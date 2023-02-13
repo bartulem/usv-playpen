@@ -1,0 +1,76 @@
+Main{
+    font: 10pt "Segoe UI";
+    min-width: 1050px;
+    min-height: 1250px;
+    max-width: 1050px;
+    max-height: 1250px;
+}
+AudioSettings{
+    font: 10pt "Segoe UI";
+    min-width: 1050px;
+    min-height: 1250px;
+    max-width: 1050px;
+    max-height: 1250px;
+}
+ConductRecording{
+    font: 10pt "Segoe UI";
+    min-width: 1050px;
+    min-height: 1250px;
+    max-width: 1050px;
+    max-height: 1250px;
+}
+QPlainTextEdit{
+    min-width: 1030px;
+    min-height: 950px;
+    max-width: 1030px;
+    max-height: 950px;
+}
+QLabel{
+    font: 12pt "Segoe UI";
+}
+QLineEdit{
+    font: 10pt "Segoe UI";
+    line-height: 10pt;
+}
+QProgressBar {
+    font: 10pt "Segoe UI";
+    font-size: 10pt;
+    font-weight: bold;
+    padding: 0px;
+}
+
+QProgressBar::chunk {
+    background-color: #F58025;
+    text-align: center;
+    width: 10px;
+}
+QPushButton{
+    font: 8pt "Segoe UI";
+    border: 1px solid #6C6C6C;
+    border-radius: 3px;
+    padding: 5px 10px;
+    margin: 1px;
+    background-color: #F58025;
+    color: #000000;
+    font-weight: bold;
+    min-width: 68px;
+    min-height: 18px;
+    max-width: 68px;
+    max-height: 18px;
+}
+QPushButton:hover {
+    border-radius: 3px;
+    margin: 0px;
+    border: 1px solid #6C6C6C;
+}
+QPushButton:focus {
+    outline-color: transparent;
+    border: 2px solid #C2C6C9;
+}
+QPushButton:pressed{
+    background-color: #6C6C6C;
+}
+QPushButton:disabled {
+    color: #CCCCCC;
+    border-color: #808080;
+}
