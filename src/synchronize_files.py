@@ -8,6 +8,7 @@ import json
 import os
 import pims
 import numpy as np
+from datetime import datetime
 from imgstore import new_for_filename
 from numba import njit
 from behavioral_experiments import _loop_time
@@ -288,6 +289,9 @@ class Synchronizer:
             Dictionary for IPI values (in ms) for each camera.
         ----------
         """
+
+        self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        _loop_time(1000)
 
         sync_sequence_dict = {}
         ipi_start_frames = 0
