@@ -1,7 +1,7 @@
 # usv-playpen v0.1.0
 ---
 
-GUI to facilitate conducting experiments with multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the Princeton Neuroscience Institute 2021-23 (Falkner/Murthy labs). due to proprietary software design and limitations, recordings can only be performed on Windows. The data processing branch of the GUI is platform-independent.
+GUI to facilitate conducting experiments with multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-23 (Falkner/Murthy labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing branch of the GUI is platform-independent.
 
 <p align="center">
   <img src="./img/usv_playpen_gui.png">
