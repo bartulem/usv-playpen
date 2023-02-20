@@ -8,7 +8,7 @@ GUI to facilitate conducting experiments with multichannel audio (Avisoft) and m
 
 ## Prerequisites
 
-* [Python 3.10](https://www.python.org/downloads/) (and add it to PATH)
+* [Python 3.10](https://www.python.org/downloads/) (and add it to top of PATH)
 * [pip](https://pip.pypa.io/en/stable/) (and add it to PATH)
 * [git](https://git-scm.com/download/)  (and add it to PATH)
 
@@ -16,19 +16,27 @@ GUI to facilitate conducting experiments with multichannel audio (Avisoft) and m
 
 Set up a new virtual environment with Python 3.10 and give it any name, _e.g._, venv_name.
 ```bash
-python3.10 -m venv venv_name
+python -m venv venv_name
 ```
 Activate the virtual environment with:
 ```bash
 source ./venv_name/bin/activate
 ```
-or, on Windows:
+or, on OS Windows:
 ```bash
 .\venv_name\Scripts\activate
 ```
 Install GUI with command below. Also, rerun the same command to check for and install updates.
 ```bash
 pip install git+https://github.com/bartulem/usv-playpen
+```
+Add the python-motifapi package to your virtual environment (on Linux):
+```bash
+pip install git+git+https://github.com/loopbio/python-motifapi.git
+```
+Or on OS Windows:
+```bash
+pip install -e git+https://github.com/loopbio/python-motifapi.git#egg=motifapi
 ```
 
 ## Features
@@ -49,7 +57,7 @@ cd /.../usv-playpen/src
 
 Run the GUI.
 ```bash
-python3.10 usv_playpen_gui.py
+python usv_playpen_gui.py
 ```
 
 Developed and tested in PyCharm Pro 2022.3.2, on Windows 10/Ubuntu 22.04 LTS.
