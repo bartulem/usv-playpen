@@ -10,7 +10,6 @@ import pims
 import numpy as np
 from imgstore import new_for_filename
 from numba import njit
-from tqdm import tqdm
 from behavioral_experiments import _loop_time
 from file_loader import DataLoader
 from file_writer import DataWriter
@@ -333,7 +332,7 @@ class Synchronizer:
                         # create memmap array to store the data for posterity
                         mm_arr = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name_sans_mp4}",
                                            dtype=DataLoader().known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='w+', shape=(total_frame_number, 3, 3))
-                        for fr_idx in tqdm(range(total_frame_number), desc=f"Working on {video_name_sans_mp4}"):
+                        for fr_idx in range(total_frame_number):
                             processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
                                                                   self.led_px_dict[led_px_version][used_camera]['LED_top'],
                                                                   self.led_px_dict[led_px_version][used_camera]['LED_middle'],
