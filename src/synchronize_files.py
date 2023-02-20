@@ -335,7 +335,7 @@ class Synchronizer:
 
                         # create memmap array to store the data for posterity
                         mm_arr = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name_sans_mp4}",
-                                           dtype=DataLoader().known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='w+', shape=(total_frame_number, 3, 3))
+                                           dtype=DataLoader(input_parameter_dict={}).known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='w+', shape=(total_frame_number, 3, 3))
                         for fr_idx in range(total_frame_number):
                             processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
                                                                   self.led_px_dict[led_px_version][used_camera]['LED_top'],
@@ -347,7 +347,7 @@ class Synchronizer:
 
                     # load memmap data
                     leds_array = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name_sans_mp4}",
-                                           dtype=DataLoader().known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='r', shape=(total_frame_number, 3, 3))
+                                           dtype=DataLoader(input_parameter_dict={}).known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='r', shape=(total_frame_number, 3, 3))
 
                     # take mean across all three (RGB) channels
                     mean_across_rgb = leds_array.mean(axis=-1)
