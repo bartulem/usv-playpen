@@ -1123,13 +1123,13 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['break_proportion_threshold'] = float(ast.literal_eval(self.a_break_proportion_threshold))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ttl_proportion_threshold'] = float(ast.literal_eval(self.a_ttl_proportion_threshold))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_version'] = self.v_led_px_version
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_dev'] = self.v_led_px_dev
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_dev'] = int(ast.literal_eval(self.v_led_px_dev))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['video_extension'] = self.v_video_extension
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['mm_dtype'] = self.v_mm_dtype
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['relative_intensity_threshold'] = self.v_relative_intensity_threshold
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['camera_fps'] = self.v_camera_fps
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_pulse_duration'] = self.v_sync_pulse_duration
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['millisecond_divergence_tolerance'] = self.v_millisecond_divergence_tolerance
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['relative_intensity_threshold'] = float(ast.literal_eval(self.v_relative_intensity_threshold))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['camera_fps'] = int(round(ast.literal_eval(self.v_camera_fps)))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_pulse_duration'] = float(ast.literal_eval(self.v_sync_pulse_duration))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['millisecond_divergence_tolerance'] = int(ast.literal_eval(self.v_millisecond_divergence_tolerance))
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['sorting_key'] = self.phidget_sorting_key
 
