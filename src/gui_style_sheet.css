@@ -5,6 +5,13 @@ Main{
     max-width: 1050px;
     max-height: 1250px;
 }
+Record{
+    font: 10pt "Segoe UI";
+    min-width: 1050px;
+    min-height: 1250px;
+    max-width: 1050px;
+    max-height: 1250px;
+}
 AudioSettings{
     font: 10pt "Segoe UI";
     min-width: 1050px;
@@ -12,7 +19,28 @@ AudioSettings{
     max-width: 1050px;
     max-height: 1250px;
 }
+VideoSettings{
+    font: 10pt "Segoe UI";
+    min-width: 1050px;
+    min-height: 1250px;
+    max-width: 1050px;
+    max-height: 1250px;
+}
+ProcessSettings{
+    font: 10pt "Segoe UI";
+    min-width: 1050px;
+    min-height: 1250px;
+    max-width: 1050px;
+    max-height: 1250px;
+}
 ConductRecording{
+    font: 10pt "Segoe UI";
+    min-width: 1050px;
+    min-height: 1250px;
+    max-width: 1050px;
+    max-height: 1250px;
+}
+ConductProcess{
     font: 10pt "Segoe UI";
     min-width: 1050px;
     min-height: 1250px;
@@ -73,4 +101,10 @@ QPushButton:pressed{
 QPushButton:disabled {
     color: #CCCCCC;
     border-color: #808080;
+}
+QSlider:handle{
+    background-color: #F58025;
+}
+QSlider:handle:hover {
+    background: #000000;
 }

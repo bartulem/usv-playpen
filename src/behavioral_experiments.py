@@ -22,7 +22,8 @@ from send_email import Messenger
 def _loop_time(delay_time):
     """time.sleep fails in PyQt6, so this is
     a replacement function which achieves the
-    same goal"""
+    same goal
+    NB: the time unit is in ms!"""
     loop = QEventLoop()
     QTimer.singleShot(delay_time, loop.quit)
     loop.exec()
