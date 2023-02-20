@@ -51,9 +51,9 @@ Locate the pip installed package:
 ```bash
 pip show usv-playpen
 ```
-Navigate to the directory w/ the "usv_playpen_gui.py" file (w/ the venv activated!).
+Navigate to the directory w/ the "usv_playpen_gui.py" file (example path listed below).
 ```bash
-cd /.../venv_name/lib/site-packages
+cd /.../venv_name/lib/site-packages/usv-playpen
 ```
 
 Run the GUI.
