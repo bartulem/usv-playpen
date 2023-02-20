@@ -20,6 +20,7 @@ setup(
     ],
     keywords='neuroscience, mouse, usv, behavior',
     package_dir={'usv-playpen': 'src'},
+    packages=['src', 'img'],
     package_data={'': ['*.png', '*.css', '*.mplstyle']},
     include_package_data=True,
     python_requires="==3.10.*",
