@@ -62,13 +62,11 @@ camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
 background_img_2 = f'{basedir}{os.sep}img{os.sep}background_img_2.png'
-background_img_3 = f'{basedir}{os.sep}img{os.sep}background_img_3.png'
 background_process = f'{basedir}{os.sep}img{os.sep}process_background.png'
 lab_icon = f'{basedir}{os.sep}img{os.sep}lab.png'
 splash_icon = f'{basedir}{os.sep}img{os.sep}uncle_stefan.png'
 process_icon = f'{basedir}{os.sep}img{os.sep}process.png'
 record_icon = f'{basedir}{os.sep}img{os.sep}record.png'
-stop_icon = f'{basedir}{os.sep}img{os.sep}stop.png'
 previous_icon = f'{basedir}{os.sep}img{os.sep}previous.png'
 next_icon = f'{basedir}{os.sep}img{os.sep}next.png'
 main_icon = f'{basedir}{os.sep}img{os.sep}main.png'
@@ -99,11 +97,6 @@ class AudioSettings(QWidget):
     def __init__(self, parent=Main):
         super(AudioSettings, self).__init__(parent)
 
-    def paintEvent(self, event):
-        paint_audio = QPainter(self)
-        paint_audio.drawPixmap(self.rect(), QPixmap(f'{background_img_2}'))
-        QWidget.paintEvent(self, event)
-
 
 class VideoSettings(QWidget):
     def __init__(self, parent=Main):
@@ -111,7 +104,7 @@ class VideoSettings(QWidget):
 
     def paintEvent(self, event):
         paint_video = QPainter(self)
-        paint_video.drawPixmap(self.rect(), QPixmap(f'{background_img_3}'))
+        paint_video.drawPixmap(self.rect(), QPixmap(f'{background_img_2}'))
         QWidget.paintEvent(self, event)
 
 
@@ -266,14 +259,6 @@ class USVPlaypenWindow(QMainWindow):
         self.link_coolterm = link_template.format('https://coolterm.en.lo4d.com/windows', 'CoolTerm')
         self.link_sox = HyperlinkLabel()
         self.link_sox = link_template.format('https://sourceforge.net/projects/sox/', 'Sox')
-        self.link_pip = HyperlinkLabel()
-        self.link_pip = link_template.format('https://www.geeksforgeeks.org/how-to-install-pip-on-windows/', 'pip')
-        self.link_python_310 = HyperlinkLabel()
-        self.link_python_310 = link_template.format('https://www.python.org/downloads/', 'Python 3.10')
-        self.link_git = HyperlinkLabel()
-        self.link_git = link_template.format('https://git-scm.com/download/win', 'git')
-        self.link_git_path = HyperlinkLabel()
-        self.link_git_path = link_template.format('https://linuxhint.com/add-git-to-path-windows/', 'PATH')
         self.power_plan = HyperlinkLabel()
         self.power_plan = link_template.format('https://www.howtogeek.com/240840/should-you-use-the-balanced-power-saver-or-high-performance-power-plan-on-windows/', 'power plan')
         self.label = QLabel(f"<br>Thank you for using the {app_name}."
@@ -284,13 +269,8 @@ class USVPlaypenWindow(QMainWindow):
                             f"<br>(4) " + self.link_arduino +
                             f"<br>(5) " + self.link_coolterm +
                             f"<br>(6) " + self.link_sox + " (and add it to PATH)"
-                            f"<br>(7) " + self.link_python_310 + " (and add it to top of PATH)"
-                            f"<br>(8) " + self.link_pip + " (and add it to PATH)"
-                            f"<br>(9) " + self.link_git + " (and add it to " + self.link_git_path + ")" 
                             f"<br><br> Change the Windows " + self.power_plan + " to 'High performance'."
-                            f"<br><br> Contact the author for Arduino/Coolterm instructions and necessary configuration files."
-                            f"<br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br>"
-                            f"<br> © github/bartulem {datetime.date.today().strftime('%Y')}")
+                            f"<br><br> Contact the author for Arduino/Coolterm instructions and necessary configuration files.")
         self.label.setOpenExternalLinks(True)
         self.generalLayout.addWidget(self.label, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
