@@ -20,7 +20,7 @@ setup(
     keywords='neuroscience, mouse, usv, behavior',
     package_dir={'': 'src'},
     packages=find_packages(where='src'),
-    python_requires="==3.10",
+    python_requires="==3.10.*",
     description='GUI to conduct experiments w/ multichannel audio and video acquisition',
     long_description=long_description,
     long_description_content_type="text/markdown",
