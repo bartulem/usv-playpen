@@ -1,4 +1,5 @@
 from setuptools import setup
+import os
 
 with open('README.md', 'r', encoding='utf-8') as fh:
     long_description = fh.read()
@@ -18,7 +19,8 @@ setup(
         'Programming Language :: Python :: 3 :: Only',
     ],
     keywords='neuroscience, mouse, usv, behavior',
-    package_dir={'': 'src'},
+    package_dir={'usv-playpen': 'src'},
+    package_data={'usv-playpen': [f'usv-playpen{os.sep}src{os.sep}*.css', f'usv-playpen{os.sep}src{os.sep}*.mplstyle']},
     include_package_data=True,
     python_requires="==3.10.*",
     description='GUI to conduct experiments w/ multichannel audio and video acquisition',
