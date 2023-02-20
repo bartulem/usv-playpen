@@ -29,7 +29,8 @@ setup(
         'Bug Tracker': 'https://github.com/bartulem/usv-playpen/issues'
     },
     license='MIT',
-    install_requires=['imgstore',
+    install_requires=['av==10.0.0',
+                      'imgstore',
                       'librosa==0.9.2',
                       'matplotlib==3.6.0',
                       'numpy==1.23.0',
