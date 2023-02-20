@@ -59,8 +59,7 @@ destination_win_global = 'F:\\Bartul\\Data,M:\\Bartul\\Data'
 camera_ids_global = ['21372315', '21372316', '21369048', '22085397', '21241563']
 camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
 
-code_dir = os.path.dirname(__file__)
-basedir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../'))
+basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
 background_img_2 = f'{basedir}{os.sep}img{os.sep}background_img_2.png'
 background_img_3 = f'{basedir}{os.sep}img{os.sep}background_img_3.png'
