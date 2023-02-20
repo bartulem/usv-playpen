@@ -28,16 +28,12 @@ or, on OS Windows:
 ```
 Install GUI with command below. Also, rerun the same command to check for and install updates.
 ```bash
-pip install git+https://github.com/bartulem/usv-playpen#egg=usv-playpen --use-pep517
+pip install git+https://github.com/bartulem/usv-playpen#egg=usv_playpen --use-pep517
 ```
 
-Add the python-motifapi package to your virtual environment (on Linux):
+Add the python-motifapi package to your virtual environment:
 ```bash
-pip install git+https://github.com/loopbio/python-motifapi.git
-```
-Or on OS Windows:
-```bash
-pip install -e git+https://github.com/loopbio/python-motifapi.git#egg=motifapi
+pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --use-pep517
 ```
 
 ## Features

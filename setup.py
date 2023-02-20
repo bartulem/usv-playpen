@@ -27,7 +27,6 @@ setup(
     project_urls={
         'Bug Tracker': 'https://github.com/bartulem/usv-playpen/issues'
     },
-    py_modules=['usv-playpen'],
     license='MIT',
     install_requires=['av==10.0.0',
                       'imgstore',
@@ -42,5 +41,6 @@ setup(
                       'scipy==1.10.0',
                       'scikit-learn==1.2.1',
                       'soundfile==0.12.1',
-                      'toml==0.10.2']
+                      'toml==0.10.2',
+                      'usv-playpen']
 )
