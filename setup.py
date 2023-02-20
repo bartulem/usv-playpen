@@ -19,6 +19,8 @@ setup(
     ],
     keywords='neuroscience, mouse, usv, behavior',
     package_dir={'': 'src'},
+    package_data={'': ['gui_style_sheet.css', 'project.mplstyle']},
+    include_package_data=True,
     python_requires="==3.10.*",
     description='GUI to conduct experiments w/ multichannel audio and video acquisition',
     long_description=long_description,
