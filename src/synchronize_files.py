@@ -536,6 +536,9 @@ class Synchronizer:
         ----------
         """
 
+        self.message_output(f"Cropping WAV files started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        _loop_time(1000)
+
         # video
         total_frame_number = 1e9
         total_video_time = 1e9

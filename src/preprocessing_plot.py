@@ -254,9 +254,12 @@ class SummaryPlotter:
                 axin1 = axr[device_num].inset_axes([0.05, 0.8, 0.15, 0.15], transform=axr[device_num].transAxes)
                 axin1.hist(phidget_data_dictionary['humidity'], color='#8EE5EE')
                 axin1.set_yticks([])
-                axin1.set_xticks([round(phidget_data_dictionary['humidity'].min(), 2),
-                                  round(phidget_data_dictionary['humidity'].mean(), 2),
-                                  round(phidget_data_dictionary['humidity'].max(), 2)])
+                try:
+                    axin1.set_xticks([round(phidget_data_dictionary['humidity'].min(), 2),
+                                      round(phidget_data_dictionary['humidity'].mean(), 2),
+                                      round(phidget_data_dictionary['humidity'].max(), 2)])
+                except ValueError:
+                    pass
                 axin1.set_xlabel('humidity (%)')
 
                 axin2 = axr[1].inset_axes([0.225, 0.8, 0.15, 0.15], transform=axr[1].transAxes)
@@ -269,9 +272,12 @@ class SummaryPlotter:
                 axin3 = axr[device_num].inset_axes([0.05, 0.5, 0.15, 0.15], transform=axr[device_num].transAxes)
                 axin3.hist(phidget_data_dictionary['lux'], color='#EEB422')
                 axin3.set_yticks([])
-                axin3.set_xticks([round(phidget_data_dictionary['lux'].min(), 2),
-                                  round(phidget_data_dictionary['lux'].mean(), 2),
-                                  round(phidget_data_dictionary['lux'].max(), 2)])
+                try:
+                    axin3.set_xticks([round(phidget_data_dictionary['lux'].min(), 2),
+                                      round(phidget_data_dictionary['lux'].mean(), 2),
+                                      round(phidget_data_dictionary['lux'].max(), 2)])
+                except ValueError:
+                    pass
                 axin3.set_xlabel('illumination (lux)')
 
                 axin4 = axr[1].inset_axes([0.225, 0.5, 0.15, 0.15], transform=axr[1].transAxes)
@@ -284,9 +290,12 @@ class SummaryPlotter:
                 axin5 = axr[device_num].inset_axes([0.05, 0.2, 0.15, 0.15], transform=axr[device_num].transAxes)
                 axin5.hist(phidget_data_dictionary['temperature'], color='#FF7F50')
                 axin5.set_yticks([])
-                axin5.set_xticks([round(phidget_data_dictionary['temperature'].min(), 2),
-                                  round(phidget_data_dictionary['temperature'].mean(), 2),
-                                  round(phidget_data_dictionary['temperature'].max(), 2)])
+                try:
+                    axin5.set_xticks([round(phidget_data_dictionary['temperature'].min(), 2),
+                                      round(phidget_data_dictionary['temperature'].mean(), 2),
+                                      round(phidget_data_dictionary['temperature'].max(), 2)])
+                except ValueError:
+                    pass
                 axin5.set_xlabel('temperature (°C)')
 
                 axin6 = axr[1].inset_axes([0.225, 0.2, 0.15, 0.15], transform=axr[1].transAxes)
