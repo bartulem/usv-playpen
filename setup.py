@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 with open('README.md', 'r', encoding='utf-8') as fh:
     long_description = fh.read()
@@ -19,15 +19,15 @@ setup(
     ],
     keywords='neuroscience, mouse, usv, behavior',
     package_dir={'': 'src'},
-    packages=find_packages(where='src'),
     python_requires="==3.10.*",
     description='GUI to conduct experiments w/ multichannel audio and video acquisition',
     long_description=long_description,
     long_description_content_type="text/markdown",
     url='https://github.com/bartulem/usv-playpen',
-    project_urls = {
+    project_urls={
         'Bug Tracker': 'https://github.com/bartulem/usv-playpen/issues'
     },
+    py_modules=['usv-playpen'],
     license='MIT',
     install_requires=['av==10.0.0',
                       'imgstore',
