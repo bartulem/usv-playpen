@@ -41,6 +41,5 @@ setup(
                       'scipy==1.10.0',
                       'scikit-learn==1.2.1',
                       'soundfile==0.12.1',
-                      'toml==0.10.2',
-                      'usv-playpen']
+                      'toml==0.10.2']
 )

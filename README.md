@@ -28,7 +28,7 @@ or, on OS Windows:
 ```
 Install GUI with command below. Also, rerun the same command to check for and install updates.
 ```bash
-pip install git+https://github.com/bartulem/usv-playpen#egg=usv_playpen --use-pep517
+pip install git+https://github.com/bartulem/usv-playpen --use-pep517
 ```
 
 Add the python-motifapi package to your virtual environment:
@@ -49,11 +49,11 @@ pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --us
 
 Locate the pip installed package:
 ```bash
-pip show usv_playpen
+pip show usv-playpen
 ```
 Navigate to the directory w/ the "usv_playpen_gui.py" file (w/ the venv activated!).
 ```bash
-cd /venv_name/usv-playpen/src
+cd /.../venv_name
 ```
 
 Run the GUI.
