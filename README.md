@@ -3,7 +3,7 @@
 
 GUI to facilitate conducting experiments with multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the Princeton Neuroscience Institute 2021-23 (Falkner/Murthy labs). due to proprietary software design and limitations, recordings can only be performed on Windows. The data processing branch of the GUI is platform-independent.
 
-![usv_playpen](./img/usv_playpen_gui.png)
+![usv_playpen](./img/usv_playpen_gui.png){ style="display: block; margin: 0 auto" }
 
 ## Prerequisites
 ---
