@@ -92,7 +92,7 @@ class SummaryPlotter:
         memmap_audio_file = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.mmap")
         audio_sampling_rate = int(int(memmap_audio_file[0].split(os.sep)[-1].split('_')[4]) / 1000)
         audio_sample_number = memmap_audio_file[0].split(os.sep)[-1].split('_')[5]
-        audio_ch_number = memmap_audio_file[0].split(os.sep)[-1].split('_')[6]
+        audio_ch_number = memmap_audio_file[0].split(os.sep)[-1].split('_')[6] * len(memmap_audio_file)
 
         # get relevant video metadata
         used_cameras = []
