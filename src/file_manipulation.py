@@ -275,35 +275,33 @@ class Operator:
 
                     # self.message_output("Saving the vstacked files as memmap. NB: memory exhaustive process!")
 
-                    for device_id in ['m', 's']:
+                    data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
+                                                                 'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
+                    dim_1 = 0
+                    dim_2 = len(data_dict.keys())
+                    data_type = 0
+                    sr = 0
+                    for file_idx, one_file in enumerate(data_dict.keys()):
+                        if file_idx == 0:
+                            name_origin = one_file.split('_')[1]
+                            data_type = data_dict[one_file]['dtype']
+                            dim_1 = data_dict[one_file]['wav_data'].shape[0]
+                            sr = data_dict[one_file]['sampling_rate']
+                            break
 
-                        data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
-                                                                     'load_wavefile_data': {'library': 'scipy', 'conditional_arg': [f"{device_id}_"]}}).load_wavefile_data()
-                        dim_1 = 0
-                        dim_2 = len(data_dict.keys())
-                        data_type = 0
-                        sr = 0
-                        for file_idx, one_file in enumerate(data_dict.keys()):
-                            if file_idx == 0:
-                                name_origin = one_file.split('_')[1]
-                                data_type = data_dict[one_file]['dtype']
-                                dim_1 = data_dict[one_file]['wav_data'].shape[0]
-                                sr = data_dict[one_file]['sampling_rate']
-                                break
+                    audio_mm_arr = np.memmap(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{name_origin}"
+                                             f"_concatenated_audio_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
+                                             dtype=data_type,
+                                             mode='w+',
+                                             shape=(dim_1, dim_2))
 
-                        audio_mm_arr = np.memmap(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{device_id}_{name_origin}"
-                                                 f"_concatenated_audio_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
-                                                 dtype=data_type,
-                                                 mode='w+',
-                                                 shape=(dim_1, dim_2))
+                    for file_idx, one_file in enumerate(data_dict.keys()):
+                        audio_mm_arr[:, file_idx] = data_dict[one_file]['wav_data']
 
-                        for file_idx, one_file in enumerate(data_dict.keys()):
-                            audio_mm_arr[:, file_idx] = data_dict[one_file]['wav_data']
+                    audio_mm_arr.flush()
+                    audio_mm_arr = 0
 
-                        audio_mm_arr.flush()
-                        audio_mm_arr = 0
-
-                        # self.message_output(f"Audio concatenation completed at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+                    # self.message_output(f"Audio concatenation completed at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
                 else:
                     self.message_output(f"Concatenation type input parameter {self.input_parameter_dict['concatenate_audio_files']['concat_type']} not recognized!")
