@@ -435,6 +435,17 @@ class Operator:
                             else:
                                 break
 
+                        if 'calibration' in sub_directory:
+                            # change video extension to .mov for calibration videos
+                            mov_subp = subprocess.Popen(f'''cmd /c "ffmpeg -i {new_file} -acodec copy -vcodec copy -f mov {new_file[:-4]}.mov"''', cwd=current_working_dir)
+
+                            while True:
+                                mov_status_poll = mov_subp.poll()
+                                if mov_status_poll is None:
+                                    _loop_time(1000)
+                                else:
+                                    break
+
                         if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
                             if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}fps_corrected_videos"):
                                 os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}fps_corrected_videos", exist_ok=False)
