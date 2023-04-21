@@ -389,8 +389,9 @@ class ExperimentController:
         for directory in total_dir_name_windows:
             if not os.path.isdir(f"{directory}{os.sep}video"):
                 os.makedirs(f"{directory}{os.sep}video", exist_ok=False)
-        if self.exp_settings_dict['conduct_audio_recording']:
-            for directory in total_dir_name_windows:
+            if not os.path.isdir(f"{directory}{os.sep}sync"):
+                os.makedirs(f"{directory}{os.sep}sync", exist_ok=False)
+            if self.exp_settings_dict['conduct_audio_recording']:
                 if not os.path.isdir(f"{directory}{os.sep}audio"):
                     os.makedirs(f"{directory}{os.sep}audio", exist_ok=False)
                     if self.exp_settings_dict['audio']['general']['total'] == 0:
@@ -398,8 +399,6 @@ class ExperimentController:
                     else:
                         os.makedirs(f"{directory}{os.sep}audio{os.sep}original", exist_ok=False)
                         os.makedirs(f"{directory}{os.sep}audio{os.sep}original_mc", exist_ok=False)
-                if not os.path.isdir(f"{directory}{os.sep}sync"):
-                    os.makedirs(f"{directory}{os.sep}sync", exist_ok=False)
 
         # record video data
         self.api.call('recording/start',
