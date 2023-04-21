@@ -444,9 +444,10 @@ class ExperimentController:
                 _loop_time(delay_time=1000)
 
         # copy audio files to another location
+        copy_data_dict = {'sync': [f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"]}
+
         if self.exp_settings_dict['conduct_audio_recording']:
-            copy_data_dict = {'audio': [],
-                              'sync': [f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"]}
+            copy_data_dict['audio'] = []
 
             # directories depend on whether the multichannel type recording was used
             device_dict = {0: "m", 12: "s"}
@@ -460,33 +461,33 @@ class ExperimentController:
                 mic_info.append(f"ch{mic_idx+1}")
                 copy_data_dict['audio'].append(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx+1}{os.sep}*.wav")
 
-            for key in copy_data_dict.keys():
-                for dir_idx, one_dir in enumerate(copy_data_dict[key]):
-                    list_of_files = glob.glob(one_dir)
+        for key in copy_data_dict.keys():
+            for dir_idx, one_dir in enumerate(copy_data_dict[key]):
+                list_of_files = glob.glob(one_dir)
 
-                    if self.exp_settings_dict['audio']['general']['total'] == 0 or key == 'sync':
-                        last_modified_file = max(list_of_files, key=os.path.getctime)
+                if self.exp_settings_dict['audio']['general']['total'] == 0 or key == 'sync':
+                    last_modified_file = max(list_of_files, key=os.path.getctime)
 
+                    for directory in total_dir_name_windows:
+                        if key != 'audio':
+                            destination_loc = f"{directory}\\{key}"
+                            shutil.copy(last_modified_file,
+                                        f"{destination_loc}{os.sep}{last_modified_file.split(os.sep)[-1]}")
+                        else:
+                            destination_loc = f"{directory}\\{key}\\original"
+                            shutil.copy(last_modified_file,
+                                        f"{destination_loc}{os.sep}{mic_info[dir_idx]}_{last_modified_file.split(os.sep)[-1]}")
+                else:
+                    for aud_file in list_of_files:
                         for directory in total_dir_name_windows:
-                            if key != 'audio':
-                                destination_loc = f"{directory}\\{key}"
-                                shutil.copy(last_modified_file,
-                                            f"{destination_loc}{os.sep}{last_modified_file.split(os.sep)[-1]}")
-                            else:
-                                destination_loc = f"{directory}\\{key}\\original"
-                                shutil.copy(last_modified_file,
-                                            f"{destination_loc}{os.sep}{mic_info[dir_idx]}_{last_modified_file.split(os.sep)[-1]}")
-                    else:
-                        for aud_file in list_of_files:
-                            for directory in total_dir_name_windows:
-                                destination_loc = f"{directory}\\{key}\\original_mc"
-                                shutil.copy(aud_file,
-                                            f"{destination_loc}{os.sep}{device_dict[ch_dir_used[dir_idx]]}_{aud_file.split(os.sep)[-1]}")
+                            destination_loc = f"{directory}\\{key}\\original_mc"
+                            shutil.copy(aud_file,
+                                        f"{destination_loc}{os.sep}{device_dict[ch_dir_used[dir_idx]]}_{aud_file.split(os.sep)[-1]}")
 
-                    # purge audio directory of channel files, so it doesn't fill up the drive
-                    if key == 'audio':
-                        for a_file in list_of_files:
-                            os.remove(a_file)
+                # purge audio directory of channel files, so it doesn't fill up the drive
+                if key == 'audio':
+                    for a_file in list_of_files:
+                        os.remove(a_file)
 
         self.message_output(f"Copying audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 

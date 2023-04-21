@@ -958,6 +958,9 @@ class USVPlaypenWindow(QMainWindow):
     def _save_modified_values_to_toml(self):
         self.exp_settings_dict = toml.load(f"{self.settings_dict['general']['config_settings_directory']}{os.sep}behavioral_experiments_settings.toml")
 
+        if self.exp_settings_dict['config_settings_directory'] != self.settings_dict['general']['config_settings_directory']:
+            self.exp_settings_dict['config_settings_directory'] = self.settings_dict['general']['config_settings_directory']
+
         if self.exp_settings_dict['avisoft_recorder_exe'] != self.settings_dict['general']['avisoft_recorder_exe']:
             self.exp_settings_dict['avisoft_recorder_exe'] = self.settings_dict['general']['avisoft_recorder_exe']
 
