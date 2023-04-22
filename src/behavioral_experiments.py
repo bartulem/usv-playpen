@@ -303,6 +303,14 @@ class ExperimentController:
             # pause for N seconds
             _loop_time(delay_time=5000)
 
+        else:
+            if not os.path.isfile(f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
+                shutil.copy(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}avisoft_config.ini",
+                            f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
+
+            # pause for N seconds
+            _loop_time(delay_time=5000)
+
     def conduct_behavioral_recording(self):
         """
         Description
