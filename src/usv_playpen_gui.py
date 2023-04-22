@@ -52,7 +52,7 @@ experimenter_id = 'bartulem'
 email_list_global = 'bmimica@princeton.edu'
 config_dir_global = 'C:\\experiment_running_docs'
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
-avisoft_base_dir_global = 'C:\\Users\\bmimica\\Documents\\Avisoft Bioacoustics'
+avisoft_base_dir_global = 'C:\\Users\\bmimica\\Documents\\Avisoft Bioacoustics\\'
 coolterm_base_dir_global = 'D:\\CoolTermWin'
 destination_linux_global = '/home/labadmin/falkner/Bartul/Data,/home/labadmin/murthy/Bartul/Data'
 destination_win_global = 'F:\\Bartul\\Data,M:\\Bartul\\Data'
@@ -958,6 +958,14 @@ class USVPlaypenWindow(QMainWindow):
     def _save_modified_values_to_toml(self):
         self.exp_settings_dict = toml.load(f"{self.settings_dict['general']['config_settings_directory']}{os.sep}behavioral_experiments_settings.toml")
 
+        audio_config_temp = configparser.ConfigParser()
+        audio_config_temp.read(f"{self.settings_dict['general']['config_settings_directory']}"
+                               f"{os.sep}avisoft_config.ini")
+
+        if audio_config_temp['Configuration']['basedirectory'] != self.settings_dict['general']['avisoft_basedirectory'] \
+                or audio_config_temp['Configuration']['configfilename'] != f"{self.settings_dict['general']['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini":
+            self.modify_audio_config = True
+
         if self.exp_settings_dict['config_settings_directory'] != self.settings_dict['general']['config_settings_directory']:
             self.exp_settings_dict['config_settings_directory'] = self.settings_dict['general']['config_settings_directory']
 
@@ -966,6 +974,7 @@ class USVPlaypenWindow(QMainWindow):
 
         if self.exp_settings_dict['avisoft_basedirectory'] != self.settings_dict['general']['avisoft_basedirectory']:
             self.exp_settings_dict['avisoft_basedirectory'] = self.settings_dict['general']['avisoft_basedirectory']
+            self.modify_audio_config = True
 
         if self.exp_settings_dict['coolterm_basedirectory'] != self.settings_dict['general']['coolterm_basedirectory']:
             self.exp_settings_dict['coolterm_basedirectory'] = self.settings_dict['general']['coolterm_basedirectory']

@@ -293,9 +293,12 @@ class ExperimentController:
             with open(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}avisoft_config.ini", 'w') as configfile:
                 self.config_1.write(configfile, space_around_delimiters=False)
 
-        if self.exp_settings_dict['modify_audio_config_file']:
-            shutil.copy(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}avisoft_config.ini",
-                        f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
+            if os.path.isfile(f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
+                shutil.copy(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}avisoft_config.ini",
+                            f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
+            else:
+                shutil.copy(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}avisoft_config.ini",
+                            f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
 
             # pause for N seconds
             _loop_time(delay_time=5000)
