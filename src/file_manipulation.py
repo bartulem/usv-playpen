@@ -437,7 +437,7 @@ class Operator:
 
                         if 'calibration' in sub_directory:
                             # change video extension to .mov for calibration videos
-                            mov_subp = subprocess.Popen(f'''cmd /c "ffmpeg -i {new_file} -acodec copy -vcodec copy -f mov {new_file[:-4]}.mov"''', cwd=current_working_dir)
+                            mov_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -i {new_file} -acodec copy -vcodec copy -f mov {new_file[:-4]}.mov"''', cwd=current_working_dir)
 
                             while True:
                                 mov_status_poll = mov_subp.poll()
