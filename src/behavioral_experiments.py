@@ -122,7 +122,7 @@ class ExperimentController:
 
         return start_hour_min_sec, total_dir_name_linux, total_dir_name_windows
 
-    def check_camera_vitals(self):
+    def check_camera_vitals(self, camera_fr=None):
         ip_address, api_key = self.get_connection_params()
 
         try:
@@ -149,7 +149,8 @@ class ExperimentController:
                          Gain=self.exp_settings_dict['video']['cameras_config'][serial_num]['gain'])
 
             # frame rate has to be same for all
-            api.call('cameras/configure', AcquisitionFrameRate=self.exp_settings_dict['video']['general']['cameras_frame_rate'])
+            api.call('cameras/configure', MotifMulticamFrameRate=camera_fr)
+            self.message_output(f"The camera frame rate is set to {camera_fr} fps for all available cameras.")
 
             # monitor recording via browser
             if self.exp_settings_dict['video']['general']['monitor_recording'] or \
@@ -168,7 +169,7 @@ class ExperimentController:
     def conduct_tracking_calibration(self):
         self.message_output(f"Video calibration started at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
-        self.check_camera_vitals()
+        self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['calibration_frame_rate'])
 
         # calibrate tracking cameras
         self.api.call('recording/start',
@@ -330,8 +331,10 @@ class ExperimentController:
                 To record USV signals with Avisoft software or not; defaults to False.
             expected_camera_num (int)
                 The expected number of recording cameras; defaults to 5.
-            cameras_frame_rate (int/float)
-                The cameras' sampling rate; defaults to 150 (fps).
+            calibration_frame_rate (int/float)
+                The calibration sampling rate; defaults to 10 (fps).
+            recording_frame_rate (int/float)
+                The recording sampling rate; defaults to 150 (fps).
             recording_duration (int/float)
                 Recording duration; defaults to 20 (minutes).
             recording_codec (str)
@@ -367,7 +370,7 @@ class ExperimentController:
                                                                                  f"and run by @{self.exp_settings_dict['video']['metadata']['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
-        self.check_camera_vitals()
+        self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['recording_frame_rate'])
 
         # start capturing sync LEDS
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):

@@ -49,7 +49,7 @@ if os.name == 'nt':
 
 app_name = 'USV Playpen'
 experimenter_id = 'bartulem'
-email_list_global = 'bmimica@princeton.edu'
+email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
 avisoft_base_dir_global = 'C:\\Users\\bmimica\\Documents\\Avisoft Bioacoustics\\'
@@ -190,7 +190,8 @@ class USVPlaypenWindow(QMainWindow):
                                             'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
                                             'conversion_target_file': 'concatenated_temp',
                                             'video_extension': 'mp4',
-                                            'desired_fps': 150,
+                                            'calibration_fps': 10,
+                                            'recording_fps': 150,
                                             'delete_old_file': True}}},
                                       'file_writer': {
                                         'DataWriter': {
@@ -375,7 +376,7 @@ class USVPlaypenWindow(QMainWindow):
         self.setWindowTitle(f'{app_name} (Record > Audio Settings)')
         self.setCentralWidget(self.AudioSettings)
         self.generalLayout = QGridLayout()
-        self.generalLayout.setSpacing(1)
+        self.generalLayout.setSpacing(2)
         self.AudioSettings.setLayout(self.generalLayout)
 
         default_audio_settings = {'name': '999', 'id': '999', 'typech': '13', 'deviceid': '999',
@@ -506,81 +507,92 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('delete post copy:'), 8, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.delete_post_copy_cb, 8, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
+        self.calibration_frame_rate = QSlider(Qt.Orientation.Horizontal)
+        self.calibration_frame_rate.setRange(10, 150)
+        self.calibration_frame_rate.setValue(10)
+        self.calibration_frame_rate.valueChanged.connect(self._update_cal_fr_label)
+
+        self.cal_fr_label = QLabel('calibration (10 fps):')
+        self.cal_fr_label.setFixedWidth(150)
+
+        self.generalLayout.addWidget(self.cal_fr_label, 9, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.calibration_frame_rate, 9, 1, alignment=Qt.AlignmentFlag.AlignVCenter)
+
         self.cameras_frame_rate = QSlider(Qt.Orientation.Horizontal)
         self.cameras_frame_rate.setRange(10, 150)
         self.cameras_frame_rate.setValue(150)
         self.cameras_frame_rate.valueChanged.connect(self._update_fr_label)
 
-        self.fr_label = QLabel('camera freq (150 fps):')
+        self.fr_label = QLabel('recording (150 fps):')
         self.fr_label.setFixedWidth(150)
 
-        self.generalLayout.addWidget(self.fr_label, 9, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.cameras_frame_rate, 9, 1, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.generalLayout.addWidget(self.fr_label, 10, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.cameras_frame_rate, 10, 1, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.vm_label = QLabel('Video metadata')
         self.vm_label.setStyleSheet('QLabel { font-weight: bold;}')
         self.generalLayout.addWidget(self.vm_label,
-                                     11, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                                     12, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.experimenter = QLineEdit(f'{experimenter_id}')
-        self.generalLayout.addWidget(QLabel('experimenter:'), 12, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.experimenter, 12, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('experimenter:'), 13, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.experimenter, 13, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.mice_num = QLineEdit('2')
-        self.generalLayout.addWidget(QLabel('mice_num:'), 13, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.mice_num, 13, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('mice_num:'), 14, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.mice_num, 14, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.cage_ID_m1 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('cage_ID_m1:'), 14, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.cage_ID_m1, 14, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('cage_ID_m1:'), 15, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.cage_ID_m1, 15, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.mouse_ID_m1 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('mouse_ID_m1:'), 15, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.mouse_ID_m1, 15, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('mouse_ID_m1:'), 16, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.mouse_ID_m1, 16, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.genotype_m1 = QLineEdit('CD1-WT')
-        self.generalLayout.addWidget(QLabel('genotype_m1:'), 16, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.genotype_m1, 16, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('genotype_m1:'), 17, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.genotype_m1, 17, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.sex_m1 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('sex_m1:'), 17, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.sex_m1, 17, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('sex_m1:'), 18, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.sex_m1, 18, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.dob_m1 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('DOB_m1:'), 18, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.dob_m1, 18, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('DOB_m1:'), 19, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.dob_m1, 19, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.housing_m1 = QLineEdit('group')
-        self.generalLayout.addWidget(QLabel('housing_m1:'), 19, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.housing_m1, 19, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('housing_m1:'), 20, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.housing_m1, 20, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.cage_ID_m2 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('cage_ID_m2:'), 20, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.cage_ID_m2, 20, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('cage_ID_m2:'), 21, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.cage_ID_m2, 21, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.mouse_ID_m2 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('mouse_ID_m2:'), 21, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.mouse_ID_m2, 21, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('mouse_ID_m2:'), 22, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.mouse_ID_m2, 22, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.genotype_m2 = QLineEdit('CD1-WT')
-        self.generalLayout.addWidget(QLabel('genotype_m2:'), 22, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.genotype_m2, 22, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('genotype_m2:'), 23, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.genotype_m2, 23, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.sex_m2 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('sex_m2:'), 23, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.sex_m2, 23, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('sex_m2:'), 24, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.sex_m2, 24, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.dob_m2 = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('DOB_m2:'), 24, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.dob_m2, 24, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('DOB_m2:'), 25, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.dob_m2, 25, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.housing_m2 = QLineEdit('group')
-        self.generalLayout.addWidget(QLabel('housing_m2:'), 25, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.housing_m2, 25, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('housing_m2:'), 26, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.housing_m2, 26, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.other = QLineEdit('')
-        self.generalLayout.addWidget(QLabel('other information:'), 26, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.other, 26, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('other information:'), 27, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.other, 27, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.generalLayout.addWidget(QLabel('         '), 5, 6, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.pcs_label = QLabel('Particular camera settings')
@@ -739,17 +751,22 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('video extension:'), 39, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.conversion_vid_ext, 39, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.desired_fps = QLineEdit('150')
-        self.desired_fps.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('desired fr (fps):'), 40, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.desired_fps, 40, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.calibration_fps = QLineEdit('10')
+        self.calibration_fps.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('calibration (fps):'), 40, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.calibration_fps, 40, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+
+        self.recording_fps = QLineEdit('150')
+        self.recording_fps.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('recording (fps):'), 41, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.recording_fps, 41, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.delete_con_file_cb = QComboBox()
         self.delete_con_file_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
         self.delete_con_file_cb.addItems(['Yes', 'No'])
         self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
-        self.generalLayout.addWidget(QLabel('delete concatenated files:'), 41, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.delete_con_file_cb, 41, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('delete concatenated files:'), 42, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.delete_con_file_cb, 42, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.generalLayout.addWidget(QLabel("  "), 45, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.gas_label = QLabel('Audio processing settings')
@@ -997,7 +1014,10 @@ class USVPlaypenWindow(QMainWindow):
         if self.exp_settings_dict['video_session_duration'] != ast.literal_eval(self.settings_dict['general']['video_session_duration']):
             self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.settings_dict['general']['video_session_duration'])
 
-        self.experiment_time_sec += ((ast.literal_eval(self.settings_dict['general']['video_session_duration']) + 0.36) * 60)
+        if self.settings_dict['general']['conduct_audio_recording']:
+            self.experiment_time_sec += ((ast.literal_eval(self.settings_dict['general']['video_session_duration']) + 0.36) * 60)
+        else:
+            self.experiment_time_sec += ((ast.literal_eval(self.settings_dict['general']['video_session_duration']) + 0.26) * 60)
 
         for audio_key in self.settings_dict['audio'].keys():
             if audio_key in self.exp_settings_dict['audio'].keys():
@@ -1086,7 +1106,7 @@ class USVPlaypenWindow(QMainWindow):
                       f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
     def _save_process_labels_func(self):
-        qlabel_strings = ['concatenate_video_ext', 'concatenated_video_name', 'conversion_target_file', 'conversion_vid_ext', 'desired_fps',
+        qlabel_strings = ['concatenate_video_ext', 'concatenated_video_name', 'conversion_target_file', 'conversion_vid_ext', 'calibration_fps', 'recording_fps',
                           'ch_receiving_input', 'cam_ttl_duration', 'ttl_proportion_threshold', 'audio_filter_format', 'freq_hp', 'freq_lp',
                           'a_ch_receiving_input', 'a_sync_pulse_duration', 'a_break_proportion_threshold', 'a_ttl_proportion_threshold',
                           'pc_usage_process', 'v_millisecond_divergence_tolerance', 'v_sync_pulse_duration', 'v_camera_fps',
@@ -1121,7 +1141,8 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['concatenated_video_name'] = self.concatenated_video_name
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['video_extension'] = self.conversion_vid_ext
-        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['desired_fps'] = int(round(ast.literal_eval(self.desired_fps)))
+        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['calibration_fps'] = int(round(ast.literal_eval(self.calibration_fps)))
+        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['recording_fps'] = int(round(ast.literal_eval(self.recording_fps)))
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ttl_pulse_duration'] = float(ast.literal_eval(self.cam_ttl_duration))
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ttl_proportion_threshold'] = float(ast.literal_eval(self.ttl_proportion_threshold))
@@ -1216,7 +1237,8 @@ class USVPlaypenWindow(QMainWindow):
         self.settings_dict['video']['delete_post_copy'] = self.delete_post_copy_cb_bool
         self.delete_post_copy_cb_bool = True
 
-        self.settings_dict['video']['cameras_frame_rate'] = self.cameras_frame_rate.value()
+        self.settings_dict['video']['recording_frame_rate'] = self.cameras_frame_rate.value()
+        self.settings_dict['video']['calibration_frame_rate'] = self.calibration_frame_rate.value()
 
         self.settings_dict['video']['exposure_time_21372316'] = self.exposure_time_21372316.value()
         self.settings_dict['video']['gain_21372316'] = self.gain_21372316.value()
@@ -1251,7 +1273,10 @@ class USVPlaypenWindow(QMainWindow):
         self.__dict__[variable_id].setText(f'digital gain ({str(value)} dB):')
 
     def _update_fr_label(self, value):
-        self.fr_label.setText(f'camera freq ({str(value)} fps):')
+        self.fr_label.setText(f'recording ({str(value)} fps):')
+
+    def _update_cal_fr_label(self, value):
+        self.cal_fr_label.setText(f'calibration ({str(value)} fps):')
 
     def _create_sliders_general(self, camera_id=None, camera_color=None, x_pos_tuple=None):
         self.generalLayout.addWidget(QLabel(f'Camera {camera_id} ({camera_color}) settings'),
@@ -1306,30 +1331,30 @@ class USVPlaypenWindow(QMainWindow):
 
         self.button_map = {'Previous': QPushButton(QIcon(previous_icon), 'Previous')}
         self.button_map['Previous'].clicked.connect(previous_win)
-        self.generalLayout.addWidget(self.button_map['Previous'], 95, 0, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.generalLayout.addWidget(self.button_map['Previous'], 98, 0, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.button_map['Main'] = QPushButton(QIcon(main_icon), 'Main')
         self.button_map['Main'].clicked.connect(self.main_window)
-        self.generalLayout.addWidget(self.button_map['Main'], 95, 71)
+        self.generalLayout.addWidget(self.button_map['Main'], 98, 71)
 
         if len(next_win_connect) > 0:
             self.button_map['Next'] = QPushButton(QIcon(next_icon), 'Next')
             for one_connection in next_win_connect:
                 self.button_map['Next'].clicked.connect(one_connection)
-            self.generalLayout.addWidget(self.button_map['Next'], 95, 58)
+            self.generalLayout.addWidget(self.button_map['Next'], 98, 58)
         else:
             if self.settings_dict['general']['conduct_tracking_calibration']:
                 self.button_map['Calibrate'] = QPushButton(QIcon(calibrate_icon), 'Calibrate')
                 self.button_map['Calibrate'].clicked.connect(self._disable_other_buttons)
                 self.button_map['Calibrate'].clicked.connect(self._start_calibration)
                 self.button_map['Calibrate'].clicked.connect(self._enable_other_buttons_post_cal)
-                self.generalLayout.addWidget(self.button_map['Calibrate'], 95, 45)
+                self.generalLayout.addWidget(self.button_map['Calibrate'], 98, 45)
 
             self.button_map['Record'] = QPushButton(QIcon(record_icon), 'Record')
             self.button_map['Record'].clicked.connect(self._disable_other_buttons)
             self.button_map['Record'].clicked.connect(self._start_recording)
             self.button_map['Record'].clicked.connect(self._enable_other_buttons_post_rec)
-            self.generalLayout.addWidget(self.button_map['Record'], 95, 58)
+            self.generalLayout.addWidget(self.button_map['Record'], 98, 58)
 
     def _create_buttons_process(self, seq):
         if seq == 0:

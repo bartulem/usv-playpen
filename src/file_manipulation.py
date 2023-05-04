@@ -389,8 +389,10 @@ class Operator:
                 File to modify; defaults to 'concatenated_temp'.
             video_extension (str)
                 Video extension; defaults to 'mp4'.
-            desired_fps (int)
-                Desired sampling rate; defaults to 150 (fps).
+            calibration_fps (int)
+                Desired sampling rate in calibration; defaults to 10 (fps).
+            recording_fps (int)
+                Desired sampling rate in recording; defaults to 150 (fps).
             delete_old_file (bool)
                 Delete original file; defaults to True.
         ----------
@@ -404,18 +406,25 @@ class Operator:
 
         self.message_output(f"FPS modification started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        # bit_rates = [1896926, 1912864, 1907971, 1915875, 1893538]
+        date_joint = ''
         if os.path.exists(f"{self.root_directory}{os.sep}video"):
-            for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
+            for sd_idx, sub_directory in enumerate(os.listdir(f"{self.root_directory}{os.sep}video")):
                 if sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']:
+
+                    if sd_idx == 0:
+                        date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
 
                     current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
                     if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
                         target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
                     else:
                         target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                    new_file = f"{sub_directory}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                    new_fps = f"{self.input_parameter_dict['rectify_video_fps']['desired_fps']}"
+                    if 'calibration' in sub_directory:
+                        new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                        new_fps = f"{self.input_parameter_dict['rectify_video_fps']['calibration_fps']}"
+                    else:
+                        new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                        new_fps = f"{self.input_parameter_dict['rectify_video_fps']['recording_fps']}"
 
                     if os.path.isfile(f"{current_working_dir}{os.sep}{target_file}"):
 
@@ -435,32 +444,28 @@ class Operator:
                             else:
                                 break
 
+                        if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}"):
+                            os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}", exist_ok=False)
+
+                        if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}"):
+                            os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}", exist_ok=False)
+
+                        if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images"):
+                            os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images", exist_ok=False)
+
+                        # copy files to special directory
                         if 'calibration' in sub_directory:
-                            # change video extension to .mov for calibration videos
-                            mov_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -i {new_file} -acodec copy -vcodec copy -f mov {new_file[:-4]}.mov"''', cwd=current_working_dir)
+                            shutil.move(f"{current_working_dir}{os.sep}{new_file}",
+                                        f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images{os.sep}{new_file}")
+                        else:
+                            shutil.move(f"{current_working_dir}{os.sep}{new_file}",
+                                        f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
 
-                            while True:
-                                mov_status_poll = mov_subp.poll()
-                                if mov_status_poll is None:
-                                    _loop_time(1000)
-                                else:
-                                    break
-
-                        if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
-                            if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}fps_corrected_videos"):
-                                os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}fps_corrected_videos", exist_ok=False)
-                                os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}sleap", exist_ok=False)
-
-                            # copy files to special directory
-                            shutil.copy(f"{current_working_dir}{os.sep}{new_file}",
-                                        f"{self.root_directory}{os.sep}video{os.sep}fps_corrected_videos{os.sep}{new_file}")
-
-                            # clean video directory of all unnecessary files
-                            if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
-                                os.remove(f"{current_working_dir}{os.sep}{new_file}")
-                                if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
-                                    os.remove(f"{current_working_dir}{os.sep}{target_file}")
-                                    os.remove(f"{current_working_dir}{os.sep}file_concatenation_list.txt")
+                        # clean video directory of all unnecessary files
+                        if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
+                            if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
+                                os.remove(f"{current_working_dir}{os.sep}{target_file}")
+                                os.remove(f"{current_working_dir}{os.sep}file_concatenation_list.txt")
 
                     else:
                         self.message_output(f"In subdirectory '{sub_directory}', the file '{target_file}' does not exist.")
