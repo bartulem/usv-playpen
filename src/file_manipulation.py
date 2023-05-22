@@ -6,7 +6,6 @@ Manipulates files:
 (3) change video (e.g., mp4) sampling rate (fps)
 """
 
-import ast
 import glob
 import json
 import os
@@ -428,14 +427,8 @@ class Operator:
 
                     if os.path.isfile(f"{current_working_dir}{os.sep}{target_file}"):
 
-                        # get desired bit rate
-                        bit_rate_pipe = subprocess.run(f'''cmd /c "ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate {target_file}"''',
-                                                       cwd=current_working_dir, stdout=subprocess.PIPE)
-                        bit_rate = bit_rate_pipe.stdout.decode('utf-8').replace(' ', '').replace('[STREAM]', '').replace('[/STREAM]', '').replace('bit_rate=', '')
-                        bit_rate = ast.literal_eval(bit_rate)
-
                         # change video sampling rate
-                        fps_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -y -r {new_fps} -i {target_file} -fps_mode passthrough -b:v {bit_rate} {new_file}"''', cwd=current_working_dir)
+                        fps_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -y -r {new_fps} -i {target_file} -fps_mode passthrough -crf 16.4 -preset veryfast {new_file}"''', cwd=current_working_dir)
 
                         while True:
                             status_poll = fps_subp.poll()

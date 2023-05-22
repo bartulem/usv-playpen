@@ -2,6 +2,7 @@
 @author: bartulem
 Synchronizes files:
 (1) the recorded .wav file with tracking file (cuts them to video length).
+(2) find audio and video sync trains and check whether they match.
 """
 
 import json
@@ -460,7 +461,8 @@ class Synchronizer:
         video_sync_sequence_array = np.array(list(video_sync_sequence_dict.values()))
 
         prediction_error_dict = {}
-        for audio_file in wave_data_dict.keys():
+        audio_devices_start_sample_differences = 0
+        for af_idx, audio_file in enumerate(wave_data_dict.keys()):
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
             _loop_time(2000)
             # correct the sync LED jitters - when LED is recorded as being ON although it ia actually off
@@ -489,6 +491,11 @@ class Synchronizer:
                     ipi_durations_ms = np.round(((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / wave_data_dict[audio_file]['sampling_rate'])
                     audio_ipi_start_samples = ipi_start_samples
 
+            if af_idx == 0:
+                audio_devices_start_sample_differences = audio_ipi_start_samples
+            else:
+                audio_devices_start_sample_differences = audio_devices_start_sample_differences - audio_ipi_start_samples
+
             if (video_sync_sequence_array == video_sync_sequence_array[0]).all():
                 for video_idx, video_key in enumerate(video_sync_sequence_dict.keys()):
                     if video_idx == 0:
@@ -504,6 +511,11 @@ class Synchronizer:
 
             else:
                 self.message_output("The IPI sequences on different videos do not match.")
+
+        # check if the audio devices match on IPI start samples
+        audio_devices_start_sample_differences = np.abs(audio_devices_start_sample_differences)
+        self.message_output(f"The smallest IPI start sample difference across master/slave audio devices is {np.nanmin(audio_devices_start_sample_differences)}, "
+                            f"the largest is {np.nanmax(audio_devices_start_sample_differences)}, and the mean is {np.nanmean(audio_devices_start_sample_differences)}.")
 
         return prediction_error_dict
 
@@ -539,18 +551,25 @@ class Synchronizer:
         self.message_output(f"Cropping WAV files started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         _loop_time(1000)
 
+        # dictionary to store the number of frames in each video
+        camera_frame_count_dict = {}
+        date_joint = ''
+
         # video
         total_frame_number = 1e9
         total_video_time = 1e9
         if os.path.exists(f"{self.root_directory}{os.sep}video"):
-            for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
+            for sd_idx, sub_directory in enumerate(os.listdir(f"{self.root_directory}{os.sep}video")):
                 if 'calibration' not in sub_directory \
                         and sub_directory.split('.')[-1] in self.input_parameter_dict['crop_wav_files_to_video']['camera_serial_num']:
+                    if sd_idx == 0:
+                        date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
                     img_store = new_for_filename(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml")
                     total_frame_num = img_store.frame_count
                     last_frame_num = img_store.frame_max
                     frame_times = img_store.get_frame_metadata()['frame_time']
                     video_duration = frame_times[-1] - frame_times[0]
+                    camera_frame_count_dict[sub_directory.split('.')[-1]] = total_frame_num
                     if total_frame_num == last_frame_num:
                         self.message_output(f"Camera {sub_directory.split('.')[-1]} has {total_frame_num} total frames, no dropped frames, "
                                             f"and a video duration of {video_duration:.4f} seconds.")
@@ -564,6 +583,10 @@ class Synchronizer:
 
         else:
             self.message_output(f"Video directory '{self.root_directory}{os.sep}video' does not exist!")
+
+        # save camera_frame_count_dict to a file
+        with open(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}_camera_frame_count_dict.json", 'w') as frame_count_outfile:
+            json.dump(camera_frame_count_dict, frame_count_outfile)
 
         # audio
         if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}original"):
