@@ -16,6 +16,7 @@ from numba import njit
 from behavioral_experiments import _loop_time
 from file_loader import DataLoader
 from file_writer import DataWriter
+from random_pulses import generate_truly_random_seed
 from sync_regression import LinRegression
 
 
@@ -452,6 +453,8 @@ class Synchronizer:
         ----------
         """
 
+        quantum_seed = generate_truly_random_seed(input_parameter_dict=self.input_parameter_dict_random)
+
         if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"):
             wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
                                                               'load_wavefile_data': {'library': 'scipy',
@@ -513,7 +516,7 @@ class Synchronizer:
                                                 f"than the tolerance and the largest one is {diff_array.max()} ms")
                         else:
                             prediction_error_array = LinRegression(x_data=audio_ipi_start_samples,
-                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(random_dict=self.input_parameter_dict_random)
+                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(quantum_seed=quantum_seed)
                             prediction_error_dict[audio_file[:-4]] = prediction_error_array
 
             else:

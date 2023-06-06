@@ -5,7 +5,6 @@ Code to regress audio to video sync data.
 
 import numpy as np
 from sklearn import linear_model
-from random_pulses import generate_truly_random_seed
 
 
 class LinRegression:
@@ -14,7 +13,7 @@ class LinRegression:
         self.x_data = x_data
         self.y_data = y_data
 
-    def split_train_test_and_regress(self, random_dict=None):
+    def split_train_test_and_regress(self, quantum_seed=None):
         """
         Description
         ----------
@@ -40,7 +39,6 @@ class LinRegression:
         """
 
         # set random seed
-        quantum_seed = generate_truly_random_seed(input_parameter_dict=random_dict)
         np.random.seed(quantum_seed[0])
 
         # chose random indices for training
