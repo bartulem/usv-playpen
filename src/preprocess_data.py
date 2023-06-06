@@ -101,9 +101,9 @@ class Stylist:
 
                 # # # crop audio files to match video
                 if self.input_parameter_dict['processing_booleans']['conduct_audio_cropping']:
-                    total_video_time, total_frame_number = Synchronizer(root_directory=one_directory,
-                                                                        input_parameter_dict=self.input_parameter_dict,
-                                                                        message_output=self.message_output).crop_wav_files_to_video()
+                    Synchronizer(root_directory=one_directory,
+                                 input_parameter_dict=self.input_parameter_dict,
+                                 message_output=self.message_output).crop_wav_files_to_video()
 
                 # # # vstack audio files in memmap
                 if self.input_parameter_dict['processing_booleans']['conduct_audio_to_mmap']:
@@ -121,7 +121,7 @@ class Stylist:
                 if self.input_parameter_dict['processing_booleans']['conduct_audio_video_sync']:
                     prediction_error_dict = Synchronizer(root_directory=one_directory,
                                                          input_parameter_dict=self.input_parameter_dict,
-                                                         message_output=self.message_output).find_audio_sync_trains(total_frame_number=total_frame_number)
+                                                         message_output=self.message_output).find_audio_sync_trains()
 
                 # # # get phidget data
                 if self.input_parameter_dict['processing_booleans']['conduct_phidget_data_extraction']:
@@ -132,8 +132,7 @@ class Stylist:
                 if self.input_parameter_dict['processing_booleans']['plot_sync_data']:
                     SummaryPlotter(root_directory=one_directory,
                                    input_parameter_dict=self.input_parameter_dict).preprocessing_summary(prediction_error_dict=prediction_error_dict,
-                                                                                                         phidget_data_dictionary=phidget_data_dictionary,
-                                                                                                         duration_min=total_video_time)
+                                                                                                         phidget_data_dictionary=phidget_data_dictionary)
 
                 self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")

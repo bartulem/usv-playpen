@@ -28,7 +28,7 @@ class SummaryPlotter:
         else:
             self.input_parameter_dict = input_parameter_dict
 
-    def preprocessing_summary(self, prediction_error_dict, phidget_data_dictionary, duration_min):
+    def preprocessing_summary(self, prediction_error_dict, phidget_data_dictionary):
         """
         Description
         ----------
@@ -66,6 +66,11 @@ class SummaryPlotter:
             Figure summarizing the preprocessing of experimental data.
         ----------
         """
+
+        # get the total number of frames in the video
+        json_loc = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0]
+        with open(json_loc, 'r') as camera_count_json_file:
+            duration_min = json.load(camera_count_json_file)['total_video_time_least']
 
         # calculate error statistics
         plot_statistics_dict = {}

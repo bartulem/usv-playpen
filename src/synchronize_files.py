@@ -300,7 +300,7 @@ class Synchronizer:
         for video_subdir in os.listdir(f"{self.root_directory}{os.sep}video"):
             if '_' not in video_subdir:
                 for camera_dir in os.listdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
-                    video_name = glob.glob('*.mp4')[0]
+                    video_name = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}*.mp4")[0].split(os.sep)[-1]
                     if 'calibration' not in video_name \
                             and video_name.split('-')[0] in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num'] \
                             and self.input_parameter_dict['find_video_sync_trains']['video_extension'] in video_name:
@@ -424,7 +424,7 @@ class Synchronizer:
 
         return ipi_start_frames, sync_sequence_dict
 
-    def find_audio_sync_trains(self, total_frame_number):
+    def find_audio_sync_trains(self):
         """
         Description
         ----------
@@ -458,6 +458,11 @@ class Synchronizer:
                                                                                      'conditional_arg': [f"_ch{self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input']:02d}"]}}).load_wavefile_data()
         else:
             self.message_output(f"Audio directory '{self.root_directory}{os.sep}audio' does not exist!")
+
+        # get the total number of frames in the video
+        json_loc = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0]
+        with open(json_loc, 'r') as camera_count_json_file:
+            total_frame_number = json.load(camera_count_json_file)['total_frame_number_least']
 
         video_ipi_start_frames, video_sync_sequence_dict = self.find_video_sync_trains(total_frame_number=total_frame_number)
         video_sync_sequence_array = np.array(list(video_sync_sequence_dict.values()))
@@ -564,7 +569,7 @@ class Synchronizer:
             for sd_idx, sub_directory in enumerate(os.listdir(f"{self.root_directory}{os.sep}video")):
                 if 'calibration' not in sub_directory \
                         and sub_directory.split('.')[-1] in self.input_parameter_dict['crop_wav_files_to_video']['camera_serial_num']:
-                    if sd_idx == 0:
+                    if date_joint == '':
                         date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
                     img_store = new_for_filename(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml")
                     total_frame_num = img_store.frame_count
@@ -587,6 +592,8 @@ class Synchronizer:
             self.message_output(f"Video directory '{self.root_directory}{os.sep}video' does not exist!")
 
         # save camera_frame_count_dict to a file
+        camera_frame_count_dict['total_frame_number_least'] = total_frame_number
+        camera_frame_count_dict['total_video_time_least'] = total_video_time
         with open(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}_camera_frame_count_dict.json", 'w') as frame_count_outfile:
             json.dump(camera_frame_count_dict, frame_count_outfile)
 
