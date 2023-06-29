@@ -149,7 +149,7 @@ class USVPlaypenWindow(QMainWindow):
         self.settings_dict = {'general': {'config_settings_directory': '',
                                           'avisoft_recorder_exe': '',
                                           'avisoft_basedirectory': '',
-                                          'coolterm_basedirectory': ''}, 'audio': {}, 'video': {}}
+                                          'coolterm_basedirectory': ''}, 'audio': {}, 'video': {'expected_camera_num': len(camera_ids_global)}}
         self.processing_input_dict = {'processing_booleans': {
                                         'conduct_video_concatenation': True,
                                         'conduct_video_fps_change': True,
@@ -477,9 +477,9 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('browser:'), 2, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.browser, 2, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
-        self.expected_camera_num = QLineEdit('5')
-        self.generalLayout.addWidget(QLabel('expected camera num:'), 3, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.expected_camera_num, 3, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.expected_cameras = QLineEdit('21372315,21372316,21369048,22085397,21241563')
+        self.generalLayout.addWidget(QLabel('cameras to use:'), 3, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.expected_cameras, 3, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.specific_camera_serial = QLineEdit('21372315')
         self.generalLayout.addWidget(QLabel('specific camera serial:'), 4, 0, alignment=Qt.AlignmentFlag.AlignTop)
@@ -1080,9 +1080,6 @@ class USVPlaypenWindow(QMainWindow):
                                  'monitor_specific_camera', 'delete_post_copy']:
                     if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
                         self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
-                elif video_key == 'expected_camera_num':
-                    if self.exp_settings_dict['video']['general'][video_key] != ast.literal_eval(self.settings_dict['video'][video_key]):
-                        self.exp_settings_dict['video']['general'][video_key] = ast.literal_eval(self.settings_dict['video'][video_key])
                 else:
                     if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
                         self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
@@ -1226,7 +1223,7 @@ class USVPlaypenWindow(QMainWindow):
             self.settings_dict['audio'][f'{variable[:-1]}'] = getattr(self, variable[:-1]).text()
 
     def _save_record_three_labels_func(self):
-        video_dict_keys = ['browser', 'expected_camera_num', 'recording_codec', 'specific_camera_serial',
+        video_dict_keys = ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial',
                            'experimenter', 'mice_num', 'cage_ID_m1', 'mouse_ID_m1', 'genotype_m1', 'sex_m1', 'dob_m1',
                            'housing_m1', 'cage_ID_m2', 'mouse_ID_m2', 'genotype_m2', 'sex_m2', 'dob_m2', 'housing_m2', 'other']
 
@@ -1252,7 +1249,11 @@ class USVPlaypenWindow(QMainWindow):
         self.settings_dict['video']['gain_21241563'] = self.gain_21241563.value()
 
         for variable in video_dict_keys:
-            self.settings_dict['video'][variable] = getattr(self, variable).text()
+            if variable != 'expected_cameras':
+                self.settings_dict['video'][variable] = getattr(self, variable).text()
+            else:
+                self.expected_cameras = self.expected_cameras.text()
+                self.settings_dict['video'][variable] = self.expected_cameras.split(',')
 
     def _combo_box_prior_true(self, index, variable_id=None):
         if index == 1:

@@ -143,14 +143,18 @@ class ExperimentController:
                 sys.exit()
 
             # configure cameras
-            for serial_num in self.camera_serial_num:
+            for serial_num in self.exp_settings_dict['video']['general']['expected_cameras']:
                 api.call(f'camera/{serial_num}/configure',
                          ExposureTime=self.exp_settings_dict['video']['cameras_config'][serial_num]['exposure_time'],
                          Gain=self.exp_settings_dict['video']['cameras_config'][serial_num]['gain'])
 
             # frame rate has to be same for all
-            api.call('cameras/configure', MotifMulticamFrameRate=camera_fr)
-            self.message_output(f"The camera frame rate is set to {camera_fr} fps for all available cameras.")
+            if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
+                api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/configure", AcquisitionFrameRate=camera_fr)
+                self.message_output(f"The camera frame rate is set to {camera_fr} fps for {self.exp_settings_dict['video']['general']['expected_cameras'][0]}.")
+            else:
+                api.call('cameras/configure', MotifMulticamFrameRate=camera_fr)
+                self.message_output(f"The camera frame rate is set to {camera_fr} fps for all available cameras.")
 
             # monitor recording via browser
             if self.exp_settings_dict['video']['general']['monitor_recording'] or \
@@ -415,10 +419,16 @@ class ExperimentController:
                         os.makedirs(f"{directory}{os.sep}audio{os.sep}original_mc", exist_ok=False)
 
         # record video data
-        self.api.call('recording/start',
-                      duration=self.exp_settings_dict['video_session_duration'] * 60,
-                      codec=self.exp_settings_dict['video']['general']['recording_codec'],
-                      metadata=self.exp_settings_dict['video']['metadata'])
+        if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
+            self.api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recording/start",
+                          duration=self.exp_settings_dict['video_session_duration'] * 60,
+                          codec=self.exp_settings_dict['video']['general']['recording_codec'],
+                          metadata=self.exp_settings_dict['video']['metadata'])
+        else:
+            self.api.call('recording/start',
+                          duration=self.exp_settings_dict['video_session_duration'] * 60,
+                          codec=self.exp_settings_dict['video']['general']['recording_codec'],
+                          metadata=self.exp_settings_dict['video']['metadata'])
 
         if not self.exp_settings_dict['conduct_audio_recording']:
             self.message_output(f"Video recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration']} minute(s). Please be patient.")
@@ -450,9 +460,14 @@ class ExperimentController:
                 del_files = self.exp_settings_dict['video']['general']['delete_post_copy']
             else:
                 del_files = False
-            self.api.call(f'recordings/copy_all',
-                          delete_after=del_files,
-                          location=f"{lin_dir}/video")
+            if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
+                self.api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recordings/copy_all",
+                              delete_after=del_files,
+                              location=f"{lin_dir}/video")
+            else:
+                self.api.call(f'recordings/copy_all',
+                              delete_after=del_files,
+                              location=f"{lin_dir}/video")
             while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
                 _loop_time(delay_time=1000)
 
