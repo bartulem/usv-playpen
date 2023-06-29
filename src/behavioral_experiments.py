@@ -420,6 +420,7 @@ class ExperimentController:
 
         # record video data
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
+            self.message_output(f"You chose to conduct the recording with one camera only (camera serial num: {self.exp_settings_dict['video']['general']['expected_cameras'][0]}).")
             self.api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recording/start",
                           duration=self.exp_settings_dict['video_session_duration'] * 60,
                           codec=self.exp_settings_dict['video']['general']['recording_codec'],

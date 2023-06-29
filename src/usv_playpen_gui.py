@@ -1076,7 +1076,7 @@ class USVPlaypenWindow(QMainWindow):
 
         for video_key in self.settings_dict['video'].keys():
             if video_key in self.exp_settings_dict['video']['general'].keys():
-                if video_key in ['browser', 'recording_codec', 'specific_camera_serial', 'monitor_recording',
+                if video_key in ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial', 'monitor_recording',
                                  'monitor_specific_camera', 'delete_post_copy']:
                     if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
                         self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
