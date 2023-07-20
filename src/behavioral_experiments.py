@@ -444,11 +444,11 @@ class ExperimentController:
         _loop_time(delay_time=10000)
 
         # close Avisoft recorder / browser post recording
-        if self.exp_settings_dict['conduct_audio_recording']:
-            self.avisoft_recording.terminate()
-            subprocess.Popen(f'''cmd /c "taskkill /IM rec_usgh.exe /T /F 1>nul 2>&1"''').wait()
-        if self.exp_settings_dict['video']['general']['monitor_recording']:
-            subprocess.Popen(f'''cmd /c "taskkill /IM {self.exp_settings_dict['video']['general']['browser']}.exe /T /F 1>nul 2>&1"''').wait()
+        # if self.exp_settings_dict['conduct_audio_recording']:
+        #     self.avisoft_recording.terminate()
+        #     subprocess.Popen(f'''cmd /c "taskkill /IM rec_usgh.exe /T /F 1>nul 2>&1"''').wait()
+        # if self.exp_settings_dict['video']['general']['monitor_recording']:
+        #     subprocess.Popen(f'''cmd /c "taskkill /IM {self.exp_settings_dict['video']['general']['browser']}.exe /T /F 1>nul 2>&1"''').wait()
 
         # close sync LED capture
         sync_leds_capture.terminate()

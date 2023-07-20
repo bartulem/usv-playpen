@@ -396,7 +396,7 @@ class USVPlaypenWindow(QMainWindow):
                                   'delay': '0.0', 'center': '40000', 'bandwidth': '5', 'fd': '5',
                                   'decimation': '-1', 'device': '0', 'mode': '0', 'outfovertaps': '32',
                                   'outfoverabtast': '2000000', 'outformat': '2', 'outfabtast': '-22050', 'outdeviceid': '0',
-                                  'outtype': '7', 'usghflags': '1574', 'diff': '0', 'format': '1',
+                                  'outtype': '7', 'usghflags': '1590', 'diff': '0', 'format': '1',
                                   'type': '0', 'nbrwavehdr': '32', 'devbuffer': '0.032', 'ntaps': '32',
                                   'filtercutoff': '15.0', 'filter': '0', 'fabtast': '250000', 'y2': '1315',
                                   'x2': '2563', 'y1': '3', 'x1': '1378', 'fftlength': '256',
