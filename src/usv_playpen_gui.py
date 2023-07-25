@@ -9,7 +9,6 @@ import ctypes
 import datetime
 import os
 import sys
-import threading
 from functools import partial
 from pathlib import Path
 import time
@@ -40,14 +39,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from behavioral_experiments import ExperimentController, _loop_time
+from behavioral_experiments import ExperimentController
 from preprocess_data import Stylist
 
 if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen'
+app_name = 'USV Playpen v0.2.9'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -617,11 +616,6 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit.setReadOnly(True)
         self.generalLayout.addWidget(self.txt_edit, 0, 0,
                                      alignment=Qt.AlignmentFlag.AlignTop)
-
-        self.experiment_progress_bar = QProgressBar()
-        self.generalLayout.addWidget(self.experiment_progress_bar, 1, 0,
-                                     alignment=Qt.AlignmentFlag.AlignTop)
-        self.experiment_progress_bar.setStyleSheet('QProgressBar { min-width: 1030px; min-height: 30px;}')
 
         self._save_modified_values_to_toml()
 
@@ -1388,15 +1382,10 @@ class USVPlaypenWindow(QMainWindow):
         self.run_processing.prepare_data_for_analyses()
 
     def _start_calibration(self):
-        self.cal_thread = threading.Thread(self.run_exp.conduct_tracking_calibration())
-        self.cal_thread.start()
+        self.run_exp.conduct_tracking_calibration()
 
     def _start_recording(self):
-        self.prog_bar_thread = threading.Thread(target=self._move_progress_bar)
-        self.prog_bar_thread.start()
-
-        self.rec_thread = threading.Thread(self.run_exp.conduct_behavioral_recording())
-        self.rec_thread.start()
+        self.run_exp.conduct_behavioral_recording()
 
     def _enable_process_buttons(self):
         self.button_map['Previous'].setEnabled(True)
@@ -1488,13 +1477,6 @@ class USVPlaypenWindow(QMainWindow):
     def _location_on_the_screen(self):
         top_left_point = QGuiApplication.primaryScreen().availableGeometry().topLeft()
         self.move(top_left_point)
-
-    def _move_progress_bar(self):
-        time_to_sleep = int(round(self.experiment_time_sec * 10))
-        for i in range(101):
-            _loop_time(delay_time=time_to_sleep)
-            self.experiment_progress_bar.setValue(i)
-        self.experiment_time_sec = 0
 
     def _message(self, s):
         self.txt_edit.appendPlainText(s)

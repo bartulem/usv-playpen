@@ -3,10 +3,7 @@
 Code to run experiments with Motif/Avisoft.
 """
 
-from PyQt6.QtCore import (
-    QEventLoop,
-    QTimer
-)
+from PyQt6.QtTest import QTest
 import configparser
 import datetime
 import glob
@@ -17,16 +14,6 @@ import sys
 import webbrowser
 import motifapi
 from send_email import Messenger
-
-
-def _loop_time(delay_time):
-    """time.sleep fails in PyQt6, so this is
-    a replacement function which achieves the
-    same goal
-    NB: the time unit is in ms!"""
-    loop = QEventLoop()
-    QTimer.singleShot(delay_time, loop.quit)
-    loop.exec()
 
 
 class ExperimentController:
@@ -166,7 +153,7 @@ class ExperimentController:
                     webbrowser.open(self.exp_settings_dict['video']['general']['monitor_url'])
 
             # pause for N seconds
-            _loop_time(delay_time=2000)
+            QTest.qWait(2000)
 
             self.api = api
 
@@ -180,7 +167,7 @@ class ExperimentController:
                       filename='calibration',
                       duration=self.exp_settings_dict['calibration_duration'] * 60,
                       codec=self.exp_settings_dict['video']['general']['recording_codec'])
-        _loop_time(delay_time=1000*((self.exp_settings_dict['calibration_duration'] * 60) + 5))
+        QTest.qWait(1000*((self.exp_settings_dict['calibration_duration'] * 60) + 5))
 
         self.message_output(f"Video calibration completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
@@ -306,7 +293,7 @@ class ExperimentController:
                             f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
 
             # pause for N seconds
-            _loop_time(delay_time=5000)
+            QTest.qWait(5000)
 
         else:
             if not os.path.isfile(f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
@@ -314,7 +301,7 @@ class ExperimentController:
                             f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
 
             # pause for N seconds
-            _loop_time(delay_time=5000)
+            QTest.qWait(5000)
 
     def conduct_behavioral_recording(self):
         """
@@ -402,7 +389,7 @@ class ExperimentController:
             start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
 
         # pause for N seconds
-        _loop_time(delay_time=10000)
+        QTest.qWait(10000)
 
         for directory in total_dir_name_windows:
             if not os.path.isdir(f"{directory}{os.sep}video"):
@@ -436,12 +423,12 @@ class ExperimentController:
 
         # wait until cameras have finished recording
         # pause for N extra seconds so audio is done, too
-        _loop_time(delay_time=1000*(10 + (self.exp_settings_dict['video_session_duration'] * 60)))
+        QTest.qWait(1000*(10 + (self.exp_settings_dict['video_session_duration'] * 60)))
 
         self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
         # pause for N seconds
-        _loop_time(delay_time=10000)
+        QTest.qWait(10000)
 
         # close Avisoft recorder / browser post recording
         # if self.exp_settings_dict['conduct_audio_recording']:
@@ -470,7 +457,7 @@ class ExperimentController:
                               delete_after=del_files,
                               location=f"{lin_dir}/video")
             while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
-                _loop_time(delay_time=1000)
+                QTest.qWait(1000)
 
         # copy audio files to another location
         copy_data_dict = {'sync': [f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"]}
