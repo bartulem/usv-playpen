@@ -5,6 +5,7 @@ Synchronizes files:
 (2) find audio and video sync trains and check whether they match.
 """
 
+from PyQt6.QtTest import QTest
 import glob
 import json
 import os
@@ -13,7 +14,6 @@ import numpy as np
 from datetime import datetime
 from imgstore import new_for_filename
 from numba import njit
-from behavioral_experiments import _loop_time
 from file_loader import DataLoader
 from file_writer import DataWriter
 from random_pulses import generate_truly_random_seed
@@ -294,7 +294,7 @@ class Synchronizer:
         """
 
         self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        _loop_time(1000)
+        QTest.qWait(1000)
 
         sync_sequence_dict = {}
         ipi_start_frames = 0
@@ -474,7 +474,7 @@ class Synchronizer:
         audio_devices_start_sample_differences = 0
         for af_idx, audio_file in enumerate(wave_data_dict.keys()):
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
-            _loop_time(2000)
+            QTest.qWait(2000)
             # correct the sync LED jitters - when LED is recorded as being ON although it ia actually off
             wave_data_dict[audio_file]['wav_data'] = self.correct_loose_ttl_samples(raw_data=wave_data_dict[audio_file]['wav_data'],
                                                                                     ch_num=self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input'],
@@ -559,7 +559,7 @@ class Synchronizer:
         """
 
         self.message_output(f"Cropping WAV files started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        _loop_time(1000)
+        QTest.qWait(1000)
 
         # dictionary to store the number of frames in each video
         camera_frame_count_dict = {}
