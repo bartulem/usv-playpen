@@ -6,6 +6,7 @@ Manipulates files:
 (3) change video (e.g., mp4) sampling rate (fps)
 """
 
+from PyQt6.QtTest import QTest
 import glob
 import json
 import os
@@ -14,7 +15,6 @@ import sys
 import numpy as np
 import subprocess
 from datetime import datetime
-from behavioral_experiments import _loop_time
 from scipy.signal import square
 from file_loader import DataLoader
 from file_writer import DataWriter
@@ -70,7 +70,7 @@ class Operator:
 
         self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        _loop_time(2000)
+        QTest.qWait(2000)
 
         if not os.path.isdir(f"{self.root_directory}{os.sep}audio{os.sep}temp"):
 
@@ -102,7 +102,7 @@ class Operator:
                 while True:
                     status_poll = mc_to_sc_subp.poll()
                     if status_poll is None:
-                        _loop_time(1000)
+                        QTest.qWait(1000)
                     else:
                         break
 
@@ -156,7 +156,7 @@ class Operator:
         self.message_output(f"Filtering out signal between {freq_lp} and {freq_hp} Hz in audio files started at: "
                             f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        _loop_time(2000)
+        QTest.qWait(2000)
 
         if not os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}filtered"):
             os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}filtered", exist_ok=False)
@@ -173,7 +173,7 @@ class Operator:
                     while True:
                         status_poll = filter_subp.poll()
                         if status_poll is None:
-                            _loop_time(1000)
+                            QTest.qWait(1000)
                         else:
                             break
 
@@ -208,7 +208,7 @@ class Operator:
 
         self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        _loop_time(2000)
+        QTest.qWait(2000)
 
         name_origin = ""
         if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"):
@@ -231,7 +231,7 @@ class Operator:
                         while True:
                             status_poll = hstack_subp.poll()
                             if status_poll is None:
-                                _loop_time(1000)
+                                QTest.qWait(1000)
                             else:
                                 break
 
@@ -364,7 +364,7 @@ class Operator:
                         while True:
                             status_poll = concat_subp.poll()
                             if status_poll is None:
-                                _loop_time(1000)
+                                QTest.qWait(1000)
                             else:
                                 break
 
@@ -433,7 +433,7 @@ class Operator:
                         while True:
                             status_poll = fps_subp.poll()
                             if status_poll is None:
-                                _loop_time(1000)
+                                QTest.qWait(1000)
                             else:
                                 break
 
