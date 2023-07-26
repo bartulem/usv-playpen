@@ -46,7 +46,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.2.11'
+app_name = 'USV Playpen v0.2.12'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -397,8 +397,8 @@ class USVPlaypenWindow(QMainWindow):
                                   'outfoverabtast': '2000000', 'outformat': '2', 'outfabtast': '-22050', 'outdeviceid': '0',
                                   'outtype': '7', 'usghflags': '1590', 'diff': '0', 'format': '1',
                                   'type': '0', 'nbrwavehdr': '32', 'devbuffer': '0.032', 'ntaps': '32',
-                                  'filtercutoff': '15.0', 'filter': '0', 'fabtast': '250000', 'y2': '1315',
-                                  'x2': '2563', 'y1': '3', 'x1': '1378', 'fftlength': '256',
+                                  'filtercutoff': '15.0', 'filter': '0', 'fabtast': '250000', 'y2': '1322',
+                                  'x2': '2557', 'y1': '10', 'x1': '1653', 'fftlength': '256',
                                   'usvmonitoringflags': '9136', 'dispspectrogramcontrast': '0.0', 'disprangespectrogram': '250.0',
                                   'disprangeamplitude': '100.0', 'disprangewaveform': '100.0', 'total': '1', 'dcolumns': '3',
                                   'display': '2', 'total_mic_number': '24', 'total_device_num': '2',
