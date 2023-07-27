@@ -8,6 +8,7 @@ import configparser
 import datetime
 import glob
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -153,7 +154,7 @@ class ExperimentController:
                     webbrowser.open(self.exp_settings_dict['video']['general']['monitor_url'])
 
             # pause for N seconds
-            QTest.qWait(2000)
+            QTest.qWait(1000)
 
             self.api = api
 
@@ -361,49 +362,49 @@ class ExperimentController:
                                                                                  f"and run by @{self.exp_settings_dict['video']['metadata']['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
-        self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['recording_frame_rate'])
-
         # start capturing sync LEDS
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):
             shutil.copy(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}coolterm_config.stc",
                         f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc")
-        sync_leds_capture = subprocess.Popen(args=f'''cmd /k "{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"''',
+        sync_leds_capture = subprocess.Popen(args=f'''cmd /c "{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"''',
                                              stdout=subprocess.PIPE)
+
+        self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['recording_frame_rate'])
+
+        # modify audio config file
+        if self.exp_settings_dict['conduct_audio_recording']:
+            self.modify_audio_file()
+
+        start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
+
+        for directory in total_dir_name_windows:
+            if not os.path.isdir(f"{directory}{os.sep}video"):
+                video_path = pathlib.Path(f"{directory}{os.sep}video")
+                video_path.mkdir(parents=True, exist_ok=True)
+            if not os.path.isdir(f"{directory}{os.sep}sync"):
+                sync_path = pathlib.Path(f"{directory}{os.sep}sync")
+                sync_path.mkdir(parents=True, exist_ok=True)
+            if self.exp_settings_dict['conduct_audio_recording']:
+                if not os.path.isdir(f"{directory}{os.sep}audio"):
+                    if self.exp_settings_dict['audio']['general']['total'] == 0:
+                        audio_one_device_original_path = pathlib.Path(f"{directory}{os.sep}audio{os.sep}original")
+                        audio_one_device_original_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        audio_two_device_original_path = pathlib.Path(f"{directory}{os.sep}audio{os.sep}original")
+                        audio_two_device_original_path.mkdir(parents=True, exist_ok=True)
+                        audio_two_device_original_mc_path = pathlib.Path(f"{directory}{os.sep}audio{os.sep}original_mc")
+                        audio_two_device_original_mc_path.mkdir(parents=True, exist_ok=True)
 
         # start recording audio
         if self.exp_settings_dict['conduct_audio_recording']:
-
-            self.modify_audio_file()
-
-            start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
-
             # run command to start audio recording and keep executing the rest of the script
             if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
                 self.avisoft_recording = subprocess.Popen(args=f'''cmd /c ""rec_usgh.exe" /CFG=avisoft_config.ini /AUT"''',
                                                           stdout=subprocess.PIPE, cwd=self.exp_settings_dict['avisoft_recorder_exe'])
                 self.message_output(f"Recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration'] + .36} minute(s). Please be patient.")
-            else:
-                self.message_output('Audio config file is not in the appropriate directory.')
-                sys.exit()
-        else:
-            start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
 
-        # pause for N seconds
-        QTest.qWait(10000)
-
-        for directory in total_dir_name_windows:
-            if not os.path.isdir(f"{directory}{os.sep}video"):
-                os.makedirs(f"{directory}{os.sep}video", exist_ok=False)
-            if not os.path.isdir(f"{directory}{os.sep}sync"):
-                os.makedirs(f"{directory}{os.sep}sync", exist_ok=False)
-            if self.exp_settings_dict['conduct_audio_recording']:
-                if not os.path.isdir(f"{directory}{os.sep}audio"):
-                    os.makedirs(f"{directory}{os.sep}audio", exist_ok=False)
-                    if self.exp_settings_dict['audio']['general']['total'] == 0:
-                        os.makedirs(f"{directory}{os.sep}audio{os.sep}original", exist_ok=False)
-                    else:
-                        os.makedirs(f"{directory}{os.sep}audio{os.sep}original", exist_ok=False)
-                        os.makedirs(f"{directory}{os.sep}audio{os.sep}original_mc", exist_ok=False)
+                # pause for N seconds
+                QTest.qWait(10000)
 
         # record video data
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
@@ -508,10 +509,3 @@ class ExperimentController:
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "
                                                                                  f"You will be notified about further experiments "
                                                                                  f"should they occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
-
-
-if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        ExperimentController(message_output=sys.argv[1],
-                             email_receivers=sys.argv[2],
-                             exp_settings_dict=sys.argv[3]).conduct_behavioral_recording()
