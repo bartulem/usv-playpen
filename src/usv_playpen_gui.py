@@ -46,7 +46,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.2.13'
+app_name = 'USV Playpen v0.2.14'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -269,7 +269,7 @@ class USVPlaypenWindow(QMainWindow):
                             f"<br>(4) " + self.link_arduino +
                             f"<br>(5) " + self.link_coolterm +
                             f"<br>(6) " + self.link_sox + " (and add it to PATH)"
-                            f"<br><br> Change the Windows " + self.power_plan + " to 'High performance'."
+                            f"<br><br> Change the Windows " + self.power_plan + " to 'Balanced performance'."
                             f"<br><br> Contact the author for Arduino/Coolterm instructions and necessary configuration files.")
         self.label.setOpenExternalLinks(True)
         self.generalLayout.addWidget(self.label, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -395,7 +395,7 @@ class USVPlaypenWindow(QMainWindow):
                                   'delay': '0.0', 'center': '40000', 'bandwidth': '5', 'fd': '5',
                                   'decimation': '-1', 'device': '0', 'mode': '0', 'outfovertaps': '32',
                                   'outfoverabtast': '2000000', 'outformat': '2', 'outfabtast': '-22050', 'outdeviceid': '0',
-                                  'outtype': '7', 'usghflags': '1590', 'diff': '0', 'format': '1',
+                                  'outtype': '7', 'usghflags': '1574', 'diff': '0', 'format': '1',
                                   'type': '0', 'nbrwavehdr': '32', 'devbuffer': '0.032', 'ntaps': '32',
                                   'filtercutoff': '15.0', 'filter': '0', 'fabtast': '250000', 'y2': '1322',
                                   'x2': '2557', 'y1': '10', 'x1': '1653', 'fftlength': '256',
