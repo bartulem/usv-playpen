@@ -46,7 +46,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.2.14'
+app_name = 'USV Playpen v0.2.15'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -269,7 +269,7 @@ class USVPlaypenWindow(QMainWindow):
                             f"<br>(4) " + self.link_arduino +
                             f"<br>(5) " + self.link_coolterm +
                             f"<br>(6) " + self.link_sox + " (and add it to PATH)"
-                            f"<br><br> Change the Windows " + self.power_plan + " to 'Balanced performance'."
+                            f"<br><br> Switch the Windows " + self.power_plan + " between Balanced/High performance if USGH Recorder runs into issues."
                             f"<br><br> Contact the author for Arduino/Coolterm instructions and necessary configuration files.")
         self.label.setOpenExternalLinks(True)
         self.generalLayout.addWidget(self.label, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -923,7 +923,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('memmap dtype:'), 35, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.v_mm_dtype, 35, 4, 35, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.v_relative_intensity_threshold = QLineEdit('0.35')
+        self.v_relative_intensity_threshold = QLineEdit('0.4')
         self.v_relative_intensity_threshold.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
         self.generalLayout.addWidget(QLabel('rel intensity threshold:'), 36, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.v_relative_intensity_threshold, 36, 4, 36, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -1077,8 +1077,7 @@ class USVPlaypenWindow(QMainWindow):
                 else:
                     if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
                         self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
-            elif video_key in self.exp_settings_dict['video']['metadata'].keys() and \
-                    self.exp_settings_dict['video']['metadata'][video_key] != self.settings_dict['video'][video_key]:
+            elif video_key in self.exp_settings_dict['video']['metadata'].keys():
                 self.exp_settings_dict['video']['metadata'][video_key] = self.settings_dict['video'][video_key]
             else:
                 for camera_id in ['21372316', '21372315', '21369048', '22085397', '21241563']:
@@ -1218,8 +1217,8 @@ class USVPlaypenWindow(QMainWindow):
 
     def _save_record_three_labels_func(self):
         video_dict_keys = ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial',
-                           'experimenter', 'mice_num', 'cage_ID_m1', 'mouse_ID_m1', 'genotype_m1', 'sex_m1', 'dob_m1',
-                           'housing_m1', 'cage_ID_m2', 'mouse_ID_m2', 'genotype_m2', 'sex_m2', 'dob_m2', 'housing_m2', 'other']
+                           'experimenter', 'mice_num', 'cage_ID_m1', 'mouse_ID_m1', 'genotype_m1', 'sex_m1', 'DOB_m1',
+                           'housing_m1', 'cage_ID_m2', 'mouse_ID_m2', 'genotype_m2', 'sex_m2', 'DOB_m2', 'housing_m2', 'other']
 
         self.settings_dict['video']['monitor_recording'] = self.monitor_recording_cb_bool
         self.monitor_recording_cb_bool = True

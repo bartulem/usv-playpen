@@ -69,8 +69,9 @@ class Synchronizer:
                    '<2023_01_19': {'21241563': {'LED_top': [275, 1266], 'LED_middle': [345, 1272], 'LED_bottom': [375, 1245]},
                                    '21372315': {'LED_top': [520, 1260], 'LED_middle': [590, 1230], 'LED_bottom': [595, 1260]},
                                    '21372316': {'LED_top': [1000, 605], 'LED_middle': [1004, 601], 'LED_bottom': [1005, 694]}},
-                   'current': {'21241563': {'LED_top': [275, 1260], 'LED_middle': [345, 1270], 'LED_bottom': [380, 1233]},
-                               '21372315': {'LED_top': [520, 1255], 'LED_middle': [590, 1230], 'LED_bottom': [595, 1257]}}}
+                   '<2023_08_01': {'21241563': {'LED_top': [275, 1260], 'LED_middle': [345, 1270], 'LED_bottom': [380, 1233]},
+                                   '21372315': {'LED_top': [520, 1255], 'LED_middle': [590, 1230], 'LED_bottom': [595, 1257]}},
+                   'current': {'21372315': {'LED_top': [516, 1263], 'LED_middle': [586, 1221], 'LED_bottom': [593, 1262]}}}
 
     def __init__(self, root_directory=None, input_parameter_dict=None, message_output=None):
         if input_parameter_dict is None:
@@ -453,7 +454,7 @@ class Synchronizer:
         ----------
         """
 
-        quantum_seed = generate_truly_random_seed(input_parameter_dict=self.input_parameter_dict_random)
+        # quantum_seed = generate_truly_random_seed(input_parameter_dict=self.input_parameter_dict_random)
 
         if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"):
             wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
@@ -516,7 +517,7 @@ class Synchronizer:
                                                 f"than the tolerance and the largest one is {diff_array.max()} ms")
                         else:
                             prediction_error_array = LinRegression(x_data=audio_ipi_start_samples,
-                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(quantum_seed=quantum_seed)
+                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(quantum_seed=None)
                             prediction_error_dict[audio_file[:-4]] = prediction_error_array
 
             else:

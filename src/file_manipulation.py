@@ -410,8 +410,7 @@ class Operator:
             for sd_idx, sub_directory in enumerate(os.listdir(f"{self.root_directory}{os.sep}video")):
                 if sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']:
 
-                    if sd_idx == 0:
-                        date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
+                    date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
 
                     current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
                     if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):

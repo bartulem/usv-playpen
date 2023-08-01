@@ -232,7 +232,7 @@ class SummaryPlotter:
                 axr[device_num].text(x=0.005, y=0.715, s=r"$\bf{duration}$: " + f"{int(round(duration_min))} s", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
                 axr[device_num].text(x=0.005, y=0.685, s=r"$\bf{audio}$: " + f"{audio_sample_number} ({audio_ch_number}ch, {audio_sampling_rate} kHz)",
                                      verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
-                axr[device_num].text(x=0.005, y=0.655, s=r"$\bf{video parameters}$", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
+                axr[device_num].text(x=0.005, y=0.655, s=r"$\bf{video-parameters:}$", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
 
                 axr[device_num].text(x=0.005, y=0.625, s=r"$\bf{motif}$: " + f"{motif_version}", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
                 axr[device_num].text(x=0.005, y=0.595, s=r"$\bf{gain}$: " + f"{camera_gain} dB", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)

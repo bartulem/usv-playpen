@@ -39,7 +39,7 @@ class LinRegression:
         """
 
         # set random seed
-        np.random.seed(quantum_seed[0])
+        np.random.seed(quantum_seed)
 
         # chose random indices for training
         train_indices = np.sort(np.random.choice(a=range(self.x_data.shape[0]), size=int(round(self.x_data.shape[0]*.5)), replace=False))
