@@ -363,7 +363,7 @@ class Synchronizer:
                         # find indices where the largest changes occur
                         relative_intensity_threshold = self.input_parameter_dict['find_video_sync_trains']['relative_intensity_threshold']
                         sequence_found = False
-                        for threshold_value in np.arange(relative_intensity_threshold-.1, relative_intensity_threshold+.01, .01)[::-1]:
+                        for threshold_value in np.arange(relative_intensity_threshold-.4, relative_intensity_threshold+.01, .01)[::-1]:
                             if not sequence_found:
                                 significant_events = []
                                 for x_idx, x in enumerate(diff_across_leds):
@@ -398,7 +398,7 @@ class Synchronizer:
                                     if 'CoolTerm' in txt_file:
                                         with open(f"{self.root_directory}{os.sep}sync{os.sep}{txt_file}", 'r') as ipi_txt_file:
                                             for line_num, line in enumerate(ipi_txt_file.readlines()):
-                                                if line_num > 0 and line.strip():
+                                                if line_num > 2 and line.strip():
                                                     arduino_ipi_durations.append(int(line.strip()))
                                         break
                                 arduino_ipi_durations = np.array(arduino_ipi_durations)

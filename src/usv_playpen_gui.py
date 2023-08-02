@@ -46,7 +46,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.2.15'
+app_name = 'USV Playpen v0.2.16'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -557,9 +557,9 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('sex_m1:'), 18, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.sex_m1, 18, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
-        self.dob_m1 = QLineEdit('')
+        self.DOB_m1 = QLineEdit('')
         self.generalLayout.addWidget(QLabel('DOB_m1:'), 19, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.dob_m1, 19, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.DOB_m1, 19, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.housing_m1 = QLineEdit('group')
         self.generalLayout.addWidget(QLabel('housing_m1:'), 20, 0, alignment=Qt.AlignmentFlag.AlignTop)
@@ -581,9 +581,9 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('sex_m2:'), 24, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.sex_m2, 24, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
-        self.dob_m2 = QLineEdit('')
+        self.DOB_m2 = QLineEdit('')
         self.generalLayout.addWidget(QLabel('DOB_m2:'), 25, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.dob_m2, 25, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.DOB_m2, 25, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.housing_m2 = QLineEdit('group')
         self.generalLayout.addWidget(QLabel('housing_m2:'), 26, 0, alignment=Qt.AlignmentFlag.AlignTop)
@@ -923,7 +923,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('memmap dtype:'), 35, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.v_mm_dtype, 35, 4, 35, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.v_relative_intensity_threshold = QLineEdit('0.4')
+        self.v_relative_intensity_threshold = QLineEdit('0.6')
         self.v_relative_intensity_threshold.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
         self.generalLayout.addWidget(QLabel('rel intensity threshold:'), 36, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.v_relative_intensity_threshold, 36, 4, 36, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
