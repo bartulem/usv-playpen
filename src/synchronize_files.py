@@ -71,7 +71,7 @@ class Synchronizer:
                                    '21372316': {'LED_top': [1000, 605], 'LED_middle': [1004, 601], 'LED_bottom': [1005, 694]}},
                    '<2023_08_01': {'21241563': {'LED_top': [275, 1260], 'LED_middle': [345, 1270], 'LED_bottom': [380, 1233]},
                                    '21372315': {'LED_top': [520, 1255], 'LED_middle': [590, 1230], 'LED_bottom': [595, 1257]}},
-                   'current': {'21372315': {'LED_top': [516, 1263], 'LED_middle': [586, 1221], 'LED_bottom': [593, 1262]}}}
+                   'current': {'21372315': {'LED_top': [514, 1255], 'LED_middle': [575, 1235], 'LED_bottom': [590, 1261]}}}
 
     def __init__(self, root_directory=None, input_parameter_dict=None, message_output=None):
         if input_parameter_dict is None:
@@ -336,7 +336,7 @@ class Synchronizer:
                                 screen_results = np.where(frame_of_choice == frame_of_choice.max())
                                 result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
                                 self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
-                                # self.message_output(f"For camera {used_camera}, {led_position} highest intensity pixel is in position {result_dim1},{result_dim2}.")
+                                self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
 
                             # create memmap array to store the data for posterity
                             mm_arr = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
@@ -372,51 +372,54 @@ class Synchronizer:
                                     elif x > threshold_value and (-threshold_value < diff_across_leds[x_idx - 1] < threshold_value):
                                         significant_events.append(x_idx)
 
-                                # get all significant event durations (i.e., LED on periods and IPIs)
-                                significant_event_durations = np.diff(a=significant_events)
-
-                                # select only IPI intervals ("-1" is because significant events are computed relative to LED on times,
-                                # so one frame has to be removed)
-                                camera_fps = self.input_parameter_dict['find_video_sync_trains']['camera_fps']
-                                even_event_durations = significant_event_durations[::2]
-                                odd_event_durations = significant_event_durations[1::2]
-                                if even_event_durations.sum() > odd_event_durations.sum():
-                                    ipi_durations_frames = even_event_durations - 1
-                                    if type(ipi_start_frames) == int:
-                                        temp_ipi_start_frames = np.array(significant_events[::2]) + 1
-                                else:
-                                    ipi_durations_frames = odd_event_durations - 1
-                                    if type(ipi_start_frames) == int:
-                                        temp_ipi_start_frames = np.array(significant_events[1::2]) + 1
-
-                                # compute IPI durations in milliseconds
-                                ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps))
-
-                                # get actual IPI from CoolTerm-recorded .txt file
-                                arduino_ipi_durations = []
-                                for txt_file in os.listdir(f"{self.root_directory}{os.sep}sync"):
-                                    if 'CoolTerm' in txt_file:
-                                        with open(f"{self.root_directory}{os.sep}sync{os.sep}{txt_file}", 'r') as ipi_txt_file:
-                                            for line_num, line in enumerate(ipi_txt_file.readlines()):
-                                                if line_num > 2 and line.strip():
-                                                    arduino_ipi_durations.append(int(line.strip()))
-                                        break
-                                arduino_ipi_durations = np.array(arduino_ipi_durations)
-
-                                # match IPI sequences
-                                sync_sequence_len = ipi_durations_ms.shape[0]
-                                for aid_idx, aid in enumerate(arduino_ipi_durations):
-                                    if aid_idx + sync_sequence_len <= arduino_ipi_durations.shape[0]:
-                                        temp_diffs = arduino_ipi_durations[aid_idx:aid_idx + sync_sequence_len]
-                                        if np.all((np.absolute(temp_diffs - ipi_durations_ms)
-                                                   <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'])):
-                                            # self.message_output(f"IPI sequence match found in video '{video_of_interest.split(os.sep)[-1]}'!")
-                                            sync_sequence_dict[camera_dir] = temp_diffs
-                                            ipi_start_frames = temp_ipi_start_frames
-                                            sequence_found = True
-                                            break
-                                else:
+                                if len(significant_events) == 0:
                                     continue
+                                else:
+                                    # get all significant event durations (i.e., LED on periods and IPIs)
+                                    significant_event_durations = np.diff(a=significant_events)
+
+                                    # select only IPI intervals ("-1" is because significant events are computed relative to LED on times,
+                                    # so one frame has to be removed)
+                                    camera_fps = self.input_parameter_dict['find_video_sync_trains']['camera_fps']
+                                    even_event_durations = significant_event_durations[::2]
+                                    odd_event_durations = significant_event_durations[1::2]
+                                    if even_event_durations.sum() > odd_event_durations.sum():
+                                        ipi_durations_frames = even_event_durations - 1
+                                        if type(ipi_start_frames) == int:
+                                            temp_ipi_start_frames = np.array(significant_events[::2]) + 1
+                                    else:
+                                        ipi_durations_frames = odd_event_durations - 1
+                                        if type(ipi_start_frames) == int:
+                                            temp_ipi_start_frames = np.array(significant_events[1::2]) + 1
+
+                                    # compute IPI durations in milliseconds
+                                    ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps))
+
+                                    # get actual IPI from CoolTerm-recorded .txt file
+                                    arduino_ipi_durations = []
+                                    for txt_file in os.listdir(f"{self.root_directory}{os.sep}sync"):
+                                        if 'CoolTerm' in txt_file:
+                                            with open(f"{self.root_directory}{os.sep}sync{os.sep}{txt_file}", 'r') as ipi_txt_file:
+                                                for line_num, line in enumerate(ipi_txt_file.readlines()):
+                                                    if line_num > 2 and line.strip():
+                                                        arduino_ipi_durations.append(int(line.strip()))
+                                            break
+                                    arduino_ipi_durations = np.array(arduino_ipi_durations)
+
+                                    # match IPI sequences
+                                    sync_sequence_len = ipi_durations_ms.shape[0]
+                                    for aid_idx, aid in enumerate(arduino_ipi_durations):
+                                        if aid_idx + sync_sequence_len <= arduino_ipi_durations.shape[0]:
+                                            temp_diffs = arduino_ipi_durations[aid_idx:aid_idx + sync_sequence_len]
+                                            if np.all((np.absolute(temp_diffs - ipi_durations_ms)
+                                                       <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'])):
+                                                # self.message_output(f"IPI sequence match found in video '{video_of_interest.split(os.sep)[-1]}'!")
+                                                sync_sequence_dict[camera_dir] = temp_diffs
+                                                ipi_start_frames = temp_ipi_start_frames
+                                                sequence_found = True
+                                                break
+                                    else:
+                                        continue
 
                             else:
                                 break
