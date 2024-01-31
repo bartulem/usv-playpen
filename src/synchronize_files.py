@@ -16,7 +16,6 @@ from imgstore import new_for_filename
 from numba import njit
 from file_loader import DataLoader
 from file_writer import DataWriter
-from random_pulses import generate_truly_random_seed
 from sync_regression import LinRegression
 
 
@@ -71,7 +70,9 @@ class Synchronizer:
                                    '21372316': {'LED_top': [1000, 605], 'LED_middle': [1004, 601], 'LED_bottom': [1005, 694]}},
                    '<2023_08_01': {'21241563': {'LED_top': [275, 1260], 'LED_middle': [345, 1270], 'LED_bottom': [380, 1233]},
                                    '21372315': {'LED_top': [520, 1255], 'LED_middle': [590, 1230], 'LED_bottom': [595, 1257]}},
-                   'current': {'21372315': {'LED_top': [514, 1255], 'LED_middle': [575, 1235], 'LED_bottom': [590, 1261]}}}
+                   '<2024_01_01': {'21372315': {'LED_top': [514, 1255], 'LED_middle': [575, 1235], 'LED_bottom': [590, 1261]}},
+                   'current': {'21241563': {'LED_top': [315, 1250], 'LED_middle': [355, 1255], 'LED_bottom': [400, 1264]},
+                               '21372315': {'LED_top': [510, 1268], 'LED_middle': [555, 1268], 'LED_bottom': [603, 1266]}}}
 
     def __init__(self, root_directory=None, input_parameter_dict=None, message_output=None):
         if input_parameter_dict is None:

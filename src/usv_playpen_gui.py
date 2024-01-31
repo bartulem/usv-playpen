@@ -46,7 +46,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.2.17'
+app_name = 'USV Playpen v0.2.18'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -179,7 +179,7 @@ class USVPlaypenWindow(QMainWindow):
                                             'concat_type': 'vstack'},
                                           'filter_audio_files': {
                                             'audio_format': 'wav',
-                                            'freq_hp': 2000,
+                                            'freq_hp': 30000,
                                             'freq_lp': 0},
                                           'concatenate_video_files': {
                                             'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
@@ -846,7 +846,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('audio file format:'), 17, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.audio_filter_format, 17, 4, 17, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.freq_hp = QLineEdit('2000')
+        self.freq_hp = QLineEdit('30000')
         self.freq_hp.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
         self.generalLayout.addWidget(QLabel('top feq cutoff (Hz):'), 18, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.freq_hp, 18, 4, 18, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)

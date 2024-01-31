@@ -15,17 +15,11 @@ import sys
 import numpy as np
 import subprocess
 from datetime import datetime
-from scipy.signal import square
 from file_loader import DataLoader
 from file_writer import DataWriter
 
 
 class Operator:
-    tone_functions = {
-        'np.sin': np.sin,
-        'np.cos': np.cos,
-        'square': square
-    }
 
     def __init__(self, root_directory=None, input_parameter_dict=None, message_output=None):
         if input_parameter_dict is None:

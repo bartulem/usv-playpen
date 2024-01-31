@@ -1,4 +1,4 @@
-# usv-playpen v0.2.17
+# usv-playpen v0.2.18
 
 <br>
 <div align="center">
@@ -6,7 +6,7 @@
 </div>
 <hr>
 
-GUI to facilitate conducting experiments with multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-23 (Falkner/Murthy labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing branch of the GUI is platform-independent.
+GUI to facilitate conducting experiments with multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-24 (Falkner/Murthy labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing branch of the GUI is platform-independent.
 
 [![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
@@ -68,4 +68,4 @@ Run the GUI.
 python usv_playpen_gui.py
 ```
 
-Developed and tested in PyCharm Pro 2023.1.1, on Windows 10/Ubuntu 22.04 LTS.
+Developed and tested in PyCharm Pro 2023.3.2, on Windows 10/Ubuntu 22.04 LTS.
