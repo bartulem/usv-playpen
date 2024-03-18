@@ -18,8 +18,7 @@ setup(
         'Programming Language :: Python :: 3 :: Only',
     ],
     keywords='neuroscience, mouse, usv, behavior',
-    packages=find_packages(where='usv-playpen'),
-    package_dir={'': 'usv-playpen'},
+    packages=find_packages(include=['usv-playpen.src', 'usv-playpen._tests']),
     package_data={'': ['*.png', '*.css', '*.mplstyle']},
     include_package_data=True,
     python_requires="==3.10.*",
@@ -45,5 +44,5 @@ setup(
                       'scikit-learn==1.2.1',
                       'soundfile==0.12.1',
                       'toml==0.10.2'],
-    test_suite='_tests'
+    test_suite='usv-playpen._tests'
 )
