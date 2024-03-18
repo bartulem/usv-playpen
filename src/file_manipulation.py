@@ -217,7 +217,7 @@ class Operator:
                 sr = data_dict[list(data_dict.keys())[0]]['sampling_rate']
 
                 audio_mm_arr = np.memmap(f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}{name_origin}"
-                                         f"_concatenated_audio_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
+                                         f"_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
                                          dtype=data_type,
                                          mode='w+',
                                          shape=(dim_1, dim_2))
