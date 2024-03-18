@@ -38,11 +38,10 @@ setup(
                       'numba==0.56.4',
                       'opencv-contrib-python==4.7.0.68',
                       'PIMS==0.6.1',
-                      'PyQt6==6.4.2',
+                      'PyQt6==6.6.1',
                       'quantumrandom==1.9.0',
                       'scipy==1.10.0',
                       'scikit-learn==1.2.1',
                       'soundfile==0.12.1',
-                      'toml==0.10.2'],
-    test_suite='_tests'
+                      'toml==0.10.2']
 )

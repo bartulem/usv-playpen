@@ -1343,23 +1343,23 @@ class USVPlaypenWindow(QMainWindow):
 
         self.button_map = {'Previous': QPushButton(QIcon(previous_icon), 'Previous')}
         self.button_map['Previous'].clicked.connect(previous_win)
-        self.generalLayout.addWidget(self.button_map['Previous'], 64, 0, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.generalLayout.addWidget(self.button_map['Previous'], 65, 0, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.button_map['Main'] = QPushButton(QIcon(main_icon), 'Main')
         self.button_map['Main'].clicked.connect(self.main_window)
-        self.generalLayout.addWidget(self.button_map['Main'], 64, 71)
+        self.generalLayout.addWidget(self.button_map['Main'], 65, 71)
 
         if seq == 0:
             self.button_map['Next'] = QPushButton(QIcon(next_icon), 'Next')
             for one_connection in next_win_connect:
                 self.button_map["Next"].clicked.connect(one_connection)
-            self.generalLayout.addWidget(self.button_map['Next'], 64, 58)
+            self.generalLayout.addWidget(self.button_map['Next'], 65, 58)
         else:
             self.button_map['Process'] = QPushButton(QIcon(process_icon), 'Process')
             self.button_map['Process'].clicked.connect(self._disable_process_buttons)
             self.button_map['Process'].clicked.connect(self._start_processing)
             self.button_map['Process'].clicked.connect(self._enable_process_buttons)
-            self.generalLayout.addWidget(self.button_map['Process'], 64, 58)
+            self.generalLayout.addWidget(self.button_map['Process'], 65, 58)
 
     def _start_processing(self):
         self.run_processing.prepare_data_for_analyses()
