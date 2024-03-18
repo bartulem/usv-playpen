@@ -43,7 +43,7 @@ Install GUI with command below. Also, rerun the same command to check for and in
 pip install git+https://github.com/bartulem/usv-playpen --use-pep517
 ```
 
-Add the python-motifapi package to your virtual environment if it wasn't installed successfully:
+Add the python-motifapi package to your virtual environment:
 ```bash
 pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --use-pep517
 ```

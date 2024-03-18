@@ -34,7 +34,6 @@ setup(
                       'imgstore',
                       'librosa==0.9.2',
                       'matplotlib==3.6.0',
-                      'motifapi==0.1.9',
                       'numpy==1.23.0',
                       'numba==0.56.4',
                       'opencv-contrib-python==4.7.0.68',
