@@ -48,7 +48,7 @@ if os.name == 'nt':
 
 app_name = 'USV Playpen v0.3.0'
 experimenter_id = 'bartulem'
-email_list_global = 'bmimica@princeton.edu'
+email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
 avisoft_base_dir_global = 'C:\\Users\\bmimica\\Documents\\Avisoft Bioacoustics\\'
@@ -176,7 +176,7 @@ class USVPlaypenWindow(QMainWindow):
                                         'Operator': {
                                           'concatenate_audio_files': {
                                             'audio_format': 'wav',
-                                            'concat_dirs': ['hpss', 'filtered']},
+                                            'concat_dirs': ['hpss_filtered']},
                                           'filter_audio_files': {
                                             'audio_format': 'wav',
                                             'filter_dirs': ['hpss'],
@@ -901,7 +901,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('audio file format:'), 32, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.audio_format, 32, 4, 32, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.concat_dirs = QLineEdit('hpss,hpss_filtered')
+        self.concat_dirs = QLineEdit('hpss_filtered')
         self.concat_dirs.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
         self.generalLayout.addWidget(QLabel('concatenation dirs:'), 33, 3, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.concat_dirs, 33, 4, 33, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
