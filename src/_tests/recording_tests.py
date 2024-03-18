@@ -7,9 +7,9 @@ import configparser
 import motifapi
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 import toml
 import unittest
+sys.path.append('..')
 from send_email import Messenger
 import usv_playpen_gui as usv_playpen_gui
 
