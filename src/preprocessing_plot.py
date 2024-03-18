@@ -8,9 +8,10 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import wave
 from imgstore import new_for_filename
 
-plt.style.use('./project.mplstyle')
+plt.style.use('src/project.mplstyle')
 
 
 class SummaryPlotter:
@@ -94,15 +95,19 @@ class SummaryPlotter:
         med_temp = np.round(np.nanmedian(phidget_data_dictionary['temperature']), 2)
 
         # get audio information
-        memmap_audio_file = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.mmap")
-        audio_sampling_rate = int(int(memmap_audio_file[0].split(os.sep)[-1].split('_')[3]) / 1000)
-        audio_sample_number = memmap_audio_file[0].split(os.sep)[-1].split('_')[4]
-        audio_ch_number = memmap_audio_file[0].split(os.sep)[-1].split('_')[5]
+        wav_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav")
+        with wave.open(wav_audio_files[0], 'rb') as example_audio_file:
+            audio_sampling_rate = example_audio_file.getframerate()
+            audio_sample_number = example_audio_file.getnframes()
+        audio_ch_number = len(wav_audio_files)
 
         # get relevant video metadata
         used_cameras = []
         total_frames = []
+        cam_esr = []
+        cam_durations = []
         motif_version = "Ø"
+        video_encoding = "Ø"
         camera_gain = 0
         camera_frame_rate = 0
         camera_exposure = 0
@@ -122,12 +127,17 @@ class SummaryPlotter:
 
         counter = 0
         for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
-            if any([cam in sub_directory for cam in ['21241563', '21369048', '21372315', '21372316', '22085397']]) and 'calibration' not in sub_directory:
+            if os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}") and '.' in sub_directory and '_' in sub_directory and 'calibration' not in sub_directory:
                 used_cameras.append(sub_directory.split('.')[-1])
                 img_store = new_for_filename(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml")
                 total_frames.append(img_store.frame_count)
+                frame_times = img_store.get_frame_metadata()['frame_time']
+                video_duration = frame_times[-1] - frame_times[0]
+                cam_durations.append(video_duration)
+                cam_esr.append(round(number=img_store.frame_count / video_duration, ndigits=3))
 
                 if counter == 0:
+                    video_encoding = img_store._format
                     user_meta_data = img_store.user_metadata
                     motif_version = f"v{user_meta_data['motif_version']}"
                     camera_gain = user_meta_data['gain']
@@ -232,16 +242,16 @@ class SummaryPlotter:
                 axr[device_num].text(x=0.005, y=0.715, s=r"$\bf{duration}$: " + f"{int(round(duration_min))} s", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
                 axr[device_num].text(x=0.005, y=0.685, s=r"$\bf{audio}$: " + f"{audio_sample_number} ({audio_ch_number}ch, {audio_sampling_rate} kHz)",
                                      verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
-                axr[device_num].text(x=0.005, y=0.655, s=r"$\bf{video-parameters:}$", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
 
-                axr[device_num].text(x=0.005, y=0.625, s=r"$\bf{motif}$: " + f"{motif_version}", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
-                axr[device_num].text(x=0.005, y=0.595, s=r"$\bf{gain}$: " + f"{camera_gain} dB", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
-                axr[device_num].text(x=0.005, y=0.565, s=r"$\bf{exposure}$: " + f"{camera_exposure} μs", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
-                axr[device_num].text(x=0.005, y=0.535, s=r"$\bf{framerate}$: " + f"{camera_frame_rate} fps", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
+                axr[device_num].text(x=0.005, y=0.655, s=r"$\bf{motif}$: " + f"{motif_version}", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
+                axr[device_num].text(x=0.005, y=0.625, s=r"$\bf{codec}$: " + f"{video_encoding}", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
+                axr[device_num].text(x=0.005, y=0.595, s=r"$\bf{user set gain}$: " + f"{camera_gain} dB", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
+                axr[device_num].text(x=0.005, y=0.565, s=r"$\bf{user set exposure}$: " + f"{camera_exposure} μs", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
+                axr[device_num].text(x=0.005, y=0.535, s=r"$\bf{user set framerate}$: " + f"{camera_frame_rate} fps", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
                 axr[device_num].text(x=0.005, y=0.505, s=r"$\bf{cameras}$", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
                 cam_y_txt = 0.475
                 for cam_idx in range(len(used_cameras)):
-                    axr[device_num].text(x=0.005, y=cam_y_txt, s=f"{used_cameras[cam_idx]}: {total_frames[cam_idx]} fr", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
+                    axr[device_num].text(x=0.005, y=cam_y_txt, s=f"{used_cameras[cam_idx]}: {total_frames[cam_idx]} fr, {cam_esr[cam_idx]} fps", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=8)
                     cam_y_txt -= .03
 
                 axr[device_num].text(x=0.625, y=0.985, s=r"$\bf{humidity (\%)}$", verticalalignment='top', transform=axr[device_num].transAxes, fontsize=12, color='#8EE5EE')
@@ -309,8 +319,5 @@ class SummaryPlotter:
                 axin6.set_yticks([])
                 axin6.set_xlabel('time (s)')
 
-        if os.path.exists(f"{self.root_directory}{os.sep}sync"):
-            fig.savefig(f"{self.root_directory}{os.sep}sync{os.sep}{self.root_directory.split(os.sep)[-1]}_summary.png",
-                        dpi=300)
-        else:
-            print("The specified figure saving directory doesn't exist. Try again.")
+        fig.savefig(f"{self.root_directory}{os.sep}sync{os.sep}{self.root_directory.split(os.sep)[-1]}_summary.png",
+                    dpi=300)

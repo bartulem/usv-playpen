@@ -5,7 +5,6 @@ Loads WAV files.
 
 import json
 import os
-import sys
 import librosa
 import numpy as np
 from scipy.io import wavfile
@@ -90,10 +89,7 @@ class DataLoader:
                     wave_data_dict[one_file] = {'sampling_rate': 0, 'wav_data': 0, 'dtype': 0}
                     if self.input_parameter_dict['load_wavefile_data']['library'] == 'scipy':
                         wave_data_dict[one_file]['sampling_rate'], wave_data_dict[one_file]['wav_data'] = wavfile.read(f'{one_dir}{os.sep}{one_file}')
-                    elif self.input_parameter_dict['load_wavefile_data']['library'] == 'librosa':
-                        wave_data_dict[one_file]['wav_data'], wave_data_dict[one_file]['sampling_rate'] = librosa.load(f'{one_dir}{os.sep}{one_file}')
                     else:
-                        print("WAV parsing library not recognized!")
-                        sys.exit()
+                        wave_data_dict[one_file]['wav_data'], wave_data_dict[one_file]['sampling_rate'] = librosa.load(f'{one_dir}{os.sep}{one_file}')
                     wave_data_dict[one_file]['dtype'] = self.known_dtypes[type(wave_data_dict[one_file]['wav_data'].ravel()[0]).__name__]
         return wave_data_dict

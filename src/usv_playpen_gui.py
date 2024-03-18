@@ -46,9 +46,9 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.2.18'
+app_name = 'USV Playpen v0.3.0'
 experimenter_id = 'bartulem'
-email_list_global = ''
+email_list_global = 'bmimica@princeton.edu'
 config_dir_global = 'C:\\experiment_running_docs'
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
 avisoft_base_dir_global = 'C:\\Users\\bmimica\\Documents\\Avisoft Bioacoustics\\'
@@ -176,9 +176,10 @@ class USVPlaypenWindow(QMainWindow):
                                         'Operator': {
                                           'concatenate_audio_files': {
                                             'audio_format': 'wav',
-                                            'concat_type': 'vstack'},
+                                            'concat_dirs': ['hpss', 'filtered']},
                                           'filter_audio_files': {
                                             'audio_format': 'wav',
+                                            'filter_dirs': ['hpss'],
                                             'freq_hp': 30000,
                                             'freq_lp': 0},
                                           'concatenate_video_files': {
@@ -189,8 +190,8 @@ class USVPlaypenWindow(QMainWindow):
                                             'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
                                             'conversion_target_file': 'concatenated_temp',
                                             'video_extension': 'mp4',
-                                            'calibration_fps': 10,
-                                            'recording_fps': 150,
+                                            'constant_rate_factor': 16.4,
+                                            'encoding_preset': 'veryfast',
                                             'delete_old_file': True}}},
                                       'file_writer': {
                                         'DataWriter': {
@@ -214,11 +215,12 @@ class USVPlaypenWindow(QMainWindow):
                                             'receivers': []}}},
                                       'synchronize_files': {
                                         'Synchronizer': {
+                                          'validate_ephys_video_sync': {
+                                              'npx_file_type': 'ap',
+                                              'npx_ms_divergence_tolerance': 10
+                                          },
                                           'find_audio_sync_trains': {
-                                            'ch_receiving_input': 2,
-                                            'sync_pulse_duration': 0.25,
-                                            'break_proportion_threshold': 0.001,
-                                            'ttl_proportion_threshold': 0.4},
+                                            'ch_receiving_input': 2},
                                           'find_video_sync_trains': {
                                             'camera_serial_num': ['21372315'],
                                             'led_px_version': 'current',
@@ -226,14 +228,10 @@ class USVPlaypenWindow(QMainWindow):
                                             'video_extension': 'mp4',
                                             'mm_dtype': 'np.uint8',
                                             'relative_intensity_threshold': 0.35,
-                                            'camera_fps': 150,
-                                            'sync_pulse_duration': 0.25,
                                             'millisecond_divergence_tolerance': 10},
                                           'crop_wav_files_to_video': {
-                                            'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
-                                            'ch_receiving_input': 1,
-                                            'ttl_pulse_duration': 0.00011333,
-                                            'ttl_proportion_threshold': 1.0}}}}
+                                            'device_receiving_input': 'm',
+                                            'ch_receiving_input': 1}}}}
 
     def main_window(self):
         # general settings
@@ -476,7 +474,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('browser:'), 2, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.browser, 2, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
-        self.expected_cameras = QLineEdit('21372315,21372316,21369048,22085397,21241563')
+        self.expected_cameras = QLineEdit(','.join(camera_ids_global))
         self.generalLayout.addWidget(QLabel('cameras to use:'), 3, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.expected_cameras, 3, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
@@ -484,9 +482,11 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(QLabel('specific camera serial:'), 4, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.specific_camera_serial, 4, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
-        self.recording_codec = QLineEdit('lq')
+        self.recording_codec_choice = QComboBox()
+        self.recording_codec_choice.addItems(['lq', 'mq', 'hq'])
+        self.recording_codec_choice.activated.connect(partial(self._combo_box_prior_codec, variable_id='recording_codec'))
         self.generalLayout.addWidget(QLabel('recording codec:'), 5, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.recording_codec, 5, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.recording_codec_choice, 5, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.monitor_recording_cb = QComboBox()
         self.monitor_recording_cb.addItems(['Yes', 'No'])
@@ -637,7 +637,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_dir_edit = QTextEdit('')
         self.processing_dir_edit.setFixedSize(350, 380)
         self.generalLayout.addWidget(QLabel('(*) root directories for processing'), 0, 0, alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.processing_dir_edit, 1, 0, 17, 1, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.processing_dir_edit, 1, 0, 18, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         settings_dir_btn = QPushButton('Browse')
         settings_dir_btn.setStyleSheet('QPushButton { min-width: 42px; min-height: 9px; max-width: 42px; max-height: 9px;}')
@@ -645,303 +645,266 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = f'{config_dir_global}'
         settings_dir_btn.clicked.connect(self._open_settings_dialog)
         self.dir_settings_edit = QLineEdit(config_dir_global)
-        self.dir_settings_edit.setStyleSheet('QLineEdit { min-width: 200px; max-width: 200px; min-height: 18px; max-height: 18px; }')
+        self.dir_settings_edit.setStyleSheet('QLineEdit { min-width: 200px; max-width: 200px; min-height: 20px; max-height: 20px; }')
+
+        # set other parameters
+        self.pc_usage_process = QLineEdit(f'{email_list_global}')
+        self.pc_usage_process.setStyleSheet('QLineEdit { min-width: 200px; min-height: 20px; max-height: 20px; }')
+        self.generalLayout.addWidget(QLabel('notify PC usage:'), 18, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.pc_usage_process, 18, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.generalLayout.addWidget(QLabel('config loc:'), 19, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.dir_settings_edit, 19, 0, alignment=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
         self.generalLayout.addWidget(settings_dir_btn, 19, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        # set other parameters
-        self.pc_usage_process = QLineEdit(f'{email_list_global}')
-        self.pc_usage_process.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('notify PC usage:'), 20, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.pc_usage_process, 20, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-
-        self.plot_sync_results_cb = QComboBox()
-        self.plot_sync_results_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
-        self.plot_sync_results_cb.addItems(['Yes', 'No'])
-        self.plot_sync_results_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='plot_sync_results_cb_bool'))
-        self.generalLayout.addWidget(QLabel('plot sync results:'), 21, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.plot_sync_results_cb, 21, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-
-        self.phidget_settings_label = QLabel('Phidget processing settings')
-        self.phidget_settings_label.setStyleSheet('QLabel { font-weight: bold; }')
-        self.generalLayout.addWidget(self.phidget_settings_label,
-                                     23, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.process_phidget_cb = QComboBox()
-        self.process_phidget_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
-        self.process_phidget_cb.addItems(['Yes', 'No'])
-        self.process_phidget_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='process_phidget_cb_bool'))
-        self.generalLayout.addWidget(QLabel('process phidget data:'), 24, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.process_phidget_cb, 24, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-
-        self.phidget_extra_data_camera = QLineEdit('22085397')
-        self.phidget_extra_data_camera.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('extra data cam:'), 25, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.phidget_extra_data_camera, 25, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-
-        self.phidget_sorting_key = QLineEdit('sensor_time')
-        self.phidget_sorting_key.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('sorting key:'), 26, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.phidget_sorting_key, 26, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-
         self.gvs_label = QLabel('Video processing settings')
         self.gvs_label.setStyleSheet('QLabel { font-weight: bold; }')
         self.generalLayout.addWidget(self.gvs_label,
-                                     28, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.vs_conc_label = QLabel('Concatenation')
-        self.vs_conc_label.setStyleSheet('QLabel { font-weight: bold; }')
-        self.generalLayout.addWidget(self.vs_conc_label,
-                                     29, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                                     21, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.conduct_video_concatenation_cb = QComboBox()
         self.conduct_video_concatenation_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
         self.conduct_video_concatenation_cb.addItems(['Yes', 'No'])
         self.conduct_video_concatenation_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='conduct_video_concatenation_cb_bool'))
-        self.generalLayout.addWidget(QLabel('conduct video concatenation:'), 30, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.conduct_video_concatenation_cb, 30, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('conduct video concatenation:'), 22, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conduct_video_concatenation_cb, 22, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.concatenate_cam_serial_num = QLineEdit('21241563,21369048,21372315,21372316,22085397')
+        self.concatenate_cam_serial_num = QLineEdit(','.join(camera_ids_global))
         self.concatenate_cam_serial_num.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('cam serial num:'), 31, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.concatenate_cam_serial_num, 31, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('cam serial num:'), 23, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.concatenate_cam_serial_num, 23, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.concatenate_video_ext = QLineEdit('mp4')
         self.concatenate_video_ext.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('video extension:'), 32, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.concatenate_video_ext, 32, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('video extension:'), 24, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.concatenate_video_ext, 24, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.concatenated_video_name = QLineEdit('concatenated_temp')
         self.concatenated_video_name.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('con video name:'), 33, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.concatenated_video_name, 33, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-
-        self.vs_fps_change_label = QLabel('FPS change')
-        self.vs_fps_change_label.setStyleSheet('QLabel { font-weight: bold; }')
-        self.generalLayout.addWidget(self.vs_fps_change_label,
-                                     35, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('con video name:'), 25, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.concatenated_video_name, 25, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.conduct_video_fps_change_cb = QComboBox()
         self.conduct_video_fps_change_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
         self.conduct_video_fps_change_cb.addItems(['Yes', 'No'])
         self.conduct_video_fps_change_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='conduct_video_fps_change_cb_bool'))
-        self.generalLayout.addWidget(QLabel('conduct video fps change:'), 36, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.conduct_video_fps_change_cb, 36, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('conduct video fps re-encoding:'), 26, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conduct_video_fps_change_cb, 26, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.change_fps_cam_serial_num = QLineEdit('21241563,21369048,21372315,21372316,22085397')
+        self.change_fps_cam_serial_num = QLineEdit(','.join(camera_ids_global))
         self.change_fps_cam_serial_num.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('cam serial num:'), 37, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.change_fps_cam_serial_num, 37, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('cam serial num:'), 27, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.change_fps_cam_serial_num, 27, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.conversion_target_file = QLineEdit('concatenated_temp')
         self.conversion_target_file.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('con target file:'), 38, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.conversion_target_file, 38, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('con target file:'), 28, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conversion_target_file, 28, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.conversion_vid_ext = QLineEdit('mp4')
         self.conversion_vid_ext.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('video extension:'), 39, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.conversion_vid_ext, 39, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('video extension:'), 29, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conversion_vid_ext, 29, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.calibration_fps = QLineEdit('10')
-        self.calibration_fps.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('calibration (fps):'), 40, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.calibration_fps, 40, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.constant_rate_factor = QLineEdit('16.4')
+        self.constant_rate_factor.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('rate factor (-crf):'), 30, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.constant_rate_factor, 30, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.recording_fps = QLineEdit('150')
-        self.recording_fps.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('recording (fps):'), 41, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.recording_fps, 41, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.encoding_preset = QLineEdit('veryfast')
+        self.encoding_preset.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('encoding preset:'), 31, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.encoding_preset, 31, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.delete_con_file_cb = QComboBox()
         self.delete_con_file_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
         self.delete_con_file_cb.addItems(['Yes', 'No'])
         self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
-        self.generalLayout.addWidget(QLabel('delete concatenated files:'), 42, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.delete_con_file_cb, 42, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('delete concatenated files:'), 32, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.delete_con_file_cb, 32, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.generalLayout.addWidget(QLabel("  "), 45, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.gas_label = QLabel('Audio processing settings')
         self.gas_label.setStyleSheet('QLabel { font-weight: bold; }')
         self.generalLayout.addWidget(self.gas_label,
-                                     0, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                                     34, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.conduct_multichannel_conversion_cb = QComboBox()
         self.conduct_multichannel_conversion_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
         self.conduct_multichannel_conversion_cb.addItems(['Yes', 'No'])
         self.conduct_multichannel_conversion_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='conduct_multichannel_conversion_cb_bool'))
-        self.generalLayout.addWidget(QLabel('multi-ch to single-ch:'), 1, 3, 1, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.conduct_multichannel_conversion_cb, 1, 4, 1, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.crop_wav_label = QLabel('Crop WAV files to video')
-        self.crop_wav_label.setStyleSheet('QLabel { font-weight: bold; }')
-        self.generalLayout.addWidget(self.crop_wav_label,
-                                     3, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('convert multi-ch to single-ch files:'), 35, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conduct_multichannel_conversion_cb, 35, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.crop_wav_cam_cb = QComboBox()
         self.crop_wav_cam_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
         self.crop_wav_cam_cb.addItems(['Yes', 'No'])
         self.crop_wav_cam_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='crop_wav_cam_cb_bool'))
-        self.generalLayout.addWidget(QLabel('crop .wav files to match video:'), 4, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.crop_wav_cam_cb, 4, 4, 4, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('crop audio files to match video:'), 36, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.crop_wav_cam_cb, 36, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.crop_wav_cam_serial_num = QLineEdit('21241563,21369048,21372315,21372316,22085397')
-        self.crop_wav_cam_serial_num.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('used camera serial numbers:'), 5, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.crop_wav_cam_serial_num, 5, 4, 5, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.device_receiving_input = QComboBox()
+        self.device_receiving_input.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
+        self.device_receiving_input.addItems(['m', 's'])
+        self.device_receiving_input.activated.connect(partial(self._combo_box_prior_audio_device_camera_input, variable_id='device_receiving_input'))
+        self.generalLayout.addWidget(QLabel('trgbox USGH (m | s):'), 37, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.device_receiving_input, 37, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
         self.ch_receiving_input = QLineEdit('1')
-        self.ch_receiving_input.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('channel receiving Motif input:'), 6, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.ch_receiving_input, 6, 4, 6, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.ch_receiving_input.setStyleSheet('QLineEdit { min-width: 150px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('trgbox ch (1-12):'), 38, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.ch_receiving_input, 38, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
 
-        self.cam_ttl_duration = QLineEdit('0.00011333')
-        self.cam_ttl_duration.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('camera TTL duration (s):'), 7, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.cam_ttl_duration, 7, 4, 7, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.ttl_proportion_threshold = QLineEdit('1.0')
-        self.ttl_proportion_threshold.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('TTL proportion threshold:'), 8, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.ttl_proportion_threshold, 8, 4, 8, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.conc_audio_label = QLabel('Concatenate audio files')
-        self.conc_audio_label.setStyleSheet('QLabel { font-weight: bold; }')
-        self.generalLayout.addWidget(self.conc_audio_label,
-                                     10, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.conc_audio_cb = QComboBox()
-        self.conc_audio_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
-        self.conc_audio_cb.addItems(['Yes', 'No'])
-        self.conc_audio_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='conc_audio_cb_bool'))
-        self.generalLayout.addWidget(QLabel('concatenate audio memmap:'), 11, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.conc_audio_cb, 11, 4, 11, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.audio_format = QLineEdit('wav')
-        self.audio_format.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('audio file format:'), 12, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.audio_format, 12, 4, 12, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.concat_type = QLineEdit('vstack')
-        self.concat_type.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('concatenation type:'), 13, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.concat_type, 13, 4, 13, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.audio_filter_label = QLabel('Band-pass filter audio files')
-        self.audio_filter_label.setStyleSheet('QLabel { font-weight: bold; }')
-        self.generalLayout.addWidget(self.audio_filter_label,
-                                     15, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.filter_audio_cb = QComboBox()
-        self.filter_audio_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
-        self.filter_audio_cb.addItems(['Yes', 'No'])
-        self.filter_audio_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='filter_audio_cb_bool'))
-        self.generalLayout.addWidget(QLabel('filter cropped .wav:'), 16, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.filter_audio_cb, 16, 4, 16, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.audio_filter_format = QLineEdit('wav')
-        self.audio_filter_format.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('audio file format:'), 17, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.audio_filter_format, 17, 4, 17, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.freq_hp = QLineEdit('30000')
-        self.freq_hp.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('top feq cutoff (Hz):'), 18, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.freq_hp, 18, 4, 18, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.freq_lp = QLineEdit('0')
-        self.freq_lp.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('bottom freq cutoff (Hz):'), 19, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.freq_lp, 19, 4, 19, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.av_sync_label = QLabel('Check sync btw a/v files')
+        # column 2
+        self.generalLayout.addWidget(QLabel("  "), 45, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.av_sync_label = QLabel('Synchronization between A/V files')
         self.av_sync_label.setStyleSheet('QLabel { font-weight: bold; }')
         self.generalLayout.addWidget(self.av_sync_label,
-                                     21, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                                     0, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.conduct_sync_cb = QComboBox()
         self.conduct_sync_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
         self.conduct_sync_cb.addItems(['Yes', 'No'])
         self.conduct_sync_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='conduct_sync_cb_bool'))
-        self.generalLayout.addWidget(QLabel('conduct a/v sync check:'), 22, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.conduct_sync_cb, 22, 4, 22, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('conduct A/V sync check:'), 1, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conduct_sync_cb, 1, 4, 1, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.a_sync_label = QLabel('Find audio sync trains')
+        self.phidget_settings_label = QLabel('Phidget processing settings')
+        self.phidget_settings_label.setStyleSheet('QLabel { font-weight: bold; }')
+        self.generalLayout.addWidget(self.phidget_settings_label,
+                                     3, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.phidget_extra_data_camera = QLineEdit('22085397')
+        self.phidget_extra_data_camera.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('extra data cam:'), 4, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.phidget_extra_data_camera, 4, 4, 4, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.phidget_sorting_key = QLineEdit('sensor_time')
+        self.phidget_sorting_key.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('sorting key:'), 5, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.phidget_sorting_key, 5, 4, 5, 5, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+
+        self.a_sync_label = QLabel('Find A/V sync trains')
         self.a_sync_label.setStyleSheet('QLabel { font-weight: bold; }')
         self.generalLayout.addWidget(self.a_sync_label,
-                                     24, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                                     7, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.a_ch_receiving_input = QLineEdit('2')
         self.a_ch_receiving_input.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('channel receiving sync input:'), 25, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.a_ch_receiving_input, 25, 4, 25, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.a_sync_pulse_duration = QLineEdit('0.25')
-        self.a_sync_pulse_duration.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('sync pulse duration (s):'), 26, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.a_sync_pulse_duration, 26, 4, 26, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.a_break_proportion_threshold = QLineEdit('0.001')
-        self.a_break_proportion_threshold.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('break proportion threshold:'), 27, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.a_break_proportion_threshold, 27, 4, 27, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.a_ttl_proportion_threshold = QLineEdit('0.4')
-        self.a_ttl_proportion_threshold.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('TTL proportion threshold:'), 28, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.a_ttl_proportion_threshold, 28, 4, 28, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.v_sync_label = QLabel('Find video sync trains')
-        self.v_sync_label.setStyleSheet('QLabel { font-weight: bold; }')
-        self.generalLayout.addWidget(self.v_sync_label,
-                                     30, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('arduino USGH sync ch (1-12):'), 8, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.a_ch_receiving_input, 8, 4, 8, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.v_camera_serial_num = QLineEdit('21372315')
         self.v_camera_serial_num.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('sync cam serial num:'), 31, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_camera_serial_num, 31, 4, 31, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.v_led_px_version = QLineEdit('current')
-        self.v_led_px_version.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('LED px version:'), 32, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_led_px_version, 32, 4, 32, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.v_led_px_dev = QLineEdit('10')
-        self.v_led_px_dev.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('LED deviation (px):'), 33, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_led_px_dev, 33, 4, 33, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('sync cam(s) serial num(s):'), 9, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.v_camera_serial_num, 9, 4, 9, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.v_video_extension = QLineEdit('mp4')
         self.v_video_extension.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('video extension:'), 34, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_video_extension, 34, 4, 34, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('video extension:'), 10, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.v_video_extension, 10, 4, 10, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.v_led_px_version = QLineEdit('current')
+        self.v_led_px_version.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('LED px version:'), 11, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.v_led_px_version, 11, 4, 11, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.v_led_px_dev = QLineEdit('10')
+        self.v_led_px_dev.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('LED deviation (px):'), 12, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.v_led_px_dev, 12, 4, 12, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.v_mm_dtype = QLineEdit('np.uint8')
         self.v_mm_dtype.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('memmap dtype:'), 35, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_mm_dtype, 35, 4, 35, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('memmap dtype:'), 13, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.v_mm_dtype, 13, 4, 13, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.v_relative_intensity_threshold = QLineEdit('0.6')
         self.v_relative_intensity_threshold.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('rel intensity threshold:'), 36, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_relative_intensity_threshold, 36, 4, 36, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.v_camera_fps = QLineEdit('150')
-        self.v_camera_fps.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('camera fr (fps):'), 37, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_camera_fps, 37, 4, 37, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        self.v_sync_pulse_duration = QLineEdit('0.25')
-        self.v_sync_pulse_duration.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('sync pulse duration (s):'), 38, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_sync_pulse_duration, 38, 4, 38, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('rel intensity threshold:'), 14, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.v_relative_intensity_threshold, 14, 4, 14, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.v_millisecond_divergence_tolerance = QLineEdit('10')
         self.v_millisecond_divergence_tolerance.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
-        self.generalLayout.addWidget(QLabel('divergence tolerance (ms):'), 39, 3, alignment=Qt.AlignmentFlag.AlignTop)
-        self.generalLayout.addWidget(self.v_millisecond_divergence_tolerance, 39, 4, 39, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(QLabel('divergence tolerance (ms):'), 15, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.v_millisecond_divergence_tolerance, 15, 4, 15, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.a_sync_label = QLabel('Synchronization between E/V files')
+        self.a_sync_label.setStyleSheet('QLabel { font-weight: bold; }')
+        self.generalLayout.addWidget(self.a_sync_label,
+                                     18, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.conduct_nv_sync_cb = QComboBox()
+        self.conduct_nv_sync_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
+        self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
+        self.conduct_nv_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_nv_sync_cb_bool'))
+        self.generalLayout.addWidget(QLabel('conduct E/V sync check:'), 19, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conduct_nv_sync_cb, 19, 4, 19, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.npx_file_type = QComboBox()
+        self.npx_file_type.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
+        self.npx_file_type.addItems(['ap', 'lf'])
+        self.npx_file_type.activated.connect(partial(self._combo_box_prior_npx_file_type, variable_id='npx_file_type'))
+        self.generalLayout.addWidget(QLabel('e-phys file format (ap | lf):'), 20, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.npx_file_type, 20, 4, 20, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.npx_ms_divergence_tolerance = QLineEdit('10')
+        self.npx_ms_divergence_tolerance.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('file divergence tolerance (ms):'), 21, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.npx_ms_divergence_tolerance, 21, 4, 21, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.audio_filter_label = QLabel('Band-pass filter audio files')
+        self.audio_filter_label.setStyleSheet('QLabel { font-weight: bold; }')
+        self.generalLayout.addWidget(self.audio_filter_label,
+                                     23, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.filter_audio_cb = QComboBox()
+        self.filter_audio_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
+        self.filter_audio_cb.addItems(['No', 'Yes'])
+        self.filter_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='filter_audio_cb_bool'))
+        self.generalLayout.addWidget(QLabel('filter individual audio files:'), 24, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.filter_audio_cb, 24, 4, 24, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.audio_filter_format = QLineEdit('wav')
+        self.audio_filter_format.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('audio file format:'), 25, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.audio_filter_format, 25, 4, 25, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.freq_hp = QLineEdit('30000')
+        self.freq_hp.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('top freq cutoff (Hz):'), 26, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.freq_hp, 26, 4, 26, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.freq_lp = QLineEdit('0')
+        self.freq_lp.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('bottom freq cutoff (Hz):'), 27, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.freq_lp, 27, 4, 27, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.filter_dirs = QLineEdit('hpss')
+        self.filter_dirs.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('filter these dirs:'), 28, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.filter_dirs, 28, 4, 28, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.conc_audio_label = QLabel('Concatenate audio files')
+        self.conc_audio_label.setStyleSheet('QLabel { font-weight: bold; }')
+        self.generalLayout.addWidget(self.conc_audio_label,
+                                     30, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.conc_audio_cb = QComboBox()
+        self.conc_audio_cb.setStyleSheet('QComboBox { min-width: 80px; min-height: 20px; max-height: 20px; }')
+        self.conc_audio_cb.addItems(['No', 'Yes'])
+        self.conc_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conc_audio_cb_bool'))
+        self.generalLayout.addWidget(QLabel('concatenate audio memmap:'), 31, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.conc_audio_cb, 31, 4, 31, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.audio_format = QLineEdit('wav')
+        self.audio_format.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('audio file format:'), 32, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.audio_format, 32, 4, 32, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        self.concat_dirs = QLineEdit('hpss,hpss_filtered')
+        self.concat_dirs.setStyleSheet('QLineEdit { min-width: 200px; min-height: 22px; max-height: 22px; }')
+        self.generalLayout.addWidget(QLabel('concatenation dirs:'), 33, 3, alignment=Qt.AlignmentFlag.AlignTop)
+        self.generalLayout.addWidget(self.concat_dirs, 33, 4, 33, 5, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self._create_buttons_process(seq=0)
 
@@ -1096,13 +1059,12 @@ class USVPlaypenWindow(QMainWindow):
                       f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
     def _save_process_labels_func(self):
-        qlabel_strings = ['concatenate_video_ext', 'concatenated_video_name', 'conversion_target_file', 'conversion_vid_ext', 'calibration_fps', 'recording_fps',
-                          'ch_receiving_input', 'cam_ttl_duration', 'ttl_proportion_threshold', 'audio_filter_format', 'freq_hp', 'freq_lp',
-                          'a_ch_receiving_input', 'a_sync_pulse_duration', 'a_break_proportion_threshold', 'a_ttl_proportion_threshold',
-                          'pc_usage_process', 'v_millisecond_divergence_tolerance', 'v_sync_pulse_duration', 'v_camera_fps',
+        qlabel_strings = ['concatenate_video_ext', 'concatenated_video_name', 'conversion_target_file', 'conversion_vid_ext',
+                          'constant_rate_factor', 'encoding_preset', 'ch_receiving_input', 'audio_filter_format', 'freq_hp',
+                          'freq_lp', 'a_ch_receiving_input', 'pc_usage_process', 'v_millisecond_divergence_tolerance',
                           'v_relative_intensity_threshold', 'v_mm_dtype', 'v_video_extension', 'v_led_px_dev', 'v_led_px_version',
-                          'phidget_extra_data_camera', 'phidget_sorting_key', 'audio_format', 'concat_type']
-        lists_in_string = ['concatenate_cam_serial_num', 'change_fps_cam_serial_num', 'crop_wav_cam_serial_num', 'v_camera_serial_num']
+                          'phidget_extra_data_camera', 'phidget_sorting_key', 'audio_format', 'npx_ms_divergence_tolerance']
+        lists_in_string = ['concatenate_cam_serial_num', 'change_fps_cam_serial_num', 'v_camera_serial_num', 'filter_dirs', 'concat_dirs']
 
         for one_elem_str in qlabel_strings:
             if type(self.__dict__[one_elem_str]) != str:
@@ -1127,41 +1089,41 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.pc_usage_process = self.pc_usage_process.split(',')
 
+        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = getattr(self, 'device_receiving_input').currentText()
+        self.device_receiving_input = 'm'
+
+        self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_file_type'] = getattr(self, 'npx_file_type').currentText()
+        self.npx_file_type = 'ap'
+
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['video_extension'] = self.concatenate_video_ext
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['concatenated_video_name'] = self.concatenated_video_name
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['video_extension'] = self.conversion_vid_ext
-        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['calibration_fps'] = int(round(ast.literal_eval(self.calibration_fps)))
-        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['recording_fps'] = int(round(ast.literal_eval(self.recording_fps)))
+        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(ast.literal_eval(self.constant_rate_factor)))
+        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['encoding_preset'] = self.encoding_preset
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ttl_pulse_duration'] = float(ast.literal_eval(self.cam_ttl_duration))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ttl_proportion_threshold'] = float(ast.literal_eval(self.ttl_proportion_threshold))
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_audio_files']['audio_format'] = self.audio_format
-        self.processing_input_dict['file_manipulation']['Operator']['concatenate_audio_files']['concat_type'] = self.concat_type
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['audio_format'] = self.audio_filter_format
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_hp'] = int(ast.literal_eval(self.freq_hp))
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_lp'] = int(ast.literal_eval(self.freq_lp))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_pulse_duration'] = float(ast.literal_eval(self.a_sync_pulse_duration))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['break_proportion_threshold'] = float(ast.literal_eval(self.a_break_proportion_threshold))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ttl_proportion_threshold'] = float(ast.literal_eval(self.a_ttl_proportion_threshold))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_version'] = self.v_led_px_version
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_dev'] = int(ast.literal_eval(self.v_led_px_dev))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['video_extension'] = self.v_video_extension
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['mm_dtype'] = self.v_mm_dtype
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['relative_intensity_threshold'] = float(ast.literal_eval(self.v_relative_intensity_threshold))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['camera_fps'] = int(round(ast.literal_eval(self.v_camera_fps)))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_pulse_duration'] = float(ast.literal_eval(self.v_sync_pulse_duration))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['millisecond_divergence_tolerance'] = int(ast.literal_eval(self.v_millisecond_divergence_tolerance))
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['sorting_key'] = self.phidget_sorting_key
+        self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_ms_divergence_tolerance'] = float(ast.literal_eval(self.npx_ms_divergence_tolerance))
 
         self.processing_input_dict['preprocess_data']['root_directories'] = self.processing_dir_edit
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['camera_serial_num'] = self.concatenate_cam_serial_num
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['camera_serial_num'] = self.change_fps_cam_serial_num
-        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['camera_serial_num'] = self.crop_wav_cam_serial_num
         self.processing_input_dict['send_email']['Messenger']['send_message']['receivers'] = self.pc_usage_process
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['camera_serial_num'] = self.v_camera_serial_num
+        self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['filter_dirs'] = self.filter_dirs
+        self.processing_input_dict['file_manipulation']['Operator']['concatenate_audio_files']['concat_dirs'] = self.concat_dirs
 
         self.processing_input_dict['processing_booleans']['conduct_video_concatenation'] = self.conduct_video_concatenation_cb_bool
         self.conduct_video_concatenation_cb_bool = True
@@ -1174,15 +1136,13 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['processing_booleans']['conduct_audio_cropping'] = self.crop_wav_cam_cb_bool
         self.crop_wav_cam_cb_bool = True
         self.processing_input_dict['processing_booleans']['conduct_audio_to_mmap'] = self.conc_audio_cb_bool
-        self.conc_audio_cb_bool = True
+        self.conc_audio_cb_bool = False
         self.processing_input_dict['processing_booleans']['conduct_audio_filtering'] = self.filter_audio_cb_bool
-        self.filter_audio_cb_bool = True
+        self.filter_audio_cb_bool = False
         self.processing_input_dict['processing_booleans']['conduct_audio_video_sync'] = self.conduct_sync_cb_bool
         self.conduct_sync_cb_bool = True
-        self.processing_input_dict['processing_booleans']['plot_sync_data'] = self.plot_sync_results_cb_bool
-        self.plot_sync_results_cb_bool = True
-        self.processing_input_dict['processing_booleans']['conduct_phidget_data_extraction'] = self.process_phidget_cb_bool
-        self.process_phidget_cb_bool = True
+        self.processing_input_dict['processing_booleans']['conduct_ephys_video_sync'] = self.conduct_nv_sync_cb_bool
+        self.conduct_nv_sync_cb_bool = False
 
     def _save_record_one_labels_func(self):
         if type(self.recording_files_destination_linux) != str:
@@ -1243,10 +1203,34 @@ class USVPlaypenWindow(QMainWindow):
 
         for variable in video_dict_keys:
             if variable != 'expected_cameras':
-                self.settings_dict['video'][variable] = getattr(self, variable).text()
+                if variable == 'recording_codec':
+                    self.settings_dict['video'][variable] = getattr(self, variable).currentText()
+                    self.recording_codec = 'lq'
+                else:
+                    self.settings_dict['video'][variable] = getattr(self, variable).text()
             else:
                 self.expected_cameras = self.expected_cameras.text()
                 self.settings_dict['video'][variable] = self.expected_cameras.split(',')
+
+    def _combo_box_prior_codec(self, index, variable_id=None):
+        if index == 0:
+            self.__dict__[variable_id] = 'lq'
+        elif index == 1:
+            self.__dict__[variable_id] = 'mq'
+        else:
+            self.__dict__[variable_id] = 'hq'
+
+    def _combo_box_prior_audio_device_camera_input(self, index, variable_id=None):
+        if index == 0:
+            self.__dict__[variable_id] = 'm'
+        else:
+            self.__dict__[variable_id] = 's'
+
+    def _combo_box_prior_npx_file_type(self, index, variable_id=None):
+        if index == 0:
+            self.__dict__[variable_id] = 'ap'
+        else:
+            self.__dict__[variable_id] = 'lf'
 
     def _combo_box_prior_true(self, index, variable_id=None):
         if index == 1:
@@ -1359,23 +1343,23 @@ class USVPlaypenWindow(QMainWindow):
 
         self.button_map = {'Previous': QPushButton(QIcon(previous_icon), 'Previous')}
         self.button_map['Previous'].clicked.connect(previous_win)
-        self.generalLayout.addWidget(self.button_map['Previous'], 75, 0, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.generalLayout.addWidget(self.button_map['Previous'], 64, 0, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.button_map['Main'] = QPushButton(QIcon(main_icon), 'Main')
         self.button_map['Main'].clicked.connect(self.main_window)
-        self.generalLayout.addWidget(self.button_map['Main'], 75, 71)
+        self.generalLayout.addWidget(self.button_map['Main'], 64, 71)
 
         if seq == 0:
             self.button_map['Next'] = QPushButton(QIcon(next_icon), 'Next')
             for one_connection in next_win_connect:
                 self.button_map["Next"].clicked.connect(one_connection)
-            self.generalLayout.addWidget(self.button_map['Next'], 75, 58)
+            self.generalLayout.addWidget(self.button_map['Next'], 64, 58)
         else:
             self.button_map['Process'] = QPushButton(QIcon(process_icon), 'Process')
             self.button_map['Process'].clicked.connect(self._disable_process_buttons)
             self.button_map['Process'].clicked.connect(self._start_processing)
             self.button_map['Process'].clicked.connect(self._enable_process_buttons)
-            self.generalLayout.addWidget(self.button_map['Process'], 75, 58)
+            self.generalLayout.addWidget(self.button_map['Process'], 64, 58)
 
     def _start_processing(self):
         self.run_processing.prepare_data_for_analyses()
@@ -1487,7 +1471,7 @@ class USVPlaypenWindow(QMainWindow):
 def main():
     usv_playpen_app = QApplication([])
 
-    # usv_playpen_app.setStyle('Fusion')
+    usv_playpen_app.setStyle('Fusion')
     with open('gui_style_sheet.css', 'r') as file:
         usv_playpen_app.setStyleSheet(file.read())
 
@@ -1504,7 +1488,7 @@ def main():
     initial_values_dict = {'experiment_time_sec': 0, 'monitor_recording_cb_bool': True, 'monitor_specific_camera_cb_bool': False, 'delete_post_copy_cb_bool': True,
                            'conduct_audio_cb_bool': True, 'conduct_tracking_calibration_cb_bool': False, 'modify_audio_config': False, 'conduct_video_concatenation_cb_bool': True,
                            'conduct_video_fps_change_cb_bool': True, 'delete_con_file_cb_bool': True, 'conduct_multichannel_conversion_cb_bool': True, 'crop_wav_cam_cb_bool': True,
-                           'conc_audio_cb_bool': True, 'filter_audio_cb_bool': True, 'conduct_sync_cb_bool': True, 'plot_sync_results_cb_bool': True, 'process_phidget_cb_bool': True}
+                           'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False, 'conduct_sync_cb_bool': True, 'conduct_nv_sync_cb_bool': False}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
     splash.finish(usv_playpen_window)
@@ -1515,4 +1499,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

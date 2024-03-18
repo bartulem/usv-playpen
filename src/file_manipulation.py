@@ -2,8 +2,7 @@
 @author: bartulem
 Manipulates files:
 (1) break from multi to single channel, band-pass filter and temporally concatenate audio (e.g., wav) files
-(2) concatenate video (e.g., mp4) files
-(3) change video (e.g., mp4) sampling rate (fps)
+(2) concatenate video (e.g., mp4) files and change video (e.g., mp4) sampling rate (fps)
 """
 
 from PyQt6.QtTest import QTest
@@ -11,10 +10,10 @@ import glob
 import json
 import os
 import shutil
-import sys
 import numpy as np
 import subprocess
 from datetime import datetime
+from imgstore import new_for_filename
 from file_loader import DataLoader
 from file_writer import DataWriter
 
@@ -67,8 +66,7 @@ class Operator:
         QTest.qWait(2000)
 
         if not os.path.isdir(f"{self.root_directory}{os.sep}audio{os.sep}temp"):
-
-            os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}temp", exist_ok=False)
+            os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}temp")
 
         mc_audio_files = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}original_mc"],
                                                           'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
@@ -88,22 +86,23 @@ class Operator:
         name_origin = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}m_*_ch*.wav")[0].split('_')[2]
 
         # concatenate single channel files for master/slave
+        separation_subprocesses = []
         for device_id in ['m', 's']:
             for ch in range(1, 13):
                 mc_to_sc_subp = subprocess.Popen(f'''cmd /c "sox {device_id}_*_ch{ch:02d}.wav -q {self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav"''',
                                                  cwd=f"{self.root_directory}{os.sep}audio{os.sep}temp")
 
-                while True:
-                    status_poll = mc_to_sc_subp.poll()
-                    if status_poll is None:
-                        QTest.qWait(1000)
-                    else:
-                        break
+                separation_subprocesses.append(mc_to_sc_subp)
+
+        while True:
+            status_poll = [query_subp.poll() for query_subp in separation_subprocesses]
+            if any(elem is None for elem in status_poll):
+                QTest.qWait(5000)
+            else:
+                break
 
         # delete temp directory (w/ all files in it)
         shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}temp")
-
-        # self.message_output(f"Multichannel to single channel audio conversion completed at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
     def filter_audio_files(self):
         """
@@ -150,38 +149,37 @@ class Operator:
         self.message_output(f"Filtering out signal between {freq_lp} and {freq_hp} Hz in audio files started at: "
                             f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        QTest.qWait(2000)
+        QTest.qWait(1000)
 
-        if not os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}filtered"):
-            os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}filtered", exist_ok=False)
+        for one_dir in self.input_parameter_dict['filter_audio_files']['filter_dirs']:
 
-        if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"):
-            all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}"
-                                        f"*.{self.input_parameter_dict['filter_audio_files']['audio_format']}")
+            if not os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered"):
+                os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered")
 
-            if len(all_audio_files) > 0:
-                for one_file in all_audio_files:
-                    filter_subp = subprocess.Popen(f'''cmd /c "sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}"''',
-                                                   cwd=f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video")
+            filter_subprocesses = []
+            if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}"):
+                all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}{os.sep}"
+                                            f"*.{self.input_parameter_dict['filter_audio_files']['audio_format']}")
 
-                    while True:
-                        status_poll = filter_subp.poll()
-                        if status_poll is None:
-                            QTest.qWait(1000)
-                        else:
-                            break
+                if len(all_audio_files) > 0:
+                    for one_file in all_audio_files:
+                        filter_subp = subprocess.Popen(f'''cmd /c "sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}"''',
+                                                       cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}")
+
+                        filter_subprocesses.append(filter_subp)
+
+            while True:
+                status_poll = [query_subp.poll() for query_subp in filter_subprocesses]
+                if any(elem is None for elem in status_poll):
+                    QTest.qWait(5000)
+                else:
+                    break
 
     def concatenate_audio_files(self):
         """
         Description
         ----------
-        This method concatenates audio files via Sox.
-
-        NB: You need to install sox: https://sourceforge.net/projects/sox/files/sox/
-            and add the sox directory to your system PATH prior to running this
-
-        NB: Size of RIFF (.wav file format) chunk data is stored in 32 bits.
-            (max. unsigned value is 4 294 967 295), i.e., RIFF is limited to ~4.2 GBytes per file
+        This method concatenates audio files into a memmap array.
         ----------
 
         Parameters
@@ -189,14 +187,12 @@ class Operator:
         Contains the following set of parameters
             audio_format (str)
                 The format of the audio files; defaults to 'wav'.
-            concat_type (str)
-                Either 'vstack' or 'hstack'.
         ----------
 
         Returns
         ----------
-        wave_file (.wav file) or memmap file
-            Concatenated wave file.
+        memmap file
+            Concatenated wave file (shape: n_channels X n_samples).
         ----------
         """
 
@@ -204,108 +200,37 @@ class Operator:
 
         QTest.qWait(2000)
 
-        name_origin = ""
-        if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"):
-            all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}"
+        for audio_file_type in self.input_parameter_dict['concatenate_audio_files']['concat_dirs']:
+
+            all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}"
                                         f"*.{self.input_parameter_dict['concatenate_audio_files']['audio_format']}")
 
             if len(all_audio_files) > 1:
-                if self.input_parameter_dict['concatenate_audio_files']['concat_type'] == 'hstack':
-                    total_file_size_in_gb = 0
-                    for file_idx, one_file in enumerate(all_audio_files):
-                        total_file_size_in_gb += os.path.getsize(one_file) / (1024*1024*1024)
-                        if file_idx == 0:
-                            name_origin = one_file.split(os.sep)[-1].split('_')[-1][:-4]
 
-                    if self.input_parameter_dict['concatenate_audio_files']['audio_format'] != 'wav' or total_file_size_in_gb < 4.2:
-                        hstack_subp = subprocess.Popen(f'''cmd /c "sox *.{self.input_parameter_dict['concatenate_audio_files']['audio_format']} -S 
-                                                       {name_origin}_concatenated.{self.input_parameter_dict['concatenate_audio_files']['audio_format']}"''',
-                                                       cwd=f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video")
+                data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}"],
+                                                             'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
 
-                        while True:
-                            status_poll = hstack_subp.poll()
-                            if status_poll is None:
-                                QTest.qWait(1000)
-                            else:
-                                break
+                name_origin = list(data_dict.keys())[0].split('_')[1]
+                dim_1 = data_dict[list(data_dict.keys())[0]]['wav_data'].shape[0]
+                dim_2 = len(data_dict.keys())
+                data_type = data_dict[list(data_dict.keys())[0]]['dtype']
+                sr = data_dict[list(data_dict.keys())[0]]['sampling_rate']
 
-                    else:
-                        self.message_output("The combined size of these files exceeds 4.2 Gb, so concatenation won't work in .wav form. Saving file as memmap. NB: memory exhaustive process!")
+                audio_mm_arr = np.memmap(f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}{name_origin}"
+                                         f"_concatenated_audio_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
+                                         dtype=data_type,
+                                         mode='w+',
+                                         shape=(dim_1, dim_2))
 
-                        data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
-                                                                     'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
+                for file_idx, one_file in enumerate(data_dict.keys()):
+                    audio_mm_arr[:, file_idx] = data_dict[one_file]['wav_data']
 
-                        dim_1 = 0
-                        dim_2 = 0
-                        data_type = 0
-                        sr = 0
-                        for file_idx, one_file in enumerate(data_dict.keys()):
-                            if file_idx == 0:
-                                data_type = data_dict[one_file]['dtype']
-                                sr = data_dict[one_file]['sampling_rate']
-                                dim_1 += data_dict[one_file]['wav_data'].shape[0]
-                                dim_2 = data_dict[one_file]['wav_data'].shape[1]
-                            else:
-                                dim_1 += data_dict[one_file]['wav_data'].shape[0]
-
-                        audio_mm_arr = np.memmap(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{name_origin}"
-                                                 f"_concatenated_audio_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
-                                                 dtype=data_type,
-                                                 mode='w+',
-                                                 shape=(dim_1, dim_2))
-
-                        counter = 0
-                        for one_file in data_dict.keys():
-                            audio_mm_arr[counter:counter+data_dict[one_file]['wav_data'].shape[0], :] = data_dict[one_file]['wav_data']
-                            counter += data_dict[one_file]['wav_data'].shape[0]
-
-                        audio_mm_arr.flush()
-                        audio_mm_arr = 0
-
-                    self.message_output(f"Audio concatenation completed at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-
-                elif self.input_parameter_dict['concatenate_audio_files']['concat_type'] == 'vstack':
-
-                    # self.message_output("Saving the vstacked files as memmap. NB: memory exhaustive process!")
-
-                    data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
-                                                                 'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
-                    dim_1 = 0
-                    dim_2 = len(data_dict.keys())
-                    data_type = 0
-                    sr = 0
-                    for file_idx, one_file in enumerate(data_dict.keys()):
-                        if file_idx == 0:
-                            name_origin = one_file.split('_')[1]
-                            data_type = data_dict[one_file]['dtype']
-                            dim_1 = data_dict[one_file]['wav_data'].shape[0]
-                            sr = data_dict[one_file]['sampling_rate']
-                            break
-
-                    audio_mm_arr = np.memmap(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{name_origin}"
-                                             f"_concatenated_audio_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
-                                             dtype=data_type,
-                                             mode='w+',
-                                             shape=(dim_1, dim_2))
-
-                    for file_idx, one_file in enumerate(data_dict.keys()):
-                        audio_mm_arr[:, file_idx] = data_dict[one_file]['wav_data']
-
-                    audio_mm_arr.flush()
-                    audio_mm_arr = 0
-
-                    # self.message_output(f"Audio concatenation completed at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-
-                else:
-                    self.message_output(f"Concatenation type input parameter {self.input_parameter_dict['concatenate_audio_files']['concat_type']} not recognized!")
-                    sys.exit()
+                audio_mm_arr.flush()
+                audio_mm_arr = 0
 
             else:
                 self.message_output(f"There are <2 audio files per provided directory: '{self.root_directory}{os.sep}audio{os.sep}cropped_to_video', "
                                     f"so concatenation impossible.")
-
-        else:
-            self.message_output(f"Directory {self.root_directory}{os.sep}audio{os.sep}cropped_to_video does not exist.")
 
     def concatenate_video_files(self):
         """
@@ -334,37 +259,49 @@ class Operator:
 
         self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        if os.path.exists(f"{self.root_directory}{os.sep}video"):
-            for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
-                if 'calibration' not in sub_directory \
-                        and sub_directory.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['camera_serial_num']:
+        subprocesses = []
 
-                    current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
+        for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
+            if 'calibration' not in sub_directory \
+                    and sub_directory.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['camera_serial_num']:
 
-                    vid_name = self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']
-                    vid_extension = self.input_parameter_dict['concatenate_video_files']['video_extension']
-                    all_video_files = glob.glob(f"{current_working_dir}{os.sep}*.{vid_extension}")
+                current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
 
-                    if len(all_video_files) > 1:
+                vid_name = f"{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}"
+                vid_extension = self.input_parameter_dict['concatenate_video_files']['video_extension']
+                all_video_files = glob.glob(f"{current_working_dir}{os.sep}*.{vid_extension}")
 
-                        # create .txt file with video files to concatenate
-                        with open(f"{current_working_dir}{os.sep}file_concatenation_list.txt", 'w', encoding="utf-8") as concat_txt_file:
-                            for file_path in all_video_files:
-                                concat_txt_file.write(f"file '{file_path.split(os.sep)[-1]}'\n")
+                if len(all_video_files) > 1:
 
-                        # concatenate videos
-                        concat_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -f concat -i file_concatenation_list.txt -c copy {vid_name}.{vid_extension}"''', cwd=current_working_dir)
+                    # create .txt file with video files to concatenate
+                    with open(f"{current_working_dir}{os.sep}file_concatenation_list_{sub_directory.split('.')[-1]}.txt", 'w', encoding="utf-8") as concat_txt_file:
+                        for file_path in all_video_files:
+                            concat_txt_file.write(f"file '{file_path.split(os.sep)[-1]}'\n")
 
-                        while True:
-                            status_poll = concat_subp.poll()
-                            if status_poll is None:
-                                QTest.qWait(1000)
-                            else:
-                                break
+                    # concatenate videos
+                    one_subprocess = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -f concat -i file_concatenation_list_{sub_directory.split('.')[-1]}.txt -c copy {vid_name}.{vid_extension}"''',
+                                                      stdout=subprocess.PIPE,
+                                                      cwd=current_working_dir)
 
-                    else:
-                        continue
-                        # self.message_output(f"There are <2 video files per provided subdirectory: '{sub_directory}', so concatenation impossible.")
+                    subprocesses.append(one_subprocess)
+
+        while True:
+            status_poll = [query_subp.poll() for query_subp in subprocesses]
+            if any(elem is None for elem in status_poll):
+                QTest.qWait(5000)
+            else:
+                break
+
+        #  copy files over to video directory
+        for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
+            if 'calibration' not in sub_directory \
+                    and sub_directory.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['camera_serial_num']:
+
+                current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
+
+                os.remove(f"{current_working_dir}{os.sep}file_concatenation_list_{sub_directory.split('.')[-1]}.txt")
+                shutil.move(f"{current_working_dir}{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}",
+                            f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}")
 
     def rectify_video_fps(self):
         """
@@ -394,64 +331,117 @@ class Operator:
         ----------
         fps_corrected_video (video (e.g., .mp4) file)
             FPS modified video file.
+        camera_frame_count_dict (.json file)
+            Dictionary with camera frame counts,
+            empirical capture rates and total video time.
         ----------
         """
 
         self.message_output(f"FPS modification started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
         date_joint = ''
-        if os.path.exists(f"{self.root_directory}{os.sep}video"):
-            for sd_idx, sub_directory in enumerate(os.listdir(f"{self.root_directory}{os.sep}video")):
-                if sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']:
+        total_frame_number = 1e9
+        total_video_time = 1e9
+        camera_frame_count_dict = {}
+        empirical_camera_sr = np.zeros(len(self.input_parameter_dict['rectify_video_fps']['camera_serial_num']))
+        empirical_camera_sr[:] = np.nan
+        camera_idx = 0
 
+        fsp_subprocesses = []
+        for sd_idx, sub_directory in enumerate(sorted(os.listdir(f"{self.root_directory}{os.sep}video"))):
+            if (os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}")
+                    and '.' in sub_directory
+                    and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']):
+
+                if camera_idx == 0:
                     date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
 
+                # get frame count and empirical sampling rate
+                img_store = new_for_filename(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml")
+                total_frame_num = img_store.frame_count
+                last_frame_num = img_store.frame_max
+                frame_times = img_store.get_frame_metadata()['frame_time']
+                video_duration = frame_times[-1] - frame_times[0]
+                esr = round(number=total_frame_num / video_duration, ndigits=3)
+                if 'calibration' not in sub_directory:
+                    empirical_camera_sr[camera_idx] = esr
+                    camera_frame_count_dict[sub_directory.split('.')[-1]] = (total_frame_num, esr)
+                    if total_frame_num == last_frame_num:
+                        self.message_output(f"Camera {sub_directory.split('.')[-1]} has {total_frame_num} total frames, no dropped frames, "
+                                            f"video duration of {video_duration:.4f} seconds, and empirical sampling rate of {esr} fps.")
+                        if total_frame_num < total_frame_number:
+                            total_frame_number = total_frame_num
+                        if video_duration < total_video_time:
+                            total_video_time = video_duration
+                    else:
+                        self.message_output(f"WARNING: The last frame on camera {sub_directory.split('.')[-1]} is {last_frame_num}, which is more than {total_frame_num} in total, "
+                                            f"suggesting dropped frames. The video duration is {video_duration:.4f} seconds")
+                    camera_idx += 1
+
+                crf = self.input_parameter_dict['rectify_video_fps']['constant_rate_factor']
+                enc_preset = self.input_parameter_dict['rectify_video_fps']['encoding_preset']
+
+                current_working_dir = f"{self.root_directory}{os.sep}video"
+                if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
+                    target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                else:
                     current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
-                    if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
-                        target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                    else:
-                        target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                    if 'calibration' in sub_directory:
-                        new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                        new_fps = f"{self.input_parameter_dict['rectify_video_fps']['calibration_fps']}"
-                    else:
-                        new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                        new_fps = f"{self.input_parameter_dict['rectify_video_fps']['recording_fps']}"
+                    target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
-                    if os.path.isfile(f"{current_working_dir}{os.sep}{target_file}"):
+                if 'calibration' in sub_directory:
+                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                else:
+                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
-                        # change video sampling rate
-                        fps_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -y -r {new_fps} -i {target_file} -fps_mode passthrough -crf 16.4 -preset veryfast {new_file}"''', cwd=current_working_dir)
+                # change video sampling rate
+                fps_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -y -r {esr} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}"''',
+                                            stdout=subprocess.PIPE,
+                                            cwd=current_working_dir)
 
-                        while True:
-                            status_poll = fps_subp.poll()
-                            if status_poll is None:
-                                QTest.qWait(1000)
-                            else:
-                                break
+                fsp_subprocesses.append(fps_subp)
 
-                        if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}"):
-                            os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}", exist_ok=False)
+        while True:
+            status_poll = [query_subp.poll() for query_subp in fsp_subprocesses]
+            if any(elem is None for elem in status_poll):
+                QTest.qWait(5000)
+            else:
+                break
 
-                        if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}"):
-                            os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}", exist_ok=False)
+        # move files to special directory
+        for sd_idx, sub_directory in enumerate(sorted(os.listdir(f"{self.root_directory}{os.sep}video"))):
+            if (os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}")
+                    and '.' in sub_directory
+                    and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']):
 
-                        if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images"):
-                            os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images", exist_ok=False)
+                if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images"):
+                    os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images")
 
-                        # copy files to special directory
-                        if 'calibration' in sub_directory:
-                            shutil.move(f"{current_working_dir}{os.sep}{new_file}",
-                                        f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images{os.sep}{new_file}")
-                        else:
-                            shutil.move(f"{current_working_dir}{os.sep}{new_file}",
-                                        f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
+                current_working_dir = f"{self.root_directory}{os.sep}video"
+                if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
+                    target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                else:
+                    current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
+                    target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                if 'calibration' in sub_directory:
+                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                else:
+                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
-                        # clean video directory of all unnecessary files
-                        if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
-                            if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
-                                os.remove(f"{current_working_dir}{os.sep}{target_file}")
-                                os.remove(f"{current_working_dir}{os.sep}file_concatenation_list.txt")
+                if 'calibration' in sub_directory:
+                    shutil.move(f"{current_working_dir}{os.sep}{new_file}",
+                                f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images{os.sep}{new_file}")
+                else:
+                    shutil.move(f"{current_working_dir}{os.sep}{new_file}",
+                                f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
 
-                    else:
-                        self.message_output(f"In subdirectory '{sub_directory}', the file '{target_file}' does not exist.")
+                # clean video directory of all unnecessary files
+                if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
+                    if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
+                        os.remove(f"{current_working_dir}{os.sep}{target_file}")
+
+        # save camera_frame_count_dict to a file
+        camera_frame_count_dict['total_frame_number_least'] = total_frame_number
+        camera_frame_count_dict['total_video_time_least'] = total_video_time
+        camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.median(empirical_camera_sr), ndigits=3)
+        with open(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}_camera_frame_count_dict.json", 'w') as frame_count_outfile:
+            json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)

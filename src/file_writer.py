@@ -53,9 +53,7 @@ class DataWriter:
                 wavfile.write(filename=f'{self.wave_write_loc}{os.sep}{self.input_parameter_dict["write_wavefile_data"]["file_name"]}.wav',
                               rate=int(np.ceil(self.input_parameter_dict['write_wavefile_data']['sampling_rate']*1e3)),
                               data=self.wav_data)
-            elif self.input_parameter_dict['write_wavefile_data']['library'] == 'soundfile':
+            else:
                 soundfile.write(file=f'{self.wave_write_loc}{os.sep}{self.input_parameter_dict["write_wavefile_data"]["file_name"]}.wav',
                                 data=self.wav_data,
                                 samplerate=int(np.ceil(self.input_parameter_dict['write_wavefile_data']['sampling_rate']*1e3)))
-            else:
-                print("WAV parsing library not recognized!")

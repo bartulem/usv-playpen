@@ -103,13 +103,28 @@ class Stylist:
                 if self.input_parameter_dict['processing_booleans']['conduct_audio_cropping']:
                     Synchronizer(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,
-                                 message_output=self.message_output).crop_wav_files_to_video()
+                                 message_output=self.message_output,
+                                 exp_settings_dict=self.exp_settings_dict).crop_wav_files_to_video()
 
-                # # # vstack audio files in memmap
-                if self.input_parameter_dict['processing_booleans']['conduct_audio_to_mmap']:
-                    Operator(root_directory=one_directory,
-                             input_parameter_dict=self.input_parameter_dict,
-                             message_output=self.message_output).concatenate_audio_files()
+                # # # check audio-video sync
+                if self.input_parameter_dict['processing_booleans']['conduct_audio_video_sync']:
+                    phidget_data_dictionary = Gatherer(root_directory=one_directory,
+                                                       input_parameter_dict=self.input_parameter_dict).prepare_data_for_analyses()
+
+                    prediction_error_dict = Synchronizer(root_directory=one_directory,
+                                                         input_parameter_dict=self.input_parameter_dict,
+                                                         message_output=self.message_output).find_audio_sync_trains()
+
+                    SummaryPlotter(root_directory=one_directory,
+                                   input_parameter_dict=self.input_parameter_dict).preprocessing_summary(prediction_error_dict=prediction_error_dict,
+                                                                                                         phidget_data_dictionary=phidget_data_dictionary)
+
+                # # # check e-phys-video sync
+                if self.input_parameter_dict['processing_booleans']['conduct_ephys_video_sync']:
+                    Synchronizer(root_directory=one_directory,
+                                 input_parameter_dict=self.input_parameter_dict,
+                                 message_output=self.message_output,
+                                 exp_settings_dict=self.exp_settings_dict).validate_ephys_video_sync()
 
                 # # # band-pass filter audio files in memmap
                 if self.input_parameter_dict['processing_booleans']['conduct_audio_filtering']:
@@ -117,22 +132,11 @@ class Stylist:
                              input_parameter_dict=self.input_parameter_dict,
                              message_output=self.message_output).filter_audio_files()
 
-                # # # check audio-video sync
-                if self.input_parameter_dict['processing_booleans']['conduct_audio_video_sync']:
-                    prediction_error_dict = Synchronizer(root_directory=one_directory,
-                                                         input_parameter_dict=self.input_parameter_dict,
-                                                         message_output=self.message_output).find_audio_sync_trains()
-
-                # # # get phidget data
-                if self.input_parameter_dict['processing_booleans']['conduct_phidget_data_extraction']:
-                    phidget_data_dictionary = Gatherer(root_directory=one_directory,
-                                                       input_parameter_dict=self.input_parameter_dict).prepare_data_for_analyses()
-
-                # # # plot sync results
-                if self.input_parameter_dict['processing_booleans']['plot_sync_data']:
-                    SummaryPlotter(root_directory=one_directory,
-                                   input_parameter_dict=self.input_parameter_dict).preprocessing_summary(prediction_error_dict=prediction_error_dict,
-                                                                                                         phidget_data_dictionary=phidget_data_dictionary)
+                # # # vstack audio files in memmap
+                if self.input_parameter_dict['processing_booleans']['conduct_audio_to_mmap']:
+                    Operator(root_directory=one_directory,
+                             input_parameter_dict=self.input_parameter_dict,
+                             message_output=self.message_output).concatenate_audio_files()
 
                 self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")

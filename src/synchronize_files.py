@@ -6,16 +6,21 @@ Synchronizes files:
 """
 
 from PyQt6.QtTest import QTest
+import configparser
 import glob
 import json
+import operator
 import os
 import pims
+import shutil
 import numpy as np
+from collections import Counter
 from datetime import datetime
-from imgstore import new_for_filename
 from numba import njit
+from requests.exceptions import RequestException
 from file_loader import DataLoader
 from file_writer import DataWriter
+from random_pulses import generate_truly_random_seed
 from sync_regression import LinRegression
 
 
@@ -74,7 +79,8 @@ class Synchronizer:
                    'current': {'21241563': {'LED_top': [315, 1250], 'LED_middle': [355, 1255], 'LED_bottom': [400, 1264]},
                                '21372315': {'LED_top': [510, 1268], 'LED_middle': [555, 1268], 'LED_bottom': [603, 1266]}}}
 
-    def __init__(self, root_directory=None, input_parameter_dict=None, message_output=None):
+    def __init__(self, root_directory=None, input_parameter_dict=None,
+                 message_output=None, exp_settings_dict=None,):
         if input_parameter_dict is None:
             with open('input_parameters.json', 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['synchronize_files']['Synchronizer']
@@ -88,21 +94,186 @@ class Synchronizer:
         else:
             self.root_directory = root_directory
 
+        if exp_settings_dict is None:
+            self.exp_settings_dict = None
+        else:
+            self.exp_settings_dict = exp_settings_dict
+
         if message_output is None:
             self.message_output = print
         else:
             self.message_output = message_output
 
+    def validate_ephys_video_sync(self):
+        """
+        Description
+        ----------
+        This method checks whether the time recorded between
+        first and last camera signals in the e-phys data stream
+        match the total video duration.
+        ----------
+
+        Parameter
+        ---------
+        npx_file_type: str
+            AP or LF binary file; defaults to 'ap'.
+        ms_divergence_tolerance : int / float
+            Max tolerance for divergence between video and e-phys recordings (in ms).
+
+        Returns
+        -------
+        binary_files_info : .json
+            Dictionary w/ information about changepoints, binary file lengths and tracking start/end.
+        """
+
+        self.message_output(f"Checking e-phys/video sync started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        QTest.qWait(1000)
+
+        # read headstage sampling rates
+        config = configparser.ConfigParser()
+        config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
+
+        # load info from camera_frame_count_dict
+        with open(glob.glob(pathname=f'{self.root_directory}{os.sep}**{os.sep}*_camera_frame_count_dict.json', recursive=True)[0], 'r') as frame_count_infile:
+            camera_frame_count_dict = json.load(frame_count_infile)
+            total_frame_number_least = camera_frame_count_dict['total_frame_number_least']
+            total_video_time_least = camera_frame_count_dict['total_video_time_least']
+
+        for npx_idx, npx_recording in enumerate(glob.glob(pathname=f"{self.root_directory}{os.sep}**{os.sep}*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin", recursive=True)):
+
+            # parse metadata file for channel and headstage information
+            with open(f"{npx_recording[:-3]}meta") as meta_data_file:
+                for line in meta_data_file:
+                    key, value = line.strip().split("=")
+                    if key == 'acqApLfSy':
+                        total_probe_ch = int(value.split(',')[-1]) + int(value.split(',')[-2])
+                    elif key == 'imDatHs_sn':
+                        headstage_sn = value
+                    elif key == 'imDatPrb_sn':
+                        imec_probe_sn = value
+
+            recording_date = self.root_directory.split(os.sep)[-1].split('_')[0]
+            recording_file_name = npx_recording.split(os.sep)[-1]
+            imec_probe_id = npx_recording.split('.')[-3]
+
+            self.message_output(f"N/V sync for {recording_file_name} with {total_probe_ch} channels, recorded w/ probe #{imec_probe_sn} & headstage #{headstage_sn}.")
+
+            sync_ch_file = npx_recording.replace(recording_file_name, f'{npx_recording.split(os.sep)[-2]}_sync_ch_data')
+            if not os.path.isfile(f'{sync_ch_file}.npy'):
+
+                # load the binary file data
+                one_recording = np.memmap(filename=npx_recording, mode='r', dtype=np.int16, order='C')
+                one_sample_num = one_recording.shape[0] // total_probe_ch
+
+                # reshape the array such that channels are rows and samples are columns
+                sync_data = one_recording.reshape((total_probe_ch, one_sample_num), order='F')[-1, :]
+
+                # save sync channel data
+                np.save(file=sync_ch_file, arr=sync_data)
+
+            # search for tracking start and end
+            ch_sync_data = np.load(file=f'{sync_ch_file}.npy')
+            tracking_start, tracking_end = self.find_lsb_changes(relevant_array=ch_sync_data,
+                                                                 lsb_bool=False,
+                                                                 total_frame_number=total_frame_number_least)
+
+            if (tracking_start, tracking_end) != (None, None):
+                spike_glx_sr = float(config['CalibratedHeadStages'][headstage_sn])
+                total_npx_recording_duration = (tracking_end - tracking_start) / spike_glx_sr
+
+                duration_difference = round(number=((total_npx_recording_duration - total_video_time_least) * 1000), ndigits=2)
+                if duration_difference < 0:
+                    comparator_word = 'shorter'
+                else:
+                    comparator_word = 'longer'
+
+                self.message_output(f"{recording_file_name} is {duration_difference} ms {comparator_word} than the video recording.")
+
+                if abs(duration_difference) < self.input_parameter_dict['validate_ephys_video_sync']['npx_ms_divergence_tolerance']:
+
+                    # save tracking start and end in changepoint information JSON file
+                    root_ephys = self.root_directory.replace('Data', 'EPHYS').replace(self.root_directory.split(os.sep)[-1], recording_date) + f'_{imec_probe_id}'
+                    if os.path.exists(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0]):
+                        with open(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
+                            binary_files_info = json.load(binary_info_input_file)
+                    else:
+                        os.makedirs(root_ephys)
+                        binary_files_info = {'changepoints': [0], 'file_lengths': {}}
+
+                    if 'tracking' not in binary_files_info.keys():
+                        binary_files_info['tracking'] = {}
+                    binary_files_info['tracking'][recording_file_name] = [int(tracking_start), int(tracking_end)]
+
+                    with open(f'{root_ephys}{os.sep}changepoints_info_{recording_date}_imec{imec_probe_id}.json', 'w') as binary_info_output_file:
+                        json.dump(binary_files_info, binary_info_output_file, indent=4)
+
+                    self.message_output(f"SUCCESS! Tracking start/end sample times saved in {glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0]}.")
+
+                else:
+                    count_values_in_sync_data = sorted(dict(Counter(ch_sync_data)).items(), key=operator.itemgetter(1), reverse=True)
+                    self.message_output(f'{recording_file_name} has a duration difference (e-phys/tracking) of {duration_difference} ms, so above threshold. '
+                                        f'Values in original sync data: {count_values_in_sync_data}. Inspect further before proceeding.')
+
+            else:
+                self.message_output(f"Tracking end exceeds e-phys recording boundary, so not found for {recording_file_name}.")
+                continue
+
     @staticmethod
     @njit(parallel=True)
-    def find_lsb_changes(sound_array=None,
-                         ch_receiving_input=0):
+    def find_lsb_changes(relevant_array=None,
+                         lsb_bool=True,
+                         total_frame_number=0):
 
         """
         Description
         ----------
-        This method takes a (multi-)channel sound array, extract the LSB
-        array and finds all instances where 0 changed to 1, and vice versa.
+        This method takes a  WAV channel sound array or Neuropixels
+        sync channel, extracts the LSB part (for WAV files) and
+        finds start and end of tracking pulses.
+        ----------
+
+        Parameters
+        ----------
+        Contains the following set of parameters
+            relevant_array (np.ndarray)
+                Array to extract sync signal from.
+            lsb_bool (bool)
+                Whether to extract the least significant bit.
+            total_frame_number (int)
+                Number of frames on the camera containing the minimum total number of frames.
+        ----------
+
+        Returns
+        ----------
+        start_first_relevant_sample, end_last_relevant_sample : tuple
+            Start and end of tracking in audio/e-phys samples.
+        ----------
+        """
+
+        if lsb_bool:
+            lsb_array = relevant_array & 1
+            ttl_break_end_samples = np.where((lsb_array[1:] - lsb_array[:-1]) > 0)[0]
+            largest_break_end_hop = np.argmax(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1]) + 1
+
+        else:
+            ttl_break_end_samples = np.where((relevant_array[1:] - relevant_array[:-1]) > 0)[0]
+            largest_break_end_hop = np.argmax(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1]) + 1
+
+        if (total_frame_number + largest_break_end_hop) <= ttl_break_end_samples.shape[0]:
+            return ttl_break_end_samples[largest_break_end_hop] + 1, ttl_break_end_samples[largest_break_end_hop + total_frame_number] + 1
+        else:
+            return None, None
+
+    @staticmethod
+    @njit(parallel=True)
+    def find_ipi_intervals(sound_array=None,
+                           audio_sr_rate=250000):
+
+        """
+        Description
+        ----------
+        This method takes a WAV channel sound array, extracts the LSB
+        part and finds durations and starts of Arduino sync pulses.
         ----------
 
         Parameters
@@ -110,30 +281,43 @@ class Synchronizer:
         Contains the following set of parameters
             sound_array (np.ndarray)
                 (Multi-)channel sound array.
-            ch_receiving_input (int)
-                Channel receiving digital input; defaults to 0.
+            audio_sr_rate (int)
+                Sampling rate of audio device; defaults to 250 kHz.
         ----------
 
         Returns
         ----------
-        on_to_off (np.ndarray)
-            Positions where values change from high to low (low positions).
-        off_to_on (np.ndarray)
-            Positions where values change from low to high (low positions).
+        ipi_durations_ms (np.ndarray)
+            Durations of all found IPI intervals (in ms).
+        audio_ipi_start_samples (np.ndarray)
+            Start samples of all found IPI intervals.
         ----------
         """
 
         # get the least significant bit array
-        if sound_array.ndim == 1:
-            lsb_array = sound_array & 1
-        else:
-            lsb_array = sound_array[:, ch_receiving_input] & 1
+        lsb_array = sound_array & 1
 
         # get switches from ON to OFF and vice versa (both look at the 0 value positions)
-        on_to_off = np.where(np.diff(lsb_array) < 0)[0] + 1
-        off_to_on = np.where(np.diff(lsb_array) > 0)[0]
+        ipi_start_samples = np.where(np.diff(lsb_array) < 0)[0] + 1
+        ipi_end_samples = np.where(np.diff(lsb_array) > 0)[0]
 
-        return on_to_off, off_to_on
+        # find IPI starts and durations in milliseconds
+        if ipi_start_samples[0] < ipi_end_samples[0]:
+            if ipi_start_samples.shape[0] == ipi_end_samples.shape[0]:
+                ipi_durations_ms = (((ipi_end_samples - ipi_start_samples) + 1) * 1000 / audio_sr_rate)
+                audio_ipi_start_samples = ipi_start_samples
+            else:
+                ipi_durations_ms = (((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / audio_sr_rate)
+                audio_ipi_start_samples = ipi_start_samples[:-1]
+        else:
+            if ipi_start_samples.shape[0] == ipi_end_samples.shape[0]:
+                ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / audio_sr_rate)
+                audio_ipi_start_samples = ipi_start_samples[:-1]
+            else:
+                ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / audio_sr_rate)
+                audio_ipi_start_samples = ipi_start_samples
+
+        return ipi_durations_ms, audio_ipi_start_samples
 
     @staticmethod
     @njit(parallel=True)
@@ -170,90 +354,81 @@ class Synchronizer:
 
         return relative_change_array
 
-    @staticmethod
-    @njit(parallel=True)
-    def correct_loose_ttl_samples(raw_data,
-                                  ch_num=1,
-                                  usgh_sr=None,
-                                  ttl_pulse_duration=None,
-                                  break_proportion_threshold=None,
-                                  ttl_proportion_threshold=None):
-
+    def gather_px_information(self, video_of_interest, sync_camera_fps,
+                              camera_id, video_name, total_frame_number):
         """
-        Description
         ----------
-        When TTL pulses (e.g., sync LEDs) occur, their duration should be fixed,
-        i.e. 250 ms, but sometimes signals are recognized spuriously as HIGH,
-        even though they should be LOW. This method finds such events and corrects
-        their values back to LOW.
+        This method takes find sync LEDs in video frames,
+        and gathers information about their intensity changes
+        over time.
         ----------
 
         Parameters
         ----------
         Contains the following set of parameters
-            raw_data (np.ndarray)
-                Sound recording input array.
-            ch_num (int)
-                In a multichannel array, channel where the TTL is recorded.
-            usgh_sr (int)
-                Sampling rate of the audio recorder.
-            ttl_pulse_duration (int / float)
-                TTL duration in seconds.
-            break_proportion_threshold (float)
-                Proportion of the break event (relative to TTL duration) below which
-                every o is turned to 1.
-            ttl_proportion_threshold (float)
-                Proportion of the TTL event that can still be considered significant.
+            video_of_interest (str)
+                Location of relevant sync video.
+            sync_camera_fps (int / float)
+                Sampling rate of given sync camera.
+            camera_id (str)
+                ID of sync camera.
+            video_name (stR)
+                Full name of sync video.
+            total_frame_number (int)
+                Total least number of frames of all cameras.
         ----------
 
         Returns
         ----------
-        raw_data (np.ndarray)
-            The LSB-corrected sound recording input array.
+        mm_arr (memmap file)
+            Memory map file containing pixel intensities of sync LEDs.
         ----------
         """
 
-        # find the least significant bit in the raw data
-        if raw_data.ndim == 1:
-            lsb_arr = raw_data & 1
-        else:
-            lsb_arr = raw_data[:, ch_num] & 1
+        # load video
+        loaded_video = pims.Video(video_of_interest)
 
-        # find all indices where the LSB changes
-        critical_points = np.where((np.diff(lsb_arr) < 0) | (np.diff(lsb_arr) > 0))[0]
+        # find camera sync pxl
+        max_frame_num = int(round(sync_camera_fps + (sync_camera_fps / 2)))
+        led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
+        led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
+        used_camera = camera_id
 
-        # find all TTL (HIGH) durations
-        critical_durations = np.diff(critical_points)
-        even_events = critical_durations[::2]
-        odd_events = critical_durations[1::2]
-        if even_events.mean() < odd_events.mean():
-            pulses_durations_samples = even_events
-            break_durations_samples = odd_events
-            start_idx_durations = 0
-            start_idx_breaks = 1
-        else:
-            pulses_durations_samples = odd_events
-            break_durations_samples = even_events
-            start_idx_durations = 1
-            start_idx_breaks = 0
+        peak_intensity_frame_loc = 'zero'
+        for led_idx, led_position in enumerate(self.led_px_dict[led_px_version][used_camera].keys()):
+            led_dim1, led_dim2 = self.led_px_dict[led_px_version][used_camera][led_position]
+            dim1_floor_pxl = max(0, led_dim1 - led_px_dev)
+            dim1_ceil_pxl = min(loaded_video[0].shape[0], led_dim1 + led_px_dev)
+            dim2_floor_pxl = max(0, led_dim2 - led_px_dev)
+            dim2_ceil_pxl = min(loaded_video[0].shape[1], led_dim2 + led_px_dev)
 
-        # turn all LSB zeros that fall below 50 samples to ones
-        if break_proportion_threshold is not None:
-            for ap_idx, ap in enumerate(break_durations_samples):
-                if ap < int(np.round((usgh_sr * ttl_pulse_duration * break_proportion_threshold))):
-                    raw_data[critical_points[start_idx_breaks + (2 * ap_idx)]:critical_points[start_idx_breaks + (2 * ap_idx) + 1] + 1] = \
-                        raw_data[critical_points[start_idx_breaks + (2 * ap_idx)]:critical_points[start_idx_breaks + (2 * ap_idx) + 1] + 1] | 1
+            if led_idx == 0:
+                fame_pxl_values = np.zeros(max_frame_num)
+                for one_num in range(max_frame_num):
+                    fame_pxl_values[one_num] = loaded_video[one_num][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl].max()
+                peak_intensity_frame_loc = fame_pxl_values.argmax()
 
-        # turn all LSB ones that fall below a certain duration threshold to zeros
-        if ttl_proportion_threshold is not None:
-            for ap_idx, ap in enumerate(pulses_durations_samples):
-                if ap < int(np.round((usgh_sr * ttl_pulse_duration * ttl_proportion_threshold))):
-                    raw_data[critical_points[start_idx_durations+(2*ap_idx)]:critical_points[start_idx_durations+(2*ap_idx)+1]+1] = \
-                        raw_data[critical_points[start_idx_durations+(2*ap_idx)]:critical_points[start_idx_durations+(2*ap_idx)+1]+1] & ~1
+            frame_of_choice = loaded_video[peak_intensity_frame_loc][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl]
+            screen_results = np.where(frame_of_choice == frame_of_choice.max())
+            result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
+            self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
+            self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
 
-        return raw_data
+        # create memmap array to store the data for posterity
+        mm_arr = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
+                           dtype=DataLoader(input_parameter_dict={}).known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='w+', shape=(total_frame_number, 3, 3))
 
-    def find_video_sync_trains(self, total_frame_number):
+        for fr_idx in range(total_frame_number):
+            processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
+                                                  self.led_px_dict[led_px_version][used_camera]['LED_top'],
+                                                  self.led_px_dict[led_px_version][used_camera]['LED_middle'],
+                                                  self.led_px_dict[led_px_version][used_camera]['LED_bottom'])
+
+        # the following line is important for saving memmap file changes
+        mm_arr.flush()
+        mm_arr = 0
+
+    def find_video_sync_trains(self, camera_fps, total_frame_number):
         """
         Description
         ----------
@@ -276,12 +451,10 @@ class Synchronizer:
                 Data type foe memmap file; defaults to 'np.uint8'.
             relative_intensity_threshold (int)
                 Relative intensity threshold to categorize important events; defaults to .35.
-            camera_fps (int)
-                Video sampling rate; defaults to 150 (fps).
-            sync_pulse_duration (int / float)
-                Duration of LED sync pulse; defaults to 0.25 (s)
             millisecond_divergence_tolerance (int / float)
                 The amount of variation allowed for sync events converted to ms; defaults to 10 (ms).
+            camera_fps (list)
+                List of relevant video sampling rates (in fps).
             total_frame_number (int)
                 Number of frames on the camera containing the minimum total number of frames.
         ----------
@@ -295,13 +468,12 @@ class Synchronizer:
         ----------
         """
 
-        self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
-
         sync_sequence_dict = {}
         ipi_start_frames = 0
+
         for video_subdir in os.listdir(f"{self.root_directory}{os.sep}video"):
-            if '_' not in video_subdir:
+            if '_' not in video_subdir and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
+                sync_cam_idx = 0
                 for camera_dir in os.listdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
                     video_name = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}*.mp4")[0].split(os.sep)[-1]
                     if 'calibration' not in video_name \
@@ -310,46 +482,13 @@ class Synchronizer:
 
                         current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}"
                         video_of_interest = f"{current_working_dir}{os.sep}{video_name}"
-                        loaded_video = pims.Video(video_of_interest)
 
                         if not os.path.exists(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}"):
-                            # find camera sync pxl
-                            max_frame_num = int(round(self.input_parameter_dict['find_video_sync_trains']['camera_fps'] + (self.input_parameter_dict['find_video_sync_trains']['camera_fps'] / 2)))
-                            led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
-                            led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
-                            used_camera = camera_dir
-
-                            peak_intensity_frame_loc = 'zero'
-                            for led_idx, led_position in enumerate(self.led_px_dict[led_px_version][used_camera].keys()):
-                                led_dim1, led_dim2 = self.led_px_dict[led_px_version][used_camera][led_position]
-                                dim1_floor_pxl = max(0, led_dim1 - led_px_dev)
-                                dim1_ceil_pxl = min(loaded_video[0].shape[0], led_dim1 + led_px_dev)
-                                dim2_floor_pxl = max(0, led_dim2 - led_px_dev)
-                                dim2_ceil_pxl = min(loaded_video[0].shape[1], led_dim2 + led_px_dev)
-
-                                if led_idx == 0:
-                                    fame_pxl_values = np.zeros(max_frame_num)
-                                    for one_num in range(max_frame_num):
-                                        fame_pxl_values[one_num] = loaded_video[one_num][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl].max()
-                                    peak_intensity_frame_loc = np.where(fame_pxl_values == fame_pxl_values.max())[0][0]
-
-                                frame_of_choice = loaded_video[peak_intensity_frame_loc][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl]
-                                screen_results = np.where(frame_of_choice == frame_of_choice.max())
-                                result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
-                                self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
-                                self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
-
-                            # create memmap array to store the data for posterity
-                            mm_arr = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
-                                               dtype=DataLoader(input_parameter_dict={}).known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='w+', shape=(total_frame_number, 3, 3))
-                            for fr_idx in range(total_frame_number):
-                                processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
-                                                                      self.led_px_dict[led_px_version][used_camera]['LED_top'],
-                                                                      self.led_px_dict[led_px_version][used_camera]['LED_middle'],
-                                                                      self.led_px_dict[led_px_version][used_camera]['LED_bottom'])
-
-                            # the following line is important for saving memmap file changes
-                            mm_arr.flush()
+                            self.gather_px_information(video_of_interest=video_of_interest,
+                                                       sync_camera_fps=camera_fps[sync_cam_idx],
+                                                       camera_id=camera_dir,
+                                                       video_name=video_name,
+                                                       total_frame_number=total_frame_number)
 
                         # load memmap data
                         leds_array = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
@@ -361,72 +500,69 @@ class Synchronizer:
                         # compute relative change across frames and take median across LEDs
                         diff_across_leds = np.median(self.relative_change_across_array(input_array=mean_across_rgb), axis=1)
 
+                        # get actual IPI from CoolTerm-recorded .txt file
+                        arduino_ipi_durations = []
+                        for txt_file in os.listdir(f"{self.root_directory}{os.sep}sync"):
+                            if 'CoolTerm' in txt_file:
+                                with open(f"{self.root_directory}{os.sep}sync{os.sep}{txt_file}", 'r') as ipi_txt_file:
+                                    for line_num, line in enumerate(ipi_txt_file.readlines()):
+                                        if line_num > 2 and line.strip():
+                                            arduino_ipi_durations.append(int(line.strip()))
+                                break
+                        arduino_ipi_durations = np.array(arduino_ipi_durations)
+
                         # find indices where the largest changes occur
                         relative_intensity_threshold = self.input_parameter_dict['find_video_sync_trains']['relative_intensity_threshold']
                         sequence_found = False
                         for threshold_value in np.arange(relative_intensity_threshold-.4, relative_intensity_threshold+.01, .01)[::-1]:
                             if not sequence_found:
-                                significant_events = []
-                                for x_idx, x in enumerate(diff_across_leds):
-                                    if x < -threshold_value and (-threshold_value < diff_across_leds[x_idx - 1] < threshold_value):
-                                        significant_events.append(x_idx + 1)
-                                    elif x > threshold_value and (-threshold_value < diff_across_leds[x_idx - 1] < threshold_value):
-                                        significant_events.append(x_idx)
+                                neg_diff_mask = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] < -threshold_value)
+                                neg_significant_events = np.where(neg_diff_mask)[0] + 1
+                                pos_diff_mask = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] > threshold_value)
+                                pos_significant_events = np.where(pos_diff_mask)[0]
+                                significant_events = np.sort(np.concatenate((neg_significant_events, pos_significant_events)))
 
-                                if len(significant_events) == 0:
-                                    continue
-                                else:
+                                expected_number_of_pulses = (total_frame_number / camera_fps[sync_cam_idx]) / (0.25 + ((0.25 + 1.5) / 2))
+                                if significant_events.shape[0] > expected_number_of_pulses:
                                     # get all significant event durations (i.e., LED on periods and IPIs)
                                     significant_event_durations = np.diff(a=significant_events)
 
                                     # select only IPI intervals ("-1" is because significant events are computed relative to LED on times,
                                     # so one frame has to be removed)
-                                    camera_fps = self.input_parameter_dict['find_video_sync_trains']['camera_fps']
                                     even_event_durations = significant_event_durations[::2]
                                     odd_event_durations = significant_event_durations[1::2]
                                     if even_event_durations.sum() > odd_event_durations.sum():
                                         ipi_durations_frames = even_event_durations - 1
-                                        if type(ipi_start_frames) == int:
+                                        if type(ipi_start_frames) is int:
                                             temp_ipi_start_frames = np.array(significant_events[::2]) + 1
                                     else:
                                         ipi_durations_frames = odd_event_durations - 1
-                                        if type(ipi_start_frames) == int:
+                                        if type(ipi_start_frames) is int:
                                             temp_ipi_start_frames = np.array(significant_events[1::2]) + 1
 
                                     # compute IPI durations in milliseconds
-                                    ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps))
-
-                                    # get actual IPI from CoolTerm-recorded .txt file
-                                    arduino_ipi_durations = []
-                                    for txt_file in os.listdir(f"{self.root_directory}{os.sep}sync"):
-                                        if 'CoolTerm' in txt_file:
-                                            with open(f"{self.root_directory}{os.sep}sync{os.sep}{txt_file}", 'r') as ipi_txt_file:
-                                                for line_num, line in enumerate(ipi_txt_file.readlines()):
-                                                    if line_num > 2 and line.strip():
-                                                        arduino_ipi_durations.append(int(line.strip()))
-                                            break
-                                    arduino_ipi_durations = np.array(arduino_ipi_durations)
+                                    ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps[sync_cam_idx]))
 
                                     # match IPI sequences
-                                    sync_sequence_len = ipi_durations_ms.shape[0]
-                                    for aid_idx, aid in enumerate(arduino_ipi_durations):
-                                        if aid_idx + sync_sequence_len <= arduino_ipi_durations.shape[0]:
-                                            temp_diffs = arduino_ipi_durations[aid_idx:aid_idx + sync_sequence_len]
-                                            if np.all((np.absolute(temp_diffs - ipi_durations_ms)
-                                                       <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'])):
-                                                # self.message_output(f"IPI sequence match found in video '{video_of_interest.split(os.sep)[-1]}'!")
-                                                sync_sequence_dict[camera_dir] = temp_diffs
-                                                ipi_start_frames = temp_ipi_start_frames
-                                                sequence_found = True
-                                                break
-                                    else:
-                                        continue
+                                    subarray_size = ipi_durations_ms.shape[0]
+                                    start_indices = np.arange(len(arduino_ipi_durations) - subarray_size + 1)
+                                    index_matrix = start_indices[:, np.newaxis] + np.arange(subarray_size)
+                                    arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
 
+                                    result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
+                                    all_zero_matches = np.all(result_array <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
+                                                              axis=1)
+                                    any_all_zeros = np.any(all_zero_matches)
+                                    if any_all_zeros:
+                                        sync_sequence_dict[camera_dir] = arduino_ipi_durations_subarrays[all_zero_matches]
+                                        ipi_start_frames = temp_ipi_start_frames
+                                        sequence_found = True
                             else:
                                 break
-
                         else:
                             self.message_output(f"No IPI sequence match found in video '{video_of_interest.split(os.sep)[-1]}'!")
+
+                        sync_cam_idx += 1
 
         return ipi_start_frames, sync_sequence_dict
 
@@ -443,12 +579,6 @@ class Synchronizer:
         Contains the following set of parameters
             ch_receiving_input (int)
                 Audio channel receiving digital input; defaults to 2.
-            sync_pulse_duration (float)
-                The duration of the LED TTL pulse; defaults to .25 (s)
-            time_proportion_threshold (float)
-                Proportion of the TTL event that can still be considered not to be spurious.
-            total_frame_number (int)
-                Number of frames on the camera containing the minimum total number of frames.
         ----------
 
         Returns
@@ -458,53 +588,38 @@ class Synchronizer:
         ----------
         """
 
-        # quantum_seed = generate_truly_random_seed(input_parameter_dict=self.input_parameter_dict_random)
+        self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        QTest.qWait(1000)
 
-        if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"):
-            wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
-                                                              'load_wavefile_data': {'library': 'scipy',
-                                                                                     'conditional_arg': [f"_ch{self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input']:02d}"]}}).load_wavefile_data()
-        else:
-            self.message_output(f"Audio directory '{self.root_directory}{os.sep}audio' does not exist!")
+        try:
+            quantum_seed = generate_truly_random_seed(input_parameter_dict=self.input_parameter_dict_random)
+        except RequestException:
+            quantum_seed = None
+
+        wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
+                                                          'load_wavefile_data': {'library': 'scipy',
+                                                                                 'conditional_arg': [f"_ch{self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input']:02d}"]}}).load_wavefile_data()
 
         # get the total number of frames in the video
         json_loc = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0]
         with open(json_loc, 'r') as camera_count_json_file:
-            total_frame_number = json.load(camera_count_json_file)['total_frame_number_least']
+            camera_fr_count_dict = json.load(camera_count_json_file)
+            total_frame_number = camera_fr_count_dict['total_frame_number_least']
+            camera_fr = [value[1] for key, value in camera_fr_count_dict.items() if key in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num']]
 
-        video_ipi_start_frames, video_sync_sequence_dict = self.find_video_sync_trains(total_frame_number=total_frame_number)
+        # find video sync trains
+        video_ipi_start_frames, video_sync_sequence_dict = self.find_video_sync_trains(total_frame_number=total_frame_number,
+                                                                                       camera_fps=camera_fr)
         video_sync_sequence_array = np.array(list(video_sync_sequence_dict.values()))
 
         prediction_error_dict = {}
         audio_devices_start_sample_differences = 0
         for af_idx, audio_file in enumerate(wave_data_dict.keys()):
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
-            QTest.qWait(2000)
-            # correct the sync LED jitters - when LED is recorded as being ON although it ia actually off
-            wave_data_dict[audio_file]['wav_data'] = self.correct_loose_ttl_samples(raw_data=wave_data_dict[audio_file]['wav_data'],
-                                                                                    ch_num=self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input'],
-                                                                                    usgh_sr=wave_data_dict[audio_file]['sampling_rate'],
-                                                                                    ttl_pulse_duration=self.input_parameter_dict['find_audio_sync_trains']['sync_pulse_duration'],
-                                                                                    break_proportion_threshold=self.input_parameter_dict['find_audio_sync_trains']['break_proportion_threshold'],
-                                                                                    ttl_proportion_threshold=self.input_parameter_dict['find_audio_sync_trains']['ttl_proportion_threshold'])
+            QTest.qWait(1000)
 
-            ipi_start_samples, ipi_end_samples = self.find_lsb_changes(sound_array=wave_data_dict[audio_file]['wav_data'],
-                                                                       ch_receiving_input=self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input'])
-
-            if ipi_start_samples[0] < ipi_end_samples[0]:
-                if ipi_start_samples.shape[0] == ipi_end_samples.shape[0]:
-                    ipi_durations_ms = np.round(((ipi_end_samples - ipi_start_samples) + 1) * 1000 / wave_data_dict[audio_file]['sampling_rate'])
-                    audio_ipi_start_samples = ipi_start_samples
-                else:
-                    ipi_durations_ms = np.round(((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / wave_data_dict[audio_file]['sampling_rate'])
-                    audio_ipi_start_samples = ipi_start_samples[:-1]
-            else:
-                if ipi_start_samples.shape[0] == ipi_end_samples.shape[0]:
-                    ipi_durations_ms = np.round(((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / wave_data_dict[audio_file]['sampling_rate'])
-                    audio_ipi_start_samples = ipi_start_samples[:-1]
-                else:
-                    ipi_durations_ms = np.round(((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / wave_data_dict[audio_file]['sampling_rate'])
-                    audio_ipi_start_samples = ipi_start_samples
+            ipi_durations_ms, audio_ipi_start_samples = self.find_ipi_intervals(sound_array=wave_data_dict[audio_file]['wav_data'],
+                                                                                audio_sr_rate=wave_data_dict[audio_file]['sampling_rate'])
 
             if af_idx == 0:
                 audio_devices_start_sample_differences = audio_ipi_start_samples
@@ -514,14 +629,14 @@ class Synchronizer:
             if (video_sync_sequence_array == video_sync_sequence_array[0]).all():
                 for video_idx, video_key in enumerate(video_sync_sequence_dict.keys()):
                     if video_idx == 0:
-                        diff_array = np.absolute(ipi_durations_ms - video_sync_sequence_dict[video_key])
+                        diff_array = np.absolute(np.round(ipi_durations_ms) - video_sync_sequence_dict[video_key])
                         bool_condition_array = diff_array <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']
                         if not np.all(bool_condition_array):
                             self.message_output(f"IPI sequence match NOT found in audio file! There is/are {(~bool_condition_array).sum()} difference(s) larger "
                                                 f"than the tolerance and the largest one is {diff_array.max()} ms")
                         else:
                             prediction_error_array = LinRegression(x_data=audio_ipi_start_samples,
-                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(quantum_seed=None)
+                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(quantum_seed=quantum_seed)
                             prediction_error_dict[audio_file[:-4]] = prediction_error_array
 
             else:
@@ -546,14 +661,8 @@ class Synchronizer:
         Parameters
         ----------
         Contains the following set of parameters
-            camera_serial_num (list)
-                Serial numbers of cameras used.
             ch_receiving_input (int)
                 Audio channel receiving digital input from Motif; defaults to 1.
-            ttl_pulse_duration (float)
-                The duration of the TTL pulse; defaults to .000116667 (s)
-            ttl_proportion_threshold (float)
-                Proportion of the TTL event that can still be considered not to be spurious.
         ----------
 
         Returns
@@ -566,130 +675,52 @@ class Synchronizer:
         self.message_output(f"Cropping WAV files started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(1000)
 
-        # dictionary to store the number of frames in each video
-        camera_frame_count_dict = {}
-        date_joint = ''
-
-        # video
-        total_frame_number = 1e9
-        total_video_time = 1e9
-        if os.path.exists(f"{self.root_directory}{os.sep}video"):
-            for sd_idx, sub_directory in enumerate(os.listdir(f"{self.root_directory}{os.sep}video")):
-                if 'calibration' not in sub_directory \
-                        and sub_directory.split('.')[-1] in self.input_parameter_dict['crop_wav_files_to_video']['camera_serial_num']:
-                    if date_joint == '':
-                        date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
-                    img_store = new_for_filename(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml")
-                    total_frame_num = img_store.frame_count
-                    last_frame_num = img_store.frame_max
-                    frame_times = img_store.get_frame_metadata()['frame_time']
-                    video_duration = frame_times[-1] - frame_times[0]
-                    camera_frame_count_dict[sub_directory.split('.')[-1]] = total_frame_num
-                    if total_frame_num == last_frame_num:
-                        self.message_output(f"Camera {sub_directory.split('.')[-1]} has {total_frame_num} total frames, no dropped frames, "
-                                            f"and a video duration of {video_duration:.4f} seconds.")
-                        if total_frame_num < total_frame_number:
-                            total_frame_number = total_frame_num
-                        if video_duration < total_video_time:
-                            total_video_time = video_duration
-                    else:
-                        self.message_output(f"WARNING: The last frame on camera {sub_directory.split('.')[-1]} is {last_frame_num}, which is more than {total_frame_num} in total, "
-                                            f"suggesting dropped frames. The video duration is {video_duration:.4f} seconds")
-
-        else:
-            self.message_output(f"Video directory '{self.root_directory}{os.sep}video' does not exist!")
-
-        # save camera_frame_count_dict to a file
-        camera_frame_count_dict['total_frame_number_least'] = total_frame_number
-        camera_frame_count_dict['total_video_time_least'] = total_video_time
-        with open(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}_camera_frame_count_dict.json", 'w') as frame_count_outfile:
-            json.dump(camera_frame_count_dict, frame_count_outfile)
+        # load info from camera_frame_count_dict
+        with open(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0], 'r') as frame_count_infile:
+            camera_frame_count_dict = json.load(frame_count_infile)
+            total_frame_number = camera_frame_count_dict['total_frame_number_least']
+            total_video_time = camera_frame_count_dict['total_video_time_least']
 
         # audio
-        if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}original"):
-            wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}original"],
-                                                              'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
-        else:
-            self.message_output(f"Audio directory '{self.root_directory}{os.sep}audio' does not exist!")
+        wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}original"],
+                                                          'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
+
+        # determine device ID that gets camera frame trigger pulses
+        device_id = self.input_parameter_dict['crop_wav_files_to_video']['device_receiving_input']
 
         # find camera frame trigger pulses and IPIs in channel file
-        cam_frames_in_audio = {'m': {'start_first_recorded_frame': 0, 'end_last_recorded_frame': 0, 'ttl_on_durations_in_video': 0},
-                               's': {'start_first_recorded_frame': 0, 'end_last_recorded_frame': 0, 'ttl_on_durations_in_video': 0}}
+        start_first_recorded_frame = 0
+        end_last_recorded_frame = 0
+
         for audio_file in wave_data_dict.keys():
             if f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input']:02d}" in audio_file and 'm_' in audio_file:
-                # determine device ID
-                device_id = 'm'
 
-                # correct camera TTL jitters
-                wave_data_dict[audio_file]['wav_data'] = self.correct_loose_ttl_samples(raw_data=wave_data_dict[audio_file]['wav_data'],
-                                                                                        ch_num=self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input'],
-                                                                                        usgh_sr=wave_data_dict[audio_file]['sampling_rate'],
-                                                                                        ttl_pulse_duration=self.input_parameter_dict['crop_wav_files_to_video']['ttl_pulse_duration'],
-                                                                                        ttl_proportion_threshold=self.input_parameter_dict['crop_wav_files_to_video']['ttl_proportion_threshold'])
+                start_first_recorded_frame, end_last_recorded_frame = self.find_lsb_changes(relevant_array=wave_data_dict[audio_file]['wav_data'],
+                                                                                            lsb_bool=True,
+                                                                                            total_frame_number=total_frame_number)
 
-                ttl_break_start_samples, ttl_break_end_samples = self.find_lsb_changes(wave_data_dict[audio_file]['wav_data'])
-                ttl_on_start_samples, ttl_on_end_samples = ttl_break_end_samples + 1, ttl_break_start_samples - 1
-
-                # cut starts and ends to the same shape
-                if ttl_break_start_samples.shape[0] != ttl_break_end_samples.shape[0]:
-                    if ttl_break_start_samples.shape[0] > ttl_break_end_samples.shape[0]:
-                        ttl_break_start_samples = ttl_break_start_samples[:-1]
-                    elif ttl_break_end_samples.shape[0] > ttl_break_start_samples.shape[0]:
-                        ttl_break_end_samples = ttl_break_end_samples[1:]
-
-                if ttl_on_start_samples.shape[0] != ttl_break_end_samples.shape[0]:
-                    if ttl_on_start_samples.shape[0] > ttl_break_end_samples.shape[0]:
-                        ttl_on_start_samples = ttl_on_start_samples[:-1]
-                    elif ttl_on_end_samples.shape[0] > ttl_on_start_samples.shape[0]:
-                        ttl_on_end_samples = ttl_on_end_samples[1:]
-
-                # get the inter-pulse intervals & camera frame durations
-                if ttl_break_start_samples[0] < ttl_break_end_samples[0]:
-                    ttl_break_durations = (ttl_break_end_samples - ttl_break_start_samples) + 1
-                    ttl_on_durations = (ttl_on_end_samples[1:] - ttl_on_start_samples[:-1]) + 1
-                    largest_ttl_break = np.where(ttl_break_durations == ttl_break_durations.max())[0][0]
-                    start_first_recorded_frame = ttl_break_end_samples[largest_ttl_break] + 1
-                    end_last_recorded_frame = ttl_break_end_samples[largest_ttl_break + total_frame_number]
-                    ttl_on_durations_in_video = ttl_on_durations[largest_ttl_break:largest_ttl_break + total_frame_number]
-                elif ttl_break_start_samples[0] > ttl_break_end_samples[0]:
-                    ttl_break_durations = (ttl_break_end_samples[1:] - ttl_break_start_samples[:-1]) + 1
-                    ttl_on_durations = (ttl_on_end_samples - ttl_on_start_samples) + 1
-                    largest_ttl_break = np.where(ttl_break_durations == ttl_break_durations.max())[0][0]
-                    start_first_recorded_frame = ttl_break_end_samples[largest_ttl_break + 1] + 1
-                    end_last_recorded_frame = ttl_break_end_samples[largest_ttl_break + 1 + total_frame_number]
-                    ttl_on_durations_in_video = ttl_on_durations[largest_ttl_break + 1:largest_ttl_break + 1 + total_frame_number]
-
-                cam_frames_in_audio[device_id]['start_first_recorded_frame'] = start_first_recorded_frame
-                cam_frames_in_audio[device_id]['end_last_recorded_frame'] = end_last_recorded_frame
-                cam_frames_in_audio[device_id]['ttl_on_durations_in_video'] = ttl_on_durations_in_video
+                total_audio_recording_during_tracking = (end_last_recorded_frame - start_first_recorded_frame + 1) / wave_data_dict[audio_file]['sampling_rate']
+                audio_tracking_difference = total_audio_recording_during_tracking - total_video_time
+                self.message_output(f"On device {device_id}, the first tracking frame started at {start_first_recorded_frame} samples, and the last joint one ended at "
+                                    f"{end_last_recorded_frame} samples, giving a total audio recording time of {total_audio_recording_during_tracking:.4f} seconds, "
+                                    f"which is ~{audio_tracking_difference:.4f} seconds off relative to tracking.")
                 break
 
-        for audio_idx, audio_file in enumerate(wave_data_dict.keys()):
-            # determine device ID
-            device_id = 'm'
+        QTest.qWait(1000)
 
-            if f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input']:02d}" in audio_file and 'm_' in audio_file:
-                ttl_sequence_duration_max = int(np.ceil(wave_data_dict[audio_file]['sampling_rate']*self.input_parameter_dict['crop_wav_files_to_video']['ttl_pulse_duration']))
-                ttl_sequence_bool = np.all((cam_frames_in_audio[device_id]['ttl_on_durations_in_video'] >= ttl_sequence_duration_max))
-                if cam_frames_in_audio[device_id]['ttl_on_durations_in_video'].shape[0] == total_frame_number and ttl_sequence_bool:
-                    total_audio_recording_during_tracking = (cam_frames_in_audio[device_id]['end_last_recorded_frame'] - cam_frames_in_audio[device_id]['start_first_recorded_frame'] + 1) / wave_data_dict[audio_file]['sampling_rate']
-                    audio_tracking_difference = total_audio_recording_during_tracking - total_video_time
-                    self.message_output(f"On device {device_id}, the first tracking frame started at {cam_frames_in_audio[device_id]['start_first_recorded_frame']} samples, and the last joint one ended at "
-                                        f"{cam_frames_in_audio[device_id]['end_last_recorded_frame']} samples, giving a total audio recording time of {total_audio_recording_during_tracking:.4f} seconds, "
-                                        f"which is ~{audio_tracking_difference:.4f} seconds off relative to tracking.")
-                else:
-                    self.message_output(f"Check this file in more detail. The total number of video frames is {total_frame_number}, and you have {ttl_on_durations_in_video.shape[0]}"
-                                        f" good TTL frames in the audio recording, while it is {str(ttl_sequence_bool).lower()} that every TTL sequence is equal to or greater than {ttl_sequence_duration_max}.")
+        for audio_idx, audio_file in enumerate(wave_data_dict.keys()):
 
             if wave_data_dict[audio_file]['wav_data'].ndim == 1:
-                resized_wav_file = wave_data_dict[audio_file]['wav_data'][cam_frames_in_audio[device_id]['start_first_recorded_frame']:cam_frames_in_audio[device_id]['end_last_recorded_frame'] + 1]
+                resized_wav_file = wave_data_dict[audio_file]['wav_data'][start_first_recorded_frame:end_last_recorded_frame + 1]
             else:
-                resized_wav_file = wave_data_dict[audio_file]['wav_data'][cam_frames_in_audio[device_id]['start_first_recorded_frame']:cam_frames_in_audio[device_id]['end_last_recorded_frame'] + 1, :]
+                resized_wav_file = wave_data_dict[audio_file]['wav_data'][start_first_recorded_frame:end_last_recorded_frame + 1, :]
 
-            # create new directory for cropped files
+            # create new directory for cropped files and HPSS files
             new_directory_cropped_files = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"
             if not os.path.isdir(new_directory_cropped_files):
-                os.makedirs(new_directory_cropped_files, exist_ok=False)
+                os.makedirs(new_directory_cropped_files)
+            if not os.path.isdir(f"{self.root_directory}{os.sep}audio{os.sep}hpss"):
+                os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}hpss")
 
             # write to file
             DataWriter(wav_data=resized_wav_file,
@@ -699,5 +730,8 @@ class Synchronizer:
                                                  'sampling_rate': wave_data_dict[audio_file]['sampling_rate'] / 1e3,
                                                  'library': 'scipy'
                                              }}).write_wavefile_data()
+
+        # delete original directory
+        shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}original")
 
         return total_video_time, total_frame_number
