@@ -1089,10 +1089,10 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.pc_usage_process = self.pc_usage_process.split(',')
 
-        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = getattr(self, 'device_receiving_input').currentText()
+        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
         self.device_receiving_input = 'm'
 
-        self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_file_type'] = getattr(self, 'npx_file_type').currentText()
+        self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_file_type'] = str(getattr(self, 'npx_file_type'))
         self.npx_file_type = 'ap'
 
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['video_extension'] = self.concatenate_video_ext
@@ -1204,7 +1204,7 @@ class USVPlaypenWindow(QMainWindow):
         for variable in video_dict_keys:
             if variable != 'expected_cameras':
                 if variable == 'recording_codec':
-                    self.settings_dict['video'][variable] = getattr(self, variable).currentText()
+                    self.settings_dict['video'][variable] = str(getattr(self, variable))
                     self.recording_codec = 'lq'
                 else:
                     self.settings_dict['video'][variable] = getattr(self, variable).text()
