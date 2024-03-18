@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 with open('README.md', 'r', encoding='utf-8') as fh:
     long_description = fh.read()
@@ -18,7 +18,8 @@ setup(
         'Programming Language :: Python :: 3 :: Only',
     ],
     keywords='neuroscience, mouse, usv, behavior',
-    package_dir={'usv-playpen': 'src'},
+    packages=find_packages(where='usv-playpen'),
+    package_dir={'': 'usv-playpen'},
     package_data={'': ['*.png', '*.css', '*.mplstyle']},
     include_package_data=True,
     python_requires="==3.10.*",
