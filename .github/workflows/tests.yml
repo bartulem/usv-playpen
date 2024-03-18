@@ -1,47 +1,17 @@
-name: tests
+name: Run Tests
 
-on:
-  # NOTE: disabled tests on push because this causes PRs to be tested twice,
-  #       need to figure out how to have both without duplicating tests.
-  # push:
-  #   branches:
-  #     - main
-  #     - "v*x"
-  #   tags:
-  #     - "v*" # Push events to matching v*, i.e. v1.0, v20.15.10
-  pull_request:
-    branches:
-      - main
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
+on: [push] 
 
 jobs:
   test:
-    name: ${{ matrix.platform }} py${{ matrix.python }}
-    runs-on: ${{ matrix.platform }}
-    strategy:
-      matrix:
-        platform: [ubuntu-latest, windows-latest]
-        python: ["3.10"]
-      fail-fast: false
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v3  
+      - uses: actions/setup-python@v3
         with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install setuptools tox tox-gh-actions
-      - name: Test with unittest
-        run: unittest
-        env:
-          PLATFORM: ${{ matrix.platform }}
-
-      - name: Coverage
-        uses: codecov/codecov-action@v4
+          python-version: '3.10' 
+      - name: Install dependencies (via setup.py)
+        run: python setup.py install
+      - name: Run tests 
+        run: python -m unittest discover -s tests
