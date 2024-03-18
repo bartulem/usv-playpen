@@ -45,5 +45,3 @@ jobs:
 
       - name: Coverage
         uses: codecov/codecov-action@v4
-
-jacobpennington Jacob Pennington  · they/them Computational neuroscience PhD student and software developer. Committed to this repository in the past week Press escape to close this hovercard
