@@ -215,18 +215,12 @@ class Operator:
                 dim_2 = len(data_dict.keys())
                 data_type = data_dict[list(data_dict.keys())[0]]['dtype']
                 sr = data_dict[list(data_dict.keys())[0]]['sampling_rate']
+                complete_mm_file_name = (f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}{name_origin}"
+                                         f"_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap")
 
-                audio_mm_arr = np.memmap(f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}{name_origin}"
-                                         f"_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap",
-                                         dtype=data_type,
-                                         mode='w+',
-                                         shape=(dim_1, dim_2))
-
-                for file_idx, one_file in enumerate(data_dict.keys()):
-                    audio_mm_arr[:, file_idx] = data_dict[one_file]['wav_data']
-
-                audio_mm_arr.flush()
-                audio_mm_arr = 0
+                with np.memmap(filename=complete_mm_file_name, dtype=data_type, mode='w+', shape=(dim_1, dim_2)) as audio_mm_arr:
+                    for file_idx, one_file in enumerate(data_dict.keys()):
+                        audio_mm_arr[:, file_idx] = data_dict[one_file]['wav_data']
 
             else:
                 self.message_output(f"There are <2 audio files per provided directory: '{self.root_directory}{os.sep}audio{os.sep}cropped_to_video', "
