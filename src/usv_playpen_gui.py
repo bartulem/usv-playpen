@@ -1373,7 +1373,7 @@ class USVPlaypenWindow(QMainWindow):
     def _enable_process_buttons(self):
         self.button_map['Previous'].setEnabled(True)
         self.button_map['Main'].setEnabled(True)
-        self.button_map['Process'].setEnabled(True)
+        self.button_map['Process'].setEnabled(False)
 
     def _disable_process_buttons(self):
         self.button_map['Previous'].setEnabled(False)
