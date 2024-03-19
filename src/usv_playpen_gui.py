@@ -483,7 +483,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generalLayout.addWidget(self.specific_camera_serial, 4, 1, alignment=Qt.AlignmentFlag.AlignTop)
 
         self.recording_codec_choice = QComboBox()
-        self.recording_codec_choice.addItems(['lq', 'mq', 'hq'])
+        self.recording_codec_choice.addItems(['hq', 'mq', 'lq'])
         self.recording_codec_choice.activated.connect(partial(self._combo_box_prior_codec, variable_id='recording_codec'))
         self.generalLayout.addWidget(QLabel('recording codec:'), 5, 0, alignment=Qt.AlignmentFlag.AlignTop)
         self.generalLayout.addWidget(self.recording_codec_choice, 5, 1, alignment=Qt.AlignmentFlag.AlignTop)
@@ -1205,7 +1205,7 @@ class USVPlaypenWindow(QMainWindow):
             if variable != 'expected_cameras':
                 if variable == 'recording_codec':
                     self.settings_dict['video'][variable] = str(getattr(self, variable))
-                    self.recording_codec = 'lq'
+                    self.recording_codec = 'hq'
                 else:
                     self.settings_dict['video'][variable] = getattr(self, variable).text()
             else:
@@ -1214,11 +1214,11 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_codec(self, index, variable_id=None):
         if index == 0:
-            self.__dict__[variable_id] = 'lq'
+            self.__dict__[variable_id] = 'hq'
         elif index == 1:
             self.__dict__[variable_id] = 'mq'
         else:
-            self.__dict__[variable_id] = 'hq'
+            self.__dict__[variable_id] = 'lq'
 
     def _combo_box_prior_audio_device_camera_input(self, index, variable_id=None):
         if index == 0:
@@ -1373,7 +1373,7 @@ class USVPlaypenWindow(QMainWindow):
     def _enable_process_buttons(self):
         self.button_map['Previous'].setEnabled(True)
         self.button_map['Main'].setEnabled(True)
-        self.button_map['Process'].setEnabled(True)
+        self.button_map['Process'].setEnabled(False)
 
     def _disable_process_buttons(self):
         self.button_map['Previous'].setEnabled(False)
