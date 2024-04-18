@@ -81,4 +81,4 @@ Run the GUI.
 python usv_playpen_gui.py
 ```
 
-Developed and tested in PyCharm Pro 2023.3.3, on Ubuntu 22.04 LTS/Windows 10.
+Developed and tested in PyCharm Pro 2024.1, on macOS Sonoma 14.4 / Ubuntu 22.04 LTS/ Windows 10.

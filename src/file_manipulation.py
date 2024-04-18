@@ -337,7 +337,7 @@ class Operator:
         ----------
         """
 
-        self.message_output(f"FPS modification started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
         date_joint = ''
         total_frame_number = 1e9

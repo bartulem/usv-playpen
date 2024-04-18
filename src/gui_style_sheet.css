@@ -1,68 +1,8 @@
-Main{
-    font: 10pt "Segoe UI";
-    min-width: 1050px;
-    min-height: 1250px;
-    max-width: 1050px;
-    max-height: 1250px;
-}
-Record{
-    font: 10pt "Segoe UI";
-    min-width: 1050px;
-    min-height: 1250px;
-    max-width: 1050px;
-    max-height: 1250px;
-}
-AudioSettings{
-    font: 10pt "Segoe UI";
-    min-width: 1050px;
-    min-height: 1250px;
-    max-width: 1050px;
-    max-height: 1250px;
-}
-VideoSettings{
-    font: 10pt "Segoe UI";
-    min-width: 1050px;
-    min-height: 1250px;
-    max-width: 1050px;
-    max-height: 1250px;
-}
-ProcessSettings{
-    font: 10pt "Segoe UI";
-    min-width: 1050px;
-    min-height: 1250px;
-    max-width: 1050px;
-    max-height: 1250px;
-}
-ConductRecording{
-    font: 10pt "Segoe UI";
-    min-width: 1050px;
-    min-height: 1250px;
-    max-width: 1050px;
-    max-height: 1250px;
-}
-ConductProcess{
-    font: 10pt "Segoe UI";
-    min-width: 1050px;
-    min-height: 1250px;
-    max-width: 1050px;
-    max-height: 1250px;
-}
-QPlainTextEdit{
-    min-width: 1030px;
-    min-height: 950px;
-    max-width: 1030px;
-    max-height: 950px;
-}
-QLabel{
-    font: 12pt "Segoe UI";
-}
-QLineEdit{
-    font: 10pt "Segoe UI";
-    line-height: 10pt;
+QWidget {
+    background-color: white;
+    color: #000000;
 }
 QProgressBar {
-    font: 10pt "Segoe UI";
-    font-size: 10pt;
     font-weight: bold;
     padding: 0px;
 }
@@ -73,7 +13,6 @@ QProgressBar::chunk {
     width: 10px;
 }
 QPushButton{
-    font: 8pt "Segoe UI";
     border: 1px solid #6C6C6C;
     border-radius: 3px;
     padding: 5px 10px;
