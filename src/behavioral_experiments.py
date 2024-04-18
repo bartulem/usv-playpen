@@ -145,8 +145,7 @@ class ExperimentController:
                 self.message_output(f"The camera frame rate is set to {camera_fr} fps for all available cameras.")
 
             # monitor recording via browser
-            if self.exp_settings_dict['video']['general']['monitor_recording'] or \
-                    self.exp_settings_dict['conduct_tracking_calibration']:
+            if self.exp_settings_dict['video']['general']['monitor_recording']:
                 if self.exp_settings_dict['video']['general']['monitor_specific_camera']:
                     meta = api.call(f"camera/{self.exp_settings_dict['video']['general']['specific_camera_serial']}")
                     webbrowser.open(meta['camera_info']['stream']['preview']['url'])
