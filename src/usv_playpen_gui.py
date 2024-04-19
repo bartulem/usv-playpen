@@ -180,7 +180,7 @@ class USVPlaypenWindow(QMainWindow):
                         'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
                         'conversion_target_file': 'concatenated_temp',
                         'video_extension': 'mp4',
-                        'constant_rate_factor': 16.4,
+                        'constant_rate_factor': 16,
                         'encoding_preset': 'veryfast',
                         'delete_old_file': True}}},
             'file_writer': {
@@ -794,7 +794,7 @@ class USVPlaypenWindow(QMainWindow):
         constant_rate_factor_label = QLabel('Rate factor (-crf):', self.ProcessSettings)
         constant_rate_factor_label.setFont(QFont(self.font_id, 12))
         constant_rate_factor_label.move(10, 770)
-        self.constant_rate_factor = QLineEdit('16.4', self.ProcessSettings)
+        self.constant_rate_factor = QLineEdit('16', self.ProcessSettings)
         self.constant_rate_factor.setFont(QFont(self.font_id, 10))
         self.constant_rate_factor.setStyleSheet('QLineEdit { width: 195px; }')
         self.constant_rate_factor.move(165, 770)
