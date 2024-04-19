@@ -1,19 +1,25 @@
 """
 @author: bartulem
-Manipulates files:
-(1) break from multi to single channel, band-pass filter and temporally concatenate audio (e.g., wav) files
-(2) concatenate video (e.g., mp4) files and change video (e.g., mp4) sampling rate (fps)
+Different functions for manipulating files:
+(1a) break from multi to single channel
+(1b) perform harmonic-percussive source separation
+(1c) perform band-pass filtering
+(1d) concatenate single channel audio (e.g., wav) files
+(2a) concatenate video (e.g., mp4) files
+(2b) change video (e.g., mp4) sampling rate (fps)
 """
 
 from PyQt6.QtTest import QTest
 import glob
 import json
+import librosa
 import os
 import shutil
 import numpy as np
 import subprocess
 from datetime import datetime
 from imgstore import new_for_filename
+from scipy.io import wavfile
 from file_loader import DataLoader
 from file_writer import DataWriter
 
@@ -63,7 +69,7 @@ class Operator:
 
         self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        QTest.qWait(2000)
+        QTest.qWait(1000)
 
         if not os.path.isdir(f"{self.root_directory}{os.sep}audio{os.sep}temp"):
             os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}temp")
@@ -103,6 +109,77 @@ class Operator:
 
         # delete temp directory (w/ all files in it)
         shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}temp")
+
+    def hpss_audio(self):
+        """
+        Description
+        ----------
+        This function performs the harmonic/percussive source separation (HPSS)
+        on the provided audio (WAV) files. The harmonic component is then converted
+        back to the time domain and saved as a new WAV file.
+        ----------
+
+        Parameter
+        ---------
+        stft_window_length_hop_size : list
+            Length of the window and hop size for the STFT (Short-Time Fourier Transform).
+        kernel_size : tuple
+            Size of the kernel for the HPSS (Harmonic / Percussive components).
+        hpss_power : float
+            Exponent for the HPSS.
+        margin : tuple
+            Margin for the HPSS (Harmonic / Percussive components).
+
+        Returns
+        -------
+        harmonic_data_clipped : WAV file(s)
+            Output audio file w/ only the harmonics component.
+        """
+
+        self.message_output(f"Harmonic-percussive source separation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+
+        QTest.qWait(1000)
+
+        wav_file_lst = glob.glob(f'{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav')
+
+        for one_wav_file in wav_file_lst:
+
+            # read the audio file (use Scipy, not Librosa because Librosa performs scaling)
+            sampling_rate_audio, audio_data = wavfile.read(one_wav_file)
+
+            # convert to float32 because librosa.stft() requires float32
+            audio_data = audio_data.astype(np.float32)
+
+            # perform Short-Time Fourier Transform (STFT) on the audio data
+            spectrogram_data = librosa.stft(y=audio_data,
+                                            n_fft=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][0],
+                                            hop_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][1])
+
+            # perform HPSS on the spectrogram data
+            D_harmonic, D_percussive = librosa.decompose.hpss(S=spectrogram_data,
+                                                              kernel_size=self.input_parameter_dict['hpss_audio']['kernel_size'],
+                                                              power=self.input_parameter_dict['hpss_audio']['hpss_power'],
+                                                              mask=False,
+                                                              margin=self.input_parameter_dict['hpss_audio']['margin'])
+
+            # convert the harmonic component back to the time domain
+            harmonic_data = librosa.istft(stft_matrix=D_harmonic,
+                                          length=audio_data.shape[0],
+                                          win_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][0],
+                                          hop_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][1])
+
+            # ensure the float values are within the range of 16-bit integers. Clip values outside the range to the minimum and maximum representable values.
+            harmonic_data_clipped = np.clip(harmonic_data, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+
+            # save the harmonic component as a new WAV file
+            new_dir = f'{self.root_directory}{os.sep}audio{os.sep}hpss'
+            if not os.path.exists(new_dir):
+                os.makedirs(new_dir)
+
+            raw_file_name = os.path.basename(one_wav_file)
+            wavfile.write(filename=f'{new_dir}{os.sep}{raw_file_name[:-4]}_hpss.wav',
+                          rate=sampling_rate_audio,
+                          data=harmonic_data_clipped)
 
     def filter_audio_files(self):
         """
@@ -198,7 +275,7 @@ class Operator:
 
         self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        QTest.qWait(2000)
+        QTest.qWait(1000)
 
         for audio_file_type in self.input_parameter_dict['concatenate_audio_files']['concat_dirs']:
 

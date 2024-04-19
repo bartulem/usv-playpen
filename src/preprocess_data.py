@@ -126,6 +126,12 @@ class Stylist:
                                  message_output=self.message_output,
                                  exp_settings_dict=self.exp_settings_dict).validate_ephys_video_sync()
 
+                # # # harmonic-percussive source separation
+                if self.input_parameter_dict['processing_booleans']['conduct_hpss']:
+                    Operator(root_directory=one_directory,
+                             input_parameter_dict=self.input_parameter_dict,
+                             message_output=self.message_output).hpss_audio()
+
                 # # # band-pass filter audio files in memmap
                 if self.input_parameter_dict['processing_booleans']['conduct_audio_filtering']:
                     Operator(root_directory=one_directory,
