@@ -1313,9 +1313,9 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_hp'] = int(ast.literal_eval(self.freq_hp))
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_lp'] = int(ast.literal_eval(self.freq_lp))
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(stft_value) for stft_value in self.stft_window_hop]
-        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple(self.hpss_kernel_size)
+        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple([int(kernel_value) for kernel_value in self.hpss_kernel_size])
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['hpss_power'] = float(ast.literal_eval(self.hpss_power))
-        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple(self.hpss_margin)
+        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple([int(margin_value) for margin_value in self.hpss_margin])
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_version'] = self.v_led_px_version
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_dev'] = int(ast.literal_eval(self.v_led_px_dev))
