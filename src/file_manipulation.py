@@ -382,16 +382,13 @@ class Operator:
                 enc_preset = self.input_parameter_dict['rectify_video_fps']['encoding_preset']
 
                 current_working_dir = f"{self.root_directory}{os.sep}video"
-                if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
+                if 'calibration' not in sub_directory:
                     target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
                 else:
                     current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
                     target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-
-                if 'calibration' in sub_directory:
                     new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                else:
-                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
                 # change video sampling rate
                 fps_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -y -r {esr} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}"''',
@@ -417,22 +414,19 @@ class Operator:
                     os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images")
 
                 current_working_dir = f"{self.root_directory}{os.sep}video"
-                if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"):
+                if 'calibration' not in sub_directory:
                     target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
+
+                    shutil.move(f"{current_working_dir}{os.sep}{new_file}",
+                                f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
                 else:
                     current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
                     target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                if 'calibration' in sub_directory:
                     new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
-                else:
-                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
-                if 'calibration' in sub_directory:
                     shutil.move(f"{current_working_dir}{os.sep}{new_file}",
                                 f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images{os.sep}{new_file}")
-                else:
-                    shutil.move(f"{current_working_dir}{os.sep}{new_file}",
-                                f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
 
                 # clean video directory of all unnecessary files
                 if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:

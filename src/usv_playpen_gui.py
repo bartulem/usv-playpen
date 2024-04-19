@@ -1066,12 +1066,12 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductProcess = ConductProcess(self)
         self.setWindowTitle(f'{app_name} (Conduct Processing)')
         self.setCentralWidget(self.ConductProcess)
-        record_four_x, record_four_y = (680, 1100)
+        record_four_x, record_four_y = (820, 1100)
         self.setFixedSize(record_four_x, record_four_y)
 
         self.txt_edit_process = QPlainTextEdit(self.ConductProcess)
         self.txt_edit_process.move(5, 5)
-        self.txt_edit_process.setFixedSize(665, 1040)
+        self.txt_edit_process.setFixedSize(805, 1040)
         self.txt_edit_process.setReadOnly(True)
 
         exp_settings_dict_final = toml.load(f"{self.processing_input_dict['send_email']['Messenger']['toml_file_loc']}{os.sep}behavioral_experiments_settings.toml")
