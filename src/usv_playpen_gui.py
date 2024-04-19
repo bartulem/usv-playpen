@@ -1312,7 +1312,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['audio_format'] = self.audio_filter_format
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_hp'] = int(ast.literal_eval(self.freq_hp))
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_lp'] = int(ast.literal_eval(self.freq_lp))
-        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = self.stft_window_hop
+        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(stft_value) for stft_value in self.stft_window_hop]
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple(self.hpss_kernel_size)
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['hpss_power'] = float(ast.literal_eval(self.hpss_power))
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple(self.hpss_margin)
