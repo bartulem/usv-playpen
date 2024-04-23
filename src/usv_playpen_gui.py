@@ -731,6 +731,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_video_concatenation_label = QLabel('Conduct video concatenation:', self.ProcessSettings)
         conduct_video_concatenation_label.setFont(QFont(self.font_id, 12))
+        conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_video_concatenation_label.move(10, 530)
         self.conduct_video_concatenation_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_concatenation_cb.addItems(['Yes', 'No'])
@@ -764,6 +765,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_video_fps_change_cb_label = QLabel('Conduct video re-encoding:', self.ProcessSettings)
         conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_video_fps_change_cb_label.move(10, 650)
         self.conduct_video_fps_change_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_fps_change_cb.addItems(['Yes', 'No'])
@@ -827,6 +829,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_multichannel_conversion_cb_label = QLabel('Convert multi-ch to single-ch files:', self.ProcessSettings)
         conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_multichannel_conversion_cb_label.move(10, 900)
         self.conduct_multichannel_conversion_cb = QComboBox(self.ProcessSettings)
         self.conduct_multichannel_conversion_cb.addItems(['Yes', 'No'])
@@ -836,6 +839,7 @@ class USVPlaypenWindow(QMainWindow):
 
         crop_wav_cam_cb_label = QLabel('Crop AUDIO files to match VIDEO:', self.ProcessSettings)
         crop_wav_cam_cb_label.setFont(QFont(self.font_id, 12))
+        crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         crop_wav_cam_cb_label.move(10, 930)
         self.crop_wav_cam_cb = QComboBox(self.ProcessSettings)
         self.crop_wav_cam_cb.addItems(['Yes', 'No'])
@@ -869,6 +873,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_sync_cb_label = QLabel('Conduct A/V sync check:', self.ProcessSettings)
         conduct_sync_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_sync_cb_label.move(400, 40)
         self.conduct_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_sync_cb.addItems(['Yes', 'No'])
@@ -963,6 +968,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_nv_sync_cb_label = QLabel('Conduct E/V sync check:', self.ProcessSettings)
         conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_nv_sync_cb_label.move(400, 410)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
@@ -994,6 +1000,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_hpss_cb_label = QLabel('Conduct HPSS:', self.ProcessSettings)
         conduct_hpss_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_hpss_cb_label.move(400, 540)
         self.conduct_hpss_cb = QComboBox(self.ProcessSettings)
         self.conduct_hpss_cb.addItems(['No', 'Yes'])
@@ -1040,6 +1047,7 @@ class USVPlaypenWindow(QMainWindow):
 
         filter_audio_cb_label = QLabel('Filter individual audio files:', self.ProcessSettings)
         filter_audio_cb_label.setFont(QFont(self.font_id, 12))
+        filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         filter_audio_cb_label.move(400, 730)
         self.filter_audio_cb = QComboBox(self.ProcessSettings)
         self.filter_audio_cb.addItems(['No', 'Yes'])
@@ -1086,6 +1094,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
         conc_audio_cb_label.setFont(QFont(self.font_id, 12))
+        conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         conc_audio_cb_label.move(400, 920)
         self.conc_audio_cb = QComboBox(self.ProcessSettings)
         self.conc_audio_cb.addItems(['No', 'Yes'])
@@ -1312,10 +1321,10 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['audio_format'] = self.audio_filter_format
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_hp'] = int(ast.literal_eval(self.freq_hp))
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_lp'] = int(ast.literal_eval(self.freq_lp))
-        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(stft_value) for stft_value in self.stft_window_hop]
-        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple([int(kernel_value) for kernel_value in self.hpss_kernel_size])
+        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(tft_value)) for stft_value in self.stft_window_hop]
+        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple([int(ast.literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['hpss_power'] = float(ast.literal_eval(self.hpss_power))
-        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple([int(margin_value) for margin_value in self.hpss_margin])
+        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple([int(ast.literal_eval(margin_value)) for margin_value in self.hpss_margin])
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_version'] = self.v_led_px_version
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_dev'] = int(ast.literal_eval(self.v_led_px_dev))

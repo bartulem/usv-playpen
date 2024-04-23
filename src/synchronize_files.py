@@ -198,14 +198,14 @@ class Synchronizer:
                             binary_files_info = json.load(binary_info_input_file)
                     else:
                         os.makedirs(root_ephys)
-                        binary_files_info = {'changepoints': [0], 'file_lengths': {}}
+                        binary_files_info[recording_file_name[:-7]] = {'session_start_end': [np.nan, np.nan],
+                                                                       'tracking_start_end': [np.nan, np.nan],
+                                                                       'file_duration_samples': np.nan}
 
-                    if 'tracking' not in binary_files_info.keys():
-                        binary_files_info['tracking'] = {}
-                    binary_files_info['tracking'][recording_file_name] = [int(tracking_start), int(tracking_end)]
+                    binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
 
                     with open(f'{root_ephys}{os.sep}changepoints_info_{recording_date}_imec{imec_probe_id}.json', 'w') as binary_info_output_file:
-                        json.dump(binary_files_info, binary_info_output_file, indent=4)
+                        json.dump(binary_files_info, binary_info_output_file, ignore_nan=True, indent=4)
 
                     self.message_output(f"SUCCESS! Tracking start/end sample times saved in {glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0]}.")
 
