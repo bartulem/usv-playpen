@@ -197,7 +197,7 @@ class Synchronizer:
                         with open(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
                     else:
-                        os.makedirs(root_ephys)
+                        os.makedirs(root_ephys, exist_ok=True)
                         binary_files_info[recording_file_name[:-7]] = {'session_start_end': [np.nan, np.nan],
                                                                        'tracking_start_end': [np.nan, np.nan],
                                                                        'file_duration_samples': np.nan}
