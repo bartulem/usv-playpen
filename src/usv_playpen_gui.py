@@ -1321,7 +1321,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['audio_format'] = self.audio_filter_format
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_hp'] = int(ast.literal_eval(self.freq_hp))
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_lp'] = int(ast.literal_eval(self.freq_lp))
-        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(tft_value)) for stft_value in self.stft_window_hop]
+        self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(stft_value)) for stft_value in self.stft_window_hop]
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple([int(ast.literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['hpss_power'] = float(ast.literal_eval(self.hpss_power))
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple([int(ast.literal_eval(margin_value)) for margin_value in self.hpss_margin])
