@@ -204,7 +204,7 @@ class Synchronizer:
 
                     binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
 
-                    with open(f'{root_ephys}{os.sep}changepoints_info_{recording_date}_imec{imec_probe_id}.json', 'w') as binary_info_output_file:
+                    with open(f'{root_ephys}{os.sep}changepoints_info_{recording_date}_{imec_probe_id}.json', 'w') as binary_info_output_file:
                         json.dump(binary_files_info, binary_info_output_file, indent=4)
 
                     self.message_output(f"SUCCESS! Tracking start/end sample times saved in {glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0]}.")
