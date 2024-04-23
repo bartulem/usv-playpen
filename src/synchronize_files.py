@@ -193,7 +193,7 @@ class Synchronizer:
 
                     # save tracking start and end in changepoint information JSON file
                     root_ephys = self.root_directory.replace('Data', 'EPHYS').replace(self.root_directory.split(os.sep)[-1], recording_date) + f'_{imec_probe_id}'
-                    if os.path.exists(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0]):
+                    if len(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)) > 0:
                         with open(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
                     else:
