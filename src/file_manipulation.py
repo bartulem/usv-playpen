@@ -207,7 +207,8 @@ class Operator:
            Concatenated binary file.
         """
 
-        self.message_output(f"E-phys file concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"E-phys file concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}. "
+                            f"Please be patient - this could take >1 hour.")
 
         QTest.qWait(1000)
 
@@ -300,6 +301,8 @@ class Operator:
 
                 with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'w') as binary_info_output_file:
                     json.dump(changepoint_info_data, binary_info_output_file, indent=4)
+
+            QTest.qWait(2000)
 
             # run command in shell
             subprocess.Popen(args=f'cmd /c "{concatenation_command}"',
