@@ -261,8 +261,8 @@ class Operator:
 
                             one_recording = np.memmap(filename=one_file, mode='r', dtype=np.int16, order='C')
 
-                            self.message_outpu(f"File {pathlib.Path(one_file).name}, recorded with hs #{headstage_sn} & probe #{imec_probe_sn} has total length {one_recording.shape[0]}, or {one_recording.shape[0] // total_num_channels} "
-                                               f"samples on {total_num_channels} channels, totaling {round((one_recording.shape[0] // total_num_channels) / (spike_glx_sr * 60), 2)} minutes of recording.")
+                            self.message_output(f"File {pathlib.Path(one_file).name}, recorded with hs #{headstage_sn} & probe #{imec_probe_sn} has total length {one_recording.shape[0]}, or {one_recording.shape[0] // total_num_channels} "
+                                                f"samples on {total_num_channels} channels, totaling {round((one_recording.shape[0] // total_num_channels) / (spike_glx_sr * 60), 2)} minutes of recording.")
 
                             binary_files_info[binary_file_info_id]['file_duration_samples'] = int(one_recording.shape[0] // total_num_channels)
 
