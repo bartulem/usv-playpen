@@ -10,10 +10,13 @@ Different functions for manipulating files:
 """
 
 from PyQt6.QtTest import QTest
+import configparser
 import glob
 import json
 import librosa
 import os
+import pandas as pd
+import pathlib
 import shutil
 import numpy as np
 import subprocess
@@ -26,7 +29,8 @@ from file_writer import DataWriter
 
 class Operator:
 
-    def __init__(self, root_directory=None, input_parameter_dict=None, message_output=None):
+    def __init__(self, root_directory=None, input_parameter_dict=None,
+                 exp_settings_dict=None, message_output=None):
         if input_parameter_dict is None:
             with open('input_parameters.json', 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['file_manipulation']['Operator']
@@ -39,10 +43,268 @@ class Operator:
         else:
             self.root_directory = root_directory
 
+        if exp_settings_dict is None:
+            self.exp_settings_dict = None
+        else:
+            self.exp_settings_dict = exp_settings_dict
+
         if message_output is None:
             self.message_output = print
         else:
             self.message_output = message_output
+
+    def split_clusters_to_sessions(self):
+        """
+        Description
+        ----------
+        This method converts every spike sample time into seconds,
+        relative to tracking start and splits spikes back into
+        individual sessions.
+
+        NB: If you have recorded multiple sessions in one day,
+        it is sufficient to put only one root directory for that day,
+        e.g., the first one. The script will find EPHYS root directory,
+        and split spikes from all probes  into sessions based on the
+        inputs in the changepoints json file.
+        ----------
+
+        Parameter
+        ---------
+        root_directory : list
+             Directories of recording files of interest;
+        calibrated_sample_rates_file : str
+            Configuration file containing calibrated sampling rates for headstages.
+        kilosort_version : str
+            Kilosort version used for spike sorting.
+        min_num_spikes : int
+            Minimum relevant number of spikes per session.
+
+        Returns
+        -------
+         spike times : np.ndarray
+            Arrays that contain spike times (in seconds and frames);
+            saved as .npy files in a separate directory.
+        """
+
+        self.message_output(f"Splitting clusters to sessions started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+
+        QTest.qWait(1000)
+
+        # read headstage sampling rates
+        calibrated_sr_config = configparser.ConfigParser()
+        calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
+
+        for one_root_dir in self.root_directory:
+            for ephys_dir in glob.glob(pathname=f"{one_root_dir.replace('Data', 'EPHYS')[:-7]}_imec*", recursive=True):
+
+                probe_id = ephys_dir.split('_')[-1]
+
+                self.message_output(f"Working on getting spike times from clusters in: {ephys_dir}, started at {datetime.now()}.")
+
+                # load the changepoint .json file
+                with open(glob.glob(pathname=f'{ephys_dir}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
+                    binary_files_info = json.load(binary_info_input_file)
+
+                # get info about session start
+                se_dict = {}
+                esr_dict = {}
+                root_dict= {}
+                unit_count_dict = {'noise': 0, 'unsorted': 0}
+                for session_key in binary_files_info.keys():
+
+                    unit_count_dict[session_key] = {'good': 0, 'mua': 0}
+
+                    # load info from camera_frame_count_dict
+                    with open(glob.glob(f"{binary_files_info[session_key]['root_directory']}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0], 'r') as frame_count_infile:
+                        esr_dict[session_key] = json.load(frame_count_infile)['median_empirical_camera_sr']
+                        root_dict[session_key] = binary_files_info[session_key]['root_directory']
+
+                    if any([np.isnan(value) for value in binary_files_info[session_key]['tracking_start_end']]):
+                        se_dict[session_key] = binary_files_info[session_key]['session_start_end']
+                    else:
+                        se_dict[session_key] = binary_files_info[session_key]['tracking_start_end']
+
+                    pathlib.Path(f'{root_dict[session_key]}{os.sep}ephys{os.sep}{probe_id}{os.sep}cluster_data').mkdir(parents=True, exist_ok=True)
+
+                # load the Kilosort output files
+                phy_curation_bool = os.path.isfile(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}cluster_info.tsv")
+                spike_clusters = np.load(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}spike_clusters.npy")
+                spike_times = np.load(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}spike_times.npy")
+
+                if phy_curation_bool:
+                    cluster_info = pd.read_csv(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}cluster_info.tsv", sep='\t')
+                else:
+                    self.message_output("Phy2 curation has not been done for this session, no cluster_info file exists.")
+                    continue
+
+                QTest.qWait(1000)
+
+                for idx in range(cluster_info.shape[0]):
+                    if cluster_info.loc[idx, 'group'] == 'good' or cluster_info.loc[idx, 'group'] == 'mua':
+
+                        # collect all spikes for any given cluster
+                        cluster_indices = np.where(spike_clusters == cluster_info.loc[idx, 'cluster_id'])[0]
+                        spike_events = np.take(spike_times, cluster_indices)
+
+                        # filter spikes for each session
+                        for session_key in binary_files_info.keys():
+                            session_spikes_sec = ((spike_events[(spike_events >= se_dict[session_key][0]) & (spike_events < se_dict[session_key][1])] - se_dict[session_key][0]) /
+                                                  float(calibrated_sr_config['CalibratedHeadStages'][binary_files_info[session_key]['headstage_sn']]))
+
+                            session_spikes_fps = np.floor(session_spikes_sec * esr_dict[session_key]).astype(np.int32)
+
+                            session_spikes = np.vstack((session_spikes_sec, session_spikes_fps))
+
+                            # save spiking data
+                            if session_spikes_sec.shape[0] > self.input_parameter_dict['get_spike_times']['min_spike_num']:
+                                cluster_id = f"{probe_id}_cl{cluster_info.loc[idx, 'cluster_id']:04d}_ch{cluster_info.loc[idx, 'ch']:03d}_{cluster_info.loc[idx, 'group']}"
+                                np.save(file=f'{root_dict[session_key]}{os.sep}ephys{os.sep}{probe_id}{os.sep}cluster_data{os.sep}{cluster_id}', arr=session_spikes)
+
+                                unit_count_dict[session_key][cluster_info.loc[idx, 'group']] += 1
+
+                    elif cluster_info.loc[idx, 'group'] == 'noise':
+                        unit_count_dict['noise'] += 1
+
+                    else:
+                        unit_count_dict['unsorted'] += 1
+
+                self.message_output(f"For {ephys_dir}, there were {unit_count_dict['noise']} noise clusters and {unit_count_dict['unsorted']} unsorted clusters.")
+                for session_key in binary_files_info.keys():
+                    self.message_output(f"For {root_dict[session_key]} probe {probe_id}, there were {unit_count_dict[session_key]['good']} good and {unit_count_dict[session_key]['mua']} MUA clusters.")
+
+    def concatenate_binary_files(self):
+        """
+        Description
+        ----------
+        This method concatenates binary files from Neuropixels recordings into one
+        .bin file (can be used from "ap" or "lf" files). It goes through all root
+        directories and concatenates all binary files for any given probe, say "imec0",
+        into one binary file.
+
+        NB: If you have recorded multiple sessions in one day,
+        it is necessary to list all of their root directories
+        to conduct concatenation. The script operates by first
+        locating all available probes in the root directories,
+        and then concatenates all binary files for each probe.
+        ----------
+
+        Parameter
+        ---------
+        root_directory : list
+             Directories of recording files of interest;
+        npx_file_type : str
+            AP or LF binary file; defaults to 'ap'.
+        calibrated_sample_rates_file : str
+            Configuration file containing calibrated sampling rates for headstages.
+
+        Returns
+        -------
+        binary_files_info : .json
+            Dictionary w/ information about changepoints and binary file lengths.
+        concatenated : .bin
+           Concatenated binary file.
+        """
+
+        self.message_output(f"E-phys file concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+
+        QTest.qWait(1000)
+
+        # read headstage sampling rates
+        calibrated_sr_config = configparser.ConfigParser()
+        calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
+
+        # create list of directories to save concatenated files in
+        concat_save_dir = []
+        available_probes = []
+        for ord_idx, one_root_dir in enumerate(self.root_directory):
+            ephys_save_dir_base = one_root_dir.replace('Data', 'EPHYS')[:-7]
+            for one_probe_dir in os.listdir(f'{one_root_dir}{os.sep}ephys'):
+                if one_probe_dir not in available_probes:
+                    available_probes.append(one_probe_dir)
+                if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{one_probe_dir}') and 'imec' in one_probe_dir:
+                    if not any([True if one_probe_dir in one_concat_dir else False for one_concat_dir in concat_save_dir]):
+                        concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir}')
+
+        # create dictionary to store information about binary files and generate stitching command
+        for probe_idx, probe_id in enumerate(available_probes):
+            binary_files_info = {}
+            changepoints = [0]
+            concatenation_command = 'copy /b '
+            for ord_idx, one_root_dir in enumerate(self.root_directory):
+                if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}'):
+                    for one_file, one_meta in zip(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin*")),
+                                                  list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.meta*"))):
+                        if one_file.is_file() and one_meta.is_file():
+
+                            # parse metadata file for channel and headstage information
+                            with open(one_meta) as meta_data_file:
+                                for line in meta_data_file:
+                                    key, value = line.strip().split("=")
+                                    if key == 'acqApLfSy':
+                                        total_num_channels = int(value.split(',')[-1]) + int(value.split(',')[-2])
+                                    elif key == 'imDatHs_sn':
+                                        headstage_sn = value
+                                        spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
+                                    elif key == 'imDatPrb_sn':
+                                        imec_probe_sn = value
+
+                            binary_file_info_id = pathlib.Path(one_file).name.split(os.sep)[-1][:-7]
+                            binary_files_info[binary_file_info_id] = {'session_start_end': [np.nan, np.nan],
+                                                                      'tracking_start_end': [np.nan, np.nan],
+                                                                      'file_duration_samples': np.nan,
+                                                                      'root_directory': one_root_dir,
+                                                                      'total_num_channels': total_num_channels,
+                                                                      'headstage_sn': headstage_sn,
+                                                                      'imec_probe_sn': imec_probe_sn}
+
+                            one_recording = np.memmap(filename=one_file, mode='r', dtype=np.int16, order='C')
+
+                            self.message_outpu(f"File {pathlib.Path(one_file).name}, recorded with hs #{headstage_sn} & probe #{imec_probe_sn} has total length {one_recording.shape[0]}, or {one_recording.shape[0] // total_num_channels} "
+                                               f"samples on {total_num_channels} channels, totaling {round((one_recording.shape[0] // total_num_channels) / (spike_glx_sr * 60), 2)} minutes of recording.")
+
+                            binary_files_info[binary_file_info_id]['file_duration_samples'] = int(one_recording.shape[0] // total_num_channels)
+
+                            if len(changepoints) == 1:
+                                binary_files_info[binary_file_info_id]['session_start_end'][0] = 0
+                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording.shape[0] // total_num_channels)
+                                changepoints.append(int(one_recording.shape[0] // total_num_channels))
+                                concatenation_command += '{} '.format(one_file)
+                            else:
+                                binary_files_info[binary_file_info_id]['session_start_end'][0] = changepoints[-1]
+                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording.shape[0] // total_num_channels) + changepoints[-1]
+                                changepoints.append(int(one_recording.shape[0] // total_num_channels) + changepoints[-1])
+                                concatenation_command += '+ {} '.format(one_file)
+
+            concatenation_command += f'"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.bin"'
+
+            # create save directory if one doesn't exist already
+            pathlib.Path(concat_save_dir[probe_idx]).mkdir(parents=True, exist_ok=True)
+
+            # save changepoint information in JSON file
+            if not os.path.exists(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json'):
+                with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'w') as binary_info_output_file:
+                    json.dump(binary_files_info, binary_info_output_file, indent=4)
+            else:
+                with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'r') as existing_json_file:
+                    changepoint_info_data = json.load(existing_json_file)
+
+                for file_key in binary_files_info.keys():
+                    if file_key not in changepoint_info_data.keys():
+                        changepoint_info_data[file_key] = binary_files_info[file_key]
+                    else:
+                        for component_key in changepoint_info_data[file_key].keys():
+                            if component_key != 'tracking_start_end' and component_key != 'root_directory' and changepoint_info_data[file_key][component_key] != binary_files_info[file_key][component_key]:
+                                changepoint_info_data[file_key][component_key] = binary_files_info[file_key][component_key]
+
+                with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'w') as binary_info_output_file:
+                    json.dump(changepoint_info_data, binary_info_output_file, indent=4)
+
+            # run command in shell
+            subprocess.Popen(args=f'cmd /c "{concatenation_command}"',
+                             shell=True,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT,
+                             cwd=concat_save_dir[probe_idx]).wait()
 
     def multichannel_to_channel_audio(self):
         """
@@ -220,8 +482,8 @@ class Operator:
         ----------
         """
 
-        freq_hp = self.input_parameter_dict['filter_audio_files']['freq_hp']
-        freq_lp = self.input_parameter_dict['filter_audio_files']['freq_lp']
+        freq_lp = self.input_parameter_dict['filter_freq_bounds'][0]
+        freq_hp = self.input_parameter_dict['filter_freq_bounds'][1]
 
         self.message_output(f"Filtering out signal between {freq_lp} and {freq_hp} Hz in audio files started at: "
                             f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")

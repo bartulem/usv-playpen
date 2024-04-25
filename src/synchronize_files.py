@@ -80,7 +80,7 @@ class Synchronizer:
                                '21372315': {'LED_top': [510, 1268], 'LED_middle': [555, 1268], 'LED_bottom': [603, 1266]}}}
 
     def __init__(self, root_directory=None, input_parameter_dict=None,
-                 message_output=None, exp_settings_dict=None,):
+                 message_output=None, exp_settings_dict=None):
         if input_parameter_dict is None:
             with open('input_parameters.json', 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['synchronize_files']['Synchronizer']
@@ -130,8 +130,8 @@ class Synchronizer:
         QTest.qWait(1000)
 
         # read headstage sampling rates
-        config = configparser.ConfigParser()
-        config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
+        calibrated_sr_config = configparser.ConfigParser()
+        calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
 
         # load info from camera_frame_count_dict
         with open(glob.glob(pathname=f'{self.root_directory}{os.sep}**{os.sep}*_camera_frame_count_dict.json', recursive=True)[0], 'r') as frame_count_infile:
@@ -144,7 +144,7 @@ class Synchronizer:
             # parse metadata file for channel and headstage information
             with open(f"{npx_recording[:-3]}meta") as meta_data_file:
                 for line in meta_data_file:
-                    key, value = line.strip().split("=")
+                    key, value = line.strip().split('=')
                     if key == 'acqApLfSy':
                         total_probe_ch = int(value.split(',')[-1]) + int(value.split(',')[-2])
                     elif key == 'imDatHs_sn':
@@ -158,7 +158,7 @@ class Synchronizer:
 
             self.message_output(f"N/V sync for {recording_file_name} with {total_probe_ch} channels, recorded w/ probe #{imec_probe_sn} & headstage #{headstage_sn}.")
 
-            sync_ch_file = npx_recording.replace(recording_file_name, f'{npx_recording.split(os.sep)[-2]}_sync_ch_data')
+            sync_ch_file = f"{os.path.dirname(npx_recording)}{os.sep}{os.path.basename(npx_recording)[:-7]}_sync_ch_data".replace('.', '_')
             if not os.path.isfile(f'{sync_ch_file}.npy'):
 
                 # load the binary file data
@@ -178,7 +178,7 @@ class Synchronizer:
                                                                  total_frame_number=total_frame_number_least)
 
             if (tracking_start, tracking_end) != (None, None):
-                spike_glx_sr = float(config['CalibratedHeadStages'][headstage_sn])
+                spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
                 total_npx_recording_duration = (tracking_end - tracking_start) / spike_glx_sr
 
                 duration_difference = round(number=((total_npx_recording_duration - total_video_time_least) * 1000), ndigits=2)
@@ -200,7 +200,11 @@ class Synchronizer:
                         os.makedirs(root_ephys, exist_ok=True)
                         binary_files_info = {recording_file_name[:-7]: {'session_start_end': [np.nan, np.nan],
                                                                         'tracking_start_end': [np.nan, np.nan],
-                                                                        'file_duration_samples': np.nan}}
+                                                                        'file_duration_samples': np.nan,
+                                                                        'root_directory': self.root_directory,
+                                                                        'total_num_channels': total_probe_ch,
+                                                                        'headstage_sn': headstage_sn,
+                                                                        'imec_probe_sn': imec_probe_sn}}
 
                     binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
 
@@ -416,7 +420,7 @@ class Synchronizer:
 
         # create memmap array to store the data for posterity
         mm_arr = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
-                           dtype=DataLoader(input_parameter_dict={}).known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='w+', shape=(total_frame_number, 3, 3))
+                           dtype=DataLoader(input_parameter_dict={}).known_dtypes['np.uint8'], mode='w+', shape=(total_frame_number, 3, 3))
 
         for fr_idx in range(total_frame_number):
             processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
@@ -447,8 +451,6 @@ class Synchronizer:
                 Max number of pxl away from some loc to search peak intensity; defaults to 10.
             video_extension (str)
                 Video extension; defaults to 'mp4'.
-            mm_dtype (str)
-                Data type foe memmap file; defaults to 'np.uint8'.
             relative_intensity_threshold (int)
                 Relative intensity threshold to categorize important events; defaults to .35.
             millisecond_divergence_tolerance (int / float)
@@ -492,7 +494,7 @@ class Synchronizer:
 
                         # load memmap data
                         leds_array = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
-                                               dtype=DataLoader(input_parameter_dict={}).known_dtypes[self.input_parameter_dict['find_video_sync_trains']['mm_dtype']], mode='r', shape=(total_frame_number, 3, 3))
+                                               dtype=DataLoader(input_parameter_dict={}).known_dtypes['np.uint8'], mode='r', shape=(total_frame_number, 3, 3))
 
                         # take mean across all three (RGB) channels
                         mean_across_rgb = leds_array.mean(axis=-1)

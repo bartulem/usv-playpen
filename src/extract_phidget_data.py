@@ -34,7 +34,7 @@ class Gatherer:
         (2) temperature (degrees Celsius)
         (3) humidity (%)
 
-        NB: Phidgets' sampling rate in ~1 Hz!
+        NB: Phidgets' sampling rate is ~1 Hz!
         ----------
 
         Parameters
@@ -44,8 +44,6 @@ class Gatherer:
                 Root directory for a recording session.
             extra_data_camera (str)
                 Camera subdirectory where phidget data is stored.
-            sorting_key (str)
-                Key used to sort dictionary list; defaults to 'sensor time'.
         ----------
 
         Returns
@@ -77,7 +75,7 @@ class Gatherer:
 
         # sort phidget_data by particular dictionary key
         phidget_data_sorted = sorted(phidget_data,
-                                     key=itemgetter(self.input_parameter_dict['prepare_data_for_analyses']['sorting_key']),
+                                     key=itemgetter('sensor time'),
                                      reverse=False)
 
         # extract data for export

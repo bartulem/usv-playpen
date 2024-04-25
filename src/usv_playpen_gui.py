@@ -147,14 +147,16 @@ class USVPlaypenWindow(QMainWindow):
             'conduct_audio_to_mmap': True,
             'conduct_audio_filtering': True,
             'conduct_hpss': True,
-            'conduct_audio_video_sync': True},
+            'conduct_audio_video_sync': True,
+            'conduct_ephys_video_sync': True,
+            'conduct_ephys_file_chaining': True,
+            'split_cluster_spikes': True},
             'preprocess_data': {
                 'root_directories': []},
             'extract_phidget_data': {
                 'Gatherer': {
                     'prepare_data_for_analyses': {
-                        'extra_data_camera': '22085397',
-                        'sorting_key': 'sensor_time'}}},
+                        'extra_data_camera': '22085397'}}},
             'file_loader': {
                 'DataLoader': {
                     'wave_data_loc': [''],
@@ -163,6 +165,9 @@ class USVPlaypenWindow(QMainWindow):
                         'conditional_arg': []}}},
             'file_manipulation': {
                 'Operator': {
+                    'get_spike_times': {
+                        'min_spike_num': 0,
+                        'kilosort_version': '4'},
                     'concatenate_audio_files': {
                         'audio_format': 'wav',
                         'concat_dirs': ['hpss_filtered']},
@@ -174,8 +179,7 @@ class USVPlaypenWindow(QMainWindow):
                     'filter_audio_files': {
                         'audio_format': 'wav',
                         'filter_dirs': ['hpss'],
-                        'freq_hp': 30000,
-                        'freq_lp': 0},
+                        'filter_freq_bounds': [0, 30000]},
                     'concatenate_video_files': {
                         'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
                         'video_extension': 'mp4',
@@ -220,7 +224,6 @@ class USVPlaypenWindow(QMainWindow):
                         'led_px_version': 'current',
                         'led_px_dev': 10,
                         'video_extension': 'mp4',
-                        'mm_dtype': 'np.uint8',
                         'relative_intensity_threshold': 0.35,
                         'millisecond_divergence_tolerance': 10},
                     'crop_wav_files_to_video': {
@@ -889,94 +892,98 @@ class USVPlaypenWindow(QMainWindow):
         self.phidget_extra_data_camera.setStyleSheet('QLineEdit { width: 108px; }')
         self.phidget_extra_data_camera.move(590, 70)
 
-        phidget_sorting_key_label = QLabel('Phidget sorting key:', self.ProcessSettings)
-        phidget_sorting_key_label.setFont(QFont(self.font_id, 12))
-        phidget_sorting_key_label.move(400, 100)
-        self.phidget_sorting_key = QLineEdit('sensor_time', self.ProcessSettings)
-        self.phidget_sorting_key.setFont(QFont(self.font_id, 10))
-        self.phidget_sorting_key.setStyleSheet('QLineEdit { width: 108px; }')
-        self.phidget_sorting_key.move(590, 100)
-
         a_ch_receiving_input_label = QLabel('Arduino-USGH ch (1-12):', self.ProcessSettings)
         a_ch_receiving_input_label.setFont(QFont(self.font_id, 12))
-        a_ch_receiving_input_label.move(400, 130)
+        a_ch_receiving_input_label.move(400, 100)
         self.a_ch_receiving_input = QLineEdit('2', self.ProcessSettings)
         self.a_ch_receiving_input.setFont(QFont(self.font_id, 10))
         self.a_ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.a_ch_receiving_input.move(590, 130)
+        self.a_ch_receiving_input.move(590, 100)
 
         v_camera_serial_num_label = QLabel('Sync camera serial(s):', self.ProcessSettings)
         v_camera_serial_num_label.setFont(QFont(self.font_id, 12))
-        v_camera_serial_num_label.move(400, 160)
+        v_camera_serial_num_label.move(400, 130)
         self.v_camera_serial_num = QLineEdit('21372315', self.ProcessSettings)
         self.v_camera_serial_num.setFont(QFont(self.font_id, 10))
         self.v_camera_serial_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_camera_serial_num.move(590, 160)
+        self.v_camera_serial_num.move(590, 130)
 
         v_video_extension_label = QLabel('Video file format:', self.ProcessSettings)
         v_video_extension_label.setFont(QFont(self.font_id, 12))
-        v_video_extension_label.move(400, 190)
+        v_video_extension_label.move(400, 160)
         self.v_video_extension = QLineEdit('mp4', self.ProcessSettings)
         self.v_video_extension.setFont(QFont(self.font_id, 10))
         self.v_video_extension.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_video_extension.move(590, 190)
+        self.v_video_extension.move(590, 160)
 
         v_led_px_version_label = QLabel('LED px version:', self.ProcessSettings)
         v_led_px_version_label.setFont(QFont(self.font_id, 12))
-        v_led_px_version_label.move(400, 220)
+        v_led_px_version_label.move(400, 190)
         self.v_led_px_version = QLineEdit('current', self.ProcessSettings)
         self.v_led_px_version.setFont(QFont(self.font_id, 10))
         self.v_led_px_version.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_led_px_version.move(590, 220)
+        self.v_led_px_version.move(590, 190)
 
         v_led_px_dev_label = QLabel('LED deviation (px):', self.ProcessSettings)
         v_led_px_dev_label.setFont(QFont(self.font_id, 12))
-        v_led_px_dev_label.move(400, 250)
+        v_led_px_dev_label.move(400, 220)
         self.v_led_px_dev = QLineEdit('10', self.ProcessSettings)
         self.v_led_px_dev.setFont(QFont(self.font_id, 10))
         self.v_led_px_dev.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_led_px_dev.move(590, 250)
-
-        v_mm_dtype_label = QLabel('MEMMAP dtype:', self.ProcessSettings)
-        v_mm_dtype_label.setFont(QFont(self.font_id, 12))
-        v_mm_dtype_label.move(400, 280)
-        self.v_mm_dtype = QLineEdit('np.uint8', self.ProcessSettings)
-        self.v_mm_dtype.setFont(QFont(self.font_id, 10))
-        self.v_mm_dtype.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_mm_dtype.move(590, 280)
+        self.v_led_px_dev.move(590, 220)
 
         v_relative_intensity_threshold_label = QLabel('Rel intensity threshold:', self.ProcessSettings)
         v_relative_intensity_threshold_label.setFont(QFont(self.font_id, 12))
-        v_relative_intensity_threshold_label.move(400, 310)
+        v_relative_intensity_threshold_label.move(400, 250)
         self.v_relative_intensity_threshold = QLineEdit('0.6', self.ProcessSettings)
         self.v_relative_intensity_threshold.setFont(QFont(self.font_id, 10))
         self.v_relative_intensity_threshold.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_relative_intensity_threshold.move(590, 310)
+        self.v_relative_intensity_threshold.move(590, 250)
 
         v_millisecond_divergence_tolerance_label = QLabel('Divergence tolerance (ms):', self.ProcessSettings)
         v_millisecond_divergence_tolerance_label.setFont(QFont(self.font_id, 12))
-        v_millisecond_divergence_tolerance_label.move(400, 340)
+        v_millisecond_divergence_tolerance_label.move(400, 280)
         self.v_millisecond_divergence_tolerance = QLineEdit('10', self.ProcessSettings)
         self.v_millisecond_divergence_tolerance.setFont(QFont(self.font_id, 10))
         self.v_millisecond_divergence_tolerance.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_millisecond_divergence_tolerance.move(590, 340)
+        self.v_millisecond_divergence_tolerance.move(590, 280)
 
-        ev_sync_label = QLabel('Synchronization between E/V files', self.ProcessSettings)
+        ev_sync_label = QLabel('Neural data processing settings', self.ProcessSettings)
         ev_sync_label.setFont(QFont(self.font_id, 13))
         ev_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
-        ev_sync_label.move(400, 380)
+        ev_sync_label.move(400, 320)
+
+        conduct_ephys_file_chaining_label = QLabel('Conduct e-phys file concat:', self.ProcessSettings)
+        conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
+        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_ephys_file_chaining_label.move(400, 350)
+        self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
+        self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
+        self.conduct_ephys_file_chaining_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conduct_ephys_file_chaining_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_ephys_file_chaining_cb_bool'))
+        self.conduct_ephys_file_chaining_cb.move(590, 350)
 
         conduct_nv_sync_cb_label = QLabel('Conduct E/V sync check:', self.ProcessSettings)
         conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 12))
         conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_nv_sync_cb_label.move(400, 410)
+        conduct_nv_sync_cb_label.move(400, 380)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
         self.conduct_nv_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_nv_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_nv_sync_cb_bool'))
-        self.conduct_nv_sync_cb.move(590, 410)
+        self.conduct_nv_sync_cb.move(590, 380)
 
-        npx_file_type_cb_label = QLabel('E-PHYS file format (ap | lf):', self.ProcessSettings)
+        split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
+        split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 12))
+        split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        split_cluster_spikes_cb_label.move(400, 410)
+        self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
+        self.split_cluster_spikes_cb.addItems(['No', 'Yes'])
+        self.split_cluster_spikes_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.split_cluster_spikes_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='split_cluster_spikes_cb_bool'))
+        self.split_cluster_spikes_cb.move(590, 410)
+
+        npx_file_type_cb_label = QLabel('Rec file format (ap | lf):', self.ProcessSettings)
         npx_file_type_cb_label.setFont(QFont(self.font_id, 12))
         npx_file_type_cb_label.move(400, 440)
         self.npx_file_type_cb = QComboBox(self.ProcessSettings)
@@ -993,130 +1000,139 @@ class USVPlaypenWindow(QMainWindow):
         self.npx_ms_divergence_tolerance.setStyleSheet('QLineEdit { width: 108px; }')
         self.npx_ms_divergence_tolerance.move(590, 470)
 
+        kilosort_version_cb_label = QLabel('Kilosort version:', self.ProcessSettings)
+        kilosort_version_cb_label.setFont(QFont(self.font_id, 12))
+        kilosort_version_cb_label.move(400, 500)
+        self.kilosort_version_cb = QComboBox(self.ProcessSettings)
+        self.kilosort_version_cb.addItems(['4', '3', '2.5', '2'])
+        self.kilosort_version_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.kilosort_version_cb.activated.connect(partial(self._combo_box_kilosort_version, variable_id='kilosort_version'))
+        self.kilosort_version_cb.move(590, 500)
+
+        min_spike_num_label = QLabel('Min num of spikes:', self.ProcessSettings)
+        min_spike_num_label.setFont(QFont(self.font_id, 12))
+        min_spike_num_label.move(400, 530)
+        self.min_spike_num = QLineEdit('0', self.ProcessSettings)
+        self.min_spike_num.setFont(QFont(self.font_id, 10))
+        self.min_spike_num.setStyleSheet('QLineEdit { width: 108px; }')
+        self.min_spike_num.move(590, 530)
+
         hpss_label = QLabel('Harmonic-percussive source separation', self.ProcessSettings)
         hpss_label.setFont(QFont(self.font_id, 13))
         hpss_label.setStyleSheet('QLabel { font-weight: bold;}')
-        hpss_label.move(400, 510)
+        hpss_label.move(400, 570)
 
         conduct_hpss_cb_label = QLabel('Conduct HPSS:', self.ProcessSettings)
         conduct_hpss_cb_label.setFont(QFont(self.font_id, 12))
         conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_hpss_cb_label.move(400, 540)
+        conduct_hpss_cb_label.move(400, 600)
         self.conduct_hpss_cb = QComboBox(self.ProcessSettings)
         self.conduct_hpss_cb.addItems(['No', 'Yes'])
         self.conduct_hpss_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_hpss_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_hpss_cb_bool'))
-        self.conduct_hpss_cb.move(590, 540)
+        self.conduct_hpss_cb.move(590, 600)
 
         stft_label = QLabel('STFT window and hop size:', self.ProcessSettings)
         stft_label.setFont(QFont(self.font_id, 12))
-        stft_label.move(400, 570)
+        stft_label.move(400, 630)
         self.stft_window_hop = QLineEdit('512,128', self.ProcessSettings)
         self.stft_window_hop.setFont(QFont(self.font_id, 10))
         self.stft_window_hop.setStyleSheet('QLineEdit { width: 108px; }')
-        self.stft_window_hop.move(590, 570)
+        self.stft_window_hop.move(590, 630)
 
         hpss_kernel_size_label = QLabel('HPSS kernel size:', self.ProcessSettings)
         hpss_kernel_size_label.setFont(QFont(self.font_id, 12))
-        hpss_kernel_size_label.move(400, 600)
+        hpss_kernel_size_label.move(400, 660)
         self.hpss_kernel_size = QLineEdit('5,60', self.ProcessSettings)
         self.hpss_kernel_size.setFont(QFont(self.font_id, 10))
         self.hpss_kernel_size.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_kernel_size.move(590, 600)
+        self.hpss_kernel_size.move(590, 660)
 
         hpss_power_label = QLabel('HPSS power:', self.ProcessSettings)
         hpss_power_label.setFont(QFont(self.font_id, 12))
-        hpss_power_label.move(400, 630)
+        hpss_power_label.move(400, 690)
         self.hpss_power = QLineEdit('4.0', self.ProcessSettings)
         self.hpss_power.setFont(QFont(self.font_id, 10))
         self.hpss_power.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_power.move(590, 630)
+        self.hpss_power.move(590, 690)
 
         hpss_margin_label = QLabel('HPSS margin:', self.ProcessSettings)
         hpss_margin_label.setFont(QFont(self.font_id, 12))
-        hpss_margin_label.move(400, 660)
+        hpss_margin_label.move(400, 720)
         self.hpss_margin = QLineEdit('4,1', self.ProcessSettings)
         self.hpss_margin.setFont(QFont(self.font_id, 10))
         self.hpss_margin.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_margin.move(590, 660)
+        self.hpss_margin.move(590, 720)
 
         audio_filter_label = QLabel('Band-pass filter audio files', self.ProcessSettings)
         audio_filter_label.setFont(QFont(self.font_id, 13))
         audio_filter_label.setStyleSheet('QLabel { font-weight: bold;}')
-        audio_filter_label.move(400, 700)
+        audio_filter_label.move(400, 760)
 
         filter_audio_cb_label = QLabel('Filter individual audio files:', self.ProcessSettings)
         filter_audio_cb_label.setFont(QFont(self.font_id, 12))
         filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        filter_audio_cb_label.move(400, 730)
+        filter_audio_cb_label.move(400, 790)
         self.filter_audio_cb = QComboBox(self.ProcessSettings)
         self.filter_audio_cb.addItems(['No', 'Yes'])
         self.filter_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.filter_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='filter_audio_cb_bool'))
-        self.filter_audio_cb.move(590, 730)
+        self.filter_audio_cb.move(590, 790)
 
         audio_filter_format_label = QLabel('Audio file format:', self.ProcessSettings)
         audio_filter_format_label.setFont(QFont(self.font_id, 12))
-        audio_filter_format_label.move(400, 760)
+        audio_filter_format_label.move(400, 820)
         self.audio_filter_format = QLineEdit('wav', self.ProcessSettings)
         self.audio_filter_format.setFont(QFont(self.font_id, 10))
         self.audio_filter_format.setStyleSheet('QLineEdit { width: 108px; }')
-        self.audio_filter_format.move(590, 760)
+        self.audio_filter_format.move(590, 820)
 
-        freq_hp_label = QLabel('Top freq cutoff (Hz):', self.ProcessSettings)
-        freq_hp_label.setFont(QFont(self.font_id, 12))
-        freq_hp_label.move(400, 790)
-        self.freq_hp = QLineEdit('30000', self.ProcessSettings)
-        self.freq_hp.setFont(QFont(self.font_id, 10))
-        self.freq_hp.setStyleSheet('QLineEdit { width: 108px; }')
-        self.freq_hp.move(590, 790)
-
-        freq_lp_label = QLabel('Bottom freq cutoff (Hz):', self.ProcessSettings)
-        freq_lp_label.setFont(QFont(self.font_id, 12))
-        freq_lp_label.move(400, 820)
-        self.freq_lp = QLineEdit('0', self.ProcessSettings)
-        self.freq_lp.setFont(QFont(self.font_id, 10))
-        self.freq_lp.setStyleSheet('QLineEdit { width: 108px; }')
-        self.freq_lp.move(590, 820)
+        filter_freq_bounds_label = QLabel('Filter freq bounds (Hz):', self.ProcessSettings)
+        filter_freq_bounds_label.setFont(QFont(self.font_id, 12))
+        filter_freq_bounds_label.move(400, 850)
+        self.filter_freq_bounds = QLineEdit('0, 30000', self.ProcessSettings)
+        self.filter_freq_bounds.setFont(QFont(self.font_id, 10))
+        self.filter_freq_bounds.setStyleSheet('QLineEdit { width: 108px; }')
+        self.filter_freq_bounds.move(590, 850)
 
         filter_dirs_label = QLabel('Folder(s) to filter:', self.ProcessSettings)
         filter_dirs_label.setFont(QFont(self.font_id, 12))
-        filter_dirs_label.move(400, 850)
+        filter_dirs_label.move(400, 880)
         self.filter_dirs = QLineEdit('hpss', self.ProcessSettings)
         self.filter_dirs.setFont(QFont(self.font_id, 10))
         self.filter_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.filter_dirs.move(590, 850)
+        self.filter_dirs.move(590, 880)
 
         conc_audio_label = QLabel('Concatenate audio files', self.ProcessSettings)
         conc_audio_label.setFont(QFont(self.font_id, 13))
         conc_audio_label.setStyleSheet('QLabel { font-weight: bold;}')
-        conc_audio_label.move(400, 890)
+        conc_audio_label.move(400, 920)
 
         conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
         conc_audio_cb_label.setFont(QFont(self.font_id, 12))
         conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conc_audio_cb_label.move(400, 920)
+        conc_audio_cb_label.move(400, 950)
         self.conc_audio_cb = QComboBox(self.ProcessSettings)
         self.conc_audio_cb.addItems(['No', 'Yes'])
         self.conc_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conc_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conc_audio_cb_bool'))
-        self.conc_audio_cb.move(590, 920)
+        self.conc_audio_cb.move(590, 950)
 
         audio_format_label = QLabel('Audio file format:', self.ProcessSettings)
         audio_format_label.setFont(QFont(self.font_id, 12))
-        audio_format_label.move(400, 950)
+        audio_format_label.move(400, 980)
         self.audio_format = QLineEdit('wav', self.ProcessSettings)
         self.audio_format.setFont(QFont(self.font_id, 10))
         self.audio_format.setStyleSheet('QLineEdit { width: 108px; }')
-        self.audio_format.move(590, 950)
+        self.audio_format.move(590, 980)
 
         concat_dirs_label = QLabel('Concatenation folder(s):', self.ProcessSettings)
         concat_dirs_label.setFont(QFont(self.font_id, 12))
-        concat_dirs_label.move(400, 980)
+        concat_dirs_label.move(400, 1010)
         self.concat_dirs = QLineEdit('hpss_filtered', self.ProcessSettings)
         self.concat_dirs.setFont(QFont(self.font_id, 10))
         self.concat_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.concat_dirs.move(590, 980)
+        self.concat_dirs.move(590, 1010)
 
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
                                      button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
@@ -1274,12 +1290,12 @@ class USVPlaypenWindow(QMainWindow):
 
     def _save_process_labels_func(self):
         qlabel_strings = ['concatenate_video_ext', 'concatenated_video_name', 'conversion_target_file', 'conversion_vid_ext',
-                          'constant_rate_factor', 'encoding_preset', 'ch_receiving_input', 'audio_filter_format', 'freq_hp',
-                          'freq_lp', 'a_ch_receiving_input', 'pc_usage_process', 'v_millisecond_divergence_tolerance',
-                          'v_relative_intensity_threshold', 'v_mm_dtype', 'v_video_extension', 'v_led_px_dev', 'v_led_px_version',
-                          'phidget_extra_data_camera', 'phidget_sorting_key', 'audio_format', 'npx_ms_divergence_tolerance', 'hpss_power']
+                          'constant_rate_factor', 'encoding_preset', 'ch_receiving_input', 'audio_filter_format',
+                          'a_ch_receiving_input', 'pc_usage_process', 'v_millisecond_divergence_tolerance', 'min_spike_num',
+                          'v_relative_intensity_threshold', 'v_video_extension', 'v_led_px_dev', 'v_led_px_version',
+                          'phidget_extra_data_camera', 'audio_format', 'npx_ms_divergence_tolerance', 'hpss_power']
         lists_in_string = ['concatenate_cam_serial_num', 'change_fps_cam_serial_num', 'v_camera_serial_num', 'filter_dirs', 'concat_dirs',
-                           'stft_window_hop', 'hpss_kernel_size', 'hpss_margin']
+                           'stft_window_hop', 'hpss_kernel_size', 'hpss_margin', 'filter_freq_bounds']
 
         for one_elem_str in qlabel_strings:
             if type(self.__dict__[one_elem_str]) != str:
@@ -1310,6 +1326,9 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_file_type'] = str(getattr(self, 'npx_file_type'))
         self.npx_file_type = 'ap'
 
+        self.processing_input_dict['file_manipulation']['Operator']['get_spike_times']['kilosort_version'] = str(getattr(self, 'kilosort_version'))
+        self.kilosort_version = '4'
+
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['video_extension'] = self.concatenate_video_ext
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['concatenated_video_name'] = self.concatenated_video_name
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
@@ -1319,22 +1338,20 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_audio_files']['audio_format'] = self.audio_format
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['audio_format'] = self.audio_filter_format
-        self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_hp'] = int(ast.literal_eval(self.freq_hp))
-        self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['freq_lp'] = int(ast.literal_eval(self.freq_lp))
+        self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(ast.literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(stft_value)) for stft_value in self.stft_window_hop]
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple([int(ast.literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['hpss_power'] = float(ast.literal_eval(self.hpss_power))
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple([int(ast.literal_eval(margin_value)) for margin_value in self.hpss_margin])
+        self.processing_input_dict['file_manipulation']['Operator']['get_spike_times']['min_spike_num'] = int(ast.literal_eval(self.min_spike_num))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_version'] = self.v_led_px_version
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_dev'] = int(ast.literal_eval(self.v_led_px_dev))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['video_extension'] = self.v_video_extension
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['mm_dtype'] = self.v_mm_dtype
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['relative_intensity_threshold'] = float(ast.literal_eval(self.v_relative_intensity_threshold))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['millisecond_divergence_tolerance'] = int(ast.literal_eval(self.v_millisecond_divergence_tolerance))
-        self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
-        self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['sorting_key'] = self.phidget_sorting_key
         self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_ms_divergence_tolerance'] = float(ast.literal_eval(self.npx_ms_divergence_tolerance))
+        self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
 
         self.processing_input_dict['preprocess_data']['root_directories'] = self.processing_dir_edit
         self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['camera_serial_num'] = self.concatenate_cam_serial_num
@@ -1364,6 +1381,10 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_sync_cb_bool = True
         self.processing_input_dict['processing_booleans']['conduct_ephys_video_sync'] = self.conduct_nv_sync_cb_bool
         self.conduct_nv_sync_cb_bool = False
+        self.processing_input_dict['processing_booleans']['conduct_ephys_file_chaining'] = self.conduct_ephys_file_chaining_cb_bool
+        self.conduct_ephys_file_chaining_cb_bool = False
+        self.processing_input_dict['processing_booleans']['split_cluster_spikes'] = self.split_cluster_spikes_cb_bool
+        self.split_cluster_spikes_cb_bool = False
 
     def _save_record_one_labels_func(self):
         if type(self.recording_files_destination_linux) != str:
@@ -1434,6 +1455,16 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 self.expected_cameras = self.expected_cameras.text()
                 self.settings_dict['video'][variable] = self.expected_cameras.split(',')
+
+    def _combo_box_kilosort_version(self, index, variable_id=None):
+        if index == 0:
+            self.__dict__[variable_id] = '4'
+        elif index == 1:
+            self.__dict__[variable_id] = '3'
+        elif index == 2:
+            self.__dict__[variable_id] = '2.5'
+        else:
+            self.__dict__[variable_id] = '2'
 
     def _combo_box_prior_codec(self, index, variable_id=None):
         if index == 0:
@@ -1730,7 +1761,8 @@ def main():
                            'conduct_audio_cb_bool': True, 'conduct_tracking_calibration_cb_bool': False, 'modify_audio_config': False, 'conduct_video_concatenation_cb_bool': True,
                            'conduct_video_fps_change_cb_bool': True, 'delete_con_file_cb_bool': True, 'conduct_multichannel_conversion_cb_bool': True, 'crop_wav_cam_cb_bool': True,
                            'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False, 'conduct_sync_cb_bool': True, 'conduct_nv_sync_cb_bool': False, 'recording_codec': 'hq',
-                           'npx_file_type': 'ap', 'device_receiving_input': 'm', 'conduct_hpss_cb_bool': False}
+                           'npx_file_type': 'ap', 'device_receiving_input': 'm', 'kilosort_version': '4', 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
+                           'split_cluster_spikes_cb_bool': False}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 
