@@ -331,6 +331,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_audio_label = QLabel('Conduct AUDIO recording:', self.Record)
         conduct_audio_label.setFont(QFont(self.font_id, 12))
+        conduct_audio_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_audio_label.move(5, 260)
         self.conduct_audio_cb = QComboBox(self.Record)
         self.conduct_audio_cb.addItems(['Yes', 'No'])
@@ -340,6 +341,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_tracking_cal_label = QLabel('Conduct VIDEO calibration:', self.Record)
         conduct_tracking_cal_label.setFont(QFont(self.font_id, 12))
+        conduct_tracking_cal_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_tracking_cal_label.move(5, 290)
         self.conduct_tracking_calibration_cb = QComboBox(self.Record)
         self.conduct_tracking_calibration_cb.addItems(['No', 'Yes'])
@@ -477,6 +479,7 @@ class USVPlaypenWindow(QMainWindow):
 
         monitor_rec_label = QLabel('Monitor recording:', self.VideoSettings)
         monitor_rec_label.setFont(QFont(self.font_id, 12))
+        monitor_rec_label.setStyleSheet('QLabel { color: #F58025; }')
         monitor_rec_label.move(5, 130)
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
         self.monitor_recording_cb.addItems(['Yes', 'No'])
@@ -486,6 +489,7 @@ class USVPlaypenWindow(QMainWindow):
 
         monitor_cam_label = QLabel('Monitor ONE camera:', self.VideoSettings)
         monitor_cam_label.setFont(QFont(self.font_id, 12))
+        monitor_cam_label.setStyleSheet('QLabel { color: #F58025; }')
         monitor_cam_label.move(5, 160)
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
         self.monitor_specific_camera_cb.addItems(['No', 'Yes'])
@@ -503,6 +507,7 @@ class USVPlaypenWindow(QMainWindow):
 
         delete_post_copy_label = QLabel('Delete post copy:', self.VideoSettings)
         delete_post_copy_label.setFont(QFont(self.font_id, 12))
+        delete_post_copy_label.setStyleSheet('QLabel { color: #F58025; }')
         delete_post_copy_label.move(5, 220)
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
         self.delete_post_copy_cb.addItems(['Yes', 'No'])
@@ -561,7 +566,7 @@ class USVPlaypenWindow(QMainWindow):
         self.mice_num.setStyleSheet('QLineEdit { width: 300px; }')
         self.mice_num.move(620, 70)
 
-        cage_ID_m1_label = QLabel('Cage ID #1:', self.VideoSettings)
+        cage_ID_m1_label = QLabel('#1 Cage ID:', self.VideoSettings)
         cage_ID_m1_label.setFont(QFont(self.font_id, 12))
         cage_ID_m1_label.move(515, 100)
         self.cage_ID_m1 = QLineEdit('', self.VideoSettings)
@@ -569,7 +574,7 @@ class USVPlaypenWindow(QMainWindow):
         self.cage_ID_m1.setStyleSheet('QLineEdit { width: 300px; }')
         self.cage_ID_m1.move(620, 100)
 
-        mouse_ID_m1_label = QLabel('Mouse ID #1:', self.VideoSettings)
+        mouse_ID_m1_label = QLabel('#1 Mouse ID:', self.VideoSettings)
         mouse_ID_m1_label.setFont(QFont(self.font_id, 12))
         mouse_ID_m1_label.move(515, 130)
         self.mouse_ID_m1 = QLineEdit('', self.VideoSettings)
@@ -577,7 +582,7 @@ class USVPlaypenWindow(QMainWindow):
         self.mouse_ID_m1.setStyleSheet('QLineEdit { width: 300px; }')
         self.mouse_ID_m1.move(620, 130)
 
-        genotype_m1_label = QLabel('Genotype #1:', self.VideoSettings)
+        genotype_m1_label = QLabel('#1 Genotype:', self.VideoSettings)
         genotype_m1_label.setFont(QFont(self.font_id, 12))
         genotype_m1_label.move(515, 160)
         self.genotype_m1 = QLineEdit('CD1-WT', self.VideoSettings)
@@ -585,7 +590,7 @@ class USVPlaypenWindow(QMainWindow):
         self.genotype_m1.setStyleSheet('QLineEdit { width: 300px; }')
         self.genotype_m1.move(620, 160)
 
-        sex_m1_label = QLabel('Sex #1:', self.VideoSettings)
+        sex_m1_label = QLabel('#1 Sex:', self.VideoSettings)
         sex_m1_label.setFont(QFont(self.font_id, 12))
         sex_m1_label.move(515, 190)
         self.sex_m1 = QLineEdit('', self.VideoSettings)
@@ -593,7 +598,7 @@ class USVPlaypenWindow(QMainWindow):
         self.sex_m1.setStyleSheet('QLineEdit { width: 300px; }')
         self.sex_m1.move(620, 190)
 
-        DOB_m1_label = QLabel('DOB #1:', self.VideoSettings)
+        DOB_m1_label = QLabel('#1 DOB:', self.VideoSettings)
         DOB_m1_label.setFont(QFont(self.font_id, 12))
         DOB_m1_label.move(515, 220)
         self.DOB_m1 = QLineEdit('', self.VideoSettings)
@@ -601,7 +606,7 @@ class USVPlaypenWindow(QMainWindow):
         self.DOB_m1.setStyleSheet('QLineEdit { width: 300px; }')
         self.DOB_m1.move(620, 220)
 
-        housing_m1_label = QLabel('Housing #1:', self.VideoSettings)
+        housing_m1_label = QLabel('#1 Housing:', self.VideoSettings)
         housing_m1_label.setFont(QFont(self.font_id, 12))
         housing_m1_label.move(515, 250)
         self.housing_m1 = QLineEdit('', self.VideoSettings)
@@ -609,7 +614,7 @@ class USVPlaypenWindow(QMainWindow):
         self.housing_m1.setStyleSheet('QLineEdit { width: 300px; }')
         self.housing_m1.move(620, 250)
 
-        cage_ID_m2_label = QLabel('Cage ID #2:', self.VideoSettings)
+        cage_ID_m2_label = QLabel('#2 Cage ID:', self.VideoSettings)
         cage_ID_m2_label.setFont(QFont(self.font_id, 12))
         cage_ID_m2_label.move(515, 280)
         self.cage_ID_m2 = QLineEdit('', self.VideoSettings)
@@ -617,7 +622,7 @@ class USVPlaypenWindow(QMainWindow):
         self.cage_ID_m2.setStyleSheet('QLineEdit { width: 300px; }')
         self.cage_ID_m2.move(620, 280)
 
-        mouse_ID_m2_label = QLabel('Mouse ID #2:', self.VideoSettings)
+        mouse_ID_m2_label = QLabel('#2 Mouse ID:', self.VideoSettings)
         mouse_ID_m2_label.setFont(QFont(self.font_id, 12))
         mouse_ID_m2_label.move(515, 310)
         self.mouse_ID_m2 = QLineEdit('', self.VideoSettings)
@@ -625,7 +630,7 @@ class USVPlaypenWindow(QMainWindow):
         self.mouse_ID_m2.setStyleSheet('QLineEdit { width: 300px; }')
         self.mouse_ID_m2.move(620, 310)
 
-        genotype_m2_label = QLabel('Genotype #2:', self.VideoSettings)
+        genotype_m2_label = QLabel('#2 Genotype:', self.VideoSettings)
         genotype_m2_label.setFont(QFont(self.font_id, 12))
         genotype_m2_label.move(515, 340)
         self.genotype_m2 = QLineEdit('CD1-WT', self.VideoSettings)
@@ -633,7 +638,7 @@ class USVPlaypenWindow(QMainWindow):
         self.genotype_m2.setStyleSheet('QLineEdit { width: 300px; }')
         self.genotype_m2.move(620, 340)
 
-        sex_m2_label = QLabel('Sex #2:', self.VideoSettings)
+        sex_m2_label = QLabel('#2 Sex:', self.VideoSettings)
         sex_m2_label.setFont(QFont(self.font_id, 12))
         sex_m2_label.move(515, 370)
         self.sex_m2 = QLineEdit('', self.VideoSettings)
@@ -641,7 +646,7 @@ class USVPlaypenWindow(QMainWindow):
         self.sex_m2.setStyleSheet('QLineEdit { width: 300px; }')
         self.sex_m2.move(620, 370)
 
-        DOB_m2_label = QLabel('DOB #2:', self.VideoSettings)
+        DOB_m2_label = QLabel('#2 DOB:', self.VideoSettings)
         DOB_m2_label.setFont(QFont(self.font_id, 12))
         DOB_m2_label.move(515, 400)
         self.DOB_m2 = QLineEdit('', self.VideoSettings)
@@ -649,7 +654,7 @@ class USVPlaypenWindow(QMainWindow):
         self.DOB_m2.setStyleSheet('QLineEdit { width: 300px; }')
         self.DOB_m2.move(620, 400)
 
-        housing_m2_label = QLabel('Housing #2:', self.VideoSettings)
+        housing_m2_label = QLabel('#2 Housing:', self.VideoSettings)
         housing_m2_label.setFont(QFont(self.font_id, 12))
         housing_m2_label.move(515, 430)
         self.housing_m2 = QLineEdit('', self.VideoSettings)
