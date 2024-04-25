@@ -34,8 +34,10 @@ class Operator:
         if input_parameter_dict is None:
             with open('input_parameters.json', 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['file_manipulation']['Operator']
+                self.input_parameter_dict_2 = json.load(json_file)['synchronize_files']['Synchronizer']
         else:
             self.input_parameter_dict = input_parameter_dict['file_manipulation']['Operator']
+            self.input_parameter_dict_2 = input_parameter_dict['synchronize_files']['Synchronizer']
 
         if root_directory is None:
             with open('input_parameters.json', 'r') as json_file:
@@ -232,8 +234,8 @@ class Operator:
             concatenation_command = 'copy /b '
             for ord_idx, one_root_dir in enumerate(self.root_directory):
                 if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}'):
-                    for one_file, one_meta in zip(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin*")),
-                                                  list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.meta*"))):
+                    for one_file, one_meta in zip(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']}.bin*")),
+                                                  list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']}.meta*"))):
                         if one_file.is_file() and one_meta.is_file():
 
                             # parse metadata file for channel and headstage information
