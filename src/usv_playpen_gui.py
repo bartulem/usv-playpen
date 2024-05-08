@@ -1062,7 +1062,7 @@ class USVPlaypenWindow(QMainWindow):
         hpss_label.setStyleSheet('QLabel { font-weight: bold;}')
         hpss_label.move(400, 570)
 
-        conduct_hpss_cb_label = QLabel('Conduct HPSS:', self.ProcessSettings)
+        conduct_hpss_cb_label = QLabel('Conduct HPSS (serial):', self.ProcessSettings)
         conduct_hpss_cb_label.setFont(QFont(self.font_id, 12))
         conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_hpss_cb_label.move(400, 600)
@@ -1414,7 +1414,7 @@ class USVPlaypenWindow(QMainWindow):
         usv_detection_label.setStyleSheet('QLabel { font-weight: bold;}')
         usv_detection_label.move(740, 800)
 
-        das_inference_cb_label = QLabel('Conduct DAS inference:', self.ProcessSettings)
+        das_inference_cb_label = QLabel('Conduct inference (serial):', self.ProcessSettings)
         das_inference_cb_label.setFont(QFont(self.font_id, 12))
         das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; }')
         das_inference_cb_label.move(740, 830)
