@@ -7,11 +7,13 @@ import json
 import os
 import traceback
 from datetime import datetime
+from anipose_operations import ConvertTo3D
 from extract_phidget_data import Gatherer
 from file_manipulation import Operator
 from preprocessing_plot import SummaryPlotter
 from send_email import Messenger
 from synchronize_files import Synchronizer
+from usv_inference import FindMouseVocalizations
 
 
 class Stylist:
@@ -171,6 +173,37 @@ class Stylist:
                         Operator(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,
                                  message_output=self.message_output).concatenate_audio_files()
+
+                    # # # convert .slp to .h5 files
+                    if self.input_parameter_dict['processing_booleans']['sleap_h5_conversion']:
+                        ConvertTo3D(root_directory=one_directory,
+                                    input_parameter_dict=self.input_parameter_dict,
+                                    message_output=self.message_output).sleap_file_conversion()
+
+                    # # # conduct Anipose calibration
+                    if self.input_parameter_dict['processing_booleans']['anipose_calibration']:
+                        ConvertTo3D(root_directory=one_directory,
+                                    input_parameter_dict=self.input_parameter_dict,
+                                    message_output=self.message_output).conduct_anipose_calibration()
+
+                    # # # conduct Anipose triangulation
+                    if self.input_parameter_dict['processing_booleans']['anipose_triangulation']:
+                        ConvertTo3D(root_directory=one_directory,
+                                    input_parameter_dict=self.input_parameter_dict,
+                                    message_output=self.message_output).conduct_anipose_triangulation()
+
+                    # # # conduct coordinate transformation of Anipose data
+                    if self.input_parameter_dict['processing_booleans']['anipose_trm']:
+                        ConvertTo3D(root_directory=one_directory,
+                                    input_parameter_dict=self.input_parameter_dict,
+                                    message_output=self.message_output,
+                                    exp_settings_dict=self.exp_settings_dict).translate_rotate_metric()
+
+                    # # # conduct DAS inference on audio data
+                    if self.input_parameter_dict['processing_booleans']['das_infer']:
+                        FindMouseVocalizations(root_directory=one_directory,
+                                               input_parameter_dict=self.input_parameter_dict,
+                                               message_output=self.message_output).das_command_line_inference()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")

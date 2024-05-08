@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.3.0',
+    version='0.3.1',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -36,11 +36,12 @@ setup(
                       'matplotlib==3.6.0',
                       'numpy==1.23.0',
                       'numba==0.56.4',
-                      'opencv-contrib-python==4.7.0.68',
+                      'opencv-contrib-python==4.6.0.66',
                       'PIMS==0.6.1',
                       'PyQt6==6.6.1',
                       'quantumrandom==1.9.0',
                       'scipy==1.10.0',
+                      'sleap-anipose==0.1.7',
                       'scikit-learn==1.2.1',
                       'soundfile==0.12.1',
                       'toml==0.10.2']

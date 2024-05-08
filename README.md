@@ -1,4 +1,4 @@
-# usv-playpen v0.3.0
+# usv-playpen v0.3.1
 
 <br>
 <div align="center">
@@ -23,6 +23,8 @@ GUI to facilitate conducting experiments with e-phys (Neuropixels), multichannel
 * [git](https://git-scm.com/download/)  (and add it to PATH)
 * [ffmpeg](https://ffmpeg.org/download.html) (and add it to PATH)
 * [sox](https://sourceforge.net/projects/sox/)  (and add it to PATH)
+* [sleap](https://sleap.ai/) 
+* [das](https://janclemenslab.org/das/)
 
 ## Installation and updating
 
@@ -61,8 +63,8 @@ python -m unittest -v _tests.processing_tests
 * behavioral_experiments.ExperimentController --> run behavioral experiments with Loopbio/Avisoft software
 * extract_phidget_data.Gatherer --> extract data measured by illumination and temperature/humidity phidgets
 * file_manipulation.Operator --> (1) break from multi to single channel, band-pass filter and temporally concatenate Avisoft-generated audio (_e.g._, WAV) files,
-                                 (2) concatenate Motif-generated video (_e.g._, mp4) files and rectify their frame rates (fps)
-* synchronize_files.Synchronizer --> cut WAV file to video file (_e.g._, mp4) length and perform a/v synchronization check
+                                 (2) concatenate Motif-generated video (_e.g._, mp4) files and re-encode them to correct sampling rate (fps)
+* synchronize_files.Synchronizer --> cut WAV file to video file (_e.g._, mp4) length and perform A/V synchronization check
 * preprocessing_plots.SummaryPlotter --> generate summary figure for data preprocessing (_i.e._, metadata and sync quality)
 
 ## Usage
@@ -81,4 +83,4 @@ Run the GUI.
 python usv_playpen_gui.py
 ```
 
-Developed and tested in PyCharm Pro 2024.1, on macOS Sonoma 14.4 / Ubuntu 22.04 LTS/ Windows 10.
+Developed and tested in PyCharm Pro 2024.1.1, on macOS Sonoma 14.4 / Ubuntu 22.04 LTS/ Windows 10.

@@ -3,15 +3,20 @@ QWidget {
     color: #000000;
 }
 QProgressBar {
-    font-weight: bold;
     padding: 0px;
+    border: 0px;
+    border-radius: 1px;
+    text-align: left;
+    margin-left: 35px;
 }
 
 QProgressBar::chunk {
-    background-color: #F58025;
-    text-align: center;
+    background-color: #7c807e;
+    text-align: left;
     width: 10px;
+    border: 0px;
 }
+
 QPushButton{
     border: 1px solid #6C6C6C;
     border-radius: 3px;

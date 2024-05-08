@@ -29,6 +29,11 @@ from file_writer import DataWriter
 
 class Operator:
 
+    if os.name == 'nt':
+        command_addition = 'cmd /c '
+    else:
+        command_addition = ''
+
     def __init__(self, root_directory=None, input_parameter_dict=None,
                  exp_settings_dict=None, message_output=None):
         if input_parameter_dict is None:
@@ -305,7 +310,7 @@ class Operator:
             QTest.qWait(2000)
 
             # run command in shell
-            subprocess.Popen(args=f'cmd /c "{concatenation_command}"',
+            subprocess.Popen(args=f"{self.command_addition}{concatenation_command}",
                              shell=True,
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.STDOUT,
@@ -362,7 +367,7 @@ class Operator:
         separation_subprocesses = []
         for device_id in ['m', 's']:
             for ch in range(1, 13):
-                mc_to_sc_subp = subprocess.Popen(f'''cmd /c "sox {device_id}_*_ch{ch:02d}.wav -q {self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav"''',
+                mc_to_sc_subp = subprocess.Popen(f'''{self.command_addition}sox {device_id}_*_ch{ch:02d}.wav -q {self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav''',
                                                  cwd=f"{self.root_directory}{os.sep}audio{os.sep}temp")
 
                 separation_subprocesses.append(mc_to_sc_subp)
@@ -507,7 +512,7 @@ class Operator:
 
                 if len(all_audio_files) > 0:
                     for one_file in all_audio_files:
-                        filter_subp = subprocess.Popen(f'''cmd /c "sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}"''',
+                        filter_subp = subprocess.Popen(f'''{self.command_addition}sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
                                                        cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}")
 
                         filter_subprocesses.append(filter_subp)
@@ -623,7 +628,7 @@ class Operator:
                             concat_txt_file.write(f"file '{file_path.split(os.sep)[-1]}'\n")
 
                     # concatenate videos
-                    one_subprocess = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -f concat -i file_concatenation_list_{sub_directory.split('.')[-1]}.txt -c copy {vid_name}.{vid_extension}"''',
+                    one_subprocess = subprocess.Popen(f'''{self.command_addition}ffmpeg -loglevel warning -f concat -i file_concatenation_list_{sub_directory.split('.')[-1]}.txt -c copy {vid_name}.{vid_extension}''',
                                                       stdout=subprocess.PIPE,
                                                       cwd=current_working_dir)
 
@@ -735,7 +740,7 @@ class Operator:
                     new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
                 # change video sampling rate
-                fps_subp = subprocess.Popen(f'''cmd /c "ffmpeg -loglevel warning -y -r {esr} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}"''',
+                fps_subp = subprocess.Popen(f'''{self.command_addition}ffmpeg -loglevel warning -y -r {esr} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}''',
                                             stdout=subprocess.PIPE,
                                             cwd=current_working_dir)
 
