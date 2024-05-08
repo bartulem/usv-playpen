@@ -59,8 +59,6 @@ class FindMouseVocalizations:
                 Directory containing DAS model files.
             model_name_base (str)
                 The base of the DAS model name.
-            save_directory (str)
-                Subdirectory (relative to base) to save files into; defaults to 'das_annotations'.
             output_file_type (str)
                 Type of annotation output file; defaults to 'csv'.
             segment_threshold (int / float)
@@ -78,11 +76,10 @@ class FindMouseVocalizations:
         ----------
         """
 
-        self.message_output(f"DAS inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"DAS inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}. Please be patient, this can take >5 min/file.")
         QTest.qWait(1000)
 
         das_conda_name = self.input_parameter_dict['das_command_line_inference']['das_conda_env_name']
-        save_file_base = f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered"
         model_base = f"{self.input_parameter_dict['das_command_line_inference']['model_directory']}{os.sep}{self.input_parameter_dict['das_command_line_inference']['model_name_base']}"
         thresh = self.input_parameter_dict['das_command_line_inference']['segment_tmf'][0]
         min_len = self.input_parameter_dict['das_command_line_inference']['segment_tmf'][1]
@@ -97,9 +94,9 @@ class FindMouseVocalizations:
         # run inference
         for one_file in glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered", "*.wav*")):
             self.message_output(f"Running DAS inference on: {os.path.basename(one_file)}")
-            QTest.qWait(1000)
+            QTest.qWait(2000)
 
-            inference_subp = subprocess.Popen(f'''{command_addition}conda activate {das_conda_name} && das predict {save_file_base} {model_base} --segment-thres {thresh} --segment-minlen {min_len} --segment-fillgap {fill_gap} --save-format {save_format}"''',
+            inference_subp = subprocess.Popen(f'''{command_addition}conda activate {das_conda_name} && das predict {one_file} {model_base} --segment-thres {thresh} --segment-minlen {min_len} --segment-fillgap {fill_gap} --save-format {save_format}"''',
                                               stdout=subprocess.DEVNULL,
                                               stderr=subprocess.STDOUT,
                                               cwd=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered")
