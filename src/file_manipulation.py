@@ -94,7 +94,6 @@ class Operator:
         """
 
         self.message_output(f"Splitting clusters to sessions started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-
         QTest.qWait(1000)
 
         # read headstage sampling rates
@@ -214,7 +213,6 @@ class Operator:
 
         self.message_output(f"E-phys file concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}. "
                             f"Please be patient - this could take >1 hour.")
-
         QTest.qWait(1000)
 
         # read headstage sampling rates
@@ -340,11 +338,9 @@ class Operator:
         """
 
         self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-
         QTest.qWait(1000)
 
-        if not os.path.isdir(f"{self.root_directory}{os.sep}audio{os.sep}temp"):
-            os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}temp")
+        pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}temp").mkdir(parents=True, exist_ok=True)
 
         mc_audio_files = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}original_mc"],
                                                           'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
@@ -409,12 +405,13 @@ class Operator:
         """
 
         self.message_output(f"Harmonic-percussive source separation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-
         QTest.qWait(1000)
 
         wav_file_lst = glob.glob(f'{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav')
 
         for one_wav_file in wav_file_lst:
+            self.message_output(f"Working on file: {one_wav_file}")
+            QTest.qWait(1000)
 
             # read the audio file (use Scipy, not Librosa because Librosa performs scaling)
             sampling_rate_audio, audio_data = wavfile.read(one_wav_file)
@@ -444,9 +441,8 @@ class Operator:
             harmonic_data_clipped = np.clip(harmonic_data, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
 
             # save the harmonic component as a new WAV file
-            new_dir = f'{self.root_directory}{os.sep}audio{os.sep}hpss'
-            if not os.path.exists(new_dir):
-                os.makedirs(new_dir)
+            new_dir = f"{self.root_directory}{os.sep}audio{os.sep}hpss"
+            pathlib.Path(new_dir).mkdir(parents=True, exist_ok=True)
 
             raw_file_name = os.path.basename(one_wav_file)
             wavfile.write(filename=f'{new_dir}{os.sep}{raw_file_name[:-4]}_hpss.wav',
@@ -492,30 +488,27 @@ class Operator:
         ----------
         """
 
-        freq_lp = self.input_parameter_dict['filter_freq_bounds'][0]
-        freq_hp = self.input_parameter_dict['filter_freq_bounds'][1]
+        freq_lp = self.input_parameter_dict['filter_audio_files']['filter_freq_bounds'][0]
+        freq_hp = self.input_parameter_dict['filter_audio_files']['filter_freq_bounds'][1]
 
         self.message_output(f"Filtering out signal between {freq_lp} and {freq_hp} Hz in audio files started at: "
                             f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-
         QTest.qWait(1000)
 
         for one_dir in self.input_parameter_dict['filter_audio_files']['filter_dirs']:
 
-            if not os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered"):
-                os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered")
+            pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered").mkdir(parents=True, exist_ok=True)
 
             filter_subprocesses = []
-            if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}"):
-                all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}{os.sep}"
-                                            f"*.{self.input_parameter_dict['filter_audio_files']['audio_format']}")
+            all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}{os.sep}"
+                                        f"*.{self.input_parameter_dict['filter_audio_files']['audio_format']}")
 
-                if len(all_audio_files) > 0:
-                    for one_file in all_audio_files:
-                        filter_subp = subprocess.Popen(f'''{self.command_addition}sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
-                                                       cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}")
+            if len(all_audio_files) > 0:
+                for one_file in all_audio_files:
+                    filter_subp = subprocess.Popen(f'''{self.command_addition}sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
+                                                   cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}")
 
-                        filter_subprocesses.append(filter_subp)
+                    filter_subprocesses.append(filter_subp)
 
             while True:
                 status_poll = [query_subp.poll() for query_subp in filter_subprocesses]
@@ -546,7 +539,6 @@ class Operator:
         """
 
         self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-
         QTest.qWait(1000)
 
         for audio_file_type in self.input_parameter_dict['concatenate_audio_files']['concat_dirs']:
@@ -759,8 +751,7 @@ class Operator:
                     and '.' in sub_directory
                     and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']):
 
-                if not os.path.exists(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images"):
-                    os.makedirs(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images")
+                pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images").mkdir(parents=True, exist_ok=True)
 
                 current_working_dir = f"{self.root_directory}{os.sep}video"
                 if 'calibration' not in sub_directory:
