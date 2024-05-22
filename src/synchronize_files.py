@@ -11,6 +11,7 @@ import glob
 import json
 import operator
 import os
+import pathlib
 import pims
 import shutil
 import numpy as np
@@ -197,7 +198,7 @@ class Synchronizer:
                         with open(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
                     else:
-                        os.makedirs(root_ephys, exist_ok=True)
+                        pathlib.Path(root_ephys).mkdir(parents=True, exist_ok=True)
                         binary_files_info = {recording_file_name[:-7]: {'session_start_end': [np.nan, np.nan],
                                                                         'tracking_start_end': [np.nan, np.nan],
                                                                         'file_duration_samples': np.nan,
@@ -719,10 +720,8 @@ class Synchronizer:
 
             # create new directory for cropped files and HPSS files
             new_directory_cropped_files = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"
-            if not os.path.isdir(new_directory_cropped_files):
-                os.makedirs(new_directory_cropped_files)
-            if not os.path.isdir(f"{self.root_directory}{os.sep}audio{os.sep}hpss"):
-                os.makedirs(f"{self.root_directory}{os.sep}audio{os.sep}hpss")
+            pathlib.Path(new_directory_cropped_files).mkdir(parents=True, exist_ok=True)
+            pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}hpss").mkdir(parents=True, exist_ok=True)
 
             # write to file
             DataWriter(wav_data=resized_wav_file,

@@ -13,7 +13,7 @@ def generate_truly_random_seed(input_parameter_dict=None):
     ----------
     This method generates a truly random seed. The process is based on the
     ANU Quantum Random Number Generator (see: https://qrng.anu.edu.au/),
-    generated in real-time in the lab by measuring the quantum fluctuations
+    generated in real-time in the lab by measuring quantum fluctuations
     of the vacuum.
     ----------
 

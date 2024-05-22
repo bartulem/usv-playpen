@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.1'
+app_name = 'USV Playpen v0.3.2'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -1777,7 +1777,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['save_mouse_data_bool'] = self.save_mouse_data_cb_bool
         self.save_mouse_data_cb_bool = True
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['delete_original_h5'] = self.delete_original_h5_cb_bool
-        self.delete_original_h5_cb_bool = False
+        self.delete_original_h5_cb_bool = True
         self.processing_input_dict['processing_booleans']['das_infer'] = self.das_inference_cb_bool
         self.das_inference_cb_bool = False
 
@@ -2211,7 +2211,7 @@ def main():
                            'npx_file_type': 'ap', 'device_receiving_input': 'm', 'kilosort_version': '4', 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
                            'split_cluster_spikes_cb_bool': False, 'anipose_calibration_cb_bool': False, 'sleap_file_conversion_cb_bool': False, 'board_provided_cb_bool': False,
                            'anipose_triangulation_cb_bool': False, 'triangulate_arena_points_cb_bool': False, 'display_progress_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
-                           'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': False, 'das_inference_cb_bool': False}
+                           'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

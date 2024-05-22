@@ -72,7 +72,8 @@ class FindMouseVocalizations:
         Returns
         ----------
         .csv annotation files
-            CSV files w/ onsets and offsets of all detected USV segments.
+            CSV files w/ onsets and offsets of all detected USV segments,
+            shape: (N_USV, VOC_TYPE, START_SEC, END_SEC).
         ----------
         """
 

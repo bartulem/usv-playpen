@@ -63,6 +63,27 @@ class Messenger:
             return config['email']['email_address'], config['email']['email_password']
 
     def send_message(self, subject, message):
+        """
+        Description
+        ----------
+        This method sends e-mails about 165B PC usage.
+        ----------
+
+        Parameters
+        ----------
+        receivers
+            List of e-mail addresses to notify.
+        subject
+            E-mail subject field.
+        message
+            Text to send.
+        ----------
+
+        Returns
+        ----------
+        ----------
+        """
+
         if len(self.receivers) > 0:
             try:
                 email_address, email_password = self.get_email_params()

@@ -286,7 +286,8 @@ class ConvertTo3D:
         Returns
         ----------
         points3d (h5 file)
-            3D triangulated point h5 file.
+            3D triangulated point h5 file,
+            shape: (N_FRAMES, N_ANIMALS, N_NODES, N_DIMENSIONS).
         ----------
         """
 
@@ -354,7 +355,8 @@ class ConvertTo3D:
         Returns
         ----------
         translated_rotated_metric (h5 file)
-            3D translated rotated and metric point h5 file.
+            3D translated rotated and metric point h5 file,
+            shape: (N_FRAMES, N_ANIMALS, N_NODES, N_DIMENSIONS).
         ----------
         """
 

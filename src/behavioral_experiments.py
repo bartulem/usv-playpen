@@ -350,6 +350,11 @@ class ExperimentController:
 
         Returns
         ----------
+        Directory structure w/ "audio", "sync" and "video" subdirectories.
+        The "audio" subdirectory contains "original" and "original_mc" subdirectories,
+        the "sync" subdirectory contains .txt files (serial monitor output),
+        and the "video" subdirectory contains individual camera video files (.mp4),
+        each in its own subdirectory.
         ----------
         """
 
