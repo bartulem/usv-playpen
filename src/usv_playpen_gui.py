@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.2'
+app_name = 'USV Playpen v0.3.3'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -153,7 +153,7 @@ class USVPlaypenWindow(QMainWindow):
             'anipose_operations': {
                 'ConvertTo3D': {
                     'sleap_file_conversion': {
-                        'sleap_conda_env_name': 'sleap1.3.1'},
+                        'sleap_conda_env_name': 'sleap1.3.3'},
                     'conduct_anipose_calibration': {
                         'board_provided_bool': False,
                         'board_xy': [8, 11],
@@ -1194,7 +1194,7 @@ class USVPlaypenWindow(QMainWindow):
         sleap_conda_label = QLabel('SLEAP conda env name:', self.ProcessSettings)
         sleap_conda_label.setFont(QFont(self.font_id, 12))
         sleap_conda_label.move(740, 70)
-        self.sleap_conda = QLineEdit('sleap1.3.1', self.ProcessSettings)
+        self.sleap_conda = QLineEdit('sleap1.3.3', self.ProcessSettings)
         self.sleap_conda.setFont(QFont(self.font_id, 10))
         self.sleap_conda.setStyleSheet('QLineEdit { width: 108px; }')
         self.sleap_conda.move(940, 70)

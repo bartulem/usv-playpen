@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.3.2',
+    version='0.3.3',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -31,11 +31,12 @@ setup(
     },
     license='MIT',
     install_requires=['av==10.0.0',
+                      'h5py==3.11.0',
                       'imgstore',
                       'librosa==0.9.2',
                       'matplotlib==3.6.0',
-                      'numpy==1.23.0',
-                      'numba==0.56.4',
+                      'numpy==1.24.4',
+                      'numba==0.58.1',
                       'opencv-contrib-python==4.6.0.66',
                       'PIMS==0.6.1',
                       'PyQt6==6.7.0',

@@ -299,7 +299,7 @@ class ConvertTo3D:
         if not self.input_parameter_dict['conduct_anipose_triangulation']['triangulate_arena_points_bool']:
 
             if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
-                with open(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}video", "*_camera_frame_count_dict.json*"), recursive=True)[0], 'r') as frame_count_infile:
+                with open(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}video", "*_camera_frame_count_dict.json*"))[0], 'r') as frame_count_infile:
                     camera_frame_count_dict = json.load(frame_count_infile)
                     self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, int(camera_frame_count_dict['total_frame_number_least'])]
 
