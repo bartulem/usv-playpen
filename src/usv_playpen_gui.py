@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.3'
+app_name = 'USV Playpen v0.3.4'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
@@ -720,7 +720,7 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit.setFixedSize(465, 500)
         self.txt_edit.setReadOnly(True)
 
-        self._save_modified_values_to_toml()
+        self._save_modified_values_to_toml(run_exp_bool=True, message_func=self._message)
 
         exp_settings_dict_final = toml.load(f"{self.settings_dict['general']['config_settings_directory']}{os.sep}behavioral_experiments_settings.toml")
         self.run_exp = ExperimentController(message_output=self._message,
@@ -1482,6 +1482,8 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.setFixedSize(805, 1040)
         self.txt_edit_process.setReadOnly(True)
 
+        self._save_modified_values_to_toml(run_exp_bool=False, message_func=self._process_message)
+
         exp_settings_dict_final = toml.load(f"{self.processing_input_dict['send_email']['Messenger']['toml_file_loc']}{os.sep}behavioral_experiments_settings.toml")
 
         self.run_processing = Stylist(message_output=self._process_message,
@@ -1492,134 +1494,135 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_process(seq=1, class_option=self.ConductProcess,
                                      button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
 
-    def _save_modified_values_to_toml(self):
+    def _save_modified_values_to_toml(self, run_exp_bool=True, message_func=None):
         self.exp_settings_dict = toml.load(f"{self.settings_dict['general']['config_settings_directory']}{os.sep}behavioral_experiments_settings.toml")
-
-        audio_config_temp = configparser.ConfigParser()
-        audio_config_temp.read(f"{self.settings_dict['general']['config_settings_directory']}"
-                               f"{os.sep}avisoft_config.ini")
-
-        if audio_config_temp['Configuration']['basedirectory'] != self.settings_dict['general']['avisoft_basedirectory'] \
-                or audio_config_temp['Configuration']['configfilename'] != f"{self.settings_dict['general']['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini":
-            self.modify_audio_config = True
 
         if self.exp_settings_dict['config_settings_directory'] != self.settings_dict['general']['config_settings_directory']:
             self.exp_settings_dict['config_settings_directory'] = self.settings_dict['general']['config_settings_directory']
 
-        if self.exp_settings_dict['avisoft_recorder_exe'] != self.settings_dict['general']['avisoft_recorder_exe']:
-            self.exp_settings_dict['avisoft_recorder_exe'] = self.settings_dict['general']['avisoft_recorder_exe']
+        if run_exp_bool:
+            audio_config_temp = configparser.ConfigParser()
+            audio_config_temp.read(f"{self.settings_dict['general']['config_settings_directory']}"
+                                   f"{os.sep}avisoft_config.ini")
 
-        if self.exp_settings_dict['avisoft_basedirectory'] != self.settings_dict['general']['avisoft_basedirectory']:
-            self.exp_settings_dict['avisoft_basedirectory'] = self.settings_dict['general']['avisoft_basedirectory']
-            self.modify_audio_config = True
-
-        if self.exp_settings_dict['coolterm_basedirectory'] != self.settings_dict['general']['coolterm_basedirectory']:
-            self.exp_settings_dict['coolterm_basedirectory'] = self.settings_dict['general']['coolterm_basedirectory']
-
-        if self.exp_settings_dict['recording_files_destination_linux'] != self.settings_dict['general']['recording_files_destination_linux']:
-            self.exp_settings_dict['recording_files_destination_linux'] = self.settings_dict['general']['recording_files_destination_linux']
-
-        if self.exp_settings_dict['recording_files_destination_win'] != self.settings_dict['general']['recording_files_destination_win']:
-            self.exp_settings_dict['recording_files_destination_win'] = self.settings_dict['general']['recording_files_destination_win']
-
-        if self.exp_settings_dict['conduct_tracking_calibration'] != self.settings_dict['general']['conduct_tracking_calibration']:
-            self.exp_settings_dict['conduct_tracking_calibration'] = self.settings_dict['general']['conduct_tracking_calibration']
-
-        if self.exp_settings_dict['calibration_duration'] != ast.literal_eval(self.settings_dict['general']['calibration_duration']):
-            self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.settings_dict['general']['calibration_duration'])
-
-        if self.exp_settings_dict['conduct_audio_recording'] != self.settings_dict['general']['conduct_audio_recording']:
-            self.exp_settings_dict['conduct_audio_recording'] = self.settings_dict['general']['conduct_audio_recording']
-
-        if self.exp_settings_dict['video_session_duration'] != ast.literal_eval(self.settings_dict['general']['video_session_duration']):
-            self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.settings_dict['general']['video_session_duration'])
-
-        if self.settings_dict['general']['conduct_audio_recording']:
-            self.experiment_time_sec += ((ast.literal_eval(self.settings_dict['general']['video_session_duration']) + 0.36) * 60)
-        else:
-            self.experiment_time_sec += ((ast.literal_eval(self.settings_dict['general']['video_session_duration']) + 0.26) * 60)
-
-        for audio_key in self.settings_dict['audio'].keys():
-            if audio_key in self.exp_settings_dict['audio'].keys():
-                if audio_key != 'used_mics':
-                    if self.exp_settings_dict['audio'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                        self.exp_settings_dict['audio'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
-                        self.modify_audio_config = True
-                else:
-                    used_mics_temp = [int(mic) for mic in self.settings_dict['audio'][audio_key].split(',')]
-                    if self.exp_settings_dict['audio'][audio_key] != used_mics_temp:
-                        self.exp_settings_dict['audio'][audio_key] = used_mics_temp
-                        self.modify_audio_config = True
-
-            elif audio_key in self.exp_settings_dict['audio']['general'].keys() and \
-                    self.exp_settings_dict['audio']['general'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                self.exp_settings_dict['audio']['general'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+            if audio_config_temp['Configuration']['basedirectory'] != self.settings_dict['general']['avisoft_basedirectory'] \
+                    or audio_config_temp['Configuration']['configfilename'] != f"{self.settings_dict['general']['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini":
                 self.modify_audio_config = True
 
-            elif audio_key in self.exp_settings_dict['audio']['screen_position'].keys() and \
-                    self.exp_settings_dict['audio']['screen_position'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                self.exp_settings_dict['audio']['screen_position'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+            if self.exp_settings_dict['avisoft_recorder_exe'] != self.settings_dict['general']['avisoft_recorder_exe']:
+                self.exp_settings_dict['avisoft_recorder_exe'] = self.settings_dict['general']['avisoft_recorder_exe']
+
+            if self.exp_settings_dict['avisoft_basedirectory'] != self.settings_dict['general']['avisoft_basedirectory']:
+                self.exp_settings_dict['avisoft_basedirectory'] = self.settings_dict['general']['avisoft_basedirectory']
                 self.modify_audio_config = True
 
-            elif audio_key in self.exp_settings_dict['audio']['devices'].keys() and \
-                    self.exp_settings_dict['audio']['devices'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                self.exp_settings_dict['audio']['devices'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
-                self.modify_audio_config = True
+            if self.exp_settings_dict['coolterm_basedirectory'] != self.settings_dict['general']['coolterm_basedirectory']:
+                self.exp_settings_dict['coolterm_basedirectory'] = self.settings_dict['general']['coolterm_basedirectory']
 
-            elif audio_key in self.exp_settings_dict['audio']['mics_config'].keys():
-                if audio_key != 'ditctime':
-                    if self.exp_settings_dict['audio']['mics_config'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                        self.exp_settings_dict['audio']['mics_config'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
-                else:
-                    if self.exp_settings_dict['audio']['mics_config'][audio_key] != self.settings_dict['audio'][audio_key]:
-                        self.exp_settings_dict['audio']['mics_config'][audio_key] = self.settings_dict['audio'][audio_key]
-                        self.modify_audio_config = True
+            if self.exp_settings_dict['recording_files_destination_linux'] != self.settings_dict['general']['recording_files_destination_linux']:
+                self.exp_settings_dict['recording_files_destination_linux'] = self.settings_dict['general']['recording_files_destination_linux']
 
-            elif audio_key in self.exp_settings_dict['audio']['monitor'].keys() and \
-                    self.exp_settings_dict['audio']['monitor'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                self.exp_settings_dict['audio']['monitor'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
-                self.modify_audio_config = True
+            if self.exp_settings_dict['recording_files_destination_win'] != self.settings_dict['general']['recording_files_destination_win']:
+                self.exp_settings_dict['recording_files_destination_win'] = self.settings_dict['general']['recording_files_destination_win']
 
-            elif audio_key in self.exp_settings_dict['audio']['call'].keys() and \
-                    self.exp_settings_dict['audio']['call'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                self.exp_settings_dict['audio']['call'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
-                self.modify_audio_config = True
+            if self.exp_settings_dict['conduct_tracking_calibration'] != self.settings_dict['general']['conduct_tracking_calibration']:
+                self.exp_settings_dict['conduct_tracking_calibration'] = self.settings_dict['general']['conduct_tracking_calibration']
 
-        audio_config = configparser.ConfigParser()
-        audio_config.read(f"{self.settings_dict['general']['config_settings_directory']}"
-                          f"{os.sep}avisoft_config.ini")
-        if float(audio_config['Configuration']['timer']) != (float(self.settings_dict['general']['video_session_duration']) + .36) * 60:
-            self.modify_audio_config = True
+            if self.exp_settings_dict['calibration_duration'] != ast.literal_eval(self.settings_dict['general']['calibration_duration']):
+                self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.settings_dict['general']['calibration_duration'])
 
-        if self.exp_settings_dict['modify_audio_config_file'] != self.modify_audio_config:
-            self.exp_settings_dict['modify_audio_config_file'] = self.modify_audio_config
+            if self.exp_settings_dict['conduct_audio_recording'] != self.settings_dict['general']['conduct_audio_recording']:
+                self.exp_settings_dict['conduct_audio_recording'] = self.settings_dict['general']['conduct_audio_recording']
 
-        for video_key in self.settings_dict['video'].keys():
-            if video_key in self.exp_settings_dict['video']['general'].keys():
-                if video_key in ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial', 'monitor_recording',
-                                 'monitor_specific_camera', 'delete_post_copy']:
-                    if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
-                        self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
-                else:
-                    if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
-                        self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
-            elif video_key in self.exp_settings_dict['video']['metadata'].keys():
-                self.exp_settings_dict['video']['metadata'][video_key] = self.settings_dict['video'][video_key]
+            if self.exp_settings_dict['video_session_duration'] != ast.literal_eval(self.settings_dict['general']['video_session_duration']):
+                self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.settings_dict['general']['video_session_duration'])
+
+            if self.settings_dict['general']['conduct_audio_recording']:
+                self.experiment_time_sec += ((ast.literal_eval(self.settings_dict['general']['video_session_duration']) + 0.36) * 60)
             else:
-                for camera_id in ['21372316', '21372315', '21369048', '22085397', '21241563']:
-                    if camera_id in video_key:
-                        if 'gain' in video_key:
-                            if self.exp_settings_dict['video']['cameras_config'][camera_id]['gain'] != self.settings_dict['video'][f'gain_{camera_id}']:
-                                self.exp_settings_dict['video']['cameras_config'][camera_id]['gain'] = self.settings_dict['video'][f'gain_{camera_id}']
-                        else:
-                            if self.exp_settings_dict['video']['cameras_config'][camera_id]['exposure_time'] != self.settings_dict['video'][f'exposure_time_{camera_id}']:
-                                self.exp_settings_dict['video']['cameras_config'][camera_id]['exposure_time'] = self.settings_dict['video'][f'exposure_time_{camera_id}']
+                self.experiment_time_sec += ((ast.literal_eval(self.settings_dict['general']['video_session_duration']) + 0.26) * 60)
+
+            for audio_key in self.settings_dict['audio'].keys():
+                if audio_key in self.exp_settings_dict['audio'].keys():
+                    if audio_key != 'used_mics':
+                        if self.exp_settings_dict['audio'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                            self.exp_settings_dict['audio'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+                            self.modify_audio_config = True
+                    else:
+                        used_mics_temp = [int(mic) for mic in self.settings_dict['audio'][audio_key].split(',')]
+                        if self.exp_settings_dict['audio'][audio_key] != used_mics_temp:
+                            self.exp_settings_dict['audio'][audio_key] = used_mics_temp
+                            self.modify_audio_config = True
+
+                elif audio_key in self.exp_settings_dict['audio']['general'].keys() and \
+                        self.exp_settings_dict['audio']['general'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                    self.exp_settings_dict['audio']['general'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+                    self.modify_audio_config = True
+
+                elif audio_key in self.exp_settings_dict['audio']['screen_position'].keys() and \
+                        self.exp_settings_dict['audio']['screen_position'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                    self.exp_settings_dict['audio']['screen_position'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+                    self.modify_audio_config = True
+
+                elif audio_key in self.exp_settings_dict['audio']['devices'].keys() and \
+                        self.exp_settings_dict['audio']['devices'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                    self.exp_settings_dict['audio']['devices'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+                    self.modify_audio_config = True
+
+                elif audio_key in self.exp_settings_dict['audio']['mics_config'].keys():
+                    if audio_key != 'ditctime':
+                        if self.exp_settings_dict['audio']['mics_config'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                            self.exp_settings_dict['audio']['mics_config'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+                    else:
+                        if self.exp_settings_dict['audio']['mics_config'][audio_key] != self.settings_dict['audio'][audio_key]:
+                            self.exp_settings_dict['audio']['mics_config'][audio_key] = self.settings_dict['audio'][audio_key]
+                            self.modify_audio_config = True
+
+                elif audio_key in self.exp_settings_dict['audio']['monitor'].keys() and \
+                        self.exp_settings_dict['audio']['monitor'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                    self.exp_settings_dict['audio']['monitor'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+                    self.modify_audio_config = True
+
+                elif audio_key in self.exp_settings_dict['audio']['call'].keys() and \
+                        self.exp_settings_dict['audio']['call'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                    self.exp_settings_dict['audio']['call'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
+                    self.modify_audio_config = True
+
+            audio_config = configparser.ConfigParser()
+            audio_config.read(f"{self.settings_dict['general']['config_settings_directory']}"
+                              f"{os.sep}avisoft_config.ini")
+            if float(audio_config['Configuration']['timer']) != (float(self.settings_dict['general']['video_session_duration']) + .36) * 60:
+                self.modify_audio_config = True
+
+            if self.exp_settings_dict['modify_audio_config_file'] != self.modify_audio_config:
+                self.exp_settings_dict['modify_audio_config_file'] = self.modify_audio_config
+
+            for video_key in self.settings_dict['video'].keys():
+                if video_key in self.exp_settings_dict['video']['general'].keys():
+                    if video_key in ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial', 'monitor_recording',
+                                     'monitor_specific_camera', 'delete_post_copy']:
+                        if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
+                            self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
+                    else:
+                        if self.exp_settings_dict['video']['general'][video_key] != self.settings_dict['video'][video_key]:
+                            self.exp_settings_dict['video']['general'][video_key] = self.settings_dict['video'][video_key]
+                elif video_key in self.exp_settings_dict['video']['metadata'].keys():
+                    self.exp_settings_dict['video']['metadata'][video_key] = self.settings_dict['video'][video_key]
+                else:
+                    for camera_id in ['21372316', '21372315', '21369048', '22085397', '21241563']:
+                        if camera_id in video_key:
+                            if 'gain' in video_key:
+                                if self.exp_settings_dict['video']['cameras_config'][camera_id]['gain'] != self.settings_dict['video'][f'gain_{camera_id}']:
+                                    self.exp_settings_dict['video']['cameras_config'][camera_id]['gain'] = self.settings_dict['video'][f'gain_{camera_id}']
+                            else:
+                                if self.exp_settings_dict['video']['cameras_config'][camera_id]['exposure_time'] != self.settings_dict['video'][f'exposure_time_{camera_id}']:
+                                    self.exp_settings_dict['video']['cameras_config'][camera_id]['exposure_time'] = self.settings_dict['video'][f'exposure_time_{camera_id}']
 
         with open(f"{self.settings_dict['general']['config_settings_directory']}{os.sep}behavioral_experiments_settings.toml", 'w') as toml_file:
             toml.dump(self.exp_settings_dict, toml_file)
 
-        self._message(f"Updating the configuration .toml file completed at: "
-                      f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
+        message_func(f"Updating the configuration .toml file completed at: "
+                     f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
     def _save_process_labels_func(self):
         qlabel_strings = ['concatenate_video_ext', 'concatenated_video_name', 'conversion_target_file', 'conversion_vid_ext',
@@ -2061,6 +2064,7 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Calibrate'].setEnabled(False)
 
     def _open_settings_dialog(self):
+        # TODO: check whether this does what it is supposed to, doesn't seem to change directories
         settings_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select settings directory',
