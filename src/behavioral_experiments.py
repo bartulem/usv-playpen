@@ -404,7 +404,8 @@ class ExperimentController:
             # run command to start audio recording and keep executing the rest of the script
             if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
                 self.avisoft_recording = subprocess.Popen(args=f'''cmd /c ""rec_usgh.exe" /CFG=avisoft_config.ini /AUT"''',
-                                                          stdout=subprocess.PIPE, cwd=self.exp_settings_dict['avisoft_recorder_exe'])
+                                                          stdout=subprocess.PIPE,
+                                                          cwd=self.exp_settings_dict['avisoft_recorder_exe'])
                 self.message_output(f"Recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration'] + .36} minute(s). Please be patient.")
 
                 # pause for N seconds

@@ -181,8 +181,10 @@ class ConvertTo3D:
 
         if os.name == 'nt':
             command_addition = 'cmd /c '
+            shell_usage_bool = False
         else:
             command_addition = ''
+            shell_usage_bool = True
 
         conversion_subprocesses = []
         for cam_directory in os.listdir(self.session_root_joint_date_dir):
@@ -192,7 +194,8 @@ class ConvertTo3D:
                         conversion_subp = subprocess.Popen(f'''{command_addition}conda activate {sleap_version} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"''',
                                                            stdout=subprocess.DEVNULL,
                                                            stderr=subprocess.STDOUT,
-                                                           cwd=os.path.join(self.session_root_joint_date_dir, cam_directory))
+                                                           cwd=os.path.join(self.session_root_joint_date_dir, cam_directory),
+                                                           shell=shell_usage_bool)
                         conversion_subprocesses.append(conversion_subp)
 
         while True:
