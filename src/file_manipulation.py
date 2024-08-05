@@ -25,10 +25,10 @@ from imgstore import new_for_filename
 from scipy.io import wavfile
 from file_loader import DataLoader
 from file_writer import DataWriter
+from os_utils import configure_path
 
 
 class Operator:
-
     if os.name == 'nt':
         command_addition = 'cmd /c '
         shell_usage_bool = False
@@ -113,10 +113,13 @@ class Operator:
                 with open(glob.glob(pathname=f'{ephys_dir}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
                     binary_files_info = json.load(binary_info_input_file)
 
+                    for session_key in binary_files_info.keys():
+                        binary_files_info[session_key]['root_directory'] = configure_path(pa=binary_files_info[session_key]['root_directory'])
+
                 # get info about session start
                 se_dict = {}
                 esr_dict = {}
-                root_dict= {}
+                root_dict = {}
                 unit_count_dict = {'noise': 0, 'unsorted': 0}
                 for session_key in binary_files_info.keys():
 
@@ -159,7 +162,7 @@ class Operator:
                             session_spikes_sec = ((spike_events[(spike_events >= se_dict[session_key][0]) & (spike_events < se_dict[session_key][1])] - se_dict[session_key][0]) /
                                                   float(calibrated_sr_config['CalibratedHeadStages'][binary_files_info[session_key]['headstage_sn']]))
 
-                            session_spikes_fps = np.floor(session_spikes_sec * esr_dict[session_key]).astype(np.int32)
+                            session_spikes_fps = np.floor(session_spikes_sec * esr_dict[session_key], dtype='int32')
 
                             session_spikes = np.vstack((session_spikes_sec, session_spikes_fps))
 
@@ -233,6 +236,7 @@ class Operator:
                     if not any([True if one_probe_dir in one_concat_dir else False for one_concat_dir in concat_save_dir]):
                         concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir}')
 
+        npx_file_type = self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']
         # create dictionary to store information about binary files and generate stitching command
         for probe_idx, probe_id in enumerate(available_probes):
             binary_files_info = {}
@@ -240,8 +244,8 @@ class Operator:
             concatenation_command = 'copy /b '
             for ord_idx, one_root_dir in enumerate(self.root_directory):
                 if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}'):
-                    for one_file, one_meta in zip(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']}.bin*")),
-                                                  list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']}.meta*"))):
+                    for one_file, one_meta in zip(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.bin*")),
+                                                  list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.meta*"))):
                         if one_file.is_file() and one_meta.is_file():
 
                             # parse metadata file for channel and headstage information
@@ -265,7 +269,7 @@ class Operator:
                                                                       'headstage_sn': headstage_sn,
                                                                       'imec_probe_sn': imec_probe_sn}
 
-                            one_recording = np.memmap(filename=one_file, mode='r', dtype=np.int16, order='C')
+                            one_recording = np.memmap(filename=one_file, mode='r', dtype='int16', order='C')
 
                             self.message_output(f"File {pathlib.Path(one_file).name}, recorded with hs #{headstage_sn} & probe #{imec_probe_sn} has total length {one_recording.shape[0]}, or {one_recording.shape[0] // total_num_channels} "
                                                 f"samples on {total_num_channels} channels, totaling {round((one_recording.shape[0] // total_num_channels) / (spike_glx_sr * 60), 2)} minutes of recording.")
@@ -283,7 +287,7 @@ class Operator:
                                 changepoints.append(int(one_recording.shape[0] // total_num_channels) + changepoints[-1])
                                 concatenation_command += '+ {} '.format(one_file)
 
-            concatenation_command += f'"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.bin"'
+            concatenation_command += f'"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.bin"'
 
             # create save directory if one doesn't exist already
             pathlib.Path(concat_save_dir[probe_idx]).mkdir(parents=True, exist_ok=True)
@@ -420,7 +424,7 @@ class Operator:
             sampling_rate_audio, audio_data = wavfile.read(one_wav_file)
 
             # convert to float32 because librosa.stft() requires float32
-            audio_data = audio_data.astype(np.float32)
+            audio_data = np.array(audio_data, dtype='float32')
 
             # perform Short-Time Fourier Transform (STFT) on the audio data
             spectrogram_data = librosa.stft(y=audio_data,
@@ -440,8 +444,12 @@ class Operator:
                                           win_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][0],
                                           hop_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][1])
 
-            # ensure the float values are within the range of 16-bit integers. Clip values outside the range to the minimum and maximum representable values.
-            harmonic_data_clipped = np.clip(harmonic_data, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+            # ensure the float values are within the range of 16-bit integers
+            # clip values outside the range to the minimum and maximum representable values
+            harmonic_data_clipped = np.clip(a=harmonic_data,
+                                            a_min=-32768,
+                                            a_max=32767,
+                                            dtype='int16')
 
             # save the harmonic component as a new WAV file
             new_dir = f"{self.root_directory}{os.sep}audio{os.sep}hpss"
@@ -642,7 +650,6 @@ class Operator:
         for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
             if 'calibration' not in sub_directory \
                     and sub_directory.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['camera_serial_num']:
-
                 current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
 
                 os.remove(f"{current_working_dir}{os.sep}file_concatenation_list_{sub_directory.split('.')[-1]}.txt")

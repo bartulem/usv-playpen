@@ -75,7 +75,7 @@ class Gatherer:
 
         # sort phidget_data by particular dictionary key
         phidget_data_sorted = sorted(phidget_data,
-                                     key=itemgetter('sensor time'),
+                                     key=itemgetter('sensor_time'),
                                      reverse=False)
 
         # extract data for export

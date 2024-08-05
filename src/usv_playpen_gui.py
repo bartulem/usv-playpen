@@ -49,12 +49,12 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.5'
+app_name = 'USV Playpen v0.3.6'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
-avisoft_base_dir_global = 'C:\\Users\\bmimica\\Documents\\Avisoft Bioacoustics\\'
+avisoft_base_dir_global = 'C:\\Users\\bartulem\\Documents\\Avisoft Bioacoustics\\'
 coolterm_base_dir_global = 'D:\\CoolTermWin'
 destination_linux_global = '/home/labadmin/falkner/Bartul/Data,/home/labadmin/murthy/Bartul/Data'
 destination_win_global = 'F:\\Bartul\\Data,M:\\Bartul\\Data'

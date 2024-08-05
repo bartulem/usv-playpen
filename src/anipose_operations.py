@@ -371,7 +371,7 @@ class ConvertTo3D:
         arena_data_original_h5_dir = os.path.dirname(arena_data_original_h5)
         arena_data_original_h5_file = os.path.basename(arena_data_original_h5)
         with h5py.File(arena_data_original_h5, 'r') as h5_file_arena:
-            arena_data = np.array(h5_file_arena['tracks']).astype(np.float64)
+            arena_data = np.array(h5_file_arena['tracks'], dtype='float64')
 
         arena_nodes = extract_skeleton_nodes(skeleton_loc=f"{self.exp_settings_dict['config_settings_directory']}{os.sep}playpen_skeleton.json",
                                              skeleton_arena_bool=True)
@@ -443,7 +443,7 @@ class ConvertTo3D:
 
         if self.input_parameter_dict['translate_rotate_metric']['save_mouse_data_bool']:
             with h5py.File(f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5", 'r') as h5_file_mouse:
-                mouse_data = np.array(h5_file_mouse['tracks']).astype(np.float64)
+                mouse_data = np.array(h5_file_mouse['tracks'], dtype='float64')
 
             mouse_nodes = extract_skeleton_nodes(skeleton_loc=f"{self.exp_settings_dict['config_settings_directory']}{os.sep}mouse_skeleton.json",
                                                  skeleton_arena_bool=False)
