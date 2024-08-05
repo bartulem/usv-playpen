@@ -448,8 +448,7 @@ class Operator:
             # clip values outside the range to the minimum and maximum representable values
             harmonic_data_clipped = np.clip(a=harmonic_data,
                                             a_min=-32768,
-                                            a_max=32767,
-                                            dtype='int16')
+                                            a_max=32767).astype('int16')
 
             # save the harmonic component as a new WAV file
             new_dir = f"{self.root_directory}{os.sep}audio{os.sep}hpss"
