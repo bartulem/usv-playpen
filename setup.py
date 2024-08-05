@@ -33,7 +33,7 @@ setup(
     install_requires=['av==10.0.0',
                       'h5py==3.11.0',
                       'imgstore',
-                      'librosa==0.9.2',
+                      'librosa==0.10.2',
                       'matplotlib==3.6.0',
                       'numpy==1.24.4',
                       'numba==0.58.1',
