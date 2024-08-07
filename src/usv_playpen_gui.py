@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.6'
+app_name = 'USV Playpen v0.3.7'
 experimenter_id = 'bartulem'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'

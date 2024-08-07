@@ -120,7 +120,7 @@ class Stylist:
                     if self.input_parameter_dict['processing_booleans']['conduct_video_fps_change']:
                         Operator(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,
-                                 message_output=self.message_output).rectify_video_fps()
+                                 message_output=self.message_output).rectify_video_fps(conduct_concat=self.input_parameter_dict['processing_booleans']['conduct_video_concatenation'])
 
                     # # # convert multichannel to single channel files
                     if self.input_parameter_dict['processing_booleans']['conduct_audio_multichannel_to_single_ch']:

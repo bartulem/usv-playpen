@@ -655,7 +655,7 @@ class Operator:
                 shutil.move(f"{current_working_dir}{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}",
                             f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}")
 
-    def rectify_video_fps(self):
+    def rectify_video_fps(self, conduct_concat=True):
         """
         Description
         ----------
@@ -690,6 +690,15 @@ class Operator:
         """
 
         self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+
+        if not conduct_concat:
+            for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
+                if 'calibration' not in sub_directory \
+                        and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']:
+                    current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
+
+                    shutil.copy(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}",
+                                f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}")
 
         date_joint = ''
         total_frame_number = 1e9
