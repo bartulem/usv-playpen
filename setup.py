@@ -44,7 +44,7 @@ setup(
                       'quantumrandom==1.9.0',
                       'scipy==1.10.0',
                       'sleap-anipose==0.1.7',
-                      'scikit-learn==1.2.1',
+                      'scikit-learn==1.5.0',
                       'soundfile==0.12.1',
                       'toml==0.10.2']
 )
