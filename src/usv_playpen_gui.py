@@ -49,15 +49,16 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.7'
+app_name = 'USV Playpen v0.3.8'
 experimenter_id = 'bartulem'
+cup_directory_name = 'Bartul'
 email_list_global = ''
 config_dir_global = 'C:\\experiment_running_docs'
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
 avisoft_base_dir_global = 'C:\\Users\\bartulem\\Documents\\Avisoft Bioacoustics\\'
 coolterm_base_dir_global = 'D:\\CoolTermWin'
-destination_linux_global = '/home/labadmin/falkner/Bartul/Data,/home/labadmin/murthy/Bartul/Data'
-destination_win_global = 'F:\\Bartul\\Data,M:\\Bartul\\Data'
+destination_linux_global = f'/home/labadmin/falkner/{cup_directory_name}/Data,/home/labadmin/murthy/{cup_directory_name}/Data'
+destination_win_global = f'F:\\{cup_directory_name}\\Data,M:\\{cup_directory_name}\\Data'
 camera_ids_global = ['21372315', '21372316', '21369048', '22085397', '21241563']
 camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
 gui_font_global = 'segoeui.ttf'
