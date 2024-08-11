@@ -382,22 +382,14 @@ class ExperimentController:
         start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
 
         for directory in total_dir_name_windows:
-            if not os.path.isdir(f"{directory}{os.sep}video"):
-                video_path = pathlib.Path(f"{directory}{os.sep}video")
-                video_path.mkdir(parents=True, exist_ok=True)
-            if not os.path.isdir(f"{directory}{os.sep}sync"):
-                sync_path = pathlib.Path(f"{directory}{os.sep}sync")
-                sync_path.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(f"{directory}{os.sep}video").mkdir(parents=True, exist_ok=True)
+            pathlib.Path(f"{directory}{os.sep}sync").mkdir(parents=True, exist_ok=True)
             if self.exp_settings_dict['conduct_audio_recording']:
-                if not os.path.isdir(f"{directory}{os.sep}audio"):
-                    if self.exp_settings_dict['audio']['general']['total'] == 0:
-                        audio_one_device_original_path = pathlib.Path(f"{directory}{os.sep}audio{os.sep}original")
-                        audio_one_device_original_path.mkdir(parents=True, exist_ok=True)
-                    else:
-                        audio_two_device_original_path = pathlib.Path(f"{directory}{os.sep}audio{os.sep}original")
-                        audio_two_device_original_path.mkdir(parents=True, exist_ok=True)
-                        audio_two_device_original_mc_path = pathlib.Path(f"{directory}{os.sep}audio{os.sep}original_mc")
-                        audio_two_device_original_mc_path.mkdir(parents=True, exist_ok=True)
+                if self.exp_settings_dict['audio']['general']['total'] == 0:
+                    pathlib.Path(f"{directory}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
+                else:
+                    pathlib.Path(f"{directory}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
+                    pathlib.Path(f"{directory}{os.sep}audio{os.sep}original_mc").mkdir(parents=True, exist_ok=True)
 
         # start recording audio
         if self.exp_settings_dict['conduct_audio_recording']:
@@ -440,69 +432,75 @@ class ExperimentController:
         sync_leds_capture.terminate()
         subprocess.Popen(f'''cmd /c "taskkill /IM CoolTerm.exe /T /F 1>nul 2>&1"''').wait()
 
-        # copy video files to another location
         self.message_output(f"Copying audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
-        for dir_idx, lin_dir in enumerate(total_dir_name_linux):
-            if dir_idx == len(total_dir_name_linux)-1:
-                del_files = self.exp_settings_dict['video']['general']['delete_post_copy']
-            else:
-                del_files = False
-            if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
-                self.api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recordings/copy_all",
-                              delete_after=del_files,
-                              location=f"{lin_dir}/video")
-            else:
-                self.api.call(f'recordings/copy_all',
-                              delete_after=del_files,
-                              location=f"{lin_dir}/video")
-            while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
-                QTest.qWait(1000)
 
-        # copy audio files to another location
-        copy_data_dict = {'sync': [f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"]}
+        # copy sync file to file server(s)
+        last_modified_sync_file = max(glob.glob(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"), key=os.path.getctime)
+        for win_dir_idx, win_dir in enumerate(total_dir_name_windows):
+            if not win_dir_idx == len(total_dir_name_windows) - 1:
+                shutil.copy(src=last_modified_sync_file,
+                            dst=f"{win_dir}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
+            else:
+                shutil.move(src=last_modified_sync_file,
+                            dst=f"{win_dir}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
 
+        # copy video files to file server(s)
+        if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
+            copy_video_command = f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recordings/copy_all"
+        else:
+            copy_video_command = 'recordings/copy_all'
+
+        self.api.call(copy_video_command,
+                      delete_after=self.exp_settings_dict['video']['general']['delete_post_copy'],
+                      location=f"{total_dir_name_linux[0]}/video")
+
+        # copy audio files to file server(s)
         if self.exp_settings_dict['conduct_audio_recording']:
-            copy_data_dict['audio'] = []
-
-            # directories depend on whether the multichannel type recording was used
-            device_dict = {0: "m", 12: "s"}
-            if self.exp_settings_dict['audio']['general']['total'] == 1:
-                ch_dir_used = [0, 12]
+            audio_copy_subprocesses = []
+            if self.exp_settings_dict['audio']['general']['total'] == 0:
+                for mic_idx in self.exp_settings_dict['audio']['used_mics']:
+                    last_modified_audio_file = max(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"),
+                                                   key=os.path.getctime)
+                    single_audio_copy_subp = subprocess.Popen(f'''cmd /c move -y "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
+                                                              cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
+                                                              shell=False)
+                    audio_copy_subprocesses.append(single_audio_copy_subp)
             else:
-                ch_dir_used = self.exp_settings_dict['audio']['used_mics']
+                for mic_idx in [0, 12]:
+                    audio_file_list = glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav")
+                    for aud_file in audio_file_list:
+                        multi_audio_copy_subp = subprocess.Popen(f'''cmd /c move -y "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}ch{mic_idx + 1}_{aud_file.split(os.sep)[-1]}"''',
+                                                                 cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
+                                                                 shell=False)
+                        audio_copy_subprocesses.append(multi_audio_copy_subp)
 
-            mic_info = []
-            for mic_idx in ch_dir_used:
-                mic_info.append(f"ch{mic_idx+1}")
-                copy_data_dict['audio'].append(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx+1}{os.sep}*.wav")
-
-        for key in copy_data_dict.keys():
-            for dir_idx, one_dir in enumerate(copy_data_dict[key]):
-                list_of_files = glob.glob(one_dir)
-
-                if self.exp_settings_dict['audio']['general']['total'] == 0 or key == 'sync':
-                    last_modified_file = max(list_of_files, key=os.path.getctime)
-
-                    for directory in total_dir_name_windows:
-                        if key != 'audio':
-                            destination_loc = f"{directory}\\{key}"
-                            shutil.copy(last_modified_file,
-                                        f"{destination_loc}{os.sep}{last_modified_file.split(os.sep)[-1]}")
-                        else:
-                            destination_loc = f"{directory}\\{key}\\original"
-                            shutil.copy(last_modified_file,
-                                        f"{destination_loc}{os.sep}{mic_info[dir_idx]}_{last_modified_file.split(os.sep)[-1]}")
+            while True:
+                status_poll = [query_subp.poll() for query_subp in audio_copy_subprocesses]
+                if any(elem is None for elem in status_poll):
+                    QTest.qWait(2000)
                 else:
-                    for aud_file in list_of_files:
-                        for directory in total_dir_name_windows:
-                            destination_loc = f"{directory}\\{key}\\original_mc"
-                            shutil.copy(aud_file,
-                                        f"{destination_loc}{os.sep}{device_dict[ch_dir_used[dir_idx]]}_{aud_file.split(os.sep)[-1]}")
+                    break
 
-                # purge audio directory of channel files, so it doesn't fill up the drive
-                if key == 'audio':
-                    for a_file in list_of_files:
-                        os.remove(a_file)
+        # ensure the video is done copying before proceeding
+        while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
+            QTest.qWait(2000)
+
+        # copy the video and audio directories to the backup network drive(s)
+        if len(total_dir_name_windows) > 1:
+            directory_copy_subprocesses = []
+            for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
+                for dir_type in ['audio', 'video']:
+                    directory_copy_subp = subprocess.Popen(f'''cmd /c xcopy "{total_dir_name_windows[0]}{os.sep}{dir_type}" "{win_dir}{os.sep}{dir_type}" /E /H /Q /Y''',
+                                                           cwd=f"{total_dir_name_windows[0]}{os.sep}{dir_type}",
+                                                           shell=False)
+                    directory_copy_subprocesses.append(directory_copy_subp)
+
+            while True:
+                status_poll = [query_subp.poll() for query_subp in directory_copy_subprocesses]
+                if any(elem is None for elem in status_poll):
+                    QTest.qWait(2000)
+                else:
+                    break
 
         self.message_output(f"Copying audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 

@@ -619,7 +619,7 @@ class Synchronizer:
 
         prediction_error_dict = {}
         audio_devices_start_sample_differences = 0
-        for af_idx, audio_file in enumerate(wave_data_dict.keys()):
+        for af_idx, audio_file in enumerate(sorted(wave_data_dict.keys())):
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
             QTest.qWait(1000)
 
