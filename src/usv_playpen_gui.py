@@ -1679,7 +1679,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
         self.device_receiving_input = 'm'
 
-        self.processing_input_dict['send_email']['Messenger']['processing_pc_choice']['device_receiving_input'] = str(getattr(self, 'processing_pc_choice'))
+        self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(getattr(self, 'processing_pc_choice'))
         self.processing_pc_choice = 'A84E Backup'
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_file_type'] = str(getattr(self, 'npx_file_type'))
