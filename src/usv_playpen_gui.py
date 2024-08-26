@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.9'
+app_name = 'USV Playpen v0.3.10'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
@@ -235,6 +235,7 @@ class USVPlaypenWindow(QMainWindow):
                     'array_len': 1}},
             'send_email': {
                 'Messenger': {
+                    'processing_pc_choice': 'A84E Backup',
                     'experimenter': f'{experimenter_id}',
                     'toml_file_loc': f'{config_dir_global}',
                     'send_message': {
@@ -252,7 +253,7 @@ class USVPlaypenWindow(QMainWindow):
                         'led_px_version': 'current',
                         'led_px_dev': 10,
                         'video_extension': 'mp4',
-                        'relative_intensity_threshold': 0.35,
+                        'relative_intensity_threshold': 0.6,
                         'millisecond_divergence_tolerance': 10},
                     'crop_wav_files_to_video': {
                         'device_receiving_input': 'm',
@@ -758,155 +759,165 @@ class USVPlaypenWindow(QMainWindow):
         settings_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         settings_dir_btn.clicked.connect(self._open_settings_dialog)
 
+        processing_pc_label = QLabel('Processing PC:', self.ProcessSettings)
+        processing_pc_label.setFont(QFont(self.font_id, 12))
+        processing_pc_label.setStyleSheet('QLabel { color: #F58025; }')
+        processing_pc_label.move(10, 455)
+        self.processing_pc_cb = QComboBox(self.ProcessSettings)
+        self.processing_pc_cb.addItems(['A84E Backup', 'A84E Main', '165B Audio', '165B Neural', 'A84I Main'])
+        self.processing_pc_cb.setStyleSheet('QComboBox { width: 105px; }')
+        self.processing_pc_cb.activated.connect(partial(self._combo_box_prior_processing_pc_choice, variable_id='processing_pc_choice'))
+        self.processing_pc_cb.move(225, 455)
+
         pc_usage_process_label = QLabel('Notify e-mail(s) of PC usage:', self.ProcessSettings)
         pc_usage_process_label.setFont(QFont(self.font_id, 12))
-        pc_usage_process_label.move(10, 455)
+        pc_usage_process_label.move(10, 485)
         self.pc_usage_process = QLineEdit(f'{email_list_global}', self.ProcessSettings)
         self.pc_usage_process.setFont(QFont(self.font_id, 10))
         self.pc_usage_process.setStyleSheet('QLineEdit { width: 150px; }')
-        self.pc_usage_process.move(210, 455)
+        self.pc_usage_process.move(210, 485)
 
         # set other parameters
 
         gvs_label = QLabel('Video processing settings', self.ProcessSettings)
         gvs_label.setFont(QFont(self.font_id, 13))
         gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
-        gvs_label.move(10, 500)
+        gvs_label.move(10, 530)
 
         conduct_video_concatenation_label = QLabel('Conduct video concatenation:', self.ProcessSettings)
         conduct_video_concatenation_label.setFont(QFont(self.font_id, 12))
         conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_video_concatenation_label.move(10, 530)
+        conduct_video_concatenation_label.move(10, 560)
         self.conduct_video_concatenation_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_concatenation_cb.addItems(['No', 'Yes'])
         self.conduct_video_concatenation_cb.setStyleSheet('QComboBox { width: 105px; }')
         self.conduct_video_concatenation_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_video_concatenation_cb_bool'))
-        self.conduct_video_concatenation_cb.move(225, 530)
+        self.conduct_video_concatenation_cb.move(225, 560)
 
         concatenate_cam_serial_num_label = QLabel('Camera serial num(s):', self.ProcessSettings)
         concatenate_cam_serial_num_label.setFont(QFont(self.font_id, 12))
-        concatenate_cam_serial_num_label.move(10, 560)
+        concatenate_cam_serial_num_label.move(10, 590)
         self.concatenate_cam_serial_num = QLineEdit(','.join(camera_ids_global), self.ProcessSettings)
         self.concatenate_cam_serial_num.setFont(QFont(self.font_id, 10))
         self.concatenate_cam_serial_num.setStyleSheet('QLineEdit { width: 195px; }')
-        self.concatenate_cam_serial_num.move(165, 560)
+        self.concatenate_cam_serial_num.move(165, 590)
 
         concatenated_video_name_label = QLabel('Chained video name:', self.ProcessSettings)
         concatenated_video_name_label.setFont(QFont(self.font_id, 12))
-        concatenated_video_name_label.move(10, 590)
+        concatenated_video_name_label.move(10, 620)
         self.concatenated_video_name = QLineEdit('concatenated_temp', self.ProcessSettings)
         self.concatenated_video_name.setFont(QFont(self.font_id, 10))
         self.concatenated_video_name.setStyleSheet('QLineEdit { width: 195px; }')
-        self.concatenated_video_name.move(165, 590)
+        self.concatenated_video_name.move(165, 620)
 
         concatenate_video_ext_label = QLabel('Video file format:', self.ProcessSettings)
         concatenate_video_ext_label.setFont(QFont(self.font_id, 12))
-        concatenate_video_ext_label.move(10, 620)
+        concatenate_video_ext_label.move(10, 650)
         self.concatenate_video_ext = QLineEdit('mp4', self.ProcessSettings)
         self.concatenate_video_ext.setFont(QFont(self.font_id, 10))
         self.concatenate_video_ext.setStyleSheet('QLineEdit { width: 195px; }')
-        self.concatenate_video_ext.move(165, 620)
+        self.concatenate_video_ext.move(165, 650)
 
         conduct_video_fps_change_cb_label = QLabel('Conduct video re-encoding:', self.ProcessSettings)
         conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 12))
         conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_video_fps_change_cb_label.move(10, 650)
+        conduct_video_fps_change_cb_label.move(10, 680)
         self.conduct_video_fps_change_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_fps_change_cb.addItems(['No', 'Yes'])
         self.conduct_video_fps_change_cb.setStyleSheet('QComboBox { width: 105px; }')
         self.conduct_video_fps_change_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_video_fps_change_cb_bool'))
-        self.conduct_video_fps_change_cb.move(225, 650)
+        self.conduct_video_fps_change_cb.move(225, 680)
 
         change_fps_cam_serial_num_label = QLabel('Camera serial num(s):', self.ProcessSettings)
         change_fps_cam_serial_num_label.setFont(QFont(self.font_id, 12))
-        change_fps_cam_serial_num_label.move(10, 680)
+        change_fps_cam_serial_num_label.move(10, 710)
         self.change_fps_cam_serial_num = QLineEdit(','.join(camera_ids_global), self.ProcessSettings)
         self.change_fps_cam_serial_num.setFont(QFont(self.font_id, 10))
         self.change_fps_cam_serial_num.setStyleSheet('QLineEdit { width: 195px; }')
-        self.change_fps_cam_serial_num.move(165, 680)
+        self.change_fps_cam_serial_num.move(165, 710)
 
         conversion_target_file_label = QLabel('Chained video name:', self.ProcessSettings)
         conversion_target_file_label.setFont(QFont(self.font_id, 12))
-        conversion_target_file_label.move(10, 710)
+        conversion_target_file_label.move(10, 740)
         self.conversion_target_file = QLineEdit('concatenated_temp', self.ProcessSettings)
         self.conversion_target_file.setFont(QFont(self.font_id, 10))
         self.conversion_target_file.setStyleSheet('QLineEdit { width: 195px; }')
-        self.conversion_target_file.move(165, 710)
+        self.conversion_target_file.move(165, 740)
 
         conversion_vid_ext_label = QLabel('Video file format:', self.ProcessSettings)
         conversion_vid_ext_label.setFont(QFont(self.font_id, 12))
-        conversion_vid_ext_label.move(10, 740)
+        conversion_vid_ext_label.move(10, 770)
         self.conversion_vid_ext = QLineEdit('mp4', self.ProcessSettings)
         self.conversion_vid_ext.setFont(QFont(self.font_id, 10))
         self.conversion_vid_ext.setStyleSheet('QLineEdit { width: 195px; }')
-        self.conversion_vid_ext.move(165, 740)
+        self.conversion_vid_ext.move(165, 770)
 
         constant_rate_factor_label = QLabel('Rate factor (-crf):', self.ProcessSettings)
         constant_rate_factor_label.setFont(QFont(self.font_id, 12))
-        constant_rate_factor_label.move(10, 770)
+        constant_rate_factor_label.move(10, 800)
         self.constant_rate_factor = QLineEdit('16', self.ProcessSettings)
         self.constant_rate_factor.setFont(QFont(self.font_id, 10))
         self.constant_rate_factor.setStyleSheet('QLineEdit { width: 195px; }')
-        self.constant_rate_factor.move(165, 770)
+        self.constant_rate_factor.move(165, 800)
 
         encoding_preset_label = QLabel('Encoding preset:', self.ProcessSettings)
         encoding_preset_label.setFont(QFont(self.font_id, 12))
-        encoding_preset_label.move(10, 800)
+        encoding_preset_label.move(10, 830)
         self.encoding_preset = QLineEdit('veryfast', self.ProcessSettings)
         self.encoding_preset.setFont(QFont(self.font_id, 10))
         self.encoding_preset.setStyleSheet('QLineEdit { width: 195px; }')
-        self.encoding_preset.move(165, 800)
+        self.encoding_preset.move(165, 830)
 
         delete_con_file_cb_label = QLabel('Delete chained video file:', self.ProcessSettings)
         delete_con_file_cb_label.setFont(QFont(self.font_id, 12))
-        delete_con_file_cb_label.move(10, 830)
+        delete_con_file_cb_label.move(10, 860)
         self.delete_con_file_cb = QComboBox(self.ProcessSettings)
         self.delete_con_file_cb.addItems(['Yes', 'No'])
         self.delete_con_file_cb.setStyleSheet('QComboBox { width: 105px; }')
         self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
-        self.delete_con_file_cb.move(225, 830)
+        self.delete_con_file_cb.move(225, 860)
 
         gas_label = QLabel('Audio processing settings', self.ProcessSettings)
         gas_label.setFont(QFont(self.font_id, 13))
         gas_label.setStyleSheet('QLabel { font-weight: bold;}')
-        gas_label.move(10, 870)
+        gas_label.move(10, 900)
 
         conduct_multichannel_conversion_cb_label = QLabel('Convert multi-ch to single-ch files:', self.ProcessSettings)
         conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 12))
         conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_multichannel_conversion_cb_label.move(10, 900)
+        conduct_multichannel_conversion_cb_label.move(10, 930)
         self.conduct_multichannel_conversion_cb = QComboBox(self.ProcessSettings)
         self.conduct_multichannel_conversion_cb.addItems(['No', 'Yes'])
         self.conduct_multichannel_conversion_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_multichannel_conversion_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_multichannel_conversion_cb_bool'))
-        self.conduct_multichannel_conversion_cb.move(250, 900)
+        self.conduct_multichannel_conversion_cb.move(250, 930)
 
         crop_wav_cam_cb_label = QLabel('Crop AUDIO files to match VIDEO:', self.ProcessSettings)
         crop_wav_cam_cb_label.setFont(QFont(self.font_id, 12))
         crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        crop_wav_cam_cb_label.move(10, 930)
+        crop_wav_cam_cb_label.move(10, 960)
         self.crop_wav_cam_cb = QComboBox(self.ProcessSettings)
         self.crop_wav_cam_cb.addItems(['No', 'Yes'])
         self.crop_wav_cam_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.crop_wav_cam_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='crop_wav_cam_cb_bool'))
-        self.crop_wav_cam_cb.move(250, 930)
+        self.crop_wav_cam_cb.move(250, 960)
 
         device_receiving_input_cb_label = QLabel('Trgbox-USGH device (m | s):', self.ProcessSettings)
         device_receiving_input_cb_label.setFont(QFont(self.font_id, 12))
-        device_receiving_input_cb_label.move(10, 960)
+        device_receiving_input_cb_label.move(10, 990)
         self.device_receiving_input_cb = QComboBox(self.ProcessSettings)
         self.device_receiving_input_cb.addItems(['m', 's'])
         self.device_receiving_input_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.device_receiving_input_cb.activated.connect(partial(self._combo_box_prior_audio_device_camera_input, variable_id='device_receiving_input'))
-        self.device_receiving_input_cb.move(250, 960)
+        self.device_receiving_input_cb.move(250, 990)
 
         ch_receiving_input_label = QLabel('Trgbox-USGH ch (1-12):', self.ProcessSettings)
         ch_receiving_input_label.setFont(QFont(self.font_id, 12))
-        ch_receiving_input_label.move(10, 990)
+        ch_receiving_input_label.move(10, 1020)
         self.ch_receiving_input = QLineEdit('1', self.ProcessSettings)
         self.ch_receiving_input.setFont(QFont(self.font_id, 10))
         self.ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.ch_receiving_input.move(250, 990)
+        self.ch_receiving_input.move(250, 1020)
 
         # column 2
 
@@ -1668,6 +1679,9 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
         self.device_receiving_input = 'm'
 
+        self.processing_input_dict['send_email']['Messenger']['processing_pc_choice']['device_receiving_input'] = str(getattr(self, 'processing_pc_choice'))
+        self.processing_pc_choice = 'A84E Backup'
+
         self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_file_type'] = str(getattr(self, 'npx_file_type'))
         self.npx_file_type = 'ap'
 
@@ -1872,6 +1886,18 @@ class USVPlaypenWindow(QMainWindow):
             self.__dict__[variable_id] = 'mq'
         else:
             self.__dict__[variable_id] = 'lq'
+
+    def _combo_box_prior_processing_pc_choice(self, index, variable_id=None):
+        if index == 0:
+            self.__dict__[variable_id] = 'A84E Backup'
+        elif index == 1:
+            self.__dict__[variable_id] = 'A84E Main'
+        elif index == 2:
+            self.__dict__[variable_id] = '165B Audio'
+        elif index == 3:
+            self.__dict__[variable_id] = '165B Neural'
+        else:
+            self.__dict__[variable_id] = 'A84I Main'
 
     def _combo_box_prior_audio_device_camera_input(self, index, variable_id=None):
         if index == 0:
@@ -2216,7 +2242,8 @@ def main():
                            'npx_file_type': 'ap', 'device_receiving_input': 'm', 'kilosort_version': '4', 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
                            'split_cluster_spikes_cb_bool': False, 'anipose_calibration_cb_bool': False, 'sleap_file_conversion_cb_bool': False, 'board_provided_cb_bool': False,
                            'anipose_triangulation_cb_bool': False, 'triangulate_arena_points_cb_bool': False, 'display_progress_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
-                           'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False}
+                           'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False,
+                           'processing_pc_choice': 'A84E Backup'}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

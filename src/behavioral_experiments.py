@@ -492,9 +492,14 @@ class ExperimentController:
 
         # copy the video and audio directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
+            if self.exp_settings_dict['conduct_audio_recording']:
+                data_streams = ['audio', 'video']
+            else:
+                data_streams = ['video']
+
             directory_copy_subprocesses = []
             for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
-                for dir_type in ['audio', 'video']:
+                for dir_type in data_streams:
                     directory_copy_subp = subprocess.Popen(f'''cmd /c xcopy "{total_dir_name_windows[0]}{os.sep}{dir_type}" "{win_dir}{os.sep}{dir_type}" /E /H /Q /Y''',
                                                            cwd=f"{total_dir_name_windows[0]}{os.sep}{dir_type}",
                                                            stdout=subprocess.DEVNULL,

@@ -72,7 +72,7 @@ class Stylist:
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
-                  exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
+                  exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                                          message=f"Data preprocessing in progress, started at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
                                                                                  f"and run by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}. "
@@ -214,7 +214,7 @@ class Stylist:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
-                  exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, processing has been completed",
+                  exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, processing has been completed",
                                                                          message=f"Data preprocessing has been completed at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
                                                                                  f"by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}. "
