@@ -15,7 +15,15 @@ import usv_playpen_gui as usv_playpen_gui
 
 class TestProcessing(unittest.TestCase):
 
+    if os.name == 'nt':
+        command_addition = 'cmd /c '
+        shell_usage_bool = False
+    else:
+        command_addition = ''
+        shell_usage_bool = True
+
     esd = toml.load(f"{usv_playpen_gui.config_dir_global}{os.sep}behavioral_experiments_settings.toml")
+
 
     def test_send_email(self):
 
@@ -33,7 +41,8 @@ class TestProcessing(unittest.TestCase):
 
         # test video processing capabilities
         try:
-            subprocess.Popen(f'''cmd /c "ffmpeg -version"''').wait()
+            subprocess.Popen(f'''{self.command_addition}ffmpeg -version''',
+                             shell=self.shell_usage_bool).wait()
             video_processing_success = True
         except subprocess.CalledProcessError as e:
             print(e)
@@ -44,7 +53,8 @@ class TestProcessing(unittest.TestCase):
     def test_audio_processing(self):
 
         try:
-            subprocess.Popen(f'''cmd /c "sox --version"''').wait()
+            subprocess.Popen(f'''{self.command_addition}sox --version''',
+                             shell=self.shell_usage_bool).wait()
             audio_processing_success = True
         except subprocess.CalledProcessError as e:
             print(e)
