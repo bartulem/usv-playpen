@@ -759,13 +759,12 @@ class USVPlaypenWindow(QMainWindow):
         settings_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         settings_dir_btn.clicked.connect(self._open_settings_dialog)
 
-        processing_pc_label = QLabel('Processing PC:', self.ProcessSettings)
+        processing_pc_label = QLabel('Processing PC of choice:', self.ProcessSettings)
         processing_pc_label.setFont(QFont(self.font_id, 12))
-        processing_pc_label.setStyleSheet('QLabel { color: #F58025; }')
         processing_pc_label.move(10, 455)
         self.processing_pc_cb = QComboBox(self.ProcessSettings)
         self.processing_pc_cb.addItems(['A84E Backup', 'A84E Main', '165B Audio', '165B Neural', 'A84I Main'])
-        self.processing_pc_cb.setStyleSheet('QComboBox { width: 105px; }')
+        self.processing_pc_cb.setStyleSheet('QComboBox { width: 150px; }')
         self.processing_pc_cb.activated.connect(partial(self._combo_box_prior_processing_pc_choice, variable_id='processing_pc_choice'))
         self.processing_pc_cb.move(225, 455)
 
@@ -1486,12 +1485,12 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductProcess = ConductProcess(self)
         self.setWindowTitle(f'{app_name} (Conduct Processing)')
         self.setCentralWidget(self.ConductProcess)
-        record_four_x, record_four_y = (820, 1100)
+        record_four_x, record_four_y = (830, 1100)
         self.setFixedSize(record_four_x, record_four_y)
 
         self.txt_edit_process = QPlainTextEdit(self.ConductProcess)
         self.txt_edit_process.move(5, 5)
-        self.txt_edit_process.setFixedSize(805, 1040)
+        self.txt_edit_process.setFixedSize(815, 1040)
         self.txt_edit_process.setReadOnly(True)
 
         self._save_modified_values_to_toml(run_exp_bool=False, message_func=self._process_message)
