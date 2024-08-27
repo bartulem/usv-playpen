@@ -764,7 +764,7 @@ class USVPlaypenWindow(QMainWindow):
         processing_pc_label.move(10, 455)
         self.processing_pc_cb = QComboBox(self.ProcessSettings)
         self.processing_pc_cb.addItems(['A84E Backup', 'A84E Main', '165B Audio', '165B Neural', 'A84I Main'])
-        self.processing_pc_cb.setStyleSheet('QComboBox { width: 150px; }')
+        self.processing_pc_cb.setStyleSheet('QComboBox { width: 105px; }')
         self.processing_pc_cb.activated.connect(partial(self._combo_box_prior_processing_pc_choice, variable_id='processing_pc_choice'))
         self.processing_pc_cb.move(225, 455)
 
