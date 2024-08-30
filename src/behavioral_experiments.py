@@ -41,6 +41,12 @@ class ExperimentController:
         else:
             self.message_output = message_output
 
+    def get_cpu_affinity_mask(self):
+        bitmask = 0
+        for cpu in self.exp_settings_dict['audio']['cpu_affinity']:
+            bitmask |= 1 << cpu
+        return f"0x{bitmask:X}"
+
     def get_connection_params(self):
         """
         Description
@@ -393,9 +399,11 @@ class ExperimentController:
 
         # start recording audio
         if self.exp_settings_dict['conduct_audio_recording']:
+            cpu_affinity_mask = self.get_cpu_affinity_mask()
+            cpu_priority = self.exp_settings_dict['audio']['cpu_priority']
             # run command to start audio recording and keep executing the rest of the script
             if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
-                self.avisoft_recording = subprocess.Popen(args=f'''cmd /c ""rec_usgh.exe" /CFG=avisoft_config.ini /AUT"''',
+                self.avisoft_recording = subprocess.Popen(args=f'''cmd /c "start /{cpu_priority} /affinity {cpu_affinity_mask} rec_usgh.exe /CFG=avisoft_config.ini /AUT"''',
                                                           stdout=subprocess.PIPE,
                                                           cwd=self.exp_settings_dict['avisoft_recorder_exe'])
                 self.message_output(f"Recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration'] + .36} minute(s). Please be patient.")

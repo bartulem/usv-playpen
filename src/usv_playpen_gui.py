@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.10'
+app_name = 'USV Playpen v0.3.11'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
@@ -449,7 +449,9 @@ class USVPlaypenWindow(QMainWindow):
                                        'usvmonitoringflags': '9136', 'dispspectrogramcontrast': '0.0', 'disprangespectrogram': '250.0',
                                        'disprangeamplitude': '100.0', 'disprangewaveform': '100.0', 'total': '1', 'dcolumns': '3',
                                        'display': '2', 'total_mic_number': '24', 'total_device_num': '2',
-                                       'used_mics': '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23'}
+                                       'used_mics': '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23',
+                                       'cpu_priority': 'High',
+                                       'cpu_affinity': '5'}
 
         row_start_position_label = 5
         row_start_position_line_edit = 120
@@ -1555,15 +1557,17 @@ class USVPlaypenWindow(QMainWindow):
 
             for audio_key in self.settings_dict['audio'].keys():
                 if audio_key in self.exp_settings_dict['audio'].keys():
-                    if audio_key != 'used_mics':
+                    if audio_key != 'used_mics' and audio_key != 'cpu_affinity':
                         if self.exp_settings_dict['audio'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
                             self.exp_settings_dict['audio'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
-                            self.modify_audio_config = True
+                            if audio_key != 'cpu_affinity':
+                                self.modify_audio_config = True
                     else:
-                        used_mics_temp = [int(mic) for mic in self.settings_dict['audio'][audio_key].split(',')]
-                        if self.exp_settings_dict['audio'][audio_key] != used_mics_temp:
-                            self.exp_settings_dict['audio'][audio_key] = used_mics_temp
-                            self.modify_audio_config = True
+                        lst_temp = [int(lst_item) for lst_item in self.settings_dict['audio'][audio_key].split(',')]
+                        if self.exp_settings_dict['audio'][audio_key] != lst_temp:
+                            self.exp_settings_dict['audio'][audio_key] = lst_temp
+                            if audio_key == 'used_mics':
+                                self.modify_audio_config = True
 
                 elif audio_key in self.exp_settings_dict['audio']['general'].keys() and \
                         self.exp_settings_dict['audio']['general'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
