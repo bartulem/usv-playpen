@@ -450,7 +450,7 @@ class USVPlaypenWindow(QMainWindow):
                                        'disprangeamplitude': '100.0', 'disprangewaveform': '100.0', 'total': '1', 'dcolumns': '3',
                                        'display': '2', 'total_mic_number': '24', 'total_device_num': '2',
                                        'used_mics': '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23',
-                                       'cpu_priority': 'High',
+                                       'cpu_priority': 'high',
                                        'cpu_affinity': '5'}
 
         row_start_position_label = 5

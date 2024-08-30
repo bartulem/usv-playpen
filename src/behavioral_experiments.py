@@ -505,22 +505,13 @@ class ExperimentController:
             else:
                 data_streams = ['video']
 
-            directory_copy_subprocesses = []
             for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
                 for dir_type in data_streams:
-                    directory_copy_subp = subprocess.Popen(f'''cmd /c xcopy "{total_dir_name_windows[0]}{os.sep}{dir_type}" "{win_dir}{os.sep}{dir_type}" /E /H /Q /Y''',
-                                                           cwd=f"{total_dir_name_windows[0]}{os.sep}{dir_type}",
-                                                           stdout=subprocess.DEVNULL,
-                                                           stderr=subprocess.STDOUT,
-                                                           shell=False)
-                    directory_copy_subprocesses.append(directory_copy_subp)
-
-            while True:
-                status_poll = [query_subp.poll() for query_subp in directory_copy_subprocesses]
-                if any(elem is None for elem in status_poll):
-                    QTest.qWait(2000)
-                else:
-                    break
+                    subprocess.Popen(f'''cmd /c robocopy "{total_dir_name_windows[0]}{os.sep}{dir_type}" "{win_dir}{os.sep}{dir_type}" /MIR''',
+                                          cwd=f"{total_dir_name_windows[0]}{os.sep}{dir_type}",
+                                          stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.STDOUT,
+                                          shell=False)
 
         self.message_output(f"Copying audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
