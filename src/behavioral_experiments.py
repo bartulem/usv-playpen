@@ -446,7 +446,7 @@ class ExperimentController:
         shutil.move(src=last_modified_sync_file,
                     dst=f"{total_dir_name_windows[0]}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
 
-        # copy video file(s) to primary file server
+        # move video file(s) to primary file server
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
             copy_video_command = f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recordings/copy_all"
         else:
@@ -456,7 +456,7 @@ class ExperimentController:
                       delete_after=self.exp_settings_dict['video']['general']['delete_post_copy'],
                       location=f"{total_dir_name_linux[0]}/video")
 
-        # copy audio file(s) to primary file server
+        # move audio file(s) to primary file server
         if self.exp_settings_dict['conduct_audio_recording']:
             audio_copy_subprocesses = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
