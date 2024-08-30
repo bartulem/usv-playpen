@@ -1558,9 +1558,12 @@ class USVPlaypenWindow(QMainWindow):
             for audio_key in self.settings_dict['audio'].keys():
                 if audio_key in self.exp_settings_dict['audio'].keys():
                     if audio_key != 'used_mics' and audio_key != 'cpu_affinity':
-                        if self.exp_settings_dict['audio'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
-                            self.exp_settings_dict['audio'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
-                            if audio_key != 'cpu_affinity':
+                        if audio_key == 'cpu_priority':
+                            if self.exp_settings_dict['audio'][audio_key] != self.settings_dict['audio'][audio_key]:
+                                self.exp_settings_dict['audio'][audio_key] = self.settings_dict['audio'][audio_key]
+                        else:
+                            if self.exp_settings_dict['audio'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                                self.exp_settings_dict['audio'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
                                 self.modify_audio_config = True
                     else:
                         lst_temp = [int(lst_item) for lst_item in self.settings_dict['audio'][audio_key].split(',')]

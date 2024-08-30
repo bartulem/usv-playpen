@@ -387,15 +387,14 @@ class ExperimentController:
 
         start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
 
-        for directory in total_dir_name_windows:
-            pathlib.Path(f"{directory}{os.sep}video").mkdir(parents=True, exist_ok=True)
-            pathlib.Path(f"{directory}{os.sep}sync").mkdir(parents=True, exist_ok=True)
-            if self.exp_settings_dict['conduct_audio_recording']:
-                if self.exp_settings_dict['audio']['general']['total'] == 0:
-                    pathlib.Path(f"{directory}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
-                else:
-                    pathlib.Path(f"{directory}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
-                    pathlib.Path(f"{directory}{os.sep}audio{os.sep}original_mc").mkdir(parents=True, exist_ok=True)
+        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}video").mkdir(parents=True, exist_ok=True)
+        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}sync").mkdir(parents=True, exist_ok=True)
+        if self.exp_settings_dict['conduct_audio_recording']:
+            if self.exp_settings_dict['audio']['general']['total'] == 0:
+                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
+            else:
+                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
+                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc").mkdir(parents=True, exist_ok=True)
 
         # start recording audio
         if self.exp_settings_dict['conduct_audio_recording']:
@@ -442,17 +441,12 @@ class ExperimentController:
 
         self.message_output(f"Copying audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
-        # copy sync file to file server(s)
+        # move last modified sync file to primary file server
         last_modified_sync_file = max(glob.glob(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"), key=os.path.getctime)
-        for win_dir_idx, win_dir in enumerate(total_dir_name_windows):
-            if not win_dir_idx == len(total_dir_name_windows) - 1:
-                shutil.copy(src=last_modified_sync_file,
-                            dst=f"{win_dir}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
-            else:
-                shutil.move(src=last_modified_sync_file,
-                            dst=f"{win_dir}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
+        shutil.move(src=last_modified_sync_file,
+                    dst=f"{total_dir_name_windows[0]}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
 
-        # copy video files to file server(s)
+        # copy video file(s) to primary file server
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
             copy_video_command = f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recordings/copy_all"
         else:
@@ -462,7 +456,7 @@ class ExperimentController:
                       delete_after=self.exp_settings_dict['video']['general']['delete_post_copy'],
                       location=f"{total_dir_name_linux[0]}/video")
 
-        # copy audio files to file server(s)
+        # copy audio file(s) to primary file server
         if self.exp_settings_dict['conduct_audio_recording']:
             audio_copy_subprocesses = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
@@ -490,28 +484,22 @@ class ExperimentController:
             while True:
                 status_poll = [query_subp.poll() for query_subp in audio_copy_subprocesses]
                 if any(elem is None for elem in status_poll):
-                    QTest.qWait(2000)
+                    QTest.qWait(1000)
                 else:
                     break
 
         # ensure the video is done copying before proceeding
         while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
-            QTest.qWait(2000)
+            QTest.qWait(1000)
 
-        # copy the video and audio directories to the backup network drive(s)
+        # copy the audio, sync and video directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
-            if self.exp_settings_dict['conduct_audio_recording']:
-                data_streams = ['audio', 'video']
-            else:
-                data_streams = ['video']
-
             for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
-                for dir_type in data_streams:
-                    subprocess.Popen(f'''cmd /c robocopy "{total_dir_name_windows[0]}{os.sep}{dir_type}" "{win_dir}{os.sep}{dir_type}" /MIR''',
-                                          cwd=f"{total_dir_name_windows[0]}{os.sep}{dir_type}",
-                                          stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.STDOUT,
-                                          shell=False)
+                subprocess.Popen(f'''cmd /c robocopy "{total_dir_name_windows[0]}" "{win_dir}" /MIR''',
+                                      cwd=f"{total_dir_name_windows[0]}",
+                                      stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.STDOUT,
+                                      shell=False)
 
         self.message_output(f"Copying audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
