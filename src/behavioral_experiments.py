@@ -496,10 +496,10 @@ class ExperimentController:
         if len(total_dir_name_windows) > 1:
             for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
                 subprocess.Popen(f'''cmd /c robocopy "{total_dir_name_windows[0]}" "{win_dir}" /MIR''',
-                                      cwd=f"{total_dir_name_windows[0]}",
-                                      stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.STDOUT,
-                                      shell=False)
+                                 cwd=f"{total_dir_name_windows[0]}",
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.STDOUT,
+                                 shell=False)
 
         self.message_output(f"Copying audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
