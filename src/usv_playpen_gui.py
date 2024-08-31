@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.3.11'
+app_name = 'USV Playpen v0.3.12'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
@@ -451,7 +451,7 @@ class USVPlaypenWindow(QMainWindow):
                                        'display': '2', 'total_mic_number': '24', 'total_device_num': '2',
                                        'used_mics': '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23',
                                        'cpu_priority': 'high',
-                                       'cpu_affinity': '5'}
+                                       'cpu_affinity': '6'}
 
         row_start_position_label = 5
         row_start_position_line_edit = 120

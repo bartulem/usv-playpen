@@ -539,11 +539,11 @@ class Synchronizer:
                                         if even_event_durations.sum() > odd_event_durations.sum():
                                             ipi_durations_frames = even_event_durations - 1
                                             if type(ipi_start_frames) is int:
-                                                temp_ipi_start_frames = np.array(significant_events[::2]) + 1
+                                                temp_ipi_start_frames = np.array(significant_events[::2]) + 2
                                         else:
                                             ipi_durations_frames = odd_event_durations - 1
                                             if type(ipi_start_frames) is int:
-                                                temp_ipi_start_frames = np.array(significant_events[1::2]) + 1
+                                                temp_ipi_start_frames = np.array(significant_events[1::2]) + 2
 
                                         # compute IPI durations in milliseconds
                                         ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps[sync_cam_idx]))

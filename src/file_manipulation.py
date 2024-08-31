@@ -554,8 +554,8 @@ class Operator:
 
         for audio_file_type in self.input_parameter_dict['concatenate_audio_files']['concat_dirs']:
 
-            all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}"
-                                        f"*.{self.input_parameter_dict['concatenate_audio_files']['audio_format']}")
+            all_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}"
+                                               f"*.{self.input_parameter_dict['concatenate_audio_files']['audio_format']}"))
 
             if len(all_audio_files) > 1:
 
@@ -621,7 +621,7 @@ class Operator:
 
                 vid_name = f"{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}"
                 vid_extension = self.input_parameter_dict['concatenate_video_files']['video_extension']
-                all_video_files = glob.glob(f"{current_working_dir}{os.sep}*.{vid_extension}")
+                all_video_files = sorted(glob.glob(f"{current_working_dir}{os.sep}*.{vid_extension}"))
 
                 if len(all_video_files) > 1:
 
