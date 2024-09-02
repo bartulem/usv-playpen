@@ -183,7 +183,7 @@ class ConvertTo3D:
             command_addition = 'cmd /c '
             shell_usage_bool = False
         else:
-            command_addition = ''
+            command_addition = 'eval "$(conda shell.bash hook)" && '
             shell_usage_bool = True
 
         conversion_subprocesses = []
