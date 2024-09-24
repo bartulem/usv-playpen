@@ -600,7 +600,7 @@ class Synchronizer:
 
         try:
             quantum_seed = generate_truly_random_seed(input_parameter_dict=self.input_parameter_dict_random)
-        except (RequestException, urllib.error.HTTPError):
+        except (TimeoutError, RequestException, urllib.error.URLError, urllib.error.HTTPError):
             quantum_seed = None
 
         wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],

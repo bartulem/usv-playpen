@@ -81,6 +81,6 @@ class PrepareClusterJob:
                             if os.path.isdir(f"{root_dir}{os.sep}video{os.sep}{video_processed_dir}{os.sep}{video_dir}") and video_dir in self.input_parameter_dict['camera_names']:
                                 for video_dir_item in os.listdir(f"{root_dir}{os.sep}video{os.sep}{video_processed_dir}{os.sep}{video_dir}"):
                                     if video_dir_item.endswith('.mp4'):
-                                        video_path = f"{spock_converted_root_dir}{os.sep}video{os.sep}{video_processed_dir}{os.sep}{video_dir}{os.sep}{video_dir_item}"
-                                        slp_result_path = f"{spock_converted_root_dir}{os.sep}video{os.sep}{video_processed_dir}{os.sep}{video_dir}{os.sep}{video_dir_item[:-4]}.slp"
+                                        video_path = f"{spock_converted_root_dir}/video/{video_processed_dir}/{video_dir}/{video_dir_item}"
+                                        slp_result_path = f"{spock_converted_root_dir}/video/{video_processed_dir}/{video_dir}/{video_dir_item[:-4]}.slp"
                                         job_list_file.write(f"{spock_converted_centroid_model_path} {spock_converted_centered_instance_model_path} {video_path} {slp_result_path}\n")
