@@ -456,25 +456,26 @@ class ExperimentController:
                       delete_after=self.exp_settings_dict['video']['general']['delete_post_copy'],
                       location=f"{total_dir_name_linux[0]}/video")
 
-        # move audio file(s) to primary file server
+        # copy audio file(s) to primary file server
         if self.exp_settings_dict['conduct_audio_recording']:
             audio_copy_subprocesses = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
                 for mic_idx in self.exp_settings_dict['audio']['used_mics']:
                     last_modified_audio_file = max(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"),
                                                    key=os.path.getctime)
-                    single_audio_copy_subp = subprocess.Popen(f'''cmd /c move "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
+                    single_audio_copy_subp = subprocess.Popen(f'''cmd /c copy "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
                                                               cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
                                                               stdout=subprocess.DEVNULL,
                                                               stderr=subprocess.STDOUT,
                                                               shell=False)
                     audio_copy_subprocesses.append(single_audio_copy_subp)
             else:
+                relevant_file_count = max(1, int(round((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
                 device_id = ['m', 's']
                 for mic_pos_idx, mic_idx in enumerate([0, 12]):
-                    audio_file_list = glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav")
+                    audio_file_list = sorted(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"), key=os.path.getctime, reverse=True)[:relevant_file_count]
                     for aud_file in audio_file_list:
-                        multi_audio_copy_subp = subprocess.Popen(f'''cmd /c move "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}{device_id[mic_pos_idx]}_{aud_file.split(os.sep)[-1]}"''',
+                        multi_audio_copy_subp = subprocess.Popen(f'''cmd /c copy "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}{device_id[mic_pos_idx]}_{aud_file.split(os.sep)[-1]}"''',
                                                                  cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
                                                                  stdout=subprocess.DEVNULL,
                                                                  stderr=subprocess.STDOUT,

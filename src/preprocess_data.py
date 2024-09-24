@@ -10,6 +10,7 @@ from datetime import datetime
 from anipose_operations import ConvertTo3D
 from extract_phidget_data import Gatherer
 from file_manipulation import Operator
+from prepare_cluster_job import PrepareClusterJob
 from preprocessing_plot import SummaryPlotter
 from send_email import Messenger
 from synchronize_files import Synchronizer
@@ -79,9 +80,9 @@ class Stylist:
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
         # analyze data in all root directories at once
-        if self.input_parameter_dict['processing_booleans']['conduct_ephys_file_chaining'] or self.input_parameter_dict['processing_booleans']['split_cluster_spikes']:
+        if self.input_parameter_dict['processing_booleans']['conduct_ephys_file_chaining'] or self.input_parameter_dict['processing_booleans']['split_cluster_spikes'] or self.input_parameter_dict['processing_booleans']['prepare_sleap_cluster']:
             try:
-                self.message_output(f"Preprocessing e-phys data started at: "
+                self.message_output(f"Preprocessing data started at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
                 # # # concatenate e-phys files
@@ -98,7 +99,13 @@ class Stylist:
                              message_output=self.message_output,
                              exp_settings_dict=self.exp_settings_dict).split_clusters_to_sessions()
 
-                self.message_output(f"Preprocessing e-phys data finished at: "
+                # # # prepare SLEAP cluster job
+                if self.input_parameter_dict['processing_booleans']['prepare_sleap_cluster']:
+                    PrepareClusterJob(root_directory=self.root_directories,
+                                      input_parameter_dict=self.input_parameter_dict,
+                                      message_output=self.message_output).video_list_to_txt()
+
+                self.message_output(f"Preprocessing data finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
             except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):

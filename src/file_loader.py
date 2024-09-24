@@ -4,14 +4,26 @@ Loads WAV files.
 """
 
 import json
-import os
 import librosa
-import numpy as np
+import os
 from scipy.io import wavfile
+import struct
+import subprocess
 import warnings
 
 
 class DataLoader:
+
+    if os.name == 'nt':
+        command_addition = 'cmd /c '
+        move_command = 'move'
+        remove_command = 'del'
+        shell_usage_bool = False
+    else:
+        command_addition = ''
+        move_command = 'mv'
+        remove_command = 'rm'
+        shell_usage_bool = True
 
     known_dtypes = {
         'int': int,
@@ -88,7 +100,15 @@ class DataLoader:
                 if '.wav' in one_file and additional_condition:
                     wave_data_dict[one_file] = {'sampling_rate': 0, 'wav_data': 0, 'dtype': 0}
                     if self.input_parameter_dict['load_wavefile_data']['library'] == 'scipy':
-                        wave_data_dict[one_file]['sampling_rate'], wave_data_dict[one_file]['wav_data'] = wavfile.read(f'{one_dir}{os.sep}{one_file}')
+                        try:
+                            wave_data_dict[one_file]['sampling_rate'], wave_data_dict[one_file]['wav_data'] = wavfile.read(f'{one_dir}{os.sep}{one_file}')
+                        except struct.error:
+                            subprocess.run(args=f'''{self.command_addition}sox {one_file} {one_file[:-4]}_correct.wav && {self.remove_command} {one_file} && {self.move_command} {one_file[:-4]}_correct.wav {one_file}''',
+                                           shell=self.shell_usage_bool,
+                                           cwd=one_dir,
+                                           stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.STDOUT)
+                            wave_data_dict[one_file]['sampling_rate'], wave_data_dict[one_file]['wav_data'] = wavfile.read(f'{one_dir}{os.sep}{one_file}')
                     else:
                         wave_data_dict[one_file]['wav_data'], wave_data_dict[one_file]['sampling_rate'] = librosa.load(f'{one_dir}{os.sep}{one_file}')
                     wave_data_dict[one_file]['dtype'] = self.known_dtypes[type(wave_data_dict[one_file]['wav_data'].ravel()[0]).__name__]
