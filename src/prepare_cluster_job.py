@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Creates/saves text file with list of videos to run inference on.
+Creates/saves text file with list of videos to run SLEAP inference on.
 """
 
 import json

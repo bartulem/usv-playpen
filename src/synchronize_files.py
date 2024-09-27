@@ -598,10 +598,7 @@ class Synchronizer:
         self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(1000)
 
-        try:
-            quantum_seed = generate_truly_random_seed(input_parameter_dict=self.input_parameter_dict_random)
-        except (TimeoutError, RequestException, urllib.error.URLError, urllib.error.HTTPError):
-            quantum_seed = None
+        quantum_seed = None
 
         wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
                                                           'load_wavefile_data': {'library': 'scipy',
