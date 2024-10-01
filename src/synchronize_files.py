@@ -7,13 +7,16 @@ Synchronizes files:
 
 from PyQt6.QtTest import QTest
 import configparser
+import contextlib
 import glob
 import json
 import operator
 import os
 import pathlib
 import pims
+import quantumrandom
 import shutil
+import signal
 import numpy as np
 import urllib.error
 from collections import Counter
@@ -22,8 +25,22 @@ from numba import njit
 from requests.exceptions import RequestException
 from file_loader import DataLoader
 from file_writer import DataWriter
-from random_pulses import generate_truly_random_seed
 from sync_regression import LinRegression
+
+
+class TimeoutExpired(Exception):
+    pass
+
+@contextlib.contextmanager
+def time_limit(seconds):
+    def signal_handler(signum, frame):
+        raise TimeoutExpired
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
 
 
 @pims.pipeline
@@ -579,6 +596,11 @@ class Synchronizer:
         ----------
         This method takes audio files and identifies sync events (from the least
         significant bit inputs) to check sync between different data streams.
+
+        It also generates a truly random seed. The process is based on the
+        ANU Quantum Random Number Generator (see: https://qrng.anu.edu.au/),
+        generated in real-time in the lab by measuring quantum fluctuations
+        of the vacuum.
         ----------
 
         Parameters
@@ -598,7 +620,12 @@ class Synchronizer:
         self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(1000)
 
-        quantum_seed = None
+        try:
+            with time_limit(10):
+                quantum_seed = quantumrandom.get_data(data_type=self.input_parameter_dict_random['dtype'],
+                                                      array_length=self.input_parameter_dict_random['array_len'])
+        except (TimeoutExpired, TimeoutError, RequestException, urllib.error.URLError, urllib.error.HTTPError):
+            quantum_seed = None
 
         wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
                                                           'load_wavefile_data': {'library': 'scipy',

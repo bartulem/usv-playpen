@@ -7,6 +7,7 @@ import ast
 import configparser
 import ctypes
 import datetime
+import math
 import os
 import platform
 import sys
@@ -50,7 +51,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.4.1'
+app_name = 'USV Playpen v0.4.2'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
@@ -298,7 +299,7 @@ class USVPlaypenWindow(QMainWindow):
         self.Record = Record(self)
         self.setWindowTitle(f'{app_name} (Record > Select config directories and set basic parameters)')
         self.setCentralWidget(self.Record)
-        record_one_x, record_one_y = (725, 500)
+        record_one_x, record_one_y = (725, 560)
         self.setFixedSize(record_one_x, record_one_y)
 
         title_label = QLabel('Please select appropriate directories (w/ config files or executables in them)', self.Record)
@@ -318,6 +319,7 @@ class USVPlaypenWindow(QMainWindow):
         settings_dir_btn.move(625, 40)
         settings_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         settings_dir_btn.clicked.connect(self._open_settings_dialog)
+        self.settings_dir_btn_clicked_flag = False
 
         avisoft_exe_dir_label = QLabel('Audio Rec (usgh.exe) directory:', self.Record)
         avisoft_exe_dir_label.setFont(QFont(self.font_id, 12))
@@ -331,6 +333,7 @@ class USVPlaypenWindow(QMainWindow):
         recorder_dir_btn.move(625, 70)
         recorder_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         recorder_dir_btn.clicked.connect(self._open_recorder_dialog)
+        self.recorder_dir_btn_clicked_flag = False
 
         avisoft_base_dir_label = QLabel('Avisoft Bioacoustics directory:', self.Record)
         avisoft_base_dir_label.setFont(QFont(self.font_id, 12))
@@ -344,6 +347,7 @@ class USVPlaypenWindow(QMainWindow):
         avisoft_base_dir_btn.move(625, 100)
         avisoft_base_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         avisoft_base_dir_btn.clicked.connect(self._open_avisoft_dialog)
+        self.avisoft_base_dir_btn_clicked_flag = False
 
         coolterm_base_dir_label = QLabel('CoolTerm base directory:', self.Record)
         coolterm_base_dir_label.setFont(QFont(self.font_id, 12))
@@ -357,6 +361,7 @@ class USVPlaypenWindow(QMainWindow):
         coolterm_base_dir_btn.move(625, 130)
         coolterm_base_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         coolterm_base_dir_btn.clicked.connect(self._open_coolterm_dialog)
+        self.coolterm_base_dir_btn_clicked_flag = False
 
         # recording files destination directories (across OS)
         recording_files_destination_linux_label = QLabel('File destination(s) Linux:', self.Record)
@@ -401,13 +406,15 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_tracking_calibration_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_tracking_calibration_cb_bool'))
         self.conduct_tracking_calibration_cb.move(220, 290)
 
-        cal_duration_label = QLabel('Calibration duration (min):', self.Record)
-        cal_duration_label.setFont(QFont(self.font_id, 12))
-        cal_duration_label.move(5, 320)
-        self.calibration_session_duration = QLineEdit('5', self.Record)
-        self.calibration_session_duration.setFont(QFont(self.font_id, 10))
-        self.calibration_session_duration.setStyleSheet('QLineEdit { width: 490px; }')
-        self.calibration_session_duration.move(220, 320)
+        disable_ethernet_label = QLabel('Disable ethernet connection:', self.Record)
+        disable_ethernet_label.setFont(QFont(self.font_id, 12))
+        disable_ethernet_label.setStyleSheet('QLabel { color: #F58025; }')
+        disable_ethernet_label.move(5, 320)
+        self.disable_ethernet_cb = QComboBox(self.Record)
+        self.disable_ethernet_cb.addItems(['Yes', 'No'])
+        self.disable_ethernet_cb.setStyleSheet('QComboBox { width: 465px; }')
+        self.disable_ethernet_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='disable_ethernet_cb_bool'))
+        self.disable_ethernet_cb.move(220, 320)
 
         video_duration_label = QLabel('Video session duration (min):', self.Record)
         video_duration_label.setFont(QFont(self.font_id, 12))
@@ -417,13 +424,29 @@ class USVPlaypenWindow(QMainWindow):
         self.video_session_duration.setStyleSheet('QLineEdit { width: 490px; }')
         self.video_session_duration.move(220, 350)
 
+        cal_duration_label = QLabel('Calibration duration (min):', self.Record)
+        cal_duration_label.setFont(QFont(self.font_id, 12))
+        cal_duration_label.move(5, 380)
+        self.calibration_session_duration = QLineEdit('5', self.Record)
+        self.calibration_session_duration.setFont(QFont(self.font_id, 10))
+        self.calibration_session_duration.setStyleSheet('QLineEdit { width: 490px; }')
+        self.calibration_session_duration.move(220, 380)
+
+        ethernet_network_label = QLabel('Ethernet network ID:', self.Record)
+        ethernet_network_label.setFont(QFont(self.font_id, 12))
+        ethernet_network_label.move(5, 410)
+        self.ethernet_network = QLineEdit('Slot01 x8 Port 1', self.Record)
+        self.ethernet_network.setFont(QFont(self.font_id, 10))
+        self.ethernet_network.setStyleSheet('QLineEdit { width: 490px; }')
+        self.ethernet_network.move(220, 410)
+
         email_notification_label = QLabel('Notify e-mail(s) of PC usage:', self.Record)
         email_notification_label.setFont(QFont(self.font_id, 12))
-        email_notification_label.move(5, 380)
+        email_notification_label.move(5, 440)
         self.email_recipients = QLineEdit(f'{email_list_global}', self.Record)
         self.email_recipients.setFont(QFont(self.font_id, 10))
         self.email_recipients.setStyleSheet('QLineEdit { width: 490px; }')
-        self.email_recipients.move(220, 380)
+        self.email_recipients.move(220, 440)
 
         self._create_buttons_record(seq=0, class_option=self.Record,
                                     button_pos_y=record_one_y-35, next_button_x_pos=record_one_x-100)
@@ -742,6 +765,7 @@ class USVPlaypenWindow(QMainWindow):
         self._save_modified_values_to_toml(run_exp_bool=True, message_func=self._message)
 
         exp_settings_dict_final = toml.load(f"{self.settings_dict['general']['config_settings_directory']}{os.sep}behavioral_experiments_settings.toml")
+
         self.run_exp = ExperimentController(message_output=self._message,
                                             email_receivers=self.email_recipients,
                                             exp_settings_dict=exp_settings_dict_final)
@@ -776,6 +800,7 @@ class USVPlaypenWindow(QMainWindow):
         centroid_model_btn.move(275, 335)
         centroid_model_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         centroid_model_btn.clicked.connect(self._open_centroid_dialog)
+        self.centroid_model_btn_clicked_flag = False
 
         self.centered_instance_model_edit = QLineEdit('', self.ProcessSettings)
         self.centered_instance_model_edit.setPlaceholderText('SLEAP centered instance model directory')
@@ -787,6 +812,7 @@ class USVPlaypenWindow(QMainWindow):
         centered_instance_btn.move(275, 365)
         centered_instance_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         centered_instance_btn.clicked.connect(self._open_centered_instance_dialog)
+        self.centered_instance_btn_btn_clicked_flag = False
 
         self.inference_root_dir_edit = QLineEdit('', self.ProcessSettings)
         self.inference_root_dir_edit.setPlaceholderText('SLEAP inference directory')
@@ -798,6 +824,7 @@ class USVPlaypenWindow(QMainWindow):
         inference_root_dir_btn.move(275, 395)
         inference_root_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         inference_root_dir_btn.clicked.connect(self._open_inference_root_dialog)
+        self.inference_root_dir_btn_clicked_flag = False
 
         self.dir_settings_edit = QLineEdit(config_dir_global, self.ProcessSettings)
         self.dir_settings_edit.setFont(QFont(self.font_id, 10))
@@ -808,6 +835,7 @@ class USVPlaypenWindow(QMainWindow):
         settings_dir_btn.move(275, 425)
         settings_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         settings_dir_btn.clicked.connect(self._open_settings_dialog)
+        self.settings_dir_btn_clicked_flag = False
 
         processing_pc_label = QLabel('Processing PC of choice:', self.ProcessSettings)
         processing_pc_label.setFont(QFont(self.font_id, 12))
@@ -1349,6 +1377,7 @@ class USVPlaypenWindow(QMainWindow):
         calibration_file_loc_btn.move(965, 370)
         calibration_file_loc_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 12px; }')
         calibration_file_loc_btn.clicked.connect(self._open_anipose_calibration_dialog)
+        self.calibration_file_loc_btn_clicked_flag = False
 
         triangulate_arena_points_cb_label = QLabel('Triangulate arena nodes:', self.ProcessSettings)
         triangulate_arena_points_cb_label.setFont(QFont(self.font_id, 12))
@@ -1444,6 +1473,7 @@ class USVPlaypenWindow(QMainWindow):
         original_arena_file_loc_btn.move(965, 700)
         original_arena_file_loc_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 12px; }')
         original_arena_file_loc_btn.clicked.connect(self._open_original_arena_dialog)
+        self.original_arena_file_loc_btn_clicked_flag = False
 
         save_arena_data_cb_label = QLabel('Save arena transformation:', self.ProcessSettings)
         save_arena_data_cb_label.setFont(QFont(self.font_id, 12))
@@ -1508,6 +1538,7 @@ class USVPlaypenWindow(QMainWindow):
         das_model_dir_btn.move(965, 910)
         das_model_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 12px; }')
         das_model_dir_btn.clicked.connect(self._open_das_model_dialog)
+        self.das_model_dir_btn_clicked_flag = False
 
         das_model_base_label = QLabel('DAS model base:', self.ProcessSettings)
         das_model_base_label.setFont(QFont(self.font_id, 12))
@@ -1572,7 +1603,7 @@ class USVPlaypenWindow(QMainWindow):
                                    f"{os.sep}avisoft_config.ini")
 
             if audio_config_temp['Configuration']['basedirectory'] != self.settings_dict['general']['avisoft_basedirectory'] \
-                    or audio_config_temp['Configuration']['configfilename'] != f"{self.settings_dict['general']['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini":
+                    or audio_config_temp['Configuration']['configfilename'] != f"{self.settings_dict['general']['avisoft_basedirectory']}Configurations\\RECORDER_USGH\\avisoft_config.ini":
                 self.modify_audio_config = True
 
             if self.exp_settings_dict['avisoft_recorder_exe'] != self.settings_dict['general']['avisoft_recorder_exe']:
@@ -1597,6 +1628,12 @@ class USVPlaypenWindow(QMainWindow):
             if self.exp_settings_dict['calibration_duration'] != ast.literal_eval(self.settings_dict['general']['calibration_duration']):
                 self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.settings_dict['general']['calibration_duration'])
 
+            if self.exp_settings_dict['disable_ethernet'] != self.settings_dict['general']['disable_ethernet']:
+                self.exp_settings_dict['disable_ethernet'] = self.settings_dict['general']['disable_ethernet']
+
+            if self.exp_settings_dict['ethernet_network'] != self.settings_dict['general']['ethernet_network']:
+                self.exp_settings_dict['ethernet_network'] = self.settings_dict['general']['ethernet_network']
+
             if self.exp_settings_dict['conduct_audio_recording'] != self.settings_dict['general']['conduct_audio_recording']:
                 self.exp_settings_dict['conduct_audio_recording'] = self.settings_dict['general']['conduct_audio_recording']
 
@@ -1615,7 +1652,7 @@ class USVPlaypenWindow(QMainWindow):
                             if self.exp_settings_dict['audio'][audio_key] != self.settings_dict['audio'][audio_key]:
                                 self.exp_settings_dict['audio'][audio_key] = self.settings_dict['audio'][audio_key]
                         else:
-                            if self.exp_settings_dict['audio'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                            if not math.isclose(self.exp_settings_dict['audio'][audio_key], ast.literal_eval(self.settings_dict['audio'][audio_key])):
                                 self.exp_settings_dict['audio'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
                                 self.modify_audio_config = True
                     else:
@@ -1626,17 +1663,17 @@ class USVPlaypenWindow(QMainWindow):
                                 self.modify_audio_config = True
 
                 elif audio_key in self.exp_settings_dict['audio']['general'].keys() and \
-                        self.exp_settings_dict['audio']['general'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                        not math.isclose(self.exp_settings_dict['audio']['general'][audio_key], ast.literal_eval(self.settings_dict['audio'][audio_key])):
                     self.exp_settings_dict['audio']['general'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
                     self.modify_audio_config = True
 
                 elif audio_key in self.exp_settings_dict['audio']['screen_position'].keys() and \
-                        self.exp_settings_dict['audio']['screen_position'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                        not math.isclose(self.exp_settings_dict['audio']['screen_position'][audio_key], ast.literal_eval(self.settings_dict['audio'][audio_key])):
                     self.exp_settings_dict['audio']['screen_position'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
                     self.modify_audio_config = True
 
                 elif audio_key in self.exp_settings_dict['audio']['devices'].keys() and \
-                        self.exp_settings_dict['audio']['devices'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                        not math.isclose( self.exp_settings_dict['audio']['devices'][audio_key], ast.literal_eval(self.settings_dict['audio'][audio_key])):
                     self.exp_settings_dict['audio']['devices'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
                     self.modify_audio_config = True
 
@@ -1650,19 +1687,19 @@ class USVPlaypenWindow(QMainWindow):
                             self.modify_audio_config = True
 
                 elif audio_key in self.exp_settings_dict['audio']['monitor'].keys() and \
-                        self.exp_settings_dict['audio']['monitor'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                        not math.isclose(self.exp_settings_dict['audio']['monitor'][audio_key], ast.literal_eval(self.settings_dict['audio'][audio_key])):
                     self.exp_settings_dict['audio']['monitor'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
                     self.modify_audio_config = True
 
                 elif audio_key in self.exp_settings_dict['audio']['call'].keys() and \
-                        self.exp_settings_dict['audio']['call'][audio_key] != ast.literal_eval(self.settings_dict['audio'][audio_key]):
+                        not math.isclose(self.exp_settings_dict['audio']['call'][audio_key], ast.literal_eval(self.settings_dict['audio'][audio_key])):
                     self.exp_settings_dict['audio']['call'][audio_key] = ast.literal_eval(self.settings_dict['audio'][audio_key])
                     self.modify_audio_config = True
 
             audio_config = configparser.ConfigParser()
             audio_config.read(f"{self.settings_dict['general']['config_settings_directory']}"
                               f"{os.sep}avisoft_config.ini")
-            if float(audio_config['Configuration']['timer']) != (float(self.settings_dict['general']['video_session_duration']) + .36) * 60:
+            if not math.isclose(float(audio_config['Configuration']['timer']), (float(self.settings_dict['general']['video_session_duration']) + .36) * 60):
                 self.modify_audio_config = True
 
             if self.exp_settings_dict['modify_audio_config_file'] != self.modify_audio_config:
@@ -1731,9 +1768,41 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.pc_usage_process = self.pc_usage_process.split(',')
 
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.original_arena_file_loc_edit.text()
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = self.calibration_file_loc_edit.text()
-        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = self.das_model_dir_edit.text()
+        if not self.inference_root_dir_btn_clicked_flag:
+            self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = self.inference_root_dir_edit.text()
+        else:
+            self.inference_root_dir_btn_clicked_flag = False
+
+        if not self.centroid_model_btn_clicked_flag:
+            self.processing_input_dict['prepare_cluster_job']['centroid_model_path'] = self.centroid_model_edit.text()
+        else:
+            self.centroid_model_btn_clicked_flag = False
+
+        if not self.centered_instance_btn_btn_clicked_flag:
+            self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path'] = self.centered_instance_model_edit.text()
+        else:
+            self.centered_instance_btn_btn_clicked_flag = False
+
+        if not self.calibration_file_loc_btn_clicked_flag:
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = self.calibration_file_loc_edit.text()
+        else:
+            self.calibration_file_loc_btn_clicked_flag = False
+
+        if not self.original_arena_file_loc_btn_clicked_flag:
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.original_arena_file_loc_edit.text()
+        else:
+            self.original_arena_file_loc_btn_clicked_flag = False
+
+        if not self.das_model_dir_btn_clicked_flag:
+            self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = self.das_model_dir_edit.text()
+        else:
+            self.das_model_dir_btn_clicked_flag = False
+
+        if not self.settings_dir_btn_clicked_flag:
+            self.settings_dict['general']['config_settings_directory'] = self.dir_settings_edit.text()
+            self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = self.dir_settings_edit.text()
+        else:
+            self.settings_dir_btn_clicked_flag = False
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
         self.device_receiving_input = 'm'
@@ -1871,6 +1940,8 @@ class USVPlaypenWindow(QMainWindow):
             self.video_session_duration = self.video_session_duration.text()
         if type(self.calibration_session_duration) != str:
             self.calibration_session_duration = self.calibration_session_duration.text()
+        if type(self.ethernet_network) != str:
+            self.ethernet_network = self.ethernet_network.text()
 
         if len(self.email_recipients) == 0:
             self.email_recipients = []
@@ -1881,11 +1952,36 @@ class USVPlaypenWindow(QMainWindow):
         self.settings_dict['general']['recording_files_destination_win'] = self.recording_files_destination_windows
         self.settings_dict['general']['video_session_duration'] = self.video_session_duration
         self.settings_dict['general']['calibration_duration'] = self.calibration_session_duration
+        self.settings_dict['general']['ethernet_network'] = self.ethernet_network
 
         self.settings_dict['general']['conduct_tracking_calibration'] = self.conduct_tracking_calibration_cb_bool
         self.conduct_tracking_calibration_cb_bool = False
         self.settings_dict['general']['conduct_audio_recording'] = self.conduct_audio_cb_bool
         self.conduct_audio_cb_bool = True
+        self.settings_dict['general']['disable_ethernet'] = self.disable_ethernet_cb_bool
+        self.disable_ethernet_cb_bool = True
+
+
+        if not self.settings_dir_btn_clicked_flag:
+            self.settings_dict['general']['config_settings_directory'] = self.dir_settings_edit.text()
+            self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = self.dir_settings_edit.text()
+        else:
+            self.settings_dir_btn_clicked_flag = False
+
+        if not self.recorder_dir_btn_clicked_flag:
+            self.settings_dict['general']['avisoft_recorder_exe'] = self.recorder_settings_edit.text()
+        else:
+            self.recorder_dir_btn_clicked_flag = False
+
+        if self.avisoft_base_dir_btn_clicked_flag:
+            self.settings_dict['general']['avisoft_basedirectory'] = self.avisoft_base_edit.text()
+        else:
+            self.avisoft_base_dir_btn_clicked_flag = False
+
+        if self.coolterm_base_dir_btn_clicked_flag:
+            self.settings_dict['general']['coolterm_basedirectory'] = self.coolterm_base_edit.text()
+        else:
+            self.coolterm_base_dir_btn_clicked_flag = False
 
     def _save_record_two_labels_func(self):
         for variable in self.default_audio_settings.keys():
@@ -2160,6 +2256,7 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Calibrate'].setEnabled(False)
 
     def _open_centroid_dialog(self):
+        self.centroid_model_btn_clicked_flag = True
         centroid_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select SLEAP centroid model directory',
@@ -2172,9 +2269,10 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 self.processing_input_dict['prepare_cluster_job']['centroid_model_path'] = str(centroid_dir_name_path)
         else:
-            self.processing_input_dict['prepare_cluster_job']['centroid_model_path'] = ''
+            self.processing_input_dict['prepare_cluster_job']['centroid_model_path'] = self.centroid_model_edit.text()
 
     def _open_centered_instance_dialog(self):
+        self.centered_instance_btn_btn_clicked_flag = True
         centered_instance_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select SLEAP centered instance model directory',
@@ -2187,9 +2285,10 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path'] = str(centered_instance_dir_name_path)
         else:
-            self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path'] = ''
+            self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path'] = self.centered_instance_model_edit.text()
 
     def _open_inference_root_dialog(self):
+        self.inference_root_dir_btn_clicked_flag = True
         inference_root_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select SLEAP centered instance model directory',
@@ -2202,9 +2301,10 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = str(inference_root_dir_name_path)
         else:
-            self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = ''
+            self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = self.inference_root_dir_edit.text()
 
     def _open_settings_dialog(self):
+        self.settings_dir_btn_clicked_flag = True
         settings_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select settings directory',
@@ -2223,6 +2323,7 @@ class USVPlaypenWindow(QMainWindow):
             self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = f'{config_dir_global}'
 
     def _open_recorder_dialog(self):
+        self.recorder_dir_btn_clicked_flag = True
         recorder_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select Avisoft Recorder USGH directory',
@@ -2238,6 +2339,7 @@ class USVPlaypenWindow(QMainWindow):
             self.settings_dict['general']['avisoft_recorder_exe'] = f'{avisoft_rec_dir_global}'
 
     def _open_avisoft_dialog(self):
+        self.avisoft_base_dir_btn_clicked_flag = True
         avisoft_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select Avisoft base directory',
@@ -2253,6 +2355,7 @@ class USVPlaypenWindow(QMainWindow):
             self.settings_dict['general']['avisoft_basedirectory'] = f'{avisoft_base_dir_global}'
 
     def _open_coolterm_dialog(self):
+        self.coolterm_base_dir_btn_clicked_flag = True
         coolterm_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select Coolterm base directory',
@@ -2268,6 +2371,7 @@ class USVPlaypenWindow(QMainWindow):
             self.settings_dict['general']['coolterm_basedirectory'] = f'{coolterm_base_dir_global}'
 
     def _open_anipose_calibration_dialog(self):
+        self.calibration_file_loc_btn_clicked_flag = True
         anipose_cal_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select Anipose calibration root directory',
@@ -2280,9 +2384,10 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = str(anipose_cal_dir_name_path)
         else:
-            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = ''
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = self.calibration_file_loc_edit.text()
 
     def _open_original_arena_dialog(self):
+        self.original_arena_file_loc_btn_clicked_flag = True
         original_arena_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select arena *points3d.h5 root directory',
@@ -2295,9 +2400,10 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = str(original_aren_dir_name_path)
         else:
-            self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = ''
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.original_arena_file_loc_edit.text()
 
     def _open_das_model_dialog(self):
+        self.das_model_dir_btn_clicked_flag = True
         das_model_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select arena *points3d.h5 root directory',
@@ -2310,7 +2416,7 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = str(das_model_dir_name_path)
         else:
-            self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = ''
+            self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = self.das_model_dir_edit.text()
 
     def _location_on_the_screen(self):
         top_left_point = QGuiApplication.primaryScreen().availableGeometry().topLeft()
@@ -2348,7 +2454,7 @@ def main():
         while time.time() < t + 0.025:
             usv_playpen_app.processEvents()
 
-    initial_values_dict = {'experiment_time_sec': 0, 'monitor_recording_cb_bool': False, 'monitor_specific_camera_cb_bool': False, 'delete_post_copy_cb_bool': True,
+    initial_values_dict = {'experiment_time_sec': 0, 'monitor_recording_cb_bool': False, 'monitor_specific_camera_cb_bool': False, 'delete_post_copy_cb_bool': True, 'disable_ethernet_cb_bool': True,
                            'conduct_audio_cb_bool': True, 'conduct_tracking_calibration_cb_bool': False, 'modify_audio_config': False, 'conduct_video_concatenation_cb_bool': False,
                            'conduct_video_fps_change_cb_bool': False, 'delete_con_file_cb_bool': True, 'conduct_multichannel_conversion_cb_bool': False, 'crop_wav_cam_cb_bool': False,
                            'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False, 'conduct_sync_cb_bool': False, 'conduct_nv_sync_cb_bool': False, 'recording_codec': 'hq',
@@ -2356,7 +2462,9 @@ def main():
                            'split_cluster_spikes_cb_bool': False, 'anipose_calibration_cb_bool': False, 'sleap_file_conversion_cb_bool': False, 'board_provided_cb_bool': False,
                            'anipose_triangulation_cb_bool': False, 'triangulate_arena_points_cb_bool': False, 'display_progress_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
                            'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False, 'sleap_cluster_cb_bool': False,
-                           'processing_pc_choice': 'A84E Backup'}
+                           'processing_pc_choice': 'A84E Backup', 'inference_root_dir_btn_clicked_flag': False, 'centroid_model_btn_clicked_flag': False, 'centered_instance_btn_btn_clicked_flag': False,
+                           'calibration_file_loc_btn_clicked_flag': False, 'original_arena_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False,
+                           'settings_dir_btn_clicked_flag': False, 'recorder_dir_btn_clicked_flag': False, 'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

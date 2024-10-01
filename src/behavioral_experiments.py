@@ -7,6 +7,7 @@ from PyQt6.QtTest import QTest
 import configparser
 import datetime
 import glob
+import math
 import os
 import pathlib
 import shutil
@@ -201,12 +202,12 @@ class ExperimentController:
                         changes += 1
 
             if self.exp_settings_dict['audio']['general']['total'] == 0:
-                if f"{(self.exp_settings_dict['video_session_duration'] + .41)}" != self.config_1['MaxFileSize']['minutes']:
+                if not math.isclose ((self.exp_settings_dict['video_session_duration'] + .41), float(self.config_1['MaxFileSize']['minutes'])):
                     self.config_1['MaxFileSize']['minutes'] = f"{(self.exp_settings_dict['video_session_duration'] + .41)}"
                     changes += 1
             else:
                 max_file_size = (self.exp_settings_dict['video_session_duration'] + .36) / (self.exp_settings_dict['video_session_duration'] / 5)
-                if self.config_1['MaxFileSize']['minutes'] != str(max_file_size):
+                if not math.isclose(float(self.config_1['MaxFileSize']['minutes']), max_file_size):
                     self.config_1['MaxFileSize']['minutes'] = str(max_file_size)
                     changes += 1
 
@@ -227,7 +228,7 @@ class ExperimentController:
 
             if self.exp_settings_dict['audio']['mics_config']['triggertype'] == 41:
                 timer_duration = self.exp_settings_dict['video_session_duration'] + .36
-                if str(timer_duration * 60) != self.config_1['Configuration']['timer']:
+                if not math.isclose((timer_duration * 60), float(self.config_1['Configuration']['timer'])):
                     self.config_1['Configuration']['timer'] = str(timer_duration * 60)
                     changes += 1
 
@@ -239,7 +240,7 @@ class ExperimentController:
             for device_num in range(self.exp_settings_dict['audio']['total_device_num']):
                 for device_setting_key in self.exp_settings_dict['audio']['devices'].keys():
                     if device_setting_key != "usghflags":
-                        if str(self.exp_settings_dict['audio']['devices'][device_setting_key]) != self.config_1['Configuration'][f"{device_setting_key}{device_num}"]:
+                        if not math.isclose(self.exp_settings_dict['audio']['devices'][device_setting_key], float(self.config_1['Configuration'][f"{device_setting_key}{device_num}"])):
                             self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key])
                     else:
                         if device_num == 0:
@@ -249,40 +250,46 @@ class ExperimentController:
 
             for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
                 for mic_spec_key in self.exp_settings_dict['audio']['mics_config'].keys():
-                    if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration'].keys()) or \
-                            (mic_num in self.exp_settings_dict['audio']['used_mics'] and str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]) != self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]):
-                        if mic_spec_key == 'name':
-                            self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"ch{mic_num + 1}"
-                            changes += 1
-                        elif mic_spec_key == 'deviceid' or mic_spec_key == 'id':
-                            if mic_num < 12:
-                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '0'
+                    if mic_spec_key in ['name', 'deviceid', 'id', 'channel', 'ditctime']:
+                        if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration'].keys()) or \
+                                (mic_num in self.exp_settings_dict['audio']['used_mics'] and str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]) != self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]):
+                            if mic_spec_key == 'name':
+                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"ch{mic_num + 1}"
                                 changes += 1
+                            elif mic_spec_key == 'deviceid' or mic_spec_key == 'id':
+                                if mic_num < 12:
+                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '0'
+                                    changes += 1
+                                else:
+                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '1'
+                                    changes += 1
+                            elif mic_spec_key == 'channel':
+                                if mic_num < 12:
+                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num}"
+                                    changes += 1
+                                else:
+                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num - 12}"
+                                    changes += 1
                             else:
-                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '1'
+                                self.config_1['Configuration'][f"{mic_spec_key}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
                                 changes += 1
-                        elif mic_spec_key == 'channel':
-                            if mic_num < 12:
-                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num}"
-                                changes += 1
-                            else:
-                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num - 12}"
-                                changes += 1
-                        else:
+                    else:
+                        if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration'].keys()) or \
+                                (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['mics_config'][mic_spec_key], float(self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]))):
                             self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
                             changes += 1
 
             for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
                 for monitor_key in self.exp_settings_dict['audio']['monitor'].keys():
                     if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{monitor_key}{mic_num}" not in self.config_1['Monitor'].keys()) or \
-                            (mic_num in self.exp_settings_dict['audio']['used_mics'] and str(self.exp_settings_dict['audio']['monitor'][monitor_key]) != self.config_1['Monitor'][f"{monitor_key}{mic_num}"]):
+                            (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['monitor'][monitor_key], float(self.config_1['Monitor'][f"{monitor_key}{mic_num}"]))):
                         self.config_1['Monitor'][f"{monitor_key}{mic_num}"] = str(self.exp_settings_dict['audio']['monitor'][monitor_key])
                         changes += 1
 
             for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
                 for call_key in self.exp_settings_dict['audio']['call'].keys():
                     if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{call_key}{mic_num}" not in self.config_1['Call'].keys()) or \
-                            (mic_num in self.exp_settings_dict['audio']['used_mics'] and str(self.exp_settings_dict['audio']['call'][call_key]) != self.config_1['Call'][f"{call_key}{mic_num}"]):
+                            (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['call'][call_key], float(self.config_1['Call'][f"{call_key}{mic_num}"]))):
                         self.config_1['Call'][f"{call_key}{mic_num}"] = str(self.exp_settings_dict['audio']['call'][call_key])
                         changes += 1
 
@@ -426,6 +433,9 @@ class ExperimentController:
         if not self.exp_settings_dict['conduct_audio_recording']:
             self.message_output(f"Video recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration']} minute(s). Please be patient.")
 
+        if self.exp_settings_dict['disable_ethernet']:
+            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" disable''').wait()
+
         # wait until cameras have finished recording
         # pause for N extra seconds so audio is done, too
         QTest.qWait(1000*(10 + (self.exp_settings_dict['video_session_duration'] * 60)))
@@ -439,7 +449,11 @@ class ExperimentController:
         sync_leds_capture.terminate()
         subprocess.Popen(f'''cmd /c "taskkill /IM CoolTerm.exe /T /F 1>nul 2>&1"''').wait()
 
-        self.message_output(f"Copying audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
+        if self.exp_settings_dict['disable_ethernet']:
+            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''').wait()
+            QTest.qWait(5000)
+
+        self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
         # move last modified sync file to primary file server
         last_modified_sync_file = max(glob.glob(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"), key=os.path.getctime)
@@ -456,14 +470,14 @@ class ExperimentController:
                       delete_after=self.exp_settings_dict['video']['general']['delete_post_copy'],
                       location=f"{total_dir_name_linux[0]}/video")
 
-        # copy audio file(s) to primary file server
+        # move audio file(s) to primary file server
         if self.exp_settings_dict['conduct_audio_recording']:
             audio_copy_subprocesses = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
                 for mic_idx in self.exp_settings_dict['audio']['used_mics']:
                     last_modified_audio_file = max(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"),
                                                    key=os.path.getctime)
-                    single_audio_copy_subp = subprocess.Popen(f'''cmd /c copy "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
+                    single_audio_copy_subp = subprocess.Popen(f'''cmd /c move "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
                                                               cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
                                                               stdout=subprocess.DEVNULL,
                                                               stderr=subprocess.STDOUT,
@@ -475,7 +489,7 @@ class ExperimentController:
                 for mic_pos_idx, mic_idx in enumerate([0, 12]):
                     audio_file_list = sorted(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"), key=os.path.getctime, reverse=True)[:relevant_file_count]
                     for aud_file in audio_file_list:
-                        multi_audio_copy_subp = subprocess.Popen(f'''cmd /c copy "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}{device_id[mic_pos_idx]}_{aud_file.split(os.sep)[-1]}"''',
+                        multi_audio_copy_subp = subprocess.Popen(f'''cmd /c move "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}{device_id[mic_pos_idx]}_{aud_file.split(os.sep)[-1]}"''',
                                                                  cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
                                                                  stdout=subprocess.DEVNULL,
                                                                  stderr=subprocess.STDOUT,
@@ -502,7 +516,7 @@ class ExperimentController:
                                  stderr=subprocess.STDOUT,
                                  shell=False)
 
-        self.message_output(f"Copying audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
+        self.message_output(f"Transferring audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
