@@ -103,14 +103,14 @@ class Operator:
         calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
 
         for one_root_dir in self.root_directory:
-            for ephys_dir in glob.glob(pathname=f"{one_root_dir.replace('Data', 'EPHYS')[:-7]}_imec*", recursive=True):
+            for ephys_dir in sorted(glob.glob(pathname=f"{one_root_dir.replace('Data', 'EPHYS')[:-7]}_imec*", recursive=True)):
 
                 probe_id = ephys_dir.split('_')[-1]
 
                 self.message_output(f"Working on getting spike times from clusters in: {ephys_dir}, started at {datetime.now()}.")
 
                 # load the changepoint .json file
-                with open(glob.glob(pathname=f'{ephys_dir}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
+                with open(sorted(glob.glob(pathname=f'{ephys_dir}{os.sep}changepoints_info_*.json', recursive=True))[0], 'r') as binary_info_input_file:
                     binary_files_info = json.load(binary_info_input_file)
 
                     for session_key in binary_files_info.keys():
@@ -126,7 +126,7 @@ class Operator:
                     unit_count_dict[session_key] = {'good': 0, 'mua': 0}
 
                     # load info from camera_frame_count_dict
-                    with open(glob.glob(f"{binary_files_info[session_key]['root_directory']}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0], 'r') as frame_count_infile:
+                    with open(sorted(glob.glob(f"{binary_files_info[session_key]['root_directory']}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0], 'r') as frame_count_infile:
                         esr_dict[session_key] = json.load(frame_count_infile)['median_empirical_camera_sr']
                         root_dict[session_key] = binary_files_info[session_key]['root_directory']
 
@@ -244,8 +244,8 @@ class Operator:
             concatenation_command = 'copy /b '
             for ord_idx, one_root_dir in enumerate(self.root_directory):
                 if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}'):
-                    for one_file, one_meta in zip(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.bin*")),
-                                                  list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.meta*"))):
+                    for one_file, one_meta in zip(sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.bin*"))),
+                                                  sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.meta*")))):
                         if one_file.is_file() and one_meta.is_file():
 
                             # parse metadata file for channel and headstage information
@@ -363,7 +363,7 @@ class Operator:
         mc_audio_files = 0
 
         # find name origin for file naming purposes
-        name_origin = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}m_*_ch*.wav")[0].split('_')[2]
+        name_origin = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}m_*_ch*.wav"))[0].split('_')[2]
 
         # concatenate single channel files for master/slave
         separation_subprocesses = []
@@ -414,7 +414,7 @@ class Operator:
         self.message_output(f"Harmonic-percussive source separation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(1000)
 
-        wav_file_lst = glob.glob(f'{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav')
+        wav_file_lst = sorted(glob.glob(f'{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav'))
 
         for one_wav_file in wav_file_lst:
             self.message_output(f"Working on file: {one_wav_file}")
@@ -510,8 +510,8 @@ class Operator:
             pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered").mkdir(parents=True, exist_ok=True)
 
             filter_subprocesses = []
-            all_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}{os.sep}"
-                                        f"*.{self.input_parameter_dict['filter_audio_files']['audio_format']}")
+            all_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}{os.sep}"
+                                               f"*.{self.input_parameter_dict['filter_audio_files']['audio_format']}"))
 
             if len(all_audio_files) > 0:
                 for one_file in all_audio_files:
@@ -565,13 +565,12 @@ class Operator:
                 name_origin = list(data_dict.keys())[0].split('_')[1]
                 dim_1 = data_dict[list(data_dict.keys())[0]]['wav_data'].shape[0]
                 dim_2 = len(data_dict.keys())
-                data_type = data_dict[list(data_dict.keys())[0]]['dtype']
                 sr = data_dict[list(data_dict.keys())[0]]['sampling_rate']
                 complete_mm_file_name = (f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}{name_origin}"
-                                         f"_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_{str(data_type).split('.')[-1][:-2]}.mmap")
+                                         f"_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_int16.mmap")
 
                 audio_mm_arr = np.memmap(filename=complete_mm_file_name,
-                                         dtype=data_type,
+                                         dtype='int16',
                                          mode='w+',
                                          shape=(dim_1, dim_2))
 

@@ -71,7 +71,7 @@ class SummaryPlotter:
         """
 
         # get the total number of frames in the video
-        json_loc = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0]
+        json_loc = sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0]
         with open(json_loc, 'r') as camera_count_json_file:
             duration_min = json.load(camera_count_json_file)['total_video_time_least']
 
@@ -97,7 +97,7 @@ class SummaryPlotter:
         med_temp = np.round(np.nanmedian(phidget_data_dictionary['temperature']), 2)
 
         # get audio information
-        wav_audio_files = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav")
+        wav_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav"))
         with wave.open(wav_audio_files[0], 'rb') as example_audio_file:
             audio_sampling_rate = example_audio_file.getframerate()
             audio_sample_number = example_audio_file.getnframes()

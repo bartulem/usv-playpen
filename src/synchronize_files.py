@@ -7,41 +7,20 @@ Synchronizes files:
 
 from PyQt6.QtTest import QTest
 import configparser
-import contextlib
 import glob
 import json
 import operator
 import os
 import pathlib
 import pims
-import quantumrandom
 import shutil
-import signal
 import numpy as np
-import urllib.error
 from collections import Counter
 from datetime import datetime
 from numba import njit
-from requests.exceptions import RequestException
 from file_loader import DataLoader
 from file_writer import DataWriter
 from sync_regression import LinRegression
-
-
-class TimeoutExpired(Exception):
-    pass
-
-@contextlib.contextmanager
-def time_limit(seconds):
-    def signal_handler(signum, frame):
-        raise TimeoutExpired
-    signal.signal(signal.SIGALRM, signal_handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
-
 
 @pims.pipeline
 def modify_memmap_array(frame, mmap_arr, frame_idx,
@@ -155,12 +134,12 @@ class Synchronizer:
         calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
 
         # load info from camera_frame_count_dict
-        with open(glob.glob(pathname=f'{self.root_directory}{os.sep}**{os.sep}*_camera_frame_count_dict.json', recursive=True)[0], 'r') as frame_count_infile:
+        with open(sorted(glob.glob(pathname=f'{self.root_directory}{os.sep}**{os.sep}*_camera_frame_count_dict.json', recursive=True))[0], 'r') as frame_count_infile:
             camera_frame_count_dict = json.load(frame_count_infile)
             total_frame_number_least = camera_frame_count_dict['total_frame_number_least']
             total_video_time_least = camera_frame_count_dict['total_video_time_least']
 
-        for npx_idx, npx_recording in enumerate(glob.glob(pathname=f"{self.root_directory}{os.sep}**{os.sep}*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin", recursive=True)):
+        for npx_idx, npx_recording in enumerate(sorted(glob.glob(pathname=f"{self.root_directory}{os.sep}**{os.sep}*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin", recursive=True))):
 
             # parse metadata file for channel and headstage information
             with open(f"{npx_recording[:-3]}meta") as meta_data_file:
@@ -214,8 +193,8 @@ class Synchronizer:
 
                     # save tracking start and end in changepoint information JSON file
                     root_ephys = self.root_directory.replace('Data', 'EPHYS').replace(self.root_directory.split(os.sep)[-1], recording_date) + f'_{imec_probe_id}'
-                    if len(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)) > 0:
-                        with open(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0], 'r') as binary_info_input_file:
+                    if len(sorted(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True))) > 0:
+                        with open(sorted(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True))[0], 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
                     else:
                         pathlib.Path(root_ephys).mkdir(parents=True, exist_ok=True)
@@ -232,7 +211,7 @@ class Synchronizer:
                     with open(f'{root_ephys}{os.sep}changepoints_info_{recording_date}_{imec_probe_id}.json', 'w') as binary_info_output_file:
                         json.dump(binary_files_info, binary_info_output_file, indent=4)
 
-                    self.message_output(f"SUCCESS! Tracking start/end sample times saved in {glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True)[0]}.")
+                    self.message_output(f"SUCCESS! Tracking start/end sample times saved in {sorted(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True))[0]}.")
 
                 else:
                     count_values_in_sync_data = sorted(dict(Counter(ch_sync_data)).items(), key=operator.itemgetter(1), reverse=True)
@@ -498,8 +477,8 @@ class Synchronizer:
             if '_' not in video_subdir and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
                 sync_cam_idx = 0
                 for camera_dir in os.listdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
-                    if camera_dir != '.DS_Store':
-                        video_name = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}*.mp4")[0].split(os.sep)[-1]
+                    if camera_dir != '.DS_Store' and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}") and camera_dir in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num']:
+                        video_name = sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}*.mp4"))[0].split(os.sep)[-1]
                         if 'calibration' not in video_name \
                                 and video_name.split('-')[0] in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num'] \
                                 and self.input_parameter_dict['find_video_sync_trains']['video_extension'] in video_name:
@@ -596,11 +575,6 @@ class Synchronizer:
         ----------
         This method takes audio files and identifies sync events (from the least
         significant bit inputs) to check sync between different data streams.
-
-        It also generates a truly random seed. The process is based on the
-        ANU Quantum Random Number Generator (see: https://qrng.anu.edu.au/),
-        generated in real-time in the lab by measuring quantum fluctuations
-        of the vacuum.
         ----------
 
         Parameters
@@ -620,19 +594,12 @@ class Synchronizer:
         self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(1000)
 
-        try:
-            with time_limit(10):
-                quantum_seed = quantumrandom.get_data(data_type=self.input_parameter_dict_random['dtype'],
-                                                      array_length=self.input_parameter_dict_random['array_len'])
-        except (TimeoutExpired, TimeoutError, RequestException, urllib.error.URLError, urllib.error.HTTPError):
-            quantum_seed = None
-
         wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
                                                           'load_wavefile_data': {'library': 'scipy',
                                                                                  'conditional_arg': [f"_ch{self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input']:02d}"]}}).load_wavefile_data()
 
         # get the total number of frames in the video
-        json_loc = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0]
+        json_loc = sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0]
         with open(json_loc, 'r') as camera_count_json_file:
             camera_fr_count_dict = json.load(camera_count_json_file)
             total_frame_number = camera_fr_count_dict['total_frame_number_least']
@@ -667,7 +634,7 @@ class Synchronizer:
                                                 f"than the tolerance and the largest one is {diff_array.max()} ms")
                         else:
                             prediction_error_array = LinRegression(x_data=audio_ipi_start_samples,
-                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(quantum_seed=quantum_seed)
+                                                                   y_data=video_ipi_start_frames).split_train_test_and_regress(quantum_seed=None)
                             prediction_error_dict[audio_file[:-4]] = prediction_error_array
 
             else:
@@ -707,7 +674,7 @@ class Synchronizer:
         QTest.qWait(1000)
 
         # load info from camera_frame_count_dict
-        with open(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")[0], 'r') as frame_count_infile:
+        with open(sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0], 'r') as frame_count_infile:
             camera_frame_count_dict = json.load(frame_count_infile)
             total_frame_number = camera_frame_count_dict['total_frame_number_least']
             total_video_time = camera_frame_count_dict['total_video_time_least']
@@ -734,7 +701,7 @@ class Synchronizer:
                 audio_tracking_difference = total_audio_recording_during_tracking - total_video_time
                 self.message_output(f"On device {device_id}, the first tracking frame started at {start_first_recorded_frame} samples, and the last joint one ended at "
                                     f"{end_last_recorded_frame} samples, giving a total audio recording time of {total_audio_recording_during_tracking:.4f} seconds, "
-                                    f"which is ~{audio_tracking_difference:.4f} seconds off relative to tracking.")
+                                    f"which is {audio_tracking_difference:.4f} seconds off relative to tracking.")
                 break
 
         QTest.qWait(1000)

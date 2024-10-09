@@ -342,7 +342,7 @@ class ExperimentController:
             recording_duration (int/float)
                 Recording duration; defaults to 20 (minutes).
             recording_codec (str)
-                Video codec to use; defaults to "lq".
+                Video codec to use; defaults to "hq".
             monitor_recording (bool)
                 To monitor or not to monitor the recording; defaults to True.
             monitor_specific_camera (bool)

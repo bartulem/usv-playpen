@@ -8,13 +8,13 @@ import os
 import traceback
 from datetime import datetime
 from anipose_operations import ConvertTo3D
+from das_inference import FindMouseVocalizations
 from extract_phidget_data import Gatherer
 from file_manipulation import Operator
 from prepare_cluster_job import PrepareClusterJob
 from preprocessing_plot import SummaryPlotter
 from send_email import Messenger
 from synchronize_files import Synchronizer
-from usv_inference import FindMouseVocalizations
 
 
 class Stylist:
@@ -211,6 +211,12 @@ class Stylist:
                         FindMouseVocalizations(root_directory=one_directory,
                                                input_parameter_dict=self.input_parameter_dict,
                                                message_output=self.message_output).das_command_line_inference()
+
+                    # # # conduct DAS summary
+                    if self.input_parameter_dict['processing_booleans']['das_summarize']:
+                        FindMouseVocalizations(root_directory=one_directory,
+                                               input_parameter_dict=self.input_parameter_dict,
+                                               message_output=self.message_output).summarize_das_findings()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")

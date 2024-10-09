@@ -41,7 +41,6 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QWidget,
 )
-from PyQt6.QtTest import QTest
 from behavioral_experiments import ExperimentController
 from preprocess_data import Stylist
 
@@ -51,24 +50,33 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.4.2'
+app_name = 'USV Playpen v0.5.0'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
+das_model_dir = 'model_2024-03-25'
+das_model_base_global ='20240325_073951'
+camera_ids_global = ['21372315', '21372316', '21369048', '22085397', '21241563']
+camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
 
 if platform.system() == 'Windows':
     config_dir_global = 'C:\\experiment_running_docs'
+    das_model_dir_global = f'F:\\{cup_directory_name}\\DAS\\{das_model_dir}'
+    sleap_inference_dir_global = f'F:\\{cup_directory_name}\\SLEAP\\inference'
 elif platform.system() == 'Linux':
     config_dir_global = f'/mnt/falkner/{cup_directory_name}/PC_transfer/experiment_running_docs'
+    das_model_dir_global = f'/mnt/falkner/{cup_directory_name}/DAS/{das_model_dir}'
+    sleap_inference_dir_global = f'/mnt/falkner/{cup_directory_name}/SLEAP/inference'
 else:
     config_dir_global = f'/Volumes/falkner/{cup_directory_name}/PC_transfer/experiment_running_docs'
+    das_model_dir_global = f'/Volumes/falkner/{cup_directory_name}/DAS/{das_model_dir}'
+    sleap_inference_dir_global = f'/Volumes/falkner/{cup_directory_name}/SLEAP/inference'
+
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
 avisoft_base_dir_global = 'C:\\Users\\bartulem\\Documents\\Avisoft Bioacoustics\\'
 coolterm_base_dir_global = 'D:\\CoolTermWin'
 destination_linux_global = f'/home/labadmin/falkner/{cup_directory_name}/Data,/home/labadmin/murthy/{cup_directory_name}/Data'
 destination_win_global = f'F:\\{cup_directory_name}\\Data,M:\\{cup_directory_name}\\Data'
-camera_ids_global = ['21372315', '21372316', '21369048', '22085397', '21241563']
-camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
 gui_font_global = 'segoeui.ttf'
 
 basedir = os.path.dirname(__file__)
@@ -161,7 +169,8 @@ class USVPlaypenWindow(QMainWindow):
             'anipose_calibration': False,
             'anipose_triangulation': False,
             'anipose_trm': False,
-            'das_infer': False},
+            'das_infer': False,
+            'das_summarize': False},
             'anipose_operations': {
                 'ConvertTo3D': {
                     'sleap_file_conversion': {
@@ -181,8 +190,11 @@ class USVPlaypenWindow(QMainWindow):
                         'display_progress_bool': False,
                         'rigid_body_constraints': [],
                         'weak_body_constraints': [],
-                        'scale_smooth_len_weak': [3, 4, 1],
-                        'reprojection_error_loss': [5, 'l2'],
+                        'smooth_scale': 3,
+                        'weight_weak': 4,
+                        'weight_rigid': 1,
+                        'reprojection_error_threshold': 5,
+                        'regularization_function': 'l2',
                         'n_deriv_smooth': 2},
                     'translate_rotate_metric': {
                         'original_arena_file_loc': '',
@@ -220,11 +232,11 @@ class USVPlaypenWindow(QMainWindow):
                         'filter_dirs': ['hpss'],
                         'filter_freq_bounds': [0, 30000]},
                     'concatenate_video_files': {
-                        'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
+                        'camera_serial_num': camera_ids_global,
                         'video_extension': 'mp4',
                         'concatenated_video_name': 'concatenated_temp'},
                     'rectify_video_fps': {
-                        'camera_serial_num': ['21241563', '21369048', '21372315', '21372316', '22085397'],
+                        'camera_serial_num': camera_ids_global,
                         'conversion_target_file': 'concatenated_temp',
                         'video_extension': 'mp4',
                         'constant_rate_factor': 16,
@@ -777,10 +789,11 @@ class USVPlaypenWindow(QMainWindow):
         self.ProcessSettings = ProcessSettings(self)
         self.setWindowTitle(f'{app_name} (Process recordings > Settings)')
         self.setCentralWidget(self.ProcessSettings)
-        record_four_x, record_four_y = (1070, 1100)
+        record_four_x, record_four_y = (1020, 935)
         self.setFixedSize(record_four_x, record_four_y)
 
-        # select all directories for processing
+        # column 1
+
         processing_dir_label = QLabel('(*) Root directories for processing', self.ProcessSettings)
         processing_dir_label.setFont(QFont(self.font_id, 13))
         processing_dir_label.setStyleSheet('QLabel { font-weight: bold;}')
@@ -790,14 +803,33 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_dir_edit.move(10, 40)
         self.processing_dir_edit.setFixedSize(350, 290)
 
+        self.dir_settings_edit = QLineEdit(config_dir_global, self.ProcessSettings)
+        self.dir_settings_edit.setFont(QFont(self.font_id, 10))
+        self.dir_settings_edit.setStyleSheet('QLineEdit { width: 260px; }')
+        self.dir_settings_edit.move(10, 335)
+        settings_dir_btn = QPushButton('Browse', self.ProcessSettings)
+        settings_dir_btn.setFont(QFont(self.font_id, 8))
+        settings_dir_btn.move(275, 335)
+        settings_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
+        settings_dir_btn.clicked.connect(self._open_settings_dialog)
+        self.settings_dir_btn_clicked_flag = False
+
+        sleap_conda_label = QLabel('SLEAP conda environment name:', self.ProcessSettings)
+        sleap_conda_label.setFont(QFont(self.font_id, 12))
+        sleap_conda_label.move(10, 365)
+        self.sleap_conda = QLineEdit('sleap1.3.3', self.ProcessSettings)
+        self.sleap_conda.setFont(QFont(self.font_id, 10))
+        self.sleap_conda.setStyleSheet('QLineEdit { width: 85px; }')
+        self.sleap_conda.move(275, 365)
+
         self.centroid_model_edit = QLineEdit('', self.ProcessSettings)
         self.centroid_model_edit.setPlaceholderText('SLEAP centroid model directory')
         self.centroid_model_edit.setFont(QFont(self.font_id, 10))
         self.centroid_model_edit.setStyleSheet('QLineEdit { width: 260px; }')
-        self.centroid_model_edit.move(10, 335)
+        self.centroid_model_edit.move(10, 395)
         centroid_model_btn = QPushButton('Browse', self.ProcessSettings)
         centroid_model_btn.setFont(QFont(self.font_id, 8))
-        centroid_model_btn.move(275, 335)
+        centroid_model_btn.move(275, 395)
         centroid_model_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         centroid_model_btn.clicked.connect(self._open_centroid_dialog)
         self.centroid_model_btn_clicked_flag = False
@@ -806,763 +838,634 @@ class USVPlaypenWindow(QMainWindow):
         self.centered_instance_model_edit.setPlaceholderText('SLEAP centered instance model directory')
         self.centered_instance_model_edit.setFont(QFont(self.font_id, 10))
         self.centered_instance_model_edit.setStyleSheet('QLineEdit { width: 260px; }')
-        self.centered_instance_model_edit.move(10, 365)
+        self.centered_instance_model_edit.move(10, 425)
         centered_instance_btn = QPushButton('Browse', self.ProcessSettings)
         centered_instance_btn.setFont(QFont(self.font_id, 8))
-        centered_instance_btn.move(275, 365)
+        centered_instance_btn.move(275, 425)
         centered_instance_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         centered_instance_btn.clicked.connect(self._open_centered_instance_dialog)
         self.centered_instance_btn_btn_clicked_flag = False
 
-        self.inference_root_dir_edit = QLineEdit('', self.ProcessSettings)
+        self.inference_root_dir_edit = QLineEdit(sleap_inference_dir_global, self.ProcessSettings)
         self.inference_root_dir_edit.setPlaceholderText('SLEAP inference directory')
         self.inference_root_dir_edit.setFont(QFont(self.font_id, 10))
         self.inference_root_dir_edit.setStyleSheet('QLineEdit { width: 260px; }')
-        self.inference_root_dir_edit.move(10, 395)
+        self.inference_root_dir_edit.move(10, 455)
         inference_root_dir_btn = QPushButton('Browse', self.ProcessSettings)
         inference_root_dir_btn.setFont(QFont(self.font_id, 8))
-        inference_root_dir_btn.move(275, 395)
+        inference_root_dir_btn.move(275, 455)
         inference_root_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
         inference_root_dir_btn.clicked.connect(self._open_inference_root_dialog)
         self.inference_root_dir_btn_clicked_flag = False
 
-        self.dir_settings_edit = QLineEdit(config_dir_global, self.ProcessSettings)
-        self.dir_settings_edit.setFont(QFont(self.font_id, 10))
-        self.dir_settings_edit.setStyleSheet('QLineEdit { width: 260px; }')
-        self.dir_settings_edit.move(10, 425)
-        settings_dir_btn = QPushButton('Browse', self.ProcessSettings)
-        settings_dir_btn.setFont(QFont(self.font_id, 8))
-        settings_dir_btn.move(275, 425)
-        settings_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
-        settings_dir_btn.clicked.connect(self._open_settings_dialog)
-        self.settings_dir_btn_clicked_flag = False
-
-        processing_pc_label = QLabel('Processing PC of choice:', self.ProcessSettings)
-        processing_pc_label.setFont(QFont(self.font_id, 12))
-        processing_pc_label.move(10, 455)
-        self.processing_pc_cb = QComboBox(self.ProcessSettings)
-        self.processing_pc_cb.addItems(['A84E Backup', 'A84E Main', '165B Audio', '165B Neural', 'A84I Main'])
-        self.processing_pc_cb.setStyleSheet('QComboBox { width: 105px; }')
-        self.processing_pc_cb.activated.connect(partial(self._combo_box_prior_processing_pc_choice, variable_id='processing_pc_choice'))
-        self.processing_pc_cb.move(225, 455)
-
-        pc_usage_process_label = QLabel('Notify e-mail(s) of PC usage:', self.ProcessSettings)
-        pc_usage_process_label.setFont(QFont(self.font_id, 12))
-        pc_usage_process_label.move(10, 485)
-        self.pc_usage_process = QLineEdit(f'{email_list_global}', self.ProcessSettings)
-        self.pc_usage_process.setFont(QFont(self.font_id, 10))
-        self.pc_usage_process.setStyleSheet('QLineEdit { width: 150px; }')
-        self.pc_usage_process.move(210, 485)
-
-        # set other parameters
-
-        gvs_label = QLabel('Video processing settings', self.ProcessSettings)
-        gvs_label.setFont(QFont(self.font_id, 13))
-        gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
-        gvs_label.move(10, 530)
-
-        conduct_video_concatenation_label = QLabel('Conduct video concatenation:', self.ProcessSettings)
-        conduct_video_concatenation_label.setFont(QFont(self.font_id, 12))
-        conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_video_concatenation_label.move(10, 560)
-        self.conduct_video_concatenation_cb = QComboBox(self.ProcessSettings)
-        self.conduct_video_concatenation_cb.addItems(['No', 'Yes'])
-        self.conduct_video_concatenation_cb.setStyleSheet('QComboBox { width: 105px; }')
-        self.conduct_video_concatenation_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_video_concatenation_cb_bool'))
-        self.conduct_video_concatenation_cb.move(225, 560)
-
-        concatenate_cam_serial_num_label = QLabel('Camera serial num(s):', self.ProcessSettings)
-        concatenate_cam_serial_num_label.setFont(QFont(self.font_id, 12))
-        concatenate_cam_serial_num_label.move(10, 590)
-        self.concatenate_cam_serial_num = QLineEdit(','.join(camera_ids_global), self.ProcessSettings)
-        self.concatenate_cam_serial_num.setFont(QFont(self.font_id, 10))
-        self.concatenate_cam_serial_num.setStyleSheet('QLineEdit { width: 195px; }')
-        self.concatenate_cam_serial_num.move(165, 590)
-
-        concatenated_video_name_label = QLabel('Chained video name:', self.ProcessSettings)
-        concatenated_video_name_label.setFont(QFont(self.font_id, 12))
-        concatenated_video_name_label.move(10, 620)
-        self.concatenated_video_name = QLineEdit('concatenated_temp', self.ProcessSettings)
-        self.concatenated_video_name.setFont(QFont(self.font_id, 10))
-        self.concatenated_video_name.setStyleSheet('QLineEdit { width: 195px; }')
-        self.concatenated_video_name.move(165, 620)
-
-        concatenate_video_ext_label = QLabel('Video file format:', self.ProcessSettings)
-        concatenate_video_ext_label.setFont(QFont(self.font_id, 12))
-        concatenate_video_ext_label.move(10, 650)
-        self.concatenate_video_ext = QLineEdit('mp4', self.ProcessSettings)
-        self.concatenate_video_ext.setFont(QFont(self.font_id, 10))
-        self.concatenate_video_ext.setStyleSheet('QLineEdit { width: 195px; }')
-        self.concatenate_video_ext.move(165, 650)
-
-        conduct_video_fps_change_cb_label = QLabel('Conduct video re-encoding:', self.ProcessSettings)
-        conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_video_fps_change_cb_label.move(10, 680)
-        self.conduct_video_fps_change_cb = QComboBox(self.ProcessSettings)
-        self.conduct_video_fps_change_cb.addItems(['No', 'Yes'])
-        self.conduct_video_fps_change_cb.setStyleSheet('QComboBox { width: 105px; }')
-        self.conduct_video_fps_change_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_video_fps_change_cb_bool'))
-        self.conduct_video_fps_change_cb.move(225, 680)
-
-        change_fps_cam_serial_num_label = QLabel('Camera serial num(s):', self.ProcessSettings)
-        change_fps_cam_serial_num_label.setFont(QFont(self.font_id, 12))
-        change_fps_cam_serial_num_label.move(10, 710)
-        self.change_fps_cam_serial_num = QLineEdit(','.join(camera_ids_global), self.ProcessSettings)
-        self.change_fps_cam_serial_num.setFont(QFont(self.font_id, 10))
-        self.change_fps_cam_serial_num.setStyleSheet('QLineEdit { width: 195px; }')
-        self.change_fps_cam_serial_num.move(165, 710)
-
-        conversion_target_file_label = QLabel('Chained video name:', self.ProcessSettings)
-        conversion_target_file_label.setFont(QFont(self.font_id, 12))
-        conversion_target_file_label.move(10, 740)
-        self.conversion_target_file = QLineEdit('concatenated_temp', self.ProcessSettings)
-        self.conversion_target_file.setFont(QFont(self.font_id, 10))
-        self.conversion_target_file.setStyleSheet('QLineEdit { width: 195px; }')
-        self.conversion_target_file.move(165, 740)
-
-        conversion_vid_ext_label = QLabel('Video file format:', self.ProcessSettings)
-        conversion_vid_ext_label.setFont(QFont(self.font_id, 12))
-        conversion_vid_ext_label.move(10, 770)
-        self.conversion_vid_ext = QLineEdit('mp4', self.ProcessSettings)
-        self.conversion_vid_ext.setFont(QFont(self.font_id, 10))
-        self.conversion_vid_ext.setStyleSheet('QLineEdit { width: 195px; }')
-        self.conversion_vid_ext.move(165, 770)
-
-        constant_rate_factor_label = QLabel('Rate factor (-crf):', self.ProcessSettings)
-        constant_rate_factor_label.setFont(QFont(self.font_id, 12))
-        constant_rate_factor_label.move(10, 800)
-        self.constant_rate_factor = QLineEdit('16', self.ProcessSettings)
-        self.constant_rate_factor.setFont(QFont(self.font_id, 10))
-        self.constant_rate_factor.setStyleSheet('QLineEdit { width: 195px; }')
-        self.constant_rate_factor.move(165, 800)
-
-        encoding_preset_label = QLabel('Encoding preset:', self.ProcessSettings)
-        encoding_preset_label.setFont(QFont(self.font_id, 12))
-        encoding_preset_label.move(10, 830)
-        self.encoding_preset = QLineEdit('veryfast', self.ProcessSettings)
-        self.encoding_preset.setFont(QFont(self.font_id, 10))
-        self.encoding_preset.setStyleSheet('QLineEdit { width: 195px; }')
-        self.encoding_preset.move(165, 830)
-
-        delete_con_file_cb_label = QLabel('Delete chained video file:', self.ProcessSettings)
-        delete_con_file_cb_label.setFont(QFont(self.font_id, 12))
-        delete_con_file_cb_label.move(10, 860)
-        self.delete_con_file_cb = QComboBox(self.ProcessSettings)
-        self.delete_con_file_cb.addItems(['Yes', 'No'])
-        self.delete_con_file_cb.setStyleSheet('QComboBox { width: 105px; }')
-        self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
-        self.delete_con_file_cb.move(225, 860)
-
-        gas_label = QLabel('Audio processing settings', self.ProcessSettings)
-        gas_label.setFont(QFont(self.font_id, 13))
-        gas_label.setStyleSheet('QLabel { font-weight: bold;}')
-        gas_label.move(10, 900)
-
-        conduct_multichannel_conversion_cb_label = QLabel('Convert multi-ch to single-ch files:', self.ProcessSettings)
-        conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_multichannel_conversion_cb_label.move(10, 930)
-        self.conduct_multichannel_conversion_cb = QComboBox(self.ProcessSettings)
-        self.conduct_multichannel_conversion_cb.addItems(['No', 'Yes'])
-        self.conduct_multichannel_conversion_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.conduct_multichannel_conversion_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_multichannel_conversion_cb_bool'))
-        self.conduct_multichannel_conversion_cb.move(250, 930)
-
-        crop_wav_cam_cb_label = QLabel('Crop AUDIO files to match VIDEO:', self.ProcessSettings)
-        crop_wav_cam_cb_label.setFont(QFont(self.font_id, 12))
-        crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        crop_wav_cam_cb_label.move(10, 960)
-        self.crop_wav_cam_cb = QComboBox(self.ProcessSettings)
-        self.crop_wav_cam_cb.addItems(['No', 'Yes'])
-        self.crop_wav_cam_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.crop_wav_cam_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='crop_wav_cam_cb_bool'))
-        self.crop_wav_cam_cb.move(250, 960)
-
-        device_receiving_input_cb_label = QLabel('Trgbox-USGH device (m | s):', self.ProcessSettings)
-        device_receiving_input_cb_label.setFont(QFont(self.font_id, 12))
-        device_receiving_input_cb_label.move(10, 990)
-        self.device_receiving_input_cb = QComboBox(self.ProcessSettings)
-        self.device_receiving_input_cb.addItems(['m', 's'])
-        self.device_receiving_input_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.device_receiving_input_cb.activated.connect(partial(self._combo_box_prior_audio_device_camera_input, variable_id='device_receiving_input'))
-        self.device_receiving_input_cb.move(250, 990)
-
-        ch_receiving_input_label = QLabel('Trgbox-USGH ch (1-12):', self.ProcessSettings)
-        ch_receiving_input_label.setFont(QFont(self.font_id, 12))
-        ch_receiving_input_label.move(10, 1020)
-        self.ch_receiving_input = QLineEdit('1', self.ProcessSettings)
-        self.ch_receiving_input.setFont(QFont(self.font_id, 10))
-        self.ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.ch_receiving_input.move(250, 1020)
-
-        # column 2
-
-        av_sync_label = QLabel('Synchronization between A/V files', self.ProcessSettings)
-        av_sync_label.setFont(QFont(self.font_id, 13))
-        av_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
-        av_sync_label.move(400, 10)
-
-        conduct_sync_cb_label = QLabel('Conduct A/V sync check:', self.ProcessSettings)
-        conduct_sync_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_sync_cb_label.move(400, 40)
-        self.conduct_sync_cb = QComboBox(self.ProcessSettings)
-        self.conduct_sync_cb.addItems(['No', 'Yes'])
-        self.conduct_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.conduct_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_sync_cb_bool'))
-        self.conduct_sync_cb.move(590, 40)
-
-        phidget_extra_data_camera_label = QLabel('Phidget data camera:', self.ProcessSettings)
-        phidget_extra_data_camera_label.setFont(QFont(self.font_id, 12))
-        phidget_extra_data_camera_label.move(400, 70)
-        self.phidget_extra_data_camera = QLineEdit('22085397', self.ProcessSettings)
-        self.phidget_extra_data_camera.setFont(QFont(self.font_id, 10))
-        self.phidget_extra_data_camera.setStyleSheet('QLineEdit { width: 108px; }')
-        self.phidget_extra_data_camera.move(590, 70)
-
-        a_ch_receiving_input_label = QLabel('Arduino-USGH ch (1-12):', self.ProcessSettings)
-        a_ch_receiving_input_label.setFont(QFont(self.font_id, 12))
-        a_ch_receiving_input_label.move(400, 100)
-        self.a_ch_receiving_input = QLineEdit('2', self.ProcessSettings)
-        self.a_ch_receiving_input.setFont(QFont(self.font_id, 10))
-        self.a_ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.a_ch_receiving_input.move(590, 100)
-
-        v_camera_serial_num_label = QLabel('Sync camera serial(s):', self.ProcessSettings)
-        v_camera_serial_num_label.setFont(QFont(self.font_id, 12))
-        v_camera_serial_num_label.move(400, 130)
-        self.v_camera_serial_num = QLineEdit('21372315', self.ProcessSettings)
-        self.v_camera_serial_num.setFont(QFont(self.font_id, 10))
-        self.v_camera_serial_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_camera_serial_num.move(590, 130)
-
-        v_video_extension_label = QLabel('Video file format:', self.ProcessSettings)
-        v_video_extension_label.setFont(QFont(self.font_id, 12))
-        v_video_extension_label.move(400, 160)
-        self.v_video_extension = QLineEdit('mp4', self.ProcessSettings)
-        self.v_video_extension.setFont(QFont(self.font_id, 10))
-        self.v_video_extension.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_video_extension.move(590, 160)
-
-        v_led_px_version_label = QLabel('LED px version:', self.ProcessSettings)
-        v_led_px_version_label.setFont(QFont(self.font_id, 12))
-        v_led_px_version_label.move(400, 190)
-        self.v_led_px_version = QLineEdit('current', self.ProcessSettings)
-        self.v_led_px_version.setFont(QFont(self.font_id, 10))
-        self.v_led_px_version.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_led_px_version.move(590, 190)
-
-        v_led_px_dev_label = QLabel('LED deviation (px):', self.ProcessSettings)
-        v_led_px_dev_label.setFont(QFont(self.font_id, 12))
-        v_led_px_dev_label.move(400, 220)
-        self.v_led_px_dev = QLineEdit('10', self.ProcessSettings)
-        self.v_led_px_dev.setFont(QFont(self.font_id, 10))
-        self.v_led_px_dev.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_led_px_dev.move(590, 220)
-
-        v_relative_intensity_threshold_label = QLabel('Rel intensity threshold:', self.ProcessSettings)
-        v_relative_intensity_threshold_label.setFont(QFont(self.font_id, 12))
-        v_relative_intensity_threshold_label.move(400, 250)
-        self.v_relative_intensity_threshold = QLineEdit('0.6', self.ProcessSettings)
-        self.v_relative_intensity_threshold.setFont(QFont(self.font_id, 10))
-        self.v_relative_intensity_threshold.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_relative_intensity_threshold.move(590, 250)
-
-        v_millisecond_divergence_tolerance_label = QLabel('Divergence tolerance (ms):', self.ProcessSettings)
-        v_millisecond_divergence_tolerance_label.setFont(QFont(self.font_id, 12))
-        v_millisecond_divergence_tolerance_label.move(400, 280)
-        self.v_millisecond_divergence_tolerance = QLineEdit('10', self.ProcessSettings)
-        self.v_millisecond_divergence_tolerance.setFont(QFont(self.font_id, 10))
-        self.v_millisecond_divergence_tolerance.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_millisecond_divergence_tolerance.move(590, 280)
-
-        ev_sync_label = QLabel('Neural data processing settings', self.ProcessSettings)
-        ev_sync_label.setFont(QFont(self.font_id, 13))
-        ev_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
-        ev_sync_label.move(400, 320)
-
-        conduct_ephys_file_chaining_label = QLabel('Conduct e-phys file concat:', self.ProcessSettings)
-        conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
-        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_ephys_file_chaining_label.move(400, 350)
-        self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
-        self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
-        self.conduct_ephys_file_chaining_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.conduct_ephys_file_chaining_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_ephys_file_chaining_cb_bool'))
-        self.conduct_ephys_file_chaining_cb.move(590, 350)
-
-        conduct_nv_sync_cb_label = QLabel('Conduct E/V sync check:', self.ProcessSettings)
-        conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_nv_sync_cb_label.move(400, 380)
-        self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
-        self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
-        self.conduct_nv_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.conduct_nv_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_nv_sync_cb_bool'))
-        self.conduct_nv_sync_cb.move(590, 380)
-
-        split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
-        split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 12))
-        split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        split_cluster_spikes_cb_label.move(400, 410)
-        self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
-        self.split_cluster_spikes_cb.addItems(['No', 'Yes'])
-        self.split_cluster_spikes_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.split_cluster_spikes_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='split_cluster_spikes_cb_bool'))
-        self.split_cluster_spikes_cb.move(590, 410)
-
-        npx_file_type_cb_label = QLabel('Rec file format (ap | lf):', self.ProcessSettings)
-        npx_file_type_cb_label.setFont(QFont(self.font_id, 12))
-        npx_file_type_cb_label.move(400, 440)
-        self.npx_file_type_cb = QComboBox(self.ProcessSettings)
-        self.npx_file_type_cb.addItems(['ap', 'lf'])
-        self.npx_file_type_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.npx_file_type_cb.activated.connect(partial(self._combo_box_prior_npx_file_type, variable_id='npx_file_type'))
-        self.npx_file_type_cb.move(590, 440)
-
-        npx_ms_divergence_tolerance_label = QLabel('Divergence tolerance (ms):', self.ProcessSettings)
-        npx_ms_divergence_tolerance_label.setFont(QFont(self.font_id, 12))
-        npx_ms_divergence_tolerance_label.move(400, 470)
-        self.npx_ms_divergence_tolerance = QLineEdit('10', self.ProcessSettings)
-        self.npx_ms_divergence_tolerance.setFont(QFont(self.font_id, 10))
-        self.npx_ms_divergence_tolerance.setStyleSheet('QLineEdit { width: 108px; }')
-        self.npx_ms_divergence_tolerance.move(590, 470)
-
-        kilosort_version_cb_label = QLabel('Kilosort version:', self.ProcessSettings)
-        kilosort_version_cb_label.setFont(QFont(self.font_id, 12))
-        kilosort_version_cb_label.move(400, 500)
-        self.kilosort_version_cb = QComboBox(self.ProcessSettings)
-        self.kilosort_version_cb.addItems(['4', '3', '2.5', '2'])
-        self.kilosort_version_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.kilosort_version_cb.activated.connect(partial(self._combo_box_kilosort_version, variable_id='kilosort_version'))
-        self.kilosort_version_cb.move(590, 500)
-
-        min_spike_num_label = QLabel('Min num of spikes:', self.ProcessSettings)
-        min_spike_num_label.setFont(QFont(self.font_id, 12))
-        min_spike_num_label.move(400, 530)
-        self.min_spike_num = QLineEdit('0', self.ProcessSettings)
-        self.min_spike_num.setFont(QFont(self.font_id, 10))
-        self.min_spike_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.min_spike_num.move(590, 530)
-
-        hpss_label = QLabel('Harmonic-percussive source separation', self.ProcessSettings)
-        hpss_label.setFont(QFont(self.font_id, 13))
-        hpss_label.setStyleSheet('QLabel { font-weight: bold;}')
-        hpss_label.move(400, 570)
-
-        conduct_hpss_cb_label = QLabel('Conduct HPSS (serial):', self.ProcessSettings)
-        conduct_hpss_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_hpss_cb_label.move(400, 600)
-        self.conduct_hpss_cb = QComboBox(self.ProcessSettings)
-        self.conduct_hpss_cb.addItems(['No', 'Yes'])
-        self.conduct_hpss_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.conduct_hpss_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_hpss_cb_bool'))
-        self.conduct_hpss_cb.move(590, 600)
-
-        stft_label = QLabel('STFT window and hop size:', self.ProcessSettings)
-        stft_label.setFont(QFont(self.font_id, 12))
-        stft_label.move(400, 630)
-        self.stft_window_hop = QLineEdit('512,128', self.ProcessSettings)
-        self.stft_window_hop.setFont(QFont(self.font_id, 10))
-        self.stft_window_hop.setStyleSheet('QLineEdit { width: 108px; }')
-        self.stft_window_hop.move(590, 630)
-
-        hpss_kernel_size_label = QLabel('HPSS kernel size:', self.ProcessSettings)
-        hpss_kernel_size_label.setFont(QFont(self.font_id, 12))
-        hpss_kernel_size_label.move(400, 660)
-        self.hpss_kernel_size = QLineEdit('5,60', self.ProcessSettings)
-        self.hpss_kernel_size.setFont(QFont(self.font_id, 10))
-        self.hpss_kernel_size.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_kernel_size.move(590, 660)
-
-        hpss_power_label = QLabel('HPSS power:', self.ProcessSettings)
-        hpss_power_label.setFont(QFont(self.font_id, 12))
-        hpss_power_label.move(400, 690)
-        self.hpss_power = QLineEdit('4.0', self.ProcessSettings)
-        self.hpss_power.setFont(QFont(self.font_id, 10))
-        self.hpss_power.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_power.move(590, 690)
-
-        hpss_margin_label = QLabel('HPSS margin:', self.ProcessSettings)
-        hpss_margin_label.setFont(QFont(self.font_id, 12))
-        hpss_margin_label.move(400, 720)
-        self.hpss_margin = QLineEdit('4,1', self.ProcessSettings)
-        self.hpss_margin.setFont(QFont(self.font_id, 10))
-        self.hpss_margin.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_margin.move(590, 720)
-
-        audio_filter_label = QLabel('Band-pass filter audio files', self.ProcessSettings)
-        audio_filter_label.setFont(QFont(self.font_id, 13))
-        audio_filter_label.setStyleSheet('QLabel { font-weight: bold;}')
-        audio_filter_label.move(400, 760)
-
-        filter_audio_cb_label = QLabel('Filter individual audio files:', self.ProcessSettings)
-        filter_audio_cb_label.setFont(QFont(self.font_id, 12))
-        filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        filter_audio_cb_label.move(400, 790)
-        self.filter_audio_cb = QComboBox(self.ProcessSettings)
-        self.filter_audio_cb.addItems(['No', 'Yes'])
-        self.filter_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.filter_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='filter_audio_cb_bool'))
-        self.filter_audio_cb.move(590, 790)
-
-        audio_filter_format_label = QLabel('Audio file format:', self.ProcessSettings)
-        audio_filter_format_label.setFont(QFont(self.font_id, 12))
-        audio_filter_format_label.move(400, 820)
-        self.audio_filter_format = QLineEdit('wav', self.ProcessSettings)
-        self.audio_filter_format.setFont(QFont(self.font_id, 10))
-        self.audio_filter_format.setStyleSheet('QLineEdit { width: 108px; }')
-        self.audio_filter_format.move(590, 820)
-
-        filter_freq_bounds_label = QLabel('Filter freq bounds (Hz):', self.ProcessSettings)
-        filter_freq_bounds_label.setFont(QFont(self.font_id, 12))
-        filter_freq_bounds_label.move(400, 850)
-        self.filter_freq_bounds = QLineEdit('0, 30000', self.ProcessSettings)
-        self.filter_freq_bounds.setFont(QFont(self.font_id, 10))
-        self.filter_freq_bounds.setStyleSheet('QLineEdit { width: 108px; }')
-        self.filter_freq_bounds.move(590, 850)
-
-        filter_dirs_label = QLabel('Folder(s) to filter:', self.ProcessSettings)
-        filter_dirs_label.setFont(QFont(self.font_id, 12))
-        filter_dirs_label.move(400, 880)
-        self.filter_dirs = QLineEdit('hpss', self.ProcessSettings)
-        self.filter_dirs.setFont(QFont(self.font_id, 10))
-        self.filter_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.filter_dirs.move(590, 880)
-
-        conc_audio_label = QLabel('Concatenate audio files', self.ProcessSettings)
-        conc_audio_label.setFont(QFont(self.font_id, 13))
-        conc_audio_label.setStyleSheet('QLabel { font-weight: bold;}')
-        conc_audio_label.move(400, 920)
-
-        conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
-        conc_audio_cb_label.setFont(QFont(self.font_id, 12))
-        conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conc_audio_cb_label.move(400, 950)
-        self.conc_audio_cb = QComboBox(self.ProcessSettings)
-        self.conc_audio_cb.addItems(['No', 'Yes'])
-        self.conc_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.conc_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conc_audio_cb_bool'))
-        self.conc_audio_cb.move(590, 950)
-
-        audio_format_label = QLabel('Audio file format:', self.ProcessSettings)
-        audio_format_label.setFont(QFont(self.font_id, 12))
-        audio_format_label.move(400, 980)
-        self.audio_format = QLineEdit('wav', self.ProcessSettings)
-        self.audio_format.setFont(QFont(self.font_id, 10))
-        self.audio_format.setStyleSheet('QLineEdit { width: 108px; }')
-        self.audio_format.move(590, 980)
-
-        concat_dirs_label = QLabel('Folder(s) to concatenate:', self.ProcessSettings)
-        concat_dirs_label.setFont(QFont(self.font_id, 12))
-        concat_dirs_label.move(400, 1010)
-        self.concat_dirs = QLineEdit('hpss_filtered', self.ProcessSettings)
-        self.concat_dirs.setFont(QFont(self.font_id, 10))
-        self.concat_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.concat_dirs.move(590, 1010)
-
-        # column 3
-
-        anipose_operations_label = QLabel('SLEAP / DAS operations', self.ProcessSettings)
-        anipose_operations_label.setFont(QFont(self.font_id, 13))
-        anipose_operations_label.setStyleSheet('QLabel { font-weight: bold;}')
-        anipose_operations_label.move(740, 10)
-
-        sleap_cluster_cb_label = QLabel('Prepare SLEAP cluster job:', self.ProcessSettings)
-        sleap_cluster_cb_label.setFont(QFont(self.font_id, 12))
-        sleap_cluster_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        sleap_cluster_cb_label.move(740, 40)
-        self.sleap_cluster_cb = QComboBox(self.ProcessSettings)
-        self.sleap_cluster_cb.addItems(['No', 'Yes'])
-        self.sleap_cluster_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.sleap_cluster_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='sleap_cluster_cb_bool'))
-        self.sleap_cluster_cb.move(940, 40)
-
-        sleap_file_conversion_cb_label = QLabel('Conduct SLP-H5 conversion:', self.ProcessSettings)
-        sleap_file_conversion_cb_label.setFont(QFont(self.font_id, 12))
-        sleap_file_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        sleap_file_conversion_cb_label.move(740, 70)
-        self.sleap_file_conversion_cb = QComboBox(self.ProcessSettings)
-        self.sleap_file_conversion_cb.addItems(['No', 'Yes'])
-        self.sleap_file_conversion_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.sleap_file_conversion_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='sleap_file_conversion_cb_bool'))
-        self.sleap_file_conversion_cb.move(940, 70)
-
-        sleap_conda_label = QLabel('SLEAP conda env name:', self.ProcessSettings)
-        sleap_conda_label.setFont(QFont(self.font_id, 12))
-        sleap_conda_label.move(740, 100)
-        self.sleap_conda = QLineEdit('sleap1.3.3', self.ProcessSettings)
-        self.sleap_conda.setFont(QFont(self.font_id, 10))
-        self.sleap_conda.setStyleSheet('QLineEdit { width: 108px; }')
-        self.sleap_conda.move(940, 100)
-
-        anipose_calibration_cb_label = QLabel('Conduct AP calibration:', self.ProcessSettings)
-        anipose_calibration_cb_label.setFont(QFont(self.font_id, 12))
-        anipose_calibration_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        anipose_calibration_cb_label.move(740, 130)
-        self.anipose_calibration_cb = QComboBox(self.ProcessSettings)
-        self.anipose_calibration_cb.addItems(['No', 'Yes'])
-        self.anipose_calibration_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.anipose_calibration_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='anipose_calibration_cb_bool'))
-        self.anipose_calibration_cb.move(940, 130)
-
-        board_provided_cb_label = QLabel('Calibration board provided:', self.ProcessSettings)
-        board_provided_cb_label.setFont(QFont(self.font_id, 12))
-        board_provided_cb_label.move(740, 160)
-        self.board_provided_cb = QComboBox(self.ProcessSettings)
-        self.board_provided_cb.addItems(['No', 'Yes'])
-        self.board_provided_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.board_provided_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='board_provided_cb_bool'))
-        self.board_provided_cb.move(940, 160)
-
-        board_xy_label = QLabel('Calibration board XY:', self.ProcessSettings)
-        board_xy_label.setFont(QFont(self.font_id, 12))
-        board_xy_label.move(740, 190)
-        self.board_xy = QLineEdit('8,11', self.ProcessSettings)
-        self.board_xy.setFont(QFont(self.font_id, 10))
-        self.board_xy.setStyleSheet('QLineEdit { width: 108px; }')
-        self.board_xy.move(940, 190)
-
-        square_len_label = QLabel('Calibration square length:', self.ProcessSettings)
-        square_len_label.setFont(QFont(self.font_id, 12))
-        square_len_label.move(740, 220)
-        self.square_len = QLineEdit('16.25', self.ProcessSettings)
-        self.square_len.setFont(QFont(self.font_id, 10))
-        self.square_len.setStyleSheet('QLineEdit { width: 108px; }')
-        self.square_len.move(940, 220)
-
-        marker_len_bits_label = QLabel('Calibration markers (bits):', self.ProcessSettings)
-        marker_len_bits_label.setFont(QFont(self.font_id, 12))
-        marker_len_bits_label.move(740, 250)
-        self.marker_len_bits = QLineEdit('12.75,4', self.ProcessSettings)
-        self.marker_len_bits.setFont(QFont(self.font_id, 10))
-        self.marker_len_bits.setStyleSheet('QLineEdit { width: 108px; }')
-        self.marker_len_bits.move(940, 250)
-
-        dict_size_label = QLabel('Dict size:', self.ProcessSettings)
-        dict_size_label.setFont(QFont(self.font_id, 12))
-        dict_size_label.move(740, 280)
-        self.dict_size = QLineEdit('1000', self.ProcessSettings)
-        self.dict_size.setFont(QFont(self.font_id, 10))
-        self.dict_size.setStyleSheet('QLineEdit { width: 108px; }')
-        self.dict_size.move(940, 280)
-
-        img_width_height_label = QLabel('Image width / height:', self.ProcessSettings)
-        img_width_height_label.setFont(QFont(self.font_id, 12))
-        img_width_height_label.move(740, 310)
-        self.img_width_height = QLineEdit('2100,2970', self.ProcessSettings)
-        self.img_width_height.setFont(QFont(self.font_id, 10))
-        self.img_width_height.setStyleSheet('QLineEdit { width: 108px; }')
-        self.img_width_height.move(940, 310)
-
-        anipose_triangulation_cb_label = QLabel('Conduct AP triangulation:', self.ProcessSettings)
-        anipose_triangulation_cb_label.setFont(QFont(self.font_id, 12))
-        anipose_triangulation_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        anipose_triangulation_cb_label.move(740, 340)
-        self.anipose_triangulation_cb = QComboBox(self.ProcessSettings)
-        self.anipose_triangulation_cb.addItems(['No', 'Yes'])
-        self.anipose_triangulation_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.anipose_triangulation_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='anipose_triangulation_cb_bool'))
-        self.anipose_triangulation_cb.move(940, 340)
-
         self.calibration_file_loc_edit = QLineEdit('', self.ProcessSettings)
-        self.calibration_file_loc_edit.setPlaceholderText('tracking calibration root directory')
+        self.calibration_file_loc_edit.setPlaceholderText('Tracking calibration root directory')
         self.calibration_file_loc_edit.setFont(QFont(self.font_id, 10))
-        self.calibration_file_loc_edit.setStyleSheet('QLineEdit { width: 220px; }')
-        self.calibration_file_loc_edit.move(740, 370)
+        self.calibration_file_loc_edit.setStyleSheet('QLineEdit { width: 260px; }')
+        self.calibration_file_loc_edit.move(10, 485)
         calibration_file_loc_btn = QPushButton('Browse', self.ProcessSettings)
         calibration_file_loc_btn.setFont(QFont(self.font_id, 8))
-        calibration_file_loc_btn.move(965, 370)
+        calibration_file_loc_btn.move(275, 485)
         calibration_file_loc_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 12px; }')
         calibration_file_loc_btn.clicked.connect(self._open_anipose_calibration_dialog)
         self.calibration_file_loc_btn_clicked_flag = False
 
-        triangulate_arena_points_cb_label = QLabel('Triangulate arena nodes:', self.ProcessSettings)
-        triangulate_arena_points_cb_label.setFont(QFont(self.font_id, 12))
-        triangulate_arena_points_cb_label.move(740, 400)
-        self.triangulate_arena_points_cb = QComboBox(self.ProcessSettings)
-        self.triangulate_arena_points_cb.addItems(['No', 'Yes'])
-        self.triangulate_arena_points_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.triangulate_arena_points_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='triangulate_arena_points_cb_bool'))
-        self.triangulate_arena_points_cb.move(940, 400)
-
-        display_progress_cb_label = QLabel('Display progress:', self.ProcessSettings)
-        display_progress_cb_label.setFont(QFont(self.font_id, 12))
-        display_progress_cb_label.move(740, 430)
-        self.display_progress_cb = QComboBox(self.ProcessSettings)
-        self.display_progress_cb.addItems(['No', 'Yes'])
-        self.display_progress_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.display_progress_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='display_progress_cb_bool'))
-        self.display_progress_cb.move(940, 430)
-
-        frame_restriction_label = QLabel('Frame restriction:', self.ProcessSettings)
-        frame_restriction_label.setFont(QFont(self.font_id, 12))
-        frame_restriction_label.move(740, 460)
-        self.frame_restriction = QLineEdit('', self.ProcessSettings)
-        self.frame_restriction.setFont(QFont(self.font_id, 10))
-        self.frame_restriction.setStyleSheet('QLineEdit { width: 108px; }')
-        self.frame_restriction.move(940, 460)
-
-        excluded_views_label = QLabel('Excluded camera views:', self.ProcessSettings)
-        excluded_views_label.setFont(QFont(self.font_id, 12))
-        excluded_views_label.move(740, 490)
-        self.excluded_views = QLineEdit('', self.ProcessSettings)
-        self.excluded_views.setFont(QFont(self.font_id, 10))
-        self.excluded_views.setStyleSheet('QLineEdit { width: 108px; }')
-        self.excluded_views.move(940, 490)
-
-        rigid_body_constraints_label = QLabel('Rigid body constraints:', self.ProcessSettings)
-        rigid_body_constraints_label.setFont(QFont(self.font_id, 12))
-        rigid_body_constraints_label.move(740, 520)
-        self.rigid_body_constraints = QLineEdit('', self.ProcessSettings)
-        self.rigid_body_constraints.setFont(QFont(self.font_id, 10))
-        self.rigid_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
-        self.rigid_body_constraints.move(940, 520)
-
-        weak_body_constraints_label = QLabel('Weak body constraints:', self.ProcessSettings)
-        weak_body_constraints_label.setFont(QFont(self.font_id, 12))
-        weak_body_constraints_label.move(740, 550)
-        self.weak_body_constraints = QLineEdit('', self.ProcessSettings)
-        self.weak_body_constraints.setFont(QFont(self.font_id, 10))
-        self.weak_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
-        self.weak_body_constraints.move(940, 550)
-
-        scale_smooth_len_weak_label = QLabel('Scale smooth / length:', self.ProcessSettings)
-        scale_smooth_len_weak_label.setFont(QFont(self.font_id, 12))
-        scale_smooth_len_weak_label.move(740, 580)
-        self.scale_smooth_len_weak = QLineEdit('3,4,1', self.ProcessSettings)
-        self.scale_smooth_len_weak.setFont(QFont(self.font_id, 10))
-        self.scale_smooth_len_weak.setStyleSheet('QLineEdit { width: 108px; }')
-        self.scale_smooth_len_weak.move(940, 580)
-
-        reprojection_error_loss_label = QLabel('Reproject error / loss:', self.ProcessSettings)
-        reprojection_error_loss_label.setFont(QFont(self.font_id, 12))
-        reprojection_error_loss_label.move(740, 610)
-        self.reprojection_error_loss = QLineEdit("5,'l2'", self.ProcessSettings)
-        self.reprojection_error_loss.setFont(QFont(self.font_id, 10))
-        self.reprojection_error_loss.setStyleSheet('QLineEdit { width: 108px; }')
-        self.reprojection_error_loss.move(940, 610)
-
-        n_deriv_smooth_label = QLabel('Derivation smoothing (n):', self.ProcessSettings)
-        n_deriv_smooth_label.setFont(QFont(self.font_id, 12))
-        n_deriv_smooth_label.move(740, 640)
-        self.n_deriv_smooth = QLineEdit('2', self.ProcessSettings)
-        self.n_deriv_smooth.setFont(QFont(self.font_id, 10))
-        self.n_deriv_smooth.setStyleSheet('QLineEdit { width: 108px; }')
-        self.n_deriv_smooth.move(940, 640)
-
-        translate_rotate_metric_label = QLabel('Conduct coordinate change:', self.ProcessSettings)
-        translate_rotate_metric_label.setFont(QFont(self.font_id, 12))
-        translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; }')
-        translate_rotate_metric_label.move(740, 670)
-        self.translate_rotate_metric_cb = QComboBox(self.ProcessSettings)
-        self.translate_rotate_metric_cb.addItems(['No', 'Yes'])
-        self.translate_rotate_metric_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.translate_rotate_metric_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='translate_rotate_metric_cb_bool'))
-        self.translate_rotate_metric_cb.move(940, 670)
-
-        self.original_arena_file_loc_edit = QLineEdit('', self.ProcessSettings)
-        self.original_arena_file_loc_edit.setPlaceholderText('points3d.h5 arena root directory')
-        self.original_arena_file_loc_edit.setFont(QFont(self.font_id, 10))
-        self.original_arena_file_loc_edit.setStyleSheet('QLineEdit { width: 220px; }')
-        self.original_arena_file_loc_edit.move(740, 700)
-        original_arena_file_loc_btn = QPushButton('Browse', self.ProcessSettings)
-        original_arena_file_loc_btn.setFont(QFont(self.font_id, 8))
-        original_arena_file_loc_btn.move(965, 700)
-        original_arena_file_loc_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 12px; }')
-        original_arena_file_loc_btn.clicked.connect(self._open_original_arena_dialog)
-        self.original_arena_file_loc_btn_clicked_flag = False
-
-        save_arena_data_cb_label = QLabel('Save arena transformation:', self.ProcessSettings)
-        save_arena_data_cb_label.setFont(QFont(self.font_id, 12))
-        save_arena_data_cb_label.move(740, 730)
-        self.save_arena_data_cb = QComboBox(self.ProcessSettings)
-        self.save_arena_data_cb.addItems(['No', 'Yes'])
-        self.save_arena_data_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.save_arena_data_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='save_arena_data_cb_bool'))
-        self.save_arena_data_cb.move(940, 730)
-
-        save_mouse_data_cb_label = QLabel('Save mouse transformation:', self.ProcessSettings)
-        save_mouse_data_cb_label.setFont(QFont(self.font_id, 12))
-        save_mouse_data_cb_label.move(740, 760)
-        self.save_mouse_data_cb = QComboBox(self.ProcessSettings)
-        self.save_mouse_data_cb.addItems(['Yes', 'No'])
-        self.save_mouse_data_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.save_mouse_data_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='save_mouse_data_cb_bool'))
-        self.save_mouse_data_cb.move(940, 760)
-
-        delete_original_h5_cb_label = QLabel('Delete original .h5:', self.ProcessSettings)
-        delete_original_h5_cb_label.setFont(QFont(self.font_id, 12))
-        delete_original_h5_cb_label.move(740, 790)
-        self.delete_original_h5_cb = QComboBox(self.ProcessSettings)
-        self.delete_original_h5_cb.addItems(['Yes', 'No'])
-        self.delete_original_h5_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.delete_original_h5_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_original_h5_cb_bool'))
-        self.delete_original_h5_cb.move(940, 790)
-
-        static_reference_len_label = QLabel('Static reference length (m):', self.ProcessSettings)
-        static_reference_len_label.setFont(QFont(self.font_id, 12))
-        static_reference_len_label.move(740, 820)
-        self.static_reference_len = QLineEdit('0.615', self.ProcessSettings)
-        self.static_reference_len.setFont(QFont(self.font_id, 10))
-        self.static_reference_len.setStyleSheet('QLineEdit { width: 108px; }')
-        self.static_reference_len.move(940, 820)
-
-        das_inference_cb_label = QLabel('Detect USVs (serial):', self.ProcessSettings)
-        das_inference_cb_label.setFont(QFont(self.font_id, 12))
-        das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        das_inference_cb_label.move(740, 850)
-        self.das_inference_cb = QComboBox(self.ProcessSettings)
-        self.das_inference_cb.addItems(['No', 'Yes'])
-        self.das_inference_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.das_inference_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_inference_cb_bool'))
-        self.das_inference_cb.move(940, 850)
-
-        das_conda_label = QLabel('DAS conda env name:', self.ProcessSettings)
+        das_conda_label = QLabel('DAS conda environment name:', self.ProcessSettings)
         das_conda_label.setFont(QFont(self.font_id, 12))
-        das_conda_label.move(740, 880)
+        das_conda_label.move(10, 515)
         self.das_conda = QLineEdit('das', self.ProcessSettings)
         self.das_conda.setFont(QFont(self.font_id, 10))
-        self.das_conda.setStyleSheet('QLineEdit { width: 108px; }')
-        self.das_conda.move(940, 880)
+        self.das_conda.setStyleSheet('QLineEdit { width: 85px; }')
+        self.das_conda.move(275, 515)
 
-        self.das_model_dir_edit = QLineEdit('', self.ProcessSettings)
-        self.das_model_dir_edit.setPlaceholderText('trained DAS model directory')
+        self.das_model_dir_edit = QLineEdit(das_model_dir_global, self.ProcessSettings)
+        self.das_model_dir_edit.setPlaceholderText('DAS model directory')
         self.das_model_dir_edit.setFont(QFont(self.font_id, 10))
-        self.das_model_dir_edit.setStyleSheet('QLineEdit { width: 220px; }')
-        self.das_model_dir_edit.move(740, 910)
+        self.das_model_dir_edit.setStyleSheet('QLineEdit { width: 260px; }')
+        self.das_model_dir_edit.move(10, 545)
         das_model_dir_btn = QPushButton('Browse', self.ProcessSettings)
         das_model_dir_btn.setFont(QFont(self.font_id, 8))
-        das_model_dir_btn.move(965, 910)
+        das_model_dir_btn.move(275, 545)
         das_model_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 12px; }')
         das_model_dir_btn.clicked.connect(self._open_das_model_dialog)
         self.das_model_dir_btn_clicked_flag = False
 
-        das_model_base_label = QLabel('DAS model base:', self.ProcessSettings)
+        das_model_base_label = QLabel('DAS model base (timestamp):', self.ProcessSettings)
         das_model_base_label.setFont(QFont(self.font_id, 12))
-        das_model_base_label.move(740, 940)
-        self.das_model_base = QLineEdit('', self.ProcessSettings)
+        das_model_base_label.move(10, 575)
+        self.das_model_base = QLineEdit(das_model_base_global, self.ProcessSettings)
         self.das_model_base.setFont(QFont(self.font_id, 10))
-        self.das_model_base.setStyleSheet('QLineEdit { width: 108px; }')
-        self.das_model_base.move(940, 940)
+        self.das_model_base.setStyleSheet('QLineEdit { width: 135px; }')
+        self.das_model_base.move(225, 575)
+
+        pc_usage_process_label = QLabel('Notify e-mail(s) of PC usage:', self.ProcessSettings)
+        pc_usage_process_label.setFont(QFont(self.font_id, 12))
+        pc_usage_process_label.move(10, 605)
+        self.pc_usage_process = QLineEdit(f'{email_list_global}', self.ProcessSettings)
+        self.pc_usage_process.setFont(QFont(self.font_id, 10))
+        self.pc_usage_process.setStyleSheet('QLineEdit { width: 135px; }')
+        self.pc_usage_process.move(225, 605)
+
+        processing_pc_label = QLabel('Processing PC of choice:', self.ProcessSettings)
+        processing_pc_label.setFont(QFont(self.font_id, 12))
+        processing_pc_label.move(10, 635)
+        self.processing_pc_cb = QComboBox(self.ProcessSettings)
+        self.processing_pc_cb.addItems(['A84E Backup', 'A84E Main', '165B Audio', '165B Neural', 'A84I Main'])
+        self.processing_pc_cb.setStyleSheet('QComboBox { width: 107px; }')
+        self.processing_pc_cb.activated.connect(partial(self._combo_box_prior_processing_pc_choice, variable_id='processing_pc_choice'))
+        self.processing_pc_cb.move(225, 635)
+
+        gvs_label = QLabel('Video processing settings', self.ProcessSettings)
+        gvs_label.setFont(QFont(self.font_id, 13))
+        gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
+        gvs_label.move(10, 675)
+
+        conduct_video_concatenation_label = QLabel('Conduct video concatenation:', self.ProcessSettings)
+        conduct_video_concatenation_label.setFont(QFont(self.font_id, 12))
+        conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_video_concatenation_label.move(10, 705)
+        self.conduct_video_concatenation_cb = QComboBox(self.ProcessSettings)
+        self.conduct_video_concatenation_cb.addItems(['No', 'Yes'])
+        self.conduct_video_concatenation_cb.setStyleSheet('QComboBox { width: 105px; }')
+        self.conduct_video_concatenation_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_video_concatenation_cb_bool'))
+        self.conduct_video_concatenation_cb.move(225, 705)
+
+        conduct_video_fps_change_cb_label = QLabel('Conduct video re-encoding:', self.ProcessSettings)
+        conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_video_fps_change_cb_label.move(10, 735)
+        self.conduct_video_fps_change_cb = QComboBox(self.ProcessSettings)
+        self.conduct_video_fps_change_cb.addItems(['No', 'Yes'])
+        self.conduct_video_fps_change_cb.setStyleSheet('QComboBox { width: 105px; }')
+        self.conduct_video_fps_change_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_video_fps_change_cb_bool'))
+        self.conduct_video_fps_change_cb.move(225, 735)
+
+        conversion_target_file_label = QLabel('Concatenated video name:', self.ProcessSettings)
+        conversion_target_file_label.setFont(QFont(self.font_id, 12))
+        conversion_target_file_label.move(10, 765)
+        self.conversion_target_file = QLineEdit('concatenated_temp', self.ProcessSettings)
+        self.conversion_target_file.setFont(QFont(self.font_id, 10))
+        self.conversion_target_file.setStyleSheet('QLineEdit { width: 135px; }')
+        self.conversion_target_file.move(225, 765)
+
+        constant_rate_factor_label = QLabel('FFMPEG rate factor (-crf):', self.ProcessSettings)
+        constant_rate_factor_label.setFont(QFont(self.font_id, 12))
+        constant_rate_factor_label.move(10, 795)
+        self.constant_rate_factor = QLineEdit('16', self.ProcessSettings)
+        self.constant_rate_factor.setFont(QFont(self.font_id, 10))
+        self.constant_rate_factor.setStyleSheet('QLineEdit { width: 135px; }')
+        self.constant_rate_factor.move(225, 795)
+
+        encoding_preset_label = QLabel('FFMPEG encoding preset:', self.ProcessSettings)
+        encoding_preset_label.setFont(QFont(self.font_id, 12))
+        encoding_preset_label.move(10, 825)
+        self.encoding_preset = QLineEdit('veryfast', self.ProcessSettings)
+        self.encoding_preset.setFont(QFont(self.font_id, 10))
+        self.encoding_preset.setStyleSheet('QLineEdit { width: 135px; }')
+        self.encoding_preset.move(225, 825)
+
+        delete_con_file_cb_label = QLabel('Delete concatenated video:', self.ProcessSettings)
+        delete_con_file_cb_label.setFont(QFont(self.font_id, 12))
+        delete_con_file_cb_label.move(10, 855)
+        self.delete_con_file_cb = QComboBox(self.ProcessSettings)
+        self.delete_con_file_cb.addItems(['Yes', 'No'])
+        self.delete_con_file_cb.setStyleSheet('QComboBox { width: 105px; }')
+        self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
+        self.delete_con_file_cb.move(225, 855)
+
+        # column 2
+
+        column_two_x1 = 380
+        column_two_x2 = 570
+
+        gas_label = QLabel('Audio processing settings', self.ProcessSettings)
+        gas_label.setFont(QFont(self.font_id, 13))
+        gas_label.setStyleSheet('QLabel { font-weight: bold;}')
+        gas_label.move(column_two_x1, 10)
+
+        conduct_multichannel_conversion_cb_label = QLabel('Convert to single-ch files:', self.ProcessSettings)
+        conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_multichannel_conversion_cb_label.move(column_two_x1, 40)
+        self.conduct_multichannel_conversion_cb = QComboBox(self.ProcessSettings)
+        self.conduct_multichannel_conversion_cb.addItems(['No', 'Yes'])
+        self.conduct_multichannel_conversion_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conduct_multichannel_conversion_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_multichannel_conversion_cb_bool'))
+        self.conduct_multichannel_conversion_cb.move(column_two_x2, 40)
+
+        crop_wav_cam_cb_label = QLabel('Crop AUDIO (to VIDEO):', self.ProcessSettings)
+        crop_wav_cam_cb_label.setFont(QFont(self.font_id, 12))
+        crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        crop_wav_cam_cb_label.move(column_two_x1, 70)
+        self.crop_wav_cam_cb = QComboBox(self.ProcessSettings)
+        self.crop_wav_cam_cb.addItems(['No', 'Yes'])
+        self.crop_wav_cam_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.crop_wav_cam_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='crop_wav_cam_cb_bool'))
+        self.crop_wav_cam_cb.move(column_two_x2, 70)
+
+        device_receiving_input_cb_label = QLabel('Trgbox-USGH device (m|s):', self.ProcessSettings)
+        device_receiving_input_cb_label.setFont(QFont(self.font_id, 12))
+        device_receiving_input_cb_label.move(column_two_x1, 100)
+        self.device_receiving_input_cb = QComboBox(self.ProcessSettings)
+        self.device_receiving_input_cb.addItems(['m', 's'])
+        self.device_receiving_input_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.device_receiving_input_cb.activated.connect(partial(self._combo_box_prior_audio_device_camera_input, variable_id='device_receiving_input'))
+        self.device_receiving_input_cb.move(column_two_x2, 100)
+
+        ch_receiving_input_label = QLabel('Trgbox-USGH ch (1-12):', self.ProcessSettings)
+        ch_receiving_input_label.setFont(QFont(self.font_id, 12))
+        ch_receiving_input_label.move(column_two_x1, 130)
+        self.ch_receiving_input = QLineEdit('1', self.ProcessSettings)
+        self.ch_receiving_input.setFont(QFont(self.font_id, 10))
+        self.ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
+        self.ch_receiving_input.move(column_two_x2, 130)
+
+        conduct_hpss_cb_label = QLabel('Conduct HPSS (slow!):', self.ProcessSettings)
+        conduct_hpss_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_hpss_cb_label.move(column_two_x1, 160)
+        self.conduct_hpss_cb = QComboBox(self.ProcessSettings)
+        self.conduct_hpss_cb.addItems(['No', 'Yes'])
+        self.conduct_hpss_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conduct_hpss_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_hpss_cb_bool'))
+        self.conduct_hpss_cb.move(column_two_x2, 160)
+
+        stft_label = QLabel('STFT window and hop size:', self.ProcessSettings)
+        stft_label.setFont(QFont(self.font_id, 12))
+        stft_label.move(column_two_x1, 190)
+        self.stft_window_hop = QLineEdit('512,128', self.ProcessSettings)
+        self.stft_window_hop.setFont(QFont(self.font_id, 10))
+        self.stft_window_hop.setStyleSheet('QLineEdit { width: 108px; }')
+        self.stft_window_hop.move(column_two_x2, 190)
+
+        hpss_kernel_size_label = QLabel('HPSS kernel size:', self.ProcessSettings)
+        hpss_kernel_size_label.setFont(QFont(self.font_id, 12))
+        hpss_kernel_size_label.move(column_two_x1, 220)
+        self.hpss_kernel_size = QLineEdit('5,60', self.ProcessSettings)
+        self.hpss_kernel_size.setFont(QFont(self.font_id, 10))
+        self.hpss_kernel_size.setStyleSheet('QLineEdit { width: 108px; }')
+        self.hpss_kernel_size.move(column_two_x2, 220)
+
+        hpss_power_label = QLabel('HPSS power:', self.ProcessSettings)
+        hpss_power_label.setFont(QFont(self.font_id, 12))
+        hpss_power_label.move(column_two_x1, 250)
+        self.hpss_power = QLineEdit('4.0', self.ProcessSettings)
+        self.hpss_power.setFont(QFont(self.font_id, 10))
+        self.hpss_power.setStyleSheet('QLineEdit { width: 108px; }')
+        self.hpss_power.move(column_two_x2, 250)
+
+        hpss_margin_label = QLabel('HPSS margin:', self.ProcessSettings)
+        hpss_margin_label.setFont(QFont(self.font_id, 12))
+        hpss_margin_label.move(column_two_x1, 280)
+        self.hpss_margin = QLineEdit('4,1', self.ProcessSettings)
+        self.hpss_margin.setFont(QFont(self.font_id, 10))
+        self.hpss_margin.setStyleSheet('QLineEdit { width: 108px; }')
+        self.hpss_margin.move(column_two_x2, 280)
+
+        filter_audio_cb_label = QLabel('Filter individual audio files:', self.ProcessSettings)
+        filter_audio_cb_label.setFont(QFont(self.font_id, 12))
+        filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        filter_audio_cb_label.move(column_two_x1, 310)
+        self.filter_audio_cb = QComboBox(self.ProcessSettings)
+        self.filter_audio_cb.addItems(['No', 'Yes'])
+        self.filter_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.filter_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='filter_audio_cb_bool'))
+        self.filter_audio_cb.move(column_two_x2, 310)
+
+        filter_freq_bounds_label = QLabel('Filter freq bounds (Hz):', self.ProcessSettings)
+        filter_freq_bounds_label.setFont(QFont(self.font_id, 12))
+        filter_freq_bounds_label.move(column_two_x1, 340)
+        self.filter_freq_bounds = QLineEdit('0, 30000', self.ProcessSettings)
+        self.filter_freq_bounds.setFont(QFont(self.font_id, 10))
+        self.filter_freq_bounds.setStyleSheet('QLineEdit { width: 108px; }')
+        self.filter_freq_bounds.move(column_two_x2, 340)
+
+        filter_dirs_label = QLabel('Folder(s) to filter:', self.ProcessSettings)
+        filter_dirs_label.setFont(QFont(self.font_id, 12))
+        filter_dirs_label.move(column_two_x1, 370)
+        self.filter_dirs = QLineEdit('hpss', self.ProcessSettings)
+        self.filter_dirs.setFont(QFont(self.font_id, 10))
+        self.filter_dirs.setStyleSheet('QLineEdit { width: 108px; }')
+        self.filter_dirs.move(column_two_x2, 370)
+
+        conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
+        conc_audio_cb_label.setFont(QFont(self.font_id, 12))
+        conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conc_audio_cb_label.move(column_two_x1, 400)
+        self.conc_audio_cb = QComboBox(self.ProcessSettings)
+        self.conc_audio_cb.addItems(['No', 'Yes'])
+        self.conc_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conc_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conc_audio_cb_bool'))
+        self.conc_audio_cb.move(column_two_x2, 400)
+
+        concat_dirs_label = QLabel('Folder(s) to concatenate:', self.ProcessSettings)
+        concat_dirs_label.setFont(QFont(self.font_id, 12))
+        concat_dirs_label.move(column_two_x1, 430)
+        self.concat_dirs = QLineEdit('hpss_filtered', self.ProcessSettings)
+        self.concat_dirs.setFont(QFont(self.font_id, 10))
+        self.concat_dirs.setStyleSheet('QLineEdit { width: 108px; }')
+        self.concat_dirs.move(column_two_x2, 430)
+
+        av_sync_label = QLabel('Synchronization between A/V files', self.ProcessSettings)
+        av_sync_label.setFont(QFont(self.font_id, 13))
+        av_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
+        av_sync_label.move(column_two_x1, 470)
+
+        conduct_sync_cb_label = QLabel('Conduct A/V sync check:', self.ProcessSettings)
+        conduct_sync_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_sync_cb_label.move(column_two_x1, 500)
+        self.conduct_sync_cb = QComboBox(self.ProcessSettings)
+        self.conduct_sync_cb.addItems(['No', 'Yes'])
+        self.conduct_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conduct_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_sync_cb_bool'))
+        self.conduct_sync_cb.move(column_two_x2, 500)
+
+        phidget_extra_data_camera_label = QLabel('Phidget(s) camera serial:', self.ProcessSettings)
+        phidget_extra_data_camera_label.setFont(QFont(self.font_id, 12))
+        phidget_extra_data_camera_label.move(column_two_x1, 530)
+        self.phidget_extra_data_camera = QLineEdit('22085397', self.ProcessSettings)
+        self.phidget_extra_data_camera.setFont(QFont(self.font_id, 10))
+        self.phidget_extra_data_camera.setStyleSheet('QLineEdit { width: 108px; }')
+        self.phidget_extra_data_camera.move(column_two_x2, 530)
+
+        a_ch_receiving_input_label = QLabel('Arduino-USGH ch (1-12):', self.ProcessSettings)
+        a_ch_receiving_input_label.setFont(QFont(self.font_id, 12))
+        a_ch_receiving_input_label.move(column_two_x1, 560)
+        self.a_ch_receiving_input = QLineEdit('2', self.ProcessSettings)
+        self.a_ch_receiving_input.setFont(QFont(self.font_id, 10))
+        self.a_ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
+        self.a_ch_receiving_input.move(column_two_x2, 560)
+
+        v_camera_serial_num_label = QLabel('Sync camera serial num(s):', self.ProcessSettings)
+        v_camera_serial_num_label.setFont(QFont(self.font_id, 12))
+        v_camera_serial_num_label.move(column_two_x1, 590)
+        self.v_camera_serial_num = QLineEdit('21372315', self.ProcessSettings)
+        self.v_camera_serial_num.setFont(QFont(self.font_id, 10))
+        self.v_camera_serial_num.setStyleSheet('QLineEdit { width: 108px; }')
+        self.v_camera_serial_num.move(column_two_x2, 590)
+
+        ev_sync_label = QLabel('Neural data processing settings', self.ProcessSettings)
+        ev_sync_label.setFont(QFont(self.font_id, 13))
+        ev_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
+        ev_sync_label.move(column_two_x1, 630)
+
+        conduct_ephys_file_chaining_label = QLabel('Conduct e-phys file concat:', self.ProcessSettings)
+        conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
+        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_ephys_file_chaining_label.move(column_two_x1, 660)
+        self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
+        self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
+        self.conduct_ephys_file_chaining_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conduct_ephys_file_chaining_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_ephys_file_chaining_cb_bool'))
+        self.conduct_ephys_file_chaining_cb.move(column_two_x2, 660)
+
+        conduct_nv_sync_cb_label = QLabel('Conduct E/V sync check:', self.ProcessSettings)
+        conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_nv_sync_cb_label.move(column_two_x1, 690)
+        self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
+        self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
+        self.conduct_nv_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conduct_nv_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_nv_sync_cb_bool'))
+        self.conduct_nv_sync_cb.move(column_two_x2, 690)
+
+        split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
+        split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 12))
+        split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        split_cluster_spikes_cb_label.move(column_two_x1, 720)
+        self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
+        self.split_cluster_spikes_cb.addItems(['No', 'Yes'])
+        self.split_cluster_spikes_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.split_cluster_spikes_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='split_cluster_spikes_cb_bool'))
+        self.split_cluster_spikes_cb.move(column_two_x2, 720)
+
+        npx_file_type_cb_label = QLabel('Rec file format (ap | lf):', self.ProcessSettings)
+        npx_file_type_cb_label.setFont(QFont(self.font_id, 12))
+        npx_file_type_cb_label.move(column_two_x1, 750)
+        self.npx_file_type_cb = QComboBox(self.ProcessSettings)
+        self.npx_file_type_cb.addItems(['ap', 'lf'])
+        self.npx_file_type_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.npx_file_type_cb.activated.connect(partial(self._combo_box_prior_npx_file_type, variable_id='npx_file_type'))
+        self.npx_file_type_cb.move(column_two_x2, 750)
+
+        npx_ms_divergence_tolerance_label = QLabel('Divergence tolerance (ms):', self.ProcessSettings)
+        npx_ms_divergence_tolerance_label.setFont(QFont(self.font_id, 12))
+        npx_ms_divergence_tolerance_label.move(column_two_x1, 780)
+        self.npx_ms_divergence_tolerance = QLineEdit('10', self.ProcessSettings)
+        self.npx_ms_divergence_tolerance.setFont(QFont(self.font_id, 10))
+        self.npx_ms_divergence_tolerance.setStyleSheet('QLineEdit { width: 108px; }')
+        self.npx_ms_divergence_tolerance.move(column_two_x2, 780)
+
+        kilosort_version_cb_label = QLabel('Kilosort version:', self.ProcessSettings)
+        kilosort_version_cb_label.setFont(QFont(self.font_id, 12))
+        kilosort_version_cb_label.move(column_two_x1, 810)
+        self.kilosort_version_cb = QComboBox(self.ProcessSettings)
+        self.kilosort_version_cb.addItems(['4', '3', '2.5', '2'])
+        self.kilosort_version_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.kilosort_version_cb.activated.connect(partial(self._combo_box_kilosort_version, variable_id='kilosort_version'))
+        self.kilosort_version_cb.move(column_two_x2, 810)
+
+        min_spike_num_label = QLabel('Min num of spikes:', self.ProcessSettings)
+        min_spike_num_label.setFont(QFont(self.font_id, 12))
+        min_spike_num_label.move(column_two_x1, 840)
+        self.min_spike_num = QLineEdit('0', self.ProcessSettings)
+        self.min_spike_num.setFont(QFont(self.font_id, 10))
+        self.min_spike_num.setStyleSheet('QLineEdit { width: 108px; }')
+        self.min_spike_num.move(column_two_x2, 840)
+
+        # column 3
+        column_three_x1 = 700
+        column_three_x2 = 900
+
+        anipose_operations_label = QLabel('SLEAP / DAS operations', self.ProcessSettings)
+        anipose_operations_label.setFont(QFont(self.font_id, 13))
+        anipose_operations_label.setStyleSheet('QLabel { font-weight: bold;}')
+        anipose_operations_label.move(column_three_x1, 10)
+
+        sleap_cluster_cb_label = QLabel('Prepare SLEAP cluster job:', self.ProcessSettings)
+        sleap_cluster_cb_label.setFont(QFont(self.font_id, 12))
+        sleap_cluster_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        sleap_cluster_cb_label.move(column_three_x1, 40)
+        self.sleap_cluster_cb = QComboBox(self.ProcessSettings)
+        self.sleap_cluster_cb.addItems(['No', 'Yes'])
+        self.sleap_cluster_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.sleap_cluster_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='sleap_cluster_cb_bool'))
+        self.sleap_cluster_cb.move(column_three_x2, 40)
+
+        sleap_file_conversion_cb_label = QLabel('Conduct SLP-H5 conversion:', self.ProcessSettings)
+        sleap_file_conversion_cb_label.setFont(QFont(self.font_id, 12))
+        sleap_file_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        sleap_file_conversion_cb_label.move(column_three_x1, 70)
+        self.sleap_file_conversion_cb = QComboBox(self.ProcessSettings)
+        self.sleap_file_conversion_cb.addItems(['No', 'Yes'])
+        self.sleap_file_conversion_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.sleap_file_conversion_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='sleap_file_conversion_cb_bool'))
+        self.sleap_file_conversion_cb.move(column_three_x2, 70)
+
+        anipose_calibration_cb_label = QLabel('Conduct AP calibration:', self.ProcessSettings)
+        anipose_calibration_cb_label.setFont(QFont(self.font_id, 12))
+        anipose_calibration_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        anipose_calibration_cb_label.move(column_three_x1, 100)
+        self.anipose_calibration_cb = QComboBox(self.ProcessSettings)
+        self.anipose_calibration_cb.addItems(['No', 'Yes'])
+        self.anipose_calibration_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.anipose_calibration_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='anipose_calibration_cb_bool'))
+        self.anipose_calibration_cb.move(column_three_x2, 100)
+
+        board_provided_cb_label = QLabel('Calibration board provided:', self.ProcessSettings)
+        board_provided_cb_label.setFont(QFont(self.font_id, 12))
+        board_provided_cb_label.move(column_three_x1, 130)
+        self.board_provided_cb = QComboBox(self.ProcessSettings)
+        self.board_provided_cb.addItems(['No', 'Yes'])
+        self.board_provided_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.board_provided_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='board_provided_cb_bool'))
+        self.board_provided_cb.move(column_three_x2, 130)
+
+        anipose_triangulation_cb_label = QLabel('Conduct AP triangulation:', self.ProcessSettings)
+        anipose_triangulation_cb_label.setFont(QFont(self.font_id, 12))
+        anipose_triangulation_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        anipose_triangulation_cb_label.move(column_three_x1, 160)
+        self.anipose_triangulation_cb = QComboBox(self.ProcessSettings)
+        self.anipose_triangulation_cb.addItems(['No', 'Yes'])
+        self.anipose_triangulation_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.anipose_triangulation_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='anipose_triangulation_cb_bool'))
+        self.anipose_triangulation_cb.move(column_three_x2, 160)
+
+        triangulate_arena_points_cb_label = QLabel('Triangulate arena nodes:', self.ProcessSettings)
+        triangulate_arena_points_cb_label.setFont(QFont(self.font_id, 12))
+        triangulate_arena_points_cb_label.move(column_three_x1, 190)
+        self.triangulate_arena_points_cb = QComboBox(self.ProcessSettings)
+        self.triangulate_arena_points_cb.addItems(['No', 'Yes'])
+        self.triangulate_arena_points_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.triangulate_arena_points_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='triangulate_arena_points_cb_bool'))
+        self.triangulate_arena_points_cb.move(column_three_x2, 190)
+
+        display_progress_cb_label = QLabel('Display progress:', self.ProcessSettings)
+        display_progress_cb_label.setFont(QFont(self.font_id, 12))
+        display_progress_cb_label.move(column_three_x1, 220)
+        self.display_progress_cb = QComboBox(self.ProcessSettings)
+        self.display_progress_cb.addItems(['No', 'Yes'])
+        self.display_progress_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.display_progress_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='display_progress_cb_bool'))
+        self.display_progress_cb.move(column_three_x2, 220)
+
+        frame_restriction_label = QLabel('Frame restriction:', self.ProcessSettings)
+        frame_restriction_label.setFont(QFont(self.font_id, 12))
+        frame_restriction_label.move(column_three_x1, 250)
+        self.frame_restriction = QLineEdit('', self.ProcessSettings)
+        self.frame_restriction.setFont(QFont(self.font_id, 10))
+        self.frame_restriction.setStyleSheet('QLineEdit { width: 108px; }')
+        self.frame_restriction.move(column_three_x2, 250)
+
+        excluded_views_label = QLabel('Excluded camera views:', self.ProcessSettings)
+        excluded_views_label.setFont(QFont(self.font_id, 12))
+        excluded_views_label.move(column_three_x1, 280)
+        self.excluded_views = QLineEdit('', self.ProcessSettings)
+        self.excluded_views.setFont(QFont(self.font_id, 10))
+        self.excluded_views.setStyleSheet('QLineEdit { width: 108px; }')
+        self.excluded_views.move(column_three_x2, 280)
+
+        rigid_body_constraints_label = QLabel('Rigid body constraints:', self.ProcessSettings)
+        rigid_body_constraints_label.setFont(QFont(self.font_id, 12))
+        rigid_body_constraints_label.move(column_three_x1, 310)
+        self.rigid_body_constraints = QLineEdit('', self.ProcessSettings)
+        self.rigid_body_constraints.setFont(QFont(self.font_id, 10))
+        self.rigid_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
+        self.rigid_body_constraints.move(column_three_x2, 310)
+
+        weak_body_constraints_label = QLabel('Weak body constraints:', self.ProcessSettings)
+        weak_body_constraints_label.setFont(QFont(self.font_id, 12))
+        weak_body_constraints_label.move(column_three_x1, 340)
+        self.weak_body_constraints = QLineEdit('', self.ProcessSettings)
+        self.weak_body_constraints.setFont(QFont(self.font_id, 10))
+        self.weak_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
+        self.weak_body_constraints.move(column_three_x2, 340)
+
+        smooth_scale_label = QLabel('Smoothing scale:', self.ProcessSettings)
+        smooth_scale_label.setFont(QFont(self.font_id, 12))
+        smooth_scale_label.move(column_three_x1, 370)
+        self.smooth_scale = QLineEdit('3', self.ProcessSettings)
+        self.smooth_scale.setFont(QFont(self.font_id, 10))
+        self.smooth_scale.setStyleSheet('QLineEdit { width: 108px; }')
+        self.smooth_scale.move(column_three_x2, 370)
+
+        weight_rigid_label = QLabel('Rigid constraints weight:', self.ProcessSettings)
+        weight_rigid_label.setFont(QFont(self.font_id, 12))
+        weight_rigid_label.move(column_three_x1, 400)
+        self.weight_rigid = QLineEdit('4', self.ProcessSettings)
+        self.weight_rigid.setFont(QFont(self.font_id, 10))
+        self.weight_rigid.setStyleSheet('QLineEdit { width: 108px; }')
+        self.weight_rigid.move(column_three_x2, 400)
+
+        weight_weak_label = QLabel('Weak constraints weight:', self.ProcessSettings)
+        weight_weak_label.setFont(QFont(self.font_id, 12))
+        weight_weak_label.move(column_three_x1, 430)
+        self.weight_weak = QLineEdit('1', self.ProcessSettings)
+        self.weight_weak.setFont(QFont(self.font_id, 10))
+        self.weight_weak.setStyleSheet('QLineEdit { width: 108px; }')
+        self.weight_weak.move(column_three_x2, 430)
+
+        reprojection_error_threshold_label = QLabel('Reproject error threshold:', self.ProcessSettings)
+        reprojection_error_threshold_label.setFont(QFont(self.font_id, 12))
+        reprojection_error_threshold_label.move(column_three_x1, 460)
+        self.reprojection_error_threshold = QLineEdit('5', self.ProcessSettings)
+        self.reprojection_error_threshold.setFont(QFont(self.font_id, 10))
+        self.reprojection_error_threshold.setStyleSheet('QLineEdit { width: 108px; }')
+        self.reprojection_error_threshold.move(column_three_x2, 460)
+
+        regularization_function_label = QLabel('Regularization:', self.ProcessSettings)
+        regularization_function_label.setFont(QFont(self.font_id, 12))
+        regularization_function_label.move(column_three_x1, 490)
+        self.regularization_function = QLineEdit('l2', self.ProcessSettings)
+        self.regularization_function.setFont(QFont(self.font_id, 10))
+        self.regularization_function.setStyleSheet('QLineEdit { width: 108px; }')
+        self.regularization_function.move(column_three_x2, 490)
+
+        n_deriv_smooth_label = QLabel('Derivation smoothing order:', self.ProcessSettings)
+        n_deriv_smooth_label.setFont(QFont(self.font_id, 12))
+        n_deriv_smooth_label.move(column_three_x1, 520)
+        self.n_deriv_smooth = QLineEdit('2', self.ProcessSettings)
+        self.n_deriv_smooth.setFont(QFont(self.font_id, 10))
+        self.n_deriv_smooth.setStyleSheet('QLineEdit { width: 108px; }')
+        self.n_deriv_smooth.move(column_three_x2, 520)
+
+        translate_rotate_metric_label = QLabel('Conduct coordinate change:', self.ProcessSettings)
+        translate_rotate_metric_label.setFont(QFont(self.font_id, 12))
+        translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; }')
+        translate_rotate_metric_label.move(column_three_x1, 550)
+        self.translate_rotate_metric_cb = QComboBox(self.ProcessSettings)
+        self.translate_rotate_metric_cb.addItems(['No', 'Yes'])
+        self.translate_rotate_metric_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.translate_rotate_metric_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='translate_rotate_metric_cb_bool'))
+        self.translate_rotate_metric_cb.move(column_three_x2, 550)
+
+        static_reference_len_label = QLabel('Static reference length (m):', self.ProcessSettings)
+        static_reference_len_label.setFont(QFont(self.font_id, 12))
+        static_reference_len_label.move(column_three_x1, 580)
+        self.static_reference_len = QLineEdit('0.615', self.ProcessSettings)
+        self.static_reference_len.setFont(QFont(self.font_id, 10))
+        self.static_reference_len.setStyleSheet('QLineEdit { width: 108px; }')
+        self.static_reference_len.move(column_three_x2, 580)
+
+        save_arena_data_cb_label = QLabel('Save arena transformation:', self.ProcessSettings)
+        save_arena_data_cb_label.setFont(QFont(self.font_id, 12))
+        save_arena_data_cb_label.move(column_three_x1, 610)
+        self.save_arena_data_cb = QComboBox(self.ProcessSettings)
+        self.save_arena_data_cb.addItems(['No', 'Yes'])
+        self.save_arena_data_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.save_arena_data_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='save_arena_data_cb_bool'))
+        self.save_arena_data_cb.move(column_three_x2, 610)
+
+        save_mouse_data_cb_label = QLabel('Save mouse transformation:', self.ProcessSettings)
+        save_mouse_data_cb_label.setFont(QFont(self.font_id, 12))
+        save_mouse_data_cb_label.move(column_three_x1, 640)
+        self.save_mouse_data_cb = QComboBox(self.ProcessSettings)
+        self.save_mouse_data_cb.addItems(['Yes', 'No'])
+        self.save_mouse_data_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.save_mouse_data_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='save_mouse_data_cb_bool'))
+        self.save_mouse_data_cb.move(column_three_x2, 640)
+
+        delete_original_h5_cb_label = QLabel('Delete original .h5:', self.ProcessSettings)
+        delete_original_h5_cb_label.setFont(QFont(self.font_id, 12))
+        delete_original_h5_cb_label.move(column_three_x1, 670)
+        self.delete_original_h5_cb = QComboBox(self.ProcessSettings)
+        self.delete_original_h5_cb.addItems(['Yes', 'No'])
+        self.delete_original_h5_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.delete_original_h5_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_original_h5_cb_bool'))
+        self.delete_original_h5_cb.move(column_three_x2, 670)
+
+        das_inference_cb_label = QLabel('Detect USVs:', self.ProcessSettings)
+        das_inference_cb_label.setFont(QFont(self.font_id, 12))
+        das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        das_inference_cb_label.move(column_three_x1, 700)
+        self.das_inference_cb = QComboBox(self.ProcessSettings)
+        self.das_inference_cb.addItems(['No', 'Yes'])
+        self.das_inference_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.das_inference_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_inference_cb_bool'))
+        self.das_inference_cb.move(column_three_x2, 700)
+
+        segment_confidence_threshold_label = QLabel('DAS confidence threshold:', self.ProcessSettings)
+        segment_confidence_threshold_label.setFont(QFont(self.font_id, 12))
+        segment_confidence_threshold_label.move(column_three_x1, 730)
+        self.segment_confidence_threshold = QLineEdit('0.5', self.ProcessSettings)
+        self.segment_confidence_threshold.setFont(QFont(self.font_id, 10))
+        self.segment_confidence_threshold.setStyleSheet('QLineEdit { width: 108px; }')
+        self.segment_confidence_threshold.move(column_three_x2, 730)
+
+        segment_minlen_label = QLabel('USV min duration (s):', self.ProcessSettings)
+        segment_minlen_label.setFont(QFont(self.font_id, 12))
+        segment_minlen_label.move(column_three_x1, 760)
+        self.segment_minlen = QLineEdit('0.015', self.ProcessSettings)
+        self.segment_minlen.setFont(QFont(self.font_id, 10))
+        self.segment_minlen.setStyleSheet('QLineEdit { width: 108px; }')
+        self.segment_minlen.move(column_three_x2, 760)
+
+        segment_fillgap_label = QLabel('Fill gaps shorter than (s):', self.ProcessSettings)
+        segment_fillgap_label.setFont(QFont(self.font_id, 12))
+        segment_fillgap_label.move(column_three_x1, 790)
+        self.segment_fillgap = QLineEdit('0.015', self.ProcessSettings)
+        self.segment_fillgap.setFont(QFont(self.font_id, 10))
+        self.segment_fillgap.setStyleSheet('QLineEdit { width: 108px; }')
+        self.segment_fillgap.move(column_three_x2, 790)
 
         das_output_type_label = QLabel('Inference output file type:', self.ProcessSettings)
         das_output_type_label.setFont(QFont(self.font_id, 12))
-        das_output_type_label.move(740, 970)
+        das_output_type_label.move(column_three_x1, 820)
         self.das_output_type = QLineEdit('csv', self.ProcessSettings)
         self.das_output_type.setFont(QFont(self.font_id, 10))
         self.das_output_type.setStyleSheet('QLineEdit { width: 108px; }')
-        self.das_output_type.move(940, 970)
+        self.das_output_type.move(column_three_x2, 820)
 
-        das_segment_tmf_label = QLabel('USV segment cutoff params:', self.ProcessSettings)
-        das_segment_tmf_label.setFont(QFont(self.font_id, 12))
-        das_segment_tmf_label.move(740, 1000)
-        self.das_segment_tmf = QLineEdit('0.5,0.015,0.015', self.ProcessSettings)
-        self.das_segment_tmf.setFont(QFont(self.font_id, 10))
-        self.das_segment_tmf.setStyleSheet('QLineEdit { width: 108px; }')
-        self.das_segment_tmf.move(940, 1000)
+        das_summary_cb_label = QLabel('Summarize DAS output:', self.ProcessSettings)
+        das_summary_cb_label.setFont(QFont(self.font_id, 12))
+        das_summary_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        das_summary_cb_label.move(column_three_x1, 850)
+        self.das_summary_cb = QComboBox(self.ProcessSettings)
+        self.das_summary_cb.addItems(['No', 'Yes'])
+        self.das_summary_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.das_summary_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_summary_cb_bool'))
+        self.das_summary_cb.move(column_three_x2, 850)
 
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
                                      button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
@@ -1571,12 +1474,12 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductProcess = ConductProcess(self)
         self.setWindowTitle(f'{app_name} (Conduct Processing)')
         self.setCentralWidget(self.ConductProcess)
-        record_four_x, record_four_y = (830, 1100)
+        record_four_x, record_four_y = (860, 1100)
         self.setFixedSize(record_four_x, record_four_y)
 
         self.txt_edit_process = QPlainTextEdit(self.ConductProcess)
         self.txt_edit_process.move(5, 5)
-        self.txt_edit_process.setFixedSize(815, 1040)
+        self.txt_edit_process.setFixedSize(845, 1040)
         self.txt_edit_process.setReadOnly(True)
 
         self._save_modified_values_to_toml(run_exp_bool=False, message_func=self._process_message)
@@ -1733,17 +1636,15 @@ class USVPlaypenWindow(QMainWindow):
                      f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
     def _save_process_labels_func(self):
-        qlabel_strings = ['concatenate_video_ext', 'concatenated_video_name', 'conversion_target_file', 'conversion_vid_ext',
-                          'constant_rate_factor', 'encoding_preset', 'ch_receiving_input', 'audio_filter_format',
-                          'a_ch_receiving_input', 'pc_usage_process', 'v_millisecond_divergence_tolerance', 'min_spike_num',
-                          'v_relative_intensity_threshold', 'v_video_extension', 'v_led_px_dev', 'v_led_px_version',
-                          'phidget_extra_data_camera', 'audio_format', 'npx_ms_divergence_tolerance', 'hpss_power', 'sleap_conda',
-                          'square_len', 'dict_size', 'n_deriv_smooth', 'static_reference_len', 'das_conda', 'das_model_base',
-                          'das_output_type']
-        lists_in_string = ['concatenate_cam_serial_num', 'change_fps_cam_serial_num', 'v_camera_serial_num', 'filter_dirs', 'concat_dirs',
-                           'stft_window_hop', 'hpss_kernel_size', 'hpss_margin', 'filter_freq_bounds', 'board_xy', 'marker_len_bits',
-                           'img_width_height', 'frame_restriction', 'excluded_views', 'rigid_body_constraints', 'weak_body_constraints',
-                           'scale_smooth_len_weak', 'reprojection_error_loss', 'das_segment_tmf']
+        qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'encoding_preset', 'ch_receiving_input',
+                          'a_ch_receiving_input', 'pc_usage_process', 'min_spike_num', 'phidget_extra_data_camera',
+                          'npx_ms_divergence_tolerance', 'hpss_power', 'sleap_conda', 'n_deriv_smooth',
+                          'static_reference_len', 'das_conda', 'das_model_base', 'das_output_type', 'smooth_scale',
+                          'weight_rigid', 'weight_weak', 'reprojection_error_threshold', 'regularization_function',
+                          'segment_confidence_threshold', 'segment_minlen', 'segment_fillgap']
+        lists_in_string = ['v_camera_serial_num', 'filter_dirs', 'concat_dirs', 'stft_window_hop', 'hpss_kernel_size',
+                           'hpss_margin', 'filter_freq_bounds', 'frame_restriction', 'excluded_views',
+                           'rigid_body_constraints', 'weak_body_constraints']
 
         for one_elem_str in qlabel_strings:
             if type(self.__dict__[one_elem_str]) != str:
@@ -1785,13 +1686,9 @@ class USVPlaypenWindow(QMainWindow):
 
         if not self.calibration_file_loc_btn_clicked_flag:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = self.calibration_file_loc_edit.text()
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.calibration_file_loc_edit.text()
         else:
             self.calibration_file_loc_btn_clicked_flag = False
-
-        if not self.original_arena_file_loc_btn_clicked_flag:
-            self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.original_arena_file_loc_edit.text()
-        else:
-            self.original_arena_file_loc_btn_clicked_flag = False
 
         if not self.das_model_dir_btn_clicked_flag:
             self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = self.das_model_dir_edit.text()
@@ -1816,15 +1713,10 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['file_manipulation']['Operator']['get_spike_times']['kilosort_version'] = str(getattr(self, 'kilosort_version'))
         self.kilosort_version = '4'
 
-        self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['video_extension'] = self.concatenate_video_ext
-        self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['concatenated_video_name'] = self.concatenated_video_name
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
-        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['video_extension'] = self.conversion_vid_ext
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(ast.literal_eval(self.constant_rate_factor)))
         self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['encoding_preset'] = self.encoding_preset
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
-        self.processing_input_dict['file_manipulation']['Operator']['concatenate_audio_files']['audio_format'] = self.audio_format
-        self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['audio_format'] = self.audio_filter_format
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(ast.literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(stft_value)) for stft_value in self.stft_window_hop]
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['kernel_size'] = tuple([int(ast.literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
@@ -1832,17 +1724,10 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['file_manipulation']['Operator']['hpss_audio']['margin'] = tuple([int(ast.literal_eval(margin_value)) for margin_value in self.hpss_margin])
         self.processing_input_dict['file_manipulation']['Operator']['get_spike_times']['min_spike_num'] = int(ast.literal_eval(self.min_spike_num))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_version'] = self.v_led_px_version
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['led_px_dev'] = int(ast.literal_eval(self.v_led_px_dev))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['video_extension'] = self.v_video_extension
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['relative_intensity_threshold'] = float(ast.literal_eval(self.v_relative_intensity_threshold))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['millisecond_divergence_tolerance'] = int(ast.literal_eval(self.v_millisecond_divergence_tolerance))
         self.processing_input_dict['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['npx_ms_divergence_tolerance'] = float(ast.literal_eval(self.npx_ms_divergence_tolerance))
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
 
         self.processing_input_dict['preprocess_data']['root_directories'] = self.processing_dir_edit
-        self.processing_input_dict['file_manipulation']['Operator']['concatenate_video_files']['camera_serial_num'] = self.concatenate_cam_serial_num
-        self.processing_input_dict['file_manipulation']['Operator']['rectify_video_fps']['camera_serial_num'] = self.change_fps_cam_serial_num
         self.processing_input_dict['send_email']['Messenger']['send_message']['receivers'] = self.pc_usage_process
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['camera_serial_num'] = self.v_camera_serial_num
         self.processing_input_dict['file_manipulation']['Operator']['filter_audio_files']['filter_dirs'] = self.filter_dirs
@@ -1851,14 +1736,12 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_conda_env_name'] = self.das_conda
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_name_base'] = self.das_model_base
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['output_file_type'] = self.das_output_type
-        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_tmf'] = [float(ast.literal_eval(tmf_value)) for tmf_value in self.das_segment_tmf]
+
+        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_confidence_threshold'] = float(ast.literal_eval(self.segment_confidence_threshold))
+        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_minlen'] = float(ast.literal_eval(self.segment_minlen))
+        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_fillgap'] = float(ast.literal_eval(self.segment_fillgap))
 
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['sleap_file_conversion']['sleap_conda_env_name'] = self.sleap_conda
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_calibration']['board_xy'] = [ast.literal_eval(xy_value) for xy_value in self.board_xy]
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_calibration']['square_len'] = float(ast.literal_eval(self.square_len))
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_calibration']['marker_len_bits'] = [ast.literal_eval(mlb_value) for mlb_value in self.marker_len_bits]
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_calibration']['dict_size'] = ast.literal_eval(self.dict_size)
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_calibration']['img_width_height'] = [ast.literal_eval(iwh_value) for iwh_value in self.img_width_height]
         if self.frame_restriction == ['']:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] = None
         else:
@@ -1875,8 +1758,12 @@ class USVPlaypenWindow(QMainWindow):
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weak_body_constraints'] = []
         else:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weak_body_constraints'] = list(ast.literal_eval(self.weak_body_constraints))
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['scale_smooth_len_weak'] = [ast.literal_eval(sslw_value) for sslw_value in self.scale_smooth_len_weak]
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['reprojection_error_loss'] = [ast.literal_eval(rel_value) for rel_value in self.reprojection_error_loss]
+
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['scale_smooth'] = int(ast.literal_eval(self.smooth_scale))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_rigid'] = int(ast.literal_eval(self.weight_rigid))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_weak'] = int(ast.literal_eval(self.weight_weak))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['reprojection_error_threshold'] = int(ast.literal_eval(self.reprojection_error_threshold))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['regularization_function'] = self.regularization_function
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['n_deriv_smooth'] = int(ast.literal_eval(self.n_deriv_smooth))
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['static_reference_len'] = float(ast.literal_eval(self.static_reference_len))
 
@@ -1928,6 +1815,8 @@ class USVPlaypenWindow(QMainWindow):
         self.delete_original_h5_cb_bool = True
         self.processing_input_dict['processing_booleans']['das_infer'] = self.das_inference_cb_bool
         self.das_inference_cb_bool = False
+        self.processing_input_dict['processing_booleans']['das_summarize'] = self.das_summary_cb_bool
+        self.das_summary_cb_bool = False
 
     def _save_record_one_labels_func(self):
         if type(self.recording_files_destination_linux) != str:
@@ -2291,7 +2180,7 @@ class USVPlaypenWindow(QMainWindow):
         self.inference_root_dir_btn_clicked_flag = True
         inference_root_dir_name = QFileDialog.getExistingDirectory(
             self,
-            'Select SLEAP centered instance model directory',
+            'Select SLEAP inference directory',
             f'')
         if inference_root_dir_name:
             inference_root_dir_name_path = Path(inference_root_dir_name)
@@ -2381,32 +2270,19 @@ class USVPlaypenWindow(QMainWindow):
             self.calibration_file_loc_edit.setText(str(anipose_cal_dir_name_path))
             if os.name == 'nt':
                 self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = str(anipose_cal_dir_name_path).replace(os.sep, '\\')
+                self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = str(anipose_cal_dir_name_path).replace(os.sep, '\\')
             else:
                 self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = str(anipose_cal_dir_name_path)
+                self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = str(anipose_cal_dir_name_path)
         else:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = self.calibration_file_loc_edit.text()
-
-    def _open_original_arena_dialog(self):
-        self.original_arena_file_loc_btn_clicked_flag = True
-        original_arena_dir_name = QFileDialog.getExistingDirectory(
-            self,
-            'Select arena *points3d.h5 root directory',
-            '')
-        if original_arena_dir_name:
-            original_aren_dir_name_path = Path(original_arena_dir_name)
-            self.original_arena_file_loc_edit.setText(str(original_aren_dir_name_path))
-            if os.name == 'nt':
-                self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = str(original_aren_dir_name_path).replace(os.sep, '\\')
-            else:
-                self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = str(original_aren_dir_name_path)
-        else:
-            self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.original_arena_file_loc_edit.text()
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.calibration_file_loc_edit.text()
 
     def _open_das_model_dialog(self):
         self.das_model_dir_btn_clicked_flag = True
         das_model_dir_name = QFileDialog.getExistingDirectory(
             self,
-            'Select arena *points3d.h5 root directory',
+            'Select DAS model directory',
             '')
         if das_model_dir_name:
             das_model_dir_name_path = Path(das_model_dir_name)
@@ -2463,8 +2339,8 @@ def main():
                            'anipose_triangulation_cb_bool': False, 'triangulate_arena_points_cb_bool': False, 'display_progress_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
                            'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False, 'sleap_cluster_cb_bool': False,
                            'processing_pc_choice': 'A84E Backup', 'inference_root_dir_btn_clicked_flag': False, 'centroid_model_btn_clicked_flag': False, 'centered_instance_btn_btn_clicked_flag': False,
-                           'calibration_file_loc_btn_clicked_flag': False, 'original_arena_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False,
-                           'settings_dir_btn_clicked_flag': False, 'recorder_dir_btn_clicked_flag': False, 'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False}
+                           'calibration_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False, 'settings_dir_btn_clicked_flag': False, 'recorder_dir_btn_clicked_flag': False,
+                           'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False, 'das_summary_cb_bool': False}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

@@ -1,4 +1,4 @@
-# usv-playpen v0.4.2
+# usv-playpen v0.5.0
 
 <br>
 <div align="center">
@@ -87,4 +87,4 @@ Run the GUI.
 python usv_playpen_gui.py
 ```
 
-Developed and tested in PyCharm Pro 2024.1.1, on macOS Sonoma 14.4 / Ubuntu 22.04 LTS/ Windows 10.
+Developed and tested in PyCharm Pro 2024.2.3, on macOS Sonoma 14.4 / Pop!_OS 22.04 / Windows 11.

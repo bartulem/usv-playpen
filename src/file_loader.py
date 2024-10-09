@@ -89,7 +89,7 @@ class DataLoader:
 
         wave_data_dict = {}
         for one_dir in self.input_parameter_dict['wave_data_loc']:
-            for one_file in os.listdir(one_dir):
+            for one_file in sorted(os.listdir(one_dir)):
 
                 # additional conditional argument to reduce numbers of files loaded
                 if len(self.input_parameter_dict['load_wavefile_data']['conditional_arg']) == 0:

@@ -314,11 +314,11 @@ class ConvertTo3D:
                                       disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
                                       constraints=self.input_parameter_dict['conduct_anipose_triangulation']['rigid_body_constraints'],
                                       constraints_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weak_body_constraints'],
-                                      scale_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['scale_smooth_len_weak'][0],
-                                      scale_length=self.input_parameter_dict['conduct_anipose_triangulation']['scale_smooth_len_weak'][1],
-                                      scale_length_weak=self.input_parameter_dict['conduct_anipose_triangulation']['scale_smooth_len_weak'][2],
-                                      reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_loss'][0],
-                                      reproj_loss=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_loss'][1],
+                                      scale_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['scale_smooth'],
+                                      scale_length=self.input_parameter_dict['conduct_anipose_triangulation']['weight_rigid'],
+                                      scale_length_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weight_weak'],
+                                      reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'],
+                                      reproj_loss=self.input_parameter_dict['conduct_anipose_triangulation']['regularization_function'],
                                       n_deriv_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['n_deriv_smooth'])
         else:
 

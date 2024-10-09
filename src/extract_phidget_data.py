@@ -60,7 +60,7 @@ class Gatherer:
                 sub_directory = one_dir
                 break
 
-        phidget_file_list = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}*.json")
+        phidget_file_list = sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}*.json"))
 
         # load raw phidget data
         phidget_data = []
