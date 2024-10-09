@@ -116,7 +116,7 @@ class Stylist:
             for one_directory in self.root_directories:
                 try:
                     self.message_output(f"Preprocessing data in {one_directory} started at: "
-                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
 
                     # # # configure video properties via ffmpeg
                     if self.input_parameter_dict['processing_booleans']['conduct_video_concatenation']:
@@ -219,7 +219,7 @@ class Stylist:
                                                message_output=self.message_output).summarize_das_findings()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
-                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
 
                 except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
                     self.message_output(traceback.format_exc())
