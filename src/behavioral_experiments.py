@@ -435,6 +435,7 @@ class ExperimentController:
 
         if self.exp_settings_dict['disable_ethernet']:
             subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" disable''').wait()
+            self.message_output(f"Ethernet DISCONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
         # wait until cameras have finished recording
         # pause for N extra seconds so audio is done, too
@@ -451,6 +452,7 @@ class ExperimentController:
 
         if self.exp_settings_dict['disable_ethernet']:
             subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''').wait()
+            self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
             QTest.qWait(5000)
 
         self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
