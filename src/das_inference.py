@@ -257,8 +257,15 @@ class FindMouseVocalizations:
             peak_amp_ch = np.unravel_index(np.argmax(audio_file_data[start_usv:stop_usv, :]), audio_file_data.shape)[1]
             mean_amp_ch = np.argmax(np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0))
             usv_detected_chs = list(row['chs_detected'])
-            # remove USV segments if peak and mean amplitude channels are not in the detected list or if it is audible only on one channel
-            if len(usv_detected_chs) < 2 or peak_amp_ch not in usv_detected_chs or mean_amp_ch not in usv_detected_chs:
+
+            # remove USV segments if they appear only on one channel; this gets rid of some true positives, but false positives to a larger extent
+            condition_1 = len(usv_detected_chs) < 2
+            # remove USV segments if they don't appear on both peak and mean amplitude channels; this is clearly noise
+            condition_2 = peak_amp_ch not in usv_detected_chs or mean_amp_ch not in usv_detected_chs
+            # if the USV is detected on two channels, but the peak amplitude channel is not the same as the mean amplitude channel, it is likely noise
+            condition_3 = len(usv_detected_chs) == 2 and peak_amp_ch != mean_amp_ch
+
+            if condition_1 or condition_2 or condition_3:
                 usv_summary.drop(labels=index, inplace=True)
             else:
                 usv_summary.at[index, 'peak_amp_ch'] = peak_amp_ch
