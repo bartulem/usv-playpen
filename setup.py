@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.5.0',
+    version='0.6.0',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -43,7 +43,7 @@ setup(
                       'requests==2.32.3',
                       'scipy==1.10.0',
                       'sleap-anipose==0.1.7',
-                      'scikit-learn==1.5.0',
+                      'scikit-learn==1.5.2',
                       'soundfile==0.12.1',
                       'toml==0.10.2']
 )

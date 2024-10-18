@@ -1,6 +1,6 @@
 """
 @author: bartulem
-GUI to run behavioral experiments.
+GUI to run behavioral experiments, data processing and analyses.
 """
 
 import ast
@@ -50,7 +50,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.5.0'
+app_name = 'USV Playpen v0.6.0'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
@@ -58,6 +58,7 @@ das_model_dir = 'model_2024-03-25'
 das_model_base_global ='20240325_073951'
 camera_ids_global = ['21372315', '21372316', '21369048', '22085397', '21241563']
 camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
+usgh_flags_global = '1574'  # change to '1862' for NO SYNC mode
 
 if platform.system() == 'Windows':
     config_dir_global = 'C:\\experiment_running_docs'
@@ -75,7 +76,7 @@ else:
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
 avisoft_base_dir_global = 'C:\\Users\\bartulem\\Documents\\Avisoft Bioacoustics\\'
 coolterm_base_dir_global = 'D:\\CoolTermWin'
-destination_linux_global = f'/home/labadmin/falkner/{cup_directory_name}/Data,/home/labadmin/murthy/{cup_directory_name}/Data'
+destination_linux_global = f'/home/labadmin/falkner/{cup_directory_name}/Data'
 destination_win_global = f'F:\\{cup_directory_name}\\Data,M:\\{cup_directory_name}\\Data'
 gui_font_global = 'segoeui.ttf'
 
@@ -284,8 +285,8 @@ class USVPlaypenWindow(QMainWindow):
                         'relative_intensity_threshold': 0.6,
                         'millisecond_divergence_tolerance': 10},
                     'crop_wav_files_to_video': {
-                        'device_receiving_input': 'm',
-                        'ch_receiving_input': 1}}},
+                        'device_receiving_input': 'both',
+                        'ch_receiving_input': 4}}},
             'usv_inference': {
                 'FindMouseVocalizations': {
                     'das_command_line_inference': {
@@ -492,7 +493,7 @@ class USVPlaypenWindow(QMainWindow):
                                        'delay': '0.0', 'center': '40000', 'bandwidth': '5', 'fd': '5',
                                        'decimation': '-1', 'device': '0', 'mode': '0', 'outfovertaps': '32',
                                        'outfoverabtast': '2000000', 'outformat': '2', 'outfabtast': '-22050', 'outdeviceid': '0',
-                                       'outtype': '7', 'usghflags': '1574', 'diff': '0', 'format': '1',
+                                       'outtype': '7', 'usghflags': usgh_flags_global, 'diff': '0', 'format': '1',
                                        'type': '0', 'nbrwavehdr': '32', 'devbuffer': '0.032', 'ntaps': '32',
                                        'filtercutoff': '15.0', 'filter': '0', 'fabtast': '250000', 'y2': '1322',
                                        'x2': '2557', 'y1': '10', 'x1': '1653', 'fftlength': '256',
@@ -1003,11 +1004,11 @@ class USVPlaypenWindow(QMainWindow):
         self.crop_wav_cam_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='crop_wav_cam_cb_bool'))
         self.crop_wav_cam_cb.move(column_two_x2, 70)
 
-        device_receiving_input_cb_label = QLabel('Trgbox-USGH device (m|s):', self.ProcessSettings)
+        device_receiving_input_cb_label = QLabel('Trgbox-USGH device(s):', self.ProcessSettings)
         device_receiving_input_cb_label.setFont(QFont(self.font_id, 12))
         device_receiving_input_cb_label.move(column_two_x1, 100)
         self.device_receiving_input_cb = QComboBox(self.ProcessSettings)
-        self.device_receiving_input_cb.addItems(['m', 's'])
+        self.device_receiving_input_cb.addItems(['both', 'm', 's'])
         self.device_receiving_input_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.device_receiving_input_cb.activated.connect(partial(self._combo_box_prior_audio_device_camera_input, variable_id='device_receiving_input'))
         self.device_receiving_input_cb.move(column_two_x2, 100)
@@ -1015,7 +1016,7 @@ class USVPlaypenWindow(QMainWindow):
         ch_receiving_input_label = QLabel('Trgbox-USGH ch (1-12):', self.ProcessSettings)
         ch_receiving_input_label.setFont(QFont(self.font_id, 12))
         ch_receiving_input_label.move(column_two_x1, 130)
-        self.ch_receiving_input = QLineEdit('1', self.ProcessSettings)
+        self.ch_receiving_input = QLineEdit('4', self.ProcessSettings)
         self.ch_receiving_input.setFont(QFont(self.font_id, 10))
         self.ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
         self.ch_receiving_input.move(column_two_x2, 130)
@@ -1030,7 +1031,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_hpss_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_hpss_cb_bool'))
         self.conduct_hpss_cb.move(column_two_x2, 160)
 
-        stft_label = QLabel('STFT window and hop size:', self.ProcessSettings)
+        stft_label = QLabel('STFT window & hop size:', self.ProcessSettings)
         stft_label.setFont(QFont(self.font_id, 12))
         stft_label.move(column_two_x1, 190)
         self.stft_window_hop = QLineEdit('512,128', self.ProcessSettings)
@@ -1150,7 +1151,7 @@ class USVPlaypenWindow(QMainWindow):
         ev_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
         ev_sync_label.move(column_two_x1, 630)
 
-        conduct_ephys_file_chaining_label = QLabel('Conduct e-phys file concat:', self.ProcessSettings)
+        conduct_ephys_file_chaining_label = QLabel('Conduct e-phys concat:', self.ProcessSettings)
         conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
         conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; }')
         conduct_ephys_file_chaining_label.move(column_two_x1, 660)
@@ -1474,12 +1475,12 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductProcess = ConductProcess(self)
         self.setWindowTitle(f'{app_name} (Conduct Processing)')
         self.setCentralWidget(self.ConductProcess)
-        record_four_x, record_four_y = (860, 1100)
+        record_four_x, record_four_y = (870, 1100)
         self.setFixedSize(record_four_x, record_four_y)
 
         self.txt_edit_process = QPlainTextEdit(self.ConductProcess)
         self.txt_edit_process.move(5, 5)
-        self.txt_edit_process.setFixedSize(845, 1040)
+        self.txt_edit_process.setFixedSize(855, 1040)
         self.txt_edit_process.setReadOnly(True)
 
         self._save_modified_values_to_toml(run_exp_bool=False, message_func=self._process_message)
@@ -1702,7 +1703,7 @@ class USVPlaypenWindow(QMainWindow):
             self.settings_dir_btn_clicked_flag = False
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
-        self.device_receiving_input = 'm'
+        self.device_receiving_input = 'both'
 
         self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(getattr(self, 'processing_pc_choice'))
         self.processing_pc_choice = 'A84E Backup'
@@ -1947,6 +1948,8 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_audio_device_camera_input(self, index, variable_id=None):
         if index == 0:
+            self.__dict__[variable_id] = 'both'
+        elif index == 1:
             self.__dict__[variable_id] = 'm'
         else:
             self.__dict__[variable_id] = 's'
@@ -2334,7 +2337,7 @@ def main():
                            'conduct_audio_cb_bool': True, 'conduct_tracking_calibration_cb_bool': False, 'modify_audio_config': False, 'conduct_video_concatenation_cb_bool': False,
                            'conduct_video_fps_change_cb_bool': False, 'delete_con_file_cb_bool': True, 'conduct_multichannel_conversion_cb_bool': False, 'crop_wav_cam_cb_bool': False,
                            'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False, 'conduct_sync_cb_bool': False, 'conduct_nv_sync_cb_bool': False, 'recording_codec': 'hq',
-                           'npx_file_type': 'ap', 'device_receiving_input': 'm', 'kilosort_version': '4', 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
+                           'npx_file_type': 'ap', 'device_receiving_input': 'both', 'kilosort_version': '4', 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
                            'split_cluster_spikes_cb_bool': False, 'anipose_calibration_cb_bool': False, 'sleap_file_conversion_cb_bool': False, 'board_provided_cb_bool': False,
                            'anipose_triangulation_cb_bool': False, 'triangulate_arena_points_cb_bool': False, 'display_progress_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
                            'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False, 'sleap_cluster_cb_bool': False,

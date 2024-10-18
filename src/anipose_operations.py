@@ -331,7 +331,7 @@ class ConvertTo3D:
                                       excluded_views=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['excluded_views']),
                                       fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
                                       disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
-                                      reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_loss'][0])
+                                      reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'])
 
     def translate_rotate_metric(self):
         """
