@@ -121,8 +121,8 @@ class FindMouseVocalizations:
         # move CSV files to save directory and remove them from WAV directory
         for one_file in os.listdir(f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered"):
             if f".{save_format}" in one_file:
-                shutil.move(f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered{os.sep}{one_file}",
-                            f"{self.root_directory}{os.sep}audio{os.sep}das_annotations{os.sep}{one_file}")
+                shutil.move(src=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered{os.sep}{one_file}",
+                            dst=f"{self.root_directory}{os.sep}audio{os.sep}das_annotations{os.sep}{one_file}")
 
     def summarize_das_findings(self):
         """

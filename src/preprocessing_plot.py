@@ -31,7 +31,7 @@ class SummaryPlotter:
         else:
             self.input_parameter_dict = input_parameter_dict
 
-    def preprocessing_summary(self, prediction_error_dict, phidget_data_dictionary):
+    def preprocessing_summary(self, ipi_discrepancy_dict, phidget_data_dictionary):
         """
         Description
         ----------
@@ -45,8 +45,8 @@ class SummaryPlotter:
         Parameters
         ----------
         Contains the following set of parameters
-            prediction_error_dict (dict)
-                Dict containing arrays w/ prediction errors.
+            ipi_discrepancy_dict (dict)
+                Dict containing arrays of A/V IPI discrepancies.
             phidget_data_dictionary (dict)
                 Dictionary containing lux, humidity and temperature data.
             duration_min (int / float)
@@ -77,11 +77,11 @@ class SummaryPlotter:
 
         # calculate error statistics
         plot_statistics_dict = {}
-        for device_id in prediction_error_dict.keys():
+        for device_id in ipi_discrepancy_dict.keys():
             plot_statistics_dict[device_id] = {}
-            plot_statistics_dict[device_id]['error_median'] = np.round(np.nanmedian(prediction_error_dict[device_id]), 2)
-            plot_statistics_dict[device_id]['error_mean'] = np.round(np.nanmean(prediction_error_dict[device_id]), 2)
-            plot_statistics_dict[device_id]['error_sem'] = np.nanstd(prediction_error_dict[device_id]) / prediction_error_dict[device_id].shape[0]
+            plot_statistics_dict[device_id]['error_median'] = np.round(np.nanmedian(ipi_discrepancy_dict[device_id]), 2)
+            plot_statistics_dict[device_id]['error_mean'] = np.round(np.nanmean(ipi_discrepancy_dict[device_id]), 2)
+            plot_statistics_dict[device_id]['error_sem'] = np.nanstd(ipi_discrepancy_dict[device_id]) / ipi_discrepancy_dict[device_id].shape[0]
             plot_statistics_dict[device_id]['low_ci'] = plot_statistics_dict[device_id]['error_mean'] - (2.58 * plot_statistics_dict[device_id]['error_sem'])
             plot_statistics_dict[device_id]['high_ci'] = plot_statistics_dict[device_id]['error_mean'] + (2.58 * plot_statistics_dict[device_id]['error_sem'])
 
@@ -176,10 +176,10 @@ class SummaryPlotter:
 
         # optimize histogram
         for device_id in plot_statistics_dict.keys():
-            plot_statistics_dict[device_id]['most_extreme_value'] = int(np.round(np.nanmax(np.abs(prediction_error_dict[device_id]))))
+            plot_statistics_dict[device_id]['most_extreme_value'] = int(np.round(np.nanmax(np.abs(ipi_discrepancy_dict[device_id]))))
             if plot_statistics_dict[device_id]['most_extreme_value'] > 10.5:
-                plot_statistics_dict[device_id]['plot_x_min'] = -plot_statistics_dict[device_id]['most_extreme_value'] - .5
-                plot_statistics_dict[device_id]['plot_x_max'] = plot_statistics_dict[device_id]['most_extreme_value'] + .5
+                plot_statistics_dict[device_id]['plot_x_min'] = -plot_statistics_dict[device_id]['most_extreme_value'] - 1.5
+                plot_statistics_dict[device_id]['plot_x_max'] = plot_statistics_dict[device_id]['most_extreme_value'] + 1.5
             else:
                 plot_statistics_dict[device_id]['plot_x_min'] = -10.5
                 plot_statistics_dict[device_id]['plot_x_max'] = 10.5
@@ -187,10 +187,13 @@ class SummaryPlotter:
         fig, ax = plt.subplots(nrows=1, ncols=len(plot_statistics_dict.keys()))
         axr = ax.ravel()
         for device_num, device_id in enumerate(plot_statistics_dict.keys()):
-            axr[device_num].hist(prediction_error_dict[device_id],
+            axr[device_num].hist(ipi_discrepancy_dict[device_id],
                                  bins=np.arange(-plot_statistics_dict[device_id]['most_extreme_value'] - .5,
                                                 plot_statistics_dict[device_id]['most_extreme_value'] + 1, 1),
-                                 color='#838B8B')
+                                 histtype='stepfilled',
+                                 color='#BBD5E8',
+                                 ec='#000000',
+                                 alpha=.15)
 
             axr[device_num].set_xlim(plot_statistics_dict[device_id]['plot_x_min'], plot_statistics_dict[device_id]['plot_x_max'])
 
@@ -200,17 +203,17 @@ class SummaryPlotter:
             axr[device_num].axvline(x=plot_statistics_dict[device_id]['error_mean'],
                                     ls='-', lw=1.4, c='#00C78C')
 
-            axr[device_num].set_xlabel('undershoot <--- Prediction error (video frames) ---> overshoot')
-            axr[device_num].set_ylabel('Total number of instances (#)')
+            axr[device_num].set_xlabel('undershoot <--- A-V IPI start discrepancy (ms) ---> overshoot')
+            axr[device_num].set_ylabel('Inter-pulse interval count (#)')
             axr[device_num].set_title(device_id, pad=20)
 
-            axr[device_num].text(x=0.775, y=0.18, s=r"median$_{error}$: " + f"{plot_statistics_dict[device_id]['error_median']} fr", verticalalignment='top',
+            axr[device_num].text(x=0.775, y=0.18, s=r"median$_{error}$: " + f"{plot_statistics_dict[device_id]['error_median']} ms", verticalalignment='top',
                                  transform=axr[device_num].transAxes, fontsize=6, color='#FF6347')
-            axr[device_num].text(x=0.775, y=0.15, s=r"mean$_{error}$: " + f"{plot_statistics_dict[device_id]['error_mean']} fr", verticalalignment='top',
+            axr[device_num].text(x=0.775, y=0.15, s=r"mean$_{error}$: " + f"{plot_statistics_dict[device_id]['error_mean']} ms", verticalalignment='top',
                                  transform=axr[device_num].transAxes, fontsize=6, color='#00C78C')
             axr[device_num].text(x=0.775, y=0.12, s=f"99% CI [{plot_statistics_dict[device_id]['low_ci']:.3f}, {plot_statistics_dict[device_id]['high_ci']:.3f}]",
                                  verticalalignment='top', transform=axr[device_num].transAxes, fontsize=6)
-            axr[device_num].text(x=0.775, y=0.09, s=r"N$_{test}$=" + f"{prediction_error_dict[device_id].shape[0]}",
+            axr[device_num].text(x=0.775, y=0.09, s=r"N$_{IPI}$=" + f"{ipi_discrepancy_dict[device_id].shape[0]}",
                                  verticalalignment='top', transform=axr[device_num].transAxes, fontsize=6)
 
             if 'm_' in device_id:

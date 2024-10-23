@@ -148,12 +148,12 @@ class Stylist:
                         phidget_data_dictionary = Gatherer(root_directory=one_directory,
                                                            input_parameter_dict=self.input_parameter_dict).prepare_data_for_analyses()
 
-                        prediction_error_dict = Synchronizer(root_directory=one_directory,
-                                                             input_parameter_dict=self.input_parameter_dict,
-                                                             message_output=self.message_output).find_audio_sync_trains()
+                        ipi_discrepancy_dict = Synchronizer(root_directory=one_directory,
+                                                            input_parameter_dict=self.input_parameter_dict,
+                                                            message_output=self.message_output).find_audio_sync_trains()
 
                         SummaryPlotter(root_directory=one_directory,
-                                       input_parameter_dict=self.input_parameter_dict).preprocessing_summary(prediction_error_dict=prediction_error_dict,
+                                       input_parameter_dict=self.input_parameter_dict).preprocessing_summary(ipi_discrepancy_dict=ipi_discrepancy_dict,
                                                                                                              phidget_data_dictionary=phidget_data_dictionary)
 
                     # # # check e-phys-video sync

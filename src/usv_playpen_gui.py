@@ -50,7 +50,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.6.0'
+app_name = 'USV Playpen v0.7.0'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
@@ -58,7 +58,7 @@ das_model_dir = 'model_2024-03-25'
 das_model_base_global ='20240325_073951'
 camera_ids_global = ['21372315', '21372316', '21369048', '22085397', '21241563']
 camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
-usgh_flags_global = '1574'  # change to '1862' for NO SYNC mode
+usgh_flags_global = '1574'  # change to '1862' for NO SYNC audio mode
 
 if platform.system() == 'Windows':
     config_dir_global = 'C:\\experiment_running_docs'
@@ -282,10 +282,10 @@ class USVPlaypenWindow(QMainWindow):
                         'led_px_version': 'current',
                         'led_px_dev': 10,
                         'video_extension': 'mp4',
-                        'relative_intensity_threshold': 0.6,
+                        'relative_intensity_threshold': 1.0,
                         'millisecond_divergence_tolerance': 10},
                     'crop_wav_files_to_video': {
-                        'device_receiving_input': 'both',
+                        'device_receiving_input': 'm',
                         'ch_receiving_input': 4}}},
             'usv_inference': {
                 'FindMouseVocalizations': {
@@ -1008,7 +1008,7 @@ class USVPlaypenWindow(QMainWindow):
         device_receiving_input_cb_label.setFont(QFont(self.font_id, 12))
         device_receiving_input_cb_label.move(column_two_x1, 100)
         self.device_receiving_input_cb = QComboBox(self.ProcessSettings)
-        self.device_receiving_input_cb.addItems(['both', 'm', 's'])
+        self.device_receiving_input_cb.addItems(['m', 's', 'both'])
         self.device_receiving_input_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.device_receiving_input_cb.activated.connect(partial(self._combo_box_prior_audio_device_camera_input, variable_id='device_receiving_input'))
         self.device_receiving_input_cb.move(column_two_x2, 100)
@@ -1475,12 +1475,12 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductProcess = ConductProcess(self)
         self.setWindowTitle(f'{app_name} (Conduct Processing)')
         self.setCentralWidget(self.ConductProcess)
-        record_four_x, record_four_y = (870, 1100)
+        record_four_x, record_four_y = (870, 1000)
         self.setFixedSize(record_four_x, record_four_y)
 
         self.txt_edit_process = QPlainTextEdit(self.ConductProcess)
         self.txt_edit_process.move(5, 5)
-        self.txt_edit_process.setFixedSize(855, 1040)
+        self.txt_edit_process.setFixedSize(855, 940)
         self.txt_edit_process.setReadOnly(True)
 
         self._save_modified_values_to_toml(run_exp_bool=False, message_func=self._process_message)
@@ -1703,7 +1703,7 @@ class USVPlaypenWindow(QMainWindow):
             self.settings_dir_btn_clicked_flag = False
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
-        self.device_receiving_input = 'both'
+        self.device_receiving_input = 'm'
 
         self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(getattr(self, 'processing_pc_choice'))
         self.processing_pc_choice = 'A84E Backup'
@@ -1948,11 +1948,11 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_audio_device_camera_input(self, index, variable_id=None):
         if index == 0:
-            self.__dict__[variable_id] = 'both'
-        elif index == 1:
             self.__dict__[variable_id] = 'm'
-        else:
+        elif index == 1:
             self.__dict__[variable_id] = 's'
+        else:
+            self.__dict__[variable_id] = 'both'
 
     def _combo_box_prior_npx_file_type(self, index, variable_id=None):
         if index == 0:
@@ -2337,7 +2337,7 @@ def main():
                            'conduct_audio_cb_bool': True, 'conduct_tracking_calibration_cb_bool': False, 'modify_audio_config': False, 'conduct_video_concatenation_cb_bool': False,
                            'conduct_video_fps_change_cb_bool': False, 'delete_con_file_cb_bool': True, 'conduct_multichannel_conversion_cb_bool': False, 'crop_wav_cam_cb_bool': False,
                            'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False, 'conduct_sync_cb_bool': False, 'conduct_nv_sync_cb_bool': False, 'recording_codec': 'hq',
-                           'npx_file_type': 'ap', 'device_receiving_input': 'both', 'kilosort_version': '4', 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
+                           'npx_file_type': 'ap', 'device_receiving_input': 'm', 'kilosort_version': '4', 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
                            'split_cluster_spikes_cb_bool': False, 'anipose_calibration_cb_bool': False, 'sleap_file_conversion_cb_bool': False, 'board_provided_cb_bool': False,
                            'anipose_triangulation_cb_bool': False, 'triangulate_arena_points_cb_bool': False, 'display_progress_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
                            'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False, 'sleap_cluster_cb_bool': False,

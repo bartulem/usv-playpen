@@ -191,7 +191,7 @@ class ConvertTo3D:
             if os.path.isdir(os.path.join(self.session_root_joint_date_dir, cam_directory)):
                 for one_file in os.listdir(os.path.join(self.session_root_joint_date_dir, cam_directory)):
                     if one_file.endswith('.slp'):
-                        conversion_subp = subprocess.Popen(f'''{command_addition}conda activate {sleap_version} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"''',
+                        conversion_subp = subprocess.Popen(args=f'''{command_addition}conda activate {sleap_version} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"''',
                                                            stdout=subprocess.DEVNULL,
                                                            stderr=subprocess.STDOUT,
                                                            cwd=os.path.join(self.session_root_joint_date_dir, cam_directory),
@@ -370,7 +370,7 @@ class ConvertTo3D:
         arena_data_original_h5 = glob.glob(pathname=f"{self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc']}{os.sep}**{os.sep}*_points3d.h5*", recursive=True)[0]
         arena_data_original_h5_dir = os.path.dirname(arena_data_original_h5)
         arena_data_original_h5_file = os.path.basename(arena_data_original_h5)
-        with h5py.File(arena_data_original_h5, 'r') as h5_file_arena:
+        with h5py.File(arena_data_original_h5, mode='r') as h5_file_arena:
             arena_data = np.array(h5_file_arena['tracks'], dtype='float64')
 
         arena_nodes = extract_skeleton_nodes(skeleton_loc=f"{self.exp_settings_dict['config_settings_directory']}{os.sep}playpen_skeleton.json",
@@ -437,12 +437,12 @@ class ConvertTo3D:
                                                            0]
 
         if self.input_parameter_dict['translate_rotate_metric']['save_arena_data_bool']:
-            with h5py.File(f"{arena_data_original_h5_dir}{os.sep}{arena_data_original_h5_file[:-3]}_translated_rotated_metric.h5", 'w') as h5_file_write:
-                h5_file_write.create_dataset('tracks', data=arena_data)
-                h5_file_write.create_dataset('node_names', data=arena_nodes)
+            with h5py.File(name=f"{arena_data_original_h5_dir}{os.sep}{arena_data_original_h5_file[:-3]}_translated_rotated_metric.h5", mode='w') as h5_file_write:
+                h5_file_write.create_dataset(name='tracks', data=arena_data)
+                h5_file_write.create_dataset(name='node_names', data=arena_nodes)
 
         if self.input_parameter_dict['translate_rotate_metric']['save_mouse_data_bool']:
-            with h5py.File(f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5", 'r') as h5_file_mouse:
+            with h5py.File(name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5", mode='r') as h5_file_mouse:
                 mouse_data = np.array(h5_file_mouse['tracks'], dtype='float64')
 
             mouse_nodes = extract_skeleton_nodes(skeleton_loc=f"{self.exp_settings_dict['config_settings_directory']}{os.sep}mouse_skeleton.json",
@@ -465,10 +465,10 @@ class ConvertTo3D:
 
             mouse_track_names = find_mouse_names(root_directory=self.root_directory)
 
-            with h5py.File(f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d_translated_rotated_metric.h5", 'w') as h5_file_write:
-                h5_file_write.create_dataset('tracks', data=mouse_data)
-                h5_file_write.create_dataset('node_names', data=mouse_nodes)
-                h5_file_write.create_dataset('track_names', data=mouse_track_names)
+            with h5py.File(name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d_translated_rotated_metric.h5", mode='w') as h5_file_write:
+                h5_file_write.create_dataset(name='tracks', data=mouse_data)
+                h5_file_write.create_dataset(name='node_names', data=mouse_nodes)
+                h5_file_write.create_dataset(name='track_names', data=mouse_track_names)
 
             if self.input_parameter_dict['translate_rotate_metric']['delete_original_h5']:
                 os.remove(f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5")

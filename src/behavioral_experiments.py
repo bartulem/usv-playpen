@@ -73,6 +73,7 @@ class ExperimentController:
         if not os.path.exists(f"{self.exp_settings_dict['config_settings_directory']}"
                               f"{os.sep}motif_config.ini"):
             self.message_output("Motif config file not found. Try again!")
+            QTest.qWait(10000)
             sys.exit()
         else:
             config.read(f"{self.exp_settings_dict['config_settings_directory']}"
@@ -124,6 +125,7 @@ class ExperimentController:
             api = motifapi.MotifApi(ip_address, api_key)
         except motifapi.api.MotifError:
             self.message_output('Motif not running or reachable. Check hardware and connections.')
+            QTest.qWait(10000)
             sys.exit()
         else:
             available_cameras = api.call('cameras')['cameras']
@@ -135,6 +137,7 @@ class ExperimentController:
                 self.message_output(f"The number of connected cameras ({len(self.camera_serial_num)}) does not match the expected "
                                     f"number of connected cameras, which is {self.exp_settings_dict['video']['general']['expected_camera_num']}.")
                 self.message_output(self.exp_settings_dict['continue_key'])
+                QTest.qWait(10000)
                 sys.exit()
 
             # configure cameras
@@ -381,8 +384,8 @@ class ExperimentController:
 
         # start capturing sync LEDS
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):
-            shutil.copy(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}coolterm_config.stc",
-                        f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc")
+            shutil.copy(src=f"{self.exp_settings_dict['config_settings_directory']}{os.sep}coolterm_config.stc",
+                        dst=f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc")
         sync_leds_capture = subprocess.Popen(args=f'''cmd /c "{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"''',
                                              stdout=subprocess.PIPE)
 
@@ -434,33 +437,32 @@ class ExperimentController:
             self.message_output(f"Video recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration']} minute(s). Please be patient.")
 
         if self.exp_settings_dict['disable_ethernet']:
-            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" disable''').wait()
+            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" disable''',
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT).wait()
             self.message_output(f"Ethernet DISCONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
         # wait until cameras have finished recording
         # pause for N extra seconds so audio is done, too
         QTest.qWait(1000*(10 + (self.exp_settings_dict['video_session_duration'] * 60)))
 
-        self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
-
         # pause for N seconds
-        QTest.qWait(10000)
+        QTest.qWait(15000)
+
+        self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
         # close sync LED capture
         sync_leds_capture.terminate()
         subprocess.Popen(f'''cmd /c "taskkill /IM CoolTerm.exe /T /F 1>nul 2>&1"''').wait()
 
         if self.exp_settings_dict['disable_ethernet']:
-            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''').wait()
+            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''',
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT).wait()
             self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
-            QTest.qWait(5000)
+            QTest.qWait(10000)
 
         self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
-
-        # move last modified sync file to primary file server
-        last_modified_sync_file = max(glob.glob(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"), key=os.path.getctime)
-        shutil.move(src=last_modified_sync_file,
-                    dst=f"{total_dir_name_windows[0]}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
 
         # move video file(s) to primary file server
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
@@ -504,6 +506,11 @@ class ExperimentController:
                     QTest.qWait(1000)
                 else:
                     break
+
+        # move last modified sync file to primary file server
+        last_modified_sync_file = max(glob.glob(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"), key=os.path.getctime)
+        shutil.move(src=last_modified_sync_file,
+                    dst=f"{total_dir_name_windows[0]}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
 
         # ensure the video is done copying before proceeding
         while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):

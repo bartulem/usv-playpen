@@ -1,4 +1,4 @@
-# usv-playpen v0.6.0
+# usv-playpen v0.7.0
 
 <br>
 <div align="center">

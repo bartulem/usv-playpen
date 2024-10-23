@@ -154,7 +154,7 @@ class Operator:
                     if cluster_info.loc[idx, 'group'] == 'good' or cluster_info.loc[idx, 'group'] == 'mua':
 
                         # collect all spikes for any given cluster
-                        cluster_indices = np.where(spike_clusters == cluster_info.loc[idx, 'cluster_id'])[0]
+                        cluster_indices = np.sort(np.where(spike_clusters == cluster_info.loc[idx, 'cluster_id'])[0])
                         spike_events = np.take(spike_times, cluster_indices)
 
                         # filter spikes for each session
@@ -369,7 +369,7 @@ class Operator:
         separation_subprocesses = []
         for device_id in ['m', 's']:
             for ch in range(1, 13):
-                mc_to_sc_subp = subprocess.Popen(f'''{self.command_addition}sox {device_id}_*_ch{ch:02d}.wav -q {self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav''',
+                mc_to_sc_subp = subprocess.Popen(args=f'''{self.command_addition}sox {device_id}_*_ch{ch:02d}.wav -q {self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav''',
                                                  cwd=f"{self.root_directory}{os.sep}audio{os.sep}temp",
                                                  shell=self.shell_usage_bool)
 
@@ -515,7 +515,7 @@ class Operator:
 
             if len(all_audio_files) > 0:
                 for one_file in all_audio_files:
-                    filter_subp = subprocess.Popen(f'''{self.command_addition}sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
+                    filter_subp = subprocess.Popen(args=f'''{self.command_addition}sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
                                                    cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}",
                                                    shell=self.shell_usage_bool)
 
@@ -630,7 +630,7 @@ class Operator:
                             concat_txt_file.write(f"file '{file_path.split(os.sep)[-1]}'\n")
 
                     # concatenate videos
-                    one_subprocess = subprocess.Popen(f'''{self.command_addition}ffmpeg -loglevel warning -f concat -i file_concatenation_list_{sub_directory.split('.')[-1]}.txt -c copy {vid_name}.{vid_extension}''',
+                    one_subprocess = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -f concat -i file_concatenation_list_{sub_directory.split('.')[-1]}.txt -c copy {vid_name}.{vid_extension}''',
                                                       stdout=subprocess.PIPE,
                                                       cwd=current_working_dir,
                                                       shell=self.shell_usage_bool)
@@ -696,8 +696,8 @@ class Operator:
                         and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['camera_serial_num']:
                     current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
 
-                    shutil.copy(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}",
-                                f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}")
+                    shutil.copy(src=f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}",
+                                dst=f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}")
 
         date_joint = ''
         total_frame_number = 1e9
@@ -752,7 +752,7 @@ class Operator:
 
                 # change video sampling rate
                 esr_int = int(np.floor(esr))
-                fps_subp = subprocess.Popen(f'''{self.command_addition}ffmpeg -loglevel warning -y -r {esr_int} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}''',
+                fps_subp = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -y -r {esr_int} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}''',
                                             stdout=subprocess.PIPE,
                                             cwd=current_working_dir,
                                             shell=self.shell_usage_bool)
@@ -779,15 +779,15 @@ class Operator:
                     target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
                     new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
-                    shutil.move(f"{current_working_dir}{os.sep}{new_file}",
-                                f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
+                    shutil.move(src=f"{current_working_dir}{os.sep}{new_file}",
+                                dst=f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
                 else:
                     current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
                     target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
                     new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
-                    shutil.move(f"{current_working_dir}{os.sep}{new_file}",
-                                f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images{os.sep}{new_file}")
+                    shutil.move(src=f"{current_working_dir}{os.sep}{new_file}",
+                                dst=f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images{os.sep}{new_file}")
 
                 # clean video directory of all unnecessary files
                 if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
