@@ -532,7 +532,7 @@ class Synchronizer:
                                     diff_mask_pos = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] > threshold_value)
                                     pos_significant_events = np.where(diff_mask_pos)[0]
 
-                                    if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value == 0.2):
+                                    if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
 
                                         if neg_significant_events.size > pos_significant_events.size:
                                             neg_significant_events = neg_significant_events[1:]
@@ -644,6 +644,7 @@ class Synchronizer:
                         else:
                             audio_video_ipi_discrepancy_ms = ((audio_ipi_start_samples / wave_data_dict[audio_file]['sampling_rate']) - (video_ipi_start_frames / camera_fr[0])) * 1000
 
+                            # if the SYNC is acceptable, delete the original audio files
                             if np.max(np.abs(audio_video_ipi_discrepancy_ms)) < 18:
                                 if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}original"):
                                     shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}original")
@@ -835,5 +836,5 @@ class Synchronizer:
             else:
                 break
 
-        # create HPSS directory and delete original directory
+        # create HPSS directory
         pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}hpss").mkdir(parents=True, exist_ok=True)

@@ -177,7 +177,7 @@ class SummaryPlotter:
         # optimize histogram
         for device_id in plot_statistics_dict.keys():
             plot_statistics_dict[device_id]['most_extreme_value'] = int(np.round(np.nanmax(np.abs(ipi_discrepancy_dict[device_id]))))
-            if plot_statistics_dict[device_id]['most_extreme_value'] > 10.5:
+            if plot_statistics_dict[device_id]['most_extreme_value'] >= 10:
                 plot_statistics_dict[device_id]['plot_x_min'] = -plot_statistics_dict[device_id]['most_extreme_value'] - 1.5
                 plot_statistics_dict[device_id]['plot_x_max'] = plot_statistics_dict[device_id]['most_extreme_value'] + 1.5
             else:

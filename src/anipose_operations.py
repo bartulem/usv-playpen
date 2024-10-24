@@ -301,10 +301,13 @@ class ConvertTo3D:
 
         if not self.input_parameter_dict['conduct_anipose_triangulation']['triangulate_arena_points_bool']:
 
+            none_hyperparam_bool = False
             if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
                 with open(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}video", "*_camera_frame_count_dict.json*"))[0], 'r') as frame_count_infile:
                     camera_frame_count_dict = json.load(frame_count_infile)
                     self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, int(camera_frame_count_dict['total_frame_number_least'])]
+                    none_hyperparam_bool = True
+
 
             sleap_anipose.triangulate(p2d=self.session_root_joint_date_dir,
                                       calib=calibration_toml_file,
@@ -320,10 +323,16 @@ class ConvertTo3D:
                                       reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'],
                                       reproj_loss=self.input_parameter_dict['conduct_anipose_triangulation']['regularization_function'],
                                       n_deriv_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['n_deriv_smooth'])
+
+            if none_hyperparam_bool:
+                self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
+
         else:
 
+            none_hyperparam_bool = False
             if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
                 self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, 1]
+                none_hyperparam_bool = True
 
             sleap_anipose.triangulate(p2d=self.session_root_joint_date_dir,
                                       calib=calibration_toml_file,
@@ -332,6 +341,9 @@ class ConvertTo3D:
                                       fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
                                       disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
                                       reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'])
+
+            if none_hyperparam_bool:
+                self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
 
     def translate_rotate_metric(self):
         """
