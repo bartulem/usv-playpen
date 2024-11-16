@@ -143,7 +143,8 @@ class Operator:
                 spike_times = np.load(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}spike_times.npy")
 
                 if phy_curation_bool:
-                    cluster_info = pd.read_csv(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}cluster_info.tsv", sep='\t')
+                    cluster_info = pd.read_csv(filepath_or_buffer=f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}cluster_info.tsv",
+                                               sep='\t')
                 else:
                     self.message_output("Phy2 curation has not been done for this session, no cluster_info file exists.")
                     continue
@@ -241,7 +242,7 @@ class Operator:
         for probe_idx, probe_id in enumerate(available_probes):
             binary_files_info = {}
             changepoints = [0]
-            concatenation_command = 'copy /b '
+            concatenation_command = 'copy /b ' if os.name == 'nt' else 'cat '
             for ord_idx, one_root_dir in enumerate(self.root_directory):
                 if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}'):
                     for one_file, one_meta in zip(sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.bin*"))),
@@ -253,7 +254,7 @@ class Operator:
                                 for line in meta_data_file:
                                     key, value = line.strip().split("=")
                                     if key == 'acqApLfSy':
-                                        total_num_channels = int(value.split(',')[-1]) + int(value.split(',')[-2])
+                                        total_num_channels = int(value.split(',')[0]) + int(value.split(',')[-1])
                                     elif key == 'imDatHs_sn':
                                         headstage_sn = value
                                         spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
@@ -285,9 +286,15 @@ class Operator:
                                 binary_files_info[binary_file_info_id]['session_start_end'][0] = changepoints[-1]
                                 binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording.shape[0] // total_num_channels) + changepoints[-1]
                                 changepoints.append(int(one_recording.shape[0] // total_num_channels) + changepoints[-1])
-                                concatenation_command += '+ {} '.format(one_file)
+                                if os.name == 'nt':
+                                    concatenation_command += '+ {} '.format(one_file)
+                                else:
+                                    concatenation_command += '{} '.format(one_file)
 
-            concatenation_command += f'"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.bin"'
+            if os.name == 'nt':
+                concatenation_command += f'"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.bin"'
+            else:
+                concatenation_command += f'> {concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.bin'
 
             # create save directory if one doesn't exist already
             pathlib.Path(concat_save_dir[probe_idx]).mkdir(parents=True, exist_ok=True)
@@ -307,6 +314,9 @@ class Operator:
                         for component_key in changepoint_info_data[file_key].keys():
                             if component_key != 'tracking_start_end' and component_key != 'root_directory' and changepoint_info_data[file_key][component_key] != binary_files_info[file_key][component_key]:
                                 changepoint_info_data[file_key][component_key] = binary_files_info[file_key][component_key]
+                            elif component_key == 'tracking_start_end' and changepoint_info_data[file_key][component_key] != [np.nan, np.nan]:
+                                changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] + binary_files_info[file_key]['session_start_end'][0]
+                                changepoint_info_data[file_key][component_key][1] = changepoint_info_data[file_key][component_key][1] + binary_files_info[file_key]['session_start_end'][0]
 
                 with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'w') as binary_info_output_file:
                     json.dump(changepoint_info_data, binary_info_output_file, indent=4)

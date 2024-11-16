@@ -50,7 +50,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.7.1'
+app_name = 'USV Playpen v0.7.2'
 experimenter_id = 'bartulem'
 cup_directory_name = 'Bartul'
 email_list_global = ''
@@ -179,8 +179,8 @@ class USVPlaypenWindow(QMainWindow):
                     'conduct_anipose_calibration': {
                         'board_provided_bool': False,
                         'board_xy': [8, 11],
-                        'square_len': 16.25,
-                        'marker_len_bits': [12.75, 4],
+                        'square_len': 24,
+                        'marker_len_bits': [18.75, 4],
                         'dict_size': 1000,
                         'img_width_height': [2100, 2970]},
                     'conduct_anipose_triangulation': {
@@ -1151,25 +1151,25 @@ class USVPlaypenWindow(QMainWindow):
         ev_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
         ev_sync_label.move(column_two_x1, 630)
 
-        conduct_ephys_file_chaining_label = QLabel('Conduct e-phys concat:', self.ProcessSettings)
-        conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
-        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_ephys_file_chaining_label.move(column_two_x1, 660)
-        self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
-        self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
-        self.conduct_ephys_file_chaining_cb.setStyleSheet('QComboBox { width: 80px; }')
-        self.conduct_ephys_file_chaining_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_ephys_file_chaining_cb_bool'))
-        self.conduct_ephys_file_chaining_cb.move(column_two_x2, 660)
-
         conduct_nv_sync_cb_label = QLabel('Conduct E/V sync check:', self.ProcessSettings)
         conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 12))
         conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
-        conduct_nv_sync_cb_label.move(column_two_x1, 690)
+        conduct_nv_sync_cb_label.move(column_two_x1, 660)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
         self.conduct_nv_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_nv_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_nv_sync_cb_bool'))
-        self.conduct_nv_sync_cb.move(column_two_x2, 690)
+        self.conduct_nv_sync_cb.move(column_two_x2, 660)
+
+        conduct_ephys_file_chaining_label = QLabel('Conduct e-phys concat:', self.ProcessSettings)
+        conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
+        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_ephys_file_chaining_label.move(column_two_x1, 690)
+        self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
+        self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
+        self.conduct_ephys_file_chaining_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.conduct_ephys_file_chaining_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_ephys_file_chaining_cb_bool'))
+        self.conduct_ephys_file_chaining_cb.move(column_two_x2, 690)
 
         split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
         split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 12))

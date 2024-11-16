@@ -6,6 +6,8 @@ Run USV inference on WAV files and create annotations.
 from PyQt6.QtTest import QTest
 import glob
 import json
+import librosa
+import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pathlib
@@ -247,17 +249,42 @@ class FindMouseVocalizations:
             usv_summary['duration'] = usv_summary['stop'] - usv_summary['start']
             usv_summary.sort_values(by='start', ascending=True, inplace=True)
 
-            # find peak and mean amplitude channels
+            # find peak and mean amplitude channels and filter out noise
+            mean_signal_correlations = np.zeros(usv_summary.shape[0])
+            mean_signal_correlations[:] = np.nan
             audio_file_loc = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered{os.sep}*.mmap"))[0]
             audio_file_name = os.path.basename(audio_file_loc)
             data_type, channel_num, sample_num, audio_sampling_rate = audio_file_name.split("_")[-1][:-5], int(audio_file_name.split("_")[-2]), int(audio_file_name.split("_")[-3]), int(audio_file_name.split("_")[-4])
             audio_file_data = np.memmap(filename=audio_file_loc, mode='r', dtype=data_type, shape=(sample_num, channel_num))
+
+            len_win_signal = 512
+            low_freq_cutoff = 30000
+            noise_corr_cutoff = 0.3
+            frequency_resolution = audio_sampling_rate / len_win_signal
+            lower_bin = int(np.floor(low_freq_cutoff / frequency_resolution))
+
             for index, row in tqdm(usv_summary.iterrows(), desc="USV clean-up progress", total=usv_summary.shape[0], position=0, leave=True):
                 start_usv = int(np.floor(row['start'] * audio_sampling_rate))
                 stop_usv = int(np.ceil(row['stop'] * audio_sampling_rate))
                 peak_amp_ch = np.unravel_index(np.argmax(audio_file_data[start_usv:stop_usv, :]), audio_file_data.shape)[1]
                 mean_amp_ch = np.argmax(np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0))
-                usv_detected_chs = list(row['chs_detected'])
+                usv_detected_chs = row['chs_detected']
+
+                # the following section computes channel-wise signal correlations in the frequency domain
+                # if the signal has a mean channel-wise correlation of less than 0.3 (or 0.4 for <4 channels!), it is likely noise
+                if len(usv_detected_chs) > 1:
+                    usv_data_selected_ch = audio_file_data[start_usv:stop_usv, usv_detected_chs].astype('float32').T
+                    spectrogram_data_selected_ch = np.abs(librosa.stft(usv_data_selected_ch, n_fft=len_win_signal))
+                    reshaped_spectrogram = spectrogram_data_selected_ch[:, lower_bin:, :].reshape(len(usv_detected_chs), -1)
+                    correlation_matrix = np.corrcoef(reshaped_spectrogram)
+                    unique_correlations = correlation_matrix[np.triu_indices(n=len(usv_detected_chs), k=1)]
+                    mean_signal_correlations[index] = np.mean(unique_correlations)
+                    if len(usv_detected_chs) > 3:
+                        condition_4 = np.mean(unique_correlations) < noise_corr_cutoff
+                    else:
+                        condition_4 = np.mean(unique_correlations) < (noise_corr_cutoff + 0.1)
+                else:
+                    condition_4 = False
 
                 # remove USV segments if they appear only on one channel; this gets rid of some true positives, but false positives to a larger extent
                 condition_1 = len(usv_detected_chs) < 2
@@ -266,11 +293,24 @@ class FindMouseVocalizations:
                 # if the USV is detected on two channels, but the peak amplitude channel is not the same as the mean amplitude channel, it is likely noise
                 condition_3 = len(usv_detected_chs) == 2 and peak_amp_ch != mean_amp_ch
 
-                if condition_1 or condition_2 or condition_3:
+                if condition_1 or condition_2 or condition_3 or condition_4:
                     usv_summary.drop(labels=index, inplace=True)
                 else:
                     usv_summary.at[index, 'peak_amp_ch'] = peak_amp_ch
                     usv_summary.at[index, 'mean_amp_ch'] = mean_amp_ch
+
+            fig, ax = plt.subplots(nrows=1, ncols=1)
+            ax.hist(x=mean_signal_correlations,
+                    bins=20,
+                    histtype='stepfilled',
+                    color='#BBD5E8',
+                    ec='#000000',
+                    alpha=.5)
+            ax.set_xlabel('Mean signal/spectral correlation')
+            ax.set_ylabel('Number of putative USVs')
+            ax.axvline(x=noise_corr_cutoff, ls='-.', lw=1.2, c='#000000')
+            fig.savefig(f"{self.root_directory}{os.sep}audio{os.sep}{session_id}_usv_signal_correlation_histogram.svg", dpi=300)
+            plt.close()
 
             # give ID number to each USV
             usv_summary['usv_id'] = [f"{_num:04d}" for _num in range(usv_summary.shape[0])]

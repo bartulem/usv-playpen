@@ -313,6 +313,7 @@ class ConvertTo3D:
                                       calib=calibration_toml_file,
                                       frames=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction']),
                                       excluded_views=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['excluded_views']),
+                                      ransac=True,
                                       fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
                                       disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
                                       constraints=self.input_parameter_dict['conduct_anipose_triangulation']['rigid_body_constraints'],
@@ -431,21 +432,21 @@ class ConvertTo3D:
         z_theta_extra = -math.pi / 4
         arena_data = rotate_z(arena_data_temp, z_theta_extra)
 
-        # correct corners to be the middle of rail instead of corner
-        arena_data[0, 0, arena_nodes.index('East'), :] = [arena_data[0, 0, arena_nodes.index('East'), 0] + .0125,
-                                                          arena_data[0, 0, arena_nodes.index('East'), 1] + .0125,
+        # correct corners to be the outer edge of rail instead of inside corner
+        arena_data[0, 0, arena_nodes.index('East'), :] = [arena_data[0, 0, arena_nodes.index('East'), 0] + .025,
+                                                          arena_data[0, 0, arena_nodes.index('East'), 1] + .025,
                                                           0]
 
-        arena_data[0, 0, arena_nodes.index('West'), :] = [arena_data[0, 0, arena_nodes.index('West'), 0] - .0125,
-                                                          arena_data[0, 0, arena_nodes.index('West'), 1] - .0125,
+        arena_data[0, 0, arena_nodes.index('West'), :] = [arena_data[0, 0, arena_nodes.index('West'), 0] - .025,
+                                                          arena_data[0, 0, arena_nodes.index('West'), 1] - .025,
                                                           0]
 
-        arena_data[0, 0, arena_nodes.index('North'), :] = [arena_data[0, 0, arena_nodes.index('North'), 0] - .0125,
-                                                           arena_data[0, 0, arena_nodes.index('North'), 1] + .0125,
+        arena_data[0, 0, arena_nodes.index('North'), :] = [arena_data[0, 0, arena_nodes.index('North'), 0] - .025,
+                                                           arena_data[0, 0, arena_nodes.index('North'), 1] + .025,
                                                            0]
 
-        arena_data[0, 0, arena_nodes.index('South'), :] = [arena_data[0, 0, arena_nodes.index('South'), 0] + .0125,
-                                                           arena_data[0, 0, arena_nodes.index('South'), 1] - .0125,
+        arena_data[0, 0, arena_nodes.index('South'), :] = [arena_data[0, 0, arena_nodes.index('South'), 0] + .025,
+                                                           arena_data[0, 0, arena_nodes.index('South'), 1] - .025,
                                                            0]
 
         if self.input_parameter_dict['translate_rotate_metric']['save_arena_data_bool']:
@@ -474,6 +475,11 @@ class ConvertTo3D:
 
             mouse_data_temp = mouse_data.copy()
             mouse_data = rotate_z(mouse_data_temp, z_theta_extra)
+
+            # set all negative mouse z-coordinates to 0
+            negative_z_indices = np.where(mouse_data[:, :, :, 2] < 0)
+            if negative_z_indices[0].size > 0:
+                mouse_data[negative_z_indices[0], negative_z_indices[1], negative_z_indices[2], 2] = 0
 
             mouse_track_names = find_mouse_names(root_directory=self.root_directory)
 

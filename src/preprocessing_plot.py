@@ -324,5 +324,6 @@ class SummaryPlotter:
                 axin6.set_yticks([])
                 axin6.set_xlabel('time (s)')
 
-        fig.savefig(f"{self.root_directory}{os.sep}sync{os.sep}{self.root_directory.split(os.sep)[-1]}_summary.png",
+        fig.savefig(f"{self.root_directory}{os.sep}sync{os.sep}{self.root_directory.split(os.sep)[-1]}_summary.svg",
                     dpi=300)
+        plt.close()

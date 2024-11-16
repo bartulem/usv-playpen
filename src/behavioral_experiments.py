@@ -123,12 +123,12 @@ class ExperimentController:
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
+            available_cameras = api.call('cameras')['cameras']
         except motifapi.api.MotifError:
             self.message_output('Motif not running or reachable. Check hardware and connections.')
             QTest.qWait(10000)
             sys.exit()
         else:
-            available_cameras = api.call('cameras')['cameras']
             self.camera_serial_num = [camera_dict['serial'] for camera_dict in available_cameras]
             self.message_output(f"The system is running Motif v{api.call('version')['software']} "
                                 f"and {len(available_cameras)} camera(s) is/are online: {self.camera_serial_num}")
@@ -460,7 +460,7 @@ class ExperimentController:
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.STDOUT).wait()
             self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
-            QTest.qWait(10000)
+            QTest.qWait(20000)
 
         self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 

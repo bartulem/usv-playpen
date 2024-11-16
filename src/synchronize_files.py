@@ -153,7 +153,7 @@ class Synchronizer:
                 for line in meta_data_file:
                     key, value = line.strip().split('=')
                     if key == 'acqApLfSy':
-                        total_probe_ch = int(value.split(',')[-1]) + int(value.split(',')[-2])
+                        total_probe_ch = int(value.split(',')[0]) + int(value.split(',')[-1])
                     elif key == 'imDatHs_sn':
                         headstage_sn = value
                     elif key == 'imDatPrb_sn':
@@ -194,17 +194,25 @@ class Synchronizer:
                 else:
                     comparator_word = 'longer'
 
-                self.message_output(f"{recording_file_name} is {duration_difference} ms {comparator_word} than the video recording.")
+                self.message_output(f"{recording_file_name} is {abs(duration_difference)} ms {comparator_word} than the video recording.")
 
                 if abs(duration_difference) < self.input_parameter_dict['validate_ephys_video_sync']['npx_ms_divergence_tolerance']:
 
                     # save tracking start and end in changepoint information JSON file
                     root_ephys = self.root_directory.replace('Data', 'EPHYS').replace(self.root_directory.split(os.sep)[-1], recording_date) + f'_{imec_probe_id}'
+                    pathlib.Path(root_ephys).mkdir(parents=True, exist_ok=True)
                     if len(sorted(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True))) > 0:
                         with open(sorted(glob.glob(pathname=f'{root_ephys}{os.sep}changepoints_info_*.json', recursive=True))[0], 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
+
+                        binary_files_info[recording_file_name[:-7]] = {'session_start_end': [np.nan, np.nan],
+                                                                       'tracking_start_end': [np.nan, np.nan],
+                                                                       'file_duration_samples': np.nan,
+                                                                       'root_directory': self.root_directory,
+                                                                       'total_num_channels': total_probe_ch,
+                                                                       'headstage_sn': headstage_sn,
+                                                                       'imec_probe_sn': imec_probe_sn}
                     else:
-                        pathlib.Path(root_ephys).mkdir(parents=True, exist_ok=True)
                         binary_files_info = {recording_file_name[:-7]: {'session_start_end': [np.nan, np.nan],
                                                                         'tracking_start_end': [np.nan, np.nan],
                                                                         'file_duration_samples': np.nan,
