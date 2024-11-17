@@ -194,7 +194,7 @@ class Synchronizer:
                 else:
                     comparator_word = 'longer'
 
-                self.message_output(f"{recording_file_name} is {abs(duration_difference)} ms {comparator_word} than the video recording.")
+                self.message_output(f"{recording_file_name} is {abs(duration_difference)} ms {comparator_word} than the video recording with {largest_break_duration / float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])} s largest camera break duration.")
 
                 if abs(duration_difference) < self.input_parameter_dict['validate_ephys_video_sync']['npx_ms_divergence_tolerance']:
 
@@ -207,6 +207,7 @@ class Synchronizer:
 
                         binary_files_info[recording_file_name[:-7]] = {'session_start_end': [np.nan, np.nan],
                                                                        'tracking_start_end': [np.nan, np.nan],
+                                                                       'largest_camera_break_duration': np.nan,
                                                                        'file_duration_samples': np.nan,
                                                                        'root_directory': self.root_directory,
                                                                        'total_num_channels': total_probe_ch,
@@ -215,6 +216,7 @@ class Synchronizer:
                     else:
                         binary_files_info = {recording_file_name[:-7]: {'session_start_end': [np.nan, np.nan],
                                                                         'tracking_start_end': [np.nan, np.nan],
+                                                                        'largest_camera_break_duration': np.nan,
                                                                         'file_duration_samples': np.nan,
                                                                         'root_directory': self.root_directory,
                                                                         'total_num_channels': total_probe_ch,
@@ -222,6 +224,7 @@ class Synchronizer:
                                                                         'imec_probe_sn': imec_probe_sn}}
 
                     binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
+                    binary_files_info[recording_file_name[:-7]]['largest_break_duration'] = largest_break_duration
 
                     with open(f'{root_ephys}{os.sep}changepoints_info_{recording_date}_{imec_probe_id}.json', 'w') as binary_info_output_file:
                         json.dump(binary_files_info, binary_info_output_file, indent=4)

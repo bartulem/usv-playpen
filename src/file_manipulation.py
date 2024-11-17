@@ -264,6 +264,7 @@ class Operator:
                             binary_file_info_id = pathlib.Path(one_file).name.split(os.sep)[-1][:-7]
                             binary_files_info[binary_file_info_id] = {'session_start_end': [np.nan, np.nan],
                                                                       'tracking_start_end': [np.nan, np.nan],
+                                                                      'largest_camera_break_duration': np.nan,
                                                                       'file_duration_samples': np.nan,
                                                                       'root_directory': one_root_dir,
                                                                       'total_num_channels': total_num_channels,
