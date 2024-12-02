@@ -6,14 +6,12 @@ Code to generate summary figure for data preprocessing.
 import glob
 import json
 import matplotlib.pyplot as plt
-import matplotlib.style as mplstyle
 import numpy as np
 import os
 import wave
 from imgstore import new_for_filename
 
-if 'usv_playpen' in mplstyle.available:
-    plt.style.use('usv_playpen')
+plt.style.use(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'usv_playpen.mplstyle'))
 
 
 class SummaryPlotter:
