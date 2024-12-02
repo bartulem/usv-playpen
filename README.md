@@ -53,7 +53,7 @@ pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --us
 ## Test installation
 Navigate to the main repo directory (example below).
 ```bash
-cd /.../usv/lib/site-packages/usv-playpen
+cd /.../usv-playpen
 python -m unittest -v _tests.recording_tests
 python -m unittest -v _tests.processing_tests
 ```
