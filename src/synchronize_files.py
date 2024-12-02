@@ -184,7 +184,8 @@ class Synchronizer:
                                                                                          lsb_bool=False,
                                                                                          total_frame_number=total_frame_number_least)
 
-            if (tracking_start, tracking_end) != (None, None) or (largest_break_duration / float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])) < 2:
+            largest_break_duration_sec = round(largest_break_duration / float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn]), 3)
+            if (tracking_start, tracking_end) != (None, None) or largest_break_duration_sec < 2:
                 spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
                 total_npx_recording_duration = (tracking_end - tracking_start) / spike_glx_sr
 
@@ -194,7 +195,7 @@ class Synchronizer:
                 else:
                     comparator_word = 'longer'
 
-                self.message_output(f"{recording_file_name} is {abs(duration_difference)} ms {comparator_word} than the video recording with {largest_break_duration / float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])} s largest camera break duration.")
+                self.message_output(f"{recording_file_name} is {abs(duration_difference)} ms {comparator_word} than the video recording with {largest_break_duration_sec} s largest camera break duration.")
 
                 if abs(duration_difference) < self.input_parameter_dict['validate_ephys_video_sync']['npx_ms_divergence_tolerance']:
 
@@ -224,7 +225,7 @@ class Synchronizer:
                                                                         'imec_probe_sn': imec_probe_sn}}
 
                     binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
-                    binary_files_info[recording_file_name[:-7]]['largest_break_duration'] = largest_break_duration
+                    binary_files_info[recording_file_name[:-7]]['largest_camera_break_duration'] = int(largest_break_duration)
 
                     with open(f'{root_ephys}{os.sep}changepoints_info_{recording_date}_{imec_probe_id}.json', 'w') as binary_info_output_file:
                         json.dump(binary_files_info, binary_info_output_file, indent=4)
@@ -538,13 +539,16 @@ class Synchronizer:
                             sequence_found = False
                             for threshold_value in np.arange(0.2, relative_intensity_threshold, .01)[::-1]:
                                 if not sequence_found:
+
                                     diff_mask_neg = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] < -threshold_value)
                                     neg_significant_events = np.where(diff_mask_neg)[0] + 1
+                                    neg_significant_events = np.delete(neg_significant_events, np.argwhere(np.ediff1d(neg_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
+
                                     diff_mask_pos = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] > threshold_value)
                                     pos_significant_events = np.where(diff_mask_pos)[0]
+                                    pos_significant_events = np.delete(pos_significant_events, np.argwhere(np.ediff1d(pos_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx]/2.5))) + 1)
 
                                     if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
-
                                         if neg_significant_events.size > pos_significant_events.size:
                                             neg_significant_events = neg_significant_events[1:]
 

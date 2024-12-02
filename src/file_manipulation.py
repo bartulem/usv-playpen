@@ -313,7 +313,7 @@ class Operator:
                         changepoint_info_data[file_key] = binary_files_info[file_key]
                     else:
                         for component_key in changepoint_info_data[file_key].keys():
-                            if component_key != 'tracking_start_end' and component_key != 'root_directory' and changepoint_info_data[file_key][component_key] != binary_files_info[file_key][component_key]:
+                            if component_key != 'tracking_start_end' and component_key != 'largest_camera_break_duration' and component_key != 'root_directory' and changepoint_info_data[file_key][component_key] != binary_files_info[file_key][component_key]:
                                 changepoint_info_data[file_key][component_key] = binary_files_info[file_key][component_key]
                             elif component_key == 'tracking_start_end' and changepoint_info_data[file_key][component_key] != [np.nan, np.nan]:
                                 changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] + binary_files_info[file_key]['session_start_end'][0]

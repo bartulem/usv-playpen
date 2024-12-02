@@ -1,11 +1,11 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 with open('README.md', 'r', encoding='utf-8') as fh:
     long_description = fh.read()
 
 setup(
     name='usv-playpen',
-    version='0.7.2',
+    version='0.7.3',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -30,6 +30,11 @@ setup(
         'Bug Tracker': 'https://github.com/bartulem/usv-playpen/issues'
     },
     license='MIT',
+    entry_points={
+        'console_scripts': [
+            'usv-playpen = usv_playpen_gui.main:main'
+        ]
+    },
     install_requires=['av==10.0.0',
                       'h5py==3.11.0',
                       'imgstore',

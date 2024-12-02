@@ -50,34 +50,16 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.7.2'
-experimenter_id = 'bartulem'
-cup_directory_name = 'Bartul'
+app_name = 'USV Playpen v0.7.3'
 email_list_global = ''
 das_model_dir = 'model_2024-03-25'
 das_model_base_global ='20240325_073951'
 camera_ids_global = ['21372315', '21372316', '21369048', '22085397', '21241563']
 camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
 usgh_flags_global = '1574'  # change to '1862' for NO SYNC audio mode
-
-if platform.system() == 'Windows':
-    config_dir_global = 'C:\\experiment_running_docs'
-    das_model_dir_global = f'F:\\{cup_directory_name}\\DAS\\{das_model_dir}'
-    sleap_inference_dir_global = f'F:\\{cup_directory_name}\\SLEAP\\inference'
-elif platform.system() == 'Linux':
-    config_dir_global = f'/mnt/falkner/{cup_directory_name}/PC_transfer/experiment_running_docs'
-    das_model_dir_global = f'/mnt/falkner/{cup_directory_name}/DAS/{das_model_dir}'
-    sleap_inference_dir_global = f'/mnt/falkner/{cup_directory_name}/SLEAP/inference'
-else:
-    config_dir_global = f'/Volumes/falkner/{cup_directory_name}/PC_transfer/experiment_running_docs'
-    das_model_dir_global = f'/Volumes/falkner/{cup_directory_name}/DAS/{das_model_dir}'
-    sleap_inference_dir_global = f'/Volumes/falkner/{cup_directory_name}/SLEAP/inference'
-
 avisoft_rec_dir_global = 'C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH'
 avisoft_base_dir_global = 'C:\\Users\\bartulem\\Documents\\Avisoft Bioacoustics\\'
 coolterm_base_dir_global = 'D:\\CoolTermWin'
-destination_linux_global = f'/home/labadmin/falkner/{cup_directory_name}/Data'
-destination_win_global = f'F:\\{cup_directory_name}\\Data,M:\\{cup_directory_name}\\Data'
 gui_font_global = 'segoeui.ttf'
 
 basedir = os.path.dirname(__file__)
@@ -146,7 +128,7 @@ class USVPlaypenWindow(QMainWindow):
         for attr, value in kwargs.items():
             setattr(self, attr, value)
 
-        self.settings_dict = {'general': {'config_settings_directory': f'{config_dir_global}',
+        self.settings_dict = {'general': {'config_settings_directory': 'C:\\experiment_running_docs',
                                           'avisoft_recorder_exe': f'{avisoft_rec_dir_global}',
                                           'avisoft_basedirectory': f'{avisoft_base_dir_global}',
                                           'coolterm_basedirectory': f'{coolterm_base_dir_global}'},
@@ -265,8 +247,8 @@ class USVPlaypenWindow(QMainWindow):
             'send_email': {
                 'Messenger': {
                     'processing_pc_choice': 'A84E Backup',
-                    'experimenter': f'{experimenter_id}',
-                    'toml_file_loc': f'{config_dir_global}',
+                    'experimenter': 'Bartul',
+                    'toml_file_loc': 'C:\\experiment_running_docs',
                     'send_message': {
                         'receivers': []}}},
             'synchronize_files': {
@@ -306,6 +288,17 @@ class USVPlaypenWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
         self.setWindowTitle(f'{app_name}')
 
+        exp_id_label = QLabel('Experimenter ID:', self.Main)
+        exp_id_label.setFont(QFont(self.font_id, 11))
+        exp_id_label.setStyleSheet('QLabel { font-weight: bold;}')
+        exp_id_label.move(105, 325)
+        self.exp_id = 'Bartul'
+        self.exp_id_cb = QComboBox(self.Main)
+        self.exp_id_cb.addItems(['Bartul', 'Jinrun'])
+        self.exp_id_cb.setStyleSheet('QComboBox { width: 65px; }')
+        self.exp_id_cb.activated.connect(partial(self._combo_box_prior_name, variable_id='exp_id'))
+        self.exp_id_cb.move(220, 325)
+
         self._create_buttons_main()
 
     def record_one(self):
@@ -323,7 +316,7 @@ class USVPlaypenWindow(QMainWindow):
         settings_dir_label = QLabel('Settings file (*.toml) directory:', self.Record)
         settings_dir_label.setFont(QFont(self.font_id, 12))
         settings_dir_label.move(5, 40)
-        self.dir_settings_edit = QLineEdit(config_dir_global, self.Record)
+        self.dir_settings_edit = QLineEdit(self.config_dir_global, self.Record)
         self.dir_settings_edit.setFont(QFont(self.font_id, 10))
         self.dir_settings_edit.setStyleSheet('QLineEdit { width: 400px; }')
         self.dir_settings_edit.move(220, 40)
@@ -380,7 +373,7 @@ class USVPlaypenWindow(QMainWindow):
         recording_files_destination_linux_label = QLabel('File destination(s) Linux:', self.Record)
         recording_files_destination_linux_label.setFont(QFont(self.font_id, 12))
         recording_files_destination_linux_label.move(5, 160)
-        self.recording_files_destination_linux = QLineEdit(f'{destination_linux_global}', self.Record)
+        self.recording_files_destination_linux = QLineEdit(f'{self.destination_linux_global}', self.Record)
         self.recording_files_destination_linux.setFont(QFont(self.font_id, 10))
         self.recording_files_destination_linux.setStyleSheet('QLineEdit { width: 490px; }')
         self.recording_files_destination_linux.move(220, 160)
@@ -388,7 +381,7 @@ class USVPlaypenWindow(QMainWindow):
         recording_files_destination_windows_label = QLabel('File destination(s) Windows:', self.Record)
         recording_files_destination_windows_label.setFont(QFont(self.font_id, 12))
         recording_files_destination_windows_label.move(5, 190)
-        self.recording_files_destination_windows = QLineEdit(f'{destination_win_global}', self.Record)
+        self.recording_files_destination_windows = QLineEdit(f'{self.destination_win_global}', self.Record)
         self.recording_files_destination_windows.setFont(QFont(self.font_id, 10))
         self.recording_files_destination_windows.setStyleSheet('QLineEdit { width: 490px; }')
         self.recording_files_destination_windows.move(220, 190)
@@ -401,7 +394,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_audio_label = QLabel('Conduct AUDIO recording:', self.Record)
         conduct_audio_label.setFont(QFont(self.font_id, 12))
-        conduct_audio_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_audio_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_audio_label.move(5, 260)
         self.conduct_audio_cb = QComboBox(self.Record)
         self.conduct_audio_cb.addItems(['Yes', 'No'])
@@ -411,7 +404,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_tracking_cal_label = QLabel('Conduct VIDEO calibration:', self.Record)
         conduct_tracking_cal_label.setFont(QFont(self.font_id, 12))
-        conduct_tracking_cal_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_tracking_cal_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_tracking_cal_label.move(5, 290)
         self.conduct_tracking_calibration_cb = QComboBox(self.Record)
         self.conduct_tracking_calibration_cb.addItems(['No', 'Yes'])
@@ -421,7 +414,7 @@ class USVPlaypenWindow(QMainWindow):
 
         disable_ethernet_label = QLabel('Disable ethernet connection:', self.Record)
         disable_ethernet_label.setFont(QFont(self.font_id, 12))
-        disable_ethernet_label.setStyleSheet('QLabel { color: #F58025; }')
+        disable_ethernet_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         disable_ethernet_label.move(5, 320)
         self.disable_ethernet_cb = QComboBox(self.Record)
         self.disable_ethernet_cb.addItems(['Yes', 'No'])
@@ -569,7 +562,7 @@ class USVPlaypenWindow(QMainWindow):
 
         monitor_rec_label = QLabel('Monitor recording:', self.VideoSettings)
         monitor_rec_label.setFont(QFont(self.font_id, 12))
-        monitor_rec_label.setStyleSheet('QLabel { color: #F58025; }')
+        monitor_rec_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         monitor_rec_label.move(5, 130)
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
         self.monitor_recording_cb.addItems(['No', 'Yes'])
@@ -579,7 +572,7 @@ class USVPlaypenWindow(QMainWindow):
 
         monitor_cam_label = QLabel('Monitor ONE camera:', self.VideoSettings)
         monitor_cam_label.setFont(QFont(self.font_id, 12))
-        monitor_cam_label.setStyleSheet('QLabel { color: #F58025; }')
+        monitor_cam_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         monitor_cam_label.move(5, 160)
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
         self.monitor_specific_camera_cb.addItems(['No', 'Yes'])
@@ -597,7 +590,7 @@ class USVPlaypenWindow(QMainWindow):
 
         delete_post_copy_label = QLabel('Delete post copy:', self.VideoSettings)
         delete_post_copy_label.setFont(QFont(self.font_id, 12))
-        delete_post_copy_label.setStyleSheet('QLabel { color: #F58025; }')
+        delete_post_copy_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         delete_post_copy_label.move(5, 220)
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
         self.delete_post_copy_cb.addItems(['Yes', 'No'])
@@ -643,7 +636,7 @@ class USVPlaypenWindow(QMainWindow):
         experimenter_label = QLabel('Experimenter:', self.VideoSettings)
         experimenter_label.setFont(QFont(self.font_id, 12))
         experimenter_label.move(515, 40)
-        self.experimenter = QLineEdit(f'{experimenter_id}', self.VideoSettings)
+        self.experimenter = QLineEdit(f'{self.exp_id}', self.VideoSettings)
         self.experimenter.setFont(QFont(self.font_id, 10))
         self.experimenter.setStyleSheet('QLineEdit { width: 300px; }')
         self.experimenter.move(620, 40)
@@ -804,7 +797,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_dir_edit.move(10, 40)
         self.processing_dir_edit.setFixedSize(350, 290)
 
-        self.dir_settings_edit = QLineEdit(config_dir_global, self.ProcessSettings)
+        self.dir_settings_edit = QLineEdit(self.config_dir_global, self.ProcessSettings)
         self.dir_settings_edit.setFont(QFont(self.font_id, 10))
         self.dir_settings_edit.setStyleSheet('QLineEdit { width: 260px; }')
         self.dir_settings_edit.move(10, 335)
@@ -847,7 +840,7 @@ class USVPlaypenWindow(QMainWindow):
         centered_instance_btn.clicked.connect(self._open_centered_instance_dialog)
         self.centered_instance_btn_btn_clicked_flag = False
 
-        self.inference_root_dir_edit = QLineEdit(sleap_inference_dir_global, self.ProcessSettings)
+        self.inference_root_dir_edit = QLineEdit(self.sleap_inference_dir_global, self.ProcessSettings)
         self.inference_root_dir_edit.setPlaceholderText('SLEAP inference directory')
         self.inference_root_dir_edit.setFont(QFont(self.font_id, 10))
         self.inference_root_dir_edit.setStyleSheet('QLineEdit { width: 260px; }')
@@ -879,7 +872,7 @@ class USVPlaypenWindow(QMainWindow):
         self.das_conda.setStyleSheet('QLineEdit { width: 85px; }')
         self.das_conda.move(275, 515)
 
-        self.das_model_dir_edit = QLineEdit(das_model_dir_global, self.ProcessSettings)
+        self.das_model_dir_edit = QLineEdit(self.das_model_dir_global, self.ProcessSettings)
         self.das_model_dir_edit.setPlaceholderText('DAS model directory')
         self.das_model_dir_edit.setFont(QFont(self.font_id, 10))
         self.das_model_dir_edit.setStyleSheet('QLineEdit { width: 260px; }')
@@ -923,7 +916,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_video_concatenation_label = QLabel('Conduct video concatenation:', self.ProcessSettings)
         conduct_video_concatenation_label.setFont(QFont(self.font_id, 12))
-        conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_video_concatenation_label.move(10, 705)
         self.conduct_video_concatenation_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_concatenation_cb.addItems(['No', 'Yes'])
@@ -933,7 +926,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_video_fps_change_cb_label = QLabel('Conduct video re-encoding:', self.ProcessSettings)
         conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_video_fps_change_cb_label.move(10, 735)
         self.conduct_video_fps_change_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_fps_change_cb.addItems(['No', 'Yes'])
@@ -986,7 +979,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_multichannel_conversion_cb_label = QLabel('Convert to single-ch files:', self.ProcessSettings)
         conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_multichannel_conversion_cb_label.move(column_two_x1, 40)
         self.conduct_multichannel_conversion_cb = QComboBox(self.ProcessSettings)
         self.conduct_multichannel_conversion_cb.addItems(['No', 'Yes'])
@@ -996,7 +989,7 @@ class USVPlaypenWindow(QMainWindow):
 
         crop_wav_cam_cb_label = QLabel('Crop AUDIO (to VIDEO):', self.ProcessSettings)
         crop_wav_cam_cb_label.setFont(QFont(self.font_id, 12))
-        crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         crop_wav_cam_cb_label.move(column_two_x1, 70)
         self.crop_wav_cam_cb = QComboBox(self.ProcessSettings)
         self.crop_wav_cam_cb.addItems(['No', 'Yes'])
@@ -1023,7 +1016,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_hpss_cb_label = QLabel('Conduct HPSS (slow!):', self.ProcessSettings)
         conduct_hpss_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_hpss_cb_label.move(column_two_x1, 160)
         self.conduct_hpss_cb = QComboBox(self.ProcessSettings)
         self.conduct_hpss_cb.addItems(['No', 'Yes'])
@@ -1065,7 +1058,7 @@ class USVPlaypenWindow(QMainWindow):
 
         filter_audio_cb_label = QLabel('Filter individual audio files:', self.ProcessSettings)
         filter_audio_cb_label.setFont(QFont(self.font_id, 12))
-        filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         filter_audio_cb_label.move(column_two_x1, 310)
         self.filter_audio_cb = QComboBox(self.ProcessSettings)
         self.filter_audio_cb.addItems(['No', 'Yes'])
@@ -1091,7 +1084,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
         conc_audio_cb_label.setFont(QFont(self.font_id, 12))
-        conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conc_audio_cb_label.move(column_two_x1, 400)
         self.conc_audio_cb = QComboBox(self.ProcessSettings)
         self.conc_audio_cb.addItems(['No', 'Yes'])
@@ -1114,7 +1107,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_sync_cb_label = QLabel('Conduct A/V sync check:', self.ProcessSettings)
         conduct_sync_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_sync_cb_label.move(column_two_x1, 500)
         self.conduct_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_sync_cb.addItems(['No', 'Yes'])
@@ -1153,7 +1146,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_nv_sync_cb_label = QLabel('Conduct E/V sync check:', self.ProcessSettings)
         conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 12))
-        conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_nv_sync_cb_label.move(column_two_x1, 660)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
@@ -1163,7 +1156,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_ephys_file_chaining_label = QLabel('Conduct e-phys concat:', self.ProcessSettings)
         conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
-        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; }')
+        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_ephys_file_chaining_label.move(column_two_x1, 690)
         self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
         self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
@@ -1173,7 +1166,7 @@ class USVPlaypenWindow(QMainWindow):
 
         split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
         split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 12))
-        split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         split_cluster_spikes_cb_label.move(column_two_x1, 720)
         self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
         self.split_cluster_spikes_cb.addItems(['No', 'Yes'])
@@ -1226,7 +1219,7 @@ class USVPlaypenWindow(QMainWindow):
 
         sleap_cluster_cb_label = QLabel('Prepare SLEAP cluster job:', self.ProcessSettings)
         sleap_cluster_cb_label.setFont(QFont(self.font_id, 12))
-        sleap_cluster_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        sleap_cluster_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         sleap_cluster_cb_label.move(column_three_x1, 40)
         self.sleap_cluster_cb = QComboBox(self.ProcessSettings)
         self.sleap_cluster_cb.addItems(['No', 'Yes'])
@@ -1236,7 +1229,7 @@ class USVPlaypenWindow(QMainWindow):
 
         sleap_file_conversion_cb_label = QLabel('Conduct SLP-H5 conversion:', self.ProcessSettings)
         sleap_file_conversion_cb_label.setFont(QFont(self.font_id, 12))
-        sleap_file_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        sleap_file_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         sleap_file_conversion_cb_label.move(column_three_x1, 70)
         self.sleap_file_conversion_cb = QComboBox(self.ProcessSettings)
         self.sleap_file_conversion_cb.addItems(['No', 'Yes'])
@@ -1246,7 +1239,7 @@ class USVPlaypenWindow(QMainWindow):
 
         anipose_calibration_cb_label = QLabel('Conduct AP calibration:', self.ProcessSettings)
         anipose_calibration_cb_label.setFont(QFont(self.font_id, 12))
-        anipose_calibration_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        anipose_calibration_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         anipose_calibration_cb_label.move(column_three_x1, 100)
         self.anipose_calibration_cb = QComboBox(self.ProcessSettings)
         self.anipose_calibration_cb.addItems(['No', 'Yes'])
@@ -1265,7 +1258,7 @@ class USVPlaypenWindow(QMainWindow):
 
         anipose_triangulation_cb_label = QLabel('Conduct AP triangulation:', self.ProcessSettings)
         anipose_triangulation_cb_label.setFont(QFont(self.font_id, 12))
-        anipose_triangulation_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        anipose_triangulation_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         anipose_triangulation_cb_label.move(column_three_x1, 160)
         self.anipose_triangulation_cb = QComboBox(self.ProcessSettings)
         self.anipose_triangulation_cb.addItems(['No', 'Yes'])
@@ -1373,7 +1366,7 @@ class USVPlaypenWindow(QMainWindow):
 
         translate_rotate_metric_label = QLabel('Conduct coordinate change:', self.ProcessSettings)
         translate_rotate_metric_label.setFont(QFont(self.font_id, 12))
-        translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; }')
+        translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         translate_rotate_metric_label.move(column_three_x1, 550)
         self.translate_rotate_metric_cb = QComboBox(self.ProcessSettings)
         self.translate_rotate_metric_cb.addItems(['No', 'Yes'])
@@ -1418,7 +1411,7 @@ class USVPlaypenWindow(QMainWindow):
 
         das_inference_cb_label = QLabel('Detect USVs:', self.ProcessSettings)
         das_inference_cb_label.setFont(QFont(self.font_id, 12))
-        das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         das_inference_cb_label.move(column_three_x1, 700)
         self.das_inference_cb = QComboBox(self.ProcessSettings)
         self.das_inference_cb.addItems(['No', 'Yes'])
@@ -1460,7 +1453,7 @@ class USVPlaypenWindow(QMainWindow):
 
         das_summary_cb_label = QLabel('Summarize DAS output:', self.ProcessSettings)
         das_summary_cb_label.setFont(QFont(self.font_id, 12))
-        das_summary_cb_label.setStyleSheet('QLabel { color: #F58025; }')
+        das_summary_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         das_summary_cb_label.move(column_three_x1, 850)
         self.das_summary_cb = QComboBox(self.ProcessSettings)
         self.das_summary_cb.addItems(['No', 'Yes'])
@@ -1916,6 +1909,32 @@ class USVPlaypenWindow(QMainWindow):
                 self.expected_cameras = self.expected_cameras.text()
                 self.settings_dict['video'][variable] = self.expected_cameras.split(',')
 
+    def _save_variables_based_on_exp_id(self):
+        if platform.system() == 'Windows':
+            self.config_dir_global = 'C:\\experiment_running_docs'
+            self.das_model_dir_global = f'F:\\{self.exp_id}\\DAS\\{das_model_dir}'
+            self.sleap_inference_dir_global = f'F:\\{self.exp_id}\\SLEAP\\inference'
+        elif platform.system() == 'Linux':
+            self.config_dir_global = f'/mnt/falkner/{self.exp_id}/PC_transfer/experiment_running_docs'
+            self.das_model_dir_global = f'/mnt/falkner/{self.exp_id}/DAS/{das_model_dir}'
+            self.sleap_inference_dir_global = f'/mnt/falkner/{self.exp_id}/SLEAP/inference'
+        else:
+            self.config_dir_global = f'/Volumes/falkner/{self.exp_id}/PC_transfer/experiment_running_docs'
+            self.das_model_dir_global = f'/Volumes/falkner/{self.exp_id}/DAS/{das_model_dir}'
+            self.sleap_inference_dir_global = f'/Volumes/falkner/{self.exp_id}/SLEAP/inference'
+
+        self.destination_linux_global = f'/home/labadmin/falkner/{self.exp_id}/Data'
+        self.destination_win_global = f'F:\\{self.exp_id}\\Data,M:\\{self.exp_id}\\Data'
+
+        self.processing_input_dict['send_email']['Messenger']['experimenter'] = f'{self.exp_id}'
+        self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = self.config_dir_global
+
+    def _combo_box_prior_name(self, index, variable_id=None):
+        if index == 0:
+            self.__dict__[variable_id] = 'Bartul'
+        else:
+            self.__dict__[variable_id] = 'Jinrun'
+
     def _combo_box_kilosort_version(self, index, variable_id=None):
         if index == 0:
             self.__dict__[variable_id] = '4'
@@ -2022,10 +2041,12 @@ class USVPlaypenWindow(QMainWindow):
 
         self.button_map['Record'].move(120, 370)
         self.button_map['Record'].setFont(QFont(self.font_id, 8))
+        self.button_map['Record'].clicked.connect(self._save_variables_based_on_exp_id)
         self.button_map['Record'].clicked.connect(self.record_one)
 
         self.button_map['Process'].move(215, 370)
         self.button_map['Process'].setFont(QFont(self.font_id, 8))
+        self.button_map['Process'].clicked.connect(self._save_variables_based_on_exp_id)
         self.button_map['Process'].clicked.connect(self.process_one)
 
         self.button_map['Analyze'].move(120, 405)
@@ -2200,7 +2221,7 @@ class USVPlaypenWindow(QMainWindow):
         settings_dir_name = QFileDialog.getExistingDirectory(
             self,
             'Select settings directory',
-            f'{config_dir_global}')
+            f'{self.config_dir_global}')
         if settings_dir_name:
             settings_dir_name_path = Path(settings_dir_name)
             self.dir_settings_edit.setText(str(settings_dir_name_path))
@@ -2211,8 +2232,8 @@ class USVPlaypenWindow(QMainWindow):
                 self.settings_dict['general']['config_settings_directory'] = str(settings_dir_name_path)
                 self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = str(settings_dir_name_path)
         else:
-            self.settings_dict['general']['config_settings_directory'] = f'{config_dir_global}'
-            self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = f'{config_dir_global}'
+            self.settings_dict['general']['config_settings_directory'] = f'{self.config_dir_global}'
+            self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = f'{self.config_dir_global}'
 
     def _open_recorder_dialog(self):
         self.recorder_dir_btn_clicked_flag = True
@@ -2343,7 +2364,7 @@ def main():
                            'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False, 'sleap_cluster_cb_bool': False,
                            'processing_pc_choice': 'A84E Backup', 'inference_root_dir_btn_clicked_flag': False, 'centroid_model_btn_clicked_flag': False, 'centered_instance_btn_btn_clicked_flag': False,
                            'calibration_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False, 'settings_dir_btn_clicked_flag': False, 'recorder_dir_btn_clicked_flag': False,
-                           'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False, 'das_summary_cb_bool': False}
+                           'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False, 'das_summary_cb_bool': False, 'exp_id': 'Bartul'}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

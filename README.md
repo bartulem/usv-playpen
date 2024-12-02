@@ -1,4 +1,4 @@
-# usv-playpen v0.7.2
+# usv-playpen v0.7.3
 
 <br>
 <div align="center">
@@ -22,7 +22,7 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 ## Prerequisites
 
 * [Helvetica](https://freefontsfamily.net/helvetica-font-family/) (download and install)
-* [Python 3.10](https://www.python.org/downloads/) (and add it to top of PATH)
+* [Anaconda](https://www.anaconda.com/download) (and add it to top of PATH)
 * [git](https://git-scm.com/download/)  (and add it to PATH)
 * [ffmpeg](https://ffmpeg.org/download.html) (and add it to PATH)
 * [sox](https://sourceforge.net/projects/sox/)  (and add it to PATH)
@@ -32,17 +32,13 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 
 ## Installation and updating
 
-Set up a new virtual environment with Python 3.10 and give it any name, _e.g._, usv.
+Set up a new conda environment with Python 3.10 and give it any name, _e.g._, usv.
 ```bash
-python -m venv usv
+conda create --name usv python=3.10
 ```
 Activate the virtual environment with:
 ```bash
-source ./usv/bin/activate
-```
-or, on OS Windows:
-```bash
-.\usv\Scripts\activate
+conda activate usv
 ```
 Install GUI with command below. Also, rerun the same command to check for and install updates.
 ```bash
@@ -73,18 +69,10 @@ python -m unittest -v _tests.processing_tests
 
 ## Usage
 
-Locate the pip installed package:
+Load the environment with the appropriate name, _e.g._, usv., and run the GUI:
 ```bash
-pip show usv-playpen
-```
-Navigate to the directory w/ the "usv_playpen_gui.py" file (example path listed below).
-```bash
-cd /.../usv/lib/site-packages/usv-playpen
-```
-
-Run the GUI.
-```bash
-python usv_playpen_gui.py
+conda activate usv
+usv-playpen
 ```
 
 Developed and tested in PyCharm Pro 2024.3, on macOS Sequoia 15.1 / Pop!_OS 22.04 / Windows 11.
