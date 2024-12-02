@@ -2339,7 +2339,7 @@ def main():
     usv_playpen_app = QApplication([])
 
     usv_playpen_app.setStyle('Fusion')
-    with open('gui_style_sheet.css', 'r') as file:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gui_style_sheet.css') , 'r') as file:
         usv_playpen_app.setStyleSheet(file.read())
 
     usv_playpen_app.setWindowIcon(QIcon(lab_icon))
