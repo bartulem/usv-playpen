@@ -23,9 +23,9 @@ import subprocess
 from datetime import datetime
 from imgstore import new_for_filename
 from scipy.io import wavfile
-from file_loader import DataLoader
-from file_writer import DataWriter
-from os_utils import configure_path
+from src.file_loader import DataLoader
+from src.file_writer import DataWriter
+from src.os_utils import configure_path
 
 
 class Operator:
