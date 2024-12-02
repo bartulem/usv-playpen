@@ -34,7 +34,7 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 
 Set up a new conda environment with Python 3.10 and give it any name, _e.g._, usv.
 ```bash
-conda create --name usv python=3.10
+conda create --name usv python=3.10 -y
 ```
 Activate the virtual environment with:
 ```bash
@@ -42,12 +42,12 @@ conda activate usv
 ```
 Install GUI with command below. Also, rerun the same command to check for and install updates.
 ```bash
-pip install git+https://github.com/bartulem/usv-playpen --use-pep517
+pip install -e git+https://github.com/bartulem/usv-playpen#egg=usv-playpen --use-pep517
 ```
 
 Add the python-motifapi package to your virtual environment:
 ```bash
-pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --use-pep517
+pip install -e git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --use-pep517
 ```
 
 ## Test installation
