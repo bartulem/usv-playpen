@@ -7,14 +7,14 @@ import json
 import os
 import traceback
 from datetime import datetime
-from src.anipose_operations import ConvertTo3D
-from src.das_inference import FindMouseVocalizations
-from src.extract_phidget_data import Gatherer
-from src.file_manipulation import Operator
-from src.prepare_cluster_job import PrepareClusterJob
-from src.preprocessing_plot import SummaryPlotter
-from src.send_email import Messenger
-from src.synchronize_files import Synchronizer
+from anipose_operations import ConvertTo3D
+from das_inference import FindMouseVocalizations
+from extract_phidget_data import Gatherer
+from file_manipulation import Operator
+from prepare_cluster_job import PrepareClusterJob
+from preprocessing_plot import SummaryPlotter
+from send_email import Messenger
+from synchronize_files import Synchronizer
 
 
 class Stylist:

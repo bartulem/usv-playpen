@@ -41,8 +41,8 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QWidget,
 )
-from src.behavioral_experiments import ExperimentController
-from src.preprocess_data import Stylist
+from behavioral_experiments import ExperimentController
+from preprocess_data import Stylist
 
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 
