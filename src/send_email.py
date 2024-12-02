@@ -7,7 +7,7 @@ import configparser
 import os
 import smtplib
 import sys
-from src.email.message import EmailMessage
+from email.message import EmailMessage
 
 
 class Messenger:
