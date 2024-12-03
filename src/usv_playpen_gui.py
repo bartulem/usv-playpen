@@ -393,7 +393,7 @@ class USVPlaypenWindow(QMainWindow):
         parameters_label.move(5, 230)
 
         conduct_audio_label = QLabel('Conduct AUDIO recording:', self.Record)
-        conduct_audio_label.setFont(QFont(self.font_id, 12))
+        conduct_audio_label.setFont(QFont(self.font_id, 11))
         conduct_audio_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_audio_label.move(5, 260)
         self.conduct_audio_cb = QComboBox(self.Record)
@@ -403,7 +403,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_audio_cb.move(220, 260)
 
         conduct_tracking_cal_label = QLabel('Conduct VIDEO calibration:', self.Record)
-        conduct_tracking_cal_label.setFont(QFont(self.font_id, 12))
+        conduct_tracking_cal_label.setFont(QFont(self.font_id, 11))
         conduct_tracking_cal_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_tracking_cal_label.move(5, 290)
         self.conduct_tracking_calibration_cb = QComboBox(self.Record)
@@ -413,7 +413,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_tracking_calibration_cb.move(220, 290)
 
         disable_ethernet_label = QLabel('Disable ethernet connection:', self.Record)
-        disable_ethernet_label.setFont(QFont(self.font_id, 12))
+        disable_ethernet_label.setFont(QFont(self.font_id, 11))
         disable_ethernet_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         disable_ethernet_label.move(5, 320)
         self.disable_ethernet_cb = QComboBox(self.Record)
@@ -561,7 +561,7 @@ class USVPlaypenWindow(QMainWindow):
         self.recording_codec_cb.move(160, 100)
 
         monitor_rec_label = QLabel('Monitor recording:', self.VideoSettings)
-        monitor_rec_label.setFont(QFont(self.font_id, 12))
+        monitor_rec_label.setFont(QFont(self.font_id, 11))
         monitor_rec_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         monitor_rec_label.move(5, 130)
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
@@ -571,7 +571,7 @@ class USVPlaypenWindow(QMainWindow):
         self.monitor_recording_cb.move(160, 130)
 
         monitor_cam_label = QLabel('Monitor ONE camera:', self.VideoSettings)
-        monitor_cam_label.setFont(QFont(self.font_id, 12))
+        monitor_cam_label.setFont(QFont(self.font_id, 11))
         monitor_cam_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         monitor_cam_label.move(5, 160)
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
@@ -589,7 +589,7 @@ class USVPlaypenWindow(QMainWindow):
         self.specific_camera_serial.move(160, 190)
 
         delete_post_copy_label = QLabel('Delete post copy:', self.VideoSettings)
-        delete_post_copy_label.setFont(QFont(self.font_id, 12))
+        delete_post_copy_label.setFont(QFont(self.font_id, 11))
         delete_post_copy_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         delete_post_copy_label.move(5, 220)
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
@@ -915,7 +915,7 @@ class USVPlaypenWindow(QMainWindow):
         gvs_label.move(10, 675)
 
         conduct_video_concatenation_label = QLabel('Conduct video concatenation:', self.ProcessSettings)
-        conduct_video_concatenation_label.setFont(QFont(self.font_id, 12))
+        conduct_video_concatenation_label.setFont(QFont(self.font_id, 11))
         conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_video_concatenation_label.move(10, 705)
         self.conduct_video_concatenation_cb = QComboBox(self.ProcessSettings)
@@ -925,7 +925,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_video_concatenation_cb.move(225, 705)
 
         conduct_video_fps_change_cb_label = QLabel('Conduct video re-encoding:', self.ProcessSettings)
-        conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 11))
         conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_video_fps_change_cb_label.move(10, 735)
         self.conduct_video_fps_change_cb = QComboBox(self.ProcessSettings)
@@ -978,7 +978,7 @@ class USVPlaypenWindow(QMainWindow):
         gas_label.move(column_two_x1, 10)
 
         conduct_multichannel_conversion_cb_label = QLabel('Convert to single-ch files:', self.ProcessSettings)
-        conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 11))
         conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_multichannel_conversion_cb_label.move(column_two_x1, 40)
         self.conduct_multichannel_conversion_cb = QComboBox(self.ProcessSettings)
@@ -988,7 +988,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_multichannel_conversion_cb.move(column_two_x2, 40)
 
         crop_wav_cam_cb_label = QLabel('Crop AUDIO (to VIDEO):', self.ProcessSettings)
-        crop_wav_cam_cb_label.setFont(QFont(self.font_id, 12))
+        crop_wav_cam_cb_label.setFont(QFont(self.font_id, 11))
         crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         crop_wav_cam_cb_label.move(column_two_x1, 70)
         self.crop_wav_cam_cb = QComboBox(self.ProcessSettings)
@@ -1015,7 +1015,7 @@ class USVPlaypenWindow(QMainWindow):
         self.ch_receiving_input.move(column_two_x2, 130)
 
         conduct_hpss_cb_label = QLabel('Conduct HPSS (slow!):', self.ProcessSettings)
-        conduct_hpss_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_hpss_cb_label.setFont(QFont(self.font_id, 11))
         conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_hpss_cb_label.move(column_two_x1, 160)
         self.conduct_hpss_cb = QComboBox(self.ProcessSettings)
@@ -1057,7 +1057,7 @@ class USVPlaypenWindow(QMainWindow):
         self.hpss_margin.move(column_two_x2, 280)
 
         filter_audio_cb_label = QLabel('Filter individual audio files:', self.ProcessSettings)
-        filter_audio_cb_label.setFont(QFont(self.font_id, 12))
+        filter_audio_cb_label.setFont(QFont(self.font_id, 11))
         filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         filter_audio_cb_label.move(column_two_x1, 310)
         self.filter_audio_cb = QComboBox(self.ProcessSettings)
@@ -1083,7 +1083,7 @@ class USVPlaypenWindow(QMainWindow):
         self.filter_dirs.move(column_two_x2, 370)
 
         conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
-        conc_audio_cb_label.setFont(QFont(self.font_id, 12))
+        conc_audio_cb_label.setFont(QFont(self.font_id, 11))
         conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conc_audio_cb_label.move(column_two_x1, 400)
         self.conc_audio_cb = QComboBox(self.ProcessSettings)
@@ -1106,7 +1106,7 @@ class USVPlaypenWindow(QMainWindow):
         av_sync_label.move(column_two_x1, 470)
 
         conduct_sync_cb_label = QLabel('Conduct A/V sync check:', self.ProcessSettings)
-        conduct_sync_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_sync_cb_label.setFont(QFont(self.font_id, 11))
         conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_sync_cb_label.move(column_two_x1, 500)
         self.conduct_sync_cb = QComboBox(self.ProcessSettings)
@@ -1145,7 +1145,7 @@ class USVPlaypenWindow(QMainWindow):
         ev_sync_label.move(column_two_x1, 630)
 
         conduct_nv_sync_cb_label = QLabel('Conduct E/V sync check:', self.ProcessSettings)
-        conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 12))
+        conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 11))
         conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_nv_sync_cb_label.move(column_two_x1, 660)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
@@ -1155,7 +1155,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_nv_sync_cb.move(column_two_x2, 660)
 
         conduct_ephys_file_chaining_label = QLabel('Conduct e-phys concat:', self.ProcessSettings)
-        conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 12))
+        conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 11))
         conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         conduct_ephys_file_chaining_label.move(column_two_x1, 690)
         self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
@@ -1165,7 +1165,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_ephys_file_chaining_cb.move(column_two_x2, 690)
 
         split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
-        split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 12))
+        split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 11))
         split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         split_cluster_spikes_cb_label.move(column_two_x1, 720)
         self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
@@ -1218,7 +1218,7 @@ class USVPlaypenWindow(QMainWindow):
         anipose_operations_label.move(column_three_x1, 10)
 
         sleap_cluster_cb_label = QLabel('Prepare SLEAP cluster job:', self.ProcessSettings)
-        sleap_cluster_cb_label.setFont(QFont(self.font_id, 12))
+        sleap_cluster_cb_label.setFont(QFont(self.font_id, 11))
         sleap_cluster_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         sleap_cluster_cb_label.move(column_three_x1, 40)
         self.sleap_cluster_cb = QComboBox(self.ProcessSettings)
@@ -1228,7 +1228,7 @@ class USVPlaypenWindow(QMainWindow):
         self.sleap_cluster_cb.move(column_three_x2, 40)
 
         sleap_file_conversion_cb_label = QLabel('Conduct SLP-H5 conversion:', self.ProcessSettings)
-        sleap_file_conversion_cb_label.setFont(QFont(self.font_id, 12))
+        sleap_file_conversion_cb_label.setFont(QFont(self.font_id, 11))
         sleap_file_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         sleap_file_conversion_cb_label.move(column_three_x1, 70)
         self.sleap_file_conversion_cb = QComboBox(self.ProcessSettings)
@@ -1238,7 +1238,7 @@ class USVPlaypenWindow(QMainWindow):
         self.sleap_file_conversion_cb.move(column_three_x2, 70)
 
         anipose_calibration_cb_label = QLabel('Conduct AP calibration:', self.ProcessSettings)
-        anipose_calibration_cb_label.setFont(QFont(self.font_id, 12))
+        anipose_calibration_cb_label.setFont(QFont(self.font_id, 11))
         anipose_calibration_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         anipose_calibration_cb_label.move(column_three_x1, 100)
         self.anipose_calibration_cb = QComboBox(self.ProcessSettings)
@@ -1257,7 +1257,7 @@ class USVPlaypenWindow(QMainWindow):
         self.board_provided_cb.move(column_three_x2, 130)
 
         anipose_triangulation_cb_label = QLabel('Conduct AP triangulation:', self.ProcessSettings)
-        anipose_triangulation_cb_label.setFont(QFont(self.font_id, 12))
+        anipose_triangulation_cb_label.setFont(QFont(self.font_id, 11))
         anipose_triangulation_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         anipose_triangulation_cb_label.move(column_three_x1, 160)
         self.anipose_triangulation_cb = QComboBox(self.ProcessSettings)
@@ -1365,7 +1365,7 @@ class USVPlaypenWindow(QMainWindow):
         self.n_deriv_smooth.move(column_three_x2, 520)
 
         translate_rotate_metric_label = QLabel('Conduct coordinate change:', self.ProcessSettings)
-        translate_rotate_metric_label.setFont(QFont(self.font_id, 12))
+        translate_rotate_metric_label.setFont(QFont(self.font_id, 11))
         translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         translate_rotate_metric_label.move(column_three_x1, 550)
         self.translate_rotate_metric_cb = QComboBox(self.ProcessSettings)
@@ -1410,7 +1410,7 @@ class USVPlaypenWindow(QMainWindow):
         self.delete_original_h5_cb.move(column_three_x2, 670)
 
         das_inference_cb_label = QLabel('Detect USVs:', self.ProcessSettings)
-        das_inference_cb_label.setFont(QFont(self.font_id, 12))
+        das_inference_cb_label.setFont(QFont(self.font_id, 11))
         das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         das_inference_cb_label.move(column_three_x1, 700)
         self.das_inference_cb = QComboBox(self.ProcessSettings)
@@ -1452,7 +1452,7 @@ class USVPlaypenWindow(QMainWindow):
         self.das_output_type.move(column_three_x2, 820)
 
         das_summary_cb_label = QLabel('Summarize DAS output:', self.ProcessSettings)
-        das_summary_cb_label.setFont(QFont(self.font_id, 12))
+        das_summary_cb_label.setFont(QFont(self.font_id, 11))
         das_summary_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         das_summary_cb_label.move(column_three_x1, 850)
         self.das_summary_cb = QComboBox(self.ProcessSettings)

@@ -71,8 +71,7 @@ python -m unittest -v _tests.processing_tests
 
 Load the environment with the appropriate name, _e.g._, usv., and run the GUI:
 ```bash
-conda activate usv
-usv-playpen
+conda activate usv && usv-playpen
 ```
 
 Developed and tested in PyCharm Pro 2024.3, on macOS Sequoia 15.1 / Pop!_OS 22.04 / Windows 11.
