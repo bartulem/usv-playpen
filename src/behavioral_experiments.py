@@ -15,7 +15,7 @@ import subprocess
 import sys
 import webbrowser
 import motifapi
-from send_email import Messenger
+from .send_email import Messenger
 
 
 class ExperimentController:

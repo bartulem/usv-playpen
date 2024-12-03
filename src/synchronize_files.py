@@ -20,7 +20,7 @@ from collections import Counter
 from datetime import datetime
 from numba import njit
 from scipy.io import wavfile
-from file_loader import DataLoader
+from .file_loader import DataLoader
 
 @pims.pipeline
 def modify_memmap_array(frame, mmap_arr, frame_idx,
