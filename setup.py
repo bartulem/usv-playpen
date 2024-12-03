@@ -33,7 +33,7 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
-            'usv-playpen = src.usv_playpen_gui:main'
+            'usv-playpen = usv_playpen_gui:main'
         ]
     },
     install_requires=['av==10.0.0',
