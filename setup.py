@@ -18,9 +18,8 @@ setup(
         'Programming Language :: Python :: 3 :: Only',
     ],
     keywords='neuroscience, mouse, usv, behavior',
-    packages=['usv_playpen'],
-    package_dir={'usv_playpen': 'usv_playpen'},
-    package_data={'usv_playpen': ['*.png', '*.css', '*.mplstyle', '*.ttf']},
+    packages=['usv-playpen'],
+    package_data={'usv-playpen': ['*.png', '*.css', '*.mplstyle', '*.ttf']},
     include_package_data=True,
     python_requires="==3.10.*",
     description='GUI to conduct experiments w/ multichannel audio and video acquisition',
@@ -33,7 +32,7 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
-            'usv-playpen = usv_playpen.src.usv_playpen_gui:main'
+            'usv-playpen = src.usv_playpen_gui:main'
         ]
     },
     install_requires=['av==10.0.0',
