@@ -20,7 +20,7 @@ setup(
     keywords='neuroscience, mouse, usv, behavior',
     packages=['usv_playpen'],
     package_dir={'usv_playpen': 'src'},
-    package_data={'usv_playpen': ['*.png', '*.css', '*.mplstyle', '*.ttf']},
+    package_data={'usv_playpen': ['img/*.png', '*.css', '*.mplstyle', 'fonts/*.ttf']},
     include_package_data=True,
     python_requires="==3.10.*",
     description='GUI to conduct experiments w/ multichannel audio and video acquisition',
