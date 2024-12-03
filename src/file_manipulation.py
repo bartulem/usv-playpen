@@ -762,8 +762,7 @@ class Operator:
                     new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['video_extension']}"
 
                 # change video sampling rate
-                esr_int = int(np.floor(esr))
-                fps_subp = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -y -r {esr_int} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}''',
+                fps_subp = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -y -r {esr} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}''',
                                             stdout=subprocess.PIPE,
                                             cwd=current_working_dir,
                                             shell=self.shell_usage_bool)
