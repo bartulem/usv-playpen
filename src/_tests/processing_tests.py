@@ -8,9 +8,9 @@ import subprocess
 import sys
 import toml
 import unittest
-sys.path.append('../src')
-from send_email import Messenger
-import usv_playpen_gui as usv_playpen_gui
+sys.path.append('..')
+from src.send_email import Messenger
+from src import usv_playpen_gui as usv_playpen_gui
 
 
 class TestProcessing(unittest.TestCase):

@@ -2,7 +2,7 @@
 
 <br>
 <div align="center">
-  <img src="img/usv_playpen_gui.png">
+  <img src="src/img/usv_playpen_gui.png">
 </div>
 <hr>
 
