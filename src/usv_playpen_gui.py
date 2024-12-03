@@ -288,7 +288,7 @@ class USVPlaypenWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
         self.setWindowTitle(f'{app_name}')
 
-        exp_id_label = QLabel('User ID:', self.Main)
+        exp_id_label = QLabel('Experimenter:', self.Main)
         exp_id_label.setFont(QFont(self.font_id, 11))
         exp_id_label.setStyleSheet('QLabel { font-weight: bold;}')
         exp_id_label.move(105, 325)
