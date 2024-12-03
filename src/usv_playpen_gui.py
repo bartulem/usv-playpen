@@ -122,7 +122,7 @@ class USVPlaypenWindow(QMainWindow):
     def __init__(self, **kwargs):
         super().__init__()
 
-        font_file_loc = QFontDatabase.addApplicationFont(f'{basedir}{os.sep}fonts{os.sep}{gui_font_global}')
+        font_file_loc = QFontDatabase.addApplicationFont(os.path.join(os.path.dirname(os.path.abspath(__file__)), f'{os.sep}fonts{os.sep}{gui_font_global}'))
         self.font_id = QFontDatabase.applicationFontFamilies(font_file_loc)[0]
 
         for attr, value in kwargs.items():
