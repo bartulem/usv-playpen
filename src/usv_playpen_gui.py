@@ -50,7 +50,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.7.3'
+app_name = 'USV Playpen v0.7.4'
 email_list_global = ''
 das_model_dir = 'model_2024-03-25'
 das_model_base_global ='20240325_073951'
@@ -289,15 +289,15 @@ class USVPlaypenWindow(QMainWindow):
         self.setWindowTitle(f'{app_name}')
 
         exp_id_label = QLabel('Experimenter:', self.Main)
-        exp_id_label.setFont(QFont(self.font_id, 11))
+        exp_id_label.setFont(QFont(self.font_id, 10))
         exp_id_label.setStyleSheet('QLabel { font-weight: bold;}')
-        exp_id_label.move(105, 325)
+        exp_id_label.move(120, 329)
         self.exp_id = 'Bartul'
         self.exp_id_cb = QComboBox(self.Main)
         self.exp_id_cb.addItems(['Bartul', 'Jinrun'])
-        self.exp_id_cb.setStyleSheet('QComboBox { width: 65px; }')
+        self.exp_id_cb.setStyleSheet('QComboBox { width: 60px; height: 24px}')
         self.exp_id_cb.activated.connect(partial(self._combo_box_prior_name, variable_id='exp_id'))
-        self.exp_id_cb.move(220, 325)
+        self.exp_id_cb.move(215, 325)
 
         self._create_buttons_main()
 
@@ -527,8 +527,10 @@ class USVPlaypenWindow(QMainWindow):
         self.VideoSettings = VideoSettings(self)
         self.setWindowTitle(f'{app_name} (Record > Video Settings)')
         self.setCentralWidget(self.VideoSettings)
-        record_three_x, record_three_y = (950, 900)
+        record_three_x, record_three_y = (980, 900)
         self.setFixedSize(record_three_x, record_three_y)
+
+        toml_ = toml.load(f"{self.settings_dict['general']['config_settings_directory']}{os.sep}behavioral_experiments_settings.toml")
 
         gvs_label = QLabel('General video recording settings', self.VideoSettings)
         gvs_label.setFont(QFont(self.font_id, 13))
@@ -556,7 +558,7 @@ class USVPlaypenWindow(QMainWindow):
         rec_codec_label.move(5, 100)
         self.recording_codec_cb = QComboBox(self.VideoSettings)
         self.recording_codec_cb.addItems(['hq', 'mq', 'lq'])
-        self.recording_codec_cb.setStyleSheet('QComboBox { width: 265px; }')
+        self.recording_codec_cb.setStyleSheet('QComboBox { width: 272px; }')
         self.recording_codec_cb.activated.connect(partial(self._combo_box_prior_codec, variable_id='recording_codec'))
         self.recording_codec_cb.move(160, 100)
 
@@ -566,7 +568,7 @@ class USVPlaypenWindow(QMainWindow):
         monitor_rec_label.move(5, 130)
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
         self.monitor_recording_cb.addItems(['No', 'Yes'])
-        self.monitor_recording_cb.setStyleSheet('QComboBox { width: 265px; }')
+        self.monitor_recording_cb.setStyleSheet('QComboBox { width: 272px; }')
         self.monitor_recording_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='monitor_recording_cb_bool'))
         self.monitor_recording_cb.move(160, 130)
 
@@ -576,7 +578,7 @@ class USVPlaypenWindow(QMainWindow):
         monitor_cam_label.move(5, 160)
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
         self.monitor_specific_camera_cb.addItems(['No', 'Yes'])
-        self.monitor_specific_camera_cb.setStyleSheet('QComboBox { width: 265px; }')
+        self.monitor_specific_camera_cb.setStyleSheet('QComboBox { width: 272px; }')
         self.monitor_specific_camera_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='monitor_specific_camera_cb_bool'))
         self.monitor_specific_camera_cb.move(160, 160)
 
@@ -594,7 +596,7 @@ class USVPlaypenWindow(QMainWindow):
         delete_post_copy_label.move(5, 220)
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
         self.delete_post_copy_cb.addItems(['Yes', 'No'])
-        self.delete_post_copy_cb.setStyleSheet('QComboBox { width: 265px; }')
+        self.delete_post_copy_cb.setStyleSheet('QComboBox { width: 272px; }')
         self.delete_post_copy_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_post_copy_cb_bool'))
         self.delete_post_copy_cb.move(160, 220)
 
@@ -628,130 +630,220 @@ class USVPlaypenWindow(QMainWindow):
         for cam_idx, cam in enumerate(camera_ids_global):
             self._create_sliders_general(camera_id=cam, camera_color=camera_colors_global[cam_idx], y_start=355+(cam_idx*90))
 
-        vm_label = QLabel('Video metadata', self.VideoSettings)
+        vm_label = QLabel('Metadata', self.VideoSettings)
         vm_label.setFont(QFont(self.font_id, 13))
         vm_label.setStyleSheet('QLabel { font-weight: bold;}')
-        vm_label.move(515, 10)
+        vm_label.move(495, 10)
+
+        institution_label = QLabel('Institution:', self.VideoSettings)
+        institution_label.setFont(QFont(self.font_id, 12))
+        institution_label.move(495, 40)
+        self.institution_entry = QLineEdit(f"{toml_['video']['metadata']['institution']}", self.VideoSettings)
+        self.institution_entry.setFont(QFont(self.font_id, 10))
+        self.institution_entry.setStyleSheet('QLineEdit { width: 95px; }')
+        self.institution_entry.move(630, 40)
+
+        laboratory_label = QLabel('Laboratory:', self.VideoSettings)
+        laboratory_label.setFont(QFont(self.font_id, 12))
+        laboratory_label.move(750, 40)
+        self.laboratory_entry = QLineEdit(f"{toml_['video']['metadata']['laboratory']}", self.VideoSettings)
+        self.laboratory_entry.setFont(QFont(self.font_id, 10))
+        self.laboratory_entry.setStyleSheet('QLineEdit { width: 95px; }')
+        self.laboratory_entry.move(875, 40)
 
         experimenter_label = QLabel('Experimenter:', self.VideoSettings)
         experimenter_label.setFont(QFont(self.font_id, 12))
-        experimenter_label.move(515, 40)
-        self.experimenter = QLineEdit(f'{self.exp_id}', self.VideoSettings)
-        self.experimenter.setFont(QFont(self.font_id, 10))
-        self.experimenter.setStyleSheet('QLineEdit { width: 300px; }')
-        self.experimenter.move(620, 40)
+        experimenter_label.move(495, 70)
+        self.experimenter_entry = QLineEdit(f'{self.exp_id}', self.VideoSettings)
+        self.experimenter_entry.setFont(QFont(self.font_id, 10))
+        self.experimenter_entry.setStyleSheet('QLineEdit { width: 95px; }')
+        self.experimenter_entry.move(630, 70)
 
-        mice_num_label = QLabel('Mouse count:', self.VideoSettings)
+        mice_num_label = QLabel('Animal count:', self.VideoSettings)
         mice_num_label.setFont(QFont(self.font_id, 12))
-        mice_num_label.move(515, 70)
-        self.mice_num = QLineEdit('2', self.VideoSettings)
-        self.mice_num.setFont(QFont(self.font_id, 10))
-        self.mice_num.setStyleSheet('QLineEdit { width: 300px; }')
-        self.mice_num.move(620, 70)
+        mice_num_label.move(750, 70)
+        self.mice_num_entry = QLineEdit(f"{toml_['video']['metadata']['mice_num']}", self.VideoSettings)
+        self.mice_num_entry.setFont(QFont(self.font_id, 10))
+        self.mice_num_entry.setStyleSheet('QLineEdit { width: 95px; }')
+        self.mice_num_entry.move(875, 70)
 
-        cage_ID_m1_label = QLabel('#1 Cage ID:', self.VideoSettings)
-        cage_ID_m1_label.setFont(QFont(self.font_id, 12))
-        cage_ID_m1_label.move(515, 100)
-        self.cage_ID_m1 = QLineEdit('', self.VideoSettings)
-        self.cage_ID_m1.setFont(QFont(self.font_id, 10))
-        self.cage_ID_m1.setStyleSheet('QLineEdit { width: 300px; }')
-        self.cage_ID_m1.move(620, 100)
+        vacant_arena_label = QLabel('Vacant arena:', self.VideoSettings)
+        vacant_arena_label.setFont(QFont(self.font_id, 12))
+        vacant_arena_label.move(495, 100)
+        self.vacant_arena_cb = QComboBox(self.VideoSettings)
+        self.vacant_arena_cb.addItems(['No', 'Yes'])
+        self.vacant_arena_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.vacant_arena_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='vacant_arena_cb_bool'))
+        self.vacant_arena_cb.move(630, 100)
 
-        mouse_ID_m1_label = QLabel('#1 Mouse ID:', self.VideoSettings)
-        mouse_ID_m1_label.setFont(QFont(self.font_id, 12))
-        mouse_ID_m1_label.move(515, 130)
-        self.mouse_ID_m1 = QLineEdit('', self.VideoSettings)
-        self.mouse_ID_m1.setFont(QFont(self.font_id, 10))
-        self.mouse_ID_m1.setStyleSheet('QLineEdit { width: 300px; }')
-        self.mouse_ID_m1.move(620, 130)
+        ambient_light_label = QLabel('Ambient light:', self.VideoSettings)
+        ambient_light_label.setFont(QFont(self.font_id, 12))
+        ambient_light_label.move(750, 100)
+        self.ambient_light_cb = QComboBox(self.VideoSettings)
+        self.ambient_light_cb.addItems(['Yes', 'No'])
+        self.ambient_light_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.ambient_light_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='ambient_light_cb_bool'))
+        self.ambient_light_cb.move(875, 100)
 
-        genotype_m1_label = QLabel('#1 Genotype:', self.VideoSettings)
-        genotype_m1_label.setFont(QFont(self.font_id, 12))
-        genotype_m1_label.move(515, 160)
-        self.genotype_m1 = QLineEdit('CD1-WT', self.VideoSettings)
-        self.genotype_m1.setFont(QFont(self.font_id, 10))
-        self.genotype_m1.setStyleSheet('QLineEdit { width: 300px; }')
-        self.genotype_m1.move(620, 160)
+        record_brain_label = QLabel('Record brain:', self.VideoSettings)
+        record_brain_label.setFont(QFont(self.font_id, 12))
+        record_brain_label.move(495, 130)
+        self.record_brain_cb = QComboBox(self.VideoSettings)
+        self.record_brain_cb.addItems(['No', 'Yes'])
+        self.record_brain_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.record_brain_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='record_brain_cb_bool'))
+        self.record_brain_cb.move(630, 130)
 
-        sex_m1_label = QLabel('#1 Sex:', self.VideoSettings)
-        sex_m1_label.setFont(QFont(self.font_id, 12))
-        sex_m1_label.move(515, 190)
-        self.sex_m1 = QLineEdit('male', self.VideoSettings)
-        self.sex_m1.setFont(QFont(self.font_id, 10))
-        self.sex_m1.setStyleSheet('QLineEdit { width: 300px; }')
-        self.sex_m1.move(620, 190)
+        usv_playback_label = QLabel('USV playback:', self.VideoSettings)
+        usv_playback_label.setFont(QFont(self.font_id, 12))
+        usv_playback_label.move(750, 130)
+        self.usv_playback_cb = QComboBox(self.VideoSettings)
+        self.usv_playback_cb.addItems(['No', 'Yes'])
+        self.usv_playback_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.usv_playback_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_playback_cb_bool'))
+        self.usv_playback_cb.move(875, 130)
 
-        DOB_m1_label = QLabel('#1 DOB:', self.VideoSettings)
-        DOB_m1_label.setFont(QFont(self.font_id, 12))
-        DOB_m1_label.move(515, 220)
-        self.DOB_m1 = QLineEdit('', self.VideoSettings)
-        self.DOB_m1.setFont(QFont(self.font_id, 10))
-        self.DOB_m1.setStyleSheet('QLineEdit { width: 300px; }')
-        self.DOB_m1.move(620, 220)
+        chemogenetics_label = QLabel('Chemogenetics:', self.VideoSettings)
+        chemogenetics_label.setFont(QFont(self.font_id, 12))
+        chemogenetics_label.move(495, 160)
+        self.chemogenetics_cb = QComboBox(self.VideoSettings)
+        self.chemogenetics_cb.addItems(['No', 'Yes'])
+        self.chemogenetics_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.chemogenetics_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='chemogenetics_cb_bool'))
+        self.chemogenetics_cb.move(630, 160)
 
-        housing_m1_label = QLabel('#1 Housing:', self.VideoSettings)
-        housing_m1_label.setFont(QFont(self.font_id, 12))
-        housing_m1_label.move(515, 250)
-        self.housing_m1 = QLineEdit('group', self.VideoSettings)
-        self.housing_m1.setFont(QFont(self.font_id, 10))
-        self.housing_m1.setStyleSheet('QLineEdit { width: 300px; }')
-        self.housing_m1.move(620, 250)
+        optogenetics_label = QLabel('Optogenetics:', self.VideoSettings)
+        optogenetics_label.setFont(QFont(self.font_id, 12))
+        optogenetics_label.move(750, 160)
+        self.optogenetics_cb = QComboBox(self.VideoSettings)
+        self.optogenetics_cb.addItems(['No', 'Yes'])
+        self.optogenetics_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.optogenetics_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='optogenetics_cb_bool'))
+        self.optogenetics_cb.move(875, 160)
 
-        cage_ID_m2_label = QLabel('#2 Cage ID:', self.VideoSettings)
-        cage_ID_m2_label.setFont(QFont(self.font_id, 12))
-        cage_ID_m2_label.move(515, 280)
-        self.cage_ID_m2 = QLineEdit('', self.VideoSettings)
-        self.cage_ID_m2.setFont(QFont(self.font_id, 10))
-        self.cage_ID_m2.setStyleSheet('QLineEdit { width: 300px; }')
-        self.cage_ID_m2.move(620, 280)
+        brain_lesion_label = QLabel('Brain lesion:', self.VideoSettings)
+        brain_lesion_label.setFont(QFont(self.font_id, 12))
+        brain_lesion_label.move(495, 190)
+        self.brain_lesion_cb = QComboBox(self.VideoSettings)
+        self.brain_lesion_cb.addItems(['No', 'Yes'])
+        self.brain_lesion_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.brain_lesion_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='brain_lesion_cb_bool'))
+        self.brain_lesion_cb.move(630, 190)
 
-        mouse_ID_m2_label = QLabel('#2 Mouse ID:', self.VideoSettings)
-        mouse_ID_m2_label.setFont(QFont(self.font_id, 12))
-        mouse_ID_m2_label.move(515, 310)
-        self.mouse_ID_m2 = QLineEdit('', self.VideoSettings)
-        self.mouse_ID_m2.setFont(QFont(self.font_id, 10))
-        self.mouse_ID_m2.setStyleSheet('QLineEdit { width: 300px; }')
-        self.mouse_ID_m2.move(620, 310)
+        devocalization_label = QLabel('Devocalization:', self.VideoSettings)
+        devocalization_label.setFont(QFont(self.font_id, 12))
+        devocalization_label.move(750, 190)
+        self.devocalization_cb = QComboBox(self.VideoSettings)
+        self.devocalization_cb.addItems(['No', 'Yes'])
+        self.devocalization_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.devocalization_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='devocalization_cb_bool'))
+        self.devocalization_cb.move(875, 190)
 
-        genotype_m2_label = QLabel('#2 Genotype:', self.VideoSettings)
-        genotype_m2_label.setFont(QFont(self.font_id, 12))
-        genotype_m2_label.move(515, 340)
-        self.genotype_m2 = QLineEdit('CD1-WT', self.VideoSettings)
-        self.genotype_m2.setFont(QFont(self.font_id, 10))
-        self.genotype_m2.setStyleSheet('QLineEdit { width: 300px; }')
-        self.genotype_m2.move(620, 340)
+        female_urine_label = QLabel('Female urine:', self.VideoSettings)
+        female_urine_label.setFont(QFont(self.font_id, 12))
+        female_urine_label.move(495, 220)
+        self.female_urine_cb = QComboBox(self.VideoSettings)
+        self.female_urine_cb.addItems(['No', 'Yes'])
+        self.female_urine_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.female_urine_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='female_urine_cb_bool'))
+        self.female_urine_cb.move(630, 220)
 
-        sex_m2_label = QLabel('#2 Sex:', self.VideoSettings)
-        sex_m2_label.setFont(QFont(self.font_id, 12))
-        sex_m2_label.move(515, 370)
-        self.sex_m2 = QLineEdit('female', self.VideoSettings)
-        self.sex_m2.setFont(QFont(self.font_id, 10))
-        self.sex_m2.setStyleSheet('QLineEdit { width: 300px; }')
-        self.sex_m2.move(620, 370)
+        female_bedding_label = QLabel('Female bedding:', self.VideoSettings)
+        female_bedding_label.setFont(QFont(self.font_id, 12))
+        female_bedding_label.move(750, 220)
+        self.female_bedding_cb = QComboBox(self.VideoSettings)
+        self.female_bedding_cb.addItems(['No', 'Yes'])
+        self.female_bedding_cb.setStyleSheet('QComboBox { width: 68px; }')
+        self.female_bedding_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='female_bedding_cb_bool'))
+        self.female_bedding_cb.move(875, 220)
 
-        DOB_m2_label = QLabel('#2 DOB:', self.VideoSettings)
-        DOB_m2_label.setFont(QFont(self.font_id, 12))
-        DOB_m2_label.move(515, 400)
-        self.DOB_m2 = QLineEdit('', self.VideoSettings)
-        self.DOB_m2.setFont(QFont(self.font_id, 10))
-        self.DOB_m2.setStyleSheet('QLineEdit { width: 300px; }')
-        self.DOB_m2.move(620, 400)
+        species_label = QLabel('Species:', self.VideoSettings)
+        species_label.setFont(QFont(self.font_id, 12))
+        species_label.move(495, 250)
+        self.species_entry = QLineEdit(f"{toml_['video']['metadata']['species']}", self.VideoSettings)
+        self.species_entry.setFont(QFont(self.font_id, 10))
+        self.species_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.species_entry.move(570, 250)
 
-        housing_m2_label = QLabel('#2 Housing:', self.VideoSettings)
-        housing_m2_label.setFont(QFont(self.font_id, 12))
-        housing_m2_label.move(515, 430)
-        self.housing_m2 = QLineEdit('group', self.VideoSettings)
-        self.housing_m2.setFont(QFont(self.font_id, 10))
-        self.housing_m2.setStyleSheet('QLineEdit { width: 300px; }')
-        self.housing_m2.move(620, 430)
+        strain_label = QLabel('Strain-GT:', self.VideoSettings)
+        strain_label.setFont(QFont(self.font_id, 12))
+        strain_label.move(495, 280)
+        self.strain_entry = QLineEdit(f"{toml_['video']['metadata']['strain']}", self.VideoSettings)
+        self.strain_entry.setFont(QFont(self.font_id, 10))
+        self.strain_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.strain_entry.move(570, 280)
 
-        other_label = QLabel('Other info:', self.VideoSettings)
-        other_label.setFont(QFont(self.font_id, 12))
-        other_label.move(515, 460)
-        self.other = QTextEdit('Lorem ipsum dolor sit amet', self.VideoSettings)
-        self.other.setFont(QFont(self.font_id, 10))
-        self.other.move(620, 460)
-        self.other.setFixedSize(302, 390)
+        cage_label = QLabel('Cage:', self.VideoSettings)
+        cage_label.setFont(QFont(self.font_id, 12))
+        cage_label.move(495, 310)
+        self.cage_entry = QLineEdit(f"{toml_['video']['metadata']['cage']}", self.VideoSettings)
+        self.cage_entry.setFont(QFont(self.font_id, 10))
+        self.cage_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.cage_entry.move(570, 310)
+
+        subject_label = QLabel('Subject:', self.VideoSettings)
+        subject_label.setFont(QFont(self.font_id, 12))
+        subject_label.move(495, 340)
+        self.subject_entry = QLineEdit(f"{toml_['video']['metadata']['subject']}", self.VideoSettings)
+        self.subject_entry.setFont(QFont(self.font_id, 10))
+        self.subject_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.subject_entry.move(570, 340)
+
+        dob_label = QLabel('DOB:', self.VideoSettings)
+        dob_label.setFont(QFont(self.font_id, 12))
+        dob_label.move(495, 370)
+        self.dob_entry = QLineEdit(f"{toml_['video']['metadata']['dob']}", self.VideoSettings)
+        self.dob_entry.setFont(QFont(self.font_id, 10))
+        self.dob_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.dob_entry.move(570, 370)
+
+        sex_label = QLabel('Sex:', self.VideoSettings)
+        sex_label.setFont(QFont(self.font_id, 12))
+        sex_label.move(495, 400)
+        self.sex_entry = QLineEdit(f"{toml_['video']['metadata']['sex']}", self.VideoSettings)
+        self.sex_entry.setFont(QFont(self.font_id, 10))
+        self.sex_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.sex_entry.move(570, 400)
+
+        weight_label = QLabel('Weight:', self.VideoSettings)
+        weight_label.setFont(QFont(self.font_id, 12))
+        weight_label.move(495, 430)
+        self.weight_entry = QLineEdit(f"{toml_['video']['metadata']['weight']}", self.VideoSettings)
+        self.weight_entry.setFont(QFont(self.font_id, 10))
+        self.weight_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.weight_entry.move(570, 430)
+
+        housing_label = QLabel('Housing:', self.VideoSettings)
+        housing_label.setFont(QFont(self.font_id, 12))
+        housing_label.move(495, 460)
+        self.housing_entry = QLineEdit(f"{toml_['video']['metadata']['housing']}", self.VideoSettings)
+        self.housing_entry.setFont(QFont(self.font_id, 10))
+        self.housing_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.housing_entry.move(570, 460)
+
+        implant_label = QLabel('Implant:', self.VideoSettings)
+        implant_label.setFont(QFont(self.font_id, 12))
+        implant_label.move(495, 490)
+        self.implant_entry = QLineEdit(f"{toml_['video']['metadata']['implant']}", self.VideoSettings)
+        self.implant_entry.setFont(QFont(self.font_id, 10))
+        self.implant_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.implant_entry.move(570, 490)
+
+        virus_label = QLabel('Virus:', self.VideoSettings)
+        virus_label.setFont(QFont(self.font_id, 12))
+        virus_label.move(495, 520)
+        self.virus_entry = QLineEdit(f"{toml_['video']['metadata']['virus']}", self.VideoSettings)
+        self.virus_entry.setFont(QFont(self.font_id, 10))
+        self.virus_entry.setStyleSheet('QLineEdit { width: 402px; }')
+        self.virus_entry.move(570, 520)
+
+        notes_label = QLabel('Notes:', self.VideoSettings)
+        notes_label.setFont(QFont(self.font_id, 12))
+        notes_label.move(495, 550)
+        self.notes_entry = QTextEdit(f"{toml_['video']['metadata']['notes']}", self.VideoSettings)
+        self.notes_entry.setFont(QFont(self.font_id, 10))
+        self.notes_entry.move(570, 550)
+        self.notes_entry.setFixedSize(403, 290)
 
         self._create_buttons_record(seq=2, class_option=self.VideoSettings,
                                     button_pos_y=record_three_y - 35, next_button_x_pos=record_three_x - 100)
@@ -1872,8 +1964,9 @@ class USVPlaypenWindow(QMainWindow):
 
     def _save_record_three_labels_func(self):
         video_dict_keys = ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial',
-                           'experimenter', 'mice_num', 'cage_ID_m1', 'mouse_ID_m1', 'genotype_m1', 'sex_m1', 'DOB_m1',
-                           'housing_m1', 'cage_ID_m2', 'mouse_ID_m2', 'genotype_m2', 'sex_m2', 'DOB_m2', 'housing_m2', 'other']
+                           'institution_entry', 'laboratory_entry', 'experimenter_entry', 'mice_num_entry',
+                           'species_entry', 'strain_entry', 'cage_entry', 'subject_entry', 'dob_entry',
+                           'sex_entry', 'weight_entry', 'housing_entry', 'implant_entry', 'virus_entry', 'notes_entry']
 
         self.settings_dict['video']['monitor_recording'] = self.monitor_recording_cb_bool
         self.monitor_recording_cb_bool = False
@@ -1881,6 +1974,27 @@ class USVPlaypenWindow(QMainWindow):
         self.monitor_specific_camera_cb_bool = False
         self.settings_dict['video']['delete_post_copy'] = self.delete_post_copy_cb_bool
         self.delete_post_copy_cb_bool = True
+
+        self.settings_dict['video']['vacant_arena'] = self.vacant_arena_cb_bool
+        self.vacant_arena_cb_bool = False
+        self.settings_dict['video']['ambient_light'] = self.ambient_light_cb_bool
+        self.ambient_light_cb_bool = True
+        self.settings_dict['video']['record_brain'] = self.record_brain_cb_bool
+        self.record_brain_cb_bool = False
+        self.settings_dict['video']['usv_playback'] = self.usv_playback_cb_bool
+        self.usv_playback_cb_bool = False
+        self.settings_dict['video']['chemogenetics'] = self.chemogenetics_cb_bool
+        self.chemogenetics_cb_bool = False
+        self.settings_dict['video']['optogenetics'] = self.optogenetics_cb_bool
+        self.optogenetics_cb_bool = False
+        self.settings_dict['video']['brain_lesion'] = self.brain_lesion_cb_bool
+        self.brain_lesion_cb_bool = False
+        self.settings_dict['video']['devocalization'] = self.devocalization_cb_bool
+        self.devocalization_cb_bool = False
+        self.settings_dict['video']['female_urine'] = self.female_urine_cb_bool
+        self.female_urine_cb_bool = False
+        self.settings_dict['video']['female_bedding'] = self.female_bedding_cb_bool
+        self.female_bedding_cb_bool = False
 
         self.settings_dict['video']['recording_frame_rate'] = self.cameras_frame_rate.value()
         self.settings_dict['video']['calibration_frame_rate'] = self.calibration_frame_rate.value()
@@ -1901,10 +2015,12 @@ class USVPlaypenWindow(QMainWindow):
                 if variable == 'recording_codec':
                     self.settings_dict['video'][variable] = str(getattr(self, variable))
                     self.recording_codec = 'hq'
-                elif variable == 'other':
-                    self.settings_dict['video'][variable] = getattr(self, variable).toPlainText()
-                else:
+                elif variable == 'browser' or variable == 'specific_camera_serial':
                     self.settings_dict['video'][variable] = getattr(self, variable).text()
+                elif variable == 'notes_entry':
+                    self.settings_dict['video'][variable[:-6]] = getattr(self, variable).toPlainText()
+                else:
+                    self.settings_dict['video'][variable[:-6]] = getattr(self, variable).text()
             else:
                 self.expected_cameras = self.expected_cameras.text()
                 self.settings_dict['video'][variable] = self.expected_cameras.split(',')
@@ -2364,7 +2480,9 @@ def main():
                            'save_arena_data_cb_bool': False, 'save_mouse_data_cb_bool': True, 'delete_original_h5_cb_bool': True, 'das_inference_cb_bool': False, 'sleap_cluster_cb_bool': False,
                            'processing_pc_choice': 'A84E Backup', 'inference_root_dir_btn_clicked_flag': False, 'centroid_model_btn_clicked_flag': False, 'centered_instance_btn_btn_clicked_flag': False,
                            'calibration_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False, 'settings_dir_btn_clicked_flag': False, 'recorder_dir_btn_clicked_flag': False,
-                           'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False, 'das_summary_cb_bool': False, 'exp_id': 'Bartul'}
+                           'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False, 'das_summary_cb_bool': False, 'exp_id': 'Bartul', 'vacant_arena_cb_bool': False,
+                           'ambient_light_cb_bool': True, 'record_brain_cb_bool': False, 'usv_playback_cb_bool': False, 'chemogenetics_cb_bool': False, 'optogenetics_cb_bool': False,
+                           'brain_lesion_cb_bool': False, 'devocalization_cb_bool': False, 'female_urine_cb_bool': False, 'female_bedding_cb_bool': False}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

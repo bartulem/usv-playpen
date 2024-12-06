@@ -257,25 +257,31 @@ class ExperimentController:
                         if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration'].keys()) or \
                                 (mic_num in self.exp_settings_dict['audio']['used_mics'] and str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]) != self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]):
                             if mic_spec_key == 'name':
-                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"ch{mic_num + 1}"
-                                changes += 1
+                                if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != f"ch{mic_num + 1}":
+                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"ch{mic_num + 1}"
+                                    changes += 1
                             elif mic_spec_key == 'deviceid' or mic_spec_key == 'id':
                                 if mic_num < 12:
-                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '0'
-                                    changes += 1
+                                    if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != '0':
+                                        self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '0'
+                                        changes += 1
                                 else:
-                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '1'
-                                    changes += 1
+                                    if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != '1':
+                                        self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '1'
+                                        changes += 1
                             elif mic_spec_key == 'channel':
                                 if mic_num < 12:
-                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num}"
-                                    changes += 1
+                                    if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != f"{mic_num}":
+                                        self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num}"
+                                        changes += 1
                                 else:
-                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num - 12}"
-                                    changes += 1
+                                    if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != f"{mic_num - 12}":
+                                        self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num - 12}"
+                                        changes += 1
                             else:
-                                self.config_1['Configuration'][f"{mic_spec_key}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
-                                changes += 1
+                                if self.config_1['Configuration'][f"{mic_spec_key}"] != str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]):
+                                    self.config_1['Configuration'][f"{mic_spec_key}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
+                                    changes += 1
                     else:
                         if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration'].keys()) or \
                                 (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['mics_config'][mic_spec_key], float(self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]))):

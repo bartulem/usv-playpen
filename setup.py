@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.7.3',
+    version='0.7.4',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -33,7 +33,9 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
-            'usv-playpen = usv_playpen.usv_playpen_gui:main'
+            'usv-playpen = usv_playpen.usv_playpen_gui:main',
+            'recording-tests = usv_playpen._tests.recording_tests:unittest.main',
+            'processing-tests = usv_playpen._tests.processing_tests:unittest.main'
         ]
     },
     install_requires=['av==10.0.0',

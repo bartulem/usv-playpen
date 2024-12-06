@@ -144,32 +144,38 @@ class SummaryPlotter:
                     camera_exposure = user_meta_data['exposuretime']
                     camera_frame_rate = user_meta_data['hwframerate']
                     for exp_key in user_meta_data.keys():
-                        if 'experimenter' in exp_key and user_meta_data[exp_key] != '':
+                        if 'experimenter' == exp_key and user_meta_data[exp_key] != '':
                             experimenter = user_meta_data[exp_key]
-                        if 'mouse_ID_m1' in exp_key and user_meta_data[exp_key] != '':
-                            animal_1 = user_meta_data[exp_key]
-                        if 'mouse_ID_m2' in exp_key and user_meta_data[exp_key] != '':
-                            animal_2 = user_meta_data[exp_key]
-                        if 'cage_ID_m1' in exp_key and user_meta_data[exp_key] != '':
-                            cage_1 = user_meta_data[exp_key]
-                        if 'cage_ID_m2' in exp_key and user_meta_data[exp_key] != '':
-                            cage_2 = user_meta_data[exp_key]
-                        if 'DOB_m1' in exp_key and user_meta_data[exp_key] != '':
-                            dob_1 = user_meta_data[exp_key]
-                        if 'DOB_m2' in exp_key and user_meta_data[exp_key] != '':
-                            dob_2 = user_meta_data[exp_key]
-                        if 'sex_m1' in exp_key and user_meta_data[exp_key] != '':
-                            sex_1 = user_meta_data[exp_key]
-                        if 'sex_m2' in exp_key and user_meta_data[exp_key] != '':
-                            sex_2 = user_meta_data[exp_key]
-                        if 'genotype_m1' in exp_key and user_meta_data[exp_key] != '':
-                            gen_1 = user_meta_data[exp_key]
-                        if 'genotype_m2' in exp_key and user_meta_data[exp_key] != '':
-                            gen_2 = user_meta_data[exp_key]
-                        if 'housing_m1' in exp_key and user_meta_data[exp_key] != '':
-                            hou_1 = user_meta_data[exp_key]
-                        if 'housing_m2' in exp_key and user_meta_data[exp_key] != '':
-                            hou_2 = user_meta_data[exp_key]
+                        if 'subject' == exp_key and user_meta_data[exp_key] != '':
+                            subject_entry = user_meta_data[exp_key].split(',')
+                            animal_1 = subject_entry[0]
+                            if len(subject_entry) > 1:
+                                animal_2 = subject_entry[1]
+                        if 'cage' == exp_key and user_meta_data[exp_key] != '':
+                            cage_entry = user_meta_data[exp_key].split(',')
+                            cage_1 = cage_entry[0]
+                            if len(cage_entry) > 1:
+                                cage_2 = cage_entry[1]
+                        if 'dob' == exp_key and user_meta_data[exp_key] != '':
+                            dob_entry = user_meta_data[exp_key].split(',')
+                            dob_1 = dob_entry[0]
+                            if len(dob_entry) > 1:
+                                dob_2 = dob_entry[1]
+                        if 'sex' == exp_key and user_meta_data[exp_key] != '':
+                            sex_entry = user_meta_data[exp_key].split(',')
+                            sex_1 = sex_entry[0]
+                            if len(sex_entry) > 1:
+                                sex_2 = sex_entry[1]
+                        if 'strain' == exp_key and user_meta_data[exp_key] != '':
+                            gen_entry = user_meta_data[exp_key].split(',')
+                            gen_1 = gen_entry[0]
+                            if len(gen_entry) > 1:
+                                gen_2 = gen_entry[1]
+                        if 'housing' == exp_key and user_meta_data[exp_key] != '':
+                            hou_entry = user_meta_data[exp_key].split(',')
+                            hou_1 = hou_entry[0]
+                            if len(hou_entry) > 1:
+                                hou_2 = hou_entry[1]
                 counter += 1
 
         # optimize histogram

@@ -1,4 +1,4 @@
-# usv-playpen v0.7.3
+# usv-playpen v0.7.4
 
 <br>
 <div align="center">
@@ -51,21 +51,11 @@ pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --us
 ```
 
 ## Test installation
-Navigate to the main repo directory (example below).
 ```bash
-cd /.../usv-playpen
-python -m unittest -v _tests.recording_tests
-python -m unittest -v _tests.processing_tests
+conda activate usv
+recording-tests
+processing-tests
 ```
-
-## Example features
-
-* behavioral_experiments.ExperimentController --> run behavioral experiments with Loopbio/Avisoft software
-* extract_phidget_data.Gatherer --> extract data measured by illumination and temperature/humidity phidgets
-* file_manipulation.Operator --> (1) break from multi to single channel, band-pass filter and temporally concatenate Avisoft-generated audio (_e.g._, WAV) files,
-                                 (2) concatenate Motif-generated video (_e.g._, mp4) files and re-encode them to correct sampling rate (fps)
-* synchronize_files.Synchronizer --> cut WAV file to video file (_e.g._, mp4) length and perform A/V synchronization check
-* preprocessing_plots.SummaryPlotter --> generate summary figure for data preprocessing (_i.e._, metadata and sync quality)
 
 ## Usage
 
@@ -74,4 +64,4 @@ Load the environment with the appropriate name, _e.g._, usv., and run the GUI:
 conda activate usv && usv-playpen
 ```
 
-Developed and tested in PyCharm Pro 2024.3, on macOS Sequoia 15.1 / Pop!_OS 22.04 / Windows 11.
+Developed in PyCharm Pro 2024.3, and tested on macOS Sequoia 15.1 / Pop!_OS 22.04 / Windows 11.
