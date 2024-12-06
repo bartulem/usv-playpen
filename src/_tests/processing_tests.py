@@ -8,8 +8,8 @@ import subprocess
 import sys
 import toml
 import unittest
-from .send_email import Messenger
-from . import usv_playpen_gui as usv_playpen_gui
+from ..send_email import Messenger
+from .. import usv_playpen_gui as usv_playpen_gui
 
 
 class TestProcessing(unittest.TestCase):
