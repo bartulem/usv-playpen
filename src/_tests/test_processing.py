@@ -12,8 +12,6 @@ import unittest
 from ..send_email import Messenger
 from .. import usv_playpen_gui as usv_playpen_gui
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 
 class TestProcessing(unittest.TestCase):
 
@@ -71,8 +69,5 @@ class TestProcessing(unittest.TestCase):
         self.assertTrue(expr=audio_processing_success, msg="SOX not functional from command line.")
 
 
-def main():
-    unittest.main()
-
 if __name__ == '__main__':
-    main()
+    unittest.main()

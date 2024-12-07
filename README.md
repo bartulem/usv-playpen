@@ -53,8 +53,8 @@ pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --us
 ## Test installation
 ```bash
 conda activate usv
-recording-tests
-processing-tests
+python -m unittest usv_playpen._tests.test_recording
+python -m unittest usv_playpen._tests.test_processing
 ```
 
 ## Usage

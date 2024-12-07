@@ -13,8 +13,6 @@ import unittest
 from ..send_email import Messenger
 from .. import usv_playpen_gui as usv_playpen_gui
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 
 class TestRecording(unittest.TestCase):
 
@@ -65,8 +63,5 @@ class TestRecording(unittest.TestCase):
         self.assertTrue(expr=config_file_status and software_status, msg="Audio / SYNC software and/or config files not ready for use.")
 
 
-def main():
-    unittest.main()
-
 if __name__ == '__main__':
-    main()
+    unittest.main()
