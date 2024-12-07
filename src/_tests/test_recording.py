@@ -18,7 +18,7 @@ class TestRecording(unittest.TestCase):
     if platform.system() == 'Windows':
         config_dir_global = 'C:\\experiment_running_docs'
     elif platform.system() == 'Linux':
-        config_di_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
+        config_dir_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
     else:
         config_dir_global = f'/Volumes/falkner/Bartul/PC_transfer/experiment_running_docs'
 
@@ -45,7 +45,7 @@ class TestRecording(unittest.TestCase):
 
         # test video recording capabilities
         video_config = configparser.ConfigParser()
-        video_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}motif_config.ini")
+        video_config.read(f"{self.config_dir_global}{os.sep}motif_config.ini")
 
         try:
             self.motif_api = motifapi.MotifApi(video_config['motif']['master_ip_address'], video_config['motif']['api'])
@@ -58,8 +58,8 @@ class TestRecording(unittest.TestCase):
     def test_recording_audio_sync_software(self):
 
         # test audi0 / sync_software presence
-        config_file_status = (os.path.isfile(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}avisoft_config.ini") and
-                              os.path.isfile(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}coolterm_config.stc"))
+        config_file_status = (os.path.isfile(f"{self.config_dir_global}{os.sep}avisoft_config.ini") and
+                              os.path.isfile(f"{self.config_dir_global}{os.sep}coolterm_config.stc"))
 
         software_status = (os.path.isfile(f"{self.exp_settings_dict['avisoft_recorder_exe']}{os.sep}rec_usgh.exe") and
                            os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}CoolTerm.exe"))

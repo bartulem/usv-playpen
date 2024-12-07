@@ -24,7 +24,7 @@ class TestProcessing(unittest.TestCase):
     if platform.system() == 'Windows':
         config_dir_global = 'C:\\experiment_running_docs'
     elif platform.system() == 'Linux':
-        config_di_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
+        config_dir_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
     else:
         config_dir_global = f'/Volumes/falkner/Bartul/PC_transfer/experiment_running_docs'
 
