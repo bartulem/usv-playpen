@@ -33,7 +33,7 @@ class TestProcessing(unittest.TestCase):
     def test_send_email(self):
 
         try:
-            email_receiver = [str(sys.argv[1])]
+            email_receiver = [str(self.email_address)]
         except IndexError:
             print("Error: Missing e-mail argument. Please provide it.")
 
@@ -74,4 +74,5 @@ class TestProcessing(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    TestProcessing.email_address = sys.argv.pop()
     unittest.main()
