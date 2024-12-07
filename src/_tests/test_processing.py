@@ -33,13 +33,13 @@ class TestProcessing(unittest.TestCase):
     def test_send_email(self):
 
         try:
-            email_receiver = sys.argv[2]
+            email_receiver = sys.argv[1]
         except IndexError:
             print("Error: Missing e-mail argument. Please provide it.")
 
         # test email sending
         try:
-            Messenger(receivers=email_receiver,
+            Messenger(receivers=[email_receiver],
                       exp_settings_dict=self.esd).send_message(subject="Test", message="This is a 165B processing test email. Please do not reply.")
             email_success = True
         except Exception:

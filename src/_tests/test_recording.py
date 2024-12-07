@@ -27,13 +27,13 @@ class TestRecording(unittest.TestCase):
     def test_recording_send_email(self):
 
         try:
-            email_receiver = sys.argv[2]
+            email_receiver = [sys.argv[1]]
         except IndexError:
             print("Error: Missing e-mail argument. Please provide it.")
 
         # test email sending
         try:
-            Messenger(receivers=email_receiver,
+            Messenger(receivers=[email_receiver],
                       exp_settings_dict=self.exp_settings_dict).send_message(subject="Test", message="This is a 165B recording test email. Please do not reply.")
             email_success = True
         except Exception:
