@@ -52,7 +52,7 @@ pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --us
 
 ## Test installation
 
-At the end of each command for testing, make sure you add a valid e-mail address.
+At the end of each command for testing, make sure you add a valid e-mail address a test e-mail can be sent to.
 ```bash
 conda activate usv
 python -m usv_playpen._tests.test_recording username@domain.com
