@@ -34,8 +34,8 @@ setup(
     entry_points={
         'console_scripts': [
             'usv-playpen = usv_playpen.usv_playpen_gui:main',
-            'recording-tests = _tests.test_recording:unittest.main',
-            'processing-tests = _tests.test_processing:unittest.main'
+            'recording-tests = usv_playpen._tests.test_recording:unittest.main',
+            'processing-tests = usv_playpen._tests.test_processing:unittest.main'
         ]
     },
     install_requires=['av==10.0.0',

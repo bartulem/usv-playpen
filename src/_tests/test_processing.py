@@ -12,6 +12,9 @@ import unittest
 from ..send_email import Messenger
 from .. import usv_playpen_gui as usv_playpen_gui
 
+print("sys.path:", sys.path)
+print("__package__:", __package__)
+
 
 class TestProcessing(unittest.TestCase):
 
