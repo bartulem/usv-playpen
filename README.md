@@ -34,7 +34,7 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 
 Set up a new conda environment with Python 3.10 and give it any name, _e.g._, usv.
 ```bash
-conda create --name usv python=3.10 -y
+conda create --name usv python=3.10 -c conda-forge -y
 ```
 Activate the virtual environment with:
 ```bash
