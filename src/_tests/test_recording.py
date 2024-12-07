@@ -63,5 +63,8 @@ class TestRecording(unittest.TestCase):
         self.assertTrue(expr=config_file_status and software_status, msg="Audio / SYNC software and/or config files not ready for use.")
 
 
-if __name__ == '__main__':
+def main():
     unittest.main()
+
+if __name__ == '__main__':
+    main()
