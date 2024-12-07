@@ -10,7 +10,6 @@ import sys
 import toml
 import unittest
 from ..send_email import Messenger
-from .. import usv_playpen_gui as usv_playpen_gui
 
 
 class TestProcessing(unittest.TestCase):
@@ -33,9 +32,14 @@ class TestProcessing(unittest.TestCase):
 
     def test_send_email(self):
 
+        try:
+            email_receiver = sys.argv[1]
+        except IndexError:
+            print("Error: Missing e-mail argument. Please provide it.")
+
         # test email sending
         try:
-            Messenger(receivers=usv_playpen_gui.email_list_global.split(","),
+            Messenger(receivers=email_receiver,
                       exp_settings_dict=self.esd).send_message(subject="Test", message="This is a 165B processing test email. Please do not reply.")
             email_success = True
         except Exception:
