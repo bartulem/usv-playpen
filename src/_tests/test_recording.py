@@ -13,6 +13,8 @@ import unittest
 from ..send_email import Messenger
 from .. import usv_playpen_gui as usv_playpen_gui
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 
 class TestRecording(unittest.TestCase):
 
