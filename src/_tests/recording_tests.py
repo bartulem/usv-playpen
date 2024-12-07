@@ -1,11 +1,12 @@
 """
 @author: bartulem
-Testing recording module.
+Test recording module.
 """
 
 import configparser
 import motifapi
 import os
+import platform
 import sys
 import toml
 import unittest
@@ -15,7 +16,14 @@ from .. import usv_playpen_gui as usv_playpen_gui
 
 class TestRecording(unittest.TestCase):
 
-    exp_settings_dict = toml.load(f"{usv_playpen_gui.config_dir_global}{os.sep}behavioral_experiments_settings.toml")
+    if platform.system() == 'Windows':
+        config_dir_global = 'C:\\experiment_running_docs'
+    elif platform.system() == 'Linux':
+        config_di_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
+    else:
+        config_dir_global = f'/Volumes/falkner/Bartul/PC_transfer/experiment_running_docs'
+
+    exp_settings_dict = toml.load(f"{config_dir_global}{os.sep}behavioral_experiments_settings.toml")
 
     def test_recording_send_email(self):
 

@@ -1,9 +1,10 @@
 """
 @author: bartulem
-Testing processing module.
+Test processing module.
 """
 
 import os
+import platform
 import subprocess
 import sys
 import toml
@@ -21,8 +22,14 @@ class TestProcessing(unittest.TestCase):
         command_addition = ''
         shell_usage_bool = True
 
-    esd = toml.load(f"{usv_playpen_gui.config_dir_global}{os.sep}behavioral_experiments_settings.toml")
+    if platform.system() == 'Windows':
+        config_dir_global = 'C:\\experiment_running_docs'
+    elif platform.system() == 'Linux':
+        config_di_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
+    else:
+        config_dir_global = f'/Volumes/falkner/Bartul/PC_transfer/experiment_running_docs'
 
+    esd = toml.load(f"{config_dir_global}{os.sep}behavioral_experiments_settings.toml")
 
     def test_send_email(self):
 
