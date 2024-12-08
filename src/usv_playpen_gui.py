@@ -50,7 +50,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.7.4'
+app_name = 'USV Playpen v0.7.5'
 email_list_global = ''
 das_model_dir = 'model_2024-03-25'
 das_model_base_global ='20240325_073951'
@@ -171,6 +171,7 @@ class USVPlaypenWindow(QMainWindow):
                         'frame_restriction': None,
                         'excluded_views': [],
                         'display_progress_bool': False,
+                        'ransac_bool': False,
                         'rigid_body_constraints': [],
                         'weak_body_constraints': [],
                         'smooth_scale': 3,
@@ -875,7 +876,7 @@ class USVPlaypenWindow(QMainWindow):
         self.ProcessSettings = ProcessSettings(self)
         self.setWindowTitle(f'{app_name} (Process recordings > Settings)')
         self.setCentralWidget(self.ProcessSettings)
-        record_four_x, record_four_y = (1020, 935)
+        record_four_x, record_four_y = (1020, 965)
         self.setFixedSize(record_four_x, record_four_y)
 
         # column 1
@@ -1392,166 +1393,175 @@ class USVPlaypenWindow(QMainWindow):
         self.excluded_views.setStyleSheet('QLineEdit { width: 108px; }')
         self.excluded_views.move(column_three_x2, 280)
 
+        ransac_cb_label = QLabel('Ransac:', self.ProcessSettings)
+        ransac_cb_label.setFont(QFont(self.font_id, 12))
+        ransac_cb_label.move(column_three_x1, 310)
+        self.ransac_cb = QComboBox(self.ProcessSettings)
+        self.ransac_cb.addItems(['No', 'Yes'])
+        self.ransac_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.ransac_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='ransac_cb_bool'))
+        self.ransac_cb.move(column_three_x2, 310)
+
         rigid_body_constraints_label = QLabel('Rigid body constraints:', self.ProcessSettings)
         rigid_body_constraints_label.setFont(QFont(self.font_id, 12))
-        rigid_body_constraints_label.move(column_three_x1, 310)
+        rigid_body_constraints_label.move(column_three_x1, 340)
         self.rigid_body_constraints = QLineEdit('', self.ProcessSettings)
         self.rigid_body_constraints.setFont(QFont(self.font_id, 10))
         self.rigid_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
-        self.rigid_body_constraints.move(column_three_x2, 310)
+        self.rigid_body_constraints.move(column_three_x2, 340)
 
         weak_body_constraints_label = QLabel('Weak body constraints:', self.ProcessSettings)
         weak_body_constraints_label.setFont(QFont(self.font_id, 12))
-        weak_body_constraints_label.move(column_three_x1, 340)
+        weak_body_constraints_label.move(column_three_x1, 370)
         self.weak_body_constraints = QLineEdit('', self.ProcessSettings)
         self.weak_body_constraints.setFont(QFont(self.font_id, 10))
         self.weak_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
-        self.weak_body_constraints.move(column_three_x2, 340)
+        self.weak_body_constraints.move(column_three_x2, 370)
 
         smooth_scale_label = QLabel('Smoothing scale:', self.ProcessSettings)
         smooth_scale_label.setFont(QFont(self.font_id, 12))
-        smooth_scale_label.move(column_three_x1, 370)
+        smooth_scale_label.move(column_three_x1, 400)
         self.smooth_scale = QLineEdit('3', self.ProcessSettings)
         self.smooth_scale.setFont(QFont(self.font_id, 10))
         self.smooth_scale.setStyleSheet('QLineEdit { width: 108px; }')
-        self.smooth_scale.move(column_three_x2, 370)
+        self.smooth_scale.move(column_three_x2, 400)
 
         weight_rigid_label = QLabel('Rigid constraints weight:', self.ProcessSettings)
         weight_rigid_label.setFont(QFont(self.font_id, 12))
-        weight_rigid_label.move(column_three_x1, 400)
+        weight_rigid_label.move(column_three_x1, 430)
         self.weight_rigid = QLineEdit('4', self.ProcessSettings)
         self.weight_rigid.setFont(QFont(self.font_id, 10))
         self.weight_rigid.setStyleSheet('QLineEdit { width: 108px; }')
-        self.weight_rigid.move(column_three_x2, 400)
+        self.weight_rigid.move(column_three_x2, 430)
 
         weight_weak_label = QLabel('Weak constraints weight:', self.ProcessSettings)
         weight_weak_label.setFont(QFont(self.font_id, 12))
-        weight_weak_label.move(column_three_x1, 430)
+        weight_weak_label.move(column_three_x1, 460)
         self.weight_weak = QLineEdit('1', self.ProcessSettings)
         self.weight_weak.setFont(QFont(self.font_id, 10))
         self.weight_weak.setStyleSheet('QLineEdit { width: 108px; }')
-        self.weight_weak.move(column_three_x2, 430)
+        self.weight_weak.move(column_three_x2, 460)
 
         reprojection_error_threshold_label = QLabel('Reproject error threshold:', self.ProcessSettings)
         reprojection_error_threshold_label.setFont(QFont(self.font_id, 12))
-        reprojection_error_threshold_label.move(column_three_x1, 460)
+        reprojection_error_threshold_label.move(column_three_x1, 490)
         self.reprojection_error_threshold = QLineEdit('5', self.ProcessSettings)
         self.reprojection_error_threshold.setFont(QFont(self.font_id, 10))
         self.reprojection_error_threshold.setStyleSheet('QLineEdit { width: 108px; }')
-        self.reprojection_error_threshold.move(column_three_x2, 460)
+        self.reprojection_error_threshold.move(column_three_x2, 490)
 
         regularization_function_label = QLabel('Regularization:', self.ProcessSettings)
         regularization_function_label.setFont(QFont(self.font_id, 12))
-        regularization_function_label.move(column_three_x1, 490)
+        regularization_function_label.move(column_three_x1, 520)
         self.regularization_function = QLineEdit('l2', self.ProcessSettings)
         self.regularization_function.setFont(QFont(self.font_id, 10))
         self.regularization_function.setStyleSheet('QLineEdit { width: 108px; }')
-        self.regularization_function.move(column_three_x2, 490)
+        self.regularization_function.move(column_three_x2, 520)
 
         n_deriv_smooth_label = QLabel('Derivation smoothing order:', self.ProcessSettings)
         n_deriv_smooth_label.setFont(QFont(self.font_id, 12))
-        n_deriv_smooth_label.move(column_three_x1, 520)
+        n_deriv_smooth_label.move(column_three_x1, 550)
         self.n_deriv_smooth = QLineEdit('2', self.ProcessSettings)
         self.n_deriv_smooth.setFont(QFont(self.font_id, 10))
         self.n_deriv_smooth.setStyleSheet('QLineEdit { width: 108px; }')
-        self.n_deriv_smooth.move(column_three_x2, 520)
+        self.n_deriv_smooth.move(column_three_x2, 550)
 
         translate_rotate_metric_label = QLabel('Conduct coordinate change:', self.ProcessSettings)
         translate_rotate_metric_label.setFont(QFont(self.font_id, 11))
         translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        translate_rotate_metric_label.move(column_three_x1, 550)
+        translate_rotate_metric_label.move(column_three_x1, 580)
         self.translate_rotate_metric_cb = QComboBox(self.ProcessSettings)
         self.translate_rotate_metric_cb.addItems(['No', 'Yes'])
         self.translate_rotate_metric_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.translate_rotate_metric_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='translate_rotate_metric_cb_bool'))
-        self.translate_rotate_metric_cb.move(column_three_x2, 550)
+        self.translate_rotate_metric_cb.move(column_three_x2, 580)
 
         static_reference_len_label = QLabel('Static reference length (m):', self.ProcessSettings)
         static_reference_len_label.setFont(QFont(self.font_id, 12))
-        static_reference_len_label.move(column_three_x1, 580)
+        static_reference_len_label.move(column_three_x1, 610)
         self.static_reference_len = QLineEdit('0.615', self.ProcessSettings)
         self.static_reference_len.setFont(QFont(self.font_id, 10))
         self.static_reference_len.setStyleSheet('QLineEdit { width: 108px; }')
-        self.static_reference_len.move(column_three_x2, 580)
+        self.static_reference_len.move(column_three_x2, 610)
 
         save_arena_data_cb_label = QLabel('Save arena transformation:', self.ProcessSettings)
         save_arena_data_cb_label.setFont(QFont(self.font_id, 12))
-        save_arena_data_cb_label.move(column_three_x1, 610)
+        save_arena_data_cb_label.move(column_three_x1, 640)
         self.save_arena_data_cb = QComboBox(self.ProcessSettings)
         self.save_arena_data_cb.addItems(['No', 'Yes'])
         self.save_arena_data_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.save_arena_data_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='save_arena_data_cb_bool'))
-        self.save_arena_data_cb.move(column_three_x2, 610)
+        self.save_arena_data_cb.move(column_three_x2, 640)
 
         save_mouse_data_cb_label = QLabel('Save mouse transformation:', self.ProcessSettings)
         save_mouse_data_cb_label.setFont(QFont(self.font_id, 12))
-        save_mouse_data_cb_label.move(column_three_x1, 640)
+        save_mouse_data_cb_label.move(column_three_x1, 670)
         self.save_mouse_data_cb = QComboBox(self.ProcessSettings)
         self.save_mouse_data_cb.addItems(['Yes', 'No'])
         self.save_mouse_data_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.save_mouse_data_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='save_mouse_data_cb_bool'))
-        self.save_mouse_data_cb.move(column_three_x2, 640)
+        self.save_mouse_data_cb.move(column_three_x2, 670)
 
         delete_original_h5_cb_label = QLabel('Delete original .h5:', self.ProcessSettings)
         delete_original_h5_cb_label.setFont(QFont(self.font_id, 12))
-        delete_original_h5_cb_label.move(column_three_x1, 670)
+        delete_original_h5_cb_label.move(column_three_x1, 700)
         self.delete_original_h5_cb = QComboBox(self.ProcessSettings)
         self.delete_original_h5_cb.addItems(['Yes', 'No'])
         self.delete_original_h5_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.delete_original_h5_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_original_h5_cb_bool'))
-        self.delete_original_h5_cb.move(column_three_x2, 670)
+        self.delete_original_h5_cb.move(column_three_x2, 700)
 
         das_inference_cb_label = QLabel('Detect USVs:', self.ProcessSettings)
         das_inference_cb_label.setFont(QFont(self.font_id, 11))
         das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        das_inference_cb_label.move(column_three_x1, 700)
+        das_inference_cb_label.move(column_three_x1, 730)
         self.das_inference_cb = QComboBox(self.ProcessSettings)
         self.das_inference_cb.addItems(['No', 'Yes'])
         self.das_inference_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.das_inference_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_inference_cb_bool'))
-        self.das_inference_cb.move(column_three_x2, 700)
+        self.das_inference_cb.move(column_three_x2, 730)
 
         segment_confidence_threshold_label = QLabel('DAS confidence threshold:', self.ProcessSettings)
         segment_confidence_threshold_label.setFont(QFont(self.font_id, 12))
-        segment_confidence_threshold_label.move(column_three_x1, 730)
+        segment_confidence_threshold_label.move(column_three_x1, 760)
         self.segment_confidence_threshold = QLineEdit('0.5', self.ProcessSettings)
         self.segment_confidence_threshold.setFont(QFont(self.font_id, 10))
         self.segment_confidence_threshold.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_confidence_threshold.move(column_three_x2, 730)
+        self.segment_confidence_threshold.move(column_three_x2, 760)
 
         segment_minlen_label = QLabel('USV min duration (s):', self.ProcessSettings)
         segment_minlen_label.setFont(QFont(self.font_id, 12))
-        segment_minlen_label.move(column_three_x1, 760)
+        segment_minlen_label.move(column_three_x1, 790)
         self.segment_minlen = QLineEdit('0.015', self.ProcessSettings)
         self.segment_minlen.setFont(QFont(self.font_id, 10))
         self.segment_minlen.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_minlen.move(column_three_x2, 760)
+        self.segment_minlen.move(column_three_x2, 790)
 
         segment_fillgap_label = QLabel('Fill gaps shorter than (s):', self.ProcessSettings)
         segment_fillgap_label.setFont(QFont(self.font_id, 12))
-        segment_fillgap_label.move(column_three_x1, 790)
+        segment_fillgap_label.move(column_three_x1, 820)
         self.segment_fillgap = QLineEdit('0.015', self.ProcessSettings)
         self.segment_fillgap.setFont(QFont(self.font_id, 10))
         self.segment_fillgap.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_fillgap.move(column_three_x2, 790)
+        self.segment_fillgap.move(column_three_x2, 820)
 
         das_output_type_label = QLabel('Inference output file type:', self.ProcessSettings)
         das_output_type_label.setFont(QFont(self.font_id, 12))
-        das_output_type_label.move(column_three_x1, 820)
+        das_output_type_label.move(column_three_x1, 850)
         self.das_output_type = QLineEdit('csv', self.ProcessSettings)
         self.das_output_type.setFont(QFont(self.font_id, 10))
         self.das_output_type.setStyleSheet('QLineEdit { width: 108px; }')
-        self.das_output_type.move(column_three_x2, 820)
+        self.das_output_type.move(column_three_x2, 850)
 
         das_summary_cb_label = QLabel('Summarize DAS output:', self.ProcessSettings)
         das_summary_cb_label.setFont(QFont(self.font_id, 11))
         das_summary_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        das_summary_cb_label.move(column_three_x1, 850)
+        das_summary_cb_label.move(column_three_x1, 880)
         self.das_summary_cb = QComboBox(self.ProcessSettings)
         self.das_summary_cb.addItems(['No', 'Yes'])
         self.das_summary_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.das_summary_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_summary_cb_bool'))
-        self.das_summary_cb.move(column_three_x2, 850)
+        self.das_summary_cb.move(column_three_x2, 880)
 
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
                                      button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
@@ -1891,6 +1901,8 @@ class USVPlaypenWindow(QMainWindow):
         self.triangulate_arena_points_cb_bool = False
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['display_progress_bool'] = self.display_progress_cb_bool
         self.display_progress_cb_bool = False
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['ransac_bool'] = self.ransac_cb_bool
+        self.ransac_cb_bool = False
         self.processing_input_dict['processing_booleans']['anipose_trm'] = self.translate_rotate_metric_cb_bool
         self.translate_rotate_metric_cb_bool = False
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['save_arena_data_bool'] = self.save_arena_data_cb_bool
@@ -2482,7 +2494,7 @@ def main():
                            'calibration_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False, 'settings_dir_btn_clicked_flag': False, 'recorder_dir_btn_clicked_flag': False,
                            'avisoft_dir_btn_clicked_flag': False, 'coolterm_dir_btn_clicked_flag': False, 'das_summary_cb_bool': False, 'exp_id': 'Bartul', 'vacant_arena_cb_bool': False,
                            'ambient_light_cb_bool': True, 'record_brain_cb_bool': False, 'usv_playback_cb_bool': False, 'chemogenetics_cb_bool': False, 'optogenetics_cb_bool': False,
-                           'brain_lesion_cb_bool': False, 'devocalization_cb_bool': False, 'female_urine_cb_bool': False, 'female_bedding_cb_bool': False}
+                           'brain_lesion_cb_bool': False, 'devocalization_cb_bool': False, 'female_urine_cb_bool': False, 'female_bedding_cb_bool': False, 'ransac_cb_bool': False}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

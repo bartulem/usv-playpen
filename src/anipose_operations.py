@@ -313,7 +313,7 @@ class ConvertTo3D:
                                       calib=calibration_toml_file,
                                       frames=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction']),
                                       excluded_views=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['excluded_views']),
-                                      ransac=True,
+                                      ransac=self.input_parameter_dict['conduct_anipose_triangulation']['ransac_bool'],
                                       fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
                                       disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
                                       constraints=self.input_parameter_dict['conduct_anipose_triangulation']['rigid_body_constraints'],
