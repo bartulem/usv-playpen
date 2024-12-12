@@ -1740,7 +1740,6 @@ class USVPlaypenWindow(QMainWindow):
         self.destination_win_global =  ','.join(self.exp_settings_dict['recording_files_destination_win'])
 
         self.processing_input_dict['send_email']['Messenger']['experimenter'] = f'{self.exp_id}'
-        self.processing_input_dict['send_email']['Messenger']['toml_file_loc'] = self.config_dir_global
 
     def _combo_box_prior_transformed_tracking_data(self, index, variable_id=None):
         if index == 0:
