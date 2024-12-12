@@ -6,8 +6,8 @@ recording_files_destination_linux = [ "/home/labadmin/falkner/Bartul/Data",]
 recording_files_destination_win = [ "F:\\Bartul\\Data", "M:\\Bartul\\Data",]
 conduct_audio_recording = true
 conduct_tracking_calibration = false
-calibration_duration = 5
-video_session_duration = 20
+calibration_duration = "5"
+video_session_duration = "20"
 disable_ethernet = true
 ethernet_network = "Slot01 x8 Port 1"
 

@@ -1647,7 +1647,28 @@ class USVPlaypenWindow(QMainWindow):
 
     def _save_record_two_labels_func(self):
         for variable in self.default_audio_settings.keys():
-            self.exp_settings_dict['audio'][f'{variable}'] = getattr(self, variable).text()
+            if variable in self.exp_settings_dict['audio'].keys():
+                if variable == 'used_mics' or variable == 'cpu_affinity':
+                    self.exp_settings_dict['audio'][f'{variable}'] = [int(x) for x in getattr(self, variable).text().split(',')]
+                elif variable == 'cpu_priority':
+                    self.exp_settings_dict['audio'][f'{variable}'] = getattr(self, variable).text()
+                else:
+                    self.exp_settings_dict['audio'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+            elif variable in self.exp_settings_dict['audio']['general'].keys():
+                self.exp_settings_dict['audio']['general'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+            elif variable in self.exp_settings_dict['audio']['screen_position'].keys():
+                self.exp_settings_dict['audio']['screen_position'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+            elif variable in self.exp_settings_dict['audio']['devices'].keys():
+                self.exp_settings_dict['audio']['devices'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+            elif variable in self.exp_settings_dict['audio']['mics_config'].keys():
+                if variable == 'ditctime':
+                    self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = getattr(self, variable).text()
+                else:
+                    self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+            elif variable in self.exp_settings_dict['audio']['monitor'].keys():
+                self.exp_settings_dict['audio']['monitor'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+            elif variable in self.exp_settings_dict['audio']['call'].keys():
+                self.exp_settings_dict['audio']['call'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
 
     def _save_record_three_labels_func(self):
         video_dict_keys = ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial',
@@ -1655,48 +1676,48 @@ class USVPlaypenWindow(QMainWindow):
                            'species_entry', 'strain_entry', 'cage_entry', 'subject_entry', 'dob_entry',
                            'sex_entry', 'weight_entry', 'housing_entry', 'implant_entry', 'virus_entry', 'notes_entry']
 
-        self.exp_settings_dict['video']['monitor_recording'] = self.monitor_recording_cb_bool
-        self.exp_settings_dict['video']['monitor_specific_camera'] = self.monitor_specific_camera_cb_bool
-        self.exp_settings_dict['video']['delete_post_copy'] = self.delete_post_copy_cb_bool
+        self.exp_settings_dict['video']['general']['monitor_recording'] = self.monitor_recording_cb_bool
+        self.exp_settings_dict['video']['general']['monitor_specific_camera'] = self.monitor_specific_camera_cb_bool
+        self.exp_settings_dict['video']['general']['delete_post_copy'] = self.delete_post_copy_cb_bool
 
-        self.exp_settings_dict['video']['vacant_arena'] = self.vacant_arena_cb_bool
-        self.exp_settings_dict['video']['ambient_light'] = self.ambient_light_cb_bool
-        self.exp_settings_dict['video']['record_brain'] = self.record_brain_cb_bool
-        self.exp_settings_dict['video']['usv_playback'] = self.usv_playback_cb_bool
-        self.exp_settings_dict['video']['chemogenetics'] = self.chemogenetics_cb_bool
-        self.exp_settings_dict['video']['optogenetics'] = self.optogenetics_cb_bool
-        self.exp_settings_dict['video']['brain_lesion'] = self.brain_lesion_cb_bool
-        self.exp_settings_dict['video']['devocalization'] = self.devocalization_cb_bool
-        self.exp_settings_dict['video']['female_urine'] = self.female_urine_cb_bool
-        self.exp_settings_dict['video']['female_bedding'] = self.female_bedding_cb_bool
+        self.exp_settings_dict['video']['metadata']['vacant_arena'] = self.vacant_arena_cb_bool
+        self.exp_settings_dict['video']['metadata']['ambient_light'] = self.ambient_light_cb_bool
+        self.exp_settings_dict['video']['metadata']['record_brain'] = self.record_brain_cb_bool
+        self.exp_settings_dict['video']['metadata']['usv_playback'] = self.usv_playback_cb_bool
+        self.exp_settings_dict['video']['metadata']['chemogenetics'] = self.chemogenetics_cb_bool
+        self.exp_settings_dict['video']['metadata']['optogenetics'] = self.optogenetics_cb_bool
+        self.exp_settings_dict['video']['metadata']['brain_lesion'] = self.brain_lesion_cb_bool
+        self.exp_settings_dict['video']['metadata']['devocalization'] = self.devocalization_cb_bool
+        self.exp_settings_dict['video']['metadata']['female_urine'] = self.female_urine_cb_bool
+        self.exp_settings_dict['video']['metadata']['female_bedding'] = self.female_bedding_cb_bool
 
-        self.exp_settings_dict['video']['recording_frame_rate'] = self.cameras_frame_rate.value()
-        self.exp_settings_dict['video']['calibration_frame_rate'] = self.calibration_frame_rate.value()
+        self.exp_settings_dict['video']['general']['recording_frame_rate'] = self.cameras_frame_rate.value()
+        self.exp_settings_dict['video']['general']['calibration_frame_rate'] = self.calibration_frame_rate.value()
 
-        self.exp_settings_dict['video']['exposure_time_21372316'] = self.exposure_time_21372316.value()
-        self.exp_settings_dict['video']['gain_21372316'] = self.gain_21372316.value()
-        self.exp_settings_dict['video']['exposure_time_21372315'] = self.exposure_time_21372315.value()
-        self.exp_settings_dict['video']['gain_21372315'] = self.gain_21372315.value()
-        self.exp_settings_dict['video']['exposure_time_21369048'] = self.exposure_time_21369048.value()
-        self.exp_settings_dict['video']['gain_21369048'] = self.gain_21369048.value()
-        self.exp_settings_dict['video']['exposure_time_22085397'] = self.exposure_time_22085397.value()
-        self.exp_settings_dict['video']['gain_22085397'] = self.gain_22085397.value()
-        self.exp_settings_dict['video']['exposure_time_21241563'] = self.exposure_time_21241563.value()
-        self.exp_settings_dict['video']['gain_21241563'] = self.gain_21241563.value()
+        self.exp_settings_dict['video']['cameras_config']['21372316']['exposure_time'] = self.exposure_time_21372316.value()
+        self.exp_settings_dict['video']['cameras_config']['21372316']['gain'] = self.gain_21372316.value()
+        self.exp_settings_dict['video']['cameras_config']['21372315']['exposure_time'] = self.exposure_time_21372315.value()
+        self.exp_settings_dict['video']['cameras_config']['21372315']['gain'] = self.gain_21372315.value()
+        self.exp_settings_dict['video']['cameras_config']['21369048']['exposure_time'] = self.exposure_time_21369048.value()
+        self.exp_settings_dict['video']['cameras_config']['21369048']['gain'] = self.gain_21369048.value()
+        self.exp_settings_dict['video']['cameras_config']['22085397']['exposure_time'] = self.exposure_time_22085397.value()
+        self.exp_settings_dict['video']['cameras_config']['22085397']['gain'] = self.gain_22085397.value()
+        self.exp_settings_dict['video']['cameras_config']['21241563']['exposure_time'] = self.exposure_time_21241563.value()
+        self.exp_settings_dict['video']['cameras_config']['21241563']['gain'] = self.gain_21241563.value()
 
         for variable in video_dict_keys:
             if variable != 'expected_cameras':
                 if variable == 'recording_codec':
-                    self.exp_settings_dict['video'][variable] = str(getattr(self, variable))
+                    self.exp_settings_dict['video']['general'][variable] = str(getattr(self, variable))
                 elif variable == 'browser' or variable == 'specific_camera_serial':
-                    self.exp_settings_dict['video'][variable] = getattr(self, variable).text()
+                    self.exp_settings_dict['video']['general'][variable] = getattr(self, variable).text()
                 elif variable == 'notes_entry':
-                    self.exp_settings_dict['video'][variable[:-6]] = getattr(self, variable).toPlainText()
+                    self.exp_settings_dict['video']['metadata'][variable[:-6]] = getattr(self, variable).toPlainText()
                 else:
-                    self.exp_settings_dict['video'][variable[:-6]] = getattr(self, variable).text()
+                    self.exp_settings_dict['video']['metadata'][variable[:-6]] = getattr(self, variable).text()
             else:
                 self.expected_cameras = self.expected_cameras.text()
-                self.exp_settings_dict['video'][variable] = self.expected_cameras.split(',')
+                self.exp_settings_dict['video']['general'][variable] = self.expected_cameras.split(',')
 
     def _save_variables_based_on_exp_id(self):
 
