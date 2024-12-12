@@ -1599,7 +1599,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['processing_booleans']['anipose_trm'] = self.translate_rotate_metric_cb_bool
         self.translate_rotate_metric_cb_bool = False
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['save_transformed_data'] = self.save_transformed_data
-        self.save_transformed_data = False
+        self.save_transformed_data = "animal"
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['delete_original_h5'] = self.delete_original_h5_cb_bool
         self.delete_original_h5_cb_bool = True
         self.processing_input_dict['processing_booleans']['das_infer'] = self.das_inference_cb_bool
@@ -1745,7 +1745,7 @@ class USVPlaypenWindow(QMainWindow):
         if index == 0:
             self.__dict__[variable_id] = 'animal'
         else:
-            self.__dict__[variable_id] = 'mouse'
+            self.__dict__[variable_id] = 'arena'
 
     def _combo_box_prior_name(self, index, variable_id=None):
         for idx in range(len(self.exp_id_list)):
@@ -2151,8 +2151,7 @@ def main():
                            'calibration_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False,
                            'recorder_dir_btn_clicked_flag': False, 'avisoft_base_dir_btn_clicked_flag': False, 'coolterm_base_dir_btn_clicked_flag': False,
                            'processing_pc_choice': _processing_settings['send_email']['Messenger']['processing_pc_choice'],
-                           'npx_file_type': 'ap', 'device_receiving_input': 'm',
-                           'save_transformed_data': _processing_settings['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['save_transformed_data'],
+                           'npx_file_type': 'ap', 'device_receiving_input': 'm', 'save_transformed_data': 'animal',
                            'conduct_video_concatenation_cb_bool': False, 'conduct_video_fps_change_cb_bool': False,
                            'conduct_multichannel_conversion_cb_bool': False, 'crop_wav_cam_cb_bool': False, 'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False,
                            'conduct_sync_cb_bool': False, 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,

@@ -15,7 +15,7 @@
     "sleap_h5_conversion": false,
     "anipose_calibration": false,
     "anipose_triangulation": false,
-    "anipose_trm": false,
+    "anipose_trm": true,
     "das_infer": false,
     "das_summarize": false
   },
@@ -59,14 +59,16 @@
       },
       "translate_rotate_metric": {
         "original_arena_file_loc": "",
-        "save_transformed_data": false,
+        "save_transformed_data": "animal",
         "delete_original_h5": true,
         "static_reference_len": 0.615
       }
     }
   },
   "preprocess_data": {
-    "root_directories": []
+    "root_directories": [
+      ""
+    ]
   },
   "extract_phidget_data": {
     "Gatherer": {
