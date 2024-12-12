@@ -207,7 +207,7 @@ class USVPlaypenWindow(QMainWindow):
         recording_files_destination_linux_label = QLabel('File destination(s) Linux:', self.Record)
         recording_files_destination_linux_label.setFont(QFont(self.font_id, 12))
         recording_files_destination_linux_label.move(5, 130)
-        self.recording_files_destination_linux = QLineEdit(f'{self.destination_linux_global}', self.Record)
+        self.recording_files_destination_linux = QLineEdit(self.destination_linux_global, self.Record)
         self.recording_files_destination_linux.setFont(QFont(self.font_id, 10))
         self.recording_files_destination_linux.setStyleSheet('QLineEdit { width: 490px; }')
         self.recording_files_destination_linux.move(220, 130)
@@ -215,7 +215,7 @@ class USVPlaypenWindow(QMainWindow):
         recording_files_destination_windows_label = QLabel('File destination(s) Windows:', self.Record)
         recording_files_destination_windows_label.setFont(QFont(self.font_id, 12))
         recording_files_destination_windows_label.move(5, 160)
-        self.recording_files_destination_windows = QLineEdit(f'{self.destination_win_global}', self.Record)
+        self.recording_files_destination_windows = QLineEdit(self.destination_win_global, self.Record)
         self.recording_files_destination_windows.setFont(QFont(self.font_id, 10))
         self.recording_files_destination_windows.setStyleSheet('QLineEdit { width: 490px; }')
         self.recording_files_destination_windows.move(220, 160)
@@ -1626,24 +1626,24 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.email_recipients = self.email_recipients.split(',')
 
-        self.exp_settings_dict['general']['recording_files_destination_linux'] = self.recording_files_destination_linux
-        self.exp_settings_dict['general']['recording_files_destination_win'] = self.recording_files_destination_windows
-        self.exp_settings_dict['general']['video_session_duration'] = self.video_session_duration
-        self.exp_settings_dict['general']['calibration_duration'] = self.calibration_session_duration
-        self.exp_settings_dict['general']['ethernet_network'] = self.ethernet_network
+        self.exp_settings_dict['recording_files_destination_linux'] = self.recording_files_destination_linux
+        self.exp_settings_dict['recording_files_destination_win'] = self.recording_files_destination_windows
+        self.exp_settings_dict['video_session_duration'] = self.video_session_duration
+        self.exp_settings_dict['calibration_duration'] = self.calibration_session_duration
+        self.exp_settings_dict['ethernet_network'] = self.ethernet_network
 
-        self.exp_settings_dict['general']['conduct_tracking_calibration'] = self.conduct_tracking_calibration_cb_bool
-        self.exp_settings_dict['general']['conduct_audio_recording'] = self.conduct_audio_cb_bool
-        self.exp_settings_dict['general']['disable_ethernet'] = self.disable_ethernet_cb_bool
+        self.exp_settings_dict['conduct_tracking_calibration'] = self.conduct_tracking_calibration_cb_bool
+        self.exp_settings_dict['conduct_audio_recording'] = self.conduct_audio_cb_bool
+        self.exp_settings_dict['disable_ethernet'] = self.disable_ethernet_cb_bool
 
         if not self.recorder_dir_btn_clicked_flag:
-            self.exp_settings_dict['general']['avisoft_recorder_exe'] = self.recorder_settings_edit.text()
+            self.exp_settings_dict['avisoft_recorder_exe'] = self.recorder_settings_edit.text()
 
         if not self.avisoft_base_dir_btn_clicked_flag:
-            self.exp_settings_dict['general']['avisoft_basedirectory'] = self.avisoft_base_edit.text()
+            self.exp_settings_dict['avisoft_basedirectory'] = self.avisoft_base_edit.text()
 
         if not self.coolterm_base_dir_btn_clicked_flag:
-            self.exp_settings_dict['general']['coolterm_basedirectory'] = self.coolterm_base_edit.text()
+            self.exp_settings_dict['coolterm_basedirectory'] = self.coolterm_base_edit.text()
 
     def _save_record_two_labels_func(self):
         for variable in self.default_audio_settings.keys():
@@ -1868,7 +1868,7 @@ class USVPlaypenWindow(QMainWindow):
             for one_connection in next_win_connect:
                 self.button_map['Next'].clicked.connect(one_connection)
         else:
-            if self.settings_dict['general']['conduct_tracking_calibration']:
+            if self.exp_settings_dict['conduct_tracking_calibration']:
                 self.button_map['Calibrate'] = QPushButton(QIcon(calibrate_icon), 'Calibrate', class_option)
                 self.button_map['Calibrate'].move(next_button_x_pos-95, button_pos_y)
                 self.button_map['Calibrate'].setFont(QFont(self.font_id, 8))
@@ -1945,7 +1945,7 @@ class USVPlaypenWindow(QMainWindow):
         self.button_map['Previous'].setEnabled(False)
         self.button_map['Main'].setEnabled(False)
         self.button_map['Record'].setEnabled(False)
-        if self.settings_dict['general']['conduct_tracking_calibration']:
+        if self.exp_settings_dict['conduct_tracking_calibration']:
             self.button_map['Calibrate'].setEnabled(False)
 
     def _open_centroid_dialog(self):
@@ -2006,11 +2006,11 @@ class USVPlaypenWindow(QMainWindow):
             recorder_dir_name_path = Path(recorder_dir_name)
             self.recorder_settings_edit.setText(str(recorder_dir_name_path))
             if os.name == 'nt':
-                self.settings_dict['general']['avisoft_recorder_exe'] = str(recorder_dir_name_path).replace(os.sep, '\\')
+                self.exp_settings_dict['avisoft_recorder_exe'] = str(recorder_dir_name_path).replace(os.sep, '\\')
             else:
-                self.settings_dict['general']['avisoft_recorder_exe'] = str(recorder_dir_name_path)
+                self.exp_settings_dict['avisoft_recorder_exe'] = str(recorder_dir_name_path)
         else:
-            self.settings_dict['general']['avisoft_recorder_exe'] = f'{self.avisoft_rec_dir_global}'
+            self.exp_settings_dict['avisoft_recorder_exe'] = f'{self.avisoft_rec_dir_global}'
 
     def _open_avisoft_dialog(self):
         self.avisoft_base_dir_btn_clicked_flag = True
@@ -2022,11 +2022,11 @@ class USVPlaypenWindow(QMainWindow):
             avisoft_dir_name_path = Path(avisoft_dir_name)
             self.avisoft_base_edit.setText(str(avisoft_dir_name_path))
             if os.name == 'nt':
-                self.settings_dict['general']['avisoft_basedirectory'] = str(avisoft_dir_name_path).replace(os.sep, '\\') + '\\'
+                self.exp_settings_dict['avisoft_basedirectory'] = str(avisoft_dir_name_path).replace(os.sep, '\\') + '\\'
             else:
-                self.settings_dict['general']['avisoft_basedirectory'] = str(avisoft_dir_name_path)
+                self.exp_settings_dict['avisoft_basedirectory'] = str(avisoft_dir_name_path)
         else:
-            self.settings_dict['general']['avisoft_basedirectory'] = f'{self.avisoft_base_dir_global}'
+            self.exp_settings_dict['avisoft_basedirectory'] = f'{self.avisoft_base_dir_global}'
 
     def _open_coolterm_dialog(self):
         self.coolterm_base_dir_btn_clicked_flag = True
@@ -2038,11 +2038,11 @@ class USVPlaypenWindow(QMainWindow):
             coolterm_dir_name_path = Path(coolterm_dir_name)
             self.coolterm_base_edit.setText(str(coolterm_dir_name_path))
             if os.name == 'nt':
-                self.settings_dict['general']['coolterm_basedirectory'] = str(coolterm_dir_name_path).replace(os.sep, '\\')
+                self.exp_settings_dict['coolterm_basedirectory'] = str(coolterm_dir_name_path).replace(os.sep, '\\')
             else:
-                self.settings_dict['general']['coolterm_basedirectory'] = str(coolterm_dir_name_path)
+                self.exp_settings_dict['coolterm_basedirectory'] = str(coolterm_dir_name_path)
         else:
-            self.settings_dict['general']['coolterm_basedirectory'] = f'{self.coolterm_base_dir_global}'
+            self.exp_settings_dict['coolterm_basedirectory'] = f'{self.coolterm_base_dir_global}'
 
     def _open_anipose_calibration_dialog(self):
         self.calibration_file_loc_btn_clicked_flag = True
