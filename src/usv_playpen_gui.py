@@ -1628,8 +1628,8 @@ class USVPlaypenWindow(QMainWindow):
 
         self.exp_settings_dict['recording_files_destination_linux'] = self.recording_files_destination_linux
         self.exp_settings_dict['recording_files_destination_win'] = self.recording_files_destination_windows
-        self.exp_settings_dict['video_session_duration'] = self.video_session_duration
-        self.exp_settings_dict['calibration_duration'] = self.calibration_session_duration
+        self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.video_session_duration)
+        self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.calibration_session_duration)
         self.exp_settings_dict['ethernet_network'] = self.ethernet_network
 
         self.exp_settings_dict['conduct_tracking_calibration'] = self.conduct_tracking_calibration_cb_bool
