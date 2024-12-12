@@ -6,7 +6,7 @@
     "conduct_audio_cropping": false,
     "conduct_audio_to_mmap": false,
     "conduct_audio_filtering": false,
-    "conduct_hpss": true,
+    "conduct_hpss": false,
     "conduct_audio_video_sync": false,
     "conduct_ephys_video_sync": false,
     "conduct_ephys_file_chaining": false,
@@ -59,7 +59,7 @@
       },
       "translate_rotate_metric": {
         "original_arena_file_loc": "",
-        "save_transformed_data": "animal",
+        "save_transformed_data": false,
         "delete_original_h5": true,
         "static_reference_len": 0.615
       }
@@ -178,10 +178,10 @@
       ],
       "processing_pc_choice": "165B Audio",
       "experimenter": "Bartul",
-      "toml_file_loc": "/home/bmimica/Insync/mimica.bartul@gmail.com/Google_Drive/PNI/code/usv_playpen/src/_config",
       "send_message": {
         "receivers": []
-      }
+      },
+      "toml_file_loc": "/home/bmimica/Insync/mimica.bartul@gmail.com/Google_Drive/PNI/code/usv_playpen/src/_config"
     }
   },
   "synchronize_files": {

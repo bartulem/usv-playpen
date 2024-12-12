@@ -776,7 +776,7 @@ class USVPlaypenWindow(QMainWindow):
         self.sleap_conda.setStyleSheet('QLineEdit { width: 85px; }')
         self.sleap_conda.move(275, 365)
 
-        self.centroid_model_edit = QLineEdit('', self.ProcessSettings)
+        self.centroid_model_edit = QLineEdit(f"{self.processing_input_dict['prepare_cluster_job']['centroid_model_path']}", self.ProcessSettings)
         self.centroid_model_edit.setPlaceholderText('SLEAP centroid model directory')
         self.centroid_model_edit.setFont(QFont(self.font_id, 10))
         self.centroid_model_edit.setStyleSheet('QLineEdit { width: 260px; }')
@@ -788,7 +788,7 @@ class USVPlaypenWindow(QMainWindow):
         self.centroid_model_btn_clicked_flag = False
         centroid_model_btn.clicked.connect(self._open_centroid_dialog)
 
-        self.centered_instance_model_edit = QLineEdit('', self.ProcessSettings)
+        self.centered_instance_model_edit = QLineEdit(f"{self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path']}", self.ProcessSettings)
         self.centered_instance_model_edit.setPlaceholderText('SLEAP centered instance model directory')
         self.centered_instance_model_edit.setFont(QFont(self.font_id, 10))
         self.centered_instance_model_edit.setStyleSheet('QLineEdit { width: 260px; }')

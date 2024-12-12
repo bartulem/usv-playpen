@@ -70,13 +70,13 @@ class Operator:
         ----------
         This method converts every spike sample time into seconds,
         relative to tracking start and splits spikes back into
-        individual sessions.
+        individual sessions (if binary files were concatenated).
 
         NB: If you have recorded multiple sessions in one day,
         it is sufficient to put only one root directory for that day,
         e.g., the first one. The script will find EPHYS root directory,
-        and split spikes from all probes  into sessions based on the
-        inputs in the changepoints json file.
+        and split spikes from all probes into sessions based on the
+        inputs in the changepoints JSON file.
         ----------
 
         Parameter
@@ -346,7 +346,7 @@ class Operator:
         split due to a size limitation.
 
         NB: You need to install sox: https://sourceforge.net/projects/sox/files/sox/
-            and add the sox directory to your system PATH prior to running this
+        and add the sox directory to your system PATH prior to running this.
         ----------
 
         Parameters
@@ -482,7 +482,7 @@ class Operator:
         This method filters audio files via Sox.
 
         NB: You need to install sox: https://sourceforge.net/projects/sox/files/sox/
-            and add the sox directory to your system PATH prior to running this
+        and add the sox directory to your system PATH prior to running this.
 
         It applies a sinc kaiser-windowed low-pass, high-pass, band-pass, or band-reject filter
         to the signal. The freqHP and freqLP parameters give the frequencies of the 6dB points
