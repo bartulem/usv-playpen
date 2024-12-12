@@ -371,7 +371,7 @@ class Operator:
         # split multichannel files
         for mc_audio_file in mc_audio_files.keys():
             for ch in range(mc_audio_files[mc_audio_file]['wav_data'].shape[1]):
-                wavfile.write(filename=f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{mc_audio_file[:-4]}_ch{ch + 1:02d}",
+                wavfile.write(filename=f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{mc_audio_file[:-4]}_ch{ch + 1:02d}.wav",
                               rate=int(mc_audio_files[mc_audio_file]['sampling_rate']),
                               data=mc_audio_files[mc_audio_file]['wav_data'][:, ch])
 
