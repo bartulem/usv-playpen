@@ -318,7 +318,7 @@ class ConvertTo3D:
                                       disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
                                       constraints=self.input_parameter_dict['conduct_anipose_triangulation']['rigid_body_constraints'],
                                       constraints_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weak_body_constraints'],
-                                      scale_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['scale_smooth'],
+                                      scale_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['smooth_scale'],
                                       scale_length=self.input_parameter_dict['conduct_anipose_triangulation']['weight_rigid'],
                                       scale_length_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weight_weak'],
                                       reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'],
