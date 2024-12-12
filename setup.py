@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.7.5',
+    version='0.7.6',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -20,7 +20,7 @@ setup(
     keywords='neuroscience, mouse, usv, behavior',
     packages=['usv_playpen', 'usv_playpen._tests'],
     package_dir={'usv_playpen': 'src'},
-    package_data={'usv_playpen': ['img/*.png', '*.css', '*.mplstyle', 'fonts/*.ttf']},
+    package_data={'usv_playpen': ['img/*.png', 'fonts/*.ttf', '_config/*', '_parameter_settings/*.json']},
     include_package_data=True,
     python_requires="==3.10.*",
     description='GUI to conduct experiments w/ multichannel audio and video acquisition',

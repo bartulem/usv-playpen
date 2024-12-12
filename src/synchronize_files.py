@@ -20,7 +20,7 @@ from collections import Counter
 from datetime import datetime
 from numba import njit
 from scipy.io import wavfile
-from .file_loader import DataLoader
+from .load_audio_files import DataLoader
 
 @pims.pipeline
 def modify_memmap_array(frame, mmap_arr, frame_idx,
@@ -138,7 +138,7 @@ class Synchronizer:
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
-        calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
+        calibrated_sr_config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/calibrated_sample_rates_imec.ini'))
 
         # load info from camera_frame_count_dict
         with open(sorted(glob.glob(pathname=f'{self.root_directory}{os.sep}**{os.sep}*_camera_frame_count_dict.json', recursive=True))[0], 'r') as frame_count_infile:

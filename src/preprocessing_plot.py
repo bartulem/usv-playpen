@@ -11,7 +11,7 @@ import os
 import wave
 from imgstore import new_for_filename
 
-plt.style.use(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'usv_playpen.mplstyle'))
+plt.style.use(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/usv_playpen.mplstyle'))
 
 
 class SummaryPlotter:

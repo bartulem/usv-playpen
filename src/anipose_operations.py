@@ -358,12 +358,10 @@ class ConvertTo3D:
         Contains the following set of parameters
             original_arena_file_loc (str)
                 Directory of original 3D arena file.
-            mouse_rotate_bool (bool)
-                If true, rotates the 3D points to match the arena; defaults to True.
             static_reference (int/ float)
                 The length of the static spatial reference in meters; defaults to 0.615 (rail-to-rail edge distance).
-            save_arena_3d (bool)
-                If true, saves the 3D arena data to file; defaults to False.
+            save_transformed_data (str)
+                If 'arena', saves the 3D arena data to file; defaults to 'animal'.
             delete_original_h5 (bool)
                 If true, deletes the original 3D points file; defaults to True.
         ----------
@@ -386,7 +384,7 @@ class ConvertTo3D:
         with h5py.File(arena_data_original_h5, mode='r') as h5_file_arena:
             arena_data = np.array(h5_file_arena['tracks'], dtype='float64')
 
-        arena_nodes = extract_skeleton_nodes(skeleton_loc=f"{self.exp_settings_dict['config_settings_directory']}{os.sep}playpen_skeleton.json",
+        arena_nodes = extract_skeleton_nodes(skeleton_loc=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/playpen_skeleton.json'),
                                              skeleton_arena_bool=True)
 
         # convert unit of measurement to meters
@@ -449,16 +447,16 @@ class ConvertTo3D:
                                                            arena_data[0, 0, arena_nodes.index('South'), 1] - .025,
                                                            0]
 
-        if self.input_parameter_dict['translate_rotate_metric']['save_arena_data_bool']:
+        if self.input_parameter_dict['translate_rotate_metric']['save_transformed_data'] == 'arena':
             with h5py.File(name=f"{arena_data_original_h5_dir}{os.sep}{arena_data_original_h5_file[:-3]}_translated_rotated_metric.h5", mode='w') as h5_file_write:
                 h5_file_write.create_dataset(name='tracks', data=arena_data)
                 h5_file_write.create_dataset(name='node_names', data=arena_nodes)
 
-        if self.input_parameter_dict['translate_rotate_metric']['save_mouse_data_bool']:
+        elif self.input_parameter_dict['translate_rotate_metric']['save_transformed_data'] == 'animal':
             with h5py.File(name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5", mode='r') as h5_file_mouse:
                 mouse_data = np.array(h5_file_mouse['tracks'], dtype='float64')
 
-            mouse_nodes = extract_skeleton_nodes(skeleton_loc=f"{self.exp_settings_dict['config_settings_directory']}{os.sep}mouse_skeleton.json",
+            mouse_nodes = extract_skeleton_nodes(skeleton_loc=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/mouse_skeleton.json'),
                                                  skeleton_arena_bool=False)
 
             mouse_data = mouse_data * metric_conversion_coefficient

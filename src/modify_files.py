@@ -1,12 +1,14 @@
 """
 @author: bartulem
-Different functions for manipulating files:
+Different functions for modifying files:
 (1a) break from multi to single channel
 (1b) perform harmonic-percussive source separation
 (1c) perform band-pass filtering
 (1d) concatenate single channel audio (e.g., wav) files
 (2a) concatenate video (e.g., mp4) files
 (2b) change video (e.g., mp4) sampling rate (fps)
+(3a) concatenate e-phys binary files
+(3b) split manually curated clusters into sessions
 """
 
 from PyQt6.QtTest import QTest
@@ -23,8 +25,8 @@ import subprocess
 from datetime import datetime
 from imgstore import new_for_filename
 from scipy.io import wavfile
-from .file_loader import DataLoader
-from .file_writer import DataWriter
+from tqdm import tqdm
+from .load_audio_files import DataLoader
 from .os_utils import configure_path
 
 
@@ -40,15 +42,15 @@ class Operator:
                  exp_settings_dict=None, message_output=None):
         if input_parameter_dict is None:
             with open('input_parameters.json', 'r') as json_file:
-                self.input_parameter_dict = json.load(json_file)['file_manipulation']['Operator']
+                self.input_parameter_dict = json.load(json_file)['modify_files']['Operator']
                 self.input_parameter_dict_2 = json.load(json_file)['synchronize_files']['Synchronizer']
         else:
-            self.input_parameter_dict = input_parameter_dict['file_manipulation']['Operator']
+            self.input_parameter_dict = input_parameter_dict['modify_files']['Operator']
             self.input_parameter_dict_2 = input_parameter_dict['synchronize_files']['Synchronizer']
 
         if root_directory is None:
             with open('input_parameters.json', 'r') as json_file:
-                self.root_directory = json.load(json_file)['file_manipulation']['root_directory']
+                self.root_directory = json.load(json_file)['modify_files']['root_directory']
         else:
             self.root_directory = root_directory
 
@@ -100,7 +102,7 @@ class Operator:
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
-        calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
+        calibrated_sr_config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/calibrated_sample_rates_imec.ini'))
 
         for one_root_dir in self.root_directory:
             for ephys_dir in sorted(glob.glob(pathname=f"{one_root_dir.replace('Data', 'EPHYS')[:-7]}_imec*", recursive=True)):
@@ -119,6 +121,7 @@ class Operator:
                 # get info about session start
                 se_dict = {}
                 esr_dict = {}
+                frame_least_dict = {}
                 root_dict = {}
                 unit_count_dict = {'noise': 0, 'unsorted': 0}
                 for session_key in binary_files_info.keys():
@@ -127,7 +130,9 @@ class Operator:
 
                     # load info from camera_frame_count_dict
                     with open(sorted(glob.glob(f"{binary_files_info[session_key]['root_directory']}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0], 'r') as frame_count_infile:
-                        esr_dict[session_key] = json.load(frame_count_infile)['median_empirical_camera_sr']
+                        camera_frame_info = json.load(frame_count_infile)
+                        esr_dict[session_key] = camera_frame_info['median_empirical_camera_sr']
+                        frame_least_dict[session_key] = camera_frame_info['total_frame_number_least']
                         root_dict[session_key] = binary_files_info[session_key]['root_directory']
 
                     if any([np.isnan(value) for value in binary_files_info[session_key]['tracking_start_end']]):
@@ -146,12 +151,12 @@ class Operator:
                     cluster_info = pd.read_csv(filepath_or_buffer=f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}cluster_info.tsv",
                                                sep='\t')
                 else:
-                    self.message_output("Phy2 curation has not been done for this session, no cluster_info file exists.")
+                    self.message_output("Phy2 curation has not been done for this session, no cluster_info.tsv file exists.")
                     continue
 
                 QTest.qWait(1000)
 
-                for idx in range(cluster_info.shape[0]):
+                for idx in tqdm(range(cluster_info.shape[0])):
                     if cluster_info.loc[idx, 'group'] == 'good' or cluster_info.loc[idx, 'group'] == 'mua':
 
                         # collect all spikes for any given cluster
@@ -163,7 +168,8 @@ class Operator:
                             session_spikes_sec = ((spike_events[(spike_events >= se_dict[session_key][0]) & (spike_events < se_dict[session_key][1])] - se_dict[session_key][0]) /
                                                   float(calibrated_sr_config['CalibratedHeadStages'][binary_files_info[session_key]['headstage_sn']]))
 
-                            session_spikes_fps = np.floor(session_spikes_sec * esr_dict[session_key], dtype='int32')
+                            session_spikes_fps = np.floor(session_spikes_sec * esr_dict[session_key])
+                            session_spikes_fps[session_spikes_fps == frame_least_dict[session_key]] = frame_least_dict[session_key]-1
 
                             session_spikes = np.vstack((session_spikes_sec, session_spikes_fps))
 
@@ -223,7 +229,7 @@ class Operator:
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
-        calibrated_sr_config.read(f"{self.exp_settings_dict['config_settings_directory']}{os.sep}calibrated_sample_rates_imec.ini")
+        calibrated_sr_config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/calibrated_sample_rates_imec.ini'))
 
         # create list of directories to save concatenated files in
         concat_save_dir = []
@@ -365,11 +371,10 @@ class Operator:
         # split multichannel files
         for mc_audio_file in mc_audio_files.keys():
             for ch in range(mc_audio_files[mc_audio_file]['wav_data'].shape[1]):
-                DataWriter(wav_data=mc_audio_files[mc_audio_file]['wav_data'][:, ch],
-                           input_parameter_dict={'wave_write_loc': f"{self.root_directory}{os.sep}audio{os.sep}temp",
-                                                 'write_wavefile_data': {'file_name': f"{mc_audio_file[:-4]}_ch{ch + 1:02d}",
-                                                                         'sampling_rate': mc_audio_files[mc_audio_file]['sampling_rate'] / 1e3,
-                                                                         'library': 'scipy'}}).write_wavefile_data()
+                wavfile.write(filename=f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{mc_audio_file[:-4]}_ch{ch + 1:02d}",
+                              rate=int(mc_audio_files[mc_audio_file]['sampling_rate']),
+                              data=mc_audio_files[mc_audio_file]['wav_data'][:, ch])
+
         # release dict from memory
         mc_audio_files = 0
 

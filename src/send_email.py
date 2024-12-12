@@ -53,13 +53,11 @@ class Messenger:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(f"{self.exp_settings_dict['config_settings_directory']}"
-                              f"{os.sep}email_config.ini"):
+        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/email_config.ini')):
             self.message_output("E-mail config file not found. Try again!")
             sys.exit()
         else:
-            config.read(f"{self.exp_settings_dict['config_settings_directory']}"
-                        f"{os.sep}email_config.ini")
+            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/email_config.ini'))
             return config['email']['email_address'], config['email']['email_password']
 
     def send_message(self, subject, message):
@@ -101,7 +99,7 @@ class Messenger:
                 msg.set_content(message)
 
                 # send email
-                with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+                with smtplib.SMTP_SSL(host='smtp.gmail.com', port=465) as smtp:
                     smtp.login(email_address, email_password)
                     smtp.send_message(msg)
                 return True
