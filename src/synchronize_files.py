@@ -93,7 +93,6 @@ class Synchronizer:
                 self.input_parameter_dict = json.load(json_file)['synchronize_files']['Synchronizer']
         else:
             self.input_parameter_dict = input_parameter_dict['synchronize_files']['Synchronizer']
-            self.input_parameter_dict_random = input_parameter_dict['random_pulses']['generate_truly_random_seed']
 
         if root_directory is None:
             with open('input_parameters.json', 'r') as json_file:
