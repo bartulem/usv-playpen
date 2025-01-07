@@ -4,11 +4,8 @@ GUI to run behavioral experiments, data processing and analyses.
 """
 
 import ast
-import configparser
 import ctypes
-import datetime
 import json
-import math
 import os
 import platform
 import sys
@@ -327,7 +324,7 @@ class USVPlaypenWindow(QMainWindow):
                                        'rwfpegel': f"{self.exp_settings_dict['audio']['mics_config']['rwfpegel']}", 'rwdutycycle': f"{self.exp_settings_dict['audio']['mics_config']['rwdutycycle']}",
                                        'rwtimeconstant': f"{self.exp_settings_dict['audio']['mics_config']['rwtimeconstant']}", 'rwholdtime': f"{self.exp_settings_dict['audio']['mics_config']['rwholdtime']}",
                                        'fpegel': f"{self.exp_settings_dict['audio']['mics_config']['fpegel']}", 'energy': f"{self.exp_settings_dict['audio']['mics_config']['energy']}",
-                                       'frange': f"{self.exp_settings_dict['audio']['mics_config']['frange']}", 'c': f"{self.exp_settings_dict['audio']['mics_config']['frange']}",
+                                       'frange': f"{self.exp_settings_dict['audio']['mics_config']['frange']}", 'entropyb': f"{self.exp_settings_dict['audio']['mics_config']['entropyb']}",
                                        'entropy': f"{self.exp_settings_dict['audio']['mics_config']['entropy']}", 'increment': f"{self.exp_settings_dict['audio']['mics_config']['increment']}",
                                        'fu': f"{self.exp_settings_dict['audio']['mics_config']['fu']}", 'fo': f"{self.exp_settings_dict['audio']['mics_config']['fo']}",
                                        'pretrigger': f"{self.exp_settings_dict['audio']['mics_config']['pretrigger']}", 'mint': f"{self.exp_settings_dict['audio']['mics_config']['mint']}",
