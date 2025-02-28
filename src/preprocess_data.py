@@ -5,6 +5,7 @@ Code to preprocess data after running experiments.
 
 import json
 import os
+import pathlib
 import traceback
 from datetime import datetime
 from .anipose_operations import ConvertTo3D
@@ -23,13 +24,13 @@ class Stylist:
                  exp_settings_dict=None, message_output=None):
 
         if root_directories is None:
-            with open('input_parameters.json', 'r') as json_file:
-                self.root_directory = json.load(json_file)['preprocess_data']['root_directories']
+            with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
+                self.root_directories = json.load(json_file)['preprocess_data']['root_directories']
         else:
             self.root_directories = root_directories
 
         if input_parameter_dict is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)
         else:
             self.input_parameter_dict = input_parameter_dict
@@ -113,7 +114,7 @@ class Stylist:
 
         # analyze data in each root directory separately
         else:
-            for one_directory in self.root_directories:
+            for one_directory_idx, one_directory in enumerate(self.root_directories):
                 try:
                     self.message_output(f"Preprocessing data in {one_directory} started at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
@@ -175,7 +176,7 @@ class Stylist:
                                  input_parameter_dict=self.input_parameter_dict,
                                  message_output=self.message_output).filter_audio_files()
 
-                    # # # vstack audio files in memmap
+                    # # # stack audio files in memmap
                     if self.input_parameter_dict['processing_booleans']['conduct_audio_to_mmap']:
                         Operator(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,
@@ -201,10 +202,14 @@ class Stylist:
 
                     # # # conduct coordinate transformation of Anipose data
                     if self.input_parameter_dict['processing_booleans']['anipose_trm']:
-                        ConvertTo3D(root_directory=one_directory,
-                                    input_parameter_dict=self.input_parameter_dict,
-                                    message_output=self.message_output,
-                                    exp_settings_dict=self.exp_settings_dict).translate_rotate_metric()
+                        if (self.input_parameter_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['triangulate_arena_points_bool'] or
+                                len(self.input_parameter_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['experimental_codes']) == len(self.root_directories)):
+                            ConvertTo3D(root_directory=one_directory,
+                                        input_parameter_dict=self.input_parameter_dict,
+                                        message_output=self.message_output,
+                                        exp_settings_dict=self.exp_settings_dict).translate_rotate_metric(session_idx=one_directory_idx)
+                        else:
+                            self.message_output("Please provide the experimental code for each session in the root directory, their number does not match.")
 
                     # # # conduct DAS inference on audio data
                     if self.input_parameter_dict['processing_booleans']['das_infer']:

@@ -1,0 +1,127 @@
+{
+  "male_colors": [
+    "#9AC0CD",
+    "#8CA252"
+  ],
+  "female_colors": [
+    "#FF6347",
+    "#B851B4"
+  ],
+  "visualize_booleans": {
+    "make_behavioral_tuning_figures_bool": false,
+    "make_behavioral_videos_bool": true
+  },
+  "visualize_data": {
+    "root_directories": [
+      ""
+    ]
+  },
+  "send_email": {
+    "visualizations_pc_list": [
+      "A84E Backup",
+      "A84E Main",
+      "165B Audio",
+      "165B Neural",
+      "A84I Main"
+    ],
+    "visualizations_pc_choice": "",
+    "experimenter": "Bartul",
+    "send_message": {
+      "receivers": ""
+    }
+  },
+  "neuronal_tuning_figures": {
+    "smoothing_sd": 1.0,
+    "occ_threshold": 1.0
+  },
+  "make_behavioral_videos": {
+    "arena_directory": "",
+    "speaker_audio_file": "",
+    "sequence_audio_file": "",
+    "animate_bool": true,
+    "video_start_time": 0.0,
+    "video_duration": 2.0,
+    "plot_theme": "light",
+    "save_fig": true,
+    "view_angle": "side",
+    "side_azimuth_start": 0,
+    "rotate_side_view_bool": true,
+    "rotation_speed": 5,
+    "history_bool": false,
+    "speaker_bool": false,
+    "spectrogram_bool": true,
+    "spectrogram_ch": 0,
+    "raster_plot_bool": false,
+    "raster_selection_criteria": {
+      "brain_areas": [],
+      "other": [
+        "good"
+      ]
+    },
+    "raster_special_units": [
+      ""
+    ],
+    "spike_sound_bool": false,
+    "beh_features_bool": false,
+    "beh_features_to_plot": [],
+    "special_beh_features": [],
+    "general_figure_specs": {
+      "fig_format": "png",
+      "fig_dpi": 600,
+      "animation_writer": "ffmpeg",
+      "animation_format": "mp4"
+    },
+    "arena_figure_specs": {
+      "arena_node_connections_bool": false,
+      "arena_axes_lw": 1.0,
+      "arena_mics_lw": 0.75,
+      "arena_mics_opacity": 0.25,
+      "plot_corners_bool": false,
+      "corner_size": 1.0,
+      "corner_opacity": 1.0,
+      "plot_mesh_walls_bool": true,
+      "mesh_opacity": 0.1,
+      "active_mic_bool": false,
+      "inactive_mic_bool": true,
+      "inactive_mic_color": "#898989",
+      "text_fontsize": 10,
+      "speaker_opacity": 0.5
+    },
+    "mouse_figure_specs": {
+      "node_bool": true,
+      "node_size": 3.5,
+      "node_opacity": 1.0,
+      "node_lw": 0.5,
+      "node_connection_lw": 1.0,
+      "body_opacity": 0.85,
+      "history_point": "Head",
+      "history_span_sec": 5,
+      "history_ls": "-",
+      "history_lw": 0.75
+    },
+    "subplot_specs": {
+      "beh_features_window_size": 10,
+      "raster_window_size": 1,
+      "raster_lw": 0.1,
+      "raster_ll": 0.9,
+      "spectrogram_cbar_bool": true,
+      "spectrogram_plot_window_size": 1,
+      "spectrogram_power_limit": [
+        -60,
+        0
+      ],
+      "spectrogram_frequency_limit": [
+        30000,
+        125000
+      ],
+      "spectrogram_yticks": [
+        50000,
+        100000
+      ],
+      "spectrogram_stft_nfft": 512,
+      "plot_usv_segments_bool": true,
+      "usv_segments_ypos": 120000,
+      "usv_segments_lw": 1.25
+    }
+  }
+}

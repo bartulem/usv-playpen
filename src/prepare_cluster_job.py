@@ -14,13 +14,13 @@ class PrepareClusterJob:
                  message_output=None):
 
         if input_parameter_dict is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['prepare_cluster_job']
         else:
             self.input_parameter_dict = input_parameter_dict['prepare_cluster_job']
 
         if root_directory is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['prepare_cluster_job']['root_directory']
         else:
             self.root_directory = root_directory
@@ -56,14 +56,23 @@ class PrepareClusterJob:
         """
 
         if platform.system() == 'Windows':
-            spock_converted_centroid_model_path = self.input_parameter_dict['centroid_model_path'].replace('\\', '/').replace('F:', '/mnt/cup/labs/falkner')
-            spock_converted_centered_instance_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('\\', '/').replace('F:', '/mnt/cup/labs/falkner')
+            spock_converted_first_model_path = self.input_parameter_dict['centroid_model_path'].replace('\\', '/').replace('F:', '/mnt/cup/labs/falkner')
+            if self.input_parameter_dict['centered_instance_model_path'] == '':
+                spock_converted_second_model_path = ''
+            else:
+                spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('\\', '/').replace('F:', '/mnt/cup/labs/falkner')
         elif platform.system() == 'Linux':
-            spock_converted_centroid_model_path = self.input_parameter_dict['centroid_model_path'].replace('mnt', 'mnt/cup/labs')
-            spock_converted_centered_instance_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('mnt', 'mnt/cup/labs')
+            spock_converted_first_model_path = self.input_parameter_dict['centroid_model_path'].replace('mnt', 'mnt/cup/labs')
+            if self.input_parameter_dict['centered_instance_model_path'] == '':
+                spock_converted_second_model_path = ''
+            else:
+                spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('mnt', 'mnt/cup/labs')
         else:
-            spock_converted_centroid_model_path = self.input_parameter_dict['centroid_model_path'].replace('Volumes', 'mnt/cup/labs')
-            spock_converted_centered_instance_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('Volumes', 'mnt/cup/labs')
+            spock_converted_first_model_path = self.input_parameter_dict['centroid_model_path'].replace('Volumes', 'mnt/cup/labs')
+            if self.input_parameter_dict['centered_instance_model_path'] == '':
+                spock_converted_second_model_path = ''
+            else:
+                spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('Volumes', 'mnt/cup/labs')
 
         with open(f"{self.input_parameter_dict['inference_root_dir']}{os.sep}job_list.txt", mode='w') as job_list_file:
             for root_dir in self.root_directory:
@@ -83,4 +92,7 @@ class PrepareClusterJob:
                                     if video_dir_item.endswith('.mp4'):
                                         video_path = f"{spock_converted_root_dir}/video/{video_processed_dir}/{video_dir}/{video_dir_item}"
                                         slp_result_path = f"{spock_converted_root_dir}/video/{video_processed_dir}/{video_dir}/{video_dir_item[:-4]}.slp"
-                                        job_list_file.write(f"{spock_converted_centroid_model_path} {spock_converted_centered_instance_model_path} {video_path} {slp_result_path}\n")
+                                        if spock_converted_second_model_path == '':
+                                            job_list_file.write(f"{spock_converted_first_model_path} {video_path} {slp_result_path}\n")
+                                        else:
+                                            job_list_file.write(f"{spock_converted_first_model_path} {spock_converted_second_model_path} {video_path} {slp_result_path}\n")

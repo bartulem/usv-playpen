@@ -69,8 +69,6 @@ class Messenger:
 
         Parameters
         ----------
-        receivers
-            List of e-mail addresses to notify.
         subject
             E-mail subject field.
         message

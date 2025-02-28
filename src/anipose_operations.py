@@ -10,6 +10,7 @@ import json
 import math
 import numpy as np
 import os
+import pathlib
 import sleap_anipose
 import subprocess
 from datetime import datetime
@@ -23,29 +24,38 @@ def find_mouse_names(root_directory):
             img_store = new_for_filename(f"{root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml")
             user_meta_data = img_store.user_metadata
 
-            metadata_key_dict = {}
-            for one_key in user_meta_data.keys():
-                if one_key.endswith('mouse_ID_m1'):
-                    metadata_key_dict['mouse_ID_m1'] = one_key
-                elif one_key.endswith('mouse_ID_m2'):
-                    metadata_key_dict['mouse_ID_m2'] = one_key
-                elif one_key.endswith('cage_ID_m1'):
-                    metadata_key_dict['cage_ID_m1'] = one_key
-                elif one_key.endswith('cage_ID_m2'):
-                    metadata_key_dict['cage_ID_m2'] = one_key
+            if 'cage' in user_meta_data.keys() and 'subject' in user_meta_data.keys():
+                for cage, subject in zip(user_meta_data['cage'].split(','), user_meta_data['subject'].split(',')):
+                    if subject != '':
+                        track_names.append(f"{cage}_{subject}")
+                    else:
+                        track_names.append(f"{cage}")
+                break
 
-            if user_meta_data[metadata_key_dict['mouse_ID_m1']] != '':
-                track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}_{user_meta_data[metadata_key_dict['mouse_ID_m1']]}")
             else:
-                track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}")
+                metadata_key_dict = {}
+                for one_key in user_meta_data.keys():
+                    if one_key.endswith('mouse_ID_m1'):
+                        metadata_key_dict['mouse_ID_m1'] = one_key
+                    elif one_key.endswith('mouse_ID_m2'):
+                        metadata_key_dict['mouse_ID_m2'] = one_key
+                    elif one_key.endswith('cage_ID_m1'):
+                        metadata_key_dict['cage_ID_m1'] = one_key
+                    elif one_key.endswith('cage_ID_m2'):
+                        metadata_key_dict['cage_ID_m2'] = one_key
 
-            if user_meta_data[metadata_key_dict['mouse_ID_m2']] != '':
-                if user_meta_data[metadata_key_dict['cage_ID_m2']] != '':
-                    track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}_{user_meta_data[metadata_key_dict['mouse_ID_m2']]}")
-            else:
-                if user_meta_data[metadata_key_dict['cage_ID_m2']] != '':
-                    track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}")
-            break
+                if user_meta_data[metadata_key_dict['mouse_ID_m1']] != '':
+                    track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}_{user_meta_data[metadata_key_dict['mouse_ID_m1']]}")
+                else:
+                    track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}")
+
+                if user_meta_data[metadata_key_dict['mouse_ID_m2']] != '':
+                    if user_meta_data[metadata_key_dict['cage_ID_m2']] != '':
+                        track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}_{user_meta_data[metadata_key_dict['mouse_ID_m2']]}")
+                else:
+                    if user_meta_data[metadata_key_dict['cage_ID_m2']] != '':
+                        track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}")
+                break
 
     return track_names
 
@@ -118,13 +128,13 @@ class ConvertTo3D:
     def __init__(self, root_directory=None, input_parameter_dict=None,
                  exp_settings_dict=None, message_output=None):
         if input_parameter_dict is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['anipose_operations']['ConvertTo3D']
         else:
             self.input_parameter_dict = input_parameter_dict['anipose_operations']['ConvertTo3D']
 
         if root_directory is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['anipose_operations']['root_directory']
         else:
             self.root_directory = root_directory
@@ -346,7 +356,7 @@ class ConvertTo3D:
             if none_hyperparam_bool:
                 self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
 
-    def translate_rotate_metric(self):
+    def translate_rotate_metric(self, **kwargs):
         """
         Description
         ----------
@@ -377,6 +387,12 @@ class ConvertTo3D:
         self.message_output(f"Translation, rotation and metric conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(2000)
 
+        session_idx = kwargs['session_idx'] if 'session_idx' in kwargs.keys() and isinstance(kwargs['session_idx'], int) else 0
+
+        # get recording frame rate
+        with open(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}video", "*_camera_frame_count_dict.json*"))[0], 'r') as frame_count_infile:
+            recording_frame_rate = json.load(frame_count_infile)["median_empirical_camera_sr"]
+
         # load original arena data
         arena_data_original_h5 = glob.glob(pathname=f"{self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc']}{os.sep}**{os.sep}*_points3d.h5*", recursive=True)[0]
         arena_data_original_h5_dir = os.path.dirname(arena_data_original_h5)
@@ -384,7 +400,7 @@ class ConvertTo3D:
         with h5py.File(arena_data_original_h5, mode='r') as h5_file_arena:
             arena_data = np.array(h5_file_arena['tracks'], dtype='float64')
 
-        arena_nodes = extract_skeleton_nodes(skeleton_loc=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/playpen_skeleton.json'),
+        arena_nodes = extract_skeleton_nodes(skeleton_loc=pathlib.Path(__file__).parent / '_config/playpen_skeleton.json',
                                              skeleton_arena_bool=True)
 
         # convert unit of measurement to meters
@@ -430,21 +446,24 @@ class ConvertTo3D:
         z_theta_extra = -math.pi / 4
         arena_data = rotate_z(arena_data_temp, z_theta_extra)
 
-        # correct corners to be the outer edge of rail instead of inside corner
-        arena_data[0, 0, arena_nodes.index('East'), :] = [arena_data[0, 0, arena_nodes.index('East'), 0] + .025,
-                                                          arena_data[0, 0, arena_nodes.index('East'), 1] + .025,
+        # take same distance to all corners and correct corners to be the outer edge of rail instead of inside corner
+        arena_center_out_distance = np.max([np.abs(np.nanmin(arena_data[0, 0, [arena_nodes.index('North'), arena_nodes.index('West'), arena_nodes.index('South'), arena_nodes.index('East')], :2])),
+                                            np.nanmax(arena_data[0, 0, [arena_nodes.index('North'), arena_nodes.index('West'), arena_nodes.index('South'), arena_nodes.index('East')], :2])])
+
+        arena_data[0, 0, arena_nodes.index('East'), :] = [(np.sign(arena_data[0, 0, arena_nodes.index('East'), 0]) * arena_center_out_distance) + .025,
+                                                          (np.sign(arena_data[0, 0, arena_nodes.index('East'), 1]) * arena_center_out_distance) + .025,
                                                           0]
 
-        arena_data[0, 0, arena_nodes.index('West'), :] = [arena_data[0, 0, arena_nodes.index('West'), 0] - .025,
-                                                          arena_data[0, 0, arena_nodes.index('West'), 1] - .025,
+        arena_data[0, 0, arena_nodes.index('West'), :] = [(np.sign(arena_data[0, 0, arena_nodes.index('West'), 0]) * arena_center_out_distance) - .025,
+                                                          (np.sign(arena_data[0, 0, arena_nodes.index('West'), 1]) * arena_center_out_distance) - .025,
                                                           0]
 
-        arena_data[0, 0, arena_nodes.index('North'), :] = [arena_data[0, 0, arena_nodes.index('North'), 0] - .025,
-                                                           arena_data[0, 0, arena_nodes.index('North'), 1] + .025,
+        arena_data[0, 0, arena_nodes.index('North'), :] = [(np.sign(arena_data[0, 0, arena_nodes.index('North'), 0]) * arena_center_out_distance) - .025,
+                                                           (np.sign(arena_data[0, 0, arena_nodes.index('North'), 1]) * arena_center_out_distance) + .025,
                                                            0]
 
-        arena_data[0, 0, arena_nodes.index('South'), :] = [arena_data[0, 0, arena_nodes.index('South'), 0] + .025,
-                                                           arena_data[0, 0, arena_nodes.index('South'), 1] - .025,
+        arena_data[0, 0, arena_nodes.index('South'), :] = [(np.sign(arena_data[0, 0, arena_nodes.index('South'), 0]) * arena_center_out_distance) + .025,
+                                                           (np.sign(arena_data[0, 0, arena_nodes.index('South'), 1]) * arena_center_out_distance) - .025,
                                                            0]
 
         if self.input_parameter_dict['translate_rotate_metric']['save_transformed_data'] == 'arena':
@@ -452,11 +471,14 @@ class ConvertTo3D:
                 h5_file_write.create_dataset(name='tracks', data=arena_data)
                 h5_file_write.create_dataset(name='node_names', data=arena_nodes)
 
+            self.message_output(f"Triangulated arena file has shape: {arena_data.shape}")
+            QTest.qWait(1000)
+
         elif self.input_parameter_dict['translate_rotate_metric']['save_transformed_data'] == 'animal':
             with h5py.File(name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5", mode='r') as h5_file_mouse:
                 mouse_data = np.array(h5_file_mouse['tracks'], dtype='float64')
 
-            mouse_nodes = extract_skeleton_nodes(skeleton_loc=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/mouse_skeleton.json'),
+            mouse_nodes = extract_skeleton_nodes(skeleton_loc=pathlib.Path(__file__).parent / '_config/mouse_skeleton.json',
                                                  skeleton_arena_bool=False)
 
             mouse_data = mouse_data * metric_conversion_coefficient
@@ -485,6 +507,11 @@ class ConvertTo3D:
                 h5_file_write.create_dataset(name='tracks', data=mouse_data)
                 h5_file_write.create_dataset(name='node_names', data=mouse_nodes)
                 h5_file_write.create_dataset(name='track_names', data=mouse_track_names)
+                h5_file_write.create_dataset(name='experimental_code', data=self.input_parameter_dict['translate_rotate_metric']['experimental_codes'][session_idx])
+                h5_file_write.create_dataset(name='recording_frame_rate', data=recording_frame_rate)
+
+            self.message_output(f"Triangulated mouse file has shape: {mouse_data.shape}")
+            QTest.qWait(1000)
 
             if self.input_parameter_dict['translate_rotate_metric']['delete_original_h5']:
                 os.remove(f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5")

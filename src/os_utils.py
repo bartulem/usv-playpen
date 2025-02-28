@@ -5,8 +5,20 @@ Configure path to the OS in use.
 
 import platform
 
+def find_base_path() -> str:
+    if platform.system() == 'Windows':
+        base_path = 'F:\\'
+    elif platform.system() == 'Darwin':
+        base_path = '/Volumes/falkner'
+    elif platform.system() == 'Linux':
+        base_path = '/mnt/falkner'
+    else:
+        base_path = None
 
-def configure_path(pa):
+    return base_path
+
+
+def configure_path(pa: str = None) -> str:
     """
     Description
     ----------

@@ -15,7 +15,7 @@
     "sleap_h5_conversion": false,
     "anipose_calibration": false,
     "anipose_triangulation": false,
-    "anipose_trm": true,
+    "anipose_trm": false,
     "das_infer": false,
     "das_summarize": false
   },
@@ -61,14 +61,13 @@
         "original_arena_file_loc": "",
         "save_transformed_data": "animal",
         "delete_original_h5": true,
-        "static_reference_len": 0.615
+        "static_reference_len": 0.615,
+        "experimental_codes": []
       }
     }
   },
   "preprocess_data": {
-    "root_directories": [
-      ""
-    ]
+    "root_directories": []
   },
   "extract_phidget_data": {
     "Gatherer": {
@@ -160,9 +159,9 @@
       "22085397",
       "21241563"
     ],
-    "inference_root_dir": "",
-    "centroid_model_path": "",
-    "centered_instance_model_path": ""
+    "inference_root_dir": "/mnt/falkner/Bartul/SLEAP/inference",
+    "centroid_model_path": "/mnt/falkner/Bartul/SLEAP/models/250203_153343.centroid_N=38642",
+    "centered_instance_model_path": "/mnt/falkner/Bartul/SLEAP/models/250203_153343.centered_instance_N=38642"
   },
   "preprocessing_plot": {
     "SummaryPlotter": {
@@ -178,7 +177,7 @@
         "165B Neural",
         "A84I Main"
       ],
-      "processing_pc_choice": "165B Audio",
+      "processing_pc_choice": "",
       "experimenter": "Bartul",
       "send_message": {
         "receivers": []
@@ -214,7 +213,7 @@
     "FindMouseVocalizations": {
       "das_command_line_inference": {
         "das_conda_env_name": "das",
-        "model_directory": "",
+        "model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
         "model_name_base": "20240325_073951",
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,

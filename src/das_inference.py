@@ -17,7 +17,7 @@ import subprocess
 from tqdm import tqdm
 from datetime import datetime
 
-plt.style.use(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/usv_playpen.mplstyle'))
+plt.style.use(pathlib.Path(__file__).parent / '_config/usv_playpen.mplstyle')
 
 
 class FindMouseVocalizations:
@@ -25,13 +25,13 @@ class FindMouseVocalizations:
     def __init__(self, root_directory=None, input_parameter_dict=None,
                  exp_settings_dict=None, message_output=None):
         if input_parameter_dict is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['usv_inference']['FindMouseVocalizations']
         else:
             self.input_parameter_dict = input_parameter_dict['usv_inference']['FindMouseVocalizations']
 
         if root_directory is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['usv_inference']['root_directory']
         else:
             self.root_directory = root_directory
