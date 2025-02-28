@@ -42,7 +42,7 @@ setup(
                       'imgstore',
                       'librosa==0.10.2',
                       'matplotlib==3.10.0',
-                      'noisereduce==3.0.3'
+                      'noisereduce==3.0.3',
                       'numpy==1.24.4',
                       'numba==0.58.1',
                       'opencv-contrib-python==4.6.0.66',
