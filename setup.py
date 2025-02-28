@@ -36,7 +36,7 @@ setup(
             'usv-playpen = usv_playpen.usv_playpen_gui:main'
         ]
     },
-    install_requires=['astropy==7.0.1',
+    install_requires=['astropy==6.1.7',
                       'av==10.0.0',
                       'h5py==3.11.0',
                       'imgstore',
