@@ -1,5 +1,5 @@
 usv-playpen
-==========
+===========
 
 GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels),
 multi-channel audio (Avisoft) and multi-camera video (Loopbio) acquisition.
