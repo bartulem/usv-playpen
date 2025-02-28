@@ -12,7 +12,7 @@ setup(
         'Development Status :: Alpha',
         'Intended Audience :: Experimental Neuroscientists',
         'Topic :: Running ana Analyzing Neural and Behavioral Experiments',
-        'License :: OSI Approved :: MIT License',
+        'License :: OSI Approved :: GNU General Public License v3.0',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3 :: Only',
