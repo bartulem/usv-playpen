@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QWidget,
 )
+from PyQt6.QtTest import QTest
 from .analyze_data import Analyst
 from .visualize_data import Visualizer
 from .behavioral_experiments import ExperimentController
@@ -2990,11 +2991,9 @@ def main():
 
 
     splash = QSplashScreen(QPixmap(splash_icon))
+    splash.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
     splash.show()
-    for i in range(0, 101):
-        t = time.time()
-        while time.time() < t + 0.025:
-            usv_playpen_app.processEvents()
+    QTest.qWait(5000)
 
     initial_values_dict = {'exp_id': _toml['video']['metadata']['experimenter'],
                            'conduct_audio_cb_bool': _toml['conduct_audio_recording'], 'conduct_tracking_calibration_cb_bool': _toml['conduct_tracking_calibration'],
