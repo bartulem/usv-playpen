@@ -1,0 +1,72 @@
+{
+  "analyses_booleans": {
+    "compute_behavioral_features_bool": false,
+    "compute_behavioral_tuning_bool": false,
+    "create_usv_playback_wav_bool": false,
+    "frequency_shift_audio_segment_bool": false
+  },
+  "compute_behavioral_features": {
+    "head_points": [
+      "Head",
+      "Ear_R",
+      "Ear_L",
+      "Nose"
+    ],
+    "tail_points": [
+      "TTI",
+      "Tail_0",
+      "Tail_1",
+      "Tail_2",
+      "TailTip"
+    ],
+    "back_root_points": [
+      "Neck",
+      "Trunk",
+      "TTI"
+    ],
+    "derivative_bins": 10
+  },
+  "analyze_data": {
+    "root_directories": []
+  },
+  "send_email": {
+    "analyses_pc_list": [
+      "A84E Backup",
+      "A84E Main",
+      "165B Audio",
+      "165B Neural",
+      "A84I Main"
+    ],
+    "analyses_pc_choice": "A84E Main",
+    "experimenter": "Bartul",
+    "send_message": {
+      "receivers": ""
+    }
+  },
+  "create_usv_playback_wav": {
+    "num_usv_files": 1,
+    "total_usv_number": 10000,
+    "ipi_duration": 0.015,
+    "wav_sampling_rate": 250,
+    "playback_snippets_dir": "usv_playback_snippets_loudness_corrected"
+  },
+  "frequency_shift_audio_segment": {
+    "fs_audio_dir": "hpss_filtered",
+    "fs_device_id": "m",
+    "fs_channel_id": 1,
+    "fs_wav_sampling_rate": 250,
+    "fs_sequence_start": 900.0,
+    "fs_sequence_duration": 2.0,
+    "fs_octave_shift": -3,
+    "fs_volume_adjustment": true
+  },
+  "calculate_neuronal_tuning_curves": {
+    "temporal_offsets": [
+      0
+    ],
+    "n_shuffles": 1000,
+    "total_bin_num": 36,
+    "n_spatial_bins": 196,
+    "spatial_scale_cm": 32
+  }
+}

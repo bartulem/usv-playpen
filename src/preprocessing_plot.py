@@ -8,23 +8,24 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import pathlib
 import wave
 from imgstore import new_for_filename
 
-plt.style.use(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/usv_playpen.mplstyle'))
+plt.style.use(pathlib.Path(__file__).parent / '_config/usv_playpen.mplstyle')
 
 
 class SummaryPlotter:
 
     def __init__(self, input_parameter_dict=None, root_directory=None):
         if root_directory is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['preprocessing_plot']['root_directory']
         else:
             self.root_directory = root_directory
 
         if input_parameter_dict is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['preprocessing_plot']['SummaryPlotter']
         else:
             self.input_parameter_dict = input_parameter_dict

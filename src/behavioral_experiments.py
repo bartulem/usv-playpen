@@ -325,7 +325,7 @@ class ExperimentController:
         Description
         ----------
         This method checks whether the system is ready for recording and if so,
-        conducts a recording with the designated parameters, and copies the recorded
+        conducts a recording with the designated parameters, and moves the recorded
         files to the network drive (see below for details).
 
         NB: the data cannot be acquired until Motif, Avisoft USGH recorder and CoolTerm
@@ -370,7 +370,7 @@ class ExperimentController:
         Directory structure w/ "audio", "sync" and "video" subdirectories.
         The "audio" subdirectory contains "original" and "original_mc" subdirectories,
         the "sync" subdirectory contains .txt files (serial monitor output),
-        and the "video" subdirectory contains individual camera video files (.mp4),
+        and the "video" subdirectory contains individual camera video (.mp4) and metadata files,
         each in its own subdirectory.
         ----------
         """

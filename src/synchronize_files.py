@@ -89,13 +89,13 @@ class Synchronizer:
     def __init__(self, root_directory=None, input_parameter_dict=None,
                  message_output=None, exp_settings_dict=None):
         if input_parameter_dict is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['synchronize_files']['Synchronizer']
         else:
             self.input_parameter_dict = input_parameter_dict['synchronize_files']['Synchronizer']
 
         if root_directory is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['synchronize_files']['root_directory']
         else:
             self.root_directory = root_directory

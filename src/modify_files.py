@@ -41,7 +41,7 @@ class Operator:
     def __init__(self, root_directory=None, input_parameter_dict=None,
                  exp_settings_dict=None, message_output=None):
         if input_parameter_dict is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['modify_files']['Operator']
                 self.input_parameter_dict_2 = json.load(json_file)['synchronize_files']['Synchronizer']
         else:
@@ -49,7 +49,7 @@ class Operator:
             self.input_parameter_dict_2 = input_parameter_dict['synchronize_files']['Synchronizer']
 
         if root_directory is None:
-            with open('input_parameters.json', 'r') as json_file:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['modify_files']['root_directory']
         else:
             self.root_directory = root_directory
@@ -168,7 +168,7 @@ class Operator:
                             session_spikes_sec = ((spike_events[(spike_events >= se_dict[session_key][0]) & (spike_events < se_dict[session_key][1])] - se_dict[session_key][0]) /
                                                   float(calibrated_sr_config['CalibratedHeadStages'][binary_files_info[session_key]['headstage_sn']]))
 
-                            session_spikes_fps = np.floor(session_spikes_sec * esr_dict[session_key])
+                            session_spikes_fps = np.round(session_spikes_sec * esr_dict[session_key])
                             session_spikes_fps[session_spikes_fps == frame_least_dict[session_key]] = frame_least_dict[session_key]-1
 
                             session_spikes = np.vstack((session_spikes_sec, session_spikes_fps))
@@ -744,7 +744,7 @@ class Operator:
                     camera_frame_count_dict[sub_directory.split('.')[-1]] = (total_frame_num, esr)
                     if total_frame_num == last_frame_num:
                         self.message_output(f"Camera {sub_directory.split('.')[-1]} has {total_frame_num} total frames, no dropped frames, "
-                                            f"video duration of {video_duration:.4f} seconds, and empirical sampling rate of {esr} fps.")
+                                            f"video duration of {video_duration:.4f} seconds, and sampling rate of {esr} fps.")
                         if total_frame_num < total_frame_number:
                             total_frame_number = total_frame_num
                         if video_duration < total_video_time:
