@@ -53,11 +53,12 @@ class Visualizer:
         """
 
         Messenger(message_output=self.message_output,
-                  receivers=self.input_parameter_dict['send_email']['send_message']['receivers']).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is busy, do NOT attempt to remote in!",
-                                                                                                               message=f"Data visualizations in progress, started at "
-                                                                                                                       f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
-                                                                                                                       f"and run by @{self.input_parameter_dict['send_email']['experimenter']}. "
-                                                                                                                       f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+                  receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
+                  exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is busy, do NOT attempt to remote in!",
+                                                       message=f"Data visualizations in progress, started at "
+                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
+                                                               f"and run by @{self.input_parameter_dict['send_email']['experimenter']}. "
+                                                               f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
         for one_directory in self.root_directories:
             try:
@@ -87,9 +88,10 @@ class Visualizer:
 
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
-                  receivers=self.input_parameter_dict['send_email']['send_message']['receivers']).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is available again, visualizations have been completed",
-                                                                                                               message=f"Data visualizations have been completed at "
-                                                                                                                       f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
-                                                                                                                       f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
-                                                                                                                       f"You will be notified about further PC usage "
-                                                                                                                       f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+                  receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
+                  exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is available again, visualizations have been completed",
+                                                       message=f"Data visualizations have been completed at "
+                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
+                                                               f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
+                                                               f"You will be notified about further PC usage "
+                                                               f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")

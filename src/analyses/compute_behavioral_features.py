@@ -269,7 +269,7 @@ def calculate_speed(tracked_points_array: np.ndarray = None,
     mouse_centroid = np.nanmean(tracked_points_array, axis=1)
     frame_differential_centroid = mouse_centroid[1:, :] - mouse_centroid[:-1, :]
     euclidean_distance_centroid = 100 * np.linalg.norm(frame_differential_centroid, axis=1) / (1 / capture_framerate)
-    speed_centroid = convolve(data=euclidean_distance_centroid,
+    speed_centroid = convolve(euclidean_distance_centroid,
                               kernel=speed_smoothing_kernel,
                               boundary='extend',
                               nan_treatment='interpolate',

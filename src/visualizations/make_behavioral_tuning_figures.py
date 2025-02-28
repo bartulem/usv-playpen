@@ -151,7 +151,7 @@ class RatemapFigureMaker(FeatureZoo):
                                         cbar_height = .04
 
                                         ratemap = cluster_data[offset][feature]['ratemaps'][:, :, 0] / cluster_data[offset][feature]['ratemaps'][:, :, 1]
-                                        ratemap = convolve(data=ratemap,
+                                        ratemap = convolve(ratemap,
                                                            kernel=astropy_kernel_2d,
                                                            boundary='extend',
                                                            nan_treatment='interpolate',
@@ -221,19 +221,19 @@ class RatemapFigureMaker(FeatureZoo):
                                             gs_x += 1
                                     else:
                                         occ_threshold = cluster_data[offset][feature]['ratemaps'][:, 1] > self.visualizations_parameter_dict['neuronal_tuning_figures']['occ_threshold']
-                                        low_end_sh = convolve(data=np.percentile(cluster_data[offset][feature]['sh_counts'], q=.5, axis=0) / cluster_data[offset][feature]['ratemaps'][:, 1],
+                                        low_end_sh = convolve(np.percentile(cluster_data[offset][feature]['sh_counts'], q=.5, axis=0) / cluster_data[offset][feature]['ratemaps'][:, 1],
                                                               kernel=astropy_kernel_1d,
                                                               boundary='extend',
                                                               nan_treatment='interpolate',
                                                               preserve_nan=True)
 
-                                        high_end_sh = convolve(data=np.percentile(cluster_data[offset][feature]['sh_counts'], q=99.5, axis=0) / cluster_data[offset][feature]['ratemaps'][:, 1],
+                                        high_end_sh = convolve(np.percentile(cluster_data[offset][feature]['sh_counts'], q=99.5, axis=0) / cluster_data[offset][feature]['ratemaps'][:, 1],
                                                                kernel=astropy_kernel_1d,
                                                                boundary='extend',
                                                                nan_treatment='interpolate',
                                                                preserve_nan=True)
 
-                                        ratemap = convolve(data=cluster_data[offset][feature]['ratemaps'][:, 0] / cluster_data[offset][feature]['ratemaps'][:, 1],
+                                        ratemap = convolve(cluster_data[offset][feature]['ratemaps'][:, 0] / cluster_data[offset][feature]['ratemaps'][:, 1],
                                                            kernel=astropy_kernel_1d,
                                                            boundary='extend',
                                                            nan_treatment='interpolate',
