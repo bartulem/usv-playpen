@@ -9,9 +9,9 @@ import pathlib
 import traceback
 import warnings
 from .send_email import Messenger
-from src.analyses.compute_behavioral_features import FeatureZoo
-from src.analyses.compute_behavioral_tuning_curves import NeuronalTuning
-from src.analyses.generate_audio_files import AudioGenerator
+from .analyses.compute_behavioral_features import FeatureZoo
+from .analyses.compute_behavioral_tuning_curves import NeuronalTuning
+from .analyses.generate_audio_files import AudioGenerator
 
 warnings.simplefilter('ignore')
 

@@ -18,9 +18,9 @@ from tqdm import tqdm
 import warnings
 from astropy.convolution import convolve
 from astropy.convolution import Gaussian1DKernel, Gaussian2DKernel
-from src.visualizations.auxiliary_plot_functions import create_colormap, choose_animal_colors
-from src.analyses.decode_experiment_label import extract_information
-from src.analyses.compute_behavioral_features import FeatureZoo
+from .auxiliary_plot_functions import create_colormap, choose_animal_colors
+from ..analyses.decode_experiment_label import extract_information
+from ..analyses.compute_behavioral_features import FeatureZoo
 
 plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')
 

@@ -23,8 +23,8 @@ import subprocess
 import warnings
 from typing import Any
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
-from src.os_utils import configure_path
-from src.analyses.decode_experiment_label import extract_information
+from ..os_utils import configure_path
+from ..analyses.decode_experiment_label import extract_information
 
 
 plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')

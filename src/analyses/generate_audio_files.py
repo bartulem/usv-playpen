@@ -15,7 +15,7 @@ import random
 from scipy.io import wavfile
 import subprocess
 from tqdm import tqdm
-from src.os_utils import find_base_path
+from ..os_utils import find_base_path
 
 
 class AudioGenerator:

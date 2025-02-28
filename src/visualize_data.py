@@ -8,8 +8,8 @@ import pathlib
 import traceback
 from datetime import datetime
 from .send_email import Messenger
-from src.visualizations.make_behavioral_tuning_figures import RatemapFigureMaker
-from src.visualizations.make_behavioral_videos import Create3DVideo
+from .visualizations.make_behavioral_tuning_figures import RatemapFigureMaker
+from .visualizations.make_behavioral_videos import Create3DVideo
 
 
 class Visualizer:

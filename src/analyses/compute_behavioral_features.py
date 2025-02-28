@@ -36,7 +36,7 @@ from scipy.optimize import minimize
 from astropy.convolution import convolve
 from astropy.convolution import Gaussian1DKernel
 from typing import Tuple
-from src.visualizations.auxiliary_plot_functions import create_colormap, choose_animal_colors
+from ..visualizations.auxiliary_plot_functions import create_colormap, choose_animal_colors
 from .decode_experiment_label import extract_information
 
 plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')
