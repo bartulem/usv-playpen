@@ -8,3 +8,13 @@ Developed for behavioral recording purposes at the
 2021-25 (Falkner/Murthy labs). Due to proprietary software design and limitations,
 recordings can only be performed on OS Windows. The data processing, analysis
 and visualization branches of the GUI are platform-independent.
+
+.. toctree::
+   :maxdepth: 1
+   :caption: User Guide
+
+   README <README.md>
+   Record
+   Process
+   Analyze
+   Visualize
