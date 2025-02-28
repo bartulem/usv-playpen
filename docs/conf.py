@@ -2,8 +2,8 @@
 # https://stackoverflow.com/questions/66495200/is-it-possible-to-include-external-rst-files-in-my-documentation
 from urllib.request import urlretrieve
 urlretrieve (
-    "https://github.com/bartulem/usv-playpen/blob/main/README.md",
-    "README.md"
+    url = "https://github.com/bartulem/usv-playpen/blob/main/README.md",
+    filename = "README.md"
 )
 
 # -- Project information -----------------------------------------------------
@@ -12,7 +12,7 @@ urlretrieve (
 project = 'usv-playpen'
 copyright = '2025, Bartul Mimica'
 author = 'Bartul Mimica (documentation)'
-release = '0.0.1'
+release = '0.8.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
