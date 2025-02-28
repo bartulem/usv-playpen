@@ -19,16 +19,13 @@ release = '0.0.1'
 
 extensions = [
     'sphinx.ext.doctest',
-    'myst_parser',            # Use markdown files in addition to .rst
-    'nbsphinx',               # Render notebooks
+    'myst_parser',
+    'nbsphinx',
     'sphinx_rtd_theme',
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
     'sphinx.ext.viewcode'
     ]
-
-autoapi_dirs = ['.../usv-playpen']
-master_doc = 'index'
 
 # Notebooks will be displayed even if they include errors
 nbsphinx_allow_errors = True
@@ -49,17 +46,14 @@ html_theme = 'sphinx_rtd_theme'
 
 html_theme_options = {
     'canonical_url': '',
-    'analytics_id': 'UA-XXXXXXX-1',  #  Provided by Google in your dashboard
     'logo_only': False,
     'display_version': True,
     'prev_next_buttons_location': 'top',
     'style_external_links': False,
     'style_nav_header_background': 'Gray',
-    # Toc options
     'collapse_navigation': True,
     'sticky_navigation': True,
     'navigation_depth': 4,
     'includehidden': True,
     'titles_only': False
 }
-html_static_path = ['_static']
