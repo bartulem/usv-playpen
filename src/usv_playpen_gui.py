@@ -1686,7 +1686,13 @@ class USVPlaypenWindow(QMainWindow):
 
         self.analyses_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
         self.analyses_input_dict['send_email']['analyses_pc_choice'] = str(getattr(self, 'analyses_pc_choice'))
-        self.analyses_input_dict['send_email']['send_message']['receivers'] = self.pc_usage_analyses.text()
+
+        self.pc_usage_analyses = self.pc_usage_analyses.text()
+        if len(self.pc_usage_analyses) == 0:
+            self.pc_usage_analyses = []
+        else:
+            self.pc_usage_analyses = self.pc_usage_analyses.split(',')
+        self.analyses_input_dict['send_email']['send_message']['receivers'] = self.pc_usage_analyses
 
         self.analyses_input_dict['analyses_booleans']['compute_behavioral_features_bool'] = self.compute_behavioral_features_cb_bool
         self.compute_behavioral_features_cb_bool = False
@@ -2024,7 +2030,13 @@ class USVPlaypenWindow(QMainWindow):
 
         self.visualizations_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
         self.visualizations_input_dict['send_email']['visualizations_pc_choice'] = str(getattr(self, 'visualizations_pc_choice'))
-        self.visualizations_input_dict['send_email']['send_message']['receivers'] = self.pc_usage_visualizations.text()
+
+        self.pc_usage_visualizations = self.pc_usage_visualizations.text()
+        if len(self.pc_usage_visualizations) == 0:
+            self.pc_usage_visualizations = []
+        else:
+            self.pc_usage_visualizations = self.pc_usage_visualizations.split(',')
+        self.visualizations_input_dict['send_email']['send_message']['receivers'] = self.pc_usage_visualizations
 
         self.visualizations_input_dict['visualize_booleans']['make_behavioral_tuning_figures_bool'] = self.plot_behavioral_tuning_cb_bool
         self.plot_behavioral_tuning_cb_bool = False
