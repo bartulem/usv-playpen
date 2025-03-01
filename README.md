@@ -1,10 +1,6 @@
 # usv-playpen v0.8.0
 
-<br>
-<div align="center">
-  <img src="src/img/usv_playpen_gui.png">
-</div>
-<hr>
+![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
 
 GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), multi-channel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-25 (Falkner/Murthy labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing, analysis and visualization branches of the GUI are platform-independent.
 
@@ -67,5 +63,3 @@ conda activate usv && usv-playpen
 ```
 
 User guide with detaile instructions is available [here](https://usv-playpen.readthedocs.io/en/latest/).
-
-Developed in PyCharm Pro 2024.3, and tested on macOS Sequoia 15.1 / Pop!_OS 22.04 / Windows 11.
