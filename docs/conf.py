@@ -2,7 +2,7 @@
 # https://stackoverflow.com/questions/66495200/is-it-possible-to-include-external-rst-files-in-my-documentation
 from urllib.request import urlretrieve
 urlretrieve (
-    url = "https://github.com/bartulem/usv-playpen/blob/main/README.md",
+    url = "https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/README.md",
     filename = "README.md"
 )
 
