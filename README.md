@@ -66,4 +66,6 @@ Load the environment with the appropriate name, _e.g._, usv., and run the GUI:
 conda activate usv && usv-playpen
 ```
 
+User guide with detaile instructions is available [here](https://usv-playpen.readthedocs.io/en/latest/).
+
 Developed in PyCharm Pro 2024.3, and tested on macOS Sequoia 15.1 / Pop!_OS 22.04 / Windows 11.
