@@ -37,7 +37,7 @@ exclude_patterns = []
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
-html_logo = 'https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/gui_icon.png'
+html_logo = 'media/gui_icon.png'
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
