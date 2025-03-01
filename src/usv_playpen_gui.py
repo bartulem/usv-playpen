@@ -1730,7 +1730,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def visualize_one(self):
         self.VisualizationsSettings = VisualizationsSettings(self)
-        self.setWindowTitle(f'{app_name} (Visualize data > Settings)')
+        self.setWindowTitle(f'{app_name} (Visualize.rst data > Settings)')
         self.setCentralWidget(self.VisualizationsSettings)
         visualize_one_x, visualize_one_y = (770, 740)
         self.setFixedSize(visualize_one_x, visualize_one_y)
@@ -1795,7 +1795,7 @@ class USVPlaypenWindow(QMainWindow):
 
         vis_col_two_x1, vis_col_two_x2 = 380, 670
 
-        make_behavioral_video_label = QLabel('Visualize 3D behavior (figure/video):', self.VisualizationsSettings)
+        make_behavioral_video_label = QLabel('Visualize.rst 3D behavior (figure/video):', self.VisualizationsSettings)
         make_behavioral_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         make_behavioral_video_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         make_behavioral_video_label.move(vis_col_two_x1, 40)
@@ -2560,7 +2560,7 @@ class USVPlaypenWindow(QMainWindow):
         self.button_map = {'Process': QPushButton(QIcon(process_icon), 'Process', self.Main),
                            'Record': QPushButton(QIcon(record_icon), 'Record', self.Main),
                            'Analyze': QPushButton(QIcon(analyze_icon), 'Analyze', self.Main),
-                           'Visualize': QPushButton(QIcon(visualize_icon), 'Visualize', self.Main)}
+                           'Visualize.rst': QPushButton(QIcon(visualize_icon), 'Visualize.rst', self.Main)}
 
         self.button_map['Record'].move(120, 370)
         self.button_map['Record'].setFont(QFont(self.font_id, 8+self.font_size_increase))
@@ -2576,9 +2576,9 @@ class USVPlaypenWindow(QMainWindow):
         self.button_map['Analyze'].setFont(QFont(self.font_id, 8+self.font_size_increase))
         self.button_map['Analyze'].clicked.connect(self.analyze_one)
 
-        self.button_map['Visualize'].move(215, 405)
-        self.button_map['Visualize'].setFont(QFont(self.font_id, 8+self.font_size_increase))
-        self.button_map['Visualize'].clicked.connect(self.visualize_one)
+        self.button_map['Visualize.rst'].move(215, 405)
+        self.button_map['Visualize.rst'].setFont(QFont(self.font_id, 8+self.font_size_increase))
+        self.button_map['Visualize.rst'].clicked.connect(self.visualize_one)
 
     def _create_buttons_record(self, seq, class_option, button_pos_y, next_button_x_pos):
         if seq == 0:
@@ -2717,12 +2717,12 @@ class USVPlaypenWindow(QMainWindow):
             for one_connection in next_window_connect:
                 self.button_map['Next'].clicked.connect(one_connection)
         else:
-            self.button_map['Visualize'] = QPushButton(QIcon(visualize_icon), 'Visualize', class_option)
-            self.button_map['Visualize'].move(next_button_x_pos, button_pos_y)
-            self.button_map['Visualize'].setFont(QFont(self.font_id, 8+self.font_size_increase))
-            self.button_map['Visualize'].clicked.connect(self._disable_visualize_buttons)
-            self.button_map['Visualize'].clicked.connect(self._start_visualizations)
-            self.button_map['Visualize'].clicked.connect(self._enable_visualize_buttons)
+            self.button_map['Visualize.rst'] = QPushButton(QIcon(visualize_icon), 'Visualize.rst', class_option)
+            self.button_map['Visualize.rst'].move(next_button_x_pos, button_pos_y)
+            self.button_map['Visualize.rst'].setFont(QFont(self.font_id, 8+self.font_size_increase))
+            self.button_map['Visualize.rst'].clicked.connect(self._disable_visualize_buttons)
+            self.button_map['Visualize.rst'].clicked.connect(self._start_visualizations)
+            self.button_map['Visualize.rst'].clicked.connect(self._enable_visualize_buttons)
 
     def _start_visualizations(self):
         self.run_visualizations.visualize_data()
@@ -2742,12 +2742,12 @@ class USVPlaypenWindow(QMainWindow):
     def _enable_visualize_buttons(self):
         self.button_map['Previous'].setEnabled(True)
         self.button_map['Main'].setEnabled(True)
-        self.button_map['Visualize'].setEnabled(False)
+        self.button_map['Visualize.rst'].setEnabled(False)
 
     def _disable_visualize_buttons(self):
         self.button_map['Previous'].setEnabled(False)
         self.button_map['Main'].setEnabled(False)
-        self.button_map['Visualize'].setEnabled(False)
+        self.button_map['Visualize.rst'].setEnabled(False)
 
     def _enable_analyze_buttons(self):
         self.button_map['Previous'].setEnabled(True)
