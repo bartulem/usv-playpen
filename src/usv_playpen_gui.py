@@ -445,10 +445,17 @@ class USVPlaypenWindow(QMainWindow):
         self.expected_cameras.setStyleSheet('QLineEdit { width: 300px; }')
         self.expected_cameras.move(160, 70)
 
+        """
+        'nvenc-fast-yuv420_A' : '-preset','fast','-qmin','15','-qmax','15'
+        'nvenc-fast-yuv420_B' : '-preset','fast','-qmin','15','-qmax','18'
+        'nvenc-II-yuv420'     : '-preset', 'lossless', '-pix_fmt', 'yuv420p'
+        """
+
         rec_codec_label = QLabel('Recording codec:', self.VideoSettings)
         rec_codec_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         rec_codec_label.move(5, 100)
-        self.recording_codec_list = sorted(['hq', 'mq', 'lq'], key=lambda x: x == self.exp_settings_dict['video']['general']['recording_codec'], reverse=True)
+        self.recording_codec_list = sorted(['hq', 'hq-fast', 'mq', 'lq', 'nvenc-fast-yuv420_A',
+                                            'nvenc-fast-yuv420_B','nvenc-II-yuv420'], key=lambda x: x == self.exp_settings_dict['video']['general']['recording_codec'], reverse=True)
         self.recording_codec_cb = QComboBox(self.VideoSettings)
         self.recording_codec_cb.addItems(self.recording_codec_list)
         self.recording_codec_cb.setStyleSheet('QComboBox { width: 272px; }')
@@ -1362,7 +1369,7 @@ class USVPlaypenWindow(QMainWindow):
         self.n_deriv_smooth.setStyleSheet('QLineEdit { width: 108px; }')
         self.n_deriv_smooth.move(column_three_x2, 550)
 
-        translate_rotate_metric_label = QLabel('Coordinate change (ExCode!):', self.ProcessSettings)
+        translate_rotate_metric_label = QLabel('Re-coordinate (ExCode!):', self.ProcessSettings)
         translate_rotate_metric_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         translate_rotate_metric_label.move(column_three_x1, 580)
@@ -1518,7 +1525,7 @@ class USVPlaypenWindow(QMainWindow):
         da_label.setStyleSheet('QLabel { font-weight: bold;}')
         da_label.move(10, 435)
 
-        compute_behavioral_features_label = QLabel('Compute 3D behavioral/social features:', self.AnalysesSettings)
+        compute_behavioral_features_label = QLabel('Compute 3D behavioral features:', self.AnalysesSettings)
         compute_behavioral_features_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         compute_behavioral_features_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         compute_behavioral_features_label.move(10, 465)
@@ -1760,7 +1767,7 @@ class USVPlaypenWindow(QMainWindow):
         dv_label.setStyleSheet('QLabel { font-weight: bold;}')
         dv_label.move(10, 435)
 
-        plot_behavioral_features_label = QLabel('Plot 3D behavioral/social tuning curves:', self.VisualizationsSettings)
+        plot_behavioral_features_label = QLabel('Plot 3D behavioral tuning curves:', self.VisualizationsSettings)
         plot_behavioral_features_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         plot_behavioral_features_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         plot_behavioral_features_label.move(10, 465)
@@ -1788,7 +1795,7 @@ class USVPlaypenWindow(QMainWindow):
 
         vis_col_two_x1, vis_col_two_x2 = 380, 670
 
-        make_behavioral_video_label = QLabel('Make tracking visualization (figure/video):', self.VisualizationsSettings)
+        make_behavioral_video_label = QLabel('Visualize 3D behavior (figure/video):', self.VisualizationsSettings)
         make_behavioral_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         make_behavioral_video_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         make_behavioral_video_label.move(vis_col_two_x1, 40)

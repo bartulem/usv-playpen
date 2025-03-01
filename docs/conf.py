@@ -10,7 +10,7 @@ urlretrieve (
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'usv-playpen'
-copyright = '2025, Bartul Mimica'
+copyright = '2025, github/bartulem'
 author = 'Bartul Mimica (documentation)'
 release = '0.8.0'
 
@@ -37,7 +37,7 @@ exclude_patterns = []
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
-html_logo = 'https://github.com/bartulem/usv-playpen/blob/main/src/img/gui_icon.png'
+html_logo = 'https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/gui_icon.png'
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
