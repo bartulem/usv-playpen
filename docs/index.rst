@@ -13,7 +13,6 @@ and visualization branches of the GUI are platform-independent.
    :maxdepth: 1
    :caption: User Guide
 
-   README <README.md>
    Record
    Process
    Analyze
