@@ -1,7 +1,7 @@
 usv-playpen
 ===========
 
-Welcome!  *usv-playpen* is a graphical user interface (henceforth, GUI) to facilitate conducting
+Welcome!  *usv-playpen* is a graphical user interface (henceforth, GUI) which facilitates conducting
 experiments with multi-probe e-phys (Neuropixels), multi-channel audio (Avisoft) and multi-camera
 video (Loopbio) acquisition. Developed for behavioral recording purposes at the
 `Princeton Neuroscience Institute <https://pni.princeton.edu/>`_
