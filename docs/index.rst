@@ -14,7 +14,7 @@ step-by-step guide to the respective functionalities of the GUI. As the GUI is d
 time, the manual is also a work in progress. We have tried to design the GUI with the experimenter in
 mind, whether it is a technician, graduate student or postdoc, with little or no background experience
 in engineering or programming. We have also tried to condense and simplify the manual as much as possible,
-This instruction set was made by users for users, with the ultimate aim to helping you collect your data and
+This instruction set was made by users for users, with the ultimate aim of helping you collect your data and
 analyze it painlessly. Despite its highly automated nature, where complex functions are several button
 clicks away, the GUI is not dummy-proof. It is important to understand the system and the checks you need
 to put in place to make sure you are using the tool correctly. Should you have any questions, please

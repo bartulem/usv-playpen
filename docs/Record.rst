@@ -1,41 +1,45 @@
 .. _Record:
 
 Record
-==================
+======
 This page explains how to use the data recording functionalities in the usv-playpen GUI.
 
-Calibration (introduction)
------------
+Hardware
+--------
 Placeholder text.
 
-Calibration (preparation)
------------
+Software
+--------
 Placeholder text.
 
-Calibration (execution)
------------
+Calibrate (introduction)
+------------------------
 Placeholder text.
 
-Calibration (assessment)
------------
+Calibrate (preparation)
+-----------------------
 Placeholder text.
 
-Recording (installation and set-up)
------------
+Calibrate (execution)
+---------------------
 Placeholder text.
 
-Recording (general settings)
------------
+Calibrate (assessment)
+----------------------
 Placeholder text.
 
-Recording (audio settings)
------------
+Record (general settings)
+-------------------------
 Placeholder text.
 
-Recording (video settings)
------------
+Record (audio settings)
+-----------------------
 Placeholder text.
 
-Recording (common issues)
------------
+Record (video settings)
+-----------------------
+Placeholder text.
+
+Record (common issues)
+----------------------
 Placeholder text.
