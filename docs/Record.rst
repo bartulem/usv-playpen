@@ -4,14 +4,6 @@ Record
 ======
 This page explains how to use the data recording functionalities in the usv-playpen GUI.
 
-Hardware
---------
-Placeholder text.
-
-Software
---------
-Placeholder text.
-
 Calibrate (introduction)
 ------------------------
 Placeholder text.
