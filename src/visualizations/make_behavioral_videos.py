@@ -1147,7 +1147,7 @@ class Create3DVideo:
         """
 
         h5_file_arena = glob.glob(f"{self.arena_directory}{os.sep}video{os.sep}**{os.sep}*_points3d_translated_rotated_metric.h5")[0]
-        h5_file_mouse = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}*[!speaker]_points3d_translated_rotated_metric.h5")[0]
+        h5_file_mouse = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5")[0]
 
         # load HDF5 file
         with h5py.File(name=h5_file_arena, mode='r') as h5_file_arena_obj:
