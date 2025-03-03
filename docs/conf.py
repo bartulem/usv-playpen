@@ -32,9 +32,6 @@ nbsphinx_allow_errors = True
 # Don't auto-execute notebooks.
 nbsphinx_execute = 'never'
 
-templates_path = ['_templates']
-exclude_patterns = []
-
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 html_logo = 'media/gui_icon.png'
@@ -54,5 +51,5 @@ html_theme_options = {
     'sticky_navigation': True,
     'navigation_depth': 4,
     'includehidden': True,
-    'titles_only': True
+    'titles_only': False
 }
