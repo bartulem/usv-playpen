@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Visualize.rst 3D tracking, vocalization and neural data.
+Visualize 3D tracking, vocalization and neural data.
 """
 
 import json
