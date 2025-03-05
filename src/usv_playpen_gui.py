@@ -11,7 +11,6 @@ import platform
 import sys
 from functools import partial
 from pathlib import Path
-import time
 import toml
 from PyQt6.QtCore import (
     Qt
@@ -1659,12 +1658,12 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductAnalyses = ConductAnalyses(self)
         self.setWindowTitle(f'{app_name} (Conduct Analyses)')
         self.setCentralWidget(self.ConductAnalyses)
-        analyze_two_x, analyze_two_y = (870, 1000)
+        analyze_two_x, analyze_two_y = (870, 800)
         self.setFixedSize(analyze_two_x, analyze_two_y)
 
         self.txt_edit_analyze = QPlainTextEdit(self.ConductAnalyses)
         self.txt_edit_analyze.move(5, 5)
-        self.txt_edit_analyze.setFixedSize(855, 940)
+        self.txt_edit_analyze.setFixedSize(855, 740)
         self.txt_edit_analyze.setReadOnly(True)
 
         with open((Path(__file__).parent / '_parameter_settings/analyses_settings.json'), 'w') as analyses_settings_file:
@@ -2000,12 +1999,12 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductVisualizations = ConductVisualizations(self)
         self.setWindowTitle(f'{app_name} (Conduct Visualizations)')
         self.setCentralWidget(self.ConductVisualizations)
-        visualize_two_x, visualize_two_y = (870, 1000)
+        visualize_two_x, visualize_two_y = (870, 800)
         self.setFixedSize(visualize_two_x, visualize_two_y)
 
         self.txt_edit_visualize = QPlainTextEdit(self.ConductVisualizations)
         self.txt_edit_visualize.move(5, 5)
-        self.txt_edit_visualize.setFixedSize(855, 940)
+        self.txt_edit_visualize.setFixedSize(855, 740)
         self.txt_edit_visualize.setReadOnly(True)
 
         with open((Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'w') as visualizations_settings_file:

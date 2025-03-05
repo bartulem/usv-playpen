@@ -13,7 +13,7 @@
   },
   "visualize_data": {
     "root_directories": [
-      ""
+      "/Volumes/falkner/Bartul/Data/20241115_165038"
     ]
   },
   "send_email": {
@@ -27,7 +27,7 @@
     "visualizations_pc_choice": "",
     "experimenter": "Bartul",
     "send_message": {
-      "receivers": ""
+      "receivers": []
     }
   },
   "neuronal_tuning_figures": {
@@ -35,21 +35,21 @@
     "occ_threshold": 1.0
   },
   "make_behavioral_videos": {
-    "arena_directory": "",
+    "arena_directory": "/Volumes/falkner/Bartul/Data/20241115_205221",
     "speaker_audio_file": "",
     "sequence_audio_file": "",
-    "animate_bool": true,
+    "animate_bool": false,
     "video_start_time": 0.0,
     "video_duration": 2.0,
     "plot_theme": "light",
     "save_fig": true,
-    "view_angle": "side",
+    "view_angle": "top",
     "side_azimuth_start": 0,
-    "rotate_side_view_bool": true,
+    "rotate_side_view_bool": false,
     "rotation_speed": 5,
     "history_bool": false,
     "speaker_bool": false,
-    "spectrogram_bool": true,
+    "spectrogram_bool": false,
     "spectrogram_ch": 0,
     "raster_plot_bool": false,
     "raster_selection_criteria": {

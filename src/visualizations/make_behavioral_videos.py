@@ -18,6 +18,7 @@ import numpy as np
 from numba import njit
 import polars as pls
 import pathlib
+import platform
 from scipy.io import wavfile
 import subprocess
 import warnings
@@ -1862,8 +1863,19 @@ class Create3DVideo:
 
             else:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:
-                    fig.savefig(f"{putative_save_directory}{os.sep}{session_id}_3D_"
-                                f"{frame_start}fr_{self.visualizations_parameter_dict['make_behavioral_videos']['view_angle']}view."
-                                f"{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_format']}",
+                    fig_loc = f"{putative_save_directory}{os.sep}{session_id}_3D_{frame_start}fr_{self.visualizations_parameter_dict['make_behavioral_videos']['view_angle']}view." \
+                              f"{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_format']}"
+                    fig.savefig(fig_loc,
                                 dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+
+                    os_type = platform.system()
+                    if os_type == "Windows":
+                        os.startfile(os.path.abspath(fig_loc))
+                    elif os_type == "Darwin":
+                        subprocess.run(['open', os.path.abspath(fig_loc)], check=True)
+                    elif os_type == "Linux":
+                        subprocess.run(['xdg-open', os.path.abspath(fig_loc)], check=True)
+                    else:
+                        self.message_output("Unsupported operating system for opening image.")
+
                 plt.close()
