@@ -13,7 +13,7 @@
   },
   "visualize_data": {
     "root_directories": [
-      "/Volumes/falkner/Bartul/Data/20241115_165038"
+      ""
     ]
   },
   "send_email": {
@@ -35,7 +35,7 @@
     "occ_threshold": 1.0
   },
   "make_behavioral_videos": {
-    "arena_directory": "/Volumes/falkner/Bartul/Data/20241115_205221",
+    "arena_directory": "",
     "speaker_audio_file": "",
     "sequence_audio_file": "",
     "animate_bool": false,

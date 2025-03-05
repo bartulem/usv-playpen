@@ -159,9 +159,9 @@
       "22085397",
       "21241563"
     ],
-    "inference_root_dir": "/mnt/falkner/Bartul/SLEAP/inference",
-    "centroid_model_path": "/mnt/falkner/Bartul/SLEAP/models/250203_153343.centroid_N=38642",
-    "centered_instance_model_path": "/mnt/falkner/Bartul/SLEAP/models/250203_153343.centered_instance_N=38642"
+    "inference_root_dir": "",
+    "centroid_model_path": "",
+    "centered_instance_model_path": ""
   },
   "preprocessing_plot": {
     "SummaryPlotter": {
@@ -213,7 +213,7 @@
     "FindMouseVocalizations": {
       "das_command_line_inference": {
         "das_conda_env_name": "das",
-        "model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
+        "model_directory": "",
         "model_name_base": "20240325_073951",
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,
