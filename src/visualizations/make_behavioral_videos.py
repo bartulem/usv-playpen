@@ -32,6 +32,28 @@ plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplsty
 
 
 @njit(parallel=True)
+def read_ttl_events(input_array: np.ndarray = None) -> tuple:
+    """
+    Return TTL ON and OFF in the least significant bit array.
+
+    Parameter
+    ---------
+    input_arr : np.ndarray
+        A (n_samples) shape ndarray of audio data.
+
+    Returns
+    -------
+     off_to_on, on_to_off: tuple
+        Samples when the TTL pulse starts and ends.
+    """
+
+    lsb_array = input_array & 1
+    off_to_on = np.where(np.diff(lsb_array) < 0)[0] + 1
+    on_to_off = np.where(np.diff(lsb_array) > 0)[0]
+    return off_to_on[0], on_to_off[0]
+
+
+@njit(parallel=True)
 def filter_spikes_for_raster(input_arr: np.ndarray = None,
                              ra_st_fr: int = None,
                              ra_end_fr: int = None,
@@ -1162,7 +1184,7 @@ class Create3DVideo:
             empirical_camera_sr = float(h5_file_mouse_obj['recording_frame_rate'][()])
 
         if self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
-            h5_file_speaker = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}*_speaker_points3d_translated_rotated_metric.h5")[0]
+            h5_file_speaker = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}speaker*_points3d_translated_rotated_metric.h5")[0]
             with h5py.File(name=h5_file_speaker, mode='r') as h5_file_speaker_obj:
                 speaker_tracks = np.array(h5_file_speaker_obj['tracks'])
                 speaker_track_name = list(h5_file_speaker_obj['track_names'])[0].decode('utf-8')
@@ -1344,7 +1366,7 @@ class Create3DVideo:
                 beh_window_size_frames = int(np.floor(self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['beh_features_window_size'] * empirical_camera_sr))
                 beh_half_window_size_frames = int(np.floor((self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['beh_features_window_size'] / 2) * empirical_camera_sr))
                 if frame_start - beh_half_window_size_frames < 0 or frame_start + frame_span + beh_half_window_size_frames > mouse_data.shape[0]:
-                    print("Video start time is either too early or too late for behavioral features.")
+                    self.message_output("Video start time is either too early or too late for behavioral features.")
                     return
 
                 # determine behavioral features to plot
@@ -1380,16 +1402,13 @@ class Create3DVideo:
                 # check if video start time and end time is within spectrogram window
                 half_window_size_frames = int(np.floor((self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_plot_window_size'] / 2) * empirical_camera_sr))
                 if frame_start - half_window_size_frames < 0 or frame_start + frame_span + half_window_size_frames > mouse_data.shape[0]:
-                    print("Video start time is either too early or too late for spectrogram.")
+                    self.message_output("Video start time is either too early or too late for spectrogram.")
                     return
 
                 active_mic_position = self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_ch']
 
-                # get audio / spectrogram data
-                if self.speaker_audio_file != '' and os.path.isfile(self.speaker_audio_file):
-                    audio_sr, audio_data = wavfile.read(self.speaker_audio_file)
-                else:
-                    audio_data, audio_sr = load_audio_data(root_directory=self.root_directory)
+                # load microphone data
+                audio_data, audio_sr = load_audio_data(root_directory=self.root_directory)
 
                 half_window_size_sec = self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_plot_window_size'] / 2
                 camera_frame_in_samples = int(np.ceil(1 / empirical_camera_sr * audio_sr))
@@ -1403,7 +1422,14 @@ class Create3DVideo:
                 first_fr_spectrogram_center = int((audio_sr * half_window_size_sec) // stft_hop)
 
                 if self.speaker_audio_file != '' and os.path.isfile(self.speaker_audio_file):
-                    spectrogram_data = librosa.stft(y=audio_data[window_start_signal:window_end_signal].astype(np.float32),
+                    speaker_audio_sr, speaker_audio_data = wavfile.read(self.speaker_audio_file)
+                    raspi_input_loc = glob.glob(pathname=f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}m_*ch03_*.wav", recursive=True)[0]
+                    raspi_input_mic_sr, raspi_input_mic_data = wavfile.read(raspi_input_loc)
+                    ttl_start, ttl_end = read_ttl_events(raspi_input_mic_data)
+                    time_correction_coefficient = 20000  # 80 ms
+                    window_start_signal = window_start_signal - ttl_start - time_correction_coefficient
+                    window_end_signal = window_end_signal - ttl_start - time_correction_coefficient
+                    spectrogram_data = librosa.stft(y=speaker_audio_data[window_start_signal:window_end_signal].astype(np.float32),
                                                     n_fft=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_stft_nfft'])
                 else:
                     spectrogram_data = librosa.stft(y=audio_data[window_start_signal:window_end_signal, self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_ch']].astype(np.float32),
@@ -1412,10 +1438,11 @@ class Create3DVideo:
                 spectrogram_amplitude = librosa.amplitude_to_db(np.abs(spectrogram_data), ref=np.max(np.abs(spectrogram_data)))
 
                 # find USV onset and offset times for epoch of interest
-                usv_summary_file = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}*_usv_summary.csv")[0]
-                usv_summary_df = pls.read_csv(usv_summary_file)
-                usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
-                                                       (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
+                if self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
+                    usv_summary_file = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}*_usv_summary.csv")[0]
+                    usv_summary_df = pls.read_csv(usv_summary_file)
+                    usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
+                                                           (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
 
         if self.visualizations_parameter_dict['make_behavioral_videos']['plot_theme'] == 'dark':
             color_mode_preferences = self.color_mode_preferences['dark_mode']
@@ -1512,15 +1539,21 @@ class Create3DVideo:
                 ax[1] = fig.add_axes([left, bottom, width, height])
                 ax[1].set_facecolor(color_mode_preferences['background_color'])
 
-                # find USV onsets/offsets for given frame
-                frame_usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
-                                                             (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + half_window_size_sec))
+                if self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
+                    # find USV onsets/offsets for given frame
+                    frame_usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
+                                                                 (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + half_window_size_sec))
 
-                usv_segments_list = [(usv_start - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'],
-                                      usv_stop - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'])
-                                     for usv_start, usv_stop in zip(frame_usv_summary_df['start'], frame_usv_summary_df['stop'])]
+                    usv_segments_list = [(usv_start - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'],
+                                          usv_stop - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'])
+                                         for usv_start, usv_stop in zip(frame_usv_summary_df['start'], frame_usv_summary_df['stop'])]
 
-                usv_segments_colors = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#C0C0C0' for emitter_id in frame_usv_summary_df['emitter']]
+                    usv_segments_colors = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#C0C0C0' for emitter_id in frame_usv_summary_df['emitter']]
+                else:
+                    usv_segments_list = []
+                    usv_segments_colors = []
+
+                plot_usv_segments_bool = self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['plot_usv_segments_bool'] and self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']
 
                 relative_fr = 0
                 spec_start = relative_fr * spectrogram_step
@@ -1539,7 +1572,7 @@ class Create3DVideo:
                                  power_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_power_limit'],
                                  freq_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_frequency_limit'],
                                  freq_yticks=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_yticks'],
-                                 plot_usv_segments_bool=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['plot_usv_segments_bool'],
+                                 plot_usv_segments_bool=plot_usv_segments_bool,
                                  usv_segments_list=usv_segments_list,
                                  usv_segment_lw=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['usv_segments_lw'],
                                  usv_segments_ypos=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['usv_segments_ypos'],
@@ -1742,16 +1775,20 @@ class Create3DVideo:
                     current_spec_start = current_relative_fr * spectrogram_step
                     current_spec_end = (first_fr_spectrogram_center * 2) + (current_relative_fr * spectrogram_step)
 
-                    # find USV onsets/offsets for given frame
-                    current_video_time = frame_num / empirical_camera_sr
-                    frame_usv_summary_df_temp = usv_summary_df.filter((pls.col('stop') >= current_video_time - half_window_size_sec) &
-                                                                      (pls.col('start') <= current_video_time + half_window_size_sec))
+                    if self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
+                        # find USV onsets/offsets for given frame
+                        current_video_time = frame_num / empirical_camera_sr
+                        frame_usv_summary_df_temp = usv_summary_df.filter((pls.col('stop') >= current_video_time - half_window_size_sec) &
+                                                                          (pls.col('start') <= current_video_time + half_window_size_sec))
 
-                    usv_segments_list_temp = [(usv_start - current_video_time,
-                                               usv_stop - current_video_time)
-                                              for usv_start, usv_stop in zip(frame_usv_summary_df_temp['start'], frame_usv_summary_df_temp['stop'])]
+                        usv_segments_list_temp = [(usv_start - current_video_time,
+                                                   usv_stop - current_video_time)
+                                                  for usv_start, usv_stop in zip(frame_usv_summary_df_temp['start'], frame_usv_summary_df_temp['stop'])]
 
-                    usv_segments_colors_temp = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#C0C0C0' for emitter_id in frame_usv_summary_df_temp['emitter']]
+                        usv_segments_colors_temp = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#C0C0C0' for emitter_id in frame_usv_summary_df_temp['emitter']]
+                    else:
+                        usv_segments_list_temp = []
+                        usv_segments_colors_temp = []
 
                     plot_spectrogram(plot_axes=ax[1],
                                      figure_object=fig,
@@ -1766,7 +1803,7 @@ class Create3DVideo:
                                      power_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_power_limit'],
                                      freq_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_frequency_limit'],
                                      freq_yticks=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_yticks'],
-                                     plot_usv_segments_bool=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['plot_usv_segments_bool'],
+                                     plot_usv_segments_bool=plot_usv_segments_bool,
                                      usv_segments_list=usv_segments_list_temp,
                                      usv_segment_lw=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['usv_segments_lw'],
                                      usv_segments_ypos=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['usv_segments_ypos'],
@@ -1827,13 +1864,31 @@ class Create3DVideo:
 
                 plt.tight_layout(pad=figure_pad)
 
+            name_addition = f"{self.visualizations_parameter_dict['make_behavioral_videos']['plot_theme']}"
+            name_addition = f"{name_addition}_{self.visualizations_parameter_dict['make_behavioral_videos']['view_angle']}view"
+            if self.visualizations_parameter_dict['make_behavioral_videos']['view_angle'] == 'side':
+                name_addition = f"{name_addition}_{self.visualizations_parameter_dict['make_behavioral_videos']['side_azimuth_start']}azim"
+                if self.visualizations_parameter_dict['make_behavioral_videos']['rotate_side_view_bool'] and self.visualizations_parameter_dict['make_behavioral_videos']['animate_bool']:
+                    name_addition = f"{name_addition}_rotate"
+            if self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool']:
+                name_addition = f"{name_addition}_{len(self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_to_plot'])}features"
+            if self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool']:
+                name_addition = f"{name_addition}_spectrogram_ch{active_mic_position}"
+            if self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']:
+                name_addition = f"{name_addition}_raster"
+            if self.visualizations_parameter_dict['make_behavioral_videos']['history_bool']:
+                name_addition = f"{name_addition}_history"
+            if self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
+                name_addition = f"{name_addition}_speaker"
+            name_addition = f"{name_addition}_{self.exp_id}"
+
             if self.visualizations_parameter_dict['make_behavioral_videos']['animate_bool']:
                 anima = FuncAnimation(fig=fig,
                                       func=animate,
                                       frames=range(frame_start, frame_start + frame_span, 1),
                                       interval=round(1 / empirical_camera_sr * 1000, 3))
 
-                animation_file_name = f"{session_id}_3D_{frame_start}-{frame_start + frame_span}fr_{self.visualizations_parameter_dict['make_behavioral_videos']['view_angle']}view"
+                animation_file_name = f"{session_id}_3D_{frame_start}-{frame_start + frame_span}fr_{name_addition}"
                 animation_file_path = f"{putative_save_directory}{os.sep}{animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
                 anima.save(filename=animation_file_path,
                            writer=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_writer'],
@@ -1863,17 +1918,17 @@ class Create3DVideo:
 
             else:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:
-                    fig_loc = f"{putative_save_directory}{os.sep}{session_id}_3D_{frame_start}fr_{self.visualizations_parameter_dict['make_behavioral_videos']['view_angle']}view." \
+                    fig_loc = f"{putative_save_directory}{os.sep}{session_id}_3D_{frame_start}fr_{name_addition}." \
                               f"{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_format']}"
                     fig.savefig(fig_loc,
                                 dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
 
                     os_type = platform.system()
-                    if os_type == "Windows":
+                    if os_type == 'Windows':
                         os.startfile(os.path.abspath(fig_loc))
-                    elif os_type == "Darwin":
+                    elif os_type == 'Darwin':
                         subprocess.run(['open', os.path.abspath(fig_loc)], check=True)
-                    elif os_type == "Linux":
+                    elif os_type == 'Linux':
                         subprocess.run(['xdg-open', os.path.abspath(fig_loc)], check=True)
                     else:
                         self.message_output("Unsupported operating system for opening image.")

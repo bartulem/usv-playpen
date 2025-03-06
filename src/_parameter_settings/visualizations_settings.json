@@ -13,7 +13,6 @@
   },
   "visualize_data": {
     "root_directories": [
-      ""
     ]
   },
   "send_email": {
@@ -39,17 +38,17 @@
     "speaker_audio_file": "",
     "sequence_audio_file": "",
     "animate_bool": false,
-    "video_start_time": 0.0,
+    "video_start_time": 500.0,
     "video_duration": 2.0,
-    "plot_theme": "light",
+    "plot_theme": "dark",
     "save_fig": true,
     "view_angle": "top",
     "side_azimuth_start": 0,
     "rotate_side_view_bool": false,
     "rotation_speed": 5,
     "history_bool": false,
-    "speaker_bool": false,
-    "spectrogram_bool": false,
+    "speaker_bool": true,
+    "spectrogram_bool": true,
     "spectrogram_ch": 0,
     "raster_plot_bool": false,
     "raster_selection_criteria": {
@@ -85,7 +84,7 @@
       "inactive_mic_bool": true,
       "inactive_mic_color": "#898989",
       "text_fontsize": 10,
-      "speaker_opacity": 0.5
+      "speaker_opacity": 1.0
     },
     "mouse_figure_specs": {
       "node_bool": true,
