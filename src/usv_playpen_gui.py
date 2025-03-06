@@ -447,14 +447,14 @@ class USVPlaypenWindow(QMainWindow):
         """
         'nvenc-fast-yuv420_A' : '-preset','fast','-qmin','15','-qmax','15'
         'nvenc-fast-yuv420_B' : '-preset','fast','-qmin','15','-qmax','18'
-        'nvenc-II-yuv420'     : '-preset', 'lossless', '-pix_fmt', 'yuv420p'
+        'nvenc-ll-yuv420'     : '-preset', 'lossless', '-pix_fmt', 'yuv420p'
         """
 
         rec_codec_label = QLabel('Recording codec:', self.VideoSettings)
         rec_codec_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         rec_codec_label.move(5, 100)
         self.recording_codec_list = sorted(['hq', 'hq-fast', 'mq', 'lq', 'nvenc-fast-yuv420_A',
-                                            'nvenc-fast-yuv420_B','nvenc-II-yuv420'], key=lambda x: x == self.recording_codec, reverse=True)
+                                            'nvenc-fast-yuv420_B','nvenc-ll-yuv420'], key=lambda x: x == self.recording_codec, reverse=True)
         self.recording_codec_cb = QComboBox(self.VideoSettings)
         self.recording_codec_cb.addItems(self.recording_codec_list)
         self.recording_codec_cb.setStyleSheet('QComboBox { width: 272px; }')
