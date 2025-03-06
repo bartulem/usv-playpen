@@ -454,7 +454,7 @@ class USVPlaypenWindow(QMainWindow):
         rec_codec_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         rec_codec_label.move(5, 100)
         self.recording_codec_list = sorted(['hq', 'hq-fast', 'mq', 'lq', 'nvenc-fast-yuv420_A',
-                                            'nvenc-fast-yuv420_B','nvenc-II-yuv420'], key=lambda x: x == self.exp_settings_dict['video']['general']['recording_codec'], reverse=True)
+                                            'nvenc-fast-yuv420_B','nvenc-II-yuv420'], key=lambda x: x == self.recording_codec, reverse=True)
         self.recording_codec_cb = QComboBox(self.VideoSettings)
         self.recording_codec_cb.addItems(self.recording_codec_list)
         self.recording_codec_cb.setStyleSheet('QComboBox { width: 272px; }')
@@ -2172,7 +2172,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(ast.literal_eval(self.constant_rate_factor)))
-        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(self.encoding_preset)
+        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(getattr(self, 'encoding_preset'))
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
         self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(ast.literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
         self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(stft_value)) for stft_value in self.stft_window_hop]
