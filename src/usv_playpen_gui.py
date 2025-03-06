@@ -945,7 +945,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conversion_target_file.setStyleSheet('QLineEdit { width: 135px; }')
         self.conversion_target_file.move(225, 765)
 
-        constant_rate_factor_label = QLabel('FFMPEG rate factor (-crf):', self.ProcessSettings)
+        constant_rate_factor_label = QLabel('FFMPEG encoding crf (0–51):', self.ProcessSettings)
         constant_rate_factor_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         constant_rate_factor_label.move(10, 795)
         self.constant_rate_factor = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor']}", self.ProcessSettings)
@@ -956,10 +956,12 @@ class USVPlaypenWindow(QMainWindow):
         encoding_preset_label = QLabel('FFMPEG encoding preset:', self.ProcessSettings)
         encoding_preset_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         encoding_preset_label.move(10, 825)
-        self.encoding_preset = QLineEdit(self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'], self.ProcessSettings)
-        self.encoding_preset.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.encoding_preset.setStyleSheet('QLineEdit { width: 135px; }')
-        self.encoding_preset.move(225, 825)
+        self.encoding_preset_list = sorted(['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'], key=lambda x: x == self.encoding_preset, reverse=True)
+        self.encoding_preset_cb = QComboBox(self.ProcessSettings)
+        self.encoding_preset_cb.addItems([str(encode_preset_item) for encode_preset_item in self.encoding_preset_list])
+        self.encoding_preset_cb.setStyleSheet('QComboBox { width: 105px; }')
+        self.encoding_preset_cb.activated.connect(partial(self._combo_box_encoding_preset, variable_id='encoding_preset'))
+        self.encoding_preset_cb.move(225, 825)
 
         delete_con_file_cb_label = QLabel('Delete concatenated video:', self.ProcessSettings)
         delete_con_file_cb_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -2101,7 +2103,7 @@ class USVPlaypenWindow(QMainWindow):
 
 
     def _save_process_labels_func(self):
-        qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'encoding_preset', 'ch_receiving_input',
+        qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'ch_receiving_input',
                           'a_ch_receiving_input', 'pc_usage_process', 'min_spike_num', 'phidget_extra_data_camera',
                           'npx_ms_divergence_tolerance', 'hpss_power', 'sleap_conda', 'n_deriv_smooth',
                           'das_conda', 'das_model_base', 'das_output_type', 'smooth_scale', 'static_reference_len',
@@ -2170,7 +2172,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(ast.literal_eval(self.constant_rate_factor)))
-        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = self.encoding_preset
+        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(self.encoding_preset)
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
         self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(ast.literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
         self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(stft_value)) for stft_value in self.stft_window_hop]
@@ -2456,6 +2458,12 @@ class USVPlaypenWindow(QMainWindow):
             self.__dict__[variable_id] = 'animal'
         else:
             self.__dict__[variable_id] = 'arena'
+
+    def _combo_box_encoding_preset(self, index, variable_id=None):
+        for idx in range(len(self.encoding_preset_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.encoding_preset_list[idx]
+                break
 
     def _combo_box_prior_name(self, index, variable_id=None):
         for idx in range(len(self.exp_id_list)):
@@ -3042,7 +3050,7 @@ def main():
                            'fs_audio_dir': analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], 'fs_device_id': analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'],
                            'fs_channel_id': analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], 'volume_adjust_audio_segment_cb_bool': True,
                            'visualizations_pc_choice': visualizations_input_dict['send_email']['visualizations_pc_choice'], 'analyses_pc_choice': analyses_input_dict['send_email']['analyses_pc_choice'],
-                           'processing_pc_choice': processing_input_dict['send_email']['Messenger']['processing_pc_choice']}
+                           'processing_pc_choice': processing_input_dict['send_email']['Messenger']['processing_pc_choice'], 'encoding_preset': processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset']}
 
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
