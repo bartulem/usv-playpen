@@ -306,55 +306,59 @@ class ConvertTo3D:
 
         self.message_output(f"ANIPOSE triangulation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(2000)
+        
+        calibration_dir_search = glob.glob(pathname=os.path.join(f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}{os.sep}**", "*_calibration.toml*"), recursive=True)
+        if len(calibration_dir_search) == 0:
+            self.message_output(f"Calibration directory not found. Please run calibration first and provide a correct path.")
+        else:
+            calibration_toml_file = calibration_dir_search[0]
 
-        calibration_toml_file = glob.glob(pathname=os.path.join(f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}{os.sep}**", "*_calibration.toml*"), recursive=True)[0]
+            if not self.input_parameter_dict['conduct_anipose_triangulation']['triangulate_arena_points_bool']:
 
-        if not self.input_parameter_dict['conduct_anipose_triangulation']['triangulate_arena_points_bool']:
+                none_hyperparam_bool = False
+                if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
+                    with open(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}video", "*_camera_frame_count_dict.json*"))[0], 'r') as frame_count_infile:
+                        camera_frame_count_dict = json.load(frame_count_infile)
+                        self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, int(camera_frame_count_dict['total_frame_number_least'])]
+                        none_hyperparam_bool = True
 
-            none_hyperparam_bool = False
-            if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
-                with open(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}video", "*_camera_frame_count_dict.json*"))[0], 'r') as frame_count_infile:
-                    camera_frame_count_dict = json.load(frame_count_infile)
-                    self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, int(camera_frame_count_dict['total_frame_number_least'])]
+
+                sleap_anipose.triangulate(p2d=self.session_root_joint_date_dir,
+                                          calib=calibration_toml_file,
+                                          frames=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction']),
+                                          excluded_views=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['excluded_views']),
+                                          ransac=self.input_parameter_dict['conduct_anipose_triangulation']['ransac_bool'],
+                                          fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
+                                          disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
+                                          constraints=self.input_parameter_dict['conduct_anipose_triangulation']['rigid_body_constraints'],
+                                          constraints_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weak_body_constraints'],
+                                          scale_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['smooth_scale'],
+                                          scale_length=self.input_parameter_dict['conduct_anipose_triangulation']['weight_rigid'],
+                                          scale_length_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weight_weak'],
+                                          reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'],
+                                          reproj_loss=self.input_parameter_dict['conduct_anipose_triangulation']['regularization_function'],
+                                          n_deriv_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['n_deriv_smooth'])
+
+                if none_hyperparam_bool:
+                    self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
+
+            else:
+
+                none_hyperparam_bool = False
+                if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
+                    self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, 1]
                     none_hyperparam_bool = True
 
+                sleap_anipose.triangulate(p2d=self.session_root_joint_date_dir,
+                                          calib=calibration_toml_file,
+                                          frames=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction']),
+                                          excluded_views=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['excluded_views']),
+                                          fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
+                                          disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
+                                          reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'])
 
-            sleap_anipose.triangulate(p2d=self.session_root_joint_date_dir,
-                                      calib=calibration_toml_file,
-                                      frames=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction']),
-                                      excluded_views=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['excluded_views']),
-                                      ransac=self.input_parameter_dict['conduct_anipose_triangulation']['ransac_bool'],
-                                      fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
-                                      disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
-                                      constraints=self.input_parameter_dict['conduct_anipose_triangulation']['rigid_body_constraints'],
-                                      constraints_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weak_body_constraints'],
-                                      scale_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['smooth_scale'],
-                                      scale_length=self.input_parameter_dict['conduct_anipose_triangulation']['weight_rigid'],
-                                      scale_length_weak=self.input_parameter_dict['conduct_anipose_triangulation']['weight_weak'],
-                                      reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'],
-                                      reproj_loss=self.input_parameter_dict['conduct_anipose_triangulation']['regularization_function'],
-                                      n_deriv_smooth=self.input_parameter_dict['conduct_anipose_triangulation']['n_deriv_smooth'])
-
-            if none_hyperparam_bool:
-                self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
-
-        else:
-
-            none_hyperparam_bool = False
-            if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
-                self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, 1]
-                none_hyperparam_bool = True
-
-            sleap_anipose.triangulate(p2d=self.session_root_joint_date_dir,
-                                      calib=calibration_toml_file,
-                                      frames=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction']),
-                                      excluded_views=tuple(self.input_parameter_dict['conduct_anipose_triangulation']['excluded_views']),
-                                      fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
-                                      disp_progress=self.input_parameter_dict['conduct_anipose_triangulation']['display_progress_bool'],
-                                      reproj_error_threshold=self.input_parameter_dict['conduct_anipose_triangulation']['reprojection_error_threshold'])
-
-            if none_hyperparam_bool:
-                self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
+                if none_hyperparam_bool:
+                    self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
 
     def translate_rotate_metric(self, **kwargs):
         """
