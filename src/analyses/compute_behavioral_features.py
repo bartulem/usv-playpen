@@ -280,14 +280,17 @@ def calculate_speed(tracked_points_array: np.ndarray = None,
     return speed
 
 
-def get_average_point(data_arr: np.ndarray) -> np.ndarray:
+def get_average_point(data_arr: np.ndarray, mouse_speed: np.ndarray) -> np.ndarray:
     """
-    Finds the closest point to head average.
+    Finds the closest point to head average, by searching for
+    timepoints when the mouse is running fast.
 
     Parameter
     ---------
     data_arr : np.ndarray
          A (4, n_frames, 3) shape ndarray of head point data.
+    mouse_speed : np.ndarray
+         A (n_frames) shape ndarray of mouse centroid speed.
 
     Returns
     -------
@@ -309,13 +312,19 @@ def get_average_point(data_arr: np.ndarray) -> np.ndarray:
     points_temp = np.zeros(shape=(data_arr.shape[1], data_arr.shape[2]), dtype=np.float64)
     points_temp[:] = np.nan
     closest_point_to_average = None
-    for dist_idx, distance in enumerate(distances_from_average):
-        if distance < min_distance:
-            for ii in range(data_arr.shape[1]):
-                points_temp[ii, :] = data_arr[dist_idx, ii, :]
+
+    average_distances_ordered_lowest_to_highest = np.argsort(distances_from_average)
+
+    for ordered_ave_distance in average_distances_ordered_lowest_to_highest:
+        if distances_from_average[ordered_ave_distance] < min_distance and mouse_speed[ordered_ave_distance] > 20:
+            points_temp = data_arr[ordered_ave_distance, :, :]
             if ~np.isnan(points_temp).any():
-                min_distance = distance
+                min_distance = distances_from_average[ordered_ave_distance]
                 closest_point_to_average = points_temp
+                break
+    else:
+        points_temp = data_arr[average_distances_ordered_lowest_to_highest[0], :, :]
+        closest_point_to_average = points_temp
 
     return closest_point_to_average
 
@@ -960,18 +969,19 @@ class FeatureZoo:
 
             head_input_arr = np.swapaxes(head_input_arr, axis1=0, axis2=1)
 
-            average_head_point = get_average_point(head_input_arr)
+            average_head_point = get_average_point(data_arr=head_input_arr,
+                                                   mouse_speed=speed[mouse_num, :, 0])
             global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='regular')
             global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
 
             # in some sessions, the average ear points end up. e.g., being tracked more posterior to the head point, so a rotation matrix modification is necessary
             roll_extreme_proportion = np.count_nonzero((global_head_angles[mouse_num, :, 0] < -120) | (global_head_angles[mouse_num, :, 0] > 120)) / global_head_angles[mouse_num, :, 0].shape[0]
+            pitch_positive_proportion = np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0) / global_head_angles[mouse_num, :, 1].shape[0]
             if roll_extreme_proportion > 0.5:
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='roll_issue')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
 
-            pitch_positive_proportion = np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0) / global_head_angles[mouse_num, :, 1].shape[0]
-            if pitch_positive_proportion > 0.5:
+            if (pitch_positive_proportion > 0.5) and (np.nanmean(neck_elevation[mouse_num, :, 0]) < 5.0):
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issue')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
                 global_head_angles[mouse_num, :, 0] = -global_head_angles[mouse_num, :, 0]

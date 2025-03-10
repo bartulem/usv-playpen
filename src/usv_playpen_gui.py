@@ -1897,7 +1897,7 @@ class USVPlaypenWindow(QMainWindow):
         self.view_angle_cb.activated.connect(partial(self._combo_box_view_angle, variable_id='view_angle'))
         self.view_angle_cb.move(vis_col_two_x2, 310)
 
-        side_azimuth_start_label = QLabel('Animation/figure side azimuth angle:', self.VisualizationsSettings)
+        side_azimuth_start_label = QLabel('Side view azimuth angle (°):', self.VisualizationsSettings)
         side_azimuth_start_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         side_azimuth_start_label.move(vis_col_two_x1, 340)
         self.side_azimuth_start = QLineEdit(f"{self.visualizations_input_dict['make_behavioral_videos']['side_azimuth_start']}", self.VisualizationsSettings)
