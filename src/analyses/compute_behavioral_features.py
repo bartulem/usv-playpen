@@ -316,12 +316,11 @@ def get_average_point(data_arr: np.ndarray, mouse_speed: np.ndarray) -> np.ndarr
     average_distances_ordered_lowest_to_highest = np.argsort(distances_from_average)
 
     for ordered_ave_distance in average_distances_ordered_lowest_to_highest:
-        if distances_from_average[ordered_ave_distance] < min_distance and mouse_speed[ordered_ave_distance] > 20:
+        if distances_from_average[ordered_ave_distance] < min_distance and (20 < mouse_speed[ordered_ave_distance] < 25):
             points_temp = data_arr[ordered_ave_distance, :, :]
             if ~np.isnan(points_temp).any():
                 min_distance = distances_from_average[ordered_ave_distance]
                 closest_point_to_average = points_temp
-                break
     else:
         points_temp = data_arr[average_distances_ordered_lowest_to_highest[0], :, :]
         closest_point_to_average = points_temp
@@ -402,7 +401,7 @@ def get_head_root(data_arr: np.ndarray,
         else:
             h_y = head_y / np.linalg.norm(head_y, axis=1)[:, np.newaxis]
             h_z = head_z / np.linalg.norm(head_z, axis=1)[:, np.newaxis]
-            h_x = np.cross(h_z, h_y)
+            h_x = np.cross(h_y, h_z)
 
     global_heads_rot = np.array([h_x, h_y, h_z])
     global_heads_rot = np.swapaxes(global_heads_rot, axis1=0, axis2=1)
@@ -982,9 +981,10 @@ class FeatureZoo:
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
 
             if (pitch_positive_proportion > 0.5) and (np.nanmean(neck_elevation[mouse_num, :, 0]) < 5.0):
+                original_roll = global_head_angles[mouse_num, :, 0].copy()
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issue')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
-                global_head_angles[mouse_num, :, 0] = -global_head_angles[mouse_num, :, 0]
+                global_head_angles[mouse_num, :, 0] = -original_roll
 
 
             global_head_angles_1st_der[mouse_num, :, :], global_head_angles_2nd_der[mouse_num, :, :] = calculate_derivatives(input_arr=global_head_angles[mouse_num, :, :],
