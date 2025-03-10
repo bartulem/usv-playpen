@@ -389,19 +389,27 @@ def get_head_root(data_arr: np.ndarray,
     head_y = rotation_root_ax[:, :, 2] + temp_diff[:, :].squeeze() - orig
     head_z = rotation_root_ax[:, :, 3] + temp_diff[:, :].squeeze() - orig
 
-    if rotation_type == 'regular':
+    if rotation_type == 'regularXY':
         h_x = head_x / np.linalg.norm(head_x, axis=1)[:, np.newaxis]
         h_y = head_y / np.linalg.norm(head_y, axis=1)[:, np.newaxis]
         h_z = np.cross(h_x, h_y)
+    elif rotation_type == 'regularYX':
+        h_x = head_x / np.linalg.norm(head_x, axis=1)[:, np.newaxis]
+        h_y = head_y / np.linalg.norm(head_y, axis=1)[:, np.newaxis]
+        h_z = np.cross(h_y, h_x)
     else:
         if rotation_type == 'roll_issue':
             h_x = head_x / np.linalg.norm(head_x, axis=1)[:, np.newaxis]
             h_z = head_z / np.linalg.norm(head_z, axis=1)[:, np.newaxis]
             h_y = np.cross(h_z, h_x)
-        else:
+        elif rotation_type == 'pitch_issueYZ':
             h_y = head_y / np.linalg.norm(head_y, axis=1)[:, np.newaxis]
             h_z = head_z / np.linalg.norm(head_z, axis=1)[:, np.newaxis]
             h_x = np.cross(h_y, h_z)
+        elif rotation_type == 'pitch_issueZY':
+            h_y = head_y / np.linalg.norm(head_y, axis=1)[:, np.newaxis]
+            h_z = head_z / np.linalg.norm(head_z, axis=1)[:, np.newaxis]
+            h_x = np.cross(h_z, h_y)
 
     global_heads_rot = np.array([h_x, h_y, h_z])
     global_heads_rot = np.swapaxes(global_heads_rot, axis1=0, axis2=1)
@@ -970,21 +978,29 @@ class FeatureZoo:
 
             average_head_point = get_average_point(data_arr=head_input_arr,
                                                    mouse_speed=speed[mouse_num, :, 0])
-            global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='regular')
+            global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='regularXY')
             global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
 
             # in some sessions, the average ear points end up. e.g., being tracked more posterior to the head point, so a rotation matrix modification is necessary
             roll_extreme_proportion = np.count_nonzero((global_head_angles[mouse_num, :, 0] < -120) | (global_head_angles[mouse_num, :, 0] > 120)) / global_head_angles[mouse_num, :, 0].shape[0]
             pitch_positive_proportion = np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0) / global_head_angles[mouse_num, :, 1].shape[0]
-            if roll_extreme_proportion > 0.5:
+            roll_correction_necessary = roll_extreme_proportion > 0.5
+            pitch_correction_necessary = (pitch_positive_proportion > 0.5) and (np.nanmean(neck_elevation[mouse_num, :, 0]) < 5.0)
+            if roll_correction_necessary and not pitch_correction_necessary:
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='roll_issue')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
-
-            if (pitch_positive_proportion > 0.5) and (np.nanmean(neck_elevation[mouse_num, :, 0]) < 5.0):
+            elif pitch_correction_necessary and not roll_correction_necessary:
                 original_roll = global_head_angles[mouse_num, :, 0].copy()
-                global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issue')
+                global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issueYZ')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
                 global_head_angles[mouse_num, :, 0] = -original_roll
+            elif roll_correction_necessary and pitch_correction_necessary:
+                global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='regularYX')
+                global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
+                original_roll = global_head_angles[mouse_num, :, 0].copy()
+                global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issueZY')
+                global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
+                global_head_angles[mouse_num, :, 0] = original_roll
 
 
             global_head_angles_1st_der[mouse_num, :, :], global_head_angles_2nd_der[mouse_num, :, :] = calculate_derivatives(input_arr=global_head_angles[mouse_num, :, :],
