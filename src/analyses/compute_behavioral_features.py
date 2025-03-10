@@ -994,6 +994,10 @@ class FeatureZoo:
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issueYZ')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
                 global_head_angles[mouse_num, :, 0] = -original_roll
+                if np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0) / global_head_angles[mouse_num, :, 1].shape[0] > 0.5:
+                    global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issueZY')
+                    global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
+                    global_head_angles[mouse_num, :, 0] = -global_head_angles[mouse_num, :, 0]
             elif roll_correction_necessary and pitch_correction_necessary:
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='regularYX')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
