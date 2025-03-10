@@ -306,7 +306,7 @@ class ConvertTo3D:
 
         self.message_output(f"ANIPOSE triangulation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         QTest.qWait(2000)
-        
+
         calibration_dir_search = glob.glob(pathname=os.path.join(f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}{os.sep}**", "*_calibration.toml*"), recursive=True)
         if len(calibration_dir_search) == 0:
             self.message_output(f"Calibration directory not found. Please run calibration first and provide a correct path.")
