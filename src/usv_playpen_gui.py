@@ -2547,7 +2547,7 @@ class USVPlaypenWindow(QMainWindow):
         self.__dict__[f'exposure_time_{camera_id}'] = QSlider(Qt.Orientation.Horizontal, self.VideoSettings)
         self.__dict__[f'exposure_time_{camera_id}'].setFixedWidth(150)
         self.__dict__[f'exposure_time_{camera_id}'].setRange(500, 30000)
-        self.__dict__[f'exposure_time_{camera_id}'].setValue(2500)
+        self.__dict__[f'exposure_time_{camera_id}'].setValue(self.__dict__[f"{camera_id}_et"])
         self.__dict__[f'exposure_time_{camera_id}'].move(5, y_start+60)
         self.__dict__[f'exposure_time_{camera_id}'].valueChanged.connect(partial(self._update_exposure_time_label, variable_id=f'exposure_time_{camera_id}_label'))
 
@@ -2558,7 +2558,7 @@ class USVPlaypenWindow(QMainWindow):
         self.__dict__[f'gain_{camera_id}'] = QSlider(Qt.Orientation.Horizontal, self.VideoSettings)
         self.__dict__[f'gain_{camera_id}'].setFixedWidth(150)
         self.__dict__[f'gain_{camera_id}'].setRange(0, 15)
-        self.__dict__[f'gain_{camera_id}'].setValue(0)
+        self.__dict__[f'gain_{camera_id}'].setValue(self.__dict__[f"{camera_id}_dg"])
         self.__dict__[f'gain_{camera_id}'].move(180, y_start+60)
         self.__dict__[f'gain_{camera_id}'].valueChanged.connect(partial(self._update_gain_label, variable_id=f'gain_{camera_id}_label'))
 
@@ -3029,6 +3029,11 @@ def main():
                            'usv_playback_cb_bool': _toml['video']['metadata']['usv_playback'], 'chemogenetics_cb_bool': _toml['video']['metadata']['chemogenetics'], 'optogenetics_cb_bool': _toml['video']['metadata']['optogenetics'],
                            'brain_lesion_cb_bool': _toml['video']['metadata']['brain_lesion'], 'devocalization_cb_bool': _toml['video']['metadata']['devocalization'], 'female_urine_cb_bool': _toml['video']['metadata']['female_urine'],
                            'female_bedding_cb_bool': _toml['video']['metadata']['female_bedding'], 'recording_codec': _toml['video']['general']['recording_codec'],
+                           '21372315_et': _toml['video']['cameras_config']['21372315']['exposure_time'], '21372315_dg': _toml['video']['cameras_config']['21372315']['gain'],
+                           '21372316_et': _toml['video']['cameras_config']['21372316']['exposure_time'], '21372316_dg': _toml['video']['cameras_config']['21372316']['gain'],
+                           '21369048_et': _toml['video']['cameras_config']['21369048']['exposure_time'], '21369048_dg': _toml['video']['cameras_config']['21369048']['gain'],
+                           '22085397_et': _toml['video']['cameras_config']['22085397']['exposure_time'], '22085397_dg': _toml['video']['cameras_config']['22085397']['gain'],
+                           '21241563_et': _toml['video']['cameras_config']['21241563']['exposure_time'], '21241563_dg': _toml['video']['cameras_config']['21241563']['gain'],
                            'inference_root_dir_btn_clicked_flag': False, 'centroid_model_btn_clicked_flag': False,  'centered_instance_btn_btn_clicked_flag': False,
                            'calibration_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False,
                            'recorder_dir_btn_clicked_flag': False, 'avisoft_base_dir_btn_clicked_flag': False, 'coolterm_base_dir_btn_clicked_flag': False,
@@ -3051,7 +3056,6 @@ def main():
                            'fs_channel_id': analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], 'volume_adjust_audio_segment_cb_bool': True,
                            'visualizations_pc_choice': visualizations_input_dict['send_email']['visualizations_pc_choice'], 'analyses_pc_choice': analyses_input_dict['send_email']['analyses_pc_choice'],
                            'processing_pc_choice': processing_input_dict['send_email']['Messenger']['processing_pc_choice'], 'encoding_preset': processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset']}
-
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 
