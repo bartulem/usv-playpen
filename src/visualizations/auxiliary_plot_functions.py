@@ -1,7 +1,6 @@
 """
 @author: bartulem
-Various functions that assist plotting:
-(1) creates perceptually uniform colormaps (per Crameri, F. et al., Nat. Commun. (2020))
+Creates perceptually uniform colormaps (per Crameri, F. et al., Nat. Commun. (2020))
 """
 
 import colorsys
@@ -19,14 +18,14 @@ def choose_animal_colors(exp_info_dict: Optional[Dict] = None,
 
     Parameters
     ----------
-    exp_info_dict : dict
-        Dictionary containing information about the experiment.
-    visualizations_parameter_dict : dict
-        Dictionary containing information about the male/female color scheme.
+    exp_info_dict (dict)
+        Information about the experiment.
+    visualizations_parameter_dict (dict)
+        Information about the male/female color scheme.
 
     Returns
     -------
-    mouse_colors : list
+    mouse_colors (list)
         Chosen mouse colors in sequence.
     """
 
@@ -57,21 +56,21 @@ def luminance_equalizer(color_start: Optional[Tuple] = None,
 
     Parameters
     ----------
-    color_start : tuple
+    color_start (tuple)
         RGB of spectrum start color.
-    color_end : tuple
+    color_end (tuple)
         RGB of spectrum end color.
-    luminance : bool/float
+    luminance (bool / float)
         Equalize luminance of spectrum ends.
-    match_by : str
+    match_by (str)
         Match luminance by 'max', 'min' or 'mean'; defaults to 'max'.
-    saturation : bool/float
+    saturation (bool / float)
         Change saturation of spectrum ends.
     ----------
 
     Returns
     ----------
-    color_start, color_end : tuples
+    color_start, color_end (tuple)
         Modified start and end colors to match luminance.
     ----------
     """
@@ -120,34 +119,34 @@ def create_colormap(input_parameter_dict: Optional[Dict] = None) -> ListedColorm
 
     Parameters
     ----------
-    input_parameter_dict : dict
+    input_parameter_dict (dict)
         Contains the following set of parameters
-        cm_length : int
+        cm_length (int)
             Length of colormap; defaults to 255.
-        cm_name : str
+        cm_name (str)
             The name of the new colormap; defaults to 'red_green'.
-        cm_type : str
+        cm_type (str)
             Colormap type; defaults to 'sequential'.
-        cm_start : tuple
+        cm_start (tuple)
             RGB start of the colormap; defaults to red (255, 0, 0).
-        cm_start_div : tuple
+        cm_start_div (tuple)
             RGB start of the opposite side in a diverging colormap;
             defaults to green (0, 255, 0).
-        cm_end : tuple
+        cm_end (tuple)
             RGB end of the colormap; defaults to white (255, 255, 255).
-        equalize_luminance : bool/float
+        equalize_luminance (bool / float)
             Match luminance at both ends of the color spectrum; defaults to True.
-        match_luminance_by : str
+        match_luminance_by (str)
             Match luminance by 'max', 'min', 'mean' or 'set'; defaults to 'max'.
-        change_saturation : float (0-1)
+        change_saturation (int / float)
             Saturation of color(s) at the end of spectrum; defaults to 1.
-        cm_opacity : float (0-1)
+        cm_opacity (int / float)
             Opacity for colors in the new colormap; defaults to 1.
     ----------
 
     Returns
     ----------
-    new_cm : matplotlib.colors.ListedColormap
+    new_cm (matplotlib.colors.ListedColormap)
         A colormap object.
     ----------
     """

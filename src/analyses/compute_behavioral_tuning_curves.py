@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Make neuronal tuning curves for 3D behavioral features.
+Makes neuronal tuning curves for 3D behavioral features.
 """
 
 from PyQt6.QtTest import QTest
@@ -53,14 +53,14 @@ def generate_ratemaps(feature_arr: np.ndarray = None,
 
     Returns
     ----------
-    ratemap: np.ndarray
+    ratemap (np.ndarray)
         A (n_bins, 2) shape ndarray containing spike counts and occupancy (in seconds)
         for each feature bin (first column spike counts, second column occ).
-    sh_counts: np.ndarray
+    sh_counts (np.ndarray)
         A (n_bins) shape ndarray containing shuffled spike counts
-    bin_centers: np.ndarray
+    bin_centers (np.ndarray)
         A (n_bins) shape ndarray containing bin centers for given feature.
-    bin_edges: np.ndarray
+    bin_edges (np.ndarray)
         A (n_bins) shape ndarray containing bin edges for given feature.
     ----------
     """
@@ -159,13 +159,13 @@ class NeuronalTuning(FeatureZoo):
         """
         Initializes the NeuronalTuning class.
 
-        Parameter
-        ---------
-        root_directory : str
+        Parameters
+        ----------
+        root_directory (str)
             Root directory for data; defaults to None.
-        tuning_parameters_dict : dict
-            Dictionary of behavioral parameters; defaults to None.
-        message_output : function
+        tuning_parameters_dict (dict)
+            Behavioral parameters; defaults to None.
+        message_output (function)
             Defines output messages; defaults to None.
 
         Returns
@@ -185,21 +185,10 @@ class NeuronalTuning(FeatureZoo):
         This method calculates neuronal tuning curves for 3D behavioral features.
         ----------
 
-        Parameter
-        ---------
-        Uses the following set of parameters:
-            root_directory : str
-                Directory of recording files of interest.
-            temporal_offsets : list
-                Offsets of interest between spikes and behavior.
-            n_shuffles : list
-                Number of shuffles; defaults to 1000.
-            total_bin_num : int
-                Number of bins to divide non-spatial features in.
-            n_spatial_bins : int
-                Total number of spatial bins
-            spatial_scale_cm
-                Length from center to edge in cm.
+        Parameters
+        ----------
+        ----------
+
 
         Returns
         -------

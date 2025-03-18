@@ -22,8 +22,30 @@ plt.style.use(pathlib.Path(__file__).parent / '_config/usv_playpen.mplstyle')
 
 class FindMouseVocalizations:
 
-    def __init__(self, root_directory=None, input_parameter_dict=None,
-                 exp_settings_dict=None, message_output=None):
+    def __init__(self, root_directory: str = None,
+                 input_parameter_dict: dict = None,
+                 exp_settings_dict: dict = None,
+                 message_output: callable = None) -> None:
+
+        """
+        Initializes the FindMouseVocalizations class.
+
+        Parameter
+        ---------
+        root_directory (str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+            Analyses parameters; defaults to None.
+        ecp_settings_dict (dict)
+            Experimental settings; defaults to None.
+        message_output (function)
+            Function to output messages; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
+
         if input_parameter_dict is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['usv_inference']['FindMouseVocalizations']
@@ -51,7 +73,7 @@ class FindMouseVocalizations:
         else:
             self.exp_settings_dict = exp_settings_dict
 
-    def das_command_line_inference(self):
+    def das_command_line_inference(self) -> None:
         """
         Description
         ----------
@@ -61,19 +83,6 @@ class FindMouseVocalizations:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            model_directory (str)
-                Directory containing DAS model files.
-            model_name_base (str)
-                The base of the DAS model name.
-            output_file_type (str)
-                Type of annotation output file; defaults to 'csv'.
-            segment_threshold (int / float)
-                Confidence threshold for detecting segments, range 0-1; defaults to 0.5.
-            segment_minlen (int / float)
-                Minimal duration of a segment used for filtering out spurious detections; defaults to 0.015 (s).
-            segment_fillgap (int / float)
-                Gap between adjacent segments to be filled; defaults to 0.015 (s).
         ----------
 
         Returns
@@ -128,7 +137,7 @@ class FindMouseVocalizations:
                 shutil.move(src=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered{os.sep}{one_file}",
                             dst=f"{self.root_directory}{os.sep}audio{os.sep}das_annotations{os.sep}{one_file}")
 
-    def summarize_das_findings(self):
+    def summarize_das_findings(self) -> None:
         """
         Description
         ----------
@@ -149,7 +158,7 @@ class FindMouseVocalizations:
         .csv summary file
             CSV file w/ information about all detected USV segments,
             shape: (N_USV, START, STOP, DURATION, PEAK_AMP_CH,
-            MEAN_AMP_CH, CHs_COUNT, CHS_DETECTED).
+            MEAN_AMP_CH, CHs_COUNT, CHS_DETECTED, EMMITER).
         ----------
         """
 

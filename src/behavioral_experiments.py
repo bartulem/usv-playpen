@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Code to run experiments with Motif/Avisoft.
+Runs experiments with Loopbio/Avisoft software.
 """
 
 from PyQt6.QtTest import QTest
@@ -20,7 +20,26 @@ from .send_email import Messenger
 
 class ExperimentController:
 
-    def __init__(self, email_receivers=None, exp_settings_dict=None, message_output=None):
+    def __init__(self, email_receivers: list = None,
+                 exp_settings_dict: dict = None,
+                 message_output: callable = None) -> None:
+
+        """
+        Initializes the ExperimentController class.
+
+        Parameter
+        ---------
+        exp_settings_dict (dict)
+            Experiment settings; defaults to None.
+        email_receivers (list)
+            Email receivers; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
 
         self.api = None
         self.camera_serial_num = None
@@ -42,13 +61,29 @@ class ExperimentController:
         else:
             self.message_output = message_output
 
-    def get_cpu_affinity_mask(self):
+    def get_cpu_affinity_mask(self) -> str:
+        """
+        Description
+        ----------
+        This method gets the CPU affinity mask for the Avisoft software.
+        ----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (str)
+            CPU affinity mask.
+        """
+
         bitmask = 0
         for cpu in self.exp_settings_dict['audio']['cpu_affinity']:
             bitmask |= 1 << cpu
         return f"0x{bitmask:X}"
 
-    def get_connection_params(self):
+    def get_connection_params(self) -> tuple:
         """
         Description
         ----------
@@ -61,10 +96,9 @@ class ExperimentController:
 
         Returns
         ----------
-        master_ip_address (str)
-            IP address of the master PC.
-        api_key (str)
-            API key to run Motif.
+        master_ip_address (str), api_key (str)
+            IP address of the master PC
+            and API key to run Motif.
         ----------
         """
 
@@ -78,7 +112,7 @@ class ExperimentController:
             config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini'))
             return config['motif']['master_ip_address'], config['motif']['api']
 
-    def get_custom_dir_names(self, now=None):
+    def get_custom_dir_names(self, now: float = None) -> tuple:
         """
         Description
         ----------
@@ -87,16 +121,14 @@ class ExperimentController:
 
         Parameters
         ----------
-        now (str)
+        now (float)
             Contains year, month, day, hour, minute, second, and microsecond.
         ----------
 
         Returns
         ----------
-        total_dir_name_linux (str)
-            Directory location in Linux coordinates.
-        total_dir_name_windows (str)
-            Directory location in Windows coordinates.
+        total_dir_name_linux (str), total_dir_name_windows (str)
+            Directory location in Linux and Window coordinates.
         ----------
         """
 
@@ -116,7 +148,24 @@ class ExperimentController:
 
         return start_hour_min_sec, total_dir_name_linux, total_dir_name_windows
 
-    def check_camera_vitals(self, camera_fr=None):
+    def check_camera_vitals(self, camera_fr: int | float = None) -> None:
+        """
+        Description
+        ----------
+        This method check whether Motif is operational.
+        ----------
+
+        Parameters
+        ----------
+        camera_fr (int / float)
+            Camera sampling rate; defaults to None.
+        ----------
+
+        Returns
+        ----------
+        ----------
+        """
+
         ip_address, api_key = self.get_connection_params()
 
         try:
@@ -165,7 +214,22 @@ class ExperimentController:
 
             self.api = api
 
-    def conduct_tracking_calibration(self):
+    def conduct_tracking_calibration(self) -> None:
+        """
+        Description
+        ----------
+        This method conducts tracking calibration.
+        ----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        ----------
+        ----------
+        """
+
         self.message_output(f"Video calibration started at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
         self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['calibration_frame_rate'])
@@ -179,7 +243,22 @@ class ExperimentController:
 
         self.message_output(f"Video calibration completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
-    def modify_audio_file(self):
+    def modify_audio_file(self) -> None:
+        """
+        Description
+        ----------
+        This method modifies the Avisoft config file.
+        ----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        ----------
+        ----------
+        """
+
         changes = 0
 
         self.config_1 = configparser.ConfigParser()
@@ -320,7 +399,7 @@ class ExperimentController:
             # pause for N seconds
             QTest.qWait(5000)
 
-    def conduct_behavioral_recording(self):
+    def conduct_behavioral_recording(self) -> None:
         """
         Description
         ----------
@@ -329,40 +408,11 @@ class ExperimentController:
         files to the network drive (see below for details).
 
         NB: the data cannot be acquired until Motif, Avisoft USGH recorder and CoolTerm
-        have been installed and configured for recording.
+        have been installed and/or configured for recording.
         ----------
 
         Parameters
         ----------
-        Contains, among others in the .toml file, the following set of parameters
-            conduct_audio_recording (bool)
-                To record USV signals with Avisoft software or not; defaults to False.
-            expected_camera_num (int)
-                The expected number of recording cameras; defaults to 5.
-            calibration_frame_rate (int/float)
-                The calibration sampling rate; defaults to 10 (fps).
-            recording_frame_rate (int/float)
-                The recording sampling rate; defaults to 150 (fps).
-            recording_duration (int/float)
-                Recording duration; defaults to 20 (minutes).
-            recording_codec (str)
-                Video codec to use; defaults to "hq".
-            monitor_recording (bool)
-                To monitor or not to monitor the recording; defaults to True.
-            monitor_specific_camera (bool)
-                To monitor only one specific camera view; defaults to False.
-            specific_camera_serial (str)
-                The serial number of the specific camera to monitor; defaults to "21372315".
-            monitor_url (str)
-                URL for monitoring all recording cameras
-            copy_files_location (str)
-                Location to copy newly recorded files to; defaults to "/home/.../Data".
-            delete_post_copy (bool)
-                Delete files post copy; defaults to False.
-            metadata (dict)
-                Metadata to write to file.
-            cameras_config (dict)
-                Color of each camera, exposure time and gain.
         ----------
 
         Returns

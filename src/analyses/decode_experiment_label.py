@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Extract information about what kind of experiment was conducted.
+Extracts information about what kind of experiment was conducted.
 """
 
 import re
@@ -43,12 +43,12 @@ def extract_information(experiment_code: Optional[str] = None) -> Optional[Dict]
 
     Parameters
     ----------
-    experiment_code : str
+    experiment_code (str)
         Code that describes the experiment, defaults to None.
 
     Returns
     -------
-    output_dict : dict
+    output_dict (dict)
         Contains information about the experiment:
         experiment type, mouse number, mouse sex, mouse housing and mouse estrus.
     """

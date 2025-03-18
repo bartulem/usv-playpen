@@ -13,7 +13,7 @@ from functools import partial
 from pathlib import Path
 import toml
 from PyQt6.QtCore import (
-    Qt
+    Qt, QEvent
 )
 from PyQt6.QtGui import (
     QFont,
@@ -49,7 +49,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.8.0'
+app_name = 'USV Playpen v0.8.1'
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -66,66 +66,218 @@ calibrate_icon = f'{basedir}{os.sep}img{os.sep}calibrate.png'
 
 
 class Main(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget = None) -> None:
+        """
+        Initializes the Main class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
         super().__init__(parent)
 
-    def paintEvent(self, event):
+    def paintEvent(self, event: QEvent = None) -> None:
+        """
+        Put background on GUI.
+
+        Parameters
+        ----------
+        event (QEvent)
+            Event to be painted.
+
+        Returns
+        -------
+        -------
+        """
         paint_main = QPainter(self)
         paint_main.drawPixmap(self.rect(), QPixmap(f'{background_img}'))
         QWidget.paintEvent(self, event)
 
 
 class Record(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the Record class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(Record, self).__init__(parent)
 
 
 class AudioSettings(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the AudioSettings class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(AudioSettings, self).__init__(parent)
 
 
 class VideoSettings(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the VideoSettings class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(VideoSettings, self).__init__(parent)
 
-
 class ConductRecording(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the ConductRecording class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(ConductRecording, self).__init__(parent)
 
-
 class ProcessSettings(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the ProcessSettings class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(ProcessSettings, self).__init__(parent)
 
-
 class ConductProcess(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the ConductProcess class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(ConductProcess, self).__init__(parent)
 
 class AnalysesSettings(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the AnalysesSettings class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(AnalysesSettings, self).__init__(parent)
 
 class ConductAnalyses(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the ConductAnalyses class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(ConductAnalyses, self).__init__(parent)
 
 class VisualizationsSettings(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the VisualizationsSettings class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(VisualizationsSettings, self).__init__(parent)
 
 class ConductVisualizations(QWidget):
-    def __init__(self, parent=Main):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the ConductVisualizations class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
         super(ConductVisualizations, self).__init__(parent)
 
 
 # noinspection PyUnresolvedReferences,PyTypeChecker
 class USVPlaypenWindow(QMainWindow):
-    """Main window of GUI."""
+    """ Main window of usv-playpen GUI """
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
+        """
+        Initializes the USVPlaypenWindow class.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
         super().__init__()
 
         font_file_loc = QFontDatabase.addApplicationFont(f'{basedir}{os.sep}fonts{os.sep}segoeui.ttf')
@@ -141,6 +293,28 @@ class USVPlaypenWindow(QMainWindow):
 
         self.boolean_list = ['Yes', 'No']
 
+        self.main_window()
+
+    def main_window(self) -> None:
+        """
+        Initializes the usv-playpen Main window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        self.Main = Main(self)
+        self.setCentralWidget(self.Main)
+        self.setFixedSize(420, 500)
+        self._location_on_the_screen()
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, on=False)
+        self.setWindowTitle(f'{app_name}')
+
         self.exp_settings_dict = toml.load(Path(__file__).parent / '_config/behavioral_experiments_settings.toml')
 
         with open((Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as process_json_file:
@@ -151,16 +325,6 @@ class USVPlaypenWindow(QMainWindow):
 
         with open((Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'r') as visualizations_json_file:
             self.visualizations_input_dict = json.load(visualizations_json_file)
-
-        self.main_window()
-
-    def main_window(self):
-        self.Main = Main(self)
-        self.setCentralWidget(self.Main)
-        self.setFixedSize(420, 500)
-        self._location_on_the_screen()
-        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, on=False)
-        self.setWindowTitle(f'{app_name}')
 
         exp_id_label = QLabel('Experimenter:', self.Main)
         exp_id_label.setFont(QFont(self.font_id, 10+self.font_size_increase))
@@ -175,7 +339,19 @@ class USVPlaypenWindow(QMainWindow):
 
         self._create_buttons_main()
 
-    def record_one(self):
+    def record_one(self) -> None:
+        """
+        Initializes the usv-playpen Record One window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.Record = Record(self)
         self.setWindowTitle(f'{app_name} (Record > Select config directories and set basic parameters)')
         self.setCentralWidget(self.Record)
@@ -320,7 +496,19 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_record(seq=0, class_option=self.Record,
                                     button_pos_y=record_one_y-35, next_button_x_pos=record_one_x-100)
 
-    def record_two(self):
+    def record_two(self) -> None:
+        """
+        Initializes the usv-playpen Record Two window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.AudioSettings = AudioSettings(self)
         self.setWindowTitle(f'{app_name} (Record > Audio Settings)')
         self.setCentralWidget(self.AudioSettings)
@@ -416,7 +604,18 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_record(seq=1, class_option=self.AudioSettings,
                                     button_pos_y=record_two_y-35, next_button_x_pos=record_two_x-100)
 
-    def record_three(self):
+    def record_three(self) -> None:
+        """
+        Initializes the usv-playpen Record Three window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
         self.VideoSettings = VideoSettings(self)
         self.setWindowTitle(f'{app_name} (Record > Video Settings)')
         self.setCentralWidget(self.VideoSettings)
@@ -761,7 +960,19 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_record(seq=2, class_option=self.VideoSettings,
                                     button_pos_y=record_three_y - 35, next_button_x_pos=record_three_x - 100)
 
-    def record_four(self):
+    def record_four(self) -> None:
+        """
+        Initializes the usv-playpen Record Four window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.ConductRecording = ConductRecording(self)
         self.setWindowTitle(f'{app_name} (Conduct recording)')
         self.setCentralWidget(self.ConductRecording)
@@ -783,7 +994,19 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_record(seq=3, class_option=self.ConductRecording,
                                     button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
 
-    def process_one(self):
+    def process_one(self) -> None:
+        """
+        Initializes the usv-playpen Process One window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.ProcessSettings = ProcessSettings(self)
         self.setWindowTitle(f'{app_name} (Process recordings > Settings)')
         self.setCentralWidget(self.ProcessSettings)
@@ -1461,7 +1684,19 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
                                      button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
 
-    def process_two(self):
+    def process_two(self) -> None:
+        """
+        Initializes the usv-playpen Process Two window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.ConductProcess = ConductProcess(self)
         self.setWindowTitle(f'{app_name} (Conduct Processing)')
         self.setCentralWidget(self.ConductProcess)
@@ -1487,7 +1722,18 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_process(seq=1, class_option=self.ConductProcess,
                                      button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
 
-    def analyze_one(self):
+    def analyze_one(self) -> None:
+        """
+        Initializes the usv-playpen Analyze One window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
         self.AnalysesSettings = AnalysesSettings(self)
         self.setWindowTitle(f'{app_name} (Analyze data > Settings)')
         self.setCentralWidget(self.AnalysesSettings)
@@ -1610,10 +1856,10 @@ class USVPlaypenWindow(QMainWindow):
         self.frequency_shift_device_id_cb.activated.connect(partial(self._combo_box_fs_device_id, variable_id='fs_device_id'))
         self.frequency_shift_device_id_cb.move(275, 705)
 
-        frequency_shift_channel_id_label = QLabel('Recording device channel (1-24):', self.AnalysesSettings)
+        frequency_shift_channel_id_label = QLabel('Recording device channel (1-12):', self.AnalysesSettings)
         frequency_shift_channel_id_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         frequency_shift_channel_id_label.move(10, 735)
-        self.frequency_shift_channel_id_list = sorted(list(range(1, 25)), key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], reverse=True)
+        self.frequency_shift_channel_id_list = sorted(list(range(1, 13)), key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], reverse=True)
         self.frequency_shift_channel_id_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_channel_id_cb.addItems([str(ch_id_item) for ch_id_item in self.frequency_shift_channel_id_list])
         self.frequency_shift_channel_id_cb.setStyleSheet('QComboBox { width: 57px; }')
@@ -1656,7 +1902,19 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_analyze(seq=0, class_option=self.AnalysesSettings,
                                      button_pos_y=analyze_one_y - 35, next_button_x_pos=analyze_one_x - 100)
 
-    def analyze_two(self):
+    def analyze_two(self) -> None:
+        """
+        Initializes the usv-playpen Analyze Two window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.ConductAnalyses = ConductAnalyses(self)
         self.setWindowTitle(f'{app_name} (Conduct Analyses)')
         self.setCentralWidget(self.ConductAnalyses)
@@ -1678,7 +1936,18 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_analyze(seq=1, class_option=self.ConductAnalyses,
                                      button_pos_y=analyze_two_y - 35, next_button_x_pos=analyze_two_x - 100)
 
-    def _save_analyses_labels_func(self):
+    def _save_analyses_labels_func(self) -> None:
+        """
+        Transfers Analyses variables to analyses_settings dictionary.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
 
         if os.name == 'nt':
             self.analyses_dir_edit = self.analyses_dir_edit.toPlainText().replace(os.sep, '\\')
@@ -1729,7 +1998,19 @@ class USVPlaypenWindow(QMainWindow):
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_volume_adjustment'] = self.volume_adjust_audio_segment_cb_bool
         self.volume_adjust_audio_segment_cb_bool = True
 
-    def visualize_one(self):
+    def visualize_one(self) -> None:
+        """
+        Initializes the usv-playpen Visualize One window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.VisualizationsSettings = VisualizationsSettings(self)
         self.setWindowTitle(f'{app_name} (Visualize data > Settings)')
         self.setCentralWidget(self.VisualizationsSettings)
@@ -1997,7 +2278,19 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_visualize(seq=0, class_option=self.VisualizationsSettings,
                                        button_pos_y=visualize_one_y - 35, next_button_x_pos=visualize_one_x - 100)
 
-    def visualize_two(self):
+    def visualize_two(self) -> None:
+        """
+        Initializes the usv-playpen Visualize Two window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.ConductVisualizations = ConductVisualizations(self)
         self.setWindowTitle(f'{app_name} (Conduct Visualizations)')
         self.setCentralWidget(self.ConductVisualizations)
@@ -2019,7 +2312,18 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_visualize(seq=1, class_option=self.ConductVisualizations,
                                        button_pos_y=visualize_two_y - 35, next_button_x_pos=visualize_two_x - 100)
 
-    def _save_visualizations_labels_func(self):
+    def _save_visualizations_labels_func(self) -> None:
+        """
+        Transfers Visualize variables to visualizations_settings dictionary.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
 
         if os.name == 'nt':
             self.visualizations_dir_edit = self.visualizations_dir_edit.toPlainText().replace(os.sep, '\\')
@@ -2102,7 +2406,19 @@ class USVPlaypenWindow(QMainWindow):
         self.beh_features_cb_bool = False
 
 
-    def _save_process_labels_func(self):
+    def _save_process_labels_func(self) -> None:
+        """
+        Transfers Processing variables to processing_settings dictionary.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'ch_receiving_input',
                           'a_ch_receiving_input', 'pc_usage_process', 'min_spike_num', 'phidget_extra_data_camera',
                           'npx_ms_divergence_tolerance', 'hpss_power', 'sleap_conda', 'n_deriv_smooth',
@@ -2276,7 +2592,18 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['processing_booleans']['das_summarize'] = self.das_summary_cb_bool
         self.das_summary_cb_bool = False
 
-    def _save_record_one_labels_func(self):
+    def _save_record_one_labels_func(self) -> None:
+        """
+        Transfers Recording One settings to exp_settings dictionary.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
         if type(self.recording_files_destination_linux) != str:
             self.recording_files_destination_linux = self.recording_files_destination_linux.text().split(',')
         if type(self.recording_files_destination_windows) != str:
@@ -2314,7 +2641,19 @@ class USVPlaypenWindow(QMainWindow):
         if not self.coolterm_base_dir_btn_clicked_flag:
             self.exp_settings_dict['coolterm_basedirectory'] = self.coolterm_base_edit.text()
 
-    def _save_record_two_labels_func(self):
+    def _save_record_two_labels_func(self) -> None:
+        """
+        Transfers Recording Two settings to exp_settings dictionary.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for variable in self.default_audio_settings.keys():
             if variable in self.exp_settings_dict['audio'].keys():
                 if variable == 'used_mics' or variable == 'cpu_affinity':
@@ -2339,7 +2678,19 @@ class USVPlaypenWindow(QMainWindow):
             elif variable in self.exp_settings_dict['audio']['call'].keys():
                 self.exp_settings_dict['audio']['call'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
 
-    def _save_record_three_labels_func(self):
+    def _save_record_three_labels_func(self) -> None:
+        """
+        Transfers Recording Three settings to exp_settings dictionary.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         video_dict_keys = ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial',
                            'institution_entry', 'laboratory_entry', 'experimenter_entry', 'mice_num_entry',
                            'species_entry', 'strain_entry', 'cage_entry', 'subject_entry', 'dob_entry',
@@ -2388,7 +2739,18 @@ class USVPlaypenWindow(QMainWindow):
                 self.expected_cameras = self.expected_cameras.text()
                 self.exp_settings_dict['video']['general'][variable] = self.expected_cameras.split(',')
 
-    def _save_variables_based_on_exp_id(self):
+    def _save_variables_based_on_exp_id(self) -> None:
+        """
+        Update all variable dependent on exp_id (e.g., fileserver path).
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
 
         self.config_dir_global = Path(__file__).parent / '_config'
 
@@ -2411,91 +2773,361 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['send_email']['Messenger']['experimenter'] = f'{self.exp_id}'
         self.analyses_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
 
-    def _combo_box_fs_channel_id(self, index, variable_id=None):
+    def _combo_box_fs_channel_id(self,
+                                 index: int,
+                                 variable_id: str = None) -> None:
+        """
+        Update frequency shift combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.frequency_shift_channel_id_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.frequency_shift_channel_id_list[idx]
                 break
 
-    def _combo_box_fs_device_id(self, index, variable_id=None):
+    def _combo_box_fs_device_id(self,
+                                index: int,
+                                variable_id: str = None) -> None:
+        """
+        Frequency shift Avisoft device combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.frequency_shift_device_id_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.frequency_shift_device_id_list[idx]
                 break
 
-    def _combo_box_fs_audio_dir(self, index, variable_id=None):
+    def _combo_box_fs_audio_dir(self,
+                                index: int,
+                                variable_id: str = None) -> None:
+        """
+        Frequency shift audio directory combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.frequency_shift_audio_dir_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.frequency_shift_audio_dir_list[idx]
                 break
 
-    def _combo_box_spectrogram_ch(self, index, variable_id=None):
+    def _combo_box_spectrogram_ch(self,
+                                  index: int,
+                                  variable_id: str = None) -> None:
+        """
+        Spectrogram channel combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.spectrogram_ch_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.spectrogram_ch_list[idx]
                 break
 
-    def _combo_box_view_angle(self, index, variable_id=None):
+    def _combo_box_view_angle(self,
+                              index: int,
+                              variable_id: str = None) -> None:
+        """
+        View angle combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.view_angle_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.view_angle_list[idx]
                 break
 
-    def _combo_box_figure_format(self, index, variable_id=None):
+    def _combo_box_figure_format(self,
+                                 index: int,
+                                 variable_id: str = None) -> None:
+        """
+        Figure format combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.fig_format_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.fig_format_list[idx]
                 break
 
-    def _combo_box_plot_theme(self, index, variable_id=None):
+    def _combo_box_plot_theme(self,
+                              index: int,
+                              variable_id: str = None) -> None:
+        """
+        Plot theme combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.plot_theme_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.plot_theme_list[idx]
                 break
 
-    def _combo_box_prior_transformed_tracking_data(self, index, variable_id=None):
+    def _combo_box_prior_transformed_tracking_data(self,
+                                                   index: int,
+                                                   variable_id: str = None) -> None:
+        """
+        Anipose transformation type combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if index == 0:
             self.__dict__[variable_id] = 'animal'
         else:
             self.__dict__[variable_id] = 'arena'
 
-    def _combo_box_encoding_preset(self, index, variable_id=None):
+    def _combo_box_encoding_preset(self,
+                                   index: int,
+                                   variable_id: str = None) -> None:
+        """
+        Encoding preset combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.encoding_preset_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.encoding_preset_list[idx]
                 break
 
-    def _combo_box_prior_name(self, index, variable_id=None):
+    def _combo_box_prior_name(self,
+                              index: int,
+                              variable_id: str = None) -> None:
+        """
+        Experimenter name combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.exp_id_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.exp_id_list[idx]
                 break
 
-    def _combo_box_prior_codec(self, index, variable_id=None):
+    def _combo_box_prior_codec(self,
+                              index: int,
+                              variable_id: str = None) -> None:
+        """
+        Recording codec combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.recording_codec_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.recording_codec_list[idx]
                 break
 
-    def _combo_box_prior_processing_pc_choice(self, index, variable_id=None):
+    def _combo_box_prior_processing_pc_choice(self,
+                                              index: int,
+                                              variable_id: str = None) -> None:
+        """
+        Processing PC of choice combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.loaded_processing_pc_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.loaded_processing_pc_list[idx]
                 break
 
-    def _combo_box_prior_analyses_pc_choice(self, index, variable_id=None):
+    def _combo_box_prior_analyses_pc_choice(self,
+                                            index: int,
+                                            variable_id: str = None) -> None:
+        """
+        Analyses PC of choice combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.loaded_analyses_pc_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.loaded_analyses_pc_list[idx]
                 break
 
-    def _combo_box_prior_visualizations_pc_choice(self, index, variable_id=None):
+    def _combo_box_prior_visualizations_pc_choice(self,
+                                                  index: int,
+                                                  variable_id: str = None) -> None:
+        """
+        Visualizations PC of choice combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         for idx in range(len(self.loaded_visualizations_pc_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.loaded_visualizations_pc_list[idx]
                 break
 
-    def _combo_box_prior_audio_device_camera_input(self, index, variable_id=None):
+    def _combo_box_prior_audio_device_camera_input(self,
+                                                   index: int,
+                                                   variable_id: str = None) -> None:
+        """
+        Audio device camera input combo box.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if index == 0:
             self.__dict__[variable_id] = 'm'
         elif index == 1:
@@ -2503,37 +3135,168 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.__dict__[variable_id] = 'both'
 
-    def _combo_box_prior_npx_file_type(self, index, variable_id=None):
+    def _combo_box_prior_npx_file_type(self,
+                                       index: int,
+                                       variable_id: str = None) -> None:
+        """
+        Neuropixels file type combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if index == 0:
             self.__dict__[variable_id] = 'ap'
         else:
             self.__dict__[variable_id] = 'lf'
 
-    def _combo_box_prior_true(self, index, variable_id=None):
+    def _combo_box_prior_true(self,
+                              index: int,
+                              variable_id: str = None) -> None:
+        """
+        Boolean (prior True) combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if index == 1:
             self.__dict__[variable_id] = False
         else:
             self.__dict__[variable_id] = True
 
-    def _combo_box_prior_false(self, index, variable_id=None):
+    def _combo_box_prior_false(self,
+                               index: int,
+                               variable_id: str = None) -> None:
+        """
+        Boolean (prior False) combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if index == 1:
             self.__dict__[variable_id] = True
         else:
             self.__dict__[variable_id] = False
 
-    def _update_exposure_time_label(self, value, variable_id=None):
+    def _update_exposure_time_label(self, value: int, variable_id: str = None) -> None:
+        """
+        Updates camera exposure time label.
+
+        Parameters
+        ----------
+        value (int)
+            Exposure time (in μs, completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.__dict__[variable_id].setText(f'exp time ({str(value)} μs):')
 
-    def _update_gain_label(self, value, variable_id=None):
+    def _update_gain_label(self, value: int, variable_id: str = None) -> None:
+        """
+        Updates camera digital gain label.
+
+        Parameters
+        ----------
+        value (int)
+            Digital gain (in dB, completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.__dict__[variable_id].setText(f'digital gain ({str(value)} dB):')
 
-    def _update_fr_label(self, value):
+    def _update_fr_label(self, value: int) -> None:
+        """
+        Updates camera sampling rate for recording sessions.
+
+        Parameters
+        ----------
+        value (int)
+            Recording rate (in fps, completes automatically).
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.fr_label.setText(f'Recording ({str(value)} fps):')
 
-    def _update_cal_fr_label(self, value):
+    def _update_cal_fr_label(self, value: int) -> None:
+        """
+        Updates camera sampling rate for calibration sessions.
+
+        Parameters
+        ----------
+        value (int)
+            Recording rate (in fps, completes automatically).
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.cal_fr_label.setText(f'Calibration ({str(value)} fps):')
 
-    def _create_sliders_general(self, camera_id=None, camera_color=None, y_start=None):
+    def _create_sliders_general(self, camera_id: str = None, camera_color: str = None, y_start: int = None) -> None:
+        """
+        Creates sliders for camera exposure time and digital gain.
+
+        Parameters
+        ----------
+        camera_id (str)
+            Camera ID (e.g., 21372316).
+        camera_color (str)
+            Camera label color (e.g., green).
+        y_start (int)
+            Starting y position for the camera settings.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
 
         specific_camera_label = QLabel(f'Camera {camera_id} ({camera_color})', self.VideoSettings)
         specific_camera_label.setStyleSheet('QLabel { font-weight: bold;}')
@@ -2563,7 +3326,19 @@ class USVPlaypenWindow(QMainWindow):
         self.__dict__[f'gain_{camera_id}'].valueChanged.connect(partial(self._update_gain_label, variable_id=f'gain_{camera_id}_label'))
 
 
-    def _create_buttons_main(self):
+    def _create_buttons_main(self) -> None:
+        """
+        Creates buttons for Main window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map = {'Process': QPushButton(QIcon(process_icon), 'Process', self.Main),
                            'Record': QPushButton(QIcon(record_icon), 'Record', self.Main),
                            'Analyze': QPushButton(QIcon(analyze_icon), 'Analyze', self.Main),
@@ -2587,7 +3362,31 @@ class USVPlaypenWindow(QMainWindow):
         self.button_map['Visualize'].setFont(QFont(self.font_id, 8+self.font_size_increase))
         self.button_map['Visualize'].clicked.connect(self.visualize_one)
 
-    def _create_buttons_record(self, seq, class_option, button_pos_y, next_button_x_pos):
+    def _create_buttons_record(self,
+                               seq: int = None,
+                               class_option: str = None,
+                               button_pos_y: int = None,
+                               next_button_x_pos: int = None) -> None:
+        """
+        Creates buttons for Record windows.
+
+        Parameters
+        ----------
+        seq (int)
+            Sequence number of the window.
+        class_option (str)
+            Class option for the button.
+        button_pos_y (int)
+            Y position for the button.
+        next_button_x_pos (int)
+            X position for the next button.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if seq == 0:
             previous_win = self.main_window
             next_win_connect = [self._save_record_one_labels_func, self.record_two]
@@ -2596,8 +3395,7 @@ class USVPlaypenWindow(QMainWindow):
             next_win_connect = [self._save_record_two_labels_func, self.record_three]
         elif seq == 2:
             previous_win = self.record_two
-            next_win_connect = [self._save_record_three_labels_func, self.main_window,
-                                self.record_four]
+            next_win_connect = [self._save_record_three_labels_func, self.record_four]
         else:
             previous_win = self.record_three
             next_win_connect = []
@@ -2635,7 +3433,31 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Record'].clicked.connect(self._start_recording)
             self.button_map['Record'].clicked.connect(self._enable_other_buttons_post_rec)
 
-    def _create_buttons_process(self, seq, class_option, button_pos_y, next_button_x_pos):
+    def _create_buttons_process(self,
+                                seq: int = None,
+                                class_option: str = None,
+                                button_pos_y: int = None,
+                                next_button_x_pos: int = None) -> None:
+        """
+        Creates buttons for Process windows.
+
+        Parameters
+        ----------
+        seq (int)
+            Sequence number of the window.
+        class_option (str)
+            Class option for the button.
+        button_pos_y (int)
+            Y position for the button.
+        next_button_x_pos (int)
+            X position for the next button.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if seq == 0:
             previous_win = self.main_window
             next_win_connect = [self._save_process_labels_func, self.process_two]
@@ -2667,7 +3489,31 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Process'].clicked.connect(self._start_processing)
             self.button_map['Process'].clicked.connect(self._enable_process_buttons)
 
-    def _create_buttons_analyze(self, seq, class_option, button_pos_y, next_button_x_pos):
+    def _create_buttons_analyze(self,
+                                seq: int = None,
+                                class_option: str = None,
+                                button_pos_y: int = None,
+                                next_button_x_pos: int = None) -> None:
+        """
+        Creates buttons for Analyses windows.
+
+        Parameters
+        ----------
+        seq (int)
+            Sequence number of the window.
+        class_option (str)
+            Class option for the button.
+        button_pos_y (int)
+            Y position for the button.
+        next_button_x_pos (int)
+            X position for the next button.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if seq == 0:
             previous_win = self.main_window
             next_window_connect = [self._save_analyses_labels_func, self.analyze_two]
@@ -2699,7 +3545,31 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Analyze'].clicked.connect(self._start_analyses)
             self.button_map['Analyze'].clicked.connect(self._enable_analyze_buttons)
 
-    def _create_buttons_visualize(self, seq, class_option, button_pos_y, next_button_x_pos):
+    def _create_buttons_visualize(self,
+                                  seq: int = None,
+                                  class_option: str = None,
+                                  button_pos_y: int = None,
+                                  next_button_x_pos: int = None) -> None:
+        """
+        Creates buttons for Visualize windows.
+
+        Parameters
+        ----------
+        seq (int)
+            Sequence number of the window.
+        class_option (str)
+            Class option for the button.
+        button_pos_y (int)
+            Y position for the button.
+        next_button_x_pos (int)
+            X position for the next button.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         if seq == 0:
             previous_win = self.main_window
             next_window_connect = [self._save_visualizations_labels_func, self.visualize_two]
@@ -2731,66 +3601,246 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Visualize'].clicked.connect(self._start_visualizations)
             self.button_map['Visualize'].clicked.connect(self._enable_visualize_buttons)
 
-    def _start_visualizations(self):
+    def _start_visualizations(self) -> None:
+        """
+        Runs visualizations.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.run_visualizations.visualize_data()
 
-    def _start_analyses(self):
+    def _start_analyses(self) -> None:
+        """
+        Runs analyses.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.run_analyses.analyze_data()
 
-    def _start_processing(self):
+    def _start_processing(self) -> None:
+        """
+        Runs processing.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.run_processing.prepare_data_for_analyses()
 
-    def _start_calibration(self):
+    def _start_calibration(self) -> None:
+        """
+        Runs calibration.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.run_exp.conduct_tracking_calibration()
 
-    def _start_recording(self):
+    def _start_recording(self) -> None:
+        """
+        Runs recording.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.run_exp.conduct_behavioral_recording()
 
-    def _enable_visualize_buttons(self):
+    def _enable_visualize_buttons(self) -> None:
+        """
+        Enables visualize buttons.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Previous'].setEnabled(True)
         self.button_map['Main'].setEnabled(True)
         self.button_map['Visualize'].setEnabled(False)
 
-    def _disable_visualize_buttons(self):
+    def _disable_visualize_buttons(self) -> None:
+        """
+        Disables visualize buttons.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Previous'].setEnabled(False)
         self.button_map['Main'].setEnabled(False)
         self.button_map['Visualize'].setEnabled(False)
 
-    def _enable_analyze_buttons(self):
+    def _enable_analyze_buttons(self) -> None:
+        """
+        Enables analyze buttons.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Previous'].setEnabled(True)
         self.button_map['Main'].setEnabled(True)
         self.button_map['Analyze'].setEnabled(False)
 
-    def _disable_analyze_buttons(self):
+    def _disable_analyze_buttons(self) -> None:
+        """
+        Disables analyze buttons.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Previous'].setEnabled(False)
         self.button_map['Main'].setEnabled(False)
         self.button_map['Analyze'].setEnabled(False)
 
-    def _enable_process_buttons(self):
+    def _enable_process_buttons(self) -> None:
+        """
+        Enables process buttons.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Previous'].setEnabled(True)
         self.button_map['Main'].setEnabled(True)
         self.button_map['Process'].setEnabled(False)
 
-    def _disable_process_buttons(self):
+    def _disable_process_buttons(self) -> None:
+        """
+        Disables process buttons.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Previous'].setEnabled(False)
         self.button_map['Main'].setEnabled(False)
         self.button_map['Process'].setEnabled(False)
 
-    def _enable_other_buttons_post_cal(self):
+    def _enable_other_buttons_post_cal(self) -> None:
+        """
+        Enables buttons after calibration.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Main'].setEnabled(True)
         self.button_map['Record'].setEnabled(True)
 
     def _enable_other_buttons_post_rec(self):
+        """
+        Enables buttons after recording.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Main'].setEnabled(True)
 
-    def _disable_other_buttons(self):
+    def _disable_other_buttons(self) -> None:
+        """
+        Disables all buttons.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.button_map['Previous'].setEnabled(False)
         self.button_map['Main'].setEnabled(False)
         self.button_map['Record'].setEnabled(False)
         if self.exp_settings_dict['conduct_tracking_calibration']:
             self.button_map['Calibrate'].setEnabled(False)
 
-    def _sequence_playback_file_dialog(self):
+    def _sequence_playback_file_dialog(self) -> None:
+        """
+        Creates dialog for audible audio sequence.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.sequence_audio_file_btn_clicked_flag = True
         sequence_audio_file_name = QFileDialog.getOpenFileNames(
             self,
@@ -2807,7 +3857,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.visualizations_input_dict['make_behavioral_videos']['sequence_audio_file'] = self.sequence_audio_file_edit.text()
 
-    def _speaker_playback_file_dialog(self):
+    def _speaker_playback_file_dialog(self) -> None:
+        """
+        Creates dialog for speaker playback.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.speaker_audio_file_btn_clicked_flag = True
         speaker_audio_file_name = QFileDialog.getOpenFileNames(
             self,
@@ -2824,7 +3886,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.visualizations_input_dict['make_behavioral_videos']['speaker_audio_file'] = self.speaker_audio_file_edit.text()
 
-    def _open_arena_tracking_dialog(self):
+    def _open_arena_tracking_dialog(self) -> None:
+        """
+        Creates dialog for arena tracking.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.arena_root_directory_btn_clicked_flag = True
         arena_tracking_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2840,7 +3914,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.visualizations_input_dict['make_behavioral_videos']['arena_directory'] = self.arena_root_directory_edit.text()
 
-    def _open_centroid_dialog(self):
+    def _open_centroid_dialog(self) -> None:
+        """
+        Creates dialog for SLEAP centroid model.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.centroid_model_btn_clicked_flag = True
         centroid_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2856,7 +3942,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.processing_input_dict['prepare_cluster_job']['centroid_model_path'] = self.centroid_model_edit.text()
 
-    def _open_centered_instance_dialog(self):
+    def _open_centered_instance_dialog(self) -> None:
+        """
+        Creates dialog for SLEAP centered instance model.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.centered_instance_btn_btn_clicked_flag = True
         centered_instance_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2872,7 +3970,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path'] = self.centered_instance_model_edit.text()
 
-    def _open_inference_root_dialog(self):
+    def _open_inference_root_dialog(self) -> None:
+        """
+        Creates dialog for SLEAP inference directory.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.inference_root_dir_btn_clicked_flag = True
         inference_root_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2888,7 +3998,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = self.inference_root_dir_edit.text()
 
-    def _open_recorder_dialog(self):
+    def _open_recorder_dialog(self) -> None:
+        """
+        Creates dialog for Avisoft USGH Recorder directory.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.recorder_dir_btn_clicked_flag = True
         recorder_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2904,7 +4026,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.exp_settings_dict['avisoft_recorder_exe'] = f'{self.avisoft_rec_dir_global}'
 
-    def _open_avisoft_dialog(self):
+    def _open_avisoft_dialog(self) -> None:
+        """
+        Creates dialog for Avisoft base directory.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.avisoft_base_dir_btn_clicked_flag = True
         avisoft_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2920,7 +4054,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.exp_settings_dict['avisoft_basedirectory'] = f'{self.avisoft_base_dir_global}'
 
-    def _open_coolterm_dialog(self):
+    def _open_coolterm_dialog(self) -> None:
+        """
+        Creates dialog for Coolterm directory.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.coolterm_base_dir_btn_clicked_flag = True
         coolterm_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2936,7 +4082,19 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.exp_settings_dict['coolterm_basedirectory'] = f'{self.coolterm_base_dir_global}'
 
-    def _open_anipose_calibration_dialog(self):
+    def _open_anipose_calibration_dialog(self) -> None:
+        """
+        Creates dialog for Anipose calibration directory.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.calibration_file_loc_btn_clicked_flag = True
         anipose_cal_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2955,7 +4113,19 @@ class USVPlaypenWindow(QMainWindow):
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = self.calibration_file_loc_edit.text()
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.calibration_file_loc_edit.text()
 
-    def _open_das_model_dialog(self):
+    def _open_das_model_dialog(self) -> None:
+        """
+        Creates dialog for DAS model directory.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.das_model_dir_btn_clicked_flag = True
         das_model_dir_name = QFileDialog.getExistingDirectory(
             self,
@@ -2971,24 +4141,96 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = self.das_model_dir_edit.text()
 
-    def _location_on_the_screen(self):
+    def _location_on_the_screen(self) -> None:
+        """
+        Places GUI in top left corner of screen.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         top_left_point = QGuiApplication.primaryScreen().availableGeometry().topLeft()
         self.move(top_left_point)
 
-    def _message(self, s):
+    def _message(self, s: str) -> None:
+        """
+        Creates messages displayed during recording.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.txt_edit.appendPlainText(s)
 
-    def _analyses_message(self, s):
+    def _analyses_message(self, s: str) -> None:
+        """
+        Creates messages displayed during analyses.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.txt_edit_analyze.appendPlainText(s)
 
-    def _visualizations_message(self, s):
+    def _visualizations_message(self, s: str) -> None:
+        """
+        Creates messages displayed during visualizations.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.txt_edit_visualize.appendPlainText(s)
 
-    def _process_message(self, s):
+    def _process_message(self, s: str) -> None:
+        """
+        Creates messages displayed during processing.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
         self.txt_edit_process.appendPlainText(s)
 
 
-def main():
+def main() -> None:
+    """
+    Creates GUI application.
+
+    Parameters
+    ----------
+    ----------
+
+    Returns
+    -------
+    -------
+    """
+
     # Handle high resolution displays:
     if hasattr(Qt, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, on=True)

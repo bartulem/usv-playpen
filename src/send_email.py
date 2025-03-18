@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Code to send e-mail notifying users the PC is busy.
+Send e-mail notifying users the PC is busy.
 """
 
 import configparser
@@ -12,8 +12,30 @@ from email.message import EmailMessage
 
 class Messenger:
 
-    def __init__(self, receivers=None, exp_settings_dict=None,
-                 message_output=None, no_receivers_notification=True):
+    def __init__(self, receivers: list = None,
+                 exp_settings_dict: dict = None,
+                 message_output: callable = None,
+                 no_receivers_notification: bool = True) -> None:
+
+        """
+        Initializes the Messenger class.
+
+        Parameter
+        ---------
+        receivers (list)
+            Root directories for data; defaults to None.
+        exp_settings_dict (dict)
+            Analyses parameters; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
+        no_receivers_notification (bool)
+            Notify if no receivers are set; defaults to True.
+
+        Returns
+        -------
+        -------
+        """
+
         if receivers is None:
             self.receivers = ['']
         else:
@@ -31,7 +53,7 @@ class Messenger:
 
         self.no_receivers_notification = no_receivers_notification
 
-    def get_email_params(self):
+    def get_email_params(self) -> tuple:
         """
         Description
         ----------
@@ -44,10 +66,8 @@ class Messenger:
 
         Returns
         ----------
-        email_address (str)
-            Lab e-mail address.
-        email_password (str)
-            Lab e-mail password.
+        email_address (str), email_password (str)
+            Lab e-mail address and password.
         ----------
         """
 
@@ -60,7 +80,8 @@ class Messenger:
             config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/email_config.ini'))
             return config['email']['email_address'], config['email']['email_password']
 
-    def send_message(self, subject, message):
+    def send_message(self, subject: str = None,
+                     message: str = None) -> bool | None:
         """
         Description
         ----------
@@ -69,9 +90,9 @@ class Messenger:
 
         Parameters
         ----------
-        subject
+        subject (str)
             E-mail subject field.
-        message
+        message (str)
             Text to send.
         ----------
 

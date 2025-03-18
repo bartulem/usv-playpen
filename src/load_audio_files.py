@@ -54,14 +54,27 @@ class DataLoader:
         'dict': dict
     }
 
-    def __init__(self, input_parameter_dict=None):
+    def __init__(self, input_parameter_dict: dict = None) -> None:
+        """
+        Initializes the DataLoader class.
+
+        Parameter
+        ---------
+        input_parameter_dict (dict)
+            Analyses parameters; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
+
         if input_parameter_dict is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['load_audio_files']['DataLoader']
         else:
             self.input_parameter_dict = input_parameter_dict
 
-    def load_wavefile_data(self):
+    def load_wavefile_data(self) -> dict:
         """
         Description
         ----------
@@ -70,17 +83,14 @@ class DataLoader:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            library (str)
-                Which module/library to use to load data; defaults to 'scipy'.
-            conditional_arg (list)
-                String to search in file names; defaults to empty list.
         ----------
 
         Returns
         ----------
         wave_data_dict (dict)
-            A dictionary with all desired sound outputs.
+            A dictionary with all desired sound outputs;
+            starting key in the dictionary is "session_id",
+            with "sampling_rate", "wav_data" and "dtype" as sub-keys.
         ----------
         """
 
@@ -112,4 +122,5 @@ class DataLoader:
                     else:
                         wave_data_dict[one_file]['wav_data'], wave_data_dict[one_file]['sampling_rate'] = librosa.load(f'{one_dir}{os.sep}{one_file}')
                     wave_data_dict[one_file]['dtype'] = self.known_dtypes[type(wave_data_dict[one_file]['wav_data'].ravel()[0]).__name__]
+
         return wave_data_dict

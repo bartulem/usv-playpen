@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Code to generate summary figure for data preprocessing.
+Generates summary figure for data preprocessing.
 """
 
 import glob
@@ -17,7 +17,23 @@ plt.style.use(pathlib.Path(__file__).parent / '_config/usv_playpen.mplstyle')
 
 class SummaryPlotter:
 
-    def __init__(self, input_parameter_dict=None, root_directory=None):
+    def __init__(self, input_parameter_dict: dict = None,
+                 root_directory: str = None) -> None:
+        """
+        Initializes the SummaryPlotter class.
+
+        Parameter
+        ---------
+        root_directory (str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+           Analyses parameters; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
+
         if root_directory is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['preprocessing_plot']['root_directory']
@@ -30,7 +46,9 @@ class SummaryPlotter:
         else:
             self.input_parameter_dict = input_parameter_dict
 
-    def preprocessing_summary(self, ipi_discrepancy_dict, phidget_data_dictionary):
+    def preprocessing_summary(self,
+                              ipi_discrepancy_dict: dict = None,
+                              phidget_data_dictionary: dict = None) -> None:
         """
         Description
         ----------
@@ -43,23 +61,10 @@ class SummaryPlotter:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            ipi_discrepancy_dict (dict)
-                Dict containing arrays of A/V IPI discrepancies.
-            phidget_data_dictionary (dict)
-                Dictionary containing lux, humidity and temperature data.
-            duration_min (int / float)
-                Actual duration of the experiment (camera w/ the least frames).
-            root_directory (str)
-                Root directory for a recording session.
-            hist_c (str)
-                Color for the histogram bars.
-            hist_ec (str)
-                Edge color for the histogram bars.
-            median_err_c (str)
-                Median error color.
-            mean_err_c (str)
-                Mean error color.
+        ipi_discrepancy_dict (dict)
+           Contains arrays of A/V IPI discrepancies.
+        phidget_data_dictionary (dict)
+            Contains lux, humidity and temperature data.
         ----------
 
         Returns
@@ -329,6 +334,6 @@ class SummaryPlotter:
                 axin6.set_yticks([])
                 axin6.set_xlabel('time (s)')
 
-        fig.savefig(f"{self.root_directory}{os.sep}sync{os.sep}{self.root_directory.split(os.sep)[-1]}_summary.svg",
+        fig.savefig(fname=f"{self.root_directory}{os.sep}sync{os.sep}{self.root_directory.split(os.sep)[-1]}_summary.svg",
                     dpi=300)
         plt.close()

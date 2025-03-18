@@ -38,8 +38,29 @@ class Operator:
         command_addition = ''
         shell_usage_bool = True
 
-    def __init__(self, root_directory=None, input_parameter_dict=None,
-                 exp_settings_dict=None, message_output=None):
+    def __init__(self, root_directory: str = None,
+                 input_parameter_dict: dict = None,
+                 exp_settings_dict: dict = None,
+                 message_output: callable = None):
+        """
+        Initializes the Operator class.
+
+        Parameter
+        ---------
+        root_directory (str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+            Analyses parameters; defaults to None.
+        exp_settings_dict (dict)
+            Experimental settings; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
+
         if input_parameter_dict is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['modify_files']['Operator']
@@ -64,7 +85,7 @@ class Operator:
         else:
             self.message_output = message_output
 
-    def split_clusters_to_sessions(self):
+    def split_clusters_to_sessions(self) -> None:
         """
         Description
         ----------
@@ -79,20 +100,13 @@ class Operator:
         inputs in the changepoints JSON file.
         ----------
 
-        Parameter
-        ---------
-        root_directory : list
-             Directories of recording files of interest;
-        calibrated_sample_rates_file : str
-            Configuration file containing calibrated sampling rates for headstages.
-        kilosort_version : str
-            Kilosort version used for spike sorting.
-        min_num_spikes : int
-            Minimum relevant number of spikes per session.
+        Parameters
+        ----------
+        ----------
 
         Returns
         -------
-         spike times : np.ndarray
+         spike times (np.ndarray)
             Arrays that contain spike times (in seconds and frames);
             saved as .npy files in a separate directory.
         """
@@ -190,7 +204,7 @@ class Operator:
                 for session_key in binary_files_info.keys():
                     self.message_output(f"For {root_dict[session_key]} probe {probe_id}, there were {unit_count_dict[session_key]['good']} good and {unit_count_dict[session_key]['mua']} MUA clusters.")
 
-    def concatenate_binary_files(self):
+    def concatenate_binary_files(self) -> None:
         """
         Description
         ----------
@@ -206,20 +220,15 @@ class Operator:
         and then concatenates all binary files for each probe.
         ----------
 
-        Parameter
-        ---------
-        root_directory : list
-             Directories of recording files of interest;
-        npx_file_type : str
-            AP or LF binary file; defaults to 'ap'.
-        calibrated_sample_rates_file : str
-            Configuration file containing calibrated sampling rates for headstages.
+        Parameters
+        ----------
+        ----------
 
         Returns
         -------
-        binary_files_info : .json
+        binary_files_info (.json)
             Dictionary w/ information about changepoints and binary file lengths.
-        concatenated : .bin
+        concatenated (.bin)
            Concatenated binary file.
         """
 
@@ -337,7 +346,7 @@ class Operator:
                              stderr=subprocess.STDOUT,
                              cwd=concat_save_dir[probe_idx]).wait()
 
-    def multichannel_to_channel_audio(self):
+    def multichannel_to_channel_audio(self) -> None:
         """
         Description
         ----------
@@ -401,7 +410,7 @@ class Operator:
         # delete temp directory (w/ all files in it)
         shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}temp")
 
-    def hpss_audio(self):
+    def hpss_audio(self) -> None:
         """
         Description
         ----------
@@ -410,20 +419,13 @@ class Operator:
         back to the time domain and saved as a new WAV file.
         ----------
 
-        Parameter
-        ---------
-        stft_window_length_hop_size : list
-            Length of the window and hop size for the STFT (Short-Time Fourier Transform).
-        kernel_size : tuple
-            Size of the kernel for the HPSS (Harmonic / Percussive components).
-        hpss_power : float
-            Exponent for the HPSS.
-        margin : tuple
-            Margin for the HPSS (Harmonic / Percussive components).
+        Parameters
+        ----------
+        ----------
 
         Returns
         -------
-        harmonic_data_clipped : WAV file(s)
+        harmonic_data_clipped (.wav file)
             Output audio file w/ only the harmonics component.
         """
 
@@ -475,7 +477,7 @@ class Operator:
                           rate=sampling_rate_audio,
                           data=harmonic_data_clipped)
 
-    def filter_audio_files(self):
+    def filter_audio_files(self) -> None:
         """
         Description
         ----------
@@ -498,13 +500,6 @@ class Operator:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            audio_format (str)
-                The format of the audio files; defaults to 'wav'.
-            freq_hp (int, float)
-                High pass filter frequency; defaults to 2000 (Hz).
-            freq_lp (int, float)
-                Low pass filter frequency; defaults to 0 (Hz).
         ----------
 
         Returns
@@ -544,7 +539,7 @@ class Operator:
                 else:
                     break
 
-    def concatenate_audio_files(self):
+    def concatenate_audio_files(self) -> None:
         """
         Description
         ----------
@@ -553,9 +548,6 @@ class Operator:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            audio_format (str)
-                The format of the audio files; defaults to 'wav'.
         ----------
 
         Returns
@@ -599,7 +591,7 @@ class Operator:
                 self.message_output(f"There are <2 audio files per provided directory: '{self.root_directory}{os.sep}audio{os.sep}cropped_to_video', "
                                     f"so concatenation impossible.")
 
-    def concatenate_video_files(self):
+    def concatenate_video_files(self) -> None:
         """
         Description
         ----------
@@ -608,18 +600,11 @@ class Operator:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            camera_serial_num (list)
-                Serial numbers of cameras used.
-            video_extension (str)
-                Video extension; defaults to 'mp4'.
-            concatenated_video_name (str)
-                Temporary name for concatenated video; defaults to 'concatenated_temp'.
         ----------
 
         Returns
         ----------
-        concatenated_temp (video (e.g., .mp4) file)
+        concatenated_temp (.mp4 file)
             Concatenated video file.
         ----------
         """
@@ -667,10 +652,10 @@ class Operator:
                 current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
 
                 os.remove(f"{current_working_dir}{os.sep}file_concatenation_list_{sub_directory.split('.')[-1]}.txt")
-                shutil.move(f"{current_working_dir}{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}",
-                            f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}")
+                shutil.move(src=f"{current_working_dir}{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}",
+                            dst=f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['video_extension']}")
 
-    def rectify_video_fps(self, conduct_concat=True):
+    def rectify_video_fps(self, conduct_concat: bool = True) -> None:
         """
         Description
         ----------
@@ -679,24 +664,13 @@ class Operator:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            camera_serial_num (list)
-                Serial numbers of cameras used.
-            conversion_target_file (str)
-                File to modify; defaults to 'concatenated_temp'.
-            video_extension (str)
-                Video extension; defaults to 'mp4'.
-            calibration_fps (int)
-                Desired sampling rate in calibration; defaults to 10 (fps).
-            recording_fps (int)
-                Desired sampling rate in recording; defaults to 150 (fps).
-            delete_old_file (bool)
-                Delete original file; defaults to True.
+        conduct_concat (bool)
+            If True, concatenation was conducted prior to running this.
         ----------
 
         Returns
         ----------
-        fps_corrected_video (video (e.g., .mp4) file)
+        fps_corrected_video (.mp4 file)
             FPS modified video file.
         camera_frame_count_dict (.json file)
             Dictionary with camera frame counts,

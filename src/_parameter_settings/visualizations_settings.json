@@ -9,11 +9,10 @@
   ],
   "visualize_booleans": {
     "make_behavioral_tuning_figures_bool": false,
-    "make_behavioral_videos_bool": true
+    "make_behavioral_videos_bool": false
   },
   "visualize_data": {
-    "root_directories": [
-    ]
+    "root_directories": []
   },
   "send_email": {
     "visualizations_pc_list": [
@@ -47,8 +46,8 @@
     "rotate_side_view_bool": false,
     "rotation_speed": 5,
     "history_bool": false,
-    "speaker_bool": true,
-    "spectrogram_bool": true,
+    "speaker_bool": false,
+    "spectrogram_bool": false,
     "spectrogram_ch": 0,
     "raster_plot_bool": false,
     "raster_selection_criteria": {

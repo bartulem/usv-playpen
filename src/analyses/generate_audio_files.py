@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Generate playback WAV files and frequency shift audio segment.
+Generates playback WAV files and frequency shift audio segment.
 """
 
 from PyQt6.QtTest import QTest
@@ -33,15 +33,15 @@ class AudioGenerator:
 
         Parameter
         ---------
-        exp_id : str
+        exp_id (str)
             Base file server directory.
-        root_directory : str
+        root_directory (str)
             Root directory for data; defaults to None.
-        create_playback_settings_dict : dict
-            Dictionary of settings for creating USV playback files; defaults to None.
-        freq_shift_settings_dict : dict
-            Dictionary of frequency shift settings; defaults to None.
-        message_output : function
+        create_playback_settings_dict (dict)
+            Settings for creating USV playback files; defaults to None.
+        freq_shift_settings_dict (dict)
+            Frequency shift settings; defaults to None.
+        message_output (function)
             Defines output messages; defaults to None.
 
         Returns
@@ -64,17 +64,6 @@ class AudioGenerator:
 
         Parameters
         ----------
-        Uses the following set of parameters:
-            num_usv_files (int)
-                Number of USV .wav files to generate; defaults to 1.
-            total_usv_number (int)
-                Targeted number of USVs in the playback file; defaults to 10000.
-            ipi_duration (int / float)
-                Inter-pulse interval (in seconds); defaults to 0.015 (seconds).
-            wav_sampling_rate (int)
-                Sampling rate of snippet .wav files; defaults to 250 (kHz).
-            playback_snippets_dir (str)
-                Directory location for snippet .wav files.
         ----------
 
         Returns
@@ -157,21 +146,6 @@ class AudioGenerator:
 
         Parameters
         ----------
-        Uses the following set of parameters:
-            audio_dir (str)
-                Audio subdirectory to use (cropped_to_video, hpss, etc.).
-            device_id (str)
-                Device ID for audio file; 'm' or 's'.
-            channel_id (int)
-                Channel ID for audio file; 1-12.
-            wav_sampling_rate (int)
-                Sampling rate of input audio file; defaults to 250 (kHz).
-            sequence_start (int / float)
-                Start of chirp sequence; defaults to 0 (seconds).
-            sequence_duration (int / float)
-                Duration of chirp sequence; defaults to 10 (seconds).
-            octave_shift (int / float)
-                Number of octaves to shift (has to be negative to reduce pitch); defaults to -3.
         ----------
 
         Returns

@@ -73,12 +73,12 @@ def generate_feature_distributions(feature_arr: np.ndarray = None,
 
     Returns
     ----------
-    occ_array: np.ndarray
+    occ_array (np.ndarray)
         A (num_bins) or (num_bins, num_bins) shape ndarray
         of occupancy (in seconds) for each feature.
-    bin_centers: np.ndarray
+    bin_centers (np.ndarray)
         A (num_bins) shape ndarray of bin centers for given feature.
-    bin_edges: np.ndarray
+    bin_edges (np.ndarray)
         A (num_bins) shape ndarray of bin edges for given feature.
     ----------
     """
@@ -112,18 +112,18 @@ def calculate_derivatives(input_arr: np.ndarray = None,
 
     Parameter
     ---------
-    input_arr : np.ndarray
+    input_arr (np.ndarray)
          A (n_frames, n_features) shape ndarray containing feature data to compute derivatives on.
     diff_bins : int
         Number of bins for the central difference derivative; defaults to None.
-    is_angle : bool
+    is_angle (bool)
         Is the feature data in angles or not; defaults to False.
-    capture_fr : int / float
+    capture_fr (int / float)
         Capture frame rate of the cameras; defaults to None (fps).
 
     Returns
     -------
-    first_der, second_der : tuple (np.ndarray, np.ndarray)
+    first_der, second_der (tuple (np.ndarray, np.ndarray))
         A tuple of 2 (n_frames, n_features) shape np.ndarray
         w/ first and second derivatives for selected features.
     """
@@ -173,12 +173,12 @@ def calculate_tail_curvature(input_arr: np.ndarray = None) -> np.ndarray:
 
     Parameter
     ---------
-    input_arr : np.ndarray
+    input_arr (np.ndarray)
          A (n_nodes, n_frames, 3) shape ndarray to compute tail curvature on.
 
     Returns
     -------
-    average_tail_curvature : np.ndarray
+    average_tail_curvature (np.ndarray)
          A (n_frames, 1) shape ndarray containing the average tail curvature.
     """
 
@@ -207,16 +207,16 @@ def calculate_planar_social_angle(point1_arr: np.ndarray = None,
 
     Parameter
     ---------
-    point1_arr : np.ndarray
+    point1_arr (np.ndarray)
          A (n_frames, 2) shape ndarray of first point in XY dimensions.
-    point2_arr : np.ndarray
+    point2_arr (np.ndarray)
          A (n_frames, 2) shape ndarray of second point in XY dimensions.
-    point3_arr : np.ndarray
+    point3_arr (np.ndarray)
          A (n_frames, 2) shape ndarray of third point in XY dimensions.
 
     Returns
     -------
-    angles_arr : np.ndarray
+    angles_arr (np.ndarray)
          A (n_frames) shape ndarray of planar social angle of interest.
     """
 
@@ -248,17 +248,17 @@ def calculate_speed(tracked_points_array: np.ndarray = None,
 
     Parameter
     ---------
-    tracked_points_array : np.ndarray
+    tracked_points_array (np.ndarray)
          A (n_frames, n_nodes, n_dimensions)
          shape ndarray of tracked points.
-    capture_framerate : int / float
+    capture_framerate (int / float)
         Recording camera framerate; defaults to None (fps).
-    smoothing_time_window : int / float
+    smoothing_time_window (int / float)
         Time window to perform smoothing over; defaults to None (s).
 
     Returns
     -------
-    speeds : np.ndarray
+    speeds (np.ndarray)
         A (n_frames) shape ndarray of centroid speed data.
     """
 
@@ -287,14 +287,14 @@ def get_average_point(data_arr: np.ndarray, mouse_speed: np.ndarray) -> np.ndarr
 
     Parameter
     ---------
-    data_arr : np.ndarray
+    data_arr (np.ndarray)
          A (4, n_frames, 3) shape ndarray of head point data.
-    mouse_speed : np.ndarray
+    mouse_speed (np.ndarray)
          A (n_frames) shape ndarray of mouse centroid speed.
 
     Returns
     -------
-    closest_point_to_average : np.ndarray
+    closest_point_to_average (np.ndarray)
         A (4, 3) shape ndarray of closest points to average.
     """
 
@@ -336,16 +336,16 @@ def get_head_root(data_arr: np.ndarray,
 
     Parameter
     ---------
-    data_arr : np.ndarray
+    data_arr (np.ndarray)
          A (4, n_frames, 3) shape ndarray of head point data.
-    closest_point_to_average : np.ndarray
+    closest_point_to_average (np.ndarray)
          A (4, 3) shape ndarray of the closest points to average.
-    rotation_type : str
+    rotation_type (str)
         Type of rotation to perform; defaults to None.
 
     Returns
     -------
-    global_heads_rot : np.ndarray
+    global_heads_rot (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of head rotation matrices.
     """
 
@@ -428,23 +428,23 @@ def get_back_root(point_data_3d: np.ndarray,
 
     Parameter
     ---------
-    point_data_3d : np.ndarray
+    point_data_3d (np.ndarray)
          A (n_frames, n_mice, n_nodes, 3) shape ndarray of tracked points.
-    mouse_id : int
+    mouse_id (int)
          Index of mouse.
-    neck_point_pos : int
+    neck_point_pos (int)
          Index of neck point in array.
-    tti_point_pos : int
+    tti_point_pos (int)
          Index of TTI point in array.
-    root_method :str
+    root_method (str)
          Rotation method to use.
-    spatial_resolution_tolerance : int / float
+    spatial_resolution_tolerance (int / float)
          The least necessary amount of
          distance between points (in meters).
 
     Returns
     -------
-    back_roots : np.ndarray
+    back_roots (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of rotation matrices.
     """
 
@@ -511,12 +511,12 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
 
     Parameter
     ---------
-    rot_matrix : np.ndarray
+    rot_matrix (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of rotation matrices.
 
     Returns
     -------
-    desired_euler_angles : np.ndarray
+    desired_euler_angles (np.ndarray)
         A (n_frames, 3) shape ndarray of Euler angles
         (in units of degrees); column are in order:
         roll, pitch, yaw.
@@ -549,13 +549,13 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
 
     Parameter
     ---------
-    back_directions : np.ndarray
+    back_directions (np.ndarray)
         A (n_frames, 3) shape ndarray of back direction data
         Array of back direction data.
 
     Returns
     -------
-    back_euler_angles : np.ndarray
+    back_euler_angles (np.ndarray)
         A (n_frames, 2) shape ndarray of
         back pitch and back yaw angles (in that order).
     """
@@ -687,13 +687,13 @@ class FeatureZoo:
         """
         Initializes the FeatureZoo class.
 
-        Parameter
-        ---------
-        root_directory : str
+        Parameters
+        ----------
+        root_directory (str)
             Root directory for data; defaults to None.
-        neuronal_tuning_figures_dict : dict
-            Dictionary of analyses parameters; defaults to None.
-        message_output : function
+        neuronal_tuning_figures_dict (dict)
+            Analyses parameters; defaults to None.
+        message_output (function)
             Defines output messages; defaults to None.
 
         Returns
@@ -712,20 +712,13 @@ class FeatureZoo:
         """
         Plots histograms of all available behavioral features.
 
-        Parameter
-        ---------
-        feature_dict : dict
-            Binned feature data; defaults to None.
-        mouse_id_list : list
-            Mouse IDs to plot; defaults to None.
-        session_exp_code : str
-            Session experiment code; defaults to None.
-        plot_file_name : str
-            Name of the plot file; defaults to None.
+        Parameters
+        ----------
+        ----------
 
         Returns
         -------
-        behavioral_feature_distributions : .pdf
+        behavioral_feature_distributions (.pdf file)
            Plot of all feature histograms.
         """
 
@@ -875,26 +868,13 @@ class FeatureZoo:
         """
         Computes and saves behavioral features to file.
 
-        Parameter
-        ---------
-        Uses the following set of parameters:
-            head_points : list
-                Head points to use for computing Euler angles; defaults to ["Head", "Ear_R", "Ear_L", "Nose"].
-                NB: order of points is important!
-            tail_points : list
-                Tail points to use for computing tail curvature; defaults to ["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"].
-                NB: order of points is important!
-            back_root_points : list
-                Back root points to use for computing Euler angles; defaults to ["Neck", "Trunk", "TTI"].
-                NB: order of points is important!
-            capture_fr : int
-                Capture framerate; defaults to 150 (fps).
-            derivative_bins : int
-                Number of bins to use for computing derivatives; defaults to +/- 10.
+        Parameters
+        ----------
+        ----------
 
         Returns
         -------
-        behavioral_features_csv : .csv
+        behavioral_features_csv (.csv file)
            Data sheet w/ behavioral features.
         """
 

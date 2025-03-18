@@ -8,10 +8,26 @@ import os
 import platform
 
 class PrepareClusterJob:
-    def __init__(self,
-                 root_directory=None,
-                 input_parameter_dict=None,
-                 message_output=None):
+    def __init__(self, input_parameter_dict: dict = None,
+                 root_directory: str = None,
+                 message_output: callable = None) -> None:
+
+        """
+        Initializes the PrepareClusterJob class.
+
+        Parameter
+        ---------
+        root_directory (str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+            Analyses parameters; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
 
         if input_parameter_dict is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
@@ -30,28 +46,30 @@ class PrepareClusterJob:
         else:
             self.message_output = message_output
 
-    def video_list_to_txt(self):
+    def video_list_to_txt(self) -> None:
         """
         Description
         ----------
         This method creates a text file (job_list.txt) with
         a list of videos to run SLEAP inference on.
+
+        NB: You need this file w/ to run SLEAP inference on the cluster!
         ----------
 
         Parameter
         ---------
-        camera_names: list
+        camera_names (list)
             Cameras used for recording video.
-        inference_root_dir: str
+        inference_root_dir (str)
             Root directory of inference slurm files.
-        centroid_model_path: str
+        centroid_model_path (str)
             Path to the centroid model.
-        centered_instance_model_path: str
+        centered_instance_model_path (str)
             Path to the centered instance model.
 
         Returns
         -------
-        job_list : .txt
+        job_list (.txt)
             List of sessions to run inference on.
         """
 

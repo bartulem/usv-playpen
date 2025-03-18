@@ -1,6 +1,6 @@
 {
   "analyses_booleans": {
-    "compute_behavioral_features_bool": true,
+    "compute_behavioral_features_bool": false,
     "compute_behavioral_tuning_bool": false,
     "create_usv_playback_wav_bool": false,
     "frequency_shift_audio_segment_bool": false
@@ -27,8 +27,7 @@
     "derivative_bins": 10
   },
   "analyze_data": {
-    "root_directories": [
-    ]
+    "root_directories": []
   },
   "send_email": {
     "analyses_pc_list": [

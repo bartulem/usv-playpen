@@ -12,7 +12,23 @@ from operator import itemgetter
 
 class Gatherer:
 
-    def __init__(self, input_parameter_dict=None, root_directory=None):
+    def __init__(self, input_parameter_dict: dict = None,
+                 root_directory: str = None) -> None:
+        """
+        Initializes the Gatherer class.
+
+        Parameter
+        ---------
+        root_directory (str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+           Analyses parameters; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
+
         if root_directory is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.root_directory = json.load(json_file)['extract_phidget_data']['root_directory']
@@ -25,7 +41,7 @@ class Gatherer:
         else:
             self.input_parameter_dict = input_parameter_dict['extract_phidget_data']['Gatherer']
 
-    def prepare_data_for_analyses(self):
+    def prepare_data_for_analyses(self) -> dict:
         """
         Description
         ----------
@@ -39,17 +55,12 @@ class Gatherer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            root_directory (str)
-                Root directory for a recording session.
-            extra_data_camera (str)
-                Camera subdirectory where phidget data is stored.
         ----------
 
         Returns
         ----------
         phidget_data_dictionary (dict)
-            Dictionary containing lux, humidity and temperature data.
+            Contains lux, humidity and temperature data.
         ----------
         """
 

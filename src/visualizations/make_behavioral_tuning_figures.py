@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Make tuning curve figures for 3D behavioral features.
+Makes tuning curve figures for 3D behavioral features.
 """
 
 from PyQt6.QtTest import QTest
@@ -32,11 +32,11 @@ class RatemapFigureMaker(FeatureZoo):
 
         Parameter
         ---------
-        root_directory : str
+        root_directory (str)
             Root directory for data; defaults to None.
-        visualizations_parameter_dict : dict
-            Dictionary of all visualization params; defaults to None.
-        message_output : function
+        visualizations_parameter_dict (dict)
+            Visualization params; defaults to None.
+        message_output (function)
             Defines output messages; defaults to None.
 
         Returns
@@ -56,17 +56,13 @@ class RatemapFigureMaker(FeatureZoo):
         This method plots tuning curves for 3D behavioral features.
         ----------
 
-        Parameter
-        ---------
-        Uses the following set of parameters:
-            smoothing_sd : int
-                Standard deviation for Gaussian smoothing kernel (in numbers of bins).
-            occ_threshold : int / float
-                Threshold for minimum occupancy (in seconds).
+        Parameters
+        ----------
+        ----------
 
         Returns
         -------
-        neuronal_tuning_curves : .pdf
+        neuronal_tuning_curves (.pdf file)
             Figure w/ tuning curves for individual behavioral features.
         """
 

@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Get 3D tracked points in metric units, rotated and translated to match arena coordinates.
+Gets 3D tracked points in metric units, rotated and translated to match arena coordinates.
 """
 
 from PyQt6.QtTest import QTest
@@ -17,7 +17,29 @@ from datetime import datetime
 from imgstore import new_for_filename
 
 
-def find_mouse_names(root_directory):
+def find_mouse_names(root_directory: str = None) -> list:
+    """
+    Description
+    ----------
+    This function finds the mouse names from the metadata.yaml file.
+
+    NB: Since the metadata.yaml file was not standardized for a while, the function
+    check for either the old or the new version of the metadata.yaml file.
+    ----------
+
+    Parameters
+    ----------
+    root_directory (str)
+        The directory where of the session.
+    ----------
+
+    Returns
+    ----------
+    track_names (list)
+        Mouse names (in the format of "cage_tail-stripe-num").
+    ----------
+    """
+
     track_names = []
     for sub_directory in os.listdir(f"{root_directory}{os.sep}video"):
         if os.path.isdir(f"{root_directory}{os.sep}video{os.sep}{sub_directory}") and '.' in sub_directory and '_' in sub_directory and 'calibration' not in sub_directory:
@@ -60,7 +82,33 @@ def find_mouse_names(root_directory):
     return track_names
 
 
-def extract_skeleton_nodes(skeleton_loc, skeleton_arena_bool=False):
+def extract_skeleton_nodes(skeleton_loc: str = None,
+                           skeleton_arena_bool: bool = False) -> list:
+    """
+    Description
+    ----------
+    This function extracts names of skeleton nodes
+    from the SLEAP .json file.
+
+    NB: By default, the skeletons are read from the files
+    located in the _config directory of the repo.
+    ----------
+
+    Parameters
+    ----------
+    skeleton_loc (str)
+        The directory where skeletons can be found.
+    skeleton_arena_bool (bool)
+        If true, the function extracts the arena nodes; defaults to False.
+    ----------
+
+    Returns
+    ----------
+    skeleton_nodes (list)
+        SLEAP skeleton node names.
+    ----------
+    """
+
     with open(skeleton_loc, 'r') as json_file:
         skeleton = json.load(json_file)
 
@@ -88,7 +136,31 @@ def extract_skeleton_nodes(skeleton_loc, skeleton_arena_bool=False):
     return skeleton_nodes
 
 
-def redefine_cage_reference_nodes(arena_input_data, node_list_indices):
+def redefine_cage_reference_nodes(arena_input_data: np.ndarray = None,
+                                  node_list_indices: list = None) -> np.ndarray:
+    """
+    Description
+    ----------
+    This function extracts names of skeleton nodes
+    from the SLEAP .json file.
+
+    ----------
+
+    Parameters
+    ----------
+    arena_input_data (np.ndarray)
+        3D arena data.
+    node_list_indices (list)
+        Indices of the arena nodes.
+    ----------
+
+    Returns
+    ----------
+    (np.ndarray)
+        3D arena data with the arena corners.
+    ----------
+    """
+
     cage_corner_first = arena_input_data[0, 0, node_list_indices[0], :]
     cage_corner_second = arena_input_data[0, 0, node_list_indices[1], :]
     cage_corner_third = arena_input_data[0, 0, node_list_indices[2], :]
@@ -96,7 +168,29 @@ def redefine_cage_reference_nodes(arena_input_data, node_list_indices):
     return np.vstack(tup=(cage_corner_first, cage_corner_second, cage_corner_third, cage_corner_fourth))
 
 
-def rotate_x(data, theta):
+def rotate_x(data: np.ndarray = None,
+             theta: float = None) -> np.ndarray:
+    """
+    Description
+    ----------
+    This function rotates data around the X axis.
+    ----------
+
+    Parameters
+    ----------
+    data (np.ndarray)
+        3D arena/mouse data.
+    theta (float)
+        Angle of rotation in radians.
+    ----------
+
+    Returns
+    ----------
+    (np.ndarray)
+        Rotated data.
+    ----------
+    """
+
     rotation_matrix = np.array([
         [1, 0, 0],
         [0, math.cos(theta), math.sin(theta)],
@@ -105,7 +199,29 @@ def rotate_x(data, theta):
     return np.matmul(data, rotation_matrix)
 
 
-def rotate_y(data, theta):
+def rotate_y(data: np.ndarray = None,
+             theta: float = None) -> np.ndarray:
+    """
+    Description
+    ----------
+    This function rotates data around the Y axis.
+    ----------
+
+    Parameters
+    ----------
+    data (np.ndarray)
+        3D arena/mouse data.
+    theta (float)
+        Angle of rotation in radians.
+    ----------
+
+    Returns
+    ----------
+    (np.ndarray)
+        Rotated data.
+    ----------
+    """
+
     rotation_matrix = np.array([
         [math.cos(theta), 0, -math.sin(theta)],
         [0, 1, 0],
@@ -114,7 +230,29 @@ def rotate_y(data, theta):
     return np.matmul(data, rotation_matrix)
 
 
-def rotate_z(data, theta):
+def rotate_z(data: np.ndarray = None,
+             theta: float = None) -> np.ndarray:
+    """
+    Description
+    ----------
+    This function rotates data around the Z axis.
+    ----------
+
+    Parameters
+    ----------
+    data (np.ndarray)
+        3D arena/mouse data.
+    theta (float)
+        Angle of rotation in radians.
+    ----------
+
+    Returns
+    ----------
+    (np.ndarray)
+        Rotated data.
+    ----------
+    """
+
     rotation_matrix = np.array([
         [math.cos(theta), math.sin(theta), 0],
         [-math.sin(theta), math.cos(theta), 0],
@@ -125,8 +263,29 @@ def rotate_z(data, theta):
 
 class ConvertTo3D:
 
-    def __init__(self, root_directory=None, input_parameter_dict=None,
-                 exp_settings_dict=None, message_output=None):
+    def __init__(self, root_directory:str = None,
+                 input_parameter_dict: dict = None,
+                 exp_settings_dict: dict = None,
+                 message_output: callable = None) -> None:
+        """
+        Initializes the ConvertTo3D class.
+
+        Parameter
+        ---------
+        root_directory (str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+            Analyses parameters; defaults to None.
+        ecp_settings_dict (dict)
+            Experimental settings; defaults to None.
+        message_output (function)
+            Output messages; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
+
         if input_parameter_dict is None:
             with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['anipose_operations']['ConvertTo3D']
@@ -161,7 +320,7 @@ class ConvertTo3D:
                 self.session_root_joint_date_dir = os.path.join(self.root_directory, 'video', one_object)
                 self.session_root_name = one_object
 
-    def sleap_file_conversion(self):
+    def sleap_file_conversion(self) -> None:
         """
         Description
         ----------
@@ -171,11 +330,6 @@ class ConvertTo3D:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            root_directory (str)
-                The directory where of the session.
-            sleap_conda_env_name (str)
-                Name/version of sleap conda would recognize.
         ----------
 
         Returns
@@ -215,7 +369,7 @@ class ConvertTo3D:
             else:
                 break
 
-    def conduct_anipose_calibration(self):
+    def conduct_anipose_calibration(self) -> None:
         """
         Description
         ----------
@@ -224,9 +378,6 @@ class ConvertTo3D:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            board_provided (bool)
-                Does the calibration board exist; defaults to 'true'.
         ----------
 
         Returns
@@ -261,7 +412,7 @@ class ConvertTo3D:
                                 histogram_path=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_reprojection_histogram.png",
                                 reproj_path=self.session_root_joint_date_dir)
 
-    def conduct_anipose_triangulation(self):
+    def conduct_anipose_triangulation(self) -> None:
         """
         Description
         ----------
@@ -270,30 +421,6 @@ class ConvertTo3D:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            calibration_file_loc (str)
-                Directory of relevant calibration files.
-            triangulate_arena_points_bool (bool)
-                If true, runs the triangulation for the arena points.
-            frame_restriction (list)
-                List of start and end frames.
-            excluded_views (list)
-                Views to exclude from triangulation.
-            display_progress_bool (bool)
-                Display progress bar; defaults to True.
-            rigid_body_constraints (list)
-                List of rigid body constraints, which edges in the animal skeleton have a fixed length.
-            weak_body_constraints (list)
-                List of flexible body constraints, which edges in the animal skeleton have a flexible length.
-            scale_smooth_len_weak (list)
-                Denotes the SCALE (weight of temporal smoothing in the optimization procedure),
-                            LENGTH (weight of the rigid body constraints in the optimization procedure),
-                            LENGTH WEAK (weight of the flexible body constraints in the optimization procedure)
-            reprojection_error_loss (list)
-                Rejects points that have a reprojection error above the threshold and
-                denote loss function.
-            n_deriv_smooth (int)
-                Denotes the order of derivative to smooth for in the temporal filtering process.
         ----------
 
         Returns
@@ -314,14 +441,12 @@ class ConvertTo3D:
             calibration_toml_file = calibration_dir_search[0]
 
             if not self.input_parameter_dict['conduct_anipose_triangulation']['triangulate_arena_points_bool']:
-
                 none_hyperparam_bool = False
                 if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
                     with open(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}video", "*_camera_frame_count_dict.json*"))[0], 'r') as frame_count_infile:
                         camera_frame_count_dict = json.load(frame_count_infile)
                         self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, int(camera_frame_count_dict['total_frame_number_least'])]
                         none_hyperparam_bool = True
-
 
                 sleap_anipose.triangulate(p2d=self.session_root_joint_date_dir,
                                           calib=calibration_toml_file,
@@ -343,7 +468,6 @@ class ConvertTo3D:
                     self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
 
             else:
-
                 none_hyperparam_bool = False
                 if self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] is None:
                     self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = [0, 1]
@@ -360,7 +484,7 @@ class ConvertTo3D:
                 if none_hyperparam_bool:
                     self.input_parameter_dict['conduct_anipose_triangulation']['frame_restriction'] = None
 
-    def translate_rotate_metric(self, **kwargs):
+    def translate_rotate_metric(self, **kwargs) -> None:
         """
         Description
         ----------
@@ -369,15 +493,6 @@ class ConvertTo3D:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            original_arena_file_loc (str)
-                Directory of original 3D arena file.
-            static_reference (int/ float)
-                The length of the static spatial reference in meters; defaults to 0.615 (rail-to-rail edge distance).
-            save_transformed_data (str)
-                If 'arena', saves the 3D arena data to file; defaults to 'animal'.
-            delete_original_h5 (bool)
-                If true, deletes the original 3D points file; defaults to True.
         ----------
 
         Returns

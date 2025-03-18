@@ -3,6 +3,7 @@
 Synchronizes files:
 (1) the recorded .wav file with tracking file (cuts them to video length).
 (2) find audio and video sync trains and check whether they match.
+(3) performs a check on the e-phys data stream to see if the video duration matches the e-phys recording.
 """
 
 from PyQt6.QtTest import QTest
@@ -23,27 +24,31 @@ from scipy.io import wavfile
 from .load_audio_files import DataLoader
 
 @pims.pipeline
-def modify_memmap_array(frame, mmap_arr, frame_idx,
-                        led_0, led_1, led_2):
+def modify_memmap_array(frame: np.ndarray = None,
+                        mmap_arr: np.ndarray = None,
+                        frame_idx: int = None,
+                        led_0: list = None,
+                        led_1: list = None,
+                        led_2: list = None) -> np.ndarray | None:
     """
     Description
     ----------
-    This function equalizes input colors on luminance.
+    This function .
     ----------
 
     Parameters
     ----------
-    frame : frame object
+    frame (np.ndarray)
         The frame to perform extraction on.
-    mmap_arr : memmap np.ndarray
+    mmap_arr (memmap np.ndarray)
         The array to fill data with.
-    frame_idx : int
+    frame_idx (int)
         The corresponding frame index.
-    led_0 : list
+    led_0 (list)
         XY px coordinates for top LED.
-    led_1 : list
+    led_1 (list)
         XY px coordinates for middle LED.
-    led_2 : list
+    led_2 (list)
         XY px coordinates for bottom LED.
     ----------
 
@@ -86,8 +91,29 @@ class Synchronizer:
         command_addition = ''
         shell_usage_bool = True
 
-    def __init__(self, root_directory=None, input_parameter_dict=None,
-                 message_output=None, exp_settings_dict=None):
+    def __init__(self, root_directory: str = None,
+                 input_parameter_dict: dict = None,
+                 message_output: callable = None,
+                 exp_settings_dict: dict = None) -> None:
+        """
+        Initializes the Synchronizer class.
+
+        Parameter
+        ---------
+        root_directory (str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+            Analyses parameters; defaults to None.
+        exp_settings_dict (dict)
+            Experimental settings; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
+
         if input_parameter_dict is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
                 self.input_parameter_dict = json.load(json_file)['synchronize_files']['Synchronizer']
@@ -110,7 +136,7 @@ class Synchronizer:
         else:
             self.message_output = message_output
 
-    def validate_ephys_video_sync(self):
+    def validate_ephys_video_sync(self) -> None:
         """
         Description
         ----------
@@ -119,16 +145,13 @@ class Synchronizer:
         match the total video duration.
         ----------
 
-        Parameter
-        ---------
-        npx_file_type: str
-            AP or LF binary file; defaults to 'ap'.
-        ms_divergence_tolerance : int / float
-            Max tolerance for divergence between video and e-phys recordings (in ms).
+        Parameters
+        ----------
+        ----------
 
         Returns
         -------
-        binary_files_info : .json
+        binary_files_info (.json file)
             Dictionary w/ information about changepoints, binary file lengths and tracking start/end.
         """
 
@@ -242,9 +265,9 @@ class Synchronizer:
 
     @staticmethod
     @njit(parallel=True)
-    def find_lsb_changes(relevant_array=None,
-                         lsb_bool=True,
-                         total_frame_number=0):
+    def find_lsb_changes(relevant_array: np.ndarray = None,
+                         lsb_bool: bool = True,
+                         total_frame_number: int = 0) -> tuple:
 
         """
         Description
@@ -256,18 +279,17 @@ class Synchronizer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            relevant_array (np.ndarray)
-                Array to extract sync signal from.
-            lsb_bool (bool)
-                Whether to extract the least significant bit.
-            total_frame_number (int)
-                Number of frames on the camera containing the minimum total number of frames.
+        relevant_array (np.ndarray)
+            Array to extract sync signal from.
+        lsb_bool (bool)
+            Whether to extract the least significant bit.
+        total_frame_number (int)
+            Number of frames on the camera containing the minimum total number of frames.
         ----------
 
         Returns
         ----------
-        start_first_relevant_sample, end_last_relevant_sample, largest_break_duration : tuple
+        start_first_relevant_sample, end_last_relevant_sample, largest_break_duration (tuple)
             Start and end of tracking in audio/e-phys samples, and the duration of largest break.
         ----------
         """
@@ -289,8 +311,8 @@ class Synchronizer:
 
     @staticmethod
     @njit(parallel=True)
-    def find_ipi_intervals(sound_array=None,
-                           audio_sr_rate=250000):
+    def find_ipi_intervals(sound_array: np.ndarray = None,
+                           audio_sr_rate: int = 250000) -> tuple:
 
         """
         Description
@@ -301,19 +323,17 @@ class Synchronizer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            sound_array (np.ndarray)
-                (Multi-)channel sound array.
-            audio_sr_rate (int)
-                Sampling rate of audio device; defaults to 250 kHz.
+        sound_array (np.ndarray)
+            Sound data array.
+        audio_sr_rate (int)
+            Sampling rate of audio device; defaults to 250 kHz.
         ----------
 
         Returns
         ----------
-        ipi_durations_ms (np.ndarray)
-            Durations of all found IPI intervals (in ms).
-        audio_ipi_start_samples (np.ndarray)
-            Start samples of all found IPI intervals.
+        ipi_durations_ms (np.ndarray), audio_ipi_start_samples (np.ndarray)
+            Durations of all found IPI intervals (in ms) and
+            start samples of all found IPI intervals.
         ----------
         """
 
@@ -344,8 +364,8 @@ class Synchronizer:
 
     @staticmethod
     @njit(parallel=True)
-    def relative_change_across_array(input_array=None,
-                                     desired_axis=0):
+    def relative_change_across_array(input_array: np.ndarray = None,
+                                     desired_axis: int = 0) -> np.ndarray:
 
         """
         Description
@@ -356,11 +376,10 @@ class Synchronizer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            input_array (np.ndarray)
-                Input array.
-            desired_axis (int)
-                Axis to compute the change over.
+        input_array (np.ndarray)
+            Input array.
+        desired_axis (int)
+            Axis to compute the change over.
         ----------
 
         Returns
@@ -377,8 +396,11 @@ class Synchronizer:
 
         return relative_change_array
 
-    def gather_px_information(self, video_of_interest, sync_camera_fps,
-                              camera_id, video_name, total_frame_number):
+    def gather_px_information(self, video_of_interest: str = None,
+                              sync_camera_fps: int | float = None,
+                              camera_id: str = None,
+                              video_name: str = None,
+                              total_frame_number: int = None) -> None:
         """
         ----------
         This method takes find sync LEDs in video frames,
@@ -388,17 +410,16 @@ class Synchronizer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            video_of_interest (str)
-                Location of relevant sync video.
-            sync_camera_fps (int / float)
-                Sampling rate of given sync camera.
-            camera_id (str)
-                ID of sync camera.
-            video_name (stR)
-                Full name of sync video.
-            total_frame_number (int)
-                Total least number of frames of all cameras.
+        video_of_interest (str)
+            Location of relevant sync video.
+        sync_camera_fps (int / float)
+            Sampling rate of given sync camera.
+        camera_id (str)
+            ID of sync camera.
+        video_name (str)
+            Full name of sync video.
+        total_frame_number (int)
+            Total least number of frames of all cameras.
         ----------
 
         Returns
@@ -451,7 +472,8 @@ class Synchronizer:
         mm_arr.flush()
         mm_arr = 0
 
-    def find_video_sync_trains(self, camera_fps, total_frame_number):
+    def find_video_sync_trains(self, camera_fps: list = None,
+                               total_frame_number: int = None) -> tuple:
         """
         Description
         ----------
@@ -461,31 +483,17 @@ class Synchronizer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            camera_serial_num (list)
-                Serial numbers of sync cameras.
-            led_px_version (str)
-                Version of LED pxl to be looked at; defaults to current.
-            led_px_dev (int)
-                Max number of pxl away from some loc to search peak intensity; defaults to 10.
-            video_extension (str)
-                Video extension; defaults to 'mp4'.
-            relative_intensity_threshold (int)
-                Relative intensity threshold to categorize important events; defaults to .35.
-            millisecond_divergence_tolerance (int / float)
-                The amount of variation allowed for sync events converted to ms; defaults to 10 (ms).
-            camera_fps (list)
-                List of relevant video sampling rates (in fps).
-            total_frame_number (int)
-                Number of frames on the camera containing the minimum total number of frames.
+        camera_fps (list)
+            List of relevant video sampling rates (in fps).
+        total_frame_number (int)
+            Number of frames on the camera containing the minimum total number of frames.
         ----------
 
         Returns
         ----------
-        led_on_frames (np.ndarray)
-            Frames when LED on events start.
-        sync_sequence_dict (dict)
-            Dictionary for IPI values (in ms) for each camera.
+        led_on_frames (np.ndarray), sync_sequence_dict (dict)
+            Frames when LED on events start and
+            dictionary for IPI values (in ms) for each camera.
         ----------
         """
 
@@ -592,7 +600,7 @@ class Synchronizer:
 
         return ipi_start_frames, sync_sequence_dict
 
-    def find_audio_sync_trains(self):
+    def find_audio_sync_trains(self) -> dict:
         """
         Description
         ----------
@@ -602,9 +610,6 @@ class Synchronizer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            ch_receiving_input (int)
-                Audio channel receiving digital input; defaults to 2.
         ----------
 
         Returns
@@ -675,7 +680,7 @@ class Synchronizer:
 
         return ipi_discrepancy_dict
 
-    def crop_wav_files_to_video(self):
+    def crop_wav_files_to_video(self) -> None:
         """
         Description
         ----------
@@ -691,9 +696,6 @@ class Synchronizer:
 
         Parameters
         ----------
-        Contains the following set of parameters
-            ch_receiving_input (int)
-                Audio channel receiving digital input from Motif; defaults to 1.
         ----------
 
         Returns

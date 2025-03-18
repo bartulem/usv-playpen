@@ -6,8 +6,6 @@
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
 SLEAP_ROOT="Name"
-MOUSE_COUNT=2
-BATCH_SIZE=2
 CPUS_PER_TASK=2
 MEMORY_PER_CPU="96G"
 TIME_RESTRICTION="05:00:00"
@@ -15,6 +13,16 @@ EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 CONDA_VERSION="anacondapy/2024.02"
 SLEAP_ENV="sleap1.3.3"
+
+SLEAP_BATCH_SIZE=2
+SLEAP_TRACKER="flow"
+SLEAP_TRACKING_SIMILARITY="instance"
+SLEAP_TRACKING_WINDOW=5
+SLEAP_CONNECT_SINGLE_BREAKS=1
+SLEAP_PEAK_THRESHOLD=0.4
+SLEAP_IOU_THRESHOLD=0.3
+SLEAP_TARGET_INSTANCE_COUNT=2
+SLEAP_PRECULL_TO_TARGET=2
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
@@ -52,7 +60,7 @@ echo "" >> "$JOB_SCRIPT"
 echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "conda activate $SLEAP_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "sleap-track \"\$video_path\" -m \"\$centroid_model\" -m \"\$centered_instance_model\" -o \"\$save_path\" --verbosity rich --tracking.tracker flow --peak_threshold 0.25 --tracking.post_connect_single_breaks 1 --tracking.similarity instance --tracking.clean_instance_count \$2 --batch_size \$3" >> "$JOB_SCRIPT"
+echo "sleap-track \"\$video_path\" -m \"\$centroid_model\" -m \"\$centered_instance_model\" -o \"\$save_path\" --verbosity rich --tracking.tracker \$3 --tracking.target_instance_count \$8 --tracking.pre_cull_to_target \$9 --tracking.pre_cull_iou_threshold \${10} --tracking.track_window \$7 --peak_threshold \$5 --tracking.post_connect_single_breaks \$6 --tracking.similarity \$4 --batch_size \$2" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB ARRAY ---------------- #
@@ -63,4 +71,4 @@ NUM_ARRAY_JOBS="$(cat $ARRAY_ARGS_FILE | wc -l)"
 
 echo "Jobs: $NUM_ARRAY_JOBS"
 
-sbatch -a 1-"$NUM_ARRAY_JOBS" "$JOB_SCRIPT" "$ARRAY_ARGS_FILE" "$MOUSE_COUNT" "$BATCH_SIZE"
+sbatch -a 1-"$NUM_ARRAY_JOBS" "$JOB_SCRIPT" "$ARRAY_ARGS_FILE" "$SLEAP_BATCH_SIZE" "$SLEAP_TRACKER" "$SLEAP_TRACKING_SIMILARITY" "$SLEAP_PEAK_THRESHOLD" "$SLEAP_CONNECT_SINGLE_BREAKS" "$SLEAP_TRACKING_WINDOW" "$SLEAP_TARGET_INSTANCE_COUNT" "$SLEAP_PRECULL_TO_TARGET" "$SLEAP_IOU_THRESHOLD"

@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Visualize 3D tracking, vocalization and neural data.
+Visualizes 3D tracking, vocalization and neural data.
 """
 
 import json
@@ -14,8 +14,26 @@ from .visualizations.make_behavioral_videos import Create3DVideo
 
 class Visualizer:
 
-    def __init__(self, input_parameter_dict=None, root_directories=None,
-                 message_output=None):
+    def __init__(self, input_parameter_dict: dict = None,
+                 root_directories: list = None,
+                 message_output: callable = None) -> None:
+
+        """
+        Initializes the Visualizer class.
+
+        Parameter
+        ---------
+        root_directories (list)
+            Root directories for data; defaults to None.
+        input_parameter_dict (dict)
+            Analyses parameters; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
+
+        Returns
+        -------
+        -------
+        """
 
         if root_directories is None:
             with open((pathlib.Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'r') as json_file:

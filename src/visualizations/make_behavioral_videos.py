@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Make behavioral videos from 3D tracked points.
+Makes behavioral videos from 3D tracked points.
 """
 
 from PyQt6.QtTest import QTest
@@ -38,12 +38,12 @@ def read_ttl_events(input_array: np.ndarray = None) -> tuple:
 
     Parameter
     ---------
-    input_arr : np.ndarray
+    input_arr (np.ndarray)
         A (n_samples) shape ndarray of audio data.
 
     Returns
     -------
-     off_to_on, on_to_off: tuple
+     off_to_on, on_to_off (tuple)
         Samples when the TTL pulse starts and ends.
     """
 
@@ -63,18 +63,18 @@ def filter_spikes_for_raster(input_arr: np.ndarray = None,
 
     Parameter
     ---------
-    input_arr : np.ndarray
+    input_arr (np.ndarray)
         A (n_spikes) shape ndarray of spike train.
-    ra_st_fr : int
+    ra_st_fr (int)
         Start frame of raster.
-    ra_end_fr : int
+    ra_end_fr (int)
         End frame of raster.
-    fr_start : int
+    fr_start (int)
         Current frame 0 in raster.
 
     Returns
     -------
-    input_arr : np.ndarray
+    input_arr (np.ndarray)
         Spike times relative to current frame.
     """
 
@@ -91,20 +91,20 @@ def find_region_by_channel(cluster_id: str = None,
 
     Parameter
     ---------
-    cluster_id : str
+    cluster_id (str)
         Cluster ID.
-    brain_area_dict : dict
+    brain_area_dict (dict)
         Contains brain area information.
-    brain_color_scheme : dict
+    brain_color_scheme (dict)
         Contains brain color scheme.
-    return_only_color : bool
+    return_only_color (bool)
         If True, returns only color.
-    return_only_area : bool
+    return_only_area (bool)
         If True, returns only area.
 
     Returns
     -------
-    brain_region, brain_color, (brain_region, brain_color) : str | tuple
+    brain_region, brain_color, (brain_region, brain_color)  (str | tuple)
         Brain region and/or color.
     """
 
@@ -129,12 +129,12 @@ def load_audio_data(root_directory: str = None) -> tuple[np.ndarray, int]:
 
     Parameter
     ---------
-    root_directory : str
+    root_directory (str)
         Root directory.
 
     Returns
     -------
-    audio_data, sampling_rate : tuple (np.ndarray, int)
+    audio_data, sampling_rate (tuple (np.ndarray, int))
        Audio data and audio sampling rate.
     """
 
@@ -1113,8 +1113,8 @@ class Create3DVideo:
             Root directory containing arena tracking data.
         speaker_audio_file (str)
             File path to speaker tracking data.
-        visualizations_parameter_dict : dict
-            Dictionary of all visualization params; defaults to None.
+        visualizations_parameter_dict (dict)
+            Visualization params; defaults to None.
         ----------
 
         Returns
