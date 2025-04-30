@@ -22,6 +22,7 @@ extensions = [
     'myst_parser',
     'nbsphinx',
     'sphinx_rtd_theme',
+    'sphinx_copybutton',
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
     'sphinx.ext.viewcode'

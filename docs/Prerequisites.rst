@@ -20,6 +20,7 @@ Audio recording essentials
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/audio_recording_hardware.png
    :width: 800
    :height: 320
+   :align: center
    :alt: Audio Hardware
 
 Video recording essentials
@@ -44,6 +45,7 @@ Video recording essentials
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/video_recording_hardware.png
    :width: 800
    :height: 320
+   :align: center
    :alt: Video Hardware
 
 E-phys recording essentials

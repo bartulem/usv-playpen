@@ -20,6 +20,7 @@ A brief introduction on the uses of ChArUco boards can be found `here <https://d
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/charuco.png
    :width: 650
    :height: 400
+   :align: center
    :alt: ChArUco board
 
 Calibrate (preparation)
@@ -81,6 +82,7 @@ they are pointing roughly into the center of the arena. Finally, check camera av
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/ir_reflectors_diff.png
    :width: 800
    :height: 320
+   :align: center
    :alt: IR Reflectors Difference
 
 Calibrate (execution)
@@ -88,21 +90,25 @@ Calibrate (execution)
 In the GUI main window, select experimenter name and click *Record*.
 
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/cal1.png
+   :align: center
    :alt: Calibration Step 1
 
 | Depending on the choice of experimenter name, you can see directory destinations of files created during recording. For a camera Calibration session, we choose not to conduct an audio recording, but to conduct video calibration. By default, calibration duration is 5 minutes long and the recording of the empty arena after it is 1 minute long, but these are arbitrary and should be adjusted to particular needs. For calibration is also not necessary to disable the ethernet connection.
 
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/cal2.png
+   :align: center
    :alt: Calibration Step 2
 
 | One can skip the Audio Settings step as it is not relevant here, and adjust Video Settings. Each video recording is associated with a particular metadata file and below you can see an example of how one might fill out the metadata form for calibration. On the left, you can use a slider to choose the acquisition frame rate of cameras during calibration. By default, this is set to 10 fps, and generally lower values are better for calibration.
 
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/cal3.png
+   :align: center
    :alt: Calibration Step 3
 
 | Finally, when ready to head over to the arena and move the calibration board, simply click the *Calibrate* button. You have several seconds before the video starts recording.
 
 .. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/cal4.png
+   :align: center
    :alt: Calibration Step 4
 
 | The video below is a sped-up version of an actual calibration and can be consulted for reference.
