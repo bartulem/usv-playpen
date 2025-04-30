@@ -13,8 +13,8 @@ import pathlib
 import polars as pls
 import subprocess
 from tqdm import tqdm
-from src.assign_vocalizations_utils import (get_arena_dimensions, load_usv_segments, load_tracks_from_h5, to_float, write_to_h5,
-                                            get_conf_sets_6d, are_points_in_conf_set)
+from .assign_vocalizations_utils import (get_arena_dimensions, load_usv_segments, load_tracks_from_h5, to_float, write_to_h5,
+                                         get_conf_sets_6d, are_points_in_conf_set)
 
 class Vocalocator:
 
