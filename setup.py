@@ -50,7 +50,7 @@ setup(
                       'pandas==2.2.3',
                       'PIMS==0.6.1',
                       'PyQt6==6.7.0',
-                      'polars==1.28.0',
+                      'polars==1.28.1',
                       'pydub==0.25.1',
                       'requests==2.32.3',
                       'scipy==1.10.0',
