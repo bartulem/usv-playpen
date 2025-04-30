@@ -105,7 +105,7 @@ In the GUI main window, select experimenter name from the dropdown menu and clic
 
    <br>
 
-Depending on the choice of experimenter name, you can see directory destinations of files created during recording. For a camera Calibration session, we choose not to conduct an audio recording, but to conduct video calibration. By default, calibration duration is 5 minutes long and the recording of the empty arena after it is 1 minute long, but these are arbitrary and should be adjusted to particular needs. For calibration is also not necessary to disable the ethernet connection.
+Depending on the choice of experimenter name, you can see file server directory destinations of files created during recording. You can naturally change this setting as you please. Several important details, however, are present in the section below. For a camera Calibration session, we choose not to conduct an audio recording, but to conduct video calibration. By default, calibration duration is 5 minutes long and the recording of the empty arena after it is 1 minute long, but these are arbitrary and should be adjusted to particular needs. For calibration is also not necessary to disable the ethernet connection.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_2.png
    :align: center
@@ -147,12 +147,42 @@ It is good practice to be thorough and move the ChArUco board around the arena, 
 
 Make sure you cover all sides and corners, but also move the board slightly in the vertical dimension, without moving too far from the floor. Change the angle of the board relative to the cameras freely, but keep in mind that extreme orientations may not be captured by the cameras at all. Moving the board over the microphones is not problematic, as long as it is not out of the range of the cameras or displacing the microphones.
 
-When Calibration is complete, you can leave the board on the floor and click the *Record* button, which will capture a minute long video on the empty arena. You do not want to move around in the arena space during this recording.
+When Calibration is complete, you can leave the board on the floor and click the *Record* button, which will capture a minute long video of the empty arena. You do not want to move around in the arena space during this recording. Upon completion, the data will be copied over to the directories/fileserver(s) you selected previously, *e.g.*, F:/Bartul/Data/20250430_141750 and there will be two subdirectories: *sync* and *video*. In the *video* subdirectory, you will find Nx (N = number of cameras) calibration subdirectories (containing 5 minute calibration videos) and Nx recording subdirectories (containing the 1 minute video post calibration).
 
 
 Calibrate (assessment)
 ----------------------
-Placeholder text.
+To assess the quality of the calibration, you first click the *Process* button on the GUI main display.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_5.png
+   :align: center
+   :alt: Calibration Step 5
+
+.. raw:: html
+
+   <br>
+
+In the *Root directories for processing* window, either write or c/p the path to the directory of the calibration session you just recorded. Select *Run video re-encoding* adn change the *Concatenation name* to 000000. Finally, select *Run AP Calibration*. Hit *Next*, and *Process*. In the terminal/powershell, you should be able to see the amount of CharUco Boards detected by reprojection on each camera, as progress bars will appear.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_6.png
+   :align: center
+   :alt: Calibration Step 6
+
+.. raw:: html
+
+   <br>
+
+When Calibration is done, if you navigate to, *e.g.*, F:/Bartul/Data/20250430_141750/20250430141750/video, you will find, among others, a *20250430141750_calibration.toml* file and a *20250430141750_reprojection_histogram.png* file. The histogram should display the reprojection error diminishing steeply (see image below for example), highly suggestive of an effective calibration.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/reprojection_histogram_example.png
+   :align: center
+   :width: 500
+   :height: 375
+   :alt: Reprojection Example
+
+.. raw:: html
+
+   <br>
 
 Record (general settings)
 -------------------------
