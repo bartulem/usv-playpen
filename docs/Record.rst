@@ -57,7 +57,7 @@ has the following characteristics (found in */src/_parameter_settings/process_se
 Clear arena and position IR-markers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/retroreflective_marker.gif
+.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/retroreflective_marker.gif
    :width: 400
    :height: 500
    :align: left
@@ -113,7 +113,7 @@ In the GUI main window, select experimenter name and click *Record*.
 
 | The video below is a sped-up version of an actual calibration and can be consulted for reference.
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_.gif
+.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_.gif
    :width: 280
    :height: 500
    :align: left
