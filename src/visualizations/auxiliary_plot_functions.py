@@ -61,7 +61,7 @@ def luminance_equalizer(color_start: Optional[Tuple] = None,
     color_end (tuple)
         RGB of spectrum end color.
     luminance (bool / float)
-        Equalize luminance of spectrum ends.
+        Equalizes luminance of spectrum ends.
     match_by (str)
         Match luminance by 'max', 'min' or 'mean'; defaults to 'max'.
     saturation (bool / float)

@@ -25,7 +25,7 @@ class Messenger:
         receivers (list)
             Root directories for data; defaults to None.
         exp_settings_dict (dict)
-            Analyses parameters; defaults to None.
+            Processing parameters; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
         no_receivers_notification (bool)

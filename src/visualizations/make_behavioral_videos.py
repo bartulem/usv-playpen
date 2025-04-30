@@ -7,7 +7,6 @@ from PyQt6.QtTest import QTest
 from datetime import datetime
 import glob
 import json
-import os
 import h5py
 import librosa
 import librosa.display
@@ -16,15 +15,16 @@ from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 from numba import njit
+import os
 import polars as pls
 import pathlib
 import platform
+import re
 from scipy.io import wavfile
 import subprocess
 import warnings
 from typing import Any
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
-from ..os_utils import configure_path
 from ..analyses.decode_experiment_label import extract_information
 
 
@@ -1063,10 +1063,10 @@ class Create3DVideo:
                             "TTI-nose": "ΔTN(cm)", "TTI-nose_1st_der": "ΔTN'(cm/s)", "TTI-nose_2nd_der": "ΔTN''(cm/s²)",
                             "neck_elevation_diff": "ΔElev(cm)", "neck_elevation_diff_1st_der": "ΔElev'(cm/s)", "neck_elevation_diff_2nd_der": "ΔElev''(cm/s²)",
                             "speed_diff": "ΔSpeed(cm/s)", "speed_diff_1st_der": "ΔSpeed'(cm/s²)", "speed_diff_2nd_der": "ΔSpeed''(cm/s³)",
-                            "allo_yaw-nose": "MF-N(°)", "allo_yaw-nose_1st_der": "MF-N'(°/s)", "allo_yaw-nose_2nd_der": "MF-N''(°/s²)",
-                            "nose-allo_yaw": "FM-N(°)", "nose-allo_yaw_1st_der": "FM-N'(°/s)", "nose-allo_yaw_2nd_der": "FM-N''(°/s²)",
-                            "allo_yaw-TTI": "MF-T(°)", "allo_yaw-TTI_1st_der": "MF-T'(°/s)", "allo_yaw-TTI_2nd_der": "MF-T''(°/s²)",
-                            "TTI-allo_yaw": "FM-T(°)", "TTI-allo_yaw_1st_der": "FM-T'(°/s)", "TTI-allo_yaw_2nd_der": "FM-T''(°/s²)"}
+                            "allo_yaw-nose": "Yaw-N(°)", "allo_yaw-nose_1st_der": "Yaw-N'(°/s)", "allo_yaw-nose_2nd_der": "Yaw-N''(°/s²)",
+                            "nose-allo_yaw": "N-Yaw(°)", "nose-allo_yaw_1st_der": "N-Yaw'(°/s)", "nose-allo_yaw_2nd_der": "N-Yaw''(°/s²)",
+                            "allo_yaw-TTI": "Yaw-T(°)", "allo_yaw-TTI_1st_der": "Yaw-T'(°/s)", "allo_yaw-TTI_2nd_der": "Yaw-T''(°/s²)",
+                            "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)"}
 
     color_mode_preferences = {
         "light_mode": {
@@ -1106,7 +1106,7 @@ class Create3DVideo:
         Parameters
         ----------
         exp_id (str)
-            Experiment ID (needed for EPHYS path).
+            Experiment ID (needed for figure naming).
         root_directory (str)
             Root directory containing mouse tracking data.
         arena_directory (str)
@@ -1305,20 +1305,18 @@ class Create3DVideo:
             main_text_offset = 0.0175
             mouse_id_text_offset = 0.035
             spec_fig_position = [0.285, 0.835, 0.55, 0.15]
+            figure_pad = -6.5
+            text_start_coords = [0.005, 0.84]
+            plot_zlim = 0.4
             if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
                     self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool'] or
                     self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']):
-                figure_pad = -6.5
-                text_start_coords = [0.005, 0.84]
                 plot_xlim = 0.6
                 plot_ylim = 0.6
-                plot_zlim = 0.4
             else:
-                figure_pad = -5.5
-                text_start_coords = [-0.0225, 0.8625]
-                plot_xlim = 0.45
-                plot_ylim = 0.45
-                plot_zlim = 0.4
+                plot_xlim = 0.5
+                plot_ylim = 0.5
+
 
         if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
                 self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool'] or
@@ -1326,7 +1324,8 @@ class Create3DVideo:
 
             if self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']:
 
-                ephys_directory = configure_path(f"/mnt/falkner/{self.exp_id}/EPHYS")
+                data_start_index = re.search(f"Data{os.sep}{self.root_directory.split(os.sep)[-1]}", self.root_directory, re.IGNORECASE).start()
+                ephys_directory = self.root_directory[:data_start_index] + 'EPHYS'
 
                 with open(glob.glob(pathname=f'{ephys_directory}{os.sep}neuropixels_sites_to_anatomy_converter.json')[0], 'r') as anatomy_converter_json:
                     neuropixels_sites_to_anatomy_converter = json.load(anatomy_converter_json)
@@ -1871,7 +1870,7 @@ class Create3DVideo:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['rotate_side_view_bool'] and self.visualizations_parameter_dict['make_behavioral_videos']['animate_bool']:
                     name_addition = f"{name_addition}_rotate"
             if self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool']:
-                name_addition = f"{name_addition}_{len(self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_to_plot'])}features"
+                name_addition = f"{name_addition}_{len(beh_features_to_plot)}features"
             if self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool']:
                 name_addition = f"{name_addition}_spectrogram_ch{active_mic_position}"
             if self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']:

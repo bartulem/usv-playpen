@@ -103,7 +103,7 @@ class Synchronizer:
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
-            Analyses parameters; defaults to None.
+            Processing parameters; defaults to None.
         exp_settings_dict (dict)
             Experimental settings; defaults to None.
         message_output (function)
@@ -264,7 +264,7 @@ class Synchronizer:
                 continue
 
     @staticmethod
-    @njit(parallel=True)
+    # @njit(parallel=True)
     def find_lsb_changes(relevant_array: np.ndarray = None,
                          lsb_bool: bool = True,
                          total_frame_number: int = 0) -> tuple:
@@ -305,9 +305,9 @@ class Synchronizer:
         largest_break_duration = np.max(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1])
 
         if (total_frame_number + largest_break_end_hop) <= ttl_break_end_samples.shape[0]:
-            return ttl_break_end_samples[largest_break_end_hop] + 1, ttl_break_end_samples[largest_break_end_hop + total_frame_number] + 1, largest_break_duration
+            return int(ttl_break_end_samples[largest_break_end_hop] + 1), int(ttl_break_end_samples[largest_break_end_hop + total_frame_number] + 1), int(largest_break_duration)
         else:
-            return None, None, largest_break_duration
+            return None, None, int(largest_break_duration)
 
     @staticmethod
     @njit(parallel=True)

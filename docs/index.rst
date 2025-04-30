@@ -20,9 +20,6 @@ clicks away, the GUI is not dummy-proof. It is important to understand the syste
 to put in place to make sure you are using the tool correctly. Should you have any questions, please
 do not hesitate to contact us, thorough Github or email.
 
-`we <https://www.teledynevisionsolutions.com/products/blackfly-s-usb3/>`_
-
-
 .. toctree::
    :maxdepth: 1
    :caption: User Guide

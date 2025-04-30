@@ -12,7 +12,7 @@ urlretrieve (
 project = 'usv-playpen'
 copyright = '2025, github/bartulem'
 author = 'Bartul Mimica (documentation)'
-release = '0.8.1'
+release = '0.8.2'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

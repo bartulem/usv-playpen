@@ -44,7 +44,6 @@ class ExperimentController:
         self.api = None
         self.camera_serial_num = None
         self.config_1 = None
-        self.avisoft_recording = None
 
         if email_receivers is None:
             self.email_receivers = None
@@ -97,7 +96,7 @@ class ExperimentController:
         Returns
         ----------
         master_ip_address (str), api_key (str)
-            IP address of the master PC
+            IP address of the main PC,
             and API key to run Motif.
         ----------
         """
@@ -152,7 +151,7 @@ class ExperimentController:
         """
         Description
         ----------
-        This method check whether Motif is operational.
+        This method checks whether Motif is operational.
         ----------
 
         Parameters
@@ -193,7 +192,7 @@ class ExperimentController:
                          ExposureTime=self.exp_settings_dict['video']['cameras_config'][serial_num]['exposure_time'],
                          Gain=self.exp_settings_dict['video']['cameras_config'][serial_num]['gain'])
 
-            # frame rate has to be same for all
+            # the frame rate has to be the same for all
             if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
                 api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/configure", AcquisitionFrameRate=camera_fr)
                 self.message_output(f"The camera frame rate is set to {camera_fr} fps for {self.exp_settings_dict['video']['general']['expected_cameras'][0]}.")
@@ -404,10 +403,10 @@ class ExperimentController:
         Description
         ----------
         This method checks whether the system is ready for recording and if so,
-        conducts a recording with the designated parameters, and moves the recorded
+        conducts a recording with the designated parameters and moves the recorded
         files to the network drive (see below for details).
 
-        NB: the data cannot be acquired until Motif, Avisoft USGH recorder and CoolTerm
+        NB: the data cannot be acquired until Motif, Avisoft USGH recorder, and CoolTerm
         have been installed and/or configured for recording.
         ----------
 
@@ -420,7 +419,7 @@ class ExperimentController:
         Directory structure w/ "audio", "sync" and "video" subdirectories.
         The "audio" subdirectory contains "original" and "original_mc" subdirectories,
         the "sync" subdirectory contains .txt files (serial monitor output),
-        and the "video" subdirectory contains individual camera video (.mp4) and metadata files,
+        and the "video" subdirectory contains individual camera videos (.mp4) and metadata files,
         each in its own subdirectory.
         ----------
         """
@@ -437,8 +436,8 @@ class ExperimentController:
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):
             shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/coolterm_config.ini'),
                         dst=f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc")
-        sync_leds_capture = subprocess.Popen(args=f'''cmd /c "{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"''',
-                                             stdout=subprocess.PIPE)
+        subprocess.Popen(args=f'''cmd /c "start /MIN {self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"''',
+                         stdout=subprocess.PIPE)
 
         self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['recording_frame_rate'])
 
@@ -448,28 +447,42 @@ class ExperimentController:
 
         start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
 
-        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}video").mkdir(parents=True, exist_ok=True)
-        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}sync").mkdir(parents=True, exist_ok=True)
-        if self.exp_settings_dict['conduct_audio_recording']:
-            if self.exp_settings_dict['audio']['general']['total'] == 0:
-                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
-            else:
-                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
-                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc").mkdir(parents=True, exist_ok=True)
-
         # start recording audio
         if self.exp_settings_dict['conduct_audio_recording']:
+            self.message_output(f"Audio recording in progress since {start_hour_min_sec}, it will last {round(self.exp_settings_dict['video_session_duration'] + .36, 2)} minute(s). Please be patient.")
+
+            avisoft_recorder_program_name = self.exp_settings_dict['avisoft_recorder_program_name']
             cpu_affinity_mask = self.get_cpu_affinity_mask()
             cpu_priority = self.exp_settings_dict['audio']['cpu_priority']
-            # run command to start audio recording and keep executing the rest of the script
+
+            # run command to start Avisoft Recorder and keep executing the rest of the script
             if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
-                self.avisoft_recording = subprocess.Popen(args=f'''cmd /c "start /{cpu_priority} /affinity {cpu_affinity_mask} rec_usgh.exe /CFG=avisoft_config.ini /AUT"''',
-                                                          stdout=subprocess.PIPE,
-                                                          cwd=self.exp_settings_dict['avisoft_recorder_exe'])
-                self.message_output(f"Recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration'] + .36} minute(s). Please be patient.")
+                subprocess.Popen(args=f'''cmd /c "start /{cpu_priority} /affinity {cpu_affinity_mask} {avisoft_recorder_program_name} /CFG=avisoft_config.ini /AUT"''',
+                                 stdout=subprocess.PIPE,
+                                 cwd=self.exp_settings_dict['avisoft_recorder_exe'])
 
                 # pause for N seconds
-                QTest.qWait(10000)
+                QTest.qWait(8000)
+
+                # check if Avisoft Recorder is running and exit GUI if not
+                is_running = False
+                is_frozen = False
+                cmd_result = subprocess.run(args=f'''tasklist /FI "IMAGENAME eq {avisoft_recorder_program_name}"''',
+                                            capture_output=True, text=True, check=False, shell=True)
+                if cmd_result.returncode == 0 and avisoft_recorder_program_name.lower() in cmd_result.stdout.lower():
+                    # check if Avisoft Recorder is frozen and exit GUI if so
+                    cmd_result_frozen = subprocess.run(args=f'''tasklist /NH /FI "IMAGENAME eq {avisoft_recorder_program_name}" /FI "STATUS eq Not Responding''',
+                                                       capture_output=True, text=True, check=False, shell=True)
+                    if not (cmd_result_frozen.returncode == 0 and avisoft_recorder_program_name.lower() in cmd_result_frozen.stdout.lower()):
+                        is_running = True
+                    else:
+                        is_frozen = True
+                if not is_running:
+                    subprocess.Popen(f'''cmd /c "taskkill /IM CoolTerm.exe /T /F 1>nul 2>&1"''').wait()
+                    if is_frozen:
+                        subprocess.Popen(f'''cmd /c "taskkill /IM {avisoft_recorder_program_name} /T /F 1>nul 2>&1"''').wait()
+                    print("Aborted experiment as Avisoft Recorder was not running or was frozen.")
+                    sys.exit(1)
 
         # record video data
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
@@ -484,8 +497,7 @@ class ExperimentController:
                           codec=self.exp_settings_dict['video']['general']['recording_codec'],
                           metadata=self.exp_settings_dict['video']['metadata'])
 
-        if not self.exp_settings_dict['conduct_audio_recording']:
-            self.message_output(f"Video recording in progress since {start_hour_min_sec}, it will last {self.exp_settings_dict['video_session_duration']} minute(s). Please be patient.")
+        self.message_output(f"Video recording in progress since {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}, it will last {round(self.exp_settings_dict['video_session_duration'], 2)} minute(s). Please be patient.")
 
         if self.exp_settings_dict['disable_ethernet']:
             subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" disable''',
@@ -495,15 +507,11 @@ class ExperimentController:
 
         # wait until cameras have finished recording
         # pause for N extra seconds so audio is done, too
-        QTest.qWait(1000*(10 + (self.exp_settings_dict['video_session_duration'] * 60)))
-
-        # pause for N seconds
-        QTest.qWait(15000)
+        QTest.qWait(1000*(25 + (self.exp_settings_dict['video_session_duration'] * 60)))
 
         self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
-        # close sync LED capture
-        sync_leds_capture.terminate()
+        # close serial monitor sync LED capture
         subprocess.Popen(f'''cmd /c "taskkill /IM CoolTerm.exe /T /F 1>nul 2>&1"''').wait()
 
         if self.exp_settings_dict['disable_ethernet']:
@@ -513,7 +521,17 @@ class ExperimentController:
             self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
             QTest.qWait(20000)
 
+        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}video").mkdir(parents=True, exist_ok=True)
+        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}sync").mkdir(parents=True, exist_ok=True)
+        if self.exp_settings_dict['conduct_audio_recording']:
+            if self.exp_settings_dict['audio']['general']['total'] == 0:
+                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
+            else:
+                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
+                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc").mkdir(parents=True, exist_ok=True)
+
         self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
+        QTest.qWait(2000)
 
         # move video file(s) to primary file server
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
@@ -532,7 +550,7 @@ class ExperimentController:
                 for mic_idx in self.exp_settings_dict['audio']['used_mics']:
                     last_modified_audio_file = max(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"),
                                                    key=os.path.getctime)
-                    single_audio_copy_subp = subprocess.Popen(f'''cmd /c move "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
+                    single_audio_copy_subp = subprocess.Popen(args=f'''cmd /c move "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
                                                               cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
                                                               stdout=subprocess.DEVNULL,
                                                               stderr=subprocess.STDOUT,
@@ -544,7 +562,7 @@ class ExperimentController:
                 for mic_pos_idx, mic_idx in enumerate([0, 12]):
                     audio_file_list = sorted(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"), key=os.path.getctime, reverse=True)[:relevant_file_count]
                     for aud_file in audio_file_list:
-                        multi_audio_copy_subp = subprocess.Popen(f'''cmd /c move "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}{device_id[mic_pos_idx]}_{aud_file.split(os.sep)[-1]}"''',
+                        multi_audio_copy_subp = subprocess.Popen(args=f'''cmd /c move "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}{device_id[mic_pos_idx]}_{aud_file.split(os.sep)[-1]}"''',
                                                                  cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
                                                                  stdout=subprocess.DEVNULL,
                                                                  stderr=subprocess.STDOUT,
@@ -570,7 +588,7 @@ class ExperimentController:
         # copy the audio, sync and video directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
             for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
-                subprocess.Popen(f'''cmd /c robocopy "{total_dir_name_windows[0]}" "{win_dir}" /MIR''',
+                subprocess.Popen(args=f'''cmd /c robocopy "{total_dir_name_windows[0]}" "{win_dir}" /MIR''',
                                  cwd=f"{total_dir_name_windows[0]}",
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.STDOUT,

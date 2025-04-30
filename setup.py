@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.8.1',
+    version='0.8.2',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -18,9 +18,9 @@ setup(
         'Programming Language :: Python :: 3 :: Only',
     ],
     keywords='neuroscience, mouse, usv, behavior, social, courtship',
-    packages=['usv_playpen', 'usv_playpen.analyses', 'usv_playpen.visualizations', 'usv_playpen._tests', 'usv_playpen._cluster'],
+    packages=['usv_playpen', 'usv_playpen.analyses', 'usv_playpen.visualizations', 'usv_playpen._tests', 'usv_playpen.other'],
     package_dir={'usv_playpen': 'src'},
-    package_data={'usv_playpen': ['img/*.png', 'fonts/*.ttf', '_config/*', '_parameter_settings/*.json', '_sync_pulse/*.ino']},
+    package_data={'usv_playpen': ['img/*.png', 'fonts/*.ttf', '_config/*', '_parameter_settings/*.json', 'other/synchronization/*.ino']},
     include_package_data=True,
     python_requires="==3.10.*",
     description='GUI to conduct, process and analyze experiments w/ multichannel e-phys, audio and video acquisition',
@@ -40,6 +40,7 @@ setup(
                       'av==10.0.0',
                       'h5py==3.11.0',
                       'imgstore',
+                      'joblib==1.4.2',
                       'librosa==0.10.2',
                       'matplotlib==3.10.0',
                       'noisereduce==3.0.3',
@@ -49,7 +50,7 @@ setup(
                       'pandas==2.2.3',
                       'PIMS==0.6.1',
                       'PyQt6==6.7.0',
-                      'polars==1.19.0',
+                      'polars==1.27.0',
                       'pydub==0.25.1',
                       'requests==2.32.3',
                       'scipy==1.10.0',

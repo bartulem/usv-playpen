@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Generates playback WAV files and frequency shift audio segment.
+Generates playback WAV files and frequency shifts audio segment.
 """
 
 from PyQt6.QtTest import QTest

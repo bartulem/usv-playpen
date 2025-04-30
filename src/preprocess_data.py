@@ -9,6 +9,7 @@ import pathlib
 import traceback
 from datetime import datetime
 from .anipose_operations import ConvertTo3D
+from .assign_vocalizations import Vocalocator
 from .das_inference import FindMouseVocalizations
 from .extract_phidget_data import Gatherer
 from .modify_files import Operator
@@ -257,6 +258,18 @@ class Stylist:
                         FindMouseVocalizations(root_directory=one_directory,
                                                input_parameter_dict=self.input_parameter_dict,
                                                message_output=self.message_output).summarize_das_findings()
+
+                    # # # prepare data for vocal assignment
+                    if self.input_parameter_dict['processing_booleans']['prepare_assign_vocalizations']:
+                        Vocalocator(root_directory=one_directory,
+                                    input_parameter_dict=self.input_parameter_dict,
+                                    message_output=self.message_output).prepare_for_vocalocator()
+
+                    # # # assign vocalizations to mice
+                    if self.input_parameter_dict['processing_booleans']['assign_vocalizations']:
+                        Vocalocator(root_directory=one_directory,
+                                    input_parameter_dict=self.input_parameter_dict,
+                                    message_output=self.message_output).run_vocalocator()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")

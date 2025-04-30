@@ -61,7 +61,7 @@ class DataLoader:
         Parameter
         ---------
         input_parameter_dict (dict)
-            Analyses parameters; defaults to None.
+            Processing parameters; defaults to None.
 
         Returns
         -------

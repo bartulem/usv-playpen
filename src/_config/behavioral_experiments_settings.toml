@@ -1,5 +1,6 @@
-experimenter_list = [ "Bartul", "Jinrun", "Annegret", "Jiayi", "Dexter",]
+experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Jiayi", "Jinrun",]
 avisoft_recorder_exe = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
+avisoft_recorder_program_name = "rec_usgh.exe"
 avisoft_basedirectory = "C:\\Users\\bartulem\\Documents\\Avisoft Bioacoustics\\"
 coolterm_basedirectory = "D:\\CoolTermWin"
 recording_files_destination_linux = [ "/home/labadmin/falkner/Bartul/Data",]

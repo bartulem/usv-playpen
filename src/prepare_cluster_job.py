@@ -20,7 +20,7 @@ class PrepareClusterJob:
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
-            Analyses parameters; defaults to None.
+            Processing parameters; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
 

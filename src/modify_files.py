@@ -50,7 +50,7 @@ class Operator:
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
-            Analyses parameters; defaults to None.
+            Processing parameters; defaults to None.
         exp_settings_dict (dict)
             Experimental settings; defaults to None.
         message_output (function)
@@ -374,18 +374,29 @@ class Operator:
 
         pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}temp").mkdir(parents=True, exist_ok=True)
 
-        mc_audio_files = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}original_mc"],
-                                                          'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
+        # separate each channel of every multichannel audio file
+        mc_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}original_mc{os.sep}*.wav"))
+        for mc_audio_file in mc_audio_files:
+            mc_audio_file_basename = os.path.basename(mc_audio_file)
+            separate_ch_subprocesses = []
+            for ch in range(1, 13):
+                output_file = f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{mc_audio_file_basename[:-4]}_ch{ch:02d}.wav"
+                sep_ch_subp = subprocess.Popen(args=f'''{self.command_addition}sox {mc_audio_file_basename} {output_file} remix {ch}''',
+                                               cwd=f"{self.root_directory}{os.sep}audio{os.sep}original_mc",
+                                               stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.STDOUT,
+                                               shell=self.shell_usage_bool)
 
-        # split multichannel files
-        for mc_audio_file in mc_audio_files.keys():
-            for ch in range(mc_audio_files[mc_audio_file]['wav_data'].shape[1]):
-                wavfile.write(filename=f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{mc_audio_file[:-4]}_ch{ch + 1:02d}.wav",
-                              rate=int(mc_audio_files[mc_audio_file]['sampling_rate']),
-                              data=mc_audio_files[mc_audio_file]['wav_data'][:, ch])
+                separate_ch_subprocesses.append(sep_ch_subp)
 
-        # release dict from memory
-        mc_audio_files = 0
+            while True:
+                status_poll = [query_subp.poll() for query_subp in separate_ch_subprocesses]
+                if any(elem is None for elem in status_poll):
+                    QTest.qWait(5000)
+                else:
+                    break
+
+        QTest.qWait(2000)
 
         # find name origin for file naming purposes
         name_origin = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}m_*_ch*.wav"))[0].split('_')[2]
@@ -396,6 +407,8 @@ class Operator:
             for ch in range(1, 13):
                 mc_to_sc_subp = subprocess.Popen(args=f'''{self.command_addition}sox {device_id}_*_ch{ch:02d}.wav -q {self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav''',
                                                  cwd=f"{self.root_directory}{os.sep}audio{os.sep}temp",
+                                                 stdout=subprocess.DEVNULL,
+                                                 stderr=subprocess.STDOUT,
                                                  shell=self.shell_usage_bool)
 
                 separation_subprocesses.append(mc_to_sc_subp)
@@ -526,8 +539,10 @@ class Operator:
 
             if len(all_audio_files) > 0:
                 for one_file in all_audio_files:
-                    filter_subp = subprocess.Popen(args=f'''{self.command_addition}sox {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
+                    filter_subp = subprocess.Popen(args=f'''{self.command_addition}sox --ignore-length {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
                                                    cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}",
+                                                   stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.STDOUT,
                                                    shell=self.shell_usage_bool)
 
                     filter_subprocesses.append(filter_subp)

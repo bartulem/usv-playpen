@@ -275,7 +275,7 @@ class ConvertTo3D:
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
-            Analyses parameters; defaults to None.
+            Processing parameters; defaults to None.
         ecp_settings_dict (dict)
             Experimental settings; defaults to None.
         message_output (function)

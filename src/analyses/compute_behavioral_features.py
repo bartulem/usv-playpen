@@ -589,7 +589,13 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
     temp_angles_back = res.x
     rotated_back_directions, back_rotator = get_rotation([0., temp_angles_back[0], temp_angles_back[1]])
 
-    rotated_back_directions = rotated_back_directions / np.linalg.norm(rotated_back_directions)
+    norm_temp = np.linalg.norm(rotated_back_directions)
+    if np.isnan(norm_temp):
+        vector_norm = 1.0
+    else:
+        vector_norm = norm_temp
+
+    rotated_back_directions = rotated_back_directions / vector_norm
     back_euler_angles[:, 0] = np.arctan2(rotated_back_directions[:, 2], np.sqrt(rotated_back_directions[:, 0] ** 2 + rotated_back_directions[:, 1] ** 2)) * 180. / np.pi
     back_euler_angles[:, 1] = -np.arctan2(rotated_back_directions[:, 1], rotated_back_directions[:, 0]) * 180. / np.pi
 
@@ -969,6 +975,9 @@ class FeatureZoo:
             if roll_correction_necessary and not pitch_correction_necessary:
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='roll_issue')
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
+                if np.count_nonzero((global_head_angles[mouse_num, :, 0] < -120) | (global_head_angles[mouse_num, :, 0] > 120)) / global_head_angles[mouse_num, :, 0].shape[0] > 0.5:
+                    global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='regularYX')
+                    global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
             elif pitch_correction_necessary and not roll_correction_necessary:
                 original_roll = global_head_angles[mouse_num, :, 0].copy()
                 global_head_root = get_head_root(head_input_arr, average_head_point, rotation_type='pitch_issueYZ')

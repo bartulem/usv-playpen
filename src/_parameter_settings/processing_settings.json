@@ -17,7 +17,9 @@
     "anipose_triangulation": false,
     "anipose_trm": false,
     "das_infer": false,
-    "das_summarize": false
+    "das_summarize": true,
+    "prepare_assign_vocalizations": false,
+    "assign_vocalizations": false
   },
   "anipose_operations": {
     "ConvertTo3D": {
@@ -177,7 +179,7 @@
         "165B Neural",
         "A84I Main"
       ],
-      "processing_pc_choice": "",
+      "processing_pc_choice": "A84I Main",
       "experimenter": "Bartul",
       "send_message": {
         "receivers": []
@@ -219,7 +221,17 @@
         "segment_confidence_threshold": 0.5,
         "segment_minlen": 0.015,
         "segment_fillgap": 0.015
+      },
+      "summarize_das_findings": {
+        "len_win_signal": 512,
+        "low_freq_cutoff": 30000,
+        "noise_corr_cutoff_min": 0.15,
+        "noise_var_cutoff_max": 0.001
       }
     }
+  },
+  "vocalocator": {
+    "vcl_conda_env_name": "vcl",
+    "model_directory": "/mnt/falkner/Bartul/sound_localization/earbud_6d_output_2025-03-12"
   }
 }
