@@ -59,11 +59,21 @@ Video recording essentials
 E-phys recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-* `PXIe-1073 3 Hybrid Slots, 2 PXI Express Slots), Up to 250 MB/s PXI Chassis <https://www.ni.com/en-us/shop/model/pxie-1073.html>`_ (1x)
-* `PXIe 8 AI (16-Bit, 1.25 MS/s/ch), 2 AO, 24 DIO, PXI Multifunction I/O Module <https://www.ni.com/en-us/shop/model/pxie-6356.html?srsltid=AfmBOoots48yZxlyxuK8NmqGoNCHw02ErHPXAnRntgEpCji0KuQUZfIv>`_ (1x)
+* `PXIe-1073 Chassis with power cord #763000-01 <https://www.ni.com/en-us/shop/model/pxie-1073.html>`_ (1x)
+* `PXIe-8381 with MXI-Express cable #782522-01 <https://www.ni.com/en-us/shop/model/pxie-6356.html?srsltid=AfmBOoots48yZxlyxuK8NmqGoNCHw02ErHPXAnRntgEpCji0KuQUZfIv>`_ (1x)
 * `PXIE_1000 <https://www.ni.com/en-us/support/model.pxi-1000.html?srsltid=AfmBOooKjvUCTGckA1omCyB1GjbCdT_w268x9-m2ihJVu6WaYSmEzz9h>`_ (1x)
 * `Neuropixels 2.0 probe <https://www.neuropixels.org/probe2-0>`_ (2x)
 * `Neuropixels 2.0 headstage <https://www.neuropixels.org/probe2-0>`_ (1x)
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/ephys_recording_hardware.png
+   :width: 800
+   :height: 320
+   :align: center
+   :alt: E-phys Hardware
+
+.. raw:: html
+
+   <br>
 
 Other essentials
 ^^^^^^^^^^^^^^^^
@@ -149,4 +159,55 @@ Another thing that needs to be ensured prior to recording is that the file serve
 
    sudo mount -t cifs //cup.princeton.edu/famousprof /home/user/famousprof -o username=netid,domain=PRINCETON,iocharset=utf8,rw,file_mode=0664,dir_mode=0775,nolinux,noperm,vers=2.1
 
-The data is recorded and saved in /mnt/DATA of each computer.
+The data is saved in /mnt/DATA of each computer.
+
+EPHYS PC essentials
+^^^^^^^^^^^^^^^^^^^
+
+On the firmware/software side, install the following (note that SpikeGLX only works on Windows!):
+
+* `SpikeGLX <https://billkarsh.github.io/SpikeGLX/>`_ (data acquisition software), unpack it in "C:\SpikeGLX"
+* `PXI Enclustra Drivers <https://billkarsh.github.io/SpikeGLX/>`_ for your specific OS version (scroll down to locate the appropriate file)
+* `NI Package Manager <https://www.ni.com/en/support/downloads/software-products/download.package-manager.html#322516>`_ (in case you ever get a NI-DAQ or some other NI device worth controlling)
+* `NI-DAQmx <https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html#464560>`_
+
+To make SpikeGLX functional (once the module and card are connected, and probe is connected to the chassis):
+
+* put the probe configuration directories in "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\SpikeGLX\_Calibation"
+* Download firmware for your specific SpikeGLX version, open the SpikeGLX Console and navigate to Tools > Update IMEC Firmware, select the slot you are using and:
+* load BS firmware from, e.g., "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\Firmware"
+* load BSC firmware from, e.g., "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\Firmware"
+
+Setting up *usv-playpen*
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+After installing *usv-playpen*, there are two files that should be modified if you plan to utilize certain functionalities. Depending on the OS and the installation, *usv-playpen* can usually be found in one of the following directories:
+
+
+.. code-block:: powershell
+
+   C:\Users\<username>\.conda\envs\usv\Lib\site-packages\usv_playpen
+
+.. code-block:: bash
+
+   /home/<username>/miniforge3/envs/usv/lib/python3.10/site-packages/usv_playpen
+
+.. code-block:: zsh
+
+   /Users/<username>/mambaforge3/envs/usv/lib/python3.10/site-packages/usv_playpen
+
+If you plan to conduct behavioral recordings, you need to modify */_config/motif_config.ini* to include the actual API key:
+
+.. code-block:: ini
+
+   [motif]
+   master_ip_address=10.241.1.205
+   api=xxx
+
+If you plan to send e-mail notifications when jobs start/complete, you need to modify */_config/email_config.ini*:
+
+.. code-block:: ini
+
+   [email]
+   email_address=165b.pni@gmail.com
+   email_password=xxx
