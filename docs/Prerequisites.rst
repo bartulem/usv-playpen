@@ -13,7 +13,7 @@ Audio recording essentials
 * `Asus with Intel(R) Core(TM) i7-5960X CPU @ 3.00 GHz and 128 GB RAM <https://www.intel.com/content/www/us/en/products/sku/82930/intel-core-i75960x-processor-extreme-edition-20m-cache-up-to-3-50-ghz/specifications.html>`_ (1x)
 * `NVIDIA TITAN RTX <https://www.nvidia.com/en-us/titan/titan-rtx/>`_ (1x)
 * `Avisoft UltraSoundGate Player 1216H (comes with SYNC cable) <hhttps://avisoft.com/ultrasoundgate/1216h/>`_ (2x)
-* `Avisoft-Bioacoustics 40011 CM16/CMPA microphones (come with XLR-5 extension cables) <https://avisoft.com/ultrasound-microphones/cm16-cmpa/>`_ (24x)
+* `Avisoft 40011 CM16/CMPA microphones (come with XLR-5 extension cables) <https://avisoft.com/ultrasound-microphones/cm16-cmpa/>`_ (24x)
 * `Sound permeable mesh <https://www.mcmaster.com/catalog/131/470/9318T25>`_ (10ft)
 * `Adhesive board for holding the mesh in place <https://www.amazon.com/BENECREAT-Self-Adhesive-Insulation-Containers-Protection/dp/B08DY8QD4Y?th=1>`_ (10x)
 
