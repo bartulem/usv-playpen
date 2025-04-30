@@ -23,6 +23,10 @@ Audio recording essentials
    :align: center
    :alt: Audio Hardware
 
+.. raw:: html
+
+   <br>
+
 Video recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -47,6 +51,10 @@ Video recording essentials
    :height: 320
    :align: center
    :alt: Video Hardware
+
+.. raw:: html
+
+   <br>
 
 E-phys recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
