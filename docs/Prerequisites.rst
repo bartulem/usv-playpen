@@ -17,7 +17,7 @@ Audio recording essentials
 * `Sound permeable mesh <https://www.mcmaster.com/catalog/131/470/9318T25>`_ (10ft)
 * `Adhesive board for holding the mesh in place <https://www.amazon.com/BENECREAT-Self-Adhesive-Insulation-Containers-Protection/dp/B08DY8QD4Y?th=1>`_ (10x)
 
-.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/audio_recording_hardware.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/audio_recording_hardware.png
    :width: 800
    :height: 320
    :align: center
@@ -42,7 +42,7 @@ Video recording essentials
 * `Humidity/temperature phidget <https://phidgets.com/?tier=3&catid=14&pcid=12&prodid=1179>`_ (1x)
 * `Loopbio Triggerbox <http://loopbio.com/recording/>`_  with 5 *Trigger Ports* and 3 *State Ports* (1x): comes with Binder (3-pole) connectors for triggering cameras (5x), and Binder (6-pole) connectors for synchronization with external hardware (3x)
 
-.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/video_recording_hardware.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/video_recording_hardware.png
    :width: 800
    :height: 320
    :align: center
