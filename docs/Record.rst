@@ -67,10 +67,6 @@ Clear arena and position IR-markers
    :align: left
    :alt: Corner marker
 
-.. raw:: html
-
-   <br>
-
 Arena corners are fitted with four laser-cut acrylic parts that are proped vertically to discourage mice from climbing up. Each part is a three-piece design consisting of the main vertical piece, a top cover and
 screw that secures the top to the t-brackets. Secured parts should not wobble when you apply perpendicular pressure. It should press tightly against the floor plate. You can remove these parts by
 loosening the screws and removing the pieces one by one. Try not to push any of these acrylic parts against the floor while removing, since they can break.
@@ -146,10 +142,6 @@ The video below is a sped-up version of an actual calibration and can be consult
    :height: 500
    :align: left
    :alt: Calibration Example
-
-.. raw:: html
-
-   <br>
 
 It is good practice to be thorough and move the ChArUco board around the arena, so that all cameras can see it. The more markers are visible to the cameras, the better the calibration will be. You can also rotate the board in your hands to ensure that all markers are visible from different angles. The calibration process is not very sensitive to the distance of the board from the cameras, but it is important to keep it in focus.
 
