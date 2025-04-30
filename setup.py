@@ -20,7 +20,7 @@ setup(
     keywords='neuroscience, mouse, usv, behavior, social, courtship',
     packages=['usv_playpen', 'usv_playpen.analyses', 'usv_playpen.visualizations', 'usv_playpen._tests', 'usv_playpen.other'],
     package_dir={'usv_playpen': 'src'},
-    package_data={'usv_playpen': ['img/*.png', 'fonts/*.ttf', '_config/*', '_parameter_settings/*.json', 'other/synchronization/*.ino']},
+    package_data={'usv_playpen': ['img/*.png', 'fonts/*.ttf', '_config/*', '_parameter_settings/*.json', 'other/cluster/*/*', 'other/playback/*.py', 'other/synchronization/*.ino']},
     include_package_data=True,
     python_requires="==3.10.*",
     description='GUI to conduct, process and analyze experiments w/ multichannel e-phys, audio and video acquisition',
