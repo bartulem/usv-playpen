@@ -17,7 +17,7 @@
     "anipose_triangulation": false,
     "anipose_trm": false,
     "das_infer": false,
-    "das_summarize": true,
+    "das_summarize": false,
     "prepare_assign_vocalizations": false,
     "assign_vocalizations": false
   },

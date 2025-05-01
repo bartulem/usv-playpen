@@ -186,15 +186,96 @@ When Calibration is done, if you navigate to, *e.g.*, F:/Bartul/Data/20250430_14
 
 Record (general settings)
 -------------------------
-Placeholder text.
+Firstly, you want to remove the retro-reflective markers, install the screen doors, and secure four corners with custom covers. Check that IR-reflectors are all connected, and the overhead light is turned to warm light and the intensity is low. If necessary, also clean the surface of the floor the animals walk on.
+
+In the GUI main window, select experimenter name from the dropdown menu and click *Record*.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_1.png
+   :align: center
+   :alt: Recording Step 0
+
+.. raw:: html
+
+   <br>
+
+On the next page, you can set some basic parameters:
+
+* Avisoft Recorder directory : this is the directory which contains the *rec_usgh.exe* file
+* Avisoft base directory : this is the local directory where the recordings will be saved
+* Coolterm directory : this is the local directory where the Arduino serial terminal outputs will be saved
+* File destination(s) Linux : this is the directory on both video PCs where the file server is mounted
+* File destination(s) Windows : this is the directory on the audio PC where the file server is mounted
+* Conduct AUDIO recording :  if *Yes*, the audio recording will be conducted; if *No*, only video will be recorded
+* Conduct VIDEO calibration : if *Yes*, the video calibration will be conducted
+* Disable ethernet connection : if *Yes*, the ethernet connection will be disabled during the recording
+* Video session duration (min) : total duration of the recording session
+* Calibration duration (min) : duration of the calibration session
+* Ethernet network ID : this is the ID of the ethernet network
+* Notify e-mail(s) of PC usage : this is the e-mail address of the person who will be notified of start and end of PC usage
+
+In the example below, one would be doing a 20 minute audio and video recording without calibration. When ready, click *Next*.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_1.png
+   :align: center
+   :alt: Recording Step 1
+
+.. raw:: html
+
+   <br>
+
 
 Record (audio settings)
 -----------------------
-Placeholder text.
+In the *Audio Settings* window, you can set the parameters for the audio recording. Avisoft Recorder USGH has a relatively complex set of options and using the default ones is probably best because they provide the best stability, although bugs can still occur. The *Audio settings* tab contains many parameters that hardly ever need changing. Of these, you might want to pay attention to three:
+
+* cpu_priority: Windows option that regulates resource management based on the importance of the process
+* cpu_affinity: Windows option that regulates the CPU core on which the process will run
+* usghflags: audio devices operate in SYNC mode (1574) or separately (1862)
+
+In the example below, one would be setting the Audio Recorder USGH to run on processor *6* with *high* priority, and the devices are operating in sync mode. When ready, click *Next*.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_2.png
+   :align: center
+   :alt: Recording Step 2
+
+.. raw:: html
+
+   <br>
 
 Record (video settings)
 -----------------------
-Placeholder text.
+
+In the *Video Settings* window, you can set the parameters for the video recording:
+
+* Browser : this is the browser you want to use for viewing video recordings live
+* Camera(s) to use : serial numbers of cameras you want to use in the recording
+* Recording codec : this is the codec (video quality) you want to use for the recording
+* Monitor recording : if *Yes*, monitor recording on this PC **(incompatible with disabling ethernet!)**
+* Monitor ONE camera : If *Yes*, monitor only one camera in browser
+* ONE camera serial : if monitoring one camera, this is the serial number of the camera you want to monitor
+* Delete post copy : if *Yes*, the video files will be deleted from the video PCs after copying to the file server
+* Calibration fps : calibration frame rate (fps) of the cameras
+* Recording fps : recording frame rate (fps) of the cameras
+* Particular camera settings : exposure time and gain setting for every available camera
+* Metadata : metadata for the recording session
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_3.png
+   :align: center
+   :alt: Recording Step 3
+
+.. raw:: html
+
+   <br>
+
+Clicking *Next* saves all your settings to the */_config/behavioral_experiments_settings.toml* file. You should also observe how upon starting another recording, **all settings which you set previously will be automatically loaded**. When the mice are in the arena and the doors are closed, click *Record*.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_4.png
+   :align: center
+   :alt: Recording Step 4
+
+.. raw:: html
+
+   <br>
 
 Record (common issues)
 ----------------------
