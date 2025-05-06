@@ -32,11 +32,10 @@ Calibrate (preparation)
 
 Create a ChArUco board
 ^^^^^^^^^^^^^^^^^^^^^^
-
 OpenCV provides a function to create a ChArUco board. This is implemented through SLEAP Anipose and available in the GUI.
 A thing to consider is the size of the board. The larger the board, the more markers it contains, and the more accurate the
 calibration will be. The user is responsible for printing the board and attaching it to a flat surface. By default, the board
-has the following characteristics (found in */src/_parameter_settings/process_settings.json*):
+has the following characteristics (found in */usv-playpen/_parameter_settings/process_settings.json*):
 
 .. code-block:: json
 
@@ -186,7 +185,7 @@ When Calibration is done, if you navigate to, *e.g.*, F:/Bartul/Data/20250430_14
 
 Record (general settings)
 -------------------------
-Firstly, you want to remove the retro-reflective markers, install the screen doors, and secure four corners with custom covers. Check that IR-reflectors are all connected, and the overhead light is turned to warm light and the intensity is low. If necessary, also clean the surface of the floor the animals walk on.
+Firstly, you want to remove the retro-reflective markers, install the screen doors, and secure four corners with custom covers. Check that IR-reflectors are all connected, and the overhead light is turned to warm light and the intensity is low. If necessary, also clean the surface of the floor the animals walk on. When ready for recording, USGH devices will have their green light on and the yellow light blinking.
 
 In the GUI main window, select experimenter name from the dropdown menu and click *Record*.
 
@@ -232,7 +231,7 @@ In the *Audio Settings* window, you can set the parameters for the audio recordi
 * **cpu_affinity**: Windows option that regulates the CPU core on which the process will run
 * **usghflags**: audio devices operate in SYNC mode (1574) or separately (1862)
 
-In the example below, one would be setting the Audio Recorder USGH to run on processor *6* with *high* priority, and the devices are operating in sync mode. When ready, click *Next*.
+In the example below, one would be setting the Audio Recorder USGH to run on processor *6* with *high* priority, and the devices are operating in sync mode (a sync cable needs to be connecting USGH devices!). When ready, click *Next*.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_2.png
    :align: center
@@ -244,7 +243,6 @@ In the example below, one would be setting the Audio Recorder USGH to run on pro
 
 Record (video settings)
 -----------------------
-
 In the *Video Settings* window, you can set the parameters for the video recording:
 
 * **Browser** : this is the browser you want to use for viewing video recordings live
@@ -277,11 +275,13 @@ Clicking *Next* saves all your settings to the */_config/behavioral_experiments_
 
    <br>
 
+The process starts with modifying the audio config file and enabling a CoolTerm process (the window will be minimized!). After this, the Avisoft Recorder should start within 8 seconds, and if it is working - a video recording will be initiated and ethernet will be disconnected during the chosen duration. You can monitor the video recording on another computer. When the time is up, video recording will stop, followed by audio recording, followed by CoolTerm. Ethernet will be reconnected and a file transfer procedure initiated. You will be notified when the file transfer procedure for the primary file server is completed.
+
 Record (common issues)
 ----------------------
 Audio PC restart (signaled by a lock screen, as sleep is disabled) can inadvertently **change identities of the main and secondary USGH device**. It is therefore good practice to check whether this had occurred before recording. When you locate the USGH devices, the main one will be labeled with "M", but both device will be receiving digital inputs on channels 2 (SYNC signal) and 4 (Triggerbox signal). If you start data acquisition in the Avisoft Recorder, it will be hard to tell whether a device switch had occurred, given that the inputs observe the same pattern across devices. A quick way to check this is to pull one of the digital imputs from the "M" device out and check whether the digital input disappeared from the "M" device (channels 1-12), or the "S" device (channels 13-24). If the former is the case, everything is functioning as it should. If the latter is the case, one needs to disconnect all six USB cables (3 from device "M", 3 from device "S") connecting to the audio PC. The approach then is to first connect the three "M" cables, and then after a brief pause (10-20 s) to reconnect the other three. One should keep checking the order of devices until the problem is resolved.  It is also important to check the the file server(s) is/are mounted to the PC.
 
-When audio recordings are initiated, the GUI will wait eight seconds and then check whether the *rec_usgh.exe* process is running and if it is not frozen or crashed, it will initiate the video recording. However, even with these precautions, **channel mixing in the form of incorrect channel arrangement** in the sync mode operating scheme (which is easily identifiable by recognizing digital inputs on the wrong channels) can occur upon starting the recording, which is a problem because it needs to be fixed manually. If this happens, you should do the following:
+When audio recordings are initiated, the GUI will wait eight seconds and then check whether the *rec_usgh.exe* process is running and if it is not frozen or crashed, it will initiate the video recording. However, even with these precautions, **channel mixing in the form of incorrect channel arrangement** in the sync mode operating scheme (easily identifiable by recognizing digital inputs on the wrong channels) can occur upon starting the recording, which is a problem because it needs to be fixed manually. If this happens, you should do the following:
 
 * click the *Stop* button in the Motif web interface (which stops video recordings)
 * close the Avisoft Recorder USGH application
