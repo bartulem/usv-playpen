@@ -9,7 +9,7 @@ video (Loopbio) acquisition. Developed for behavioral recording purposes at the
 Due to proprietary software design and limitations, recordings can only be performed on OS Windows.
 The data processing, analysis and visualization branches of the GUI are platform-independent.
 
-This manual is divided in five sections: *Prerequisites*, *Record*, *Process*, *Analyze*, and *Visualize*. Each section is a
+This manual is divided in five sections: *Requirements*, *Record*, *Process*, *Analyze*, and *Visualize*. Each section is a
 step-by-step guide to the respective functionalities of the GUI. As the GUI is developing gradually over
 time, the manual is also a work in progress. We have tried to design the GUI with the experimenter in
 mind, whether it is a technician, graduate student or postdoc, with little or no background experience
