@@ -160,6 +160,56 @@ Running this function results in the creation of the *data_animation_examples* s
     │   └── video
     │       ...
 
+An example figure of male-female courtship behavior (as visualized from the top view with a light background) is shown below:
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_light_mode_fig.png
+   :align: center
+   :alt: Visualization example 1
+
+.. raw:: html
+
+   <br>
+
+Another example male-female courtship interaction with a live spectrogram subplot, with vocalizations labeled by color of animal they were assigned to:
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_dark_mode_fig.png
+   :align: center
+   :alt: Visualization example 2
+
+.. raw:: html
+
+   <br>
+
+An example side view of a male-female courtship interaction with spectrogram, raster plot and behavioral features subplots:
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_dark_mode_side.png
+   :align: center
+   :alt: Visualization example 3
+
+.. raw:: html
+
+   <br>
+
+An example of an animated male-female courtship interaction with a light background, side view and history of both animals' heads:
+
+.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_video_example1.gif
+   :align: center
+   :alt: Behavior video example 1
+
+.. raw:: html
+
+   <br>
+
+An example of an animated male-female courtship interaction with a dark background, top view and spectrogram with assigned vocalizations:
+
+.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_video_example2.gif
+   :align: center
+   :alt: Behavior video example 2
+
+.. raw:: html
+
+   <br>
+
 The */usv-playpen/_parameter_settings/visualization_settings.json* file contains a section only partially modifiable in the GUI, but it can entirely be modified manually in the *visualization_settings.json* file:
 
 * **arena_directory** : path to the directory with the 3D tracked arena data
