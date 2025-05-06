@@ -260,7 +260,7 @@ The analysis results in the creation of a *frequency_shifted_audio_segments* sub
     │   └── video
     │       ...
 
-Below you can find an example of frequency-shifted mouse vocalizations.
+Below you can find an example of a brief sequence of frequency-shifted mouse vocalizations:
 
 .. raw:: html
 

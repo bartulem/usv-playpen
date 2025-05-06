@@ -139,3 +139,136 @@ Visualize 3D behavior (figure/video)
 
    <br>
 
+Running this function results in the creation of the *data_animation_examples* subdirectory (if it has not been created already), and the figure/video will be saved inside:
+
+.. parsed-literal::
+
+    ├── 20250430_145017
+    │   ├── audio
+    │   │   ...
+    │   ├── **data_animation_examples**
+    │   │   ├── **20250430_145017_3D_30045fr_dark_topview_Bartul.png**
+    │   │   ├── **20250430_145017_3D_30045--30795fr_dark_topview_Bartul.mp4**
+    │   │   ...
+    │   ├── ephys
+    │   │   ...
+    │   ├── sync
+    │   │   ...
+    │   └── video
+    │       ...
+
+The */usv-playpen/_parameter_settings/visualization_settings.json* file contains a section only partially modifiable in the GUI, but it can entirely be modified manually in the *visualization_settings.json* file:
+
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+* **xxx** : xxx
+
+.. code-block:: json
+
+    "make_behavioral_videos": {
+        "arena_directory": "",
+        "speaker_audio_file": "",
+        "sequence_audio_file": "",
+        "animate_bool": false,
+        "video_start_time": 567.19,
+        "video_duration": 5.0,
+        "plot_theme": "dark",
+        "save_fig": true,
+        "view_angle": "top",
+        "side_azimuth_start": 45,
+        "rotate_side_view_bool": false,
+        "rotation_speed": 5,
+        "history_bool": false,
+        "speaker_bool": false,
+        "spectrogram_bool": false,
+        "spectrogram_ch": 0,
+        "raster_plot_bool": false,
+        "raster_selection_criteria": {
+          "brain_areas": [],
+          "other": [
+            "good"
+          ]
+        },
+        "raster_special_units": [
+          ""
+        ],
+        "spike_sound_bool": false,
+        "beh_features_bool": false,
+        "beh_features_to_plot": [],
+        "special_beh_features": [],
+        "general_figure_specs": {
+          "fig_format": "png",
+          "fig_dpi": 600,
+          "animation_writer": "ffmpeg",
+          "animation_format": "mp4"
+        },
+        "arena_figure_specs": {
+          "arena_node_connections_bool": false,
+          "arena_axes_lw": 1.0,
+          "arena_mics_lw": 0.75,
+          "arena_mics_opacity": 0.25,
+          "plot_corners_bool": false,
+          "corner_size": 1.0,
+          "corner_opacity": 1.0,
+          "plot_mesh_walls_bool": true,
+          "mesh_opacity": 0.1,
+          "active_mic_bool": false,
+          "inactive_mic_bool": true,
+          "inactive_mic_color": "#898989",
+          "text_fontsize": 10,
+          "speaker_opacity": 1.0
+        },
+        "mouse_figure_specs": {
+          "node_bool": true,
+          "node_size": 3.5,
+          "node_opacity": 1.0,
+          "node_lw": 0.5,
+          "node_connection_lw": 1.0,
+          "body_opacity": 0.85,
+          "history_point": "Head",
+          "history_span_sec": 5,
+          "history_ls": "-",
+          "history_lw": 0.75
+        },
+        "subplot_specs": {
+          "beh_features_window_size": 10,
+          "raster_window_size": 1,
+          "raster_lw": 0.1,
+          "raster_ll": 0.9,
+          "spectrogram_cbar_bool": true,
+          "spectrogram_plot_window_size": 1,
+          "spectrogram_power_limit": [
+            -60,
+            0
+          ],
+          "spectrogram_frequency_limit": [
+            30000,
+            125000
+          ],
+          "spectrogram_yticks": [
+            50000,
+            100000
+          ],
+          "spectrogram_stft_nfft": 512,
+          "plot_usv_segments_bool": true,
+          "usv_segments_ypos": 120000,
+          "usv_segments_lw": 1.25
+        }
+    }

@@ -1,7 +1,7 @@
-.. _Prerequisites:
+.. _Requirements:
 
-Prerequisites
-==============
+Requirements
+============
 
 This page explains how to set up your equipment and PCs before using the *usv-playpen* GUI for behavioral recordings.
 

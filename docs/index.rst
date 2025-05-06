@@ -18,14 +18,14 @@ This instruction set was made by users for users, with the ultimate aim of helpi
 analyze it painlessly. Despite its highly automated nature, where complex functions are several button
 clicks away, the GUI is not dummy-proof. It is important to understand the system and the checks you need
 to put in place to make sure you are using the tool correctly. Should you have any questions, please
-do not hesitate to contact us, thorough Github or email.
+do not hesitate to open a thread or issue on Github.
 
 .. toctree::
    :maxdepth: 1
    :caption: User Guide
 
    README <README.md>
-   Prerequisites
+   Requirements
    Record
    Process
    Analyze
