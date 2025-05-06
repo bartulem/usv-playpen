@@ -4,7 +4,7 @@ Process
 =======
 This page explains how to use the data processing functionalities in the *usv-playpen* GUI.
 
-In order to run any of the functions detailed below, you first click the *Process* button on the GUI main display.
+In order to run any of the functions detailed below, select experimenter name from the dropdown menu and click the *Process* button on the GUI main display.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_5.png
    :align: center
@@ -1129,8 +1129,7 @@ The A/V synchronization procedure will first crate a *sync_px* file for each inp
     │   └── video
     │       ...
 
-An example output of the A/V synchronization procedure is shown below:
-
+An example output of the A/V synchronization procedure is shown below (the discrepancy goes rarely beyond one camera frame, which is ~6 ms, which is an acceptable amount of jitter):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/sync_summary_example.png
    :align: center
