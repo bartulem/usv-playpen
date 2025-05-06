@@ -2,7 +2,7 @@
 
 Process
 =======
-This page explains how to use the data processing functionalities in the usv-playpen GUI.
+This page explains how to use the data processing functionalities in the *usv-playpen* GUI.
 
 In order to run any of the functions detailed below, you first click the *Process* button on the GUI main display.
 
@@ -24,11 +24,11 @@ Clicking the *Process* button will open a new window with all the processing fun
 
    <br>
 
-All the main functions are outlined in orange and black fields are specific options tunable by the user in the GUI. It is important to note that these are not necessarily *all* the options the user can set, and the full list of options can be found under each function in the */usv-playpen/_parameter_settings/process_settings.json* file. Each time the user clicks the *Next* button in the window above, *processing_settings.json* is modified to the newest input configuration.
+All the main functions are outlined in orange and black fields are specific options tunable by the user in the GUI. It is important to note that these are not necessarily *all* the options the user can set, and the full list of options can be found under each function in the */usv-playpen/_parameter_settings/processing_settings.json* file. Each time the user clicks the *Next* button in the window above, *processing_settings.json* is modified to the newest input configuration.
 
-The *Root directories* field enables you to list the directories containing the data you want to process. Each root directory should be in its own row; for example, three sessions should be listed as follows:
+The *Root directories* field enables you to list the directories containing the data you want to process. Each root directory should be in its **own row**; for example, three sessions should be listed as follows:
 
-.. code-block:: bash
+.. parsed-literal::
 
     F:\Bartul\Data\20250430_145017
     F:\Bartul\Data\20250430_165730
