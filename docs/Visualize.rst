@@ -130,6 +130,9 @@ The */usv-playpen/_parameter_settings/visualization_settings.json* file contains
 
 Visualize 3D behavior (figure/video)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Once 3D tracked data is available, you can visualize animal social behavior, either in figure or video. This GUI segment allows for a wide array of options in creating such visualizations. For example, you can choose whether you want to view the interaction from above or the side, and you can also choose to rotate the view as the behavior unfolds.
+
+To obtain this visualization, you need to list the root directories of interest (it is best to stick with one), select the *Visualize 3D behavior (figure/video)* option in the GUI, insert the arena directory for that session, pick all desired figure features, click *Next* and then *Visualize*. It is important to point out that there are many more features available in the *visualization_settings.json* file than are available in the GUI, and these options are explained in detail several sections below.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_2.png
    :align: center
@@ -148,7 +151,7 @@ Running this function results in the creation of the *data_animation_examples* s
     │   │   ...
     │   ├── **data_animation_examples**
     │   │   ├── **20250430_145017_3D_30045fr_dark_topview_Bartul.png**
-    │   │   ├── **20250430_145017_3D_30045--30795fr_dark_topview_Bartul.mp4**
+    │   │   ├── **20250430_145017_3D_30045-30795fr_dark_topview_Bartul.mp4**
     │   │   ...
     │   ├── ephys
     │   │   ...
@@ -159,26 +162,77 @@ Running this function results in the creation of the *data_animation_examples* s
 
 The */usv-playpen/_parameter_settings/visualization_settings.json* file contains a section only partially modifiable in the GUI, but it can entirely be modified manually in the *visualization_settings.json* file:
 
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
-* **xxx** : xxx
+* **arena_directory** : path to the directory with the 3D tracked arena data
+* **speaker_audio_file** : path to the audio file containing the playback speaker sound
+* **sequence_audio_file** : path to the frequency-shifted audio file containing the audible vocalizations
+* **animate_bool** : boolean value indicating whether to animate the figure or not ("No" creates figure)
+* **video_start_time** : start time of the figure/video in seconds
+* **video_duration** : duration of the video in seconds
+* **plot_theme** : "dark" or "light" plot background
+* **save_fig** : if True, the figure will be saved in the *data_animation_examples* subdirectory
+* **view_angle** : "top" or "side" view of social behavior in the playpen arena
+* **side_azimuth_start** : azimuth angle of the side view (in deg)
+* **rotate_side_view_bool** : rotate the side view or not (NB: angles wrap around)
+* **rotation_speed** : rotation speed of the side view (in deg/s)
+* **history_bool** : plot the location history of one body node
+* **speaker_bool** : plot the playback speaker
+* **spectrogram_bool** : plot the spectrogram of the audio segment
+* **spectrogram_ch** : channel of the audio segment to plot
+* **raster_plot_bool** : plot the live spiking raster of the neural data
+* **raster_selection_criteria** : criteria for selecting the neurons to plot in the raster
+* **raster_selection_criteria (brain_areas)** : list of brain areas to include in the raster plot
+* **raster_selection_criteria (other)** : list of other criteria to include in the raster plot (e.g., "good" for unit type)
+* **raster_special_units** : unit(s) to highlight in the raster plot (*e.g.*, "imec0_cl0000_ch361")
+* **spike_sound_bool** : make spike sound each time the highlighted unit spikes
+* **beh_features_bool** : plot the behavioral features dynamics subplot
+* **beh_features_to_plot** : list of behavioral features in the subplot
+* **special_beh_features** : list of highlighted behavioral features in the subplot
+
+Parameters specific to the arena figure include:
+
+* **arena_node_connections_bool** : plots connections between corner and nearest microphones
+* **arena_axes_lw** : line width of the arena axes
+* **arena_mics_lw** : line width of the microphones
+* **arena_mics_opacity** : opacity of the microphones
+* **plot_corners_bool** : plot different color spheres in corners of the arena
+* **corner_size** : size of the corner spheres
+* **corner_opacity** : opacity of the corner spheres
+* **plot_mesh_walls_bool** : plot the mesh walls of the arena
+* **mesh_opacity** : opacity of the mesh walls
+* **active_mic_bool** : plots the active microphone (whose spectrogram is shown)
+* **inactive_mic_bool** : plots the inactive microphones (whose spectrograms are not shown)
+* **inactive_mic_color** : color of the inactive microphones
+* **text_fontsize** : font size of the text in the arena figure
+* **speaker_opacity** : opacity of the playback speaker
+
+Parameters specific to the mouse figure include:
+
+* **node_bool** : plot mouse body nodes as spheres
+* **node_size** : size of the body node spheres
+* **node_opacity** : opacity of the body node spheres
+* **node_lw** : line width of the body node spheres
+* **node_connection_lw** : plots connections between body nodes
+* **body_opacity** : opacity of the body polygons connected with nodes
+* **history_point** : plot history of particular body point
+* **history_span_sec** : time span of the history in seconds (**will fail if history is set to start before tracking!**)
+* **history_ls** : line style of the history plot (e.g., "-", "--", "-.", ":")
+* **history_lw** : line width of the history plot
+
+Parameters specific to subplots include:
+
+* **beh_features_window_size** : time window of the behavioral features subplot (in s, **will fail if is set beyond tracking boundaries!**)
+* **raster_window_size** : time window of the raster subplot (in s, **will fail if is set beyond tracking boundaries!**)
+* **raster_lw** : line width of spikes in the raster plot
+* **raster_ll** : line length of spikes in the raster plot
+* **spectrogram_cbar_bool** : plot spectrogram colorbar
+* **spectrogram_plot_window_size** : time window of the spectrogram subplot (in s, **will fail if is set beyond tracking boundaries!**)
+* **spectrogram_power_limit** : lower and upper limits of the spectrogram colorbar (in dB)
+* **spectrogram_frequency_limit** : lower and upper limits of the spectrogram frequency axis (in Hz)
+* **spectrogram_yticks** : y-axis ticks of the spectrogram (in Hz)
+* **spectrogram_stft_nfft** : window size for the spectrogram calculation
+* **plot_usv_segments_bool** : plot the DAS-detected USV segments in the spectrogram
+* **usv_segments_ypos** : y-axis position of the USV segments in the spectrogram (in Hz)
+* **usv_segments_lw** : line width of the USV segments in the spectrogram
 
 .. code-block:: json
 
