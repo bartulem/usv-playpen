@@ -67,6 +67,27 @@ The analysis results in the creation of [1] a CSV file containing behavioral fea
     │       │    ├── **20250430145035_points3d_translated_rotated_metric_behavioral_features_histograms.pdf**
     │       ...
 
+The *behavioral_features.csv* file should look similar to an example table below:
+
+.. parsed-literal::
+    ┌─────────────────┬─────────────────┬─────────────────┬────────────────┬───┬
+    │ 158114_2.spaceX ┆ 158114_2.spaceY ┆ 158114_2.spaceZ ┆ 158114_2.speed ┆ … ┆
+    │ ---             ┆ ---             ┆ ---             ┆ ---            ┆   ┆
+    │ f64             ┆ f64             ┆ f64             ┆ f64            ┆   ┆
+    ╞═════════════════╪═════════════════╪═════════════════╪════════════════╪═══╪
+    │ -26.841561      ┆ -23.796571      ┆ 2.922045        ┆ NaN            ┆ … ┆
+    │ -26.844099      ┆ -23.798917      ┆ 2.923149        ┆ 0.426783       ┆ … ┆
+    │ -26.848196      ┆ -23.802833      ┆ 2.925208        ┆ 0.505712       ┆ … ┆
+    │ -26.85301       ┆ -23.807948      ┆ 2.927885        ┆ 0.598469       ┆ … ┆
+    │ -26.859138      ┆ -23.813435      ┆ 2.930909        ┆ 0.692332       ┆ … ┆
+    │ …               ┆ …               ┆ …               ┆ …              ┆ … ┆
+    │ -4.515579       ┆ -28.340828      ┆ 3.667301        ┆ 11.337689      ┆ … ┆
+    │ -4.583698       ┆ -28.336554      ┆ 3.668319        ┆ 9.594388       ┆ … ┆
+    │ -4.638644       ┆ -28.332085      ┆ 3.668867        ┆ 7.809649       ┆ … ┆
+    │ -4.678483       ┆ -28.327466      ┆ 3.668817        ┆ 6.153409       ┆ … ┆
+    │ -4.699602       ┆ -28.324635      ┆ 3.668698        ┆ 4.805457       ┆ … ┆
+    └─────────────────┴─────────────────┴─────────────────┴────────────────┴───┴
+
 An example of typical individual and social feature distributions is shown below:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_behavioral_features_1.png
@@ -238,6 +259,20 @@ The analysis results in the creation of a *frequency_shifted_audio_segments* sub
     │   │   ...
     │   └── video
     │       ...
+
+Below you can find an example of frequency-shifted mouse vocalizations.
+
+.. raw:: html
+
+   <audio controls>
+     <source src="https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/fs_example.wav" type="audio/wav">
+     Your browser does not support the audio element.
+   </audio>
+
+.. raw:: html
+
+   <br>
+   <br>
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section only partially modifiable in the GUI, but it can be modified manually:
 
