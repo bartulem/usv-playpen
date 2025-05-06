@@ -30,9 +30,9 @@ The *Root directories* field enables you to list the directories containing the 
 
 .. parsed-literal::
 
-    F:\Bartul\Data\20250430_145017
-    F:\Bartul\Data\20250430_165730
-    F:\Bartul\Data\20250430_182145
+    F:\\Bartul\\Data\\20250430_145017
+    F:\\Bartul\\Data\\20250430_165730
+    F:\\Bartul\\Data\\20250430_182145
 
 Certain processing functions take all root sessions *together* when operating on data, and others process each session *separately*. Additionally, in both of these categories, there is a specific order in executing individual functions.
 
@@ -567,7 +567,7 @@ This shouldn’t take longer than one minute; the directory structure and file n
 
 3D animal points
 ----------------
-To triangulate animal points, you need to list the root directories of interest, list their respective experimental codes, select the directory with the triangulated arena file, select *Run AP triangulation* and *Re-coordinate*, select "animal" for *Save transformation type* and choose "Yes" for *Delete original .h5*. Finally, click *Next* and then *Process*.
+To triangulate animal points, you need to list the root directories of interest, list their respective experimental codes, select the directory with the triangulated arena file, select *Run AP triangulation* and *Re-coordinate*, select "animal" for *Save transformation type* and choose "Yes" for *Delete original .h5*. Finally, click *Next* and then *Process* (a progress bar in the terminal will update you on tha status of the process).
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_8.png
    :align: center

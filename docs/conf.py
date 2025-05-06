@@ -25,13 +25,16 @@ extensions = [
     'sphinx_copybutton',
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
-    'sphinx.ext.viewcode'
+    'sphinx.ext.viewcode',
+    'sphinx_rtd_dark_mode'
     ]
 
 # Notebooks will be displayed even if they include errors
 nbsphinx_allow_errors = True
 # Don't auto-execute notebooks.
 nbsphinx_execute = 'never'
+# Set to True if you want dark mode to be the default for first-time visitors.
+default_dark_mode = True
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output

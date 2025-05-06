@@ -30,13 +30,29 @@ The *Root directories* field enables you to list the directories containing the 
 
 .. parsed-literal::
 
-    F:\Bartul\Data\20250430_145017
-    F:\Bartul\Data\20250430_165730
-    F:\Bartul\Data\20250430_182145
+    F:\\Bartul\\Data\\20250430_145017
+    F:\\Bartul\\Data\\20250430_165730
+    F:\\Bartul\\Data\\20250430_182145
 
 Plot 3D behavioral tuning curves
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_1.png
+   :align: center
+   :alt: Visualize Step 1
+
+.. raw:: html
+
+   <br>
+
 Visualize 3D behavior (figure/video)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_2.png
+   :align: center
+   :alt: Visualize Step 2
+
+.. raw:: html
+
+   <br>
 
