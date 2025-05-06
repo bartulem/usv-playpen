@@ -4,7 +4,7 @@ Process
 =======
 This page explains how to use the data processing functionalities in the *usv-playpen* GUI.
 
-In order to run any of the functions detailed below, select experimenter name from the dropdown menu and click the *Process* button on the GUI main display.
+In order to run any of the functions detailed below, select an experimenter name from the dropdown menu and click the *Process* button on the GUI main display.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_5.png
    :align: center

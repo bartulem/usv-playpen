@@ -94,7 +94,7 @@ they are pointing roughly into the center of the arena. Finally, check camera av
 
 Calibrate (execution)
 ---------------------
-In the GUI main window, select experimenter name from the dropdown menu and click *Record*.
+In the GUI main window, select an experimenter name from the dropdown menu and click *Record*.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_1.png
    :align: center
@@ -187,7 +187,7 @@ Record (general settings)
 -------------------------
 Firstly, you want to remove the retro-reflective markers, install the screen doors, and secure four corners with custom covers. Check that IR-reflectors are all connected, and the overhead light is turned to warm light and the intensity is low. If necessary, also clean the surface of the floor the animals walk on. When ready for recording, USGH devices will have their green light on and the yellow light blinking.
 
-In the GUI main window, select experimenter name from the dropdown menu and click *Record*.
+In the GUI main window, select an experimenter name from the dropdown menu and click *Record*.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_1.png
    :align: center
