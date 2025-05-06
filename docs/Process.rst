@@ -66,7 +66,7 @@ If you recorded a session with audio, e-phys and video data (imaginary example: 
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
+    F:\\Bartul\\Data:
     ├── 20250430_145017
     │   ├── audio
     │   │   ├── original (empty)
@@ -137,7 +137,7 @@ Neural recording data is aligned to the start of video recording, which is ident
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
+    F:\\Bartul\\Data:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
@@ -155,7 +155,7 @@ Neural recording data is aligned to the start of video recording, which is ident
     │   │
     │   └── video
     │       ...
-    F:\Bartul\EPHYS:
+    F:\\Bartul\\EPHYS:
     ├── 20250430_imec0
     │   ├── **changepoints_info_20250430_imec0.json**
     ├── 20250430_imec1
@@ -212,7 +212,7 @@ The code will find all the *ap.bin* files for each probe and conduct the concate
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
+    F:\\Bartul\\Data:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
@@ -230,7 +230,7 @@ The code will find all the *ap.bin* files for each probe and conduct the concate
     │   │
     │   └── video
     │       ...
-    F:\Bartul\EPHYS:
+    F:\\Bartul\\EPHYS:
     ├── 20250430_imec0
     │   ├── changepoints_info_20250430_imec0.json
     │   ├── **concatenated_20250430_imec0.ap.bin**
@@ -276,7 +276,6 @@ The code will create a *cluster_data* subdirectory in each session's *ephys/imec
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
@@ -371,7 +370,6 @@ These steps change videos and video directory structure from the native Loopbio 
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
@@ -450,7 +448,7 @@ This shouldn’t take longer than several seconds - it will create/update the *j
 
 .. parsed-literal::
 
-    F:\Bartul\SLEAP\inference:
+    F:\\Bartul\\SLEAP\\inference:
     ├── **job_list.txt**
     │   ...
 
@@ -496,7 +494,6 @@ This shouldn’t take longer than two minutes; the directory structure and file 
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
@@ -552,7 +549,6 @@ This shouldn’t take longer than one minute; the directory structure and file n
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
     ├── 20250430_145017
     │   ...
     │
@@ -585,7 +581,6 @@ The process results in the creation of an H5 file which ends in *_points3d_trans
 
 .. parsed-literal::
 
-    F:\Bartul\Data:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
