@@ -147,7 +147,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 Compute 3D feature tuning curves
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Having recorded unit activity and social behavior, you might be interested whether individual units encode specific behavioral features. To get at this, you can compute *tuning curves* capturing the relationship between the firing rate of each unit and each behavioral feature of interest. To achieve this in the GUI, you need to list the root directories of interest, select *Compute 3D feature tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running).
+Having recorded unit activity and social behavior, you might be interested whether individual units encode specific behavioral features. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and each behavioral feature of interest. To achieve this in the GUI, you need to list the root directories of interest, select *Compute 3D feature tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running).
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_2.png
    :align: center
@@ -268,9 +268,6 @@ Below you can find an example of frequency-shifted mouse vocalizations.
      <source src="https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/fs_example.wav" type="audio/wav">
      Your browser does not support the audio element.
    </audio>
-
-.. raw:: html
-
    <br>
    <br>
 
