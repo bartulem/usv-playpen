@@ -1547,7 +1547,7 @@ class Create3DVideo:
                                           usv_stop - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'])
                                          for usv_start, usv_stop in zip(frame_usv_summary_df['start'], frame_usv_summary_df['stop'])]
 
-                    usv_segments_colors = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#C0C0C0' for emitter_id in frame_usv_summary_df['emitter']]
+                    usv_segments_colors = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#FFFFFF' for emitter_id in frame_usv_summary_df['emitter']]
                 else:
                     usv_segments_list = []
                     usv_segments_colors = []
