@@ -1,4 +1,4 @@
-# usv-playpen v0.8.2
+# usv-playpen v0.8.3
 
 ![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
 
@@ -41,19 +41,9 @@ Install GUI with command below. Also, rerun the same command to check for and in
 ```bash
 pip install git+https://github.com/bartulem/usv-playpen#egg=usv-playpen --use-pep517
 ```
-
 Add the python-motifapi package to your virtual environment:
 ```bash
 pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --use-pep517
-```
-
-## Test installation
-
-At the end of each command for testing, make sure you add a valid e-mail address a test e-mail can be sent to.
-```bash
-conda activate usv
-python -m usv_playpen._tests.test_recording username@domain.com
-python -m usv_playpen._tests.test_processing username@domain.com
 ```
 
 ## Usage

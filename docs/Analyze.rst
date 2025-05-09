@@ -4,7 +4,7 @@ Analyze
 ==================
 This page explains how to use the data analyses functionalities in the *usv-playpen* GUI.
 
-In order to run any of the functions detailed below, select an experimenter name from the dropdown menu and click the *Analyze* button on the GUI main display.
+In order to run any of the functions detailed below, select an experimenter name from the dropdown menu and click the *Analyze* button on the GUI main display:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_0a.png
    :align: center
@@ -14,7 +14,7 @@ In order to run any of the functions detailed below, select an experimenter name
 
    <br>
 
-Clicking the *Analyze* button will open a new window with all the offered functionalities (see below).
+Clicking the *Analyze* button will open a new window with all the offered functionalities (see below):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_0b.png
    :align: center
@@ -24,7 +24,7 @@ Clicking the *Analyze* button will open a new window with all the offered functi
 
    <br>
 
-All the main functions are outlined in orange and black fields are specific options tunable by the user in the GUI. It is important to note that these are not necessarily *all* the options the user can set, and the full list of options can be found under each function in the */usv-playpen/_parameter_settings/analyses_settings.json* file. Each time the user clicks the *Next* button in the window above, *analyses_settings.json* is modified to the newest input configuration.
+All the main functions are outlined in orange, and black fields are function-specific options tunable by the user in the GUI. It is important to note that these are not necessarily *all* the options the user can set, and the full list of options can be found under each function in the */usv-playpen/_parameter_settings/analyses_settings.json* file. Each time the user clicks the *Next* button in the window above, *analyses_settings.json* is modified to the newest input configuration.
 
 The *Root directories* field enables you to list the directories containing the data you want to analyze. Each root directory should be in its **own row**; for example, three sessions should be listed as follows:
 
@@ -36,7 +36,7 @@ The *Root directories* field enables you to list the directories containing the 
 
 Compute 3D behavioral features
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Once 3D tracking data is available, you can compute behavioral features. These can be *individual features* specific to each mouse (*i.e.*, spatial location, speed, posture, *etc.*) or *social features* (assuming two or more mice) that describe the relationship between the mice (*i.e.*, distance, angle, *etc.*). The code does not yet have the functionality to analyze multi-mouse features (>2 mice). The output of this analysis are two files: [1] CSV file containing each measured feature in each column, and [2] a PDF file containing graphs for the observed distribution of each feature. To run this analysis in the GUI, you need to list the root directories of interest, select *Compute 3D behavioral features*, click *Next* and then *Analyze*.
+Once 3D tracking data is available, you can compute behavioral features. These can be *individual features* specific to each mouse (*i.e.*, spatial location, speed, posture, *etc.*) or *social features* (assuming two or more mice) that describe the relationship between the mice (*i.e.*, distance, angle, *etc.*). The code does not yet have the functionality to analyze multi-mouse features (>2 mice). The output of this analysis are two files: [1] CSV file containing each measured feature in each column, and [2] a PDF file containing graphs for the observed distribution of each feature. To run this analysis in the GUI, you need to list the root directories of interest, select *Compute 3D behavioral features*, click *Next* and then *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_1.png
    :align: center
@@ -147,7 +147,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 Compute 3D feature tuning curves
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Having recorded unit activity and social behavior, you might be interested whether individual units encode specific behavioral features. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and each behavioral feature of interest. To achieve this in the GUI, you need to list the root directories of interest, select *Compute 3D feature tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running).
+Having recorded unit activity and social behavior, you might be interested whether individual units encode specific behavioral features. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and each behavioral feature of interest. To achieve this in the GUI, you need to list the root directories of interest, select *Compute 3D feature tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_2.png
    :align: center
@@ -195,7 +195,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 Create USV playback .WAV file
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-This function creates a .WAV file containing USV snippets. The snippets are randomly selected from the USVs in the specified directory and concatenated with inter-pulse intervals (IPIs) of a specified duration. The resulting .WAV file can be used for playback experiments. To achieve this in the GUI, select *Create USV playback .WAV file* (no need to list root directories!), select total number of files to be created, number of vocalizations in each one, click *Next* and then *Analyze*.
+This function creates a .WAV file containing USV snippets. The snippets are randomly selected from the USV snippet repository in the specified directory and concatenated with inter-pulse intervals (IPIs) of a specified duration. The resulting .WAV file can be used for playback experiments. To achieve this in the GUI, select *Create USV playback .WAV file* (no need to list root directories!), select total number of files to be created, number of vocalizations in each one, click *Next* and then *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_4.png
    :align: center
@@ -235,7 +235,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 Frequency shift audio segment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-For presentation purposes, one might want to play audio data of mouse USVs. Since these are beyond human audible range, the only way is to frequency-shift them several octaves down. To achieve this in the GUI, you need to list the root directories of interest, select *Frequency shift audio segment*, choose the start time and duration of the segment, click *Next* and then *Analyze*.
+For presentation purposes, one might want to play audio data of mouse USVs. Since these are beyond human audible range, the only way is to frequency-shift them several octaves down. To achieve this in the GUI, you need to list the root directories of interest, select *Frequency shift audio segment*, choose the start time and duration of the segment, click *Next* and then *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_5.png
    :align: center
@@ -245,7 +245,7 @@ For presentation purposes, one might want to play audio data of mouse USVs. Sinc
 
    <br>
 
-The analysis results in the creation of a *frequency_shifted_audio_segments* subdirectory (if it is not already there) and a file *wave* in it containing the frequency-shifted segment:
+The analysis results in the creation of a *frequency_shifted_audio_segments* subdirectory (if it is not already there) and a *wave* file in it containing the frequency-shifted segment:
 
 .. parsed-literal::
 

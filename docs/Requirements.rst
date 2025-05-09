@@ -100,17 +100,17 @@ Software Requirements
 Audio PC essentials
 ^^^^^^^^^^^^^^^^^^^
 
-Whatever operating system you are using, you will need to install the following software *prior to* installing usv-playpen: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (*e.g.,* how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
+Whatever operating system you are using, you will need to install the following software *prior to* installing *usv-playpen*: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (you can also find the ttf file in *usv-playpen/fonts*; how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
 (2) `Anaconda <https://www.anaconda.com/download>`_ (and add it to PATH on Windows), (3) `git <https://git-scm.com/download/>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add it to PATH on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add it to PATH on Windows). How to add a program to PATH on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
 
 `Avisoft Recorder USGH <https://avisoft.com/downloads/>`_ works on Windows 11. You should download a version of the software that does not require an USB license key.
-`CoolTerm <https://coolterm.en.lo4d.com/windows>`_ is a serial port terminal application, which allows you to record and keep Arduino print statements in the form of a text file. In the *src/_config* directory,
-you can find a CoolTerm configuration file, *coolterm_config.stc*, which you can import into CoolTerm. This file is already set up according to the recording needs of usv-playpen. The two important points to consider are which port to set it to
+`CoolTerm <https://coolterm.en.lo4d.com/windows>`_ is a serial port terminal application, which allows you to record and keep Arduino print statements in the form of a text file. In the *usv-playpen/_config* directory,
+you can find a CoolTerm configuration file, *coolterm_config.stc*, which you can import into CoolTerm. This file is already set up according to the recording needs of *usv-playpen*. The two important points to consider are which port to set it to
 (by default it is set to COM3) and the directory where the text files should be saved. If you are using the existing Arduino UNO, it is
-sufficient to plug it into a port (ideally COM3, which would require no changes to the ColTerm configuration file), as the sketch was already uploaded. However,
-if you want to upload the sketch to a different Arduino device, you will need to install the `Arduino IDE <https://www.arduino.cc/en/software/>`_ and upload the following sketch: *src/other/sychronization/generate_sync_pulses.ino*.
+sufficient to plug it into a port (ideally COM3, which would require no changes to the CoolTerm configuration file), as the sketch was already uploaded. However,
+if you want to upload the sketch to a different Arduino device, you will need to install the `Arduino IDE <https://www.arduino.cc/en/software/>`_, compile and upload the following sketch: *usv-playpen/other/sychronization/generate_sync_pulses.ino*.
 
-To control Ethernet connection from the command line (more on this subsequently), one needs to run Powershell in administrator mode. To ensure Powershell is in administrator mode all the time:
+To control Ethernet connection status from the command line (more on this in the *Record* section), one needs to run Powershell in administrator mode. To ensure Powershell is in administrator mode all the time:
 (1) find Windows PowerShell ISE in windows search and pin it to task bar, (2) right-click on the icon in the task bar and right click again on Windows PowerShell ISE, (3) in the Properties, go to
 advanced properties and select *run as administrator* and hit OK. When you open PowerShell ISE, it should say administrator in the title bar. To check if you are in administrator mode, type *whoami* and hit enter.
 If you are in administrator mode, it should say *administrator*. It is also important to check the the file server is mounted to the PC. You can check all the mounted file systems with the following command:
@@ -151,7 +151,7 @@ If Motif is experiencing issues, it can be restarted on any PC with the followin
 
    sudo systemctl restart supervisor.service
 
-but the user then needs to connect to the Motif web interface and manually ensure that all the cameras are connected and ready for recording.
+but the user then needs to connect to the **Motif web interface** and manually ensure that all the cameras are connected and ready for recording.
 
 Another thing that needs to be ensured prior to recording is that the file server is mounted to the PC. You can mount the file server with the following command:
 
@@ -159,7 +159,7 @@ Another thing that needs to be ensured prior to recording is that the file serve
 
    sudo mount -t cifs //cup.princeton.edu/famousprof /home/user/famousprof -o username=netid,domain=PRINCETON,iocharset=utf8,rw,file_mode=0664,dir_mode=0775,nolinux,noperm,vers=2.1
 
-The data is saved in /mnt/DATA of each computer.
+The video data is saved in /mnt/DATA of each computer.
 
 EPHYS PC essentials
 ^^^^^^^^^^^^^^^^^^^
@@ -204,7 +204,7 @@ If you plan to conduct behavioral recordings, you need to modify */_config/motif
    master_ip_address=10.241.1.205
    api=xxx
 
-If you plan to send e-mail notifications when jobs start/complete, you need to modify */_config/email_config.ini*:
+If you plan to send/receive e-mail notifications when jobs start/complete, you need to modify */_config/email_config.ini*:
 
 .. code-block:: ini
 

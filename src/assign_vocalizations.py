@@ -192,15 +192,19 @@ class Vocalocator:
         one_in_set = pts_in_set.sum(axis=1) == 1
         two_in_set = pts_in_set.sum(axis=1) == 2
 
+        # Make assignment vector and save to disk:
+        mouse_one_vocalizations = one_in_set & pts_in_set[:, 0]
+        mouse_two_vocalizations = one_in_set & pts_in_set[:, 1]
+        assignments = np.full((len(pts_in_set),), -1, dtype=int)
+        assignments[mouse_one_vocalizations] = 0  # Mouse 1
+        assignments[mouse_two_vocalizations] = 1  # Mouse 2
+        assignments[two_in_set] = 2  # Both (ambiguous)
+
         self.message_output(f"Vocalization percentage attributed to NO mouse: {none_in_set.sum()}")
         self.message_output(f"Vocalization percentage attributed to ONE mouse: {one_in_set.sum()}")
+        self.message_output(f"Vocalization percentage attributed to mouse #1: {mouse_one_vocalizations.sum()}")
+        self.message_output(f"Vocalization percentage attributed to mouse #2: {mouse_two_vocalizations.sum()}")
         self.message_output(f"Vocalization percentage attributed to BOTH mice: {two_in_set.sum()}")
-
-        # Make assignment vector and save to disk:
-        assignments = np.full((len(pts_in_set),), -1, dtype=int)
-        assignments[one_in_set & pts_in_set[:, 0]] = 0  # Mouse 1
-        assignments[one_in_set & pts_in_set[:, 1]] = 1  # Mouse 2
-        assignments[two_in_set] = 2  # Both (ambiguous)
 
         np.save(f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}assessment_assn.npy", assignments)
 

@@ -40,9 +40,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtTest import QTest
 from .analyze_data import Analyst
-from .visualize_data import Visualizer
 from .behavioral_experiments import ExperimentController
+from .os_utils import configure_path
 from .preprocess_data import Stylist
+from .visualize_data import Visualizer
 
 # do NOT print logs (debug, warnings, or otherwise) from the qt.qpa.window category.
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.window=false"
@@ -55,7 +56,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.8.2'
+app_name = 'USV Playpen v0.8.3'
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -2816,18 +2817,21 @@ class USVPlaypenWindow(QMainWindow):
 
         self.config_dir_global = Path(__file__).parent / '_config'
 
-        if platform.system() == 'Windows':
-            self.das_model_dir_global = f'F:\\{self.exp_id}\\DAS\\model_2024-03-25'
-            self.sleap_inference_dir_global = f'F:\\{self.exp_id}\\SLEAP\\inference'
-            self.vcl_model_dir_global = f'F:\\{self.exp_id}\\sound_localization\\earbud_6d_output_2025-03-12'
-        elif platform.system() == 'Linux':
-            self.das_model_dir_global = f'/mnt/falkner/{self.exp_id}/DAS/model_2024-03-25'
-            self.sleap_inference_dir_global = f'/mnt/falkner/{self.exp_id}/SLEAP/inference'
-            self.vcl_model_dir_global = f'/mnt/falkner/{self.exp_id}/sound_localization/earbud_6d_output_2025-03-12'
-        else:
-            self.das_model_dir_global = f'/Volumes/falkner/{self.exp_id}/DAS/model_2024-03-25'
-            self.sleap_inference_dir_global = f'/Volumes/falkner/{self.exp_id}/SLEAP/inference'
-            self.vcl_model_dir_global = f'/Volumes/falkner/{self.exp_id}/sound_localization/earbud_6d_output_2025-03-12'
+        das_model_dir = configure_path(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'])
+        sleap_inference_dir = configure_path(self.processing_input_dict['prepare_cluster_job']['inference_root_dir'])
+        vcl_model_dir = configure_path(self.processing_input_dict['vocalocator']['model_directory'])
+
+        self.das_model_dir_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
+                                                         recording_files_destinations=[das_model_dir],
+                                                         exp_id=self.exp_id)
+
+        self.sleap_inference_dir_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
+                                                               recording_files_destinations=[sleap_inference_dir],
+                                                               exp_id=self.exp_id)
+
+        self.vcl_model_dir_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
+                                                         recording_files_destinations=[vcl_model_dir],
+                                                         exp_id=self.exp_id)
 
         self.avisoft_rec_dir_global = self.exp_settings_dict['avisoft_recorder_exe']
         self.avisoft_base_dir_global = self.exp_settings_dict['avisoft_basedirectory']

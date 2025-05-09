@@ -2,7 +2,7 @@
 
 Visualize
 ==================
-This page explains how to use the data visualization functionalities in the *usv-playpen* GUI.
+This page explains how to use the data visualization functionalities in the *usv-playpen* GUI:
 
 In order to run any of the functions detailed below, select an experimenter name from the dropdown menu and click the *Visualize* button on the GUI main display.
 
@@ -14,7 +14,7 @@ In order to run any of the functions detailed below, select an experimenter name
 
    <br>
 
-Clicking the *Visualize* button will open a new window with all the offered functionalities (see below).
+Clicking the *Visualize* button will open a new window with all the offered functionalities (see below):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_0b.png
    :align: center
@@ -24,7 +24,7 @@ Clicking the *Visualize* button will open a new window with all the offered func
 
    <br>
 
-All the main functions are outlined in orange and black fields are specific options tunable by the user in the GUI. It is important to note that these are not necessarily *all* the options the user can set, and the full list of options can be found under each function in the */usv-playpen/_parameter_settings/visualizations_settings.json* file. Each time the user clicks the *Next* button in the window above, *visualizations_settings.json* is modified to the newest input configuration.
+All the main functions are outlined in orange, and black fields are function-specific options tunable by the user in the GUI. It is important to note that these are not necessarily *all* the options the user can set, and the full list of options can be found under each function in the */usv-playpen/_parameter_settings/visualizations_settings.json* file. Each time the user clicks the *Next* button in the window above, *visualizations_settings.json* is modified to the newest input configuration.
 
 The *Root directories* field enables you to list the directories containing the data you want to visualize. Each root directory should be in its **own row**; for example, three sessions should be listed as follows:
 
@@ -40,7 +40,7 @@ Once the *Compute 3D feature tuning curves* function from the *Analyze* section 
 These tuning curves are denote by a line spanning the graph horizontally, usually in color (depending on the sex of the animal) or in black for social features.
 The 99% CI of the shuffled distribution is shown as a shaded area around the tuning curve.
 
-To obtain this visualization, you need to list the root directories of interest, select the *Plot 3D behavioral tuning curves* option in the GUI and click *Next* and then *Visualize*.
+To obtain this visualization, you need to list the root directories of interest, select the *Plot 3D behavioral tuning curves* option in the GUI and click *Next* and then *Visualize*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_1.png
    :align: center
@@ -132,7 +132,7 @@ Visualize 3D behavior (figure/video)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Once 3D tracked data is available, you can visualize animal social behavior, either in figure or video. This GUI segment allows for a wide array of options in creating such visualizations. For example, you can choose whether you want to view the interaction from above or the side, and you can also choose to rotate the view as the behavior unfolds.
 
-To obtain this visualization, you need to list the root directories of interest (it is best to stick with one), select the *Visualize 3D behavior (figure/video)* option in the GUI, insert the arena directory for that session, pick all desired figure features, click *Next* and then *Visualize*. It is important to point out that there are many more features available in the *visualization_settings.json* file than are available in the GUI, and these options are explained in detail several sections below.
+To obtain this visualization, you need to list the root directories of interest (it is best to stick with one), select the *Visualize 3D behavior (figure/video)* option in the GUI, insert the arena directory for that session, pick all desired figure features, click *Next* and then *Visualize*. It is important to point out that there are many more features available in the *visualization_settings.json* file than are available in the GUI, and these options are explained in detail several sections below:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_2.png
    :align: center
@@ -272,8 +272,8 @@ Parameters specific to subplots include:
 
 * **beh_features_window_size** : time window of the behavioral features subplot (in s, **will fail if is set beyond tracking boundaries!**)
 * **raster_window_size** : time window of the raster subplot (in s, **will fail if is set beyond tracking boundaries!**)
-* **raster_lw** : line width of spikes in the raster plot
-* **raster_ll** : line length of spikes in the raster plot
+* **raster_lw** : horizontal line width of spikes in the raster plot
+* **raster_ll** : vertical line length of spikes in the raster plot
 * **spectrogram_cbar_bool** : plot spectrogram colorbar
 * **spectrogram_plot_window_size** : time window of the spectrogram subplot (in s, **will fail if is set beyond tracking boundaries!**)
 * **spectrogram_power_limit** : lower and upper limits of the spectrogram colorbar (in dB)

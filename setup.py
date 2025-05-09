@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.8.2',
+    version='0.8.3',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -18,7 +18,7 @@ setup(
         'Programming Language :: Python :: 3 :: Only',
     ],
     keywords='neuroscience, mouse, usv, behavior, social, courtship',
-    packages=['usv_playpen', 'usv_playpen.analyses', 'usv_playpen.visualizations', 'usv_playpen._tests', 'usv_playpen.other'],
+    packages=['usv_playpen', 'usv_playpen.analyses', 'usv_playpen.visualizations', 'usv_playpen.other'],
     package_dir={'usv_playpen': 'src'},
     package_data={'usv_playpen': ['img/*.png', 'fonts/*.ttf', '_config/*', '_parameter_settings/*.json', 'other/cluster/*/*', 'other/playback/*.py', 'other/synchronization/*.ino']},
     include_package_data=True,

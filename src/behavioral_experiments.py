@@ -462,7 +462,7 @@ class ExperimentController:
                                  cwd=self.exp_settings_dict['avisoft_recorder_exe'])
 
                 # pause for N seconds
-                QTest.qWait(8000)
+                QTest.qWait(10000)
 
                 # check if Avisoft Recorder is running and exit GUI if not
                 is_running = False

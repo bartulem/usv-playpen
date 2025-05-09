@@ -7,6 +7,7 @@ Synchronizes files:
 """
 
 from PyQt6.QtTest import QTest
+import av
 import configparser
 import glob
 import json
@@ -81,8 +82,10 @@ class Synchronizer:
                    '<2024_01_01': {'21372315': {'LED_top': [514, 1255], 'LED_middle': [575, 1235], 'LED_bottom': [590, 1261]}},
                    '<2024_09_20': {'21241563': {'LED_top': [315, 1250], 'LED_middle': [355, 1255], 'LED_bottom': [400, 1264]},
                                    '21372315': {'LED_top': [510, 1268], 'LED_middle': [555, 1268], 'LED_bottom': [603, 1266]}},
+                   '<2025_05_08': {'21241563': {'LED_top': [317, 1247], 'LED_middle': [360, 1254], 'LED_bottom': [403, 1262]},
+                                   '21372315': {'LED_top': [507, 1267], 'LED_middle': [554, 1267], 'LED_bottom': [601, 1266]}},
                    'current': {'21241563': {'LED_top': [317, 1247], 'LED_middle': [360, 1254], 'LED_bottom': [403, 1262]},
-                               '21372315': {'LED_top': [507, 1267], 'LED_middle': [554, 1267], 'LED_bottom': [601, 1266]}}}
+                               '21372315': {'LED_top': [504, 1261], 'LED_middle': [551, 1260], 'LED_bottom': [598, 1260]}}}
 
     if os.name == 'nt':
         command_addition = 'cmd /c '
@@ -384,8 +387,8 @@ class Synchronizer:
 
         Returns
         ----------
-        percent_change_array (np.ndarray)
-            Proportional change relative to previous element along the desired axis.
+        relative_change_array (np.ndarray)
+            Proportional change relative to a previous element along the desired axis.
         ----------
         """
 
@@ -463,14 +466,17 @@ class Synchronizer:
                            dtype=DataLoader(input_parameter_dict={}).known_dtypes['np.uint8'], mode='w+', shape=(total_frame_number, 3, 3))
 
         for fr_idx in range(total_frame_number):
-            processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
-                                                  self.led_px_dict[led_px_version][used_camera]['LED_top'],
-                                                  self.led_px_dict[led_px_version][used_camera]['LED_middle'],
-                                                  self.led_px_dict[led_px_version][used_camera]['LED_bottom'])
+            try:
+                processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
+                                                      self.led_px_dict[led_px_version][used_camera]['LED_top'],
+                                                      self.led_px_dict[led_px_version][used_camera]['LED_middle'],
+                                                      self.led_px_dict[led_px_version][used_camera]['LED_bottom'])
+            except av.error.EOFError:
+                self.message_output(f"WARNING: Reached end of decodable frames at index {fr_idx}, while PIMS reported {total_frame_number} total frames.")
+                break
 
         # the following line is important for saving memmap file changes
         mm_arr.flush()
-        mm_arr = 0
 
     def find_video_sync_trains(self, camera_fps: list = None,
                                total_frame_number: int = None) -> tuple:
@@ -521,7 +527,7 @@ class Synchronizer:
                                                            total_frame_number=total_frame_number)
 
                             # load memmap data
-                            leds_array = np.memmap(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
+                            leds_array = np.memmap(filename=f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
                                                    dtype=DataLoader(input_parameter_dict={}).known_dtypes['np.uint8'], mode='r', shape=(total_frame_number, 3, 3))
 
                             # take mean across all three (RGB) channels
@@ -553,26 +559,27 @@ class Synchronizer:
 
                                     diff_mask_pos = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] > threshold_value)
                                     pos_significant_events = np.where(diff_mask_pos)[0]
-                                    pos_significant_events = np.delete(pos_significant_events, np.argwhere(np.ediff1d(pos_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx]/2.5))) + 1)
+                                    pos_significant_events = np.delete(pos_significant_events, np.argwhere(np.ediff1d(pos_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
 
-                                    if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
-                                        if neg_significant_events.size > pos_significant_events.size:
-                                            neg_significant_events = neg_significant_events[1:]
+                                    if pos_significant_events.size > 0 and neg_significant_events.size > 0:
+                                        if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
+                                            if neg_significant_events.size > pos_significant_events.size:
+                                                neg_significant_events = neg_significant_events[1:]
 
-                                        if pos_significant_events[0] < neg_significant_events[0]:
-                                            if pos_significant_events.size == neg_significant_events.size:
-                                                ipi_durations_frames = (neg_significant_events - pos_significant_events) - 1
-                                                temp_ipi_start_frames = pos_significant_events + 1
+                                            if pos_significant_events[0] < neg_significant_events[0]:
+                                                if pos_significant_events.size == neg_significant_events.size:
+                                                    ipi_durations_frames = (neg_significant_events - pos_significant_events) - 1
+                                                    temp_ipi_start_frames = pos_significant_events + 1
+                                                else:
+                                                    ipi_durations_frames = (neg_significant_events - pos_significant_events[:-1]) - 1
+                                                    temp_ipi_start_frames = pos_significant_events[:-1] + 1
                                             else:
-                                                ipi_durations_frames = (neg_significant_events - pos_significant_events[:-1]) - 1
-                                                temp_ipi_start_frames = pos_significant_events[:-1] + 1
-                                        else:
-                                            if pos_significant_events.size == neg_significant_events.size:
-                                                ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:-1]) - 1
-                                                temp_ipi_start_frames = pos_significant_events[:-1] + 1
-                                            else:
-                                                ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
-                                                temp_ipi_start_frames = pos_significant_events + 1
+                                                if pos_significant_events.size == neg_significant_events.size:
+                                                    ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:-1]) - 1
+                                                    temp_ipi_start_frames = pos_significant_events[:-1] + 1
+                                                else:
+                                                    ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
+                                                    temp_ipi_start_frames = pos_significant_events + 1
 
                                         # compute IPI durations in milliseconds
                                         ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps[sync_cam_idx]))
@@ -664,7 +671,7 @@ class Synchronizer:
                             audio_video_ipi_discrepancy_ms = ((audio_ipi_start_samples / wave_data_dict[audio_file]['sampling_rate']) - (video_ipi_start_frames / camera_fr[0])) * 1000
 
                             # if the SYNC is acceptable, delete the original audio files
-                            if np.max(np.abs(audio_video_ipi_discrepancy_ms)) < 18:
+                            if np.max(np.abs(audio_video_ipi_discrepancy_ms)) < self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']:
                                 if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}original"):
                                     shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}original")
 

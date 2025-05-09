@@ -10,7 +10,7 @@ import platform
 import sys
 import toml
 import unittest
-from ..send_email import Messenger
+from src.send_email import Messenger
 
 
 class TestRecording(unittest.TestCase):

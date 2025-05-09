@@ -190,7 +190,7 @@
     "Synchronizer": {
       "validate_ephys_video_sync": {
         "npx_file_type": "ap",
-        "npx_ms_divergence_tolerance": 10.0
+        "npx_ms_divergence_tolerance": 12.0
       },
       "find_audio_sync_trains": {
         "ch_receiving_input": 2
@@ -203,7 +203,7 @@
         "led_px_dev": 10,
         "video_extension": "mp4",
         "relative_intensity_threshold": 1.0,
-        "millisecond_divergence_tolerance": 10
+        "millisecond_divergence_tolerance": 12
       },
       "crop_wav_files_to_video": {
         "device_receiving_input": "m",
@@ -232,6 +232,6 @@
   },
   "vocalocator": {
     "vcl_conda_env_name": "vcl",
-    "model_directory": "/mnt/falkner/Bartul/sound_localization/earbud_6d_output_2025-03-12"
+    "model_directory": "/mnt/falkner/Bartul/sound_localization/20250312_earbud_model"
   }
 }

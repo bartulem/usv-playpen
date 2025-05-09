@@ -25,7 +25,7 @@ def run_playback_files(num_seq,
     # find .wav files
     wav_file_lst = glob.glob(f"{audio_d}/*.wav")
     
-    # get a pseudoranom sequence of audio files
+    # get a pseudo-random sequence of audio files
     random_int_lst = np.random.randint(low=0, high=100, size=num_seq, dtype=int)
     
     for i in range(num_seq):

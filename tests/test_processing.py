@@ -9,7 +9,7 @@ import subprocess
 import sys
 import toml
 import unittest
-from ..send_email import Messenger
+from src.send_email import Messenger
 
 
 class TestProcessing(unittest.TestCase):
@@ -51,7 +51,7 @@ class TestProcessing(unittest.TestCase):
 
         # test video processing capabilities
         try:
-            subprocess.Popen(f'''{self.command_addition}ffmpeg -version''',
+            subprocess.Popen(args=f'''{self.command_addition}ffmpeg -version''',
                              shell=self.shell_usage_bool).wait()
             video_processing_success = True
         except subprocess.CalledProcessError as e:
@@ -63,7 +63,7 @@ class TestProcessing(unittest.TestCase):
     def test_audio_processing(self):
 
         try:
-            subprocess.Popen(f'''{self.command_addition}sox --version''',
+            subprocess.Popen(args=f'''{self.command_addition}sox --version''',
                              shell=self.shell_usage_bool).wait()
             audio_processing_success = True
         except subprocess.CalledProcessError as e:
