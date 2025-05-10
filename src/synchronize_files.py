@@ -581,23 +581,23 @@ class Synchronizer:
                                                     ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
                                                     temp_ipi_start_frames = pos_significant_events + 1
 
-                                        # compute IPI durations in milliseconds
-                                        ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps[sync_cam_idx]))
+                                            # compute IPI durations in milliseconds
+                                            ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps[sync_cam_idx]))
 
-                                        # match IPI sequences
-                                        subarray_size = ipi_durations_ms.shape[0]
-                                        start_indices = np.arange(len(arduino_ipi_durations) - subarray_size + 1)
-                                        index_matrix = start_indices[:, np.newaxis] + np.arange(subarray_size)
-                                        arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
+                                            # match IPI sequences
+                                            subarray_size = ipi_durations_ms.shape[0]
+                                            start_indices = np.arange(len(arduino_ipi_durations) - subarray_size + 1)
+                                            index_matrix = start_indices[:, np.newaxis] + np.arange(subarray_size)
+                                            arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
 
-                                        result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
-                                        all_zero_matches = np.all(result_array <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
-                                                                  axis=1)
-                                        any_all_zeros = np.any(all_zero_matches)
-                                        if any_all_zeros:
-                                            sync_sequence_dict[camera_dir] = np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])
-                                            ipi_start_frames = temp_ipi_start_frames
-                                            sequence_found = True
+                                            result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
+                                            all_zero_matches = np.all(result_array <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
+                                                                      axis=1)
+                                            any_all_zeros = np.any(all_zero_matches)
+                                            if any_all_zeros:
+                                                sync_sequence_dict[camera_dir] = np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])
+                                                ipi_start_frames = temp_ipi_start_frames
+                                                sequence_found = True
                                 else:
                                     break
                             else:
