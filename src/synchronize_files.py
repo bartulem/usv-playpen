@@ -683,7 +683,7 @@ class Synchronizer:
         # check if the audio devices match on IPI start samples
         audio_devices_start_sample_differences = np.abs(audio_devices_start_sample_differences)
         self.message_output(f"The smallest IPI start sample difference across master/slave audio devices is {np.nanmin(audio_devices_start_sample_differences)}, "
-                            f"the largest is {np.nanmax(audio_devices_start_sample_differences)}, and the mean is {np.nanmean(audio_devices_start_sample_differences)}.")
+                            f"the largest is {np.nanmax(audio_devices_start_sample_differences)}, and the mean is {round(np.nanmean(audio_devices_start_sample_differences), 2)}.")
 
         return ipi_discrepancy_dict
 
