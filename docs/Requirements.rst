@@ -103,6 +103,39 @@ Audio PC essentials
 Whatever operating system you are using, you will need to install the following software *prior to* installing *usv-playpen*: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (you can also find the ttf file in *usv-playpen/fonts*; how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
 (2) `Anaconda <https://www.anaconda.com/download>`_ (and add it to PATH on Windows), (3) `git <https://git-scm.com/download/>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add it to PATH on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add it to PATH on Windows). How to add a program to PATH on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
 
+You can verify that the installation was successful by running the following commands in the terminal:
+
+.. code-block:: bash
+
+   conda --version
+   git --version
+   sox --version
+   ffmpeg -version
+
+You should something like the following output:
+
+.. code-block:: bash
+
+    (base) bmimica@PNI-NV6T43LF74 ~ % conda --version
+    conda 24.7.1
+    (base) bmimica@PNI-NV6T43LF74 ~ % git --version
+    git version 2.39.5 (Apple Git-154)
+    (base) bmimica@PNI-NV6T43LF74 ~ % sox --version
+    sox:      SoX v
+    (base) bmimica@PNI-NV6T43LF74 ~ % ffmpeg -version
+    ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers
+    built with Apple clang version 16.0.0 (clang-1600.0.26.6)
+    configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/7.1.1_2 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags='-Wl,-ld_classic' --enable-ffplay --enable-gnutls --enable-gpl --enable-libaom --enable-libaribb24 --enable-libbluray --enable-libdav1d --enable-libharfbuzz --enable-libjxl --enable-libmp3lame --enable-libopus --enable-librav1e --enable-librist --enable-librubberband --enable-libsnappy --enable-libsrt --enable-libssh --enable-libsvtav1 --enable-libtesseract --enable-libtheora --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libxvid --enable-lzma --enable-libfontconfig --enable-libfreetype --enable-frei0r --enable-libass --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libspeex --enable-libsoxr --enable-libzmq --enable-libzimg --disable-libjack --disable-indev=jack --enable-videotoolbox --enable-audiotoolbox --enable-neon
+    libavutil      59. 39.100 / 59. 39.100
+    libavcodec     61. 19.101 / 61. 19.101
+    libavformat    61.  7.100 / 61.  7.100
+    libavdevice    61.  3.100 / 61.  3.100
+    libavfilter    10.  4.100 / 10.  4.100
+    libswscale      8.  3.100 /  8.  3.100
+    libswresample   5.  3.100 /  5.  3.100
+    libpostproc    58.  3.100 / 58.  3.100
+
+
 `Avisoft Recorder USGH <https://avisoft.com/downloads/>`_ works on Windows 11. You should download a version of the software that does not require an USB license key.
 `CoolTerm <https://coolterm.en.lo4d.com/windows>`_ is a serial port terminal application, which allows you to record and keep Arduino print statements in the form of a text file. In the *usv-playpen/_config* directory,
 you can find a CoolTerm configuration file, *coolterm_config.stc*, which you can import into CoolTerm. This file is already set up according to the recording needs of *usv-playpen*. The two important points to consider are which port to set it to
