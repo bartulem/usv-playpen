@@ -714,6 +714,16 @@ Before running this section, it is always a good idea to check that audio files 
 
    <br>
 
+If you used used the SYNC recording mode (usghflags: 1574), the *Trgbox-USGH device(s)* needs to be set to **m**. If you, however, used the NO SYNC recording mode (usghflags: 1862), the *Trgbox-USGH device(s)* needs to be set to **both**:
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_9b.png
+   :align: center
+   :alt: Processing Step 9b
+
+.. raw:: html
+
+   <br>
+
 The *Convert to single-ch files* step populates the *original* directory with single channel files of the entire recording. The *Crop AUDIO (to VIDEO)* step will crop the audio files to the video duration, and save them in the *cropped_to_video* subdirectory. Both steps require the usage of `sox <https://sourceforge.net/projects/sox/>`_. In the last step, the *original* directory will be deleted; reduced to one channel below for brevity:
 
 .. parsed-literal::

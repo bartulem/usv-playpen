@@ -37,7 +37,7 @@
     "speaker_audio_file": "",
     "sequence_audio_file": "",
     "animate_bool": false,
-    "video_start_time": 567.19,
+    "video_start_time": 0,
     "video_duration": 5.0,
     "plot_theme": "dark",
     "save_fig": true,

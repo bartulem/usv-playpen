@@ -322,7 +322,10 @@ class ExperimentController:
                     if device_num == 0:
                         self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key])
                     else:
-                        self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key] - 2)
+                        if self.exp_settings_dict['audio']['devices'][device_setting_key] == 1574:
+                            self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key] - 2)
+                        else:
+                            self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key])
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
             for mic_spec_key in self.exp_settings_dict['audio']['mics_config'].keys():

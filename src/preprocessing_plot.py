@@ -83,26 +83,26 @@ class SummaryPlotter:
         plot_statistics_dict = {}
         for device_id in ipi_discrepancy_dict.keys():
             plot_statistics_dict[device_id] = {}
-            plot_statistics_dict[device_id]['error_median'] = np.round(np.nanmedian(ipi_discrepancy_dict[device_id]), 2)
-            plot_statistics_dict[device_id]['error_mean'] = np.round(np.nanmean(ipi_discrepancy_dict[device_id]), 2)
+            plot_statistics_dict[device_id]['error_median'] = np.round(np.nanmedian(ipi_discrepancy_dict[device_id]), decimals=2)
+            plot_statistics_dict[device_id]['error_mean'] = np.round(np.nanmean(ipi_discrepancy_dict[device_id]), decimals=2)
             plot_statistics_dict[device_id]['error_sem'] = np.nanstd(ipi_discrepancy_dict[device_id]) / ipi_discrepancy_dict[device_id].shape[0]
             plot_statistics_dict[device_id]['low_ci'] = plot_statistics_dict[device_id]['error_mean'] - (2.58 * plot_statistics_dict[device_id]['error_sem'])
             plot_statistics_dict[device_id]['high_ci'] = plot_statistics_dict[device_id]['error_mean'] + (2.58 * plot_statistics_dict[device_id]['error_sem'])
 
         # calculate phidget-data statistics
-        min_hum = np.round(np.nanmin(phidget_data_dictionary['humidity']), 2)
-        max_hum = np.round(np.nanmax(phidget_data_dictionary['humidity']), 2)
-        med_hum = np.round(np.nanmedian(phidget_data_dictionary['humidity']), 2)
-        min_lux = np.round(np.nanmin(phidget_data_dictionary['lux']), 3)
-        max_lux = np.round(np.nanmax(phidget_data_dictionary['lux']), 3)
-        med_lux = np.round(np.nanmedian(phidget_data_dictionary['lux']), 3)
-        min_temp = np.round(np.nanmin(phidget_data_dictionary['temperature']), 2)
-        max_temp = np.round(np.nanmax(phidget_data_dictionary['temperature']), 2)
-        med_temp = np.round(np.nanmedian(phidget_data_dictionary['temperature']), 2)
+        min_hum = np.round(np.nanmin(phidget_data_dictionary['humidity']), decimals=2)
+        max_hum = np.round(np.nanmax(phidget_data_dictionary['humidity']), decimals=2)
+        med_hum = np.round(np.nanmedian(phidget_data_dictionary['humidity']), decimals=2)
+        min_lux = np.round(np.nanmin(phidget_data_dictionary['lux']), decimals=3)
+        max_lux = np.round(np.nanmax(phidget_data_dictionary['lux']), decimals=3)
+        med_lux = np.round(np.nanmedian(phidget_data_dictionary['lux']), decimals=3)
+        min_temp = np.round(np.nanmin(phidget_data_dictionary['temperature']), decimals=2)
+        max_temp = np.round(np.nanmax(phidget_data_dictionary['temperature']), decimals=2)
+        med_temp = np.round(np.nanmedian(phidget_data_dictionary['temperature']), decimals=2)
 
         # get audio information
         wav_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav"))
-        with wave.open(wav_audio_files[0], 'rb') as example_audio_file:
+        with wave.open(wav_audio_files[0], mode='rb') as example_audio_file:
             audio_sampling_rate = example_audio_file.getframerate()
             audio_sample_number = example_audio_file.getnframes()
         audio_ch_number = len(wav_audio_files)

@@ -206,7 +206,7 @@
         "millisecond_divergence_tolerance": 12
       },
       "crop_wav_files_to_video": {
-        "device_receiving_input": "m",
+        "device_receiving_input": "both",
         "ch_receiving_input": 4
       }
     }

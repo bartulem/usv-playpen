@@ -56,7 +56,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.8.3'
+app_name = 'USV Playpen v0.8.4'
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -562,7 +562,7 @@ class USVPlaypenWindow(QMainWindow):
         gas_label.setStyleSheet('QLabel { font-weight: bold;}')
         gas_label.move(5, 10)
 
-        # change usghflags to '1862' for NO SYNC audio mode
+        # change usghflags to '1862 for NO SYNC audio mode, 1574 for SYNC audio mode
 
         self.default_audio_settings = {'name': f"{self.exp_settings_dict['audio']['mics_config']['name']}", 'id': f"{self.exp_settings_dict['audio']['mics_config']['id']}",
                                        'typech': f"{self.exp_settings_dict['audio']['mics_config']['typech']}", 'deviceid': f"{self.exp_settings_dict['audio']['mics_config']['deviceid']}",
@@ -1529,8 +1529,9 @@ class USVPlaypenWindow(QMainWindow):
         device_receiving_input_cb_label = QLabel('Trgbox-USGH device(s):', self.ProcessSettings)
         device_receiving_input_cb_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         device_receiving_input_cb_label.move(column_three_x1, 100)
+        self.usgh_device_receiving_input_list = sorted(['both', 'm', 's'], key=lambda x: x == self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'], reverse=True)
         self.device_receiving_input_cb = QComboBox(self.ProcessSettings)
-        self.device_receiving_input_cb.addItems(['m', 's', 'both'])
+        self.device_receiving_input_cb.addItems(self.usgh_device_receiving_input_list)
         self.device_receiving_input_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.device_receiving_input_cb.activated.connect(partial(self._combo_box_prior_audio_device_camera_input, variable_id='device_receiving_input'))
         self.device_receiving_input_cb.move(column_three_x2, 100)
@@ -3203,12 +3204,10 @@ class USVPlaypenWindow(QMainWindow):
         -------
         """
 
-        if index == 0:
-            self.__dict__[variable_id] = 'm'
-        elif index == 1:
-            self.__dict__[variable_id] = 's'
-        else:
-            self.__dict__[variable_id] = 'both'
+        for idx in range(len(self.usgh_device_receiving_input_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.usgh_device_receiving_input_list[idx]
+                break
 
     def _combo_box_prior_true(self,
                               index: int,

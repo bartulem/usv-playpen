@@ -84,7 +84,7 @@ class Synchronizer:
                                    '21372315': {'LED_top': [510, 1268], 'LED_middle': [555, 1268], 'LED_bottom': [603, 1266]}},
                    '<2025_05_08': {'21241563': {'LED_top': [317, 1247], 'LED_middle': [360, 1254], 'LED_bottom': [403, 1262]},
                                    '21372315': {'LED_top': [507, 1267], 'LED_middle': [554, 1267], 'LED_bottom': [601, 1266]}},
-                   'current': {'21241563': {'LED_top': [317, 1247], 'LED_middle': [360, 1254], 'LED_bottom': [403, 1262]},
+                   'current': {'21241563': {'LED_top': [310, 1245], 'LED_middle': [358, 1248], 'LED_bottom': [402, 1255]},
                                '21372315': {'LED_top': [504, 1261], 'LED_middle': [551, 1260], 'LED_bottom': [598, 1260]}}}
 
     if os.name == 'nt':
@@ -578,8 +578,12 @@ class Synchronizer:
                                                     ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:-1]) - 1
                                                     temp_ipi_start_frames = pos_significant_events[:-1] + 1
                                                 else:
-                                                    ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
-                                                    temp_ipi_start_frames = pos_significant_events + 1
+                                                    if pos_significant_events.size > neg_significant_events.size:
+                                                        ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:neg_significant_events.size-1]) - 1
+                                                        temp_ipi_start_frames = pos_significant_events[:neg_significant_events.size-1] + 1
+                                                    else:
+                                                        ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
+                                                        temp_ipi_start_frames = pos_significant_events + 1
 
                                             # compute IPI durations in milliseconds
                                             ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps[sync_cam_idx]))
@@ -771,21 +775,24 @@ class Synchronizer:
                m_longer = True
                m_original_arr_indices = np.arange(0, start_end_video['m']['duration_samples'])
                m_new_arr_indices = np.linspace(start=0, stop=start_end_video['m']['duration_samples'] - 1, num=start_end_video['s']['duration_samples'])
+               base_name_date = next(key for key in wave_data_dict.keys() if 's_' in key and f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input']:02d}" in key)[2:-9]
            if start_end_video['m']['duration_samples'] < start_end_video['s']['duration_samples']:
                s_longer = True
                s_original_arr_indices = np.arange(0, start_end_video['s']['duration_samples'])
                s_new_arr_indices = np.linspace(start=0, stop=start_end_video['s']['duration_samples'] - 1, num=start_end_video['m']['duration_samples'])
+               base_name_date = next(key for key in wave_data_dict.keys() if 'm_' in key and f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input']:02d}" in key)[2:-9]
 
         QTest.qWait(1000)
 
         cut_audio_subprocesses = []
         for audio_file in all_audio_files:
-            outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{os.path.basename(audio_file)[:-4]}_cropped_to_video.wav"
-
             if len(device_ids) == 1:
+                outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{os.path.basename(audio_file)[:-4]}_cropped_to_video.wav"
                 start_cut_sample = start_end_video[device_ids[0]]['start_first_recorded_frame']
                 cut_duration_samples = start_end_video[device_ids[0]]['duration_samples']
                 cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {start_cut_sample}s {cut_duration_samples}s''',
+                                                  stdout=subprocess.DEVNULL,
+                                                  stderr=subprocess.STDOUT,
                                                   cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
                                                   shell=self.shell_usage_bool)
                 cut_audio_subprocesses.append(cut_audio_subp)
@@ -794,29 +801,25 @@ class Synchronizer:
                     m_start_cut_sample = start_end_video['m']['start_first_recorded_frame']
                     m_cut_duration_samples = start_end_video['m']['duration_samples']
                     if m_longer:
-                        # extract original LSB data
-                        m_sr_original, m_data_original = wavfile.read(f'{audio_file}')
-                        m_lsb_original = m_data_original[start_end_video['m']['start_first_recorded_frame']:start_end_video['m']['end_last_recorded_frame']+1] & 1
-
-                        # resample the LSB data
-                        m_lsb_modified = np.where(np.interp(x=m_new_arr_indices, xp=m_original_arr_indices, fp=m_lsb_original).astype(np.int16) > 0.5, 1, 0).astype(np.int16)
+                        # adjust outfile name
+                        default_base_name = os.path.basename(audio_file)[:-4]
+                        modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
+                        outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{modified_base_name}_cropped_to_video.wav"
 
                         # trim and adjust tempo
                         tempo_adjustment_factor = start_end_video['m']['duration_samples'] / start_end_video['s']['duration_samples']
-                        subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {m_start_cut_sample}s {m_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
-                                         cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
-                                         shell=self.shell_usage_bool).wait()
-
-                        # load data again and overwrite the LSB
-                        m_sr_tempo_adjusted, m_data_tempo_adjusted = wavfile.read(f'{outfile_loc}')
-                        if m_data_tempo_adjusted.size == start_end_video['s']['duration_samples']:
-                            m_data_modified = (m_data_tempo_adjusted & ~1) ^ m_lsb_modified
-                        else:
-                            m_data_modified = (m_data_tempo_adjusted[:start_end_video['s']['duration_samples']] & ~1) ^ m_lsb_modified
-                        wavfile.write(filename=outfile_loc, rate=m_sr_original, data=m_data_modified)
+                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {m_start_cut_sample}s {m_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
+                                                          stdout=subprocess.DEVNULL,
+                                                          stderr=subprocess.STDOUT,
+                                                          cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
+                                                          shell=self.shell_usage_bool)
+                        cut_audio_subprocesses.append(cut_audio_subp)
 
                     else:
+                        outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{os.path.basename(audio_file)[:-4]}_cropped_to_video.wav"
                         cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {m_start_cut_sample}s {m_cut_duration_samples}s''',
+                                                          stdout=subprocess.DEVNULL,
+                                                          stderr=subprocess.STDOUT,
                                                           cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
                                                           shell=self.shell_usage_bool)
                         cut_audio_subprocesses.append(cut_audio_subp)
@@ -824,30 +827,25 @@ class Synchronizer:
                     s_start_cut_sample = start_end_video['s']['start_first_recorded_frame']
                     s_cut_duration_samples = start_end_video['s']['duration_samples']
                     if s_longer:
-                        # extract original LSB data
-                        s_sr_original, s_data_original = wavfile.read(f'{audio_file}')
-                        s_lsb_original = s_data_original[start_end_video['s']['start_first_recorded_frame']:start_end_video['s']['end_last_recorded_frame'] + 1] & 1
-
-                        # resample the LSB data
-                        s_lsb_modified = np.where(np.interp(x=s_new_arr_indices, xp=s_original_arr_indices, fp=s_lsb_original).astype(np.int16) > 0.5, 1, 0).astype(np.int16)
+                        # adjust outfile name
+                        default_base_name = os.path.basename(audio_file)[:-4]
+                        modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
+                        outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{modified_base_name}_cropped_to_video.wav"
 
                         # trim and adjust tempo
                         tempo_adjustment_factor = start_end_video['s']['duration_samples'] / start_end_video['m']['duration_samples']
-                        subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {s_start_cut_sample}s {s_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
-                                         cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
-                                         shell=self.shell_usage_bool).wait()
-
-                        # load data again and overwrite the LSB
-                        s_sr_tempo_adjusted, s_data_tempo_adjusted = wavfile.read(f'{outfile_loc}')
-                        if s_data_tempo_adjusted.size == start_end_video['m']['duration_samples']:
-                            s_data_modified = (s_data_tempo_adjusted & ~1) ^ s_lsb_modified
-                        else:
-                            s_data_modified = (s_data_tempo_adjusted[:start_end_video['m']['duration_samples']] & ~1) ^ s_lsb_modified
-
-                        wavfile.write(filename=outfile_loc, rate=s_sr_original, data=s_data_modified)
+                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {s_start_cut_sample}s {s_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
+                                                          stdout=subprocess.DEVNULL,
+                                                          stderr=subprocess.STDOUT,
+                                                          cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
+                                                          shell=self.shell_usage_bool)
+                        cut_audio_subprocesses.append(cut_audio_subp)
 
                     else:
+                        outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{os.path.basename(audio_file)[:-4]}_cropped_to_video.wav"
                         cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {s_start_cut_sample}s {s_cut_duration_samples}s''',
+                                                          stdout=subprocess.DEVNULL,
+                                                          stderr=subprocess.STDOUT,
                                                           cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
                                                           shell=self.shell_usage_bool)
                         cut_audio_subprocesses.append(cut_audio_subp)
@@ -858,6 +856,72 @@ class Synchronizer:
                 QTest.qWait(5000)
             else:
                 break
+
+        if len(device_ids) > 1:
+            for audio_file in all_audio_files:
+                if 'm_' in audio_file:
+                    if m_longer:
+                        # adjust outfile name
+                        default_base_name = os.path.basename(audio_file)[:-4]
+                        modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
+                        outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{modified_base_name}_cropped_to_video.wav"
+
+                        # extract original LSB data
+                        m_sr_original, m_data_original = wavfile.read(f'{audio_file}')
+                        m_lsb_original = m_data_original[start_end_video['m']['start_first_recorded_frame']:start_end_video['m']['end_last_recorded_frame'] + 1] & 1
+
+                        # resample the LSB data
+                        m_lsb_modified = np.where(np.interp(x=m_new_arr_indices, xp=m_original_arr_indices, fp=m_lsb_original).astype(np.int16) > 0.5, 1, 0).astype(np.int16)
+
+                        # load data again and overwrite the LSB
+                        m_sr_tempo_adjusted, m_data_tempo_adjusted = wavfile.read(f'{outfile_loc}')
+                        if m_data_tempo_adjusted.size == start_end_video['s']['duration_samples']:
+                            m_data_modified = (m_data_tempo_adjusted & ~1) ^ m_lsb_modified
+                        elif m_data_tempo_adjusted.size > start_end_video['s']['duration_samples']:
+                            m_data_modified = (m_data_tempo_adjusted[:start_end_video['s']['duration_samples']] & ~1) ^ m_lsb_modified
+                        else:
+                            padding_needed = start_end_video['s']['duration_samples'] - m_data_tempo_adjusted.size
+                            value_for_padded_part = m_data_tempo_adjusted[-1]
+                            padding = np.full(padding_needed, value_for_padded_part, dtype=m_data_tempo_adjusted.dtype)
+                            padded_data = np.concatenate((m_data_tempo_adjusted, padding))
+                            lsb_value_for_padded_part = m_lsb_modified[-1]
+                            lsb_padding = np.full(padding_needed, lsb_value_for_padded_part, dtype=m_lsb_modified.dtype)
+                            extended_lsb_array = np.concatenate((m_lsb_modified, lsb_padding))
+                            m_data_modified = (padded_data & ~1) ^ extended_lsb_array
+
+                        wavfile.write(filename=outfile_loc, rate=m_sr_original, data=m_data_modified)
+                else:
+                    if s_longer:
+                        # adjust outfile name
+                        default_base_name = os.path.basename(audio_file)[:-4]
+                        modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
+                        outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{modified_base_name}_cropped_to_video.wav"
+
+                        # extract original LSB data
+                        s_sr_original, s_data_original = wavfile.read(f'{audio_file}')
+                        s_lsb_original = s_data_original[start_end_video['s']['start_first_recorded_frame']:start_end_video['s']['end_last_recorded_frame'] + 1] & 1
+
+                        # resample the LSB data
+                        s_lsb_modified = np.where(np.interp(x=s_new_arr_indices, xp=s_original_arr_indices, fp=s_lsb_original).astype(np.int16) > 0.5, 1, 0).astype(np.int16)
+
+                        # load data again and overwrite the LSB
+                        s_sr_tempo_adjusted, s_data_tempo_adjusted = wavfile.read(f'{outfile_loc}')
+                        if s_data_tempo_adjusted.size == start_end_video['m']['duration_samples']:
+                            s_data_modified = (s_data_tempo_adjusted & ~1) ^ s_lsb_modified
+                        elif s_data_tempo_adjusted.size > start_end_video['m']['duration_samples']:
+                            s_data_modified = (s_data_tempo_adjusted[:start_end_video['m']['duration_samples']] & ~1) ^ s_lsb_modified
+                        else:
+                            padding_needed = start_end_video['m']['duration_samples'] - s_data_tempo_adjusted.size
+                            value_for_padded_part = s_data_tempo_adjusted[-1]
+                            padding = np.full(padding_needed, value_for_padded_part, dtype=s_data_tempo_adjusted.dtype)
+                            padded_data = np.concatenate((s_data_tempo_adjusted, padding))
+                            lsb_value_for_padded_part = s_lsb_modified[-1]
+                            lsb_padding = np.full(padding_needed, lsb_value_for_padded_part, dtype=s_lsb_modified.dtype)
+                            extended_lsb_array = np.concatenate((s_lsb_modified, lsb_padding))
+                            s_data_modified = (padded_data & ~1) ^ extended_lsb_array
+
+                        wavfile.write(filename=outfile_loc, rate=s_sr_original, data=s_data_modified)
+
 
         # create HPSS directory
         pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}hpss").mkdir(parents=True, exist_ok=True)

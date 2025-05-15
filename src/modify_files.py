@@ -647,7 +647,8 @@ class Operator:
 
                     # concatenate videos
                     one_subprocess = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -f concat -i file_concatenation_list_{sub_directory.split('.')[-1]}.txt -c copy {vid_name}.{vid_extension}''',
-                                                      stdout=subprocess.PIPE,
+                                                      stdout=subprocess.DEVNULL,
+                                                      stderr=subprocess.STDOUT,
                                                       cwd=current_working_dir,
                                                       shell=self.shell_usage_bool)
 
@@ -757,7 +758,8 @@ class Operator:
 
                 # change video sampling rate
                 fps_subp = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -y -r {esr} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}''',
-                                            stdout=subprocess.PIPE,
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.STDOUT,
                                             cwd=current_working_dir,
                                             shell=self.shell_usage_bool)
 
