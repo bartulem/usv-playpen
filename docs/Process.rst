@@ -92,6 +92,8 @@ If you recorded a session with audio, e-phys and video data (imaginary example: 
     │   │       ├── 20250430_145017.imec1.ap.meta
     │   ├── sync
     │   │   ├── CoolTerm Capture (coolterm_config.stc) 2024-04-30-14-50-14-236.txt
+    │   │   ├── 20250430_rec4_g0_t0.nidq.bin
+    │   │   ├── 20250430_rec4_g0_t0.nidq.meta
     │   │
     │   └── video
     │       ├── 20250430_145027.21241563
@@ -740,11 +742,13 @@ The *Convert to single-ch files* step populates the *original* directory with si
     │   ├── ephys
     │   │   ...
     │   ├── sync
-    │   │   ...
+    │   │   ├── **m_video_frames_in_audio_samples**
+    │   │   ├── **s_video_frames_in_audio_samples**
+    │   │   ├── **nidq_ipi_data.npy**
     │   └── video
     │       ...
 
-The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *camera_frame_count_dict.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording.
+The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_triggerbox_sync_info.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording. In the *sync* subdirectory, the *m_video_frames_in_audio_samples* and *s_video_frames_in_audio_samples* files will be created, which contain the sample numbers of video frame starts in the audio recording. These files are useful should troubleshooting sync issues arise. In case, NIDQ data was recorded, the *nidq_ipi_data.npy* file will be created, which contains the IPI durations (first row) and IPI start samples (second row).
 
 .. code-block:: json
 
@@ -1144,16 +1148,29 @@ The A/V synchronization procedure will first crate a *sync_px* file for each inp
     │   │   ...
     │   ├── sync
     │   │   ...
+    │   │   ├── **nidq_ipi_data.npy**
     │   │   ├── **sync_px_21372315-250430145009.mmap**
     │   │   ├── **20250430_145017_summary.svg**
     │   └── video
     │       ...
 
-An example output of the A/V synchronization procedure is shown below (the discrepancy goes rarely beyond one camera frame, which is ~6 ms, an acceptable amount of jitter):
+An example output of the A/V synchronization procedure is shown below.
+
+Notice that the plot contains two columns, one for each USGH device (which can operate in NO SYNC mode). In the first row, you can observe the distribution of A-V IPI discrepancies, which is the difference between the IPI onsets detected in the video and audio data. In the example, you can see the discrepancy goes rarely beyond one camera frame, which is ~6 ms, an acceptable amount of jitter. One might also be interested in viewing how this discrepancy evolves over time. One thing we would want to avoid are drastic changes in sampling rates on any of the devices over time. In the second row, you can see the relationship between IPI onsets time (earlier-later in the session) and the A-V IPI discrepancy. Ideally, we would want to observe a *flat cloud* of points, which would indicate that the A/V IPI discrepancy is stable over time. If you observe a trend that goes beyond 2 tracking frames, it might be worth investigating further.
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/sync_summary_example_noNIDQ.png
+   :align: center
+   :alt: Sync summary
+
+.. raw:: html
+
+   <br>
+
+In case NIDQ was also used in the recording, the first of the device plots will have a subplot detailing the temporal relationship between the NIDQ IPI onsets and the video IPI onsets (in ms). This plot is informative in case there is a large A-V discrepancy, as it allows you to determine which device (A or V) is having issues. If the NIDQ-V discrepancy is small, the sync issue is likely related to the audio device. On the contrary, if the NIDQ-V discrepancy is large, the sync issue is likely related to the video device. Either way, this is a first step in investigating this further, which is highly recommended.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/sync_summary_example.png
    :align: center
-   :alt: Sync summary
+   :alt: Sync summary NIDQ
 
 .. raw:: html
 
@@ -1163,6 +1180,10 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 
 * **extra_data_camera** : serial number of the camera used to store phidget data
 * **ch_receiving_input** : microphone channel receiving Arduino digital input
+* **nidq_sr** : sampling rate of the NIDQ device (in Hz)
+* **nidq_num_channels** : number of channels on the NIDQ device (9 on BNC-2110)
+* **nidq_triggerbox_input_bit_position** : triggerbox input bit position on the NIDQ device digital channel (assumes last channel is digital!)
+* **nidq_sync_input_bit_position** : sync input bit position on the NIDQ device digital channel (assumes last channel is digital!)
 * **camera_serial_num** : serial numbers of cameras that can detect flashing LEDs
 * **led_px_version** : version of the LED pixel positions
 * **led_px_dev** : maximal deviation (in px) of observed LED flashes relative to expected positions
@@ -1179,11 +1200,15 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
     }
    },
    "find_audio_sync_trains": {
-        "ch_receiving_input": 2
-      },
-      "find_video_sync_trains": {
+        "ch_receiving_input": 2,
+        "nidq_sr": 62500.72887,
+        "nidq_num_channels": 9,
+        "nidq_triggerbox_input_bit_position": 5,
+        "nidq_sync_input_bit_position": 7}
+    },
+   "find_video_sync_trains": {
         "camera_serial_num": [
-          "21372315"
+            "21372315"
         ],
         "led_px_version": "current",
         "led_px_dev": 10,

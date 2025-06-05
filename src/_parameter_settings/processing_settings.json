@@ -193,7 +193,11 @@
         "npx_ms_divergence_tolerance": 12.0
       },
       "find_audio_sync_trains": {
-        "ch_receiving_input": 2
+        "ch_receiving_input": 2,
+        "nidq_sr": 62500.72887,
+        "nidq_num_channels": 9,
+        "nidq_triggerbox_input_bit_position": 5,
+        "nidq_sync_input_bit_position": 7
       },
       "find_video_sync_trains": {
         "camera_serial_num": [

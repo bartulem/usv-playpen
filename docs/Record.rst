@@ -101,7 +101,7 @@ In the GUI main window, select an experimenter name from the dropdown menu and c
 
    <br>
 
-Depending on the choice of experimenter name, you can see file server directory destinations of files created during recording. You can naturally change these settings as you please. Several important details, however, are present in the section below. For a camera Calibration session, we choose not to conduct an audio recording, but to conduct video calibration. By default, calibration duration is 5 minutes long and the recording of the empty arena after it is 1 minute long, but these are arbitrary and should be adjusted to particular needs. For calibration purposes, it is not necessary to disable the ethernet connection:
+Should you require a name that is not present in the loaded list, you can manually add it to **/usv-playpen/_config/behavioral_experiments_settings.toml** to the very top variable *experimenter_list* (NB: be sure to leave a trailing comma at the end). Depending on the choice of experimenter name, you can see file server directory destinations of files created during recording. You can naturally change these settings as you please. Several important details, however, are present in the section below. For a camera Calibration session, we choose not to conduct an audio recording, but to conduct video calibration. By default, calibration duration is 5 minutes long and the recording of the empty arena after it is 1 minute long, but these are arbitrary and should be adjusted to particular needs. For calibration purposes, it is not necessary to disable the ethernet connection:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_2.png
    :align: center

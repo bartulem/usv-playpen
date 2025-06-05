@@ -1,4 +1,4 @@
-Port = COM3
+Port = COM5
 BaudRate = 9600
 DataBits = 8
 Parity = N
@@ -67,7 +67,7 @@ CaptureFileStaysOpen = true
 CaptureAutostart = true
 CaptureAutoAppend = false
 CaptureAutoFilename = 
-CapturePath = D:\CoolTermWin\Data\
+CapturePath = D:\CoolTerm\Data\
 CaptureAskForFilename = false
 TerminateSendString = false
 TerminationString = 0D 0A

@@ -1,7 +1,7 @@
 """
 @author: bartulem
 Synchronizes files:
-(1) the recorded .wav file with tracking file (cuts them to video length).
+(1) the recorded .wav file with a tracking file (cuts them to video length).
 (2) find audio and video sync trains and check whether they match.
 (3) performs a check on the e-phys data stream to see if the video duration matches the e-phys recording.
 """
@@ -20,6 +20,7 @@ import subprocess
 import numpy as np
 from collections import Counter
 from datetime import datetime
+from imgstore import new_for_filename
 from numba import njit
 from scipy.io import wavfile
 from .load_audio_files import DataLoader
@@ -205,9 +206,8 @@ class Synchronizer:
 
             # search for tracking start and end
             ch_sync_data = np.load(file=f'{sync_ch_file}.npy')
-            tracking_start, tracking_end, largest_break_duration = self.find_lsb_changes(relevant_array=ch_sync_data,
-                                                                                         lsb_bool=False,
-                                                                                         total_frame_number=total_frame_number_least)
+            (tracking_start, tracking_end, largest_break_duration,
+             ttl_break_end_samples, largest_break_end_hop) = self.find_lsb_changes(relevant_array=ch_sync_data, lsb_bool=False, total_frame_number=total_frame_number_least)
 
             largest_break_duration_sec = round(largest_break_duration / float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn]), 3)
             if (tracking_start, tracking_end) != (None, None) or largest_break_duration_sec < 2:
@@ -267,7 +267,6 @@ class Synchronizer:
                 continue
 
     @staticmethod
-    # @njit(parallel=True)
     def find_lsb_changes(relevant_array: np.ndarray = None,
                          lsb_bool: bool = True,
                          total_frame_number: int = 0) -> tuple:
@@ -275,7 +274,7 @@ class Synchronizer:
         """
         Description
         ----------
-        This method takes a  WAV channel sound array or Neuropixels
+        This method takes a WAV channel sound array or Neuropixels
         sync channel, extracts the LSB part (for WAV files) and
         finds start and end of tracking pulses.
         ----------
@@ -292,8 +291,10 @@ class Synchronizer:
 
         Returns
         ----------
-        start_first_relevant_sample, end_last_relevant_sample, largest_break_duration (tuple)
-            Start and end of tracking in audio/e-phys samples, and the duration of largest break.
+        start_first_relevant_sample, end_last_relevant_sample,
+        largest_break_duration, ttl_break_end_samples, largest_break_end_hop (tuple)
+            Start and end of tracking in audio/e-phys samples, the duration of largest break,
+            all TTL break end samples, and sample position of the largest break.
         ----------
         """
 
@@ -308,9 +309,9 @@ class Synchronizer:
         largest_break_duration = np.max(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1])
 
         if (total_frame_number + largest_break_end_hop) <= ttl_break_end_samples.shape[0]:
-            return int(ttl_break_end_samples[largest_break_end_hop] + 1), int(ttl_break_end_samples[largest_break_end_hop + total_frame_number] + 1), int(largest_break_duration)
+            return int(ttl_break_end_samples[largest_break_end_hop] + 1), int(ttl_break_end_samples[largest_break_end_hop + total_frame_number] + 1), int(largest_break_duration), ttl_break_end_samples, largest_break_end_hop
         else:
-            return None, None, int(largest_break_duration)
+            return None, None, int(largest_break_duration), ttl_break_end_samples, largest_break_end_hop
 
     @staticmethod
     @njit(parallel=True)
@@ -349,14 +350,14 @@ class Synchronizer:
 
         # find IPI starts and durations in milliseconds
         if ipi_start_samples[0] < ipi_end_samples[0]:
-            if ipi_start_samples.shape[0] == ipi_end_samples.shape[0]:
+            if ipi_start_samples.size == ipi_end_samples.size:
                 ipi_durations_ms = (((ipi_end_samples - ipi_start_samples) + 1) * 1000 / audio_sr_rate)
                 audio_ipi_start_samples = ipi_start_samples
             else:
                 ipi_durations_ms = (((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / audio_sr_rate)
                 audio_ipi_start_samples = ipi_start_samples[:-1]
         else:
-            if ipi_start_samples.shape[0] == ipi_end_samples.shape[0]:
+            if ipi_start_samples.size == ipi_end_samples.size:
                 ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / audio_sr_rate)
                 audio_ipi_start_samples = ipi_start_samples[:-1]
             else:
@@ -642,6 +643,7 @@ class Synchronizer:
         with open(json_loc, 'r') as camera_count_json_file:
             camera_fr_count_dict = json.load(camera_count_json_file)
             total_frame_number = camera_fr_count_dict['total_frame_number_least']
+            total_video_time_least = camera_fr_count_dict['total_video_time_least']
             camera_fr = [value[1] for key, value in camera_fr_count_dict.items() if key in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num']]
 
         # find video sync trains
@@ -649,9 +651,56 @@ class Synchronizer:
                                                                                        camera_fps=camera_fr)
         video_sync_sequence_array = np.array(list(video_sync_sequence_dict.values()))
 
+        # find NIDQ sync trains
+        nidq_file = next(pathlib.Path(self.root_directory).glob(f"**{os.sep}*.nidq.bin"), None)
+        nidq_ipi_data_file = f"{self.root_directory}{os.sep}sync{os.sep}nidq_ipi_data.npy"
+        if nidq_file is not None and not os.path.isfile(nidq_ipi_data_file):
+            nidq_recording = np.memmap(filename=nidq_file, mode='r', dtype=np.int16, order='C')
+            nidq_sample_num = nidq_recording.shape[0] // self.input_parameter_dict['find_audio_sync_trains']['nidq_num_channels']
+            nidq_digital_ch = nidq_recording.reshape((self.input_parameter_dict['find_audio_sync_trains']['nidq_num_channels'], nidq_sample_num), order='F')[-1, :].reshape([-1, 1])
+            nidq_digital_bits = (nidq_digital_ch & (2 ** np.arange(16).reshape([1, 16]))).astype(bool).astype(int)
+
+            # find start/end of recording
+            triggerbox_bit_changes = np.where((nidq_digital_bits[1:, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']] - nidq_digital_bits[:-1, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']]) > 0)[0]
+            triggerbox_diffs = triggerbox_bit_changes[1:] - triggerbox_bit_changes[:-1]
+            largest_break_end_hop = np.argmax(triggerbox_diffs) + 1
+            largest_break_end_hop_sec = round((triggerbox_bit_changes[largest_break_end_hop] - triggerbox_bit_changes[largest_break_end_hop - 1]) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'], 3)
+            self.message_output(f"For NIDQ, the largest break in video frame recording is {largest_break_end_hop_sec} seconds.")
+
+            loopbio_start_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop] + 1)
+            loopbio_end_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop + total_frame_number] + 1)
+            nidq_rec_duration = (loopbio_end_nidq_sample - loopbio_start_nidq_sample) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr']
+            nidq_video_difference = nidq_rec_duration - total_video_time_least
+            self.message_output(f"For NIDQ, video recording starts at {loopbio_start_nidq_sample} NIDQ sample and ends at {loopbio_end_nidq_sample} NIDQ sample, giving a total NIDQ duration of {nidq_rec_duration:.4f}, which is {nidq_video_difference:.4f} off relative to video duration.")
+
+            # find NIDQ IPI starts and durations in milliseconds
+            nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
+            ipi_start_samples = np.where(np.diff(nidq_rec_) < 0)[0] + 1
+            ipi_end_samples = np.where(np.diff(nidq_rec_) > 0)[0]
+
+            if ipi_start_samples[0] < ipi_end_samples[0]:
+                if ipi_start_samples.size == ipi_end_samples.size:
+                    nidq_ipi_durations_ms = (((ipi_end_samples - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                    nidq_ipi_start_samples = ipi_start_samples
+                else:
+                    nidq_ipi_durations_ms = (((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                    nidq_ipi_start_samples = ipi_start_samples[:-1]
+            else:
+                if ipi_start_samples.size == ipi_end_samples.size:
+                    nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                    nidq_ipi_start_samples = ipi_start_samples[:-1]
+                else:
+                    nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                    nidq_ipi_start_samples = ipi_start_samples
+
+            # save NIDQ IPI data
+            nidq_data_arr = np.vstack((nidq_ipi_durations_ms, nidq_ipi_start_samples))
+            np.save(file=nidq_ipi_data_file, arr=nidq_data_arr)
+
         ipi_discrepancy_dict = {}
         audio_devices_start_sample_differences = 0
         for af_idx, audio_file in enumerate(sorted(wave_data_dict.keys())):
+            ipi_discrepancy_dict[audio_file[:-4]] = {}
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
             QTest.qWait(1000)
 
@@ -672,14 +721,43 @@ class Synchronizer:
                             self.message_output(f"IPI sequence match NOT found in audio file! There is/are {(~bool_condition_array).sum()} difference(s) larger "
                                                 f"than the tolerance and the largest one is {diff_array.max()} ms")
                         else:
-                            audio_video_ipi_discrepancy_ms = ((audio_ipi_start_samples / wave_data_dict[audio_file]['sampling_rate']) - (video_ipi_start_frames / camera_fr[0])) * 1000
+                            video_metadata_search = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"*.{video_key}{os.sep}metadata.yaml"), None)
+                            img_store = new_for_filename(str(video_metadata_search))
+                            frame_times = np.array(img_store.get_frame_metadata()['frame_time'])
+                            frame_times = frame_times - frame_times[0]
+                            video_ipi_start_times = frame_times[video_ipi_start_frames]
+
+                            extract_exact_video_frame_times_bool = False
+                            if video_metadata_search and extract_exact_video_frame_times_bool:
+                                audio_video_ipi_discrepancy_ms = ((audio_ipi_start_samples / wave_data_dict[audio_file]['sampling_rate']) - video_ipi_start_times) * 1000
+                            else:
+                                # this comparison is fairer, given that we do not have exact sample times for audio, but both should give similar results
+                                audio_video_ipi_discrepancy_ms = ((audio_ipi_start_samples / wave_data_dict[audio_file]['sampling_rate']) - (video_ipi_start_frames / camera_fr[0])) * 1000
+
+                                # with open(f"{self.root_directory}{os.sep}sync{os.sep}m_video_frames_in_audio_samples.txt", 'r') as txt_file:
+                                #    video_fr_starts_in_samples = np.array([line.rstrip() for line in txt_file], dtype=np.int64)
+
+                                # audio_ipi_start_frames = []
+                                # for ipi_start_sample in audio_ipi_start_samples:
+                                #    temp_arr = video_fr_starts_in_samples - ipi_start_sample
+                                #    audio_ipi_start_frames.append((list(temp_arr).index(max(temp_arr[temp_arr<0]))))
+
+                                # discrepancy_arr = audio_ipi_start_frames - video_ipi_start_frames
+                                # print(audio_file, discrepancy_arr[:5], discrepancy_arr[-5:], np.mean(discrepancy_arr), np.min(discrepancy_arr), np.max(discrepancy_arr))
 
                             # if the SYNC is acceptable, delete the original audio files
                             if np.max(np.abs(audio_video_ipi_discrepancy_ms)) < self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']:
                                 if os.path.exists(f"{self.root_directory}{os.sep}audio{os.sep}original"):
                                     shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}original")
 
-                            ipi_discrepancy_dict[audio_file[:-4]] = audio_video_ipi_discrepancy_ms
+                            ipi_discrepancy_dict[audio_file[:-4]]['ipi_discrepancy_ms'] = audio_video_ipi_discrepancy_ms
+                            ipi_discrepancy_dict[audio_file[:-4]]['video_ipi_start_frames'] = video_ipi_start_frames
+                            if nidq_file is not None and os.path.isfile(nidq_ipi_data_file):
+                                nidq_data_arr = np.load(file=nidq_ipi_data_file)
+                                ipi_discrepancy_dict[audio_file[:-4]]['nidq_ipi_durations_ms'] = nidq_data_arr[0, :]
+                                ipi_discrepancy_dict[audio_file[:-4]]['nidq_ipi_discrepancy_ms'] = ((nidq_data_arr[1, :] / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr']) * 1000)  - ((video_ipi_start_frames / camera_fr[0]) * 1000)
+                                ipi_discrepancy_dict[audio_file[:-4]]['nidq_ipi_start_samples'] = nidq_data_arr[1, :]
+
 
             else:
                 self.message_output("The IPI sequences on different videos do not match.")
@@ -712,7 +790,7 @@ class Synchronizer:
         Returns
         ----------
         cropped_to_video (.wav file)
-            Cropped channel file(s) to match video file.
+            Cropped channel file(s) to match video duration.
         ----------
         """
 
@@ -746,7 +824,15 @@ class Synchronizer:
 
                     (start_end_video[device]['start_first_recorded_frame'],
                      start_end_video[device]['end_last_recorded_frame'],
-                     start_end_video[device]['largest_break_duration']) = self.find_lsb_changes(relevant_array=wave_data_dict[audio_file]['wav_data'], lsb_bool=True, total_frame_number=total_frame_number)
+                     start_end_video[device]['largest_break_duration'],
+                     ttl_break_end_samples,
+                     largest_break_end_hop) = self.find_lsb_changes(relevant_array=wave_data_dict[audio_file]['wav_data'], lsb_bool=True, total_frame_number=total_frame_number)
+
+                    # for each audio device, write the sync video frame start times in audio samples
+                    if not os.path.isfile(f"{self.root_directory}{os.sep}sync{os.sep}{device}_video_frames_in_audio_samples.txt"):
+                        with open(f"{self.root_directory}{os.sep}sync{os.sep}{device}_video_frames_in_audio_samples.txt", 'w') as text_file:
+                            for fr in range(total_frame_number):
+                                text_file.write(f"{int(ttl_break_end_samples[largest_break_end_hop + fr] + 1 - int(ttl_break_end_samples[largest_break_end_hop] + 1))}" + "\n")
 
                     start_end_video[device]['duration_samples'] = int(start_end_video[device]['end_last_recorded_frame'] - start_end_video[device]['start_first_recorded_frame'] + 1)
                     start_end_video[device]['duration_seconds'] = round(start_end_video[device]['duration_samples'] / wave_data_dict[audio_file]['sampling_rate'], 4)

@@ -56,7 +56,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.8.4'
+app_name = 'USV Playpen v0.8.5'
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -563,6 +563,7 @@ class USVPlaypenWindow(QMainWindow):
         gas_label.move(5, 10)
 
         # change usghflags to '1862 for NO SYNC audio mode, 1574 for SYNC audio mode
+        # NB: The NO SYNC mode for processing only works assuming NO DROPPED SAMPLES!
 
         self.default_audio_settings = {'name': f"{self.exp_settings_dict['audio']['mics_config']['name']}", 'id': f"{self.exp_settings_dict['audio']['mics_config']['id']}",
                                        'typech': f"{self.exp_settings_dict['audio']['mics_config']['typech']}", 'deviceid': f"{self.exp_settings_dict['audio']['mics_config']['deviceid']}",
@@ -1529,7 +1530,7 @@ class USVPlaypenWindow(QMainWindow):
         device_receiving_input_cb_label = QLabel('Trgbox-USGH device(s):', self.ProcessSettings)
         device_receiving_input_cb_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         device_receiving_input_cb_label.move(column_three_x1, 100)
-        self.usgh_device_receiving_input_list = sorted(['both', 'm', 's'], key=lambda x: x == self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'], reverse=True)
+        self.usgh_device_receiving_input_list = sorted(['m', 's', 'both'], key=lambda x: x == self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'], reverse=True)
         self.device_receiving_input_cb = QComboBox(self.ProcessSettings)
         self.device_receiving_input_cb.addItems(self.usgh_device_receiving_input_list)
         self.device_receiving_input_cb.setStyleSheet('QComboBox { width: 80px; }')
@@ -2542,7 +2543,7 @@ class USVPlaypenWindow(QMainWindow):
             self.processing_input_dict['vocalocator']['model_directory'] = self.vcl_model_dir_edit.text()
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
-        self.device_receiving_input = 'm'
+        self.device_receiving_input = self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input']
 
         self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(getattr(self, 'processing_pc_choice'))
 
@@ -4357,7 +4358,8 @@ def main() -> None:
                            'inference_root_dir_btn_clicked_flag': False, 'centroid_model_btn_clicked_flag': False,  'centered_instance_btn_btn_clicked_flag': False,
                            'calibration_file_loc_btn_clicked_flag': False, 'das_model_dir_btn_clicked_flag': False,
                            'recorder_dir_btn_clicked_flag': False, 'avisoft_base_dir_btn_clicked_flag': False, 'coolterm_base_dir_btn_clicked_flag': False,
-                           'device_receiving_input': 'm', 'save_transformed_data': 'animal',
+                           'device_receiving_input': processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'],
+                           'save_transformed_data': processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['save_transformed_data'],
                            'conduct_video_concatenation_cb_bool': False, 'conduct_video_fps_change_cb_bool': False,
                            'conduct_multichannel_conversion_cb_bool': False, 'crop_wav_cam_cb_bool': False, 'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False,
                            'conduct_sync_cb_bool': False, 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,

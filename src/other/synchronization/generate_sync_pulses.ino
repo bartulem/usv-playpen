@@ -14,7 +14,7 @@ obtain the initial seed value.
 
 Tested on the Arduino Uno.
 
-©bartulem 2024-03-14
+©bartulem 2025-05-20
 
 */
 
@@ -31,10 +31,10 @@ Define arduino output pins. Change these values as necessary.
 The LED_BUILTIN pin is helpful as an indicator that the program is running.
 */
 
-#define OUTPUT_PINS 2
+#define OUTPUT_PINS 1
 #define N_PINS 3
-const int pins[N_PINS] = {2, 3, 4};
-const int op[OUTPUT_PINS] = {7, 11};
+const int pins[N_PINS] = {2, 4, 6};
+const int op[OUTPUT_PINS] = {13};
 
 // Define some parameters for the pulse train
 #define INTERVAL_MIN 250    // Minimum IPI in ms

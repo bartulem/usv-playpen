@@ -1,8 +1,8 @@
 experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Jiayi", "Jinrun",]
 avisoft_recorder_exe = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
 avisoft_recorder_program_name = "rec_usgh.exe"
-avisoft_basedirectory = "C:\\Users\\bartulem\\Documents\\Avisoft Bioacoustics\\"
-coolterm_basedirectory = "D:\\CoolTermWin"
+avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics\\"
+coolterm_basedirectory = "D:\\CoolTerm"
 recording_files_destination_linux = [ "/home/labadmin/falkner/Bartul/Data",]
 recording_files_destination_win = [ "F:\\Bartul\\Data", "M:\\Bartul\\Data",]
 conduct_audio_recording = true
@@ -10,7 +10,7 @@ conduct_tracking_calibration = false
 calibration_duration = 5
 video_session_duration = 20
 disable_ethernet = true
-ethernet_network = "Slot01 x8 Port 1"
+ethernet_network = "Ethernet 5"
 
 [audio]
 total_device_num = 2
@@ -46,7 +46,7 @@ nbrwavehdr = 32
 type = 0
 format = 1
 diff = 0
-usghflags = 1862
+usghflags = 1574
 outtype = 7
 outdeviceid = 0
 outfabtast = -22050

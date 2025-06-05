@@ -10,8 +10,7 @@ Hardware Requirements
 Audio recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-* `Asus with Intel(R) Core(TM) i7-5960X CPU @ 3.00 GHz and 128 GB RAM <https://www.intel.com/content/www/us/en/products/sku/82930/intel-core-i75960x-processor-extreme-edition-20m-cache-up-to-3-50-ghz/specifications.html>`_ (1x)
-* `NVIDIA TITAN RTX <https://www.nvidia.com/en-us/titan/titan-rtx/>`_ (1x)
+* `Dell Precision 3680 Tower Intel(R) Core(TM) i9-1900 CPU @ 2.00 GHz and 64 GB RAM <https://www.dell.com/en-us/shop/desktop-computers/precision-3680-tower-workstation/spd/precision-t3680-workstation>`_ (1x)
 * `Avisoft UltraSoundGate Player 1216H (comes with SYNC cable) <hhttps://avisoft.com/ultrasoundgate/1216h/>`_ (2x)
 * `Avisoft 40011 CM16/CMPA microphones (come with XLR-5 extension cables) <https://avisoft.com/ultrasound-microphones/cm16-cmpa/>`_ (24x)
 * `Sound permeable mesh <https://www.mcmaster.com/catalog/131/470/9318T25>`_ (10ft)
@@ -101,12 +100,13 @@ Audio PC essentials
 ^^^^^^^^^^^^^^^^^^^
 
 Whatever operating system you are using, you will need to install the following software *prior to* installing *usv-playpen*: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (you can also find the ttf file in *usv-playpen/fonts*; how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
-(2) `Anaconda <https://www.anaconda.com/download>`_ (and add it to PATH on Windows), (3) `git <https://git-scm.com/download/>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add it to PATH on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add it to PATH on Windows). How to add a program to PATH on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
+(2) `Anaconda <https://www.anaconda.com/download>`_ (and add it to PATH on Windows), (3) `git <https://git-scm.com/downloads/win>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add it to PATH on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add it to PATH on Windows). How to add a program to PATH on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
 
 You can verify that the installation was successful by running the following commands in the terminal:
 
 .. code-block:: bash
 
+   conda init powershell
    conda --version
    git --version
    sox --version
@@ -136,16 +136,15 @@ You should something like the following output:
     libpostproc    58.  3.100 / 58.  3.100
 
 
-`Avisoft Recorder USGH <https://avisoft.com/downloads/>`_ works on Windows 11. You should download a version of the software that does not require an USB license key.
+`Avisoft Recorder USGH <https://avisoft.com/downloads/>`_ works on Windows 11. You should download a version of the software that does not require an USB license key. There is a known issue that the configuration file can occasionally contain invalid settings that lead to various unexpected behaviors. This potential issue can be avoided by disabling the automatic saving of the configuration when the program is closed (*Options > Configuration management > Save mode on exit > Save current configuration automatically*).
 `CoolTerm <https://coolterm.en.lo4d.com/windows>`_ is a serial port terminal application, which allows you to record and keep Arduino print statements in the form of a text file. In the *usv-playpen/_config* directory,
-you can find a CoolTerm configuration file, *coolterm_config.stc*, which you can import into CoolTerm. This file is already set up according to the recording needs of *usv-playpen*. The two important points to consider are which port to set it to
-(by default it is set to COM3) and the directory where the text files should be saved. If you are using the existing Arduino UNO, it is
-sufficient to plug it into a port (ideally COM3, which would require no changes to the CoolTerm configuration file), as the sketch was already uploaded. However,
+you can find a CoolTerm configuration file, *coolterm_config.stc*, which you can import into CoolTerm. If you are setting CoolTerm up for the first time, it is best to unpack it in *D:\\CoolTerm* and further create two directories: *D:\\CoolTerm\\Connection_settings* (place the *coolterm_config.stc* file here) and *D:\\CoolTerm\\Data*. Open the config file in CoolTerm and ensure that the location of saved files is *D:\\CoolTerm\\Data* and not *D:\\CoolTerm*. An additional important point to consider is which port to set it to
+(by default it is set to COM5). If you are using the existing Arduino UNO, it is sufficient to plug it into a port (ideally COM5, which would require no changes to the CoolTerm configuration file), as the sketch was already uploaded. However,
 if you want to upload the sketch to a different Arduino device, you will need to install the `Arduino IDE <https://www.arduino.cc/en/software/>`_, compile and upload the following sketch: *usv-playpen/other/sychronization/generate_sync_pulses.ino*.
 
 To control Ethernet connection status from the command line (more on this in the *Record* section), one needs to run Powershell in administrator mode. To ensure Powershell is in administrator mode all the time:
-(1) find Windows PowerShell ISE in windows search and pin it to task bar, (2) right-click on the icon in the task bar and right click again on Windows PowerShell ISE, (3) in the Properties, go to
-advanced properties and select *run as administrator* and hit OK. When you open PowerShell ISE, it should say administrator in the title bar. To check if you are in administrator mode, type *whoami* and hit enter.
+(1) find Windows PowerShell in windows search and pin it to task bar, (2) right-click on the icon in the task bar and right click again on Windows PowerShell, (3) in the Properties, go to
+advanced properties and select *run as administrator* and hit OK. When you open PowerShell, it should say administrator in the title bar. To check if you are in administrator mode, type *whoami* and hit enter.
 If you are in administrator mode, it should say *administrator*. It is also important to check the the file server is mounted to the PC. You can check all the mounted file systems with the following command:
 
 .. code-block:: powershell

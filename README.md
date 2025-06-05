@@ -1,4 +1,4 @@
-# usv-playpen v0.8.4
+# usv-playpen v0.8.5
 
 ![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
 
@@ -19,7 +19,7 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 
 * [Helvetica](https://freefontsfamily.net/helvetica-font-family/) (download and install)
 * [Anaconda](https://www.anaconda.com/download) (and add it to PATH)
-* [git](https://git-scm.com/download/)  (and add it to PATH)
+* [git](https://git-scm.com/downloads/win)  (and add it to PATH)
 * [ffmpeg](https://ffmpeg.org/download.html) (and add it to PATH)
 * [sox](https://sourceforge.net/projects/sox/)  (and add it to PATH)
 * [sleap](https://sleap.ai/) 
