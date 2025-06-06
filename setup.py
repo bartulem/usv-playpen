@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.8.5',
+    version='0.8.6',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[

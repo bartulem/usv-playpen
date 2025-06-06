@@ -1,4 +1,4 @@
-experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Jiayi", "Jinrun",]
+experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Ivan", "Jiayi", "Jinrun", "Mala",]
 avisoft_recorder_exe = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
 avisoft_recorder_program_name = "rec_usgh.exe"
 avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics\\"
@@ -46,7 +46,7 @@ nbrwavehdr = 32
 type = 0
 format = 1
 diff = 0
-usghflags = 1574
+usghflags = 1862
 outtype = 7
 outdeviceid = 0
 outfabtast = -22050

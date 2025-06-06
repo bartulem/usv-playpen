@@ -728,7 +728,7 @@ class Operator:
                 last_frame_num = img_store.frame_max
                 frame_times = img_store.get_frame_metadata()['frame_time']
                 video_duration = frame_times[-1] - frame_times[0]
-                esr = round(number=total_frame_num / video_duration, ndigits=3)
+                esr = round(number=total_frame_num / video_duration, ndigits=4)
                 if 'calibration' not in sub_directory:
                     empirical_camera_sr[camera_idx] = esr
                     camera_frame_count_dict[sub_directory.split('.')[-1]] = (total_frame_num, esr)
@@ -803,6 +803,6 @@ class Operator:
         # save camera_frame_count_dict to a file
         camera_frame_count_dict['total_frame_number_least'] = total_frame_number
         camera_frame_count_dict['total_video_time_least'] = total_video_time
-        camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.median(empirical_camera_sr), ndigits=3)
+        camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.median(empirical_camera_sr), ndigits=4)
         with open(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}_camera_frame_count_dict.json", 'w') as frame_count_outfile:
             json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)

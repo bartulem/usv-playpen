@@ -1180,6 +1180,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 
 * **extra_data_camera** : serial number of the camera used to store phidget data
 * **ch_receiving_input** : microphone channel receiving Arduino digital input
+* **extract_exact_video_frame_times_bool** : instead of using frame indices multiplied by empirical frame rate, use Loopbio times directly (which is less precise!)
 * **nidq_sr** : sampling rate of the NIDQ device (in Hz)
 * **nidq_num_channels** : number of channels on the NIDQ device (9 on BNC-2110)
 * **nidq_triggerbox_input_bit_position** : triggerbox input bit position on the NIDQ device digital channel (assumes last channel is digital!)
@@ -1201,6 +1202,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
    },
    "find_audio_sync_trains": {
         "ch_receiving_input": 2,
+        "extract_exact_video_frame_times_bool": false,
         "nidq_sr": 62500.72887,
         "nidq_num_channels": 9,
         "nidq_triggerbox_input_bit_position": 5,

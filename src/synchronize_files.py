@@ -699,6 +699,7 @@ class Synchronizer:
 
         ipi_discrepancy_dict = {}
         audio_devices_start_sample_differences = 0
+        audio_device_prefixes = ['m', 's']
         for af_idx, audio_file in enumerate(sorted(wave_data_dict.keys())):
             ipi_discrepancy_dict[audio_file[:-4]] = {}
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
@@ -722,28 +723,31 @@ class Synchronizer:
                                                 f"than the tolerance and the largest one is {diff_array.max()} ms")
                         else:
                             video_metadata_search = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"*.{video_key}{os.sep}metadata.yaml"), None)
-                            img_store = new_for_filename(str(video_metadata_search))
-                            frame_times = np.array(img_store.get_frame_metadata()['frame_time'])
-                            frame_times = frame_times - frame_times[0]
-                            video_ipi_start_times = frame_times[video_ipi_start_frames]
+                            if video_metadata_search:
+                                img_store = new_for_filename(str(video_metadata_search))
+                                frame_times = np.array(img_store.get_frame_metadata()['frame_time'])
+                                frame_times = frame_times - frame_times[0]
+                                video_ipi_start_times = frame_times[video_ipi_start_frames]
 
-                            extract_exact_video_frame_times_bool = False
-                            if video_metadata_search and extract_exact_video_frame_times_bool:
+                            if video_metadata_search and self.input_parameter_dict['find_audio_sync_trains']['extract_exact_video_frame_times_bool']:
                                 audio_video_ipi_discrepancy_ms = ((audio_ipi_start_samples / wave_data_dict[audio_file]['sampling_rate']) - video_ipi_start_times) * 1000
                             else:
-                                # this comparison is fairer, given that we do not have exact sample times for audio, but both should give similar results
+                                # this comparison is fairer, given that the timing on the video PC is not completely accurate (up to ~4 ms jitter), but both should give roughly similar results
                                 audio_video_ipi_discrepancy_ms = ((audio_ipi_start_samples / wave_data_dict[audio_file]['sampling_rate']) - (video_ipi_start_frames / camera_fr[0])) * 1000
 
-                                # with open(f"{self.root_directory}{os.sep}sync{os.sep}m_video_frames_in_audio_samples.txt", 'r') as txt_file:
-                                #    video_fr_starts_in_samples = np.array([line.rstrip() for line in txt_file], dtype=np.int64)
+                                # the following segment checks whether the IPI video frames indices extracted from the audio file match the video frames indices
+                                if next(pathlib.Path(f"{self.root_directory}{os.sep}sync{os.sep}").glob(f"*{audio_device_prefixes[af_idx]}_video_frames_in_audio_samples.txt"), None):
+                                    with open(f"{self.root_directory}{os.sep}sync{os.sep}{audio_device_prefixes[af_idx]}_video_frames_in_audio_samples.txt", 'r') as txt_file:
+                                       video_fr_starts_in_samples = np.array([line.rstrip() for line in txt_file], dtype=np.int64)
 
-                                # audio_ipi_start_frames = []
-                                # for ipi_start_sample in audio_ipi_start_samples:
-                                #    temp_arr = video_fr_starts_in_samples - ipi_start_sample
-                                #    audio_ipi_start_frames.append((list(temp_arr).index(max(temp_arr[temp_arr<0]))))
+                                    audio_ipi_start_frames = []
+                                    for ipi_start_sample in audio_ipi_start_samples:
+                                       temp_arr = video_fr_starts_in_samples - ipi_start_sample
+                                       audio_ipi_start_frames.append((list(temp_arr).index(max(temp_arr[temp_arr<0]))))
 
-                                # discrepancy_arr = audio_ipi_start_frames - video_ipi_start_frames
-                                # print(audio_file, discrepancy_arr[:5], discrepancy_arr[-5:], np.mean(discrepancy_arr), np.min(discrepancy_arr), np.max(discrepancy_arr))
+                                    discrepancy_arr = np.array(audio_ipi_start_frames) - video_ipi_start_frames
+                                    self.message_output(f"On device {audio_device_prefixes[af_idx]}, the first IPI event had a {discrepancy_arr[0]} fr discrepancy, and the last one had a {discrepancy_arr[-1]} fr discrepancy.")
+                                    self.message_output(f"Overall, the min discrepancy is {np.min(discrepancy_arr)} fr and the max discrepancy is {np.max(discrepancy_arr)} fr.")
 
                             # if the SYNC is acceptable, delete the original audio files
                             if np.max(np.abs(audio_video_ipi_discrepancy_ms)) < self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']:

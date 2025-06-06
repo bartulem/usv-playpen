@@ -1,4 +1,4 @@
-# usv-playpen v0.8.5
+# usv-playpen v0.8.6
 
 ![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
 
