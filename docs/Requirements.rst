@@ -58,9 +58,11 @@ Video recording essentials
 E-phys recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-* `PXIe-1073 Chassis with power cord #763000-01 <https://www.ni.com/en-us/shop/model/pxie-1073.html>`_ (1x)
-* `PXIe-8381 with MXI-Express cable #782522-01 <https://www.ni.com/en-us/shop/model/pxie-6356.html?srsltid=AfmBOoots48yZxlyxuK8NmqGoNCHw02ErHPXAnRntgEpCji0KuQUZfIv>`_ (1x)
-* `PXIE_1000 <https://www.ni.com/en-us/support/model.pxi-1000.html?srsltid=AfmBOooKjvUCTGckA1omCyB1GjbCdT_w268x9-m2ihJVu6WaYSmEzz9h>`_ (1x)
+* `PXIe-1071 Chassis with power cord <https://www.ni.com/en-us/shop/model/pxie-1071.html>`_ (1x)
+* `PXIe-8381 module and card with MXI-Express cable <https://www.ni.com/en-us/shop/model/pxie-8381.html>`_ (1x)
+* `BNC-2110 <https://www.ni.com/en-us/support/model.bnc-2110.html>`_ (1x)
+* `SHC68-68-EPM shielded cable <https://www.ni.com/en-us/support/model.shc68-68-epm.html>`_ (1x)
+* `PXIe-6341 <https://www.ni.com/en-us/shop/model/pxie-6341.html>`_ (1x)
 * `Neuropixels 2.0 probe <https://www.neuropixels.org/probe2-0>`_ (2x)
 * `Neuropixels 2.0 headstage <https://www.neuropixels.org/probe2-0>`_ (1x)
 
