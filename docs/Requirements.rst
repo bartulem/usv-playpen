@@ -102,7 +102,7 @@ Audio PC essentials
 ^^^^^^^^^^^^^^^^^^^
 
 Whatever operating system you are using, you will need to install the following software *prior to* installing *usv-playpen*: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (you can also find the ttf file in *usv-playpen/fonts*; how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
-(2) `Anaconda <https://www.anaconda.com/download>`_ (and add it to PATH on Windows), (3) `git <https://git-scm.com/downloads/win>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add it to PATH on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add it to PATH on Windows). How to add a program to PATH on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
+(2) `Anaconda <https://www.anaconda.com/download>`_ (and add PATH to USER VARIABLES on Windows), (3) `git <https://git-scm.com/downloads/win>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add PATH to USER VARIABLES on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add PATH to USER VARIABLES on Windows). How to add PATH to USER VARIABLES on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
 
 You can verify that the installation was successful by running the following commands in the terminal:
 

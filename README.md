@@ -10,6 +10,7 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 [![Documentation Status](https://readthedocs.org/projects//usv-playpen/badge/?version=latest)](https://usv-playpen.readthedocs.io/en/latest/?badge=latest)
 [![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 ![shields.io-issues](https://img.shields.io/github/issues/bartulem/usv-playpen)
+[![Release](https://img.shields.io/github/v/release/bartulem/usv-playpen)](https://img.shields.io/github/v/release/bartulem/usv-playpen)
 [![MIT Licence](https://img.shields.io/github/license/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/blob/main/LICENSE)
 [![All Contributors](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)
 [![GitHub stars](https://img.shields.io/github/stars/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
@@ -18,15 +19,16 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 
 ## Prerequisites
 
+* [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio recording PC)
 * [Helvetica](https://freefontsfamily.net/helvetica-font-family/) (download and install)
-* [Anaconda](https://www.anaconda.com/download) (and add it to PATH)
-* [git](https://git-scm.com/downloads/win)  (and add it to PATH)
-* [ffmpeg](https://ffmpeg.org/download.html) (and add it to PATH)
-* [sox](https://sourceforge.net/projects/sox/)  (and add it to PATH)
-* [sleap](https://sleap.ai/) 
-* [das](https://janclemenslab.org/das/)
-* [vocalocator](https://github.com/neurostatslab/vocalocator)
-* [CoolTerm](https://coolterm.en.lo4d.com/windows)
+* [git](https://git-scm.com/downloads/win)  (if on Windows, add PATH to USER VARIABLES)
+* [ffmpeg](https://ffmpeg.org/download.html) (if on Windows, add PATH to USER VARIABLES)
+* [sox](https://sourceforge.net/projects/sox/)  (if on Windows, add PATH to USER VARIABLES)
+* [Anaconda](https://www.anaconda.com/download) (if on Windows, add PATH to USER VARIABLES)
+* [sleap](https://sleap.ai/) (install in standalone environment)
+* [das](https://janclemenslab.org/das/) (install in standalone environment)
+* [vocalocator](https://github.com/neurostatslab/vocalocator) (install in standalone environment)
+
 
 ## Installation and updating
 
