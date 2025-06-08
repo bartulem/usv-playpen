@@ -2,7 +2,7 @@
 
 ![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
 
-GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-25 (Falkner/Murthy labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing, analysis and visualization branches of the GUI are platform-independent.
+GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-25 ([Falkner](https://www.falknerlab.com/)/[Murthy](https://murthylab.princeton.edu/) labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing, analysis and visualization branches of the GUI are platform-independent.
 
 [![Python version](https://img.shields.io/badge/Python-3.10-blue)](https://img.shields.io/badge/Python-3.10-blue)
 [![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
@@ -29,28 +29,28 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 
 ## Installation and updating
 
-Set up a new conda environment with Python 3.10 and give it any name, _e.g._, usv.
+Set up a new conda environment with Python 3.10 and give it any name, _e.g._, pni_up.
 ```bash
-conda create --name usv python=3.10 -c conda-forge -y
+conda create --name pni_up python=3.10 -c conda-forge -y
 ```
 Activate the virtual environment with:
 ```bash
-conda activate usv
+conda activate pni_up
 ```
 Install GUI with command below. Also, rerun the same command to check for and install updates.
 ```bash
-pip install git+https://github.com/bartulem/usv-playpen#egg=usv-playpen --use-pep517
+pip install git+https://github.com/bartulem/usv-playpen --use-pep517
 ```
 Add the python-motifapi package to your virtual environment:
 ```bash
-pip install git+https://github.com/loopbio/python-motifapi.git#egg=motifapi --use-pep517
+pip install git+https://github.com/loopbio/python-motifapi --use-pep517
 ```
 
 ## Usage
 
-Load the environment with the appropriate name, _e.g._, usv., and run the GUI:
+Load the environment with the appropriate name, _e.g._, pni_up, and run the GUI:
 ```bash
-conda activate usv && usv-playpen
+conda activate pni_up && usv-playpen
 ```
 
 User guide with detailed instructions is available [here](https://usv-playpen.readthedocs.io/en/latest/).
