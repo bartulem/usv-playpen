@@ -52,7 +52,7 @@ setup(
                       'PyQt6==6.7.0',
                       'polars==1.28.1',
                       'pydub==0.25.1',
-                      'requests==2.32.3',
+                      'requests==2.32.4',
                       'scipy==1.10.0',
                       'sleap-anipose==0.1.7',
                       'scikit-learn==1.5.2',
