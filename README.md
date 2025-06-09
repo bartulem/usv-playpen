@@ -32,13 +32,13 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 
 ## Installation and updating
 
-Set up a new conda environment with Python 3.10 and give it any name, _e.g._, pni_up.
+Set up a new conda environment with Python 3.10 and give it any name, _e.g._, pni.
 ```bash
-conda create --name pni_up python=3.10 -c conda-forge -y
+conda create --name pni python=3.10 -c conda-forge -y
 ```
 Activate the virtual environment with:
 ```bash
-conda activate pni_up
+conda activate pni
 ```
 Install GUI with command below. Also, rerun the same command to check for and install updates.
 ```bash
@@ -51,9 +51,9 @@ pip install git+https://github.com/loopbio/python-motifapi --use-pep517
 
 ## Usage
 
-Load the environment with the appropriate name, _e.g._, pni_up, and run the GUI:
+Load the environment with the appropriate name, _e.g._, pni, and run the GUI:
 ```bash
-conda activate pni_up && usv-playpen
+conda activate pni && usv-playpen
 ```
 
 User guide with detailed instructions is available [here](https://usv-playpen.readthedocs.io/en/latest/).
