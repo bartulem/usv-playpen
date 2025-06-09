@@ -30,7 +30,7 @@ setup(
     project_urls={
         'Bug Tracker': 'https://github.com/bartulem/usv-playpen/issues'
     },
-    license='MIT',
+    license='GPL-3.0',
     entry_points={
         'console_scripts': [
             'usv-playpen = usv_playpen.usv_playpen_gui:main'
