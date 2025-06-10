@@ -3,6 +3,7 @@
 Visualizes 3D tracking, vocalization and neural data.
 """
 
+import click
 import json
 import pathlib
 import traceback
@@ -113,3 +114,7 @@ class Visualizer:
                                                                f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
                                                                f"You will be notified about further PC usage "
                                                                f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+
+@click.command()
+def visualize_3D_data_cli_entry():
+    Visualizer().visualize_data()

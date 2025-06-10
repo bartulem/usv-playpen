@@ -33,11 +33,13 @@ setup(
     license='GPL-3.0',
     entry_points={
         'console_scripts': [
-            'usv-playpen = usv_playpen.usv_playpen_gui:main'
+            'usv-playpen = usv_playpen.usv_playpen_gui:main',
+            'video-viz = usv_playpen.visualize_data:visualize_3D_data_cli_entry'
         ]
     },
     install_requires=['astropy==6.1.7',
                       'av==10.0.0',
+                      'click==8.2.1',
                       'h5py==3.11.0',
                       'imgstore',
                       'joblib==1.4.2',
