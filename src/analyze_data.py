@@ -160,7 +160,9 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
         AudioGenerator().create_usv_playback_wav()
     else:
         analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, provided_params=provided_params, settings_dict='analyses_settings')
-        AudioGenerator(exp_id=exp_id, create_playback_settings_dict=analyses_settings_parameter_dict['create_usv_playback_wav']).create_usv_playback_wav(spock_cluster_bool=True)
+        AudioGenerator(exp_id=exp_id,
+                       create_playback_settings_dict=analyses_settings_parameter_dict['create_usv_playback_wav'],
+                       message_output=print).create_usv_playback_wav(spock_cluster_bool=True)
 
 @click.command(name='generate-rm')
 @click.option('--root_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
@@ -189,7 +191,9 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
     analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, provided_params=provided_params, settings_dict='analyses_settings')
-    NeuronalTuning(root_directory=root_directory, tuning_parameters_dict=analyses_settings_parameter_dict['calculate_neuronal_tuning_curves']).calculate_neuronal_tuning_curves()
+    NeuronalTuning(root_directory=root_directory,
+                   tuning_parameters_dict=analyses_settings_parameter_dict['calculate_neuronal_tuning_curves'],
+                   message_output=print).calculate_neuronal_tuning_curves()
 
 @click.command(name='generate-beh-features')
 @click.option('--root_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
@@ -219,4 +223,6 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
     analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, parameters_lists=parameters_lists, provided_params=provided_params, settings_dict='analyses_settings')
-    FeatureZoo(root_directory=root_directory, behavioral_parameters_dict=analyses_settings_parameter_dict['compute_behavioral_features']).save_behavioral_features_to_file()
+    FeatureZoo(root_directory=root_directory,
+               behavioral_parameters_dict=analyses_settings_parameter_dict['compute_behavioral_features'],
+               message_output=print).save_behavioral_features_to_file()

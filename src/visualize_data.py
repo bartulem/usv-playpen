@@ -209,7 +209,7 @@ def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_
                                                                           parameters_lists=parameters_lists, settings_dict='visualizations_settings')
 
     Create3DVideo(root_directory=root_directory, arena_directory=arena_directory, exp_id=exp_id, speaker_audio_file=speaker_audio_file,
-                  visualizations_parameter_dict=visualizations_settings_parameter_dict).visualize_in_video()
+                  visualizations_parameter_dict=visualizations_settings_parameter_dict, message_output=print).visualize_in_video()
 
 
 @click.command(name='generate-rm-figs')
@@ -236,4 +236,5 @@ def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
     visualizations_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, provided_params=provided_params, settings_dict='visualizations_settings')
-    RatemapFigureMaker(root_directory=root_directory, visualizations_parameter_dict=visualizations_settings_parameter_dict).neuronal_tuning_figures()
+    RatemapFigureMaker(root_directory=root_directory, visualizations_parameter_dict=visualizations_settings_parameter_dict,
+                       message_output=print).neuronal_tuning_figures()
