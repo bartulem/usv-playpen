@@ -46,9 +46,9 @@ echo "module load ffmpeg" >> "$JOB_SCRIPT"
 echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "conda activate $USV_PLAYPEN_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "sleap-to-h5 --root_directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
-echo "anipose-triangulate --root_directory \"$SESSION_ROOT_DIRECTORY\" --cal-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --display-progress --no-arena-points" >> "$JOB_SCRIPT"
-echo "anipose-trm --root_directory \"$SESSION_ROOT_DIRECTORY\" --exp-code $EXP_CODE --arena-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --delete-original" >> "$JOB_SCRIPT"
+echo "sleap-to-h5 --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "anipose-triangulate --root-directory \"$SESSION_ROOT_DIRECTORY\" --cal-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --display-progress --no-arena-points" >> "$JOB_SCRIPT"
+echo "anipose-trm --root-directory \"$SESSION_ROOT_DIRECTORY\" --exp-code $EXP_CODE --arena-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --delete-original" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

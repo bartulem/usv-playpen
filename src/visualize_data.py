@@ -116,73 +116,73 @@ class Visualizer:
                                                                f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
 @click.command(name='generate-viz')
-@click.option('--root_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
-@click.option('--arena_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Arena session path.')
-@click.option('--exp_id', type=str, default=None, required=True, help='Experimenter ID.')
-@click.option('--speaker_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Speaker audio file path.')
-@click.option('--sequence_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Audible audio sequence file path.')
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
+@click.option('--arena-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Arena session path.')
+@click.option('--exp-id', 'experimenter', type=str, default=None, required=True, help='Experimenter ID.')
+@click.option('--speaker-audio-file', 'speaker_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Speaker audio file path.')
+@click.option('--sequence-audio-file', 'sequence_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Audible audio sequence file path.')
 @click.option('--animate/--no-animate', 'animate_bool', default=None, help='Animate visualization.')
-@click.option('--video_start_time', type=click.IntRange(min=0), default=None, required=False, help='Video start time (in s).')
-@click.option('--video_duration', type=Union[int, float], default=None, required=False, help='Video duration (in s).')
-@click.option('--plot_theme', type=str, default=None, required=False, help='Plot background theme (light or dark).')
+@click.option('--video-start-time', 'video_start_time', type=click.IntRange(min=0), default=None, required=False, help='Video start time (in s).')
+@click.option('--video-duration', 'video_duration', type=Union[int, float], default=None, required=False, help='Video duration (in s).')
+@click.option('--plot-theme', 'plot_theme', type=str, default=None, required=False, help='Plot background theme (light or dark).')
 @click.option('--save-fig/--no-save-fig', 'save_fig', default=None, help='Save plot as figure to file.')
-@click.option('--view_angle', type=str, default=None, required=False, help='View angle for 3D visualization ("top" or "side").')
-@click.option('--side_azimuth_start', type=Union[int, float], default=None, required=False, help='Azimuth angle for side view (in degrees).')
+@click.option('--view-angle', 'view_angle', type=str, default=None, required=False, help='View angle for 3D visualization ("top" or "side").')
+@click.option('--side-azimuth-start', 'side_azimuth_start', type=Union[int, float], default=None, required=False, help='Azimuth angle for side view (in degrees).')
 @click.option('--rotate-side-view/--no-rotate-side-view', 'rotate_side_view_bool', default=None, help='Rotate side view in animation.')
-@click.option('--rotation_speed', type=Union[int, float], default=None, required=False, help='Rotation speed (in degrees/s).')
+@click.option('--rotation-speed', 'rotation_speed', type=Union[int, float], default=None, required=False, help='Rotation speed (in degrees/s).')
 @click.option('--history/--no-history', 'history_bool', default=None, help='Display history of single mouse node.')
 @click.option('--speaker/--no-speaker', 'speaker_bool', default=None, help='Display speaker node in visualization.')
 @click.option('--spectrogram/--no-spectrogram', 'spectrogram_bool', default=None, help='Display spectrogram of audio sequence.')
-@click.option('--spectrogram_ch', type=int, default=None, required=False, help='Spectrogram channel (0-23).')
+@click.option('--spectrogram-ch', 'spectrogram_ch', type=int, default=None, required=False, help='Spectrogram channel (0-23).')
 @click.option('--raster-plot/--no-raster-plot', 'raster_plot_bool', default=None, help='Display spike raster plot in visualization.')
-@click.option('--brain_areas', multiple=True, type=str, default=None, required=False, help='Brain areas to display in raster plot.')
-@click.option('--other', multiple=True, type=str, default=None, required=False, help='Other spike cluster features to use for filtering.')
-@click.option('--raster_special_units', multiple=True, type=str, default=None, required=False, help='Clusters to accentuate in raster plot.')
+@click.option('--brain-areas', 'brain_areas', multiple=True, type=str, default=None, required=False, help='Brain areas to display in raster plot.')
+@click.option('--other', 'other', multiple=True, type=str, default=None, required=False, help='Other spike cluster features to use for filtering.')
+@click.option('--raster-special-units', 'raster_special_units', multiple=True, type=str, default=None, required=False, help='Clusters to accentuate in raster plot.')
 @click.option('--spike-sound/--no-spike-sound', 'spike_sound_bool', default=None, help='Play sound each time the cluster spikes.')
 @click.option('--beh-features/--no-beh-features', 'beh_features_bool', default=None, help='Display behavioral feature dynamics.')
-@click.option('--beh_features_to_plot', multiple=True, type=str, default=None, required=False, help='Behavioral feature(s) to display.')
-@click.option('--special_beh_features', multiple=True, type=str, default=None, required=False, help='Behavioral feature(s) to accentuate in display.')
-@click.option('--fig_format', type=str, default=None, required=False, help='Figure format.')
-@click.option('--fig_dpi', type=int, default=None, required=False, help='Figure resolution in dots per inch.')
-@click.option('--animation_writer', type=str, default=None, required=False, help='Animation writer backend.')
-@click.option('--animation_format', type=str, default=None, required=False, help='Video format.')
+@click.option('--beh-features-to-plot', 'beh_features_to_plot', multiple=True, type=str, default=None, required=False, help='Behavioral feature(s) to display.')
+@click.option('--special-beh-features', 'special_beh_features', multiple=True, type=str, default=None, required=False, help='Behavioral feature(s) to accentuate in display.')
+@click.option('--fig-format', 'fig_format', type=str, default=None, required=False, help='Figure format.')
+@click.option('--fig-dpi', 'fig_dpi', type=int, default=None, required=False, help='Figure resolution in dots per inch.')
+@click.option('--animation-writer', 'animation_writer', type=str, default=None, required=False, help='Animation writer backend.')
+@click.option('--animation-format', 'animation_format', type=str, default=None, required=False, help='Video format.')
 @click.option('--arena-node-connections/--no-arena-node-connections', 'arena_node_connections_bool', default=None, help='Display connections between arena nodes.')
-@click.option('--arena_axes_lw', type=float, default=None, required=False, help='Line width for the arena axes.')
-@click.option('--arena_mics_lw', type=float, default=None, required=False, help='Line width for the microphone markers.')
-@click.option('--arena_mics_opacity', type=float, default=None, required=False, help='Opacity for the microphone markers.')
+@click.option('--arena-axes-lw', 'arena_axes_lw', type=float, default=None, required=False, help='Line width for the arena axes.')
+@click.option('--arena-mics-lw', 'arena_mics_lw', type=float, default=None, required=False, help='Line width for the microphone markers.')
+@click.option('--arena-mics-opacity', 'arena_mics_opacity', type=float, default=None, required=False, help='Opacity for the microphone markers.')
 @click.option('--plot-corners/--no-plot-corners', 'plot_corners_bool', default=None, help='Display arena corner markers.')
-@click.option('--corner_size', type=float, default=None, required=False, help='Size of the arena corner markers.')
-@click.option('--corner_opacity', type=float, default=None, required=False, help='Opacity of the arena corner markers.')
+@click.option('--corner-size', 'corner_size', type=float, default=None, required=False, help='Size of the arena corner markers.')
+@click.option('--corner-opacity', 'corner_opacity', type=float, default=None, required=False, help='Opacity of the arena corner markers.')
 @click.option('--plot-mesh-walls/--no-plot-mesh-walls', 'plot_mesh_walls_bool', default=None, help='Display arena walls as a mesh.')
-@click.option('--mesh_opacity', type=float, default=None, required=False, help='Opacity of the arena wall mesh.')
+@click.option('--mesh-opacity', 'mesh_opacity', type=float, default=None, required=False, help='Opacity of the arena wall mesh.')
 @click.option('--active-mic/--no-active-mic', 'active_mic_bool', default=None, help='Display the active microphone marker.')
 @click.option('--inactive-mic/--no-inactive-mic', 'inactive_mic_bool', default=None, help='Display inactive microphone markers.')
-@click.option('--inactive_mic_color', type=str, default=None, required=False, help='Color for inactive microphone markers.')
-@click.option('--text_fontsize', type=int, default=None, required=False, help='Font size for text elements in the plot.')
-@click.option('--speaker_opacity', type=float, default=None, required=False, help='Opacity of the speaker node.')
+@click.option('--inactive-mic-color', 'inactive_mic_color', type=str, default=None, required=False, help='Color for inactive microphone markers.')
+@click.option('--text-fontsize', 'text_fontsize', type=int, default=None, required=False, help='Font size for text elements in the plot.')
+@click.option('--speaker-opacity', 'speaker_opacity', type=float, default=None, required=False, help='Opacity of the speaker node.')
 @click.option('--nodes/--no-nodes', 'node_bool', default=None, help='Display mouse nodes.')
-@click.option('--node_size', type=float, default=None, required=False, help='Size of the mouse nodes.')
-@click.option('--node_opacity', type=float, default=None, required=False, help='Opacity of the mouse nodes.')
-@click.option('--node_lw', type=float, default=None, required=False, help='Line width for the mouse node connections.')
-@click.option('--node_connection_lw', type=float, default=None, required=False, help='Line width for mouse node connections.')
-@click.option('--body_opacity', type=float, default=None, required=False, help='Opacity of the mouse body.')
-@click.option('--history_point', type=str, default=None, required=False, help="Node to use for the history trail.")
-@click.option('--history_span_sec', type=int, default=None, required=False, help='Duration of the history trail (s).')
-@click.option('--history_ls', type=str, default=None, required=False, help="Line style for the history trail.")
-@click.option('--history_lw', type=float, default=None, required=False, help='Line width for the history trail.')
-@click.option('--beh_features_window_size', type=int, default=None, required=False, help='Window size for behavioral features (s).')
-@click.option('--raster_window_size', type=int, default=None, required=False, help='Window size for the raster plot (s).')
-@click.option('--raster_lw', type=float, default=None, required=False, help='Line width for spikes in the raster plot.')
-@click.option('--raster_ll', type=float, default=None, required=False, help='Line length for spikes in the raster plot.')
+@click.option('--node-size', 'node_size', type=float, default=None, required=False, help='Size of the mouse nodes.')
+@click.option('--node-opacity', 'node_opacity', type=float, default=None, required=False, help='Opacity of the mouse nodes.')
+@click.option('--node-lw', 'node_lw', type=float, default=None, required=False, help='Line width for the mouse node connections.')
+@click.option('--node-connection-lw', 'node_connection_lw', type=float, default=None, required=False, help='Line width for mouse node connections.')
+@click.option('--body-opacity', 'body_opacity', type=float, default=None, required=False, help='Opacity of the mouse body.')
+@click.option('--history-point', 'history_point', type=str, default=None, required=False, help="Node to use for the history trail.")
+@click.option('--history-span-sec', 'history_span_sec', type=int, default=None, required=False, help='Duration of the history trail (s).')
+@click.option('--history-ls', 'history_ls', type=str, default=None, required=False, help="Line style for the history trail.")
+@click.option('--history-lw', 'history_lw', type=float, default=None, required=False, help='Line width for the history trail.')
+@click.option('--beh-features-window-size', 'beh_features_window_size', type=int, default=None, required=False, help='Window size for behavioral features (s).')
+@click.option('--raster-window-size', 'raster_window_size', type=int, default=None, required=False, help='Window size for the raster plot (s).')
+@click.option('--raster-lw', 'raster_lw', type=float, default=None, required=False, help='Line width for spikes in the raster plot.')
+@click.option('--raster-ll', 'raster_ll', type=float, default=None, required=False, help='Line length for spikes in the raster plot.')
 @click.option('--spectrogram-cbar/--no-spectrogram-cbar', 'spectrogram_cbar_bool', default=None, help='Display the color bar for the spectrogram.')
-@click.option('--spectrogram_plot_window_size', type=int, default=None, required=False, help='Window size for the spectrogram plot (s).')
-@click.option('--spectrogram_power_limit', nargs=2, type=int, default=None, required=False, help='Power limits (min/max) for spectrogram color scale.')
-@click.option('--spectrogram_frequency_limit', nargs=2, type=int, default=None, required=False, help='Frequency limits (min/max) for spectrogram y-axis (Hz).')
-@click.option('--spectrogram_yticks', multiple=True, type=int, default=None, required=False, help='Y-tick position for spectrogram')
-@click.option('--spectrogram_stft_nfft', type=int, default=None, required=False, help='NFFT for the spectrogram STFT calculation.')
+@click.option('--spectrogram-plot-window-size', 'spectrogram_plot_window_size', type=int, default=None, required=False, help='Window size for the spectrogram plot (s).')
+@click.option('--spectrogram-power-limit', 'spectrogram_power_limit', nargs=2, type=int, default=None, required=False, help='Power limits (min/max) for spectrogram color scale.')
+@click.option('--spectrogram-frequency-limit', 'spectrogram_frequency_limit', nargs=2, type=int, default=None, required=False, help='Frequency limits (min/max) for spectrogram y-axis (Hz).')
+@click.option('--spectrogram-yticks', 'spectrogram_yticks', multiple=True, type=int, default=None, required=False, help='Y-tick position for spectrogram')
+@click.option('--spectrogram-stft-nfft', 'spectrogram_stft_nfft', type=int, default=None, required=False, help='NFFT for the spectrogram STFT calculation.')
 @click.option('--plot-usv-segments/--no-plot-usv-segments', 'plot_usv_segments_bool', default=None, help='Display USV assignments on the spectrogram.')
-@click.option('--usv_segments_ypos', type=int, default=None, required=False, help='Y-axis position for USV segment markers (Hz).')
-@click.option('--usv_segments_lw', type=float, default=None, required=False, help='Line width for USV segment markers.')
+@click.option('--usv-segments-ypos', 'usv_segments_ypos', type=int, default=None, required=False, help='Y-axis position for USV segment markers (Hz).')
+@click.option('--usv-segments-lw', 'usv_segments_lw', type=float, default=None, required=False, help='Line width for USV segment markers.')
 @click.pass_context
 def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_audio_file, **kwargs) -> None:
     """
@@ -205,17 +205,23 @@ def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
-    visualizations_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, provided_params=provided_params,
-                                                                          parameters_lists=parameters_lists, settings_dict='visualizations_settings')
+    visualizations_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                          provided_params=provided_params,
+                                                                          parameters_lists=parameters_lists,
+                                                                          settings_dict='visualizations_settings')
 
-    Create3DVideo(root_directory=root_directory, arena_directory=arena_directory, exp_id=exp_id, speaker_audio_file=speaker_audio_file,
-                  visualizations_parameter_dict=visualizations_settings_parameter_dict, message_output=print).visualize_in_video()
+    Create3DVideo(root_directory=root_directory,
+                  arena_directory=arena_directory,
+                  exp_id=exp_id,
+                  speaker_audio_file=speaker_audio_file,
+                  visualizations_parameter_dict=visualizations_settings_parameter_dict,
+                  message_output=print).visualize_in_video()
 
 
 @click.command(name='generate-rm-figs')
-@click.option('--root_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
-@click.option('--smoothing_sd', type=float, default=None, required=False, help='Standard deviation of smoothing (in bins).')
-@click.option('--occ_threshold', type=float, default=None, required=False, help='Minimum acceptable occupancy (in s).')
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
+@click.option('--smoothing-sd', 'smoothing_sd', type=float, default=None, required=False, help='Standard deviation of smoothing (in bins).')
+@click.option('--occ-threshold', 'occ_threshold', type=float, default=None, required=False, help='Minimum acceptable occupancy (in s).')
 @click.pass_context
 def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -235,6 +241,9 @@ def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
-    visualizations_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, provided_params=provided_params, settings_dict='visualizations_settings')
-    RatemapFigureMaker(root_directory=root_directory, visualizations_parameter_dict=visualizations_settings_parameter_dict,
+    visualizations_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                          provided_params=provided_params,
+                                                                          settings_dict='visualizations_settings')
+    RatemapFigureMaker(root_directory=root_directory,
+                       visualizations_parameter_dict=visualizations_settings_parameter_dict,
                        message_output=print).neuronal_tuning_figures()

@@ -131,12 +131,12 @@ class Analyst:
 
 
 @click.command(name='generate-usv-playback')
-@click.option('--exp_id', type=str, default=None, required=True, help='Experimenter ID.')
-@click.option('--num_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
-@click.option('--total_usv_number', type=int, default=None, required=False, help='Total number of USVs to distribute across file.')
-@click.option('--ipi_duration', type=float, default=None, required=False, help='Inter-USV-interval duration (in s).')
-@click.option('--wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in Hz).')
-@click.option('--playback_snippets_dir', type=str, default=None, required=False, help='Directory of USV playback snippets.')
+@click.option('--exp-id', 'experimenter', type=str, required=True, help='Experimenter ID.')
+@click.option('--num-usv-files', 'num_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
+@click.option('--total-usv-number', 'total_usv_number', type=int, default=None, required=False, help='Total number of USVs to distribute across files.')
+@click.option('--ipi-duration', 'ipi_duration', type=float, default=None, required=False, help='Inter-USV-interval duration (in s).')
+@click.option('--wav-sampling-rate', 'wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in Hz).')
+@click.option('--playback-snippets-dir', 'playback_snippets_dir', type=str, default=None, required=False, help='Directory of USV playback snippets.')
 @click.pass_context
 def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
@@ -159,18 +159,20 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     if not provided_params:
         AudioGenerator().create_usv_playback_wav()
     else:
-        analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, provided_params=provided_params, settings_dict='analyses_settings')
+        analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                        provided_params=provided_params,
+                                                                        settings_dict='analyses_settings')
         AudioGenerator(exp_id=exp_id,
-                       create_playback_settings_dict=analyses_settings_parameter_dict['create_usv_playback_wav'],
+                       create_playback_settings_dict=analyses_settings_parameter_dict,
                        message_output=print).create_usv_playback_wav(spock_cluster_bool=True)
 
 @click.command(name='generate-rm')
-@click.option('--root_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
-@click.option('--temporal_offsets', multiple=True, type=int, default=None, required=False, help='Spike-behavior offsets to consider (in s).')
-@click.option('--n_shuffles', type=int, default=None, required=False, help='Number of shuffles.')
-@click.option('--total_bin_num', type=int, default=None, required=False, help='Total number of bins for 1D tuning curves.')
-@click.option('--n_spatial_bins', type=int, default=None, required=False, help='Number of spatial bins.')
-@click.option('--spatial_scale_cm', type=int, default=None, required=False, help='Spatial extent of the arena (in cm).')
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
+@click.option('--temporal-offsets', 'temporal_offsets', multiple=True, type=int, default=None, required=False, help='Spike-behavior offsets to consider (in s).')
+@click.option('--n-shuffles', 'n_shuffles', type=int, default=None, required=False, help='Number of shuffles.')
+@click.option('--total-bin-num', 'total_bin_num', type=int, default=None, required=False, help='Total number of bins for 1D tuning curves.')
+@click.option('--n-spatial-bins', 'n_spatial_bins', type=int, default=None, required=False, help='Number of spatial bins.')
+@click.option('--spatial-scale-cm', 'spatial_scale_cm', type=int, default=None, required=False, help='Spatial extent of the arena (in cm).')
 @click.pass_context
 def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -190,17 +192,19 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
-    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, provided_params=provided_params, settings_dict='analyses_settings')
+    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                    provided_params=provided_params,
+                                                                    settings_dict='analyses_settings')
     NeuronalTuning(root_directory=root_directory,
-                   tuning_parameters_dict=analyses_settings_parameter_dict['calculate_neuronal_tuning_curves'],
+                   tuning_parameters_dict=analyses_settings_parameter_dict,
                    message_output=print).calculate_neuronal_tuning_curves()
 
 @click.command(name='generate-beh-features')
-@click.option('--root_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
-@click.option('--head_points', nargs=4, type=str, default=None, required=False, help='Skeleton head nodes.')
-@click.option('--tail_points',  nargs=5, type=str, default=None, required=False, help='Skeleton tail nodes.')
-@click.option('--back_root_points',  nargs=3, type=str, default=None, required=False, help='Skeleton back nodes.')
-@click.option('--derivative_bins', multiple=True, type=str, default=None, required=False, help='Number of bins for derivative calculation.')
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
+@click.option('--head-points', 'head_points', nargs=4, type=str, default=None, required=False, help='Skeleton head nodes.')
+@click.option('--tail-points', 'tail_points',  nargs=5, type=str, default=None, required=False, help='Skeleton tail nodes.')
+@click.option('--back-root-points', 'back_root_points', nargs=3, type=str, default=None, required=False, help='Skeleton back nodes.')
+@click.option('--derivative-bins', 'derivative_bins', multiple=True, type=str, default=None, required=False, help='Number of bins for derivative calculation.')
 @click.pass_context
 def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -222,7 +226,10 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
-    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx, parameters_lists=parameters_lists, provided_params=provided_params, settings_dict='analyses_settings')
+    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                    parameters_lists=parameters_lists,
+                                                                    provided_params=provided_params,
+                                                                    settings_dict='analyses_settings')
     FeatureZoo(root_directory=root_directory,
-               behavioral_parameters_dict=analyses_settings_parameter_dict['compute_behavioral_features'],
+               behavioral_parameters_dict=analyses_settings_parameter_dict,
                message_output=print).save_behavioral_features_to_file()

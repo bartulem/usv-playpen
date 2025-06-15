@@ -46,7 +46,7 @@ echo "module load ffmpeg" >> "$JOB_SCRIPT"
 echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "conda activate $USV_PLAYPEN_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "generate-viz --root_directory \"$SESSION_ROOT_DIRECTORY\" --arena_directory \"$ARENA_DIRECTORY\" --exp_id $EXP_ID --animate_bool --video_start_time $VIDEO_START_TIME --video_duration $VIDEO_DURATION" >> "$JOB_SCRIPT"
+echo "generate-viz --root-directory \"$SESSION_ROOT_DIRECTORY\" --arena-directory \"$ARENA_DIRECTORY\" --exp-id $EXP_ID --animate-bool --video-start_time $VIDEO_START_TIME --video-duration $VIDEO_DURATION" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

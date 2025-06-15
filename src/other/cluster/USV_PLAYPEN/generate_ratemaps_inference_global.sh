@@ -42,8 +42,8 @@ echo "" >> "$JOB_SCRIPT"
 echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "conda activate $USV_PLAYPEN_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "generate-rm --root_directory\"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
-echo "generate-rm-figs --root_directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "generate-rm --root-directory\"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "generate-rm-figs --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

@@ -105,7 +105,7 @@ Process
                              [--conduct-concat | --no-conduct-concat]
 
     required arguments:
-      --root_directory      Session root directory path.
+      --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
@@ -413,21 +413,21 @@ Analyze
 
 .. code-block:: plaintext
 
-    usage: generate-beh-features  [-h] --root_directory PATH
-                                  [--head_points TEXT TEXT TEXT TEXT]
-                                  [--tail_points TEXT TEXT TEXT TEXT TEXT]
-                                  [--back_root_points TEXT TEXT TEXT]
-                                  [--derivative_bins TEXT]
+    usage: generate-beh-features  [-h] --root-directory PATH
+                                  [--head-points TEXT TEXT TEXT TEXT]
+                                  [--tail-points TEXT TEXT TEXT TEXT TEXT]
+                                  [--back-root-points TEXT TEXT TEXT]
+                                  [--derivative-bins TEXT]
 
     required arguments:
-      --root_directory      Session root directory path.
+      --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --head_points         Skeleton head nodes.
-      --tail_points         Skeleton tail nodes.
-      --back_root_points    Skeleton back nodes.
-      --derivative_bins     Number of bins for derivative calculation.
+      --head-points         Skeleton head nodes.
+      --tail-points         Skeleton tail nodes.
+      --back-root-points    Skeleton back nodes.
+      --derivative-bins     Number of bins for derivative calculation.
 
 
 ``generate-usv-playback``
@@ -436,20 +436,21 @@ Analyze
 
 .. code-block:: plaintext
 
-    usage: generate-usv-playback [-h] --exp_id TEXT [--num_usv_files INTEGER]
-                                 [--total_usv_number INTEGER] [--ipi_duration FLOAT]
-                                 [--wav_sampling_rate INTEGER]
-                                 [--playback_snippets_dir TEXT]
+    usage: generate-usv-playback [-h] --exp-id TEXT [--num-usv-files INTEGER]
+                                 [--total-usv-number INTEGER] [--ipi-duration FLOAT]
+                                 [--wav-sampling-rate INTEGER]
+                                 [--playback-snippets-dir TEXT]
+
     required arguments:
-      --exp_id                     Experimenter ID.
+        --exp-id                     Experimenter ID.
 
     optional arguments:
-      -h, --help                   Show this help message and exit.
-      --num_usv_files              Number of WAV files to create.
-      --total_usv_number           Total number of USVs to distribute across file.
-      --ipi_duration               Inter-USV-interval duration (in s).
-      --wav_sampling_rate          Sampling rate for the output WAV file (in Hz).
-      --playback_snippets_dir      Directory of USV playback snippets.
+        -h, --help                   Show this help message and exit.
+        --num-usv-files              Number of WAV files to create.
+        --total-usv-number           Total number of USVs to distribute across file.
+        --ipi-duration               Inter-USV-interval duration (in s).
+        --wav-sampling-rate          Sampling rate for the output WAV file (in Hz).
+        --playback-snippets-dir      Directory of USV playback snippets.
 
 ``generate-rm``
 ---------------
@@ -457,20 +458,20 @@ Analyze
 
 .. code-block:: plaintext
 
-    usage: generate-rm [-h] --root_directory PATH [--temporal_offsets INTEGER...]
-                       [--n_shuffles INTEGER] [--total_bin_num INTEGER]
-                       [--n_spatial_bins INTEGER] [--spatial_scale_cm INTEGER]
+    usage: generate-rm [-h] --root-directory PATH [--temporal-offsets INTEGER...]
+                       [--n-shuffles INTEGER] [--total-bin-num INTEGER]
+                       [--n-spatial-bins INTEGER] [--spatial-scale-cm INTEGER]
 
     required arguments:
-      --root_directory      Session root directory path.
+      --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --temporal_offsets    Spike-behavior offset(s) to consider (in s).
-      --n_shuffles          Number of shuffles.
-      --total_bin_num       Total number of bins for 1D tuning curves.
-      --n_spatial_bins      Number of spatial bins.
-      --spatial_scale_cm    Spatial extent of the arena (in cm).
+      --temporal-offsets    Spike-behavior offset(s) to consider (in s).
+      --n-shuffles          Number of shuffles.
+      --total-bin-num       Total number of bins for 1D tuning curves.
+      --n-spatial-bins      Number of spatial bins.
+      --spatial-scale-cm    Spatial extent of the arena (in cm).
 
 Visualize
 ^^^^^^^^^
@@ -481,15 +482,15 @@ Visualize
 
 .. code-block:: plaintext
 
-    usage: generate-rm-figs [-h] --root_directory PATH [--smoothing_sd FLOAT]
-                            [--occ_threshold FLOAT]
+    usage: generate-rm-figs [-h] --root-directory PATH [--smoothing-sd FLOAT]
+                            [--occ-threshold FLOAT]
     required arguments:
-      --root_directory      Session root directory path.
+      --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --smoothing_sd        Standard deviation of smoothing (in bins).
-      --occ_threshold       Minimum acceptable occupancy (in s).
+      --smoothing-sd        Standard deviation of smoothing (in bins).
+      --occ-threshold       Minimum acceptable occupancy (in s).
 
 
 ``generate-viz``
@@ -498,132 +499,132 @@ Visualize
 
 .. code-block:: plaintext
 
-    usage: generate-viz [-h] --root_directory PATH --arena_directory PATH --exp_id TEXT
-                        [--speaker_audio_file PATH] [--sequence_audio_file PATH]
-                        [--animate | --no-animate] [--video_start_time INTEGER]
-                        [--video_duration FLOAT] [--plot_theme TEXT]
+    usage: generate-viz [-h] --root-directory PATH --arena-directory PATH --exp-id TEXT
+                        [--speaker-audio-file PATH] [--sequence-audio-file PATH]
+                        [--animate | --no-animate] [--video-start-time INTEGER]
+                        [--video-duration FLOAT] [--plot-theme TEXT]
                         [--save-fig | --no-save-fig]
-                        [--view_angle TEXT] [--side_azimuth_start FLOAT]
+                        [--view-angle TEXT] [--side-azimuth-start FLOAT]
                         [--rotate-side-view | --no-rotate-side-view]
-                        [--rotation_speed FLOAT]
+                        [--rotation-speed FLOAT]
                         [--history | --no-history] [--speaker | --no-speaker]
-                        [--spectrogram | --no-spectrogram] [--spectrogram_ch INTEGER]
-                        [--raster-plot | --no-raster-plot] [--brain_areas TEXT...]
-                        [--other TEXT...] [--raster_special_units TEXT...]
+                        [--spectrogram | --no-spectrogram] [--spectrogram-ch INTEGER]
+                        [--raster-plot | --no-raster-plot] [--brain-areas TEXT...]
+                        [--other TEXT...] [--raster-special-units TEXT...]
                         [--spike-sound | --no-spike-sound]
                         [--beh-features | --no-beh-features]
-                        [--beh_features_to_plot TEXT...]
-                        [--special_beh_features TEXT...]
-                        [--fig_format TEXT] [--fig_dpi INTEGER]
-                        [--animation_writer TEXT]
-                        [--animation_format TEXT]
+                        [--beh-features-to-plot TEXT...]
+                        [--special-beh-features TEXT...]
+                        [--fig-format TEXT] [--fig-dpi INTEGER]
+                        [--animation-writer TEXT]
+                        [--animation-format TEXT]
                         [--arena-node-connections | --no-arena-node-connections]
-                        [--arena_axes_lw FLOAT] [--arena_mics_lw FLOAT]
-                        [--arena_mics_opacity FLOAT]
+                        [--arena-axes-lw FLOAT] [--arena-mics-lw FLOAT]
+                        [--arena-mics-opacity FLOAT]
                         [--plot-corners | --no-plot-corners]
-                        [--corner_size FLOAT] [--corner_opacity FLOAT]
+                        [--corner-size FLOAT] [--corner-opacity FLOAT]
                         [--plot-mesh-walls | --no-plot-mesh-walls]
-                        [--mesh_opacity FLOAT]
+                        [--mesh-opacity FLOAT]
                         [--active-mic | --no-active-mic]
                         [--inactive-mic | --no-inactive-mic]
-                        [--inactive_mic_color TEXT] [--text_fontsize INTEGER]
-                        [--speaker_opacity FLOAT] [--nodes | --no-nodes]
-                        [--node_size FLOAT] [--node_opacity FLOAT]
-                        [--node_lw FLOAT]
-                        [--node_connection_lw FLOAT] [--body_opacity FLOAT]
-                        [--history_point TEXT] [--history_span_sec INTEGER]
-                        [--history_ls TEXT] [--history_lw FLOAT]
-                        [--beh_features_window_size INTEGER]
-                        [--raster_window_size INTEGER] [--raster_lw FLOAT]
-                        [--raster_ll FLOAT]
+                        [--inactive-mic-color TEXT] [--text-fontsize INTEGER]
+                        [--speaker-opacity FLOAT] [--nodes | --no-nodes]
+                        [--node-size FLOAT] [--node-opacity FLOAT]
+                        [--node-lw FLOAT]
+                        [--node-connection-lw FLOAT] [--body-opacity FLOAT]
+                        [--history-point TEXT] [--history-span-sec INTEGER]
+                        [--history-ls TEXT] [--history-lw FLOAT]
+                        [--beh-features-window-size INTEGER]
+                        [--raster-window-size INTEGER] [--raster-lw FLOAT]
+                        [--raster-ll FLOAT]
                         [--spectrogram-cbar | --no-spectrogram-cbar]
-                        [--spectrogram_plot_window_size INTEGER]
-                        [--spectrogram_power_limit INTEGER INTEGER]
-                        [--spectrogram_frequency_limit INTEGER INTEGER]
-                        [--spectrogram_yticks INTEGER...]
-                        [--spectrogram_stft_nfft INTEGER]
+                        [--spectrogram-plot-window-size INTEGER]
+                        [--spectrogram-power-limit INTEGER INTEGER]
+                        [--spectrogram-frequency-limit INTEGER INTEGER]
+                        [--spectrogram-yticks INTEGER...]
+                        [--spectrogram-stft-nfft INTEGER]
                         [--plot-usv-segments | --no-plot-usv-segments]
-                        [--usv_segments_ypos INTEGER] [--usv_segments_lw FLOAT]
+                        [--usv-segments-ypos INTEGER] [--usv-segments-lw FLOAT]
 
     required arguments:
-      --root_directory                 Session root directory path.
-      --arena_directory                Arena session path.
-      --exp_id                         Experimenter ID.
+      --root-directory                 Session root directory path.
+      --arena-directory                Arena session path.
+      --exp-id                         Experimenter ID.
 
     optional arguments:
       -h, --help                       Show this help message and exit.
-      --speaker_audio_file             Speaker audio file path.
-      --sequence_audio_file            Audible audio sequence file path.
+      --speaker-audio-file             Speaker audio file path.
+      --sequence-audio-file            Audible audio sequence file path.
       --animate / --no-animate         Animate visualization.
-      --video_start_time               Video start time (in s).
-      --video_duration                 Video duration (in s).
-      --plot_theme                     Plot background theme (light or dark).
+      --video-start-time               Video start time (in s).
+      --video-duration                 Video duration (in s).
+      --plot-theme                     Plot background theme (light or dark).
       --save-fig / --no-save-fig       Save plot as figure to file.
-      --view_angle                     View angle for 3D visualization ("top" or "side").
-      --side_azimuth_start             Azimuth angle for side view (in degrees).
+      --view-angle                     View angle for 3D visualization ("top" or "side").
+      --side-azimuth-start             Azimuth angle for side view (in degrees).
       --rotate-side-view / --no-rotate-side-view
                                        Rotate side view in animation.
-      --rotation_speed                 Speed of rotation for side view (in degrees/s).
+      --rotation-speed                 Speed of rotation for side view (in degrees/s).
       --history / --no-history         Display history of single mouse node.
       --speaker / --no-speaker         Display speaker node in visualization.
       --spectrogram / --no-spectrogram
                                        Display spectrogram of audio sequence.
-      --spectrogram_ch                 Spectrogram channel (0-23).
+      --spectrogram-ch                 Spectrogram channel (0-23).
       --raster-plot / --no-raster-plot
                                        Display spike raster plot in visualization.
-      --brain_areas                    Brain areas to display in raster plot.
+      --brain-areas                    Brain areas to display in raster plot.
       --other                          Other spike cluster features to use for filtering.
-      --raster_special_units           Clusters to accentuate in raster plot.
+      --raster-special-units           Clusters to accentuate in raster plot.
       --spike-sound / --no-spike-sound
                                        Play sound each time the cluster spikes.
       --beh-features / --no-beh-features
                                        Display behavioral feature dynamics.
-      --beh_features_to_plot           Behavioral feature(s) to display.
-      --special_beh_features           Behavioral feature(s) to accentuate in display.
-      --fig_format                     Figure format.
-      --fig_dpi                        Figure resolution in dots per inch.
-      --animation_writer               Animation writer backend.
-      --animation_format               Video format.
+      --beh-features-to-plot           Behavioral feature(s) to display.
+      --special-beh-features           Behavioral feature(s) to accentuate in display.
+      --fig-format                     Figure format.
+      --fig-dpi                        Figure resolution in dots per inch.
+      --animation-writer               Animation writer backend.
+      --animation-format               Video format.
       --arena-node-connections / --no-arena-node-connections
                                        Display connections between arena nodes.
-      --arena_axes_lw                  Line width for the arena axes.
-      --arena_mics_lw                  Line width for the microphone markers.
-      --arena_mics_opacity             Opacity for the microphone markers.
+      --arena-axes-lw                  Line width for the arena axes.
+      --arena-mics-lw                  Line width for the microphone markers.
+      --arena-mics-opacity             Opacity for the microphone markers.
       --plot-corners / --no-plot-corners
                                        Display arena corner markers.
-      --corner_size                    Size of the arena corner markers.
-      --corner_opacity                 Opacity of the arena corner markers.
+      --corner-size                    Size of the arena corner markers.
+      --corner-opacity                 Opacity of the arena corner markers.
       --plot-mesh-walls / --no-plot-mesh-walls
                                        Display arena walls as a mesh.
-      --mesh_opacity                   Opacity of the arena wall mesh.
+      --mesh-opacity                   Opacity of the arena wall mesh.
       --active-mic / --no-active-mic   Display the active microphone marker.
       --inactive-mic / --no-inactive-mic
                                        Display inactive microphone markers.
-      --inactive_mic_color             Color for inactive microphone markers.
-      --text_fontsize                  Font size for text elements in the plot.
-      --speaker_opacity                Opacity of the speaker node.
+      --inactive-mic-color             Color for inactive microphone markers.
+      --text-fontsize                  Font size for text elements in the plot.
+      --speaker-opacity                Opacity of the speaker node.
       --nodes / --no-nodes             Display mouse nodes.
-      --node_size                      Size of the mouse nodes.
-      --node_opacity                   Opacity of the mouse nodes.
-      --node_lw                        Line width for the mouse node connections.
-      --node_connection_lw             Line width for mouse node connections.
-      --body_opacity                   Opacity of the mouse body.
-      --history_point                  Node to use for the history trail.
-      --history_span_sec               Duration of the history trail (s).
-      --history_ls                     Line style for the history trail.
-      --history_lw                     Line width for the history trail.
-      --beh_features_window_size       Window size for behavioral features (s).
-      --raster_window_size             Window size for the raster plot (s).
-      --raster_lw                      Line width for spikes in the raster plot.
-      --raster_ll                      Line length for spikes in the raster plot.
+      --node-size                      Size of the mouse nodes.
+      --node-opacity                   Opacity of the mouse nodes.
+      --node-lw                        Line width for the mouse node connections.
+      --node-connection-lw             Line width for mouse node connections.
+      --body-opacity                   Opacity of the mouse body.
+      --history-point                  Node to use for the history trail.
+      --history-span-sec               Duration of the history trail (s).
+      --history-ls                     Line style for the history trail.
+      --history-lw                     Line width for the history trail.
+      --beh-features-window-size       Window size for behavioral features (s).
+      --raster-window-size             Window size for the raster plot (s).
+      --raster-lw                      Line width for spikes in the raster plot.
+      --raster-ll                      Line length for spikes in the raster plot.
       --spectrogram-cbar / --no-spectrogram-cbar
                                        Display the color bar for the spectrogram.
-      --spectrogram_plot_window_size   Window size for the spectrogram plot (s).
-      --spectrogram_power_limit        Power (min/max) for spectrogram color scale.
-      --spectrogram_frequency_limit    Freq. (min/max) for spectrogram y-axis (Hz).
-      --spectrogram_yticks             Y-tick position for spectrogram.
-      --spectrogram_stft_nfft          NFFT for the spectrogram STFT calculation.
+      --spectrogram-plot-window-size   Window size for the spectrogram plot (s).
+      --spectrogram-power-limit        Power (min/max) for spectrogram color scale.
+      --spectrogram-frequency-limit    Freq. (min/max) for spectrogram y-axis (Hz).
+      --spectrogram-yticks             Y-tick position for spectrogram.
+      --spectrogram-stft-nfft          NFFT for the spectrogram STFT calculation.
       --plot-usv-segments / --no-plot-usv-segments
                                        Display USV assignments on the spectrogram.
-      --usv_segments_ypos              Y-axis position for USV segment markers (Hz).
-      --usv_segments_lw                Line width for USV segment markers.
+      --usv-segments-ypos              Y-axis position for USV segment markers (Hz).
+      --usv-segments-lw                Line width for USV segment markers.
