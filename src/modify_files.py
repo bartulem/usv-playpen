@@ -60,8 +60,9 @@ class Operator:
 
         if input_parameter_dict is None:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
-                self.input_parameter_dict = json.load(json_file)['modify_files']['Operator']
-                self.input_parameter_dict_2 = json.load(json_file)['synchronize_files']['Synchronizer']
+                input_parameter_dict_loaded = json.load(json_file)
+                self.input_parameter_dict = input_parameter_dict_loaded['modify_files']['Operator']
+                self.input_parameter_dict_2 = input_parameter_dict_loaded['synchronize_files']['Synchronizer']
         else:
             self.input_parameter_dict = input_parameter_dict['modify_files']['Operator']
             self.input_parameter_dict_2 = input_parameter_dict['synchronize_files']['Synchronizer']
