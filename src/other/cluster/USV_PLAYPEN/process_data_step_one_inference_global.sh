@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Usage: process_data_step_one_inference_global.sh
+# Usage: bash process_data_step_one_inference_global.sh
 
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
