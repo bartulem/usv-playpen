@@ -6,7 +6,6 @@ Synchronizes files:
 (3) performs a check on the e-phys data stream to see if the video duration matches the e-phys recording.
 """
 
-from PyQt6.QtTest import QTest
 import av
 import configparser
 import glob
@@ -24,6 +23,7 @@ from imgstore import new_for_filename
 from numba import njit
 from scipy.io import wavfile
 from .load_audio_files import DataLoader
+from .time_utils import *
 
 @pims.pipeline
 def modify_memmap_array(frame: np.ndarray = None,
@@ -97,8 +97,7 @@ class Synchronizer:
 
     def __init__(self, root_directory: str = None,
                  input_parameter_dict: dict = None,
-                 message_output: callable = None,
-                 exp_settings_dict: dict = None) -> None:
+                 message_output: callable = None) -> None:
         """
         Initializes the Synchronizer class.
 
@@ -108,8 +107,6 @@ class Synchronizer:
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
             Processing parameters; defaults to None.
-        exp_settings_dict (dict)
-            Experimental settings; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
 
@@ -130,15 +127,12 @@ class Synchronizer:
         else:
             self.root_directory = root_directory
 
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
-
         if message_output is None:
             self.message_output = print
         else:
             self.message_output = message_output
+
+        self.app_context_bool = is_gui_context()
 
     def validate_ephys_video_sync(self) -> None:
         """
@@ -160,7 +154,7 @@ class Synchronizer:
         """
 
         self.message_output(f"Checking e-phys/video sync started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
@@ -511,11 +505,11 @@ class Synchronizer:
             if '_' not in video_subdir and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
                 sync_cam_idx = 0
                 for camera_dir in os.listdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
-                    if camera_dir != '.DS_Store' and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}") and camera_dir in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num']:
+                    if camera_dir != '.DS_Store' and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}") and camera_dir in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']:
                         video_name = sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}*.mp4"))[0].split(os.sep)[-1]
                         if 'calibration' not in video_name \
-                                and video_name.split('-')[0] in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num'] \
-                                and self.input_parameter_dict['find_video_sync_trains']['video_extension'] in video_name:
+                                and video_name.split('-')[0] in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num'] \
+                                and self.input_parameter_dict['find_video_sync_trains']['sync_video_extension'] in video_name:
 
                             current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}"
                             video_of_interest = f"{current_working_dir}{os.sep}{video_name}"
@@ -626,17 +620,17 @@ class Synchronizer:
 
         Returns
         ----------
-        prediction_error_array (np.ndarray)
-            The difference between predicted LED on start video frames and observed LED on start frames.
+        ipi_discrepancy_dict (dict)
+            Contains IPI discrepancies between audio and video sync trains and IPI video start frames.
         ----------
         """
 
         self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"],
                                                           'load_wavefile_data': {'library': 'scipy',
-                                                                                 'conditional_arg': [f"_ch{self.input_parameter_dict['find_audio_sync_trains']['ch_receiving_input']:02d}"]}}).load_wavefile_data()
+                                                                                 'conditional_arg': [f"_ch{self.input_parameter_dict['find_audio_sync_trains']['sync_ch_receiving_input']:02d}"]}}).load_wavefile_data()
 
         # get the total number of frames in the video
         json_loc = sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0]
@@ -644,7 +638,7 @@ class Synchronizer:
             camera_fr_count_dict = json.load(camera_count_json_file)
             total_frame_number = camera_fr_count_dict['total_frame_number_least']
             total_video_time_least = camera_fr_count_dict['total_video_time_least']
-            camera_fr = [value[1] for key, value in camera_fr_count_dict.items() if key in self.input_parameter_dict['find_video_sync_trains']['camera_serial_num']]
+            camera_fr = [value[1] for key, value in camera_fr_count_dict.items() if key in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']]
 
         # find video sync trains
         video_ipi_start_frames, video_sync_sequence_dict = self.find_video_sync_trains(total_frame_number=total_frame_number,
@@ -703,7 +697,7 @@ class Synchronizer:
         for af_idx, audio_file in enumerate(sorted(wave_data_dict.keys())):
             ipi_discrepancy_dict[audio_file[:-4]] = {}
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
-            QTest.qWait(1000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
             ipi_durations_ms, audio_ipi_start_samples = self.find_ipi_intervals(sound_array=wave_data_dict[audio_file]['wav_data'],
                                                                                 audio_sr_rate=wave_data_dict[audio_file]['sampling_rate'])
@@ -799,7 +793,7 @@ class Synchronizer:
         """
 
         self.message_output(f"Cropping WAV files to video started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # load info from camera_frame_count_dict
         with open(sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0], 'r') as frame_count_infile:
@@ -810,7 +804,7 @@ class Synchronizer:
         # load audio channels receiving camera triggerbox input
         wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}original"],
                                                           'load_wavefile_data': {'library': 'scipy',
-                                                                                 'conditional_arg': [f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input']:02d}"]}}).load_wavefile_data()
+                                                                                 'conditional_arg': [f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['triggerbox_ch_receiving_input']:02d}"]}}).load_wavefile_data()
 
         # determine device ID(s) that get(s) camera frame trigger pulses
         if self.input_parameter_dict['crop_wav_files_to_video']['device_receiving_input'] == 'both':
@@ -865,14 +859,14 @@ class Synchronizer:
                m_longer = True
                m_original_arr_indices = np.arange(0, start_end_video['m']['duration_samples'])
                m_new_arr_indices = np.linspace(start=0, stop=start_end_video['m']['duration_samples'] - 1, num=start_end_video['s']['duration_samples'])
-               base_name_date = next(key for key in wave_data_dict.keys() if 's_' in key and f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input']:02d}" in key)[2:-9]
+               base_name_date = next(key for key in wave_data_dict.keys() if 's_' in key and f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['triggerbox_ch_receiving_input']:02d}" in key)[2:-9]
            if start_end_video['m']['duration_samples'] < start_end_video['s']['duration_samples']:
                s_longer = True
                s_original_arr_indices = np.arange(0, start_end_video['s']['duration_samples'])
                s_new_arr_indices = np.linspace(start=0, stop=start_end_video['s']['duration_samples'] - 1, num=start_end_video['m']['duration_samples'])
-               base_name_date = next(key for key in wave_data_dict.keys() if 'm_' in key and f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['ch_receiving_input']:02d}" in key)[2:-9]
+               base_name_date = next(key for key in wave_data_dict.keys() if 'm_' in key and f"_ch{self.input_parameter_dict['crop_wav_files_to_video']['triggerbox_ch_receiving_input']:02d}" in key)[2:-9]
 
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         cut_audio_subprocesses = []
         for audio_file in all_audio_files:
@@ -943,7 +937,7 @@ class Synchronizer:
         while True:
             status_poll = [query_subp.poll() for query_subp in cut_audio_subprocesses]
             if any(elem is None for elem in status_poll):
-                QTest.qWait(5000)
+                smart_wait(app_context_bool=self.app_context_bool, seconds=5)
             else:
                 break
 

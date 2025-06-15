@@ -6,7 +6,7 @@ Test recording module.
 import configparser
 import motifapi
 import os
-import platform
+import pathlib
 import sys
 import toml
 import unittest
@@ -15,12 +15,7 @@ from src.send_email import Messenger
 
 class TestRecording(unittest.TestCase):
 
-    if platform.system() == 'Windows':
-        config_dir_global = 'C:\\experiment_running_docs'
-    elif platform.system() == 'Linux':
-        config_dir_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
-    else:
-        config_dir_global = f'/Volumes/falkner/Bartul/PC_transfer/experiment_running_docs'
+    config_dir_global = pathlib.Path(__file__).parent.parent / 'src' / '_config'
 
     exp_settings_dict = toml.load(f"{config_dir_global}{os.sep}behavioral_experiments_settings.toml")
 
@@ -57,7 +52,7 @@ class TestRecording(unittest.TestCase):
 
     def test_recording_audio_sync_software(self):
 
-        # test audi0 / sync_software presence
+        # test audio / sync_software presence
         config_file_status = (os.path.isfile(f"{self.config_dir_global}{os.sep}avisoft_config.ini") and
                               os.path.isfile(f"{self.config_dir_global}{os.sep}coolterm_config.stc"))
 

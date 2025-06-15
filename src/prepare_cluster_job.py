@@ -9,7 +9,7 @@ import platform
 
 class PrepareClusterJob:
     def __init__(self, input_parameter_dict: dict = None,
-                 root_directory: str = None,
+                 root_directory: list[str] = None,
                  message_output: callable = None) -> None:
 
         """
@@ -17,8 +17,8 @@ class PrepareClusterJob:
 
         Parameter
         ---------
-        root_directory (str)
-            Root directory for data; defaults to None.
+        root_directory (list of str)
+            Root directories for data; defaults to None.
         input_parameter_dict (dict)
             Processing parameters; defaults to None.
         message_output (function)

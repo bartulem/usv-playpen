@@ -3,7 +3,6 @@
 Makes dataset to run and runs vocalocator inference.
 """
 
-from PyQt6.QtTest import QTest
 from datetime import datetime
 import h5py
 import json
@@ -15,6 +14,7 @@ import subprocess
 from tqdm import tqdm
 from .assign_vocalizations_utils import (get_arena_dimensions, load_usv_segments, load_tracks_from_h5, to_float, write_to_h5,
                                          get_conf_sets_6d, are_points_in_conf_set)
+from .time_utils import *
 
 class Vocalocator:
 
@@ -44,6 +44,7 @@ class Vocalocator:
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
+        self.app_context_bool = is_gui_context()
 
     def prepare_for_vocalocator(self) -> None:
         """
@@ -62,7 +63,7 @@ class Vocalocator:
         """
 
         self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         audio_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_concatenated_audio_*.mmap"), None)
         usv_segments_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob("*_usv_summary.csv"), None)
@@ -152,10 +153,10 @@ class Vocalocator:
         """
 
         self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']
-        model_directory = self.input_parameter_dict['vocalocator']['model_directory']
+        model_directory = self.input_parameter_dict['vocalocator']['vcl_model_directory']
         model_config_path = f"{model_directory}{os.sep}config.json"
         data_file_path = f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}dset.h5"
         output_file_path = f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}assessment.h5"
@@ -175,7 +176,7 @@ class Vocalocator:
                        cwd=model_directory,
                        shell=shell_usage_bool)
 
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # conduct 6D inference
         with h5py.File(output_file_path, mode='r') as ctx:
@@ -208,7 +209,7 @@ class Vocalocator:
 
         np.save(f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}assessment_assn.npy", assignments)
 
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # get assignment results into the usv_summary file
         with h5py.File(name=track_file_path, mode='r') as f:

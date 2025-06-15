@@ -5,13 +5,13 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.8.7',
+    version='0.8.8',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
         'Development Status :: Alpha',
         'Intended Audience :: Experimental Neuroscientists',
-        'Topic :: Running ana Analyzing Neural and Behavioral Experiments',
+        'Topic :: Running ana Analyzing Behavioral and Neural Experiments',
         'License :: OSI Approved :: GNU General Public License v3.0',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.10',
@@ -23,7 +23,7 @@ setup(
     package_data={'usv_playpen': ['img/*.png', 'fonts/*.ttf', '_config/*', '_parameter_settings/*.json', 'other/cluster/*/*', 'other/playback/*.py', 'other/synchronization/*.ino']},
     include_package_data=True,
     python_requires="==3.10.*",
-    description='GUI to conduct, process and analyze experiments w/ multichannel e-phys, audio and video acquisition',
+    description='GUI/CLI to conduct, process and analyze experiments w/ multichannel e-phys, audio and video acquisition',
     long_description=long_description,
     long_description_content_type="text/markdown",
     url='https://github.com/bartulem/usv-playpen',
@@ -34,7 +34,30 @@ setup(
     entry_points={
         'console_scripts': [
             'usv-playpen = usv_playpen.usv_playpen_gui:main',
-            'video-viz = usv_playpen.visualize_data:visualize_3D_data_cli_entry'
+            'conduct-calibration = usv_playpen.behavioral_experiments:conduct_calibration_cli',
+            'conduct-recording = usv_playpen.behavioral_experiments:conduct_recording_cli',
+            'concatenate-video-files = usv_playpen.preprocess_data:concatenate_video_files_cli',
+            'rectify-video-fps = usv_playpen.preprocess_data:rectify_video_fps_cli',
+            'multichannel-to-single-ch = usv_playpen.preprocess_data:multichannel_to_channel_audio_cli',
+            'crop-wav-files = usv_playpen.preprocess_data:crop_wav_files_to_video_cli',
+            'av-sync-check = usv_playpen.preprocess_data:av_sync_check_cli',
+            'ev-sync-check = usv_playpen.preprocess_data:ev_sync_check_cli',
+            'hpss-audio = usv_playpen.preprocess_data:hpss_audio_cli',
+            'bp-filter-audio = usv_playpen.preprocess_data:bp_filter_audio_files_cli',
+            'concatenate-audio-files = usv_playpen.preprocess_data:concatenate_audio_files_cli',
+            'sleap-to-h5 = usv_playpen.preprocess_data:sleap_file_conversion_cli',
+            'anipose-calibrate = usv_playpen.preprocess_data:conduct_anipose_calibration_cli',
+            'anipose-triangulate = usv_playpen.preprocess_data:conduct_anipose_triangulation_cli',
+            'anipose-trm = usv_playpen.preprocess_data:translate_rotate_metric_cli',
+            'das-infer = usv_playpen.preprocess_data:das_command_line_inference_cli',
+            'das-summarize = usv_playpen.preprocess_data:summarize_das_findings_cli',
+            'concatenate-ephys-files = usv_playpen.preprocess_data:concatenate_binary_files_cli',
+            'split-clusters = usv_playpen.preprocess_data:split_clusters_to_sessions_cli',
+            'generate-beh-features = usv_playpen.analyze_data:generate_beh_features_cli',
+            'generate-usv-playback = usv_playpen.analyze_data:generate_usv_playback_cli',
+            'generate-rm = usv_playpen.analyze_data:generate_rm_files_cli',
+            'generate-rm-figs = usv_playpen.visualize_data:generate_rm_figures_cli',
+            'generate-viz = usv_playpen.visualize_data:visualize_3D_data_cli'
         ]
     },
     install_requires=['astropy==6.1.7',

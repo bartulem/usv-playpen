@@ -6,7 +6,7 @@ Extracts information about what kind of experiment was conducted.
 import re
 from typing import Optional, Dict
 
-def extract_information(experiment_code: Optional[str] = None) -> Optional[Dict]:
+def extract_information(experiment_code: Optional[str] = None) -> Optional[Dict] | None:
     """
     Extracts information about the experiment from the experiment code, as follows:
 
@@ -79,5 +79,7 @@ def extract_information(experiment_code: Optional[str] = None) -> Optional[Dict]
             else:
                 output_dict[key] = int(re.search(search_patterns_dict[key], experiment_code).group(0))
 
-
         return output_dict
+
+    else:
+        return None

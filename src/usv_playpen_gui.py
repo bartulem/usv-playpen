@@ -56,7 +56,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.8.7'
+app_name = 'USV Playpen v0.8.8'
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -1540,7 +1540,7 @@ class USVPlaypenWindow(QMainWindow):
         ch_receiving_input_label = QLabel('Trgbox-USGH ch (1-12):', self.ProcessSettings)
         ch_receiving_input_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         ch_receiving_input_label.move(column_three_x1, 130)
-        self.ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input']}", self.ProcessSettings)
+        self.ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input']}", self.ProcessSettings)
         self.ch_receiving_input.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
         self.ch_receiving_input.move(column_three_x2, 130)
@@ -1729,7 +1729,7 @@ class USVPlaypenWindow(QMainWindow):
         a_ch_receiving_input_label = QLabel('Arduino-USGH ch (1-12):', self.ProcessSettings)
         a_ch_receiving_input_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         a_ch_receiving_input_label.move(column_three_x1, 800)
-        self.a_ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ch_receiving_input']}", self.ProcessSettings)
+        self.a_ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input']}", self.ProcessSettings)
         self.a_ch_receiving_input.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.a_ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
         self.a_ch_receiving_input.move(column_three_x2, 800)
@@ -1737,7 +1737,7 @@ class USVPlaypenWindow(QMainWindow):
         v_camera_serial_num_label = QLabel('Sync camera serial num(s):', self.ProcessSettings)
         v_camera_serial_num_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         v_camera_serial_num_label.move(column_three_x1, 830)
-        self.v_camera_serial_num = QLineEdit(','.join([str(x) for x in self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['camera_serial_num']]), self.ProcessSettings)
+        self.v_camera_serial_num = QLineEdit(','.join([str(x) for x in self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_camera_serial_num']]), self.ProcessSettings)
         self.v_camera_serial_num.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.v_camera_serial_num.setStyleSheet('QLineEdit { width: 108px; }')
         self.v_camera_serial_num.move(column_three_x2, 830)
@@ -2537,10 +2537,10 @@ class USVPlaypenWindow(QMainWindow):
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['original_arena_file_loc'] = self.calibration_file_loc_edit.text()
 
         if not self.das_model_dir_btn_clicked_flag:
-            self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = self.das_model_dir_edit.text()
+            self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'] = self.das_model_dir_edit.text()
 
         if not self.vcl_model_dir_btn_clicked_flag:
-            self.processing_input_dict['vocalocator']['model_directory'] = self.vcl_model_dir_edit.text()
+            self.processing_input_dict['vocalocator']['vcl_model_directory'] = self.vcl_model_dir_edit.text()
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
         self.device_receiving_input = self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input']
@@ -2550,20 +2550,20 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(ast.literal_eval(self.constant_rate_factor)))
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(getattr(self, 'encoding_preset'))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
         self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(ast.literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
         self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(stft_value)) for stft_value in self.stft_window_hop]
         self.processing_input_dict['modify_files']['Operator']['hpss_audio']['kernel_size'] = tuple([int(ast.literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
         self.processing_input_dict['modify_files']['Operator']['hpss_audio']['hpss_power'] = float(ast.literal_eval(self.hpss_power))
         self.processing_input_dict['modify_files']['Operator']['hpss_audio']['margin'] = tuple([int(ast.literal_eval(margin_value)) for margin_value in self.hpss_margin])
         self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num'] = int(ast.literal_eval(self.min_spike_num))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
 
         self.processing_input_dict['preprocess_data']['root_directories'] = self.processing_dir_edit
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['experimental_codes'] = self.exp_codes_edit
         self.processing_input_dict['send_email']['Messenger']['send_message']['receivers'] = self.pc_usage_process
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['camera_serial_num'] = self.v_camera_serial_num
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_camera_serial_num'] = self.v_camera_serial_num
         self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_dirs'] = self.filter_dirs
         self.processing_input_dict['modify_files']['Operator']['concatenate_audio_files']['concat_dirs'] = self.concat_dirs
 
@@ -2819,9 +2819,9 @@ class USVPlaypenWindow(QMainWindow):
 
         self.config_dir_global = Path(__file__).parent / '_config'
 
-        das_model_dir = configure_path(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'])
+        das_model_dir = configure_path(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'])
         sleap_inference_dir = configure_path(self.processing_input_dict['prepare_cluster_job']['inference_root_dir'])
-        vcl_model_dir = configure_path(self.processing_input_dict['vocalocator']['model_directory'])
+        vcl_model_dir = configure_path(self.processing_input_dict['vocalocator']['vcl_model_directory'])
 
         self.das_model_dir_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
                                                          recording_files_destinations=[das_model_dir],
@@ -4186,11 +4186,11 @@ class USVPlaypenWindow(QMainWindow):
             vcl_model_dir_name_path = Path(vcl_model_dir_name)
             self.vcl_model_dir_edit.setText(str(vcl_model_dir_name_path))
             if os.name == 'nt':
-                self.processing_input_dict['vocalocator']['model_directory'] = str(vcl_model_dir_name_path).replace(os.sep, '\\')
+                self.processing_input_dict['vocalocator']['vcl_model_directory'] = str(vcl_model_dir_name_path).replace(os.sep, '\\')
             else:
-                self.processing_input_dict['vocalocator']['model_directory'] = str(vcl_model_dir_name_path)
+                self.processing_input_dict['vocalocator']['vcl_model_directory'] = str(vcl_model_dir_name_path)
         else:
-            self.processing_input_dict['vocalocator']['model_directory'] = self.vcl_model_dir_edit.text()
+            self.processing_input_dict['vocalocator']['vcl_model_directory'] = self.vcl_model_dir_edit.text()
 
     def _open_das_model_dialog(self) -> None:
         """
@@ -4214,11 +4214,11 @@ class USVPlaypenWindow(QMainWindow):
             das_model_dir_name_path = Path(das_model_dir_name)
             self.das_model_dir_edit.setText(str(das_model_dir_name_path))
             if os.name == 'nt':
-                self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = str(das_model_dir_name_path).replace(os.sep, '\\')
+                self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'] = str(das_model_dir_name_path).replace(os.sep, '\\')
             else:
-                self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = str(das_model_dir_name_path)
+                self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'] = str(das_model_dir_name_path)
         else:
-            self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_directory'] = self.das_model_dir_edit.text()
+            self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'] = self.das_model_dir_edit.text()
 
     def _location_on_the_screen(self) -> None:
         """

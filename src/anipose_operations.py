@@ -3,7 +3,6 @@
 Gets 3D tracked points in metric units, rotated and translated to match arena coordinates.
 """
 
-from PyQt6.QtTest import QTest
 import glob
 import h5py
 import json
@@ -15,6 +14,7 @@ import sleap_anipose
 import subprocess
 from datetime import datetime
 from imgstore import new_for_filename
+from .time_utils import *
 
 
 def find_mouse_names(root_directory: str = None) -> list:
@@ -265,7 +265,6 @@ class ConvertTo3D:
 
     def __init__(self, root_directory:str = None,
                  input_parameter_dict: dict = None,
-                 exp_settings_dict: dict = None,
                  message_output: callable = None) -> None:
         """
         Initializes the ConvertTo3D class.
@@ -276,8 +275,6 @@ class ConvertTo3D:
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
             Processing parameters; defaults to None.
-        ecp_settings_dict (dict)
-            Experimental settings; defaults to None.
         message_output (function)
             Output messages; defaults to None.
 
@@ -298,20 +295,10 @@ class ConvertTo3D:
         else:
             self.root_directory = root_directory
 
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
-
         if message_output is None:
             self.message_output = print
         else:
             self.message_output = message_output
-
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
 
         self.session_root_joint_date_dir = ''
         self.session_root_name = ''
@@ -319,6 +306,8 @@ class ConvertTo3D:
             if os.path.isdir(os.path.join(self.root_directory, 'video', one_object)) and '_' not in one_object:
                 self.session_root_joint_date_dir = os.path.join(self.root_directory, 'video', one_object)
                 self.session_root_name = one_object
+
+        self.app_context_bool = is_gui_context()
 
     def sleap_file_conversion(self) -> None:
         """
@@ -339,7 +328,7 @@ class ConvertTo3D:
         """
 
         self.message_output(f"SLEAP file conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         sleap_version = self.input_parameter_dict['sleap_file_conversion']['sleap_conda_env_name']
 
@@ -365,7 +354,7 @@ class ConvertTo3D:
         while True:
             status_poll = [query_subp.poll() for query_subp in conversion_subprocesses]
             if any(elem is None for elem in status_poll):
-                QTest.qWait(1000)
+                smart_wait(app_context_bool=self.app_context_bool, seconds=1)
             else:
                 break
 
@@ -391,7 +380,7 @@ class ConvertTo3D:
         """
 
         self.message_output(f"ANIPOSE calibration started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(2000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         if not self.input_parameter_dict['conduct_anipose_calibration']['board_provided_bool']:
             sleap_anipose.draw_board(board_name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_charuco_8x11.png",
@@ -432,7 +421,7 @@ class ConvertTo3D:
         """
 
         self.message_output(f"ANIPOSE triangulation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(2000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         calibration_dir_search = glob.glob(pathname=os.path.join(f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}{os.sep}**", "*_calibration.toml*"), recursive=True)
         if len(calibration_dir_search) == 0:
@@ -504,7 +493,7 @@ class ConvertTo3D:
         """
 
         self.message_output(f"Translation, rotation and metric conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(2000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         session_idx = kwargs['session_idx'] if 'session_idx' in kwargs.keys() and isinstance(kwargs['session_idx'], int) else 0
 
@@ -591,7 +580,7 @@ class ConvertTo3D:
                 h5_file_write.create_dataset(name='node_names', data=arena_nodes)
 
             self.message_output(f"Triangulated arena file has shape: {arena_data.shape}")
-            QTest.qWait(1000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         elif self.input_parameter_dict['translate_rotate_metric']['save_transformed_data'] == 'animal':
             with h5py.File(name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5", mode='r') as h5_file_mouse:
@@ -630,7 +619,7 @@ class ConvertTo3D:
                 h5_file_write.create_dataset(name='recording_frame_rate', data=recording_frame_rate)
 
             self.message_output(f"Triangulated mouse file has shape: {mouse_data.shape}")
-            QTest.qWait(1000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
             if self.input_parameter_dict['translate_rotate_metric']['delete_original_h5']:
                 os.remove(f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5")

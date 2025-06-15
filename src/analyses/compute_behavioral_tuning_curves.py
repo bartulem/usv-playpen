@@ -3,7 +3,6 @@
 Makes neuronal tuning curves for 3D behavioral features.
 """
 
-from PyQt6.QtTest import QTest
 from datetime import datetime
 import glob
 import h5py
@@ -15,6 +14,7 @@ import polars as pls
 from tqdm import tqdm
 from typing import Tuple
 from .compute_behavioral_features import FeatureZoo
+from ..time_utils import *
 
 def generate_ratemaps(feature_arr: np.ndarray = None,
                       spike_arr: np.ndarray = None,
@@ -178,6 +178,8 @@ class NeuronalTuning(FeatureZoo):
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
+        self.app_context_bool = is_gui_context()
+
     def calculate_neuronal_tuning_curves(self) -> None:
         """
         Description
@@ -197,7 +199,7 @@ class NeuronalTuning(FeatureZoo):
         """
 
         self.message_output(f"Computing behavioral tuning curves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # load behavioral feature data
         behavioral_data_file = glob.glob(pathname=f"{self.root_directory}{os.sep}**{os.sep}*_behavioral_features.csv*",

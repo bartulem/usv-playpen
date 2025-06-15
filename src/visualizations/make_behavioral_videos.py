@@ -3,7 +3,6 @@
 Makes behavioral videos from 3D tracked points.
 """
 
-from PyQt6.QtTest import QTest
 from datetime import datetime
 import glob
 import json
@@ -12,6 +11,7 @@ import librosa
 import librosa.display
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+import matplotlib.font_manager as fm
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 from numba import njit
@@ -26,8 +26,9 @@ import warnings
 from typing import Any
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
 from ..analyses.decode_experiment_label import extract_information
+from ..time_utils import *
 
-
+fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / 'fonts/Helvetica.ttf')
 plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')
 
 
@@ -1125,6 +1126,8 @@ class Create3DVideo:
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
+        self.app_context_bool = is_gui_context()
+
 
     def load_beh_features_file(self) -> pls.DataFrame:
         """
@@ -1219,7 +1222,7 @@ class Create3DVideo:
         """
 
         self.message_output(f"Creating data visualization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # create save directory (if one doesn't exist already)
         putative_save_directory = f"{self.root_directory}{os.sep}data_animation_examples"
@@ -1908,7 +1911,7 @@ class Create3DVideo:
 
                 if self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file'] != '' and pathlib.Path(self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file']).is_file():
                     output_video_name = animation_file_name + f"_with_USV_sound.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
-                    subprocess.Popen(f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file']} -c:v copy -c:a aac {output_video_name}",
+                    subprocess.Popen(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file']} -c:v copy -c:a aac {output_video_name}",
                                      stdout=subprocess.DEVNULL,
                                      stderr=subprocess.STDOUT,
                                      cwd=putative_save_directory,
@@ -1922,13 +1925,17 @@ class Create3DVideo:
                     fig.savefig(fig_loc,
                                 dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
 
+                    # open image in default viewer if display available
                     os_type = platform.system()
                     if os_type == 'Windows':
-                        os.startfile(os.path.abspath(fig_loc))
+                        if 'WT_SESSION' in os.environ or 'USERNAME' in os.environ:
+                            os.startfile(os.path.abspath(fig_loc))
                     elif os_type == 'Darwin':
-                        subprocess.run(['open', os.path.abspath(fig_loc)], check=True)
+                        if 'DISPLAY' in os.environ:
+                            subprocess.run(args=['open', os.path.abspath(fig_loc)], check=True)
                     elif os_type == 'Linux':
-                        subprocess.run(['xdg-open', os.path.abspath(fig_loc)], check=True)
+                        if 'DISPLAY' in os.environ:
+                            subprocess.run(args=['xdg-open', os.path.abspath(fig_loc)], check=True)
                     else:
                         self.message_output("Unsupported operating system for opening image.")
 

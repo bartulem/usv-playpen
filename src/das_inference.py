@@ -3,11 +3,11 @@
 Run USV inference on WAV files and create annotations.
 """
 
-from PyQt6.QtTest import QTest
 import glob
 import json
 import librosa
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import numpy as np
 import os
 import pathlib
@@ -16,7 +16,9 @@ import shutil
 import subprocess
 from tqdm import tqdm
 from datetime import datetime
+from .time_utils import *
 
+fm.fontManager.addfont(pathlib.Path(__file__).parent / 'fonts/Helvetica.ttf')
 plt.style.use(pathlib.Path(__file__).parent / '_config/usv_playpen.mplstyle')
 
 
@@ -73,6 +75,8 @@ class FindMouseVocalizations:
         else:
             self.exp_settings_dict = exp_settings_dict
 
+        self.app_context_bool = is_gui_context()
+
     def das_command_line_inference(self) -> None:
         """
         Description
@@ -94,10 +98,10 @@ class FindMouseVocalizations:
         """
 
         self.message_output(f"DAS inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}. Please be patient, this can take >5 min/file.")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         das_conda_name = self.input_parameter_dict['das_command_line_inference']['das_conda_env_name']
-        model_base = f"{self.input_parameter_dict['das_command_line_inference']['model_directory']}{os.sep}{self.input_parameter_dict['das_command_line_inference']['model_name_base']}"
+        model_base = f"{self.input_parameter_dict['das_command_line_inference']['das_model_directory']}{os.sep}{self.input_parameter_dict['das_command_line_inference']['model_name_base']}"
         thresh = self.input_parameter_dict['das_command_line_inference']['segment_confidence_threshold']
         min_len = self.input_parameter_dict['das_command_line_inference']['segment_minlen']
         fill_gap = self.input_parameter_dict['das_command_line_inference']['segment_fillgap']
@@ -113,7 +117,7 @@ class FindMouseVocalizations:
         # run inference
         for one_file in sorted(glob.glob(pathname=os.path.join(f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered", "*.wav*"))):
             self.message_output(f"Running DAS inference on: {os.path.basename(one_file)}")
-            QTest.qWait(2000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
             inference_subp = subprocess.Popen(args=f'''{command_addition}conda activate {das_conda_name} && das predict {one_file} {model_base} --segment-thres {thresh} --segment-minlen {min_len} --segment-fillgap {fill_gap} --save-format {save_format}''',
                                               stdout=subprocess.DEVNULL,
@@ -124,7 +128,7 @@ class FindMouseVocalizations:
             while True:
                 status_poll = inference_subp.poll()
                 if status_poll is None:
-                    QTest.qWait(5000)
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=5)
                 else:
                     break
 
@@ -161,7 +165,7 @@ class FindMouseVocalizations:
         """
 
         self.message_output(f"DAS summary started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         ch_conversion_dict = {'m_ch01': 0, 'm_ch02': 1, 'm_ch03': 2, 'm_ch04': 3, 'm_ch05': 4, 'm_ch06': 5,
                               'm_ch07': 6, 'm_ch08': 7, 'm_ch09': 8, 'm_ch10': 9, 'm_ch11': 10, 'm_ch12': 11,

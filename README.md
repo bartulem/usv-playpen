@@ -1,8 +1,8 @@
-# usv-playpen v0.8.7
+# usv-playpen v0.8.8
 
 ![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
 
-GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-26 ([Falkner](https://www.falknerlab.com/)/[Murthy](https://murthylab.princeton.edu/) labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing, analysis and visualization branches of the GUI are platform-independent.
+GUI/CLI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio) acquisition. Developed for behavioral recording purposes at the [Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-26 ([Falkner](https://www.falknerlab.com/)/[Murthy](https://murthylab.princeton.edu/) labs). Due to proprietary software design and limitations, recordings can only be performed on OS Windows. The data processing, analysis and visualization branches of the GUI are platform-independent.
 
 [![Python version](https://img.shields.io/badge/Python-3.10-blue)](https://img.shields.io/badge/Python-3.10-blue)
 [![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
@@ -20,21 +20,16 @@ GUI to facilitate conducting experiments with multi-probe e-phys (Neuropixels), 
 ## Prerequisites
 
 * [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio recording PC)
-* [Helvetica](https://freefontsfamily.net/helvetica-font-family/) (download and install)
-* [git](https://git-scm.com/downloads/win)  (if on Windows, add PATH to USER VARIABLES)
-* [ffmpeg](https://ffmpeg.org/download.html) (if on Windows, add PATH to USER VARIABLES)
-* [sox](https://sourceforge.net/projects/sox/)  (if on Windows, add PATH to USER VARIABLES)
 * [Anaconda](https://www.anaconda.com/download) (if on Windows, add PATH to USER VARIABLES)
-* [sleap](https://sleap.ai/) (install in standalone environment)
-* [das](https://janclemenslab.org/das/) (install in standalone environment)
-* [vocalocator](https://github.com/neurostatslab/vocalocator) (install in standalone environment)
-
+* [sleap](https://sleap.ai/) (install in standalone conda environment)
+* [das](https://janclemenslab.org/das/) (install in standalone conda environment)
+* [vocalocator](https://github.com/neurostatslab/vocalocator) (install in standalone conda environment)
 
 ## Installation and updating
 
 Set up a new conda environment with Python 3.10 and give it any name, _e.g._, pni.
 ```bash
-conda create --name pni python=3.10 -c conda-forge -y
+conda create -n pni python=3.10 ffmpeg git sox -c conda-forge -y
 ```
 Activate the virtual environment with:
 ```bash

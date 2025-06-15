@@ -1,22 +1,22 @@
 """
 @author: bartulem
-Runs experiments with Loopbio/Avisoft software.
+Runs experiments with Avisoft/CoolTerm/Loopbio software.
 """
 
-from PyQt6.QtTest import QTest
 import configparser
 import datetime
 import glob
 import math
 import os
-import pathlib
 import shutil
 import subprocess
 import sys
+import toml
 import webbrowser
 import motifapi
+from .cli_utils import *
 from .send_email import Messenger
-
+from .time_utils import *
 
 class ExperimentController:
 
@@ -59,6 +59,8 @@ class ExperimentController:
             self.message_output = print
         else:
             self.message_output = message_output
+
+        self.app_context_bool = is_gui_context()
 
     def get_cpu_affinity_mask(self) -> str:
         """
@@ -105,7 +107,7 @@ class ExperimentController:
 
         if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini')):
             self.message_output("Motif config file not found. Try again!")
-            QTest.qWait(10000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
         else:
             config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini'))
@@ -172,7 +174,7 @@ class ExperimentController:
             available_cameras = api.call('cameras')['cameras']
         except motifapi.api.MotifError:
             self.message_output('Motif not running or reachable. Check hardware and connections.')
-            QTest.qWait(10000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
         else:
             self.camera_serial_num = [camera_dict['serial'] for camera_dict in available_cameras]
@@ -183,7 +185,7 @@ class ExperimentController:
                 self.message_output(f"The number of connected cameras ({len(self.camera_serial_num)}) does not match the expected "
                                     f"number of connected cameras, which is {self.exp_settings_dict['video']['general']['expected_camera_num']}.")
                 self.message_output(self.exp_settings_dict['continue_key'])
-                QTest.qWait(10000)
+                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
                 sys.exit()
 
             # configure cameras
@@ -209,7 +211,7 @@ class ExperimentController:
                     webbrowser.open(self.exp_settings_dict['video']['general']['monitor_url'])
 
             # pause for N seconds
-            QTest.qWait(1000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
 
             self.api = api
 
@@ -238,7 +240,7 @@ class ExperimentController:
                       filename='calibration',
                       duration=self.exp_settings_dict['calibration_duration'] * 60,
                       codec=self.exp_settings_dict['video']['general']['recording_codec'])
-        QTest.qWait(1000*((self.exp_settings_dict['calibration_duration'] * 60) + 5))
+        smart_wait(app_context_bool=self.app_context_bool, seconds=(self.exp_settings_dict['calibration_duration'] * 60) + 5)
 
         self.message_output(f"Video calibration completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 
@@ -398,7 +400,7 @@ class ExperimentController:
                             dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
 
             # pause for N seconds
-            QTest.qWait(5000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=5)
 
         else:
             if not os.path.isfile(f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
@@ -406,7 +408,7 @@ class ExperimentController:
                             dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
 
             # pause for N seconds
-            QTest.qWait(5000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=5)
 
     def conduct_behavioral_recording(self) -> None:
         """
@@ -472,7 +474,7 @@ class ExperimentController:
                                  cwd=self.exp_settings_dict['avisoft_recorder_exe'])
 
                 # pause for N seconds
-                QTest.qWait(10000)
+                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
 
                 # check if Avisoft Recorder is running and exit GUI if not
                 is_running = False
@@ -517,7 +519,7 @@ class ExperimentController:
 
         # wait until cameras have finished recording
         # pause for N extra seconds so audio is done, too
-        QTest.qWait(1000*(25 + (self.exp_settings_dict['video_session_duration'] * 60)))
+        smart_wait(app_context_bool=self.app_context_bool, seconds=25 + (self.exp_settings_dict['video_session_duration'] * 60))
 
         self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
@@ -529,7 +531,7 @@ class ExperimentController:
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.STDOUT).wait()
             self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
-            QTest.qWait(20000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=20)
 
         pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}video").mkdir(parents=True, exist_ok=True)
         pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}sync").mkdir(parents=True, exist_ok=True)
@@ -541,7 +543,7 @@ class ExperimentController:
                 pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc").mkdir(parents=True, exist_ok=True)
 
         self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
-        QTest.qWait(2000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
         # move video file(s) to primary file server
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
@@ -582,7 +584,7 @@ class ExperimentController:
             while True:
                 status_poll = [query_subp.poll() for query_subp in audio_copy_subprocesses]
                 if any(elem is None for elem in status_poll):
-                    QTest.qWait(1000)
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=1)
                 else:
                     break
 
@@ -593,7 +595,7 @@ class ExperimentController:
 
         # ensure the video is done copying before proceeding
         while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
-            QTest.qWait(1000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # copy the audio, sync and video directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
@@ -614,3 +616,55 @@ class ExperimentController:
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "
                                                                                  f"You will be notified about further experiments "
                                                                                  f"should they occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+
+@click.command(name="conduct-calibration")
+@click.option('--set', 'overrides', multiple=True, help='Override a setting, e.g., --set calibration_duration=10')
+def conduct_calibration_cli( overrides):
+    """
+    Description
+    ----------
+    A command-line tool to perform a tracking camera calibration.
+    ----------
+
+    Parameters
+    ----------
+    ----------
+
+    Returns
+    ----------
+    ----------
+    """
+
+    with open((pathlib.Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
+        exp_settings_dict = toml.load(f)
+
+    if len(overrides) > 0:
+        exp_settings_dict = override_toml_values(overrides=overrides, exp_settings_dict=exp_settings_dict)
+
+    ExperimentController(exp_settings_dict=exp_settings_dict).conduct_tracking_calibration()
+
+@click.command(name="conduct-recording")
+@click.option('--set', 'overrides', multiple=True, help='Override a setting, e.g., --set video.metadata.notes="Test run"')
+def conduct_recording_cli(overrides):
+    """
+    Description
+    ----------
+    A command-line tool to conduct a behavioral recording session.
+    ----------
+
+    Parameters
+    ----------
+    ----------
+
+    Returns
+    ----------
+    ----------
+    """
+
+    with open((pathlib.Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
+        exp_settings_dict = toml.load(f)
+
+    if len(overrides) > 0:
+        exp_settings_dict = override_toml_values(overrides=overrides, exp_settings_dict=exp_settings_dict)
+
+    ExperimentController(exp_settings_dict=exp_settings_dict).conduct_behavioral_recording()

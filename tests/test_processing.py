@@ -4,7 +4,7 @@ Test processing module.
 """
 
 import os
-import platform
+import pathlib
 import subprocess
 import sys
 import toml
@@ -21,12 +21,7 @@ class TestProcessing(unittest.TestCase):
         command_addition = ''
         shell_usage_bool = True
 
-    if platform.system() == 'Windows':
-        config_dir_global = 'C:\\experiment_running_docs'
-    elif platform.system() == 'Linux':
-        config_dir_global = f'/mnt/falkner/Bartul/PC_transfer/experiment_running_docs'
-    else:
-        config_dir_global = f'/Volumes/falkner/Bartul/PC_transfer/experiment_running_docs'
+    config_dir_global = pathlib.Path(__file__).parent.parent / 'src' / '_config'
 
     esd = toml.load(f"{config_dir_global}{os.sep}behavioral_experiments_settings.toml")
 

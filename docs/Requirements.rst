@@ -101,7 +101,7 @@ Software Requirements
 Audio PC essentials
 ^^^^^^^^^^^^^^^^^^^
 
-Whatever operating system you are using, you will need to install the following software *prior to* installing *usv-playpen*: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (you can also find the ttf file in *usv-playpen/fonts*; how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
+Whatever operating system you are using, you will need to ensure the existence of the following software *prior to* using *usv-playpen*: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (you can also find the ttf file in *usv-playpen/fonts*; how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
 (2) `Anaconda <https://www.anaconda.com/download>`_ (and add PATH to USER VARIABLES on Windows), (3) `git <https://git-scm.com/downloads/win>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add PATH to USER VARIABLES on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add PATH to USER VARIABLES on Windows). How to add PATH to USER VARIABLES on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
 
 You can verify that the installation was successful by running the following commands in the terminal:
@@ -118,13 +118,13 @@ You should something like the following output:
 
 .. code-block:: bash
 
-    (base) bmimica@PNI-NV6T43LF74 ~ % conda --version
+    (pni) bmimica@PNI-NV6T43LF74 ~ % conda --version
     conda 24.7.1
-    (base) bmimica@PNI-NV6T43LF74 ~ % git --version
+    (pni) bmimica@PNI-NV6T43LF74 ~ % git --version
     git version 2.39.5 (Apple Git-154)
-    (base) bmimica@PNI-NV6T43LF74 ~ % sox --version
+    (pni) bmimica@PNI-NV6T43LF74 ~ % sox --version
     sox:      SoX v
-    (base) bmimica@PNI-NV6T43LF74 ~ % ffmpeg -version
+    (pni) bmimica@PNI-NV6T43LF74 ~ % ffmpeg -version
     ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers
     built with Apple clang version 16.0.0 (clang-1600.0.26.6)
     configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/7.1.1_2 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags='-Wl,-ld_classic' --enable-ffplay --enable-gnutls --enable-gpl --enable-libaom --enable-libaribb24 --enable-libbluray --enable-libdav1d --enable-libharfbuzz --enable-libjxl --enable-libmp3lame --enable-libopus --enable-librav1e --enable-librist --enable-librubberband --enable-libsnappy --enable-libsrt --enable-libssh --enable-libsvtav1 --enable-libtesseract --enable-libtheora --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libxvid --enable-lzma --enable-libfontconfig --enable-libfreetype --enable-frei0r --enable-libass --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libspeex --enable-libsoxr --enable-libzmq --enable-libzimg --disable-libjack --disable-indev=jack --enable-videotoolbox --enable-audiotoolbox --enable-neon

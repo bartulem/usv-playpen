@@ -3,12 +3,12 @@
 Makes tuning curve figures for 3D behavioral features.
 """
 
-from PyQt6.QtTest import QTest
 from datetime import datetime
 import glob
 import h5py
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 import os
@@ -21,7 +21,9 @@ from astropy.convolution import Gaussian1DKernel, Gaussian2DKernel
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
 from ..analyses.decode_experiment_label import extract_information
 from ..analyses.compute_behavioral_features import FeatureZoo
+from ..time_utils import *
 
+fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / 'fonts/Helvetica.ttf')
 plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')
 
 class RatemapFigureMaker(FeatureZoo):
@@ -49,6 +51,8 @@ class RatemapFigureMaker(FeatureZoo):
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
+        self.app_context_bool = is_gui_context()
+
     def neuronal_tuning_figures(self) -> None:
         """
         Description
@@ -67,7 +71,7 @@ class RatemapFigureMaker(FeatureZoo):
         """
 
         self.message_output(f"Making behavioral tuning curves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         astropy_kernel_1d = Gaussian1DKernel(stddev=self.visualizations_parameter_dict['neuronal_tuning_figures']['smoothing_sd'])
         astropy_kernel_2d = Gaussian2DKernel(x_stddev=self.visualizations_parameter_dict['neuronal_tuning_figures']['smoothing_sd'], y_stddev=self.visualizations_parameter_dict['neuronal_tuning_figures']['smoothing_sd'])

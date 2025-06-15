@@ -96,7 +96,7 @@
         "kilosort_version": "4"
       },
       "concatenate_audio_files": {
-        "audio_format": "wav",
+        "concatenate_audio_format": "wav",
         "concat_dirs": [
           "hpss_filtered"
         ]
@@ -117,7 +117,7 @@
         ]
       },
       "filter_audio_files": {
-        "audio_format": "wav",
+        "filter_audio_format": "wav",
         "filter_dirs": [
           "hpss"
         ],
@@ -127,18 +127,18 @@
         ]
       },
       "concatenate_video_files": {
-        "camera_serial_num": [
+        "concatenate_camera_serial_num": [
           "21372315",
           "21372316",
           "21369048",
           "22085397",
           "21241563"
         ],
-        "video_extension": "mp4",
+        "concatenate_video_extension": "mp4",
         "concatenated_video_name": "concatenated_temp"
       },
       "rectify_video_fps": {
-        "camera_serial_num": [
+        "encode_camera_serial_num": [
           "21372315",
           "21372316",
           "21369048",
@@ -146,7 +146,7 @@
           "21241563"
         ],
         "conversion_target_file": "concatenated_temp",
-        "video_extension": "mp4",
+        "encode_video_extension": "mp4",
         "constant_rate_factor": 16,
         "encoding_preset": "veryfast",
         "delete_old_file": true
@@ -193,7 +193,7 @@
         "npx_ms_divergence_tolerance": 12.0
       },
       "find_audio_sync_trains": {
-        "ch_receiving_input": 2,
+        "sync_ch_receiving_input": 2,
         "extract_exact_video_frame_times_bool": false,
         "nidq_sr": 62500.72887,
         "nidq_num_channels": 9,
@@ -201,18 +201,18 @@
         "nidq_sync_input_bit_position": 7
       },
       "find_video_sync_trains": {
-        "camera_serial_num": [
+        "sync_camera_serial_num": [
           "21372315"
         ],
         "led_px_version": "current",
         "led_px_dev": 10,
-        "video_extension": "mp4",
+        "sync_video_extension": "mp4",
         "relative_intensity_threshold": 1.0,
         "millisecond_divergence_tolerance": 12
       },
       "crop_wav_files_to_video": {
         "device_receiving_input": "both",
-        "ch_receiving_input": 4
+        "triggerbox_ch_receiving_input": 4
       }
     }
   },
@@ -220,7 +220,7 @@
     "FindMouseVocalizations": {
       "das_command_line_inference": {
         "das_conda_env_name": "das",
-        "model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
+        "das_model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
         "model_name_base": "20240325_073951",
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,
@@ -237,6 +237,6 @@
   },
   "vocalocator": {
     "vcl_conda_env_name": "vcl",
-    "model_directory": "/mnt/falkner/Bartul/sound_localization/20250312_earbud_model"
+    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/20250312_earbud_model"
   }
 }

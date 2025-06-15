@@ -6,12 +6,14 @@ Generates a summary figure for data preprocessing.
 import glob
 import json
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import numpy as np
 import os
 import pathlib
 import wave
 from imgstore import new_for_filename
 
+fm.fontManager.addfont(pathlib.Path(__file__).parent / 'fonts/Helvetica.ttf')
 plt.style.use(pathlib.Path(__file__).parent / '_config/usv_playpen.mplstyle')
 
 

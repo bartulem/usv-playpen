@@ -18,12 +18,12 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 (24) Yaw-TTI (25) Yaw-TTI der (26) Yaw-TTI 2der (27) TTI-Yaw (28) TTI-Yaw angle der (29) TTI-Yaw 2der
 """
 
-from PyQt6.QtTest import QTest
 import glob
 import h5py
 import itertools
 import json
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import matplotlib.gridspec as gridspec
 import numpy as np
 import os
@@ -38,7 +38,9 @@ from astropy.convolution import Gaussian1DKernel
 from typing import Tuple
 from ..visualizations.auxiliary_plot_functions import create_colormap, choose_animal_colors
 from .decode_experiment_label import extract_information
+from ..time_utils import *
 
+fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / 'fonts/Helvetica.ttf')
 plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')
 
 
@@ -713,6 +715,7 @@ class FeatureZoo:
         with open((pathlib.Path(__file__).parent.parent / '_parameter_settings/visualizations_settings.json'), 'r') as json_file:
             self.visualizations_parameter_dict = json.load(json_file)
 
+        self.app_context_bool = is_gui_context()
 
     def plot_feature_distributions(self, **kwargs):
         """
@@ -885,7 +888,7 @@ class FeatureZoo:
         """
 
         self.message_output(f"Computing behavioral features started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         tracked_file_loc = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5")[0]
 
@@ -899,7 +902,7 @@ class FeatureZoo:
 
         self.message_output(f"Working on tracking data of shape {mouse_data.shape} with experiment code '{experimental_code}' ({empirical_camera_sr} fps), track names {track_names} \n"
                             f"and nodes {mouse_nodes}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # # # compute individual features
         head_position = np.zeros((mouse_data.shape[1], mouse_data.shape[0], 3))

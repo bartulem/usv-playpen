@@ -3,7 +3,6 @@
 Generates playback WAV files and frequency shifts audio segment.
 """
 
-from PyQt6.QtTest import QTest
 from datetime import datetime
 import glob
 import noisereduce as nr
@@ -16,6 +15,7 @@ from scipy.io import wavfile
 import subprocess
 from tqdm import tqdm
 from ..os_utils import find_base_path
+from ..time_utils import *
 
 
 class AudioGenerator:
@@ -52,7 +52,9 @@ class AudioGenerator:
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
-    def create_usv_playback_wav(self) -> None:
+        self.app_context_bool = is_gui_context()
+
+    def create_usv_playback_wav(self, spock_cluster_bool: bool = False) -> None:
         """
         Description
         ----------
@@ -64,6 +66,8 @@ class AudioGenerator:
 
         Parameters
         ----------
+        spock_cluster_bool (bool)
+            If True, the code is run on Spock.
         ----------
 
         Returns
@@ -73,11 +77,16 @@ class AudioGenerator:
         """
 
         self.message_output(f"Creating USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        os_base_path = find_base_path()
-        playback_snippets_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}{self.create_playback_settings_dict['playback_snippets_dir']}"
-        output_file_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}usv_playback_files"
+        if not spock_cluster_bool:
+            os_base_path = find_base_path()
+            playback_snippets_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}{self.create_playback_settings_dict['playback_snippets_dir']}"
+            output_file_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}usv_playback_files"
+        else:
+            playback_snippets_dir = f"/mnt/cup/labs/falkner/{self.exp_id}/usv_playback_experiments{os.sep}{self.create_playback_settings_dict['playback_snippets_dir']}"
+            output_file_dir = f"/mnt/cup/labs/falkner/{self.exp_id}/usv_playback_experiments{os.sep}usv_playback_files"
+
         Path(output_file_dir).mkdir(parents=True, exist_ok=True)
         ipi_duration = self.create_playback_settings_dict['ipi_duration']
         wav_sampling_rate = self.create_playback_settings_dict['wav_sampling_rate']
@@ -85,7 +94,7 @@ class AudioGenerator:
 
         for number in range(self.create_playback_settings_dict['num_usv_files']):
 
-            QTest.qWait(1000)
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
             current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
 
             wav_files_list = sorted(glob.glob(f"{playback_snippets_dir}{os.sep}*.wav"))
@@ -157,7 +166,7 @@ class AudioGenerator:
         """
 
         self.message_output(f"Frequency shifting of audio segment by {abs(self.freq_shift_settings_dict['fs_octave_shift'])} octaves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
-        QTest.qWait(1000)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         audio_dir = self.freq_shift_settings_dict['fs_audio_dir']
         device_id = self.freq_shift_settings_dict['fs_device_id']
