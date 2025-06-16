@@ -54,6 +54,7 @@ echo "sleap-to-h5 --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
 echo "anipose-triangulate --root-directory \"$SESSION_ROOT_DIRECTORY\" --cal-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --display-progress --no-arena-points" >> "$JOB_SCRIPT"
 echo "anipose-trm --root-directory \"$SESSION_ROOT_DIRECTORY\" --exp-code $EXP_CODE --arena-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --delete-original" >> "$JOB_SCRIPT"
 echo "echo 'All processing steps (step two) completed successfully.'" >> "$JOB_SCRIPT"
+
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #
 
