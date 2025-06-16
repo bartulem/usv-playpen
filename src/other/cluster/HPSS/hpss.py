@@ -38,7 +38,7 @@ def hpss_func(recording_identifier: str = None,
         Output audio file w/ only the harmonics component.
     """
 
-    wav_file = sorted(glob.glob(f'/mnt/cup/labs/falkner/{cup_recording_directory}/Data/{recording_identifier}/audio/cropped_to_video/*.wav'))[wav_file_idx]
+    wav_file = sorted(glob.glob(f'/mnt/cup/labs/{cup_recording_directory}/{recording_identifier}/audio/cropped_to_video/*.wav'))[wav_file_idx]
     
     # read the audio file (use Scipy, not Librosa because Librosa performs scaling)
     sampling_rate_audio, audio_data = wavfile.read(wav_file)
@@ -63,13 +63,12 @@ def hpss_func(recording_identifier: str = None,
     harmonic_data_clipped = np.clip(harmonic_data, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
 
     # save the harmonic component as a new WAV file
-    pathlib.Path(f'/mnt/cup/labs/falkner/{cup_recording_directory}/Data/{recording_identifier}/audio/hpss').mkdir(parents=True, exist_ok=True)
+    pathlib.Path(f'/mnt/cup/labs/{cup_recording_directory}/{recording_identifier}/audio/hpss').mkdir(parents=True, exist_ok=True)
     
     raw_file_name = os.path.basename(wav_file)
-    wavfile.write(filename=f'/mnt/cup/labs/falkner/{cup_recording_directory}/Data/{recording_identifier}/audio/hpss/{raw_file_name[:-4]}_hpss.wav', 
+    wavfile.write(filename=f'/mnt/cup/labs/{cup_recording_directory}/{recording_identifier}/audio/hpss/{raw_file_name[:-4]}_hpss.wav',
                   rate=sampling_rate_audio, 
                   data=harmonic_data_clipped)
-
 
 
 if __name__ == '__main__':

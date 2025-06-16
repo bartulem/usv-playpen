@@ -5,8 +5,8 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT_DIR="Name"
-HPSS_ROOT="Name"
+CUP_ROOT_DIR="falkner/Name/Data"
+WORK_DIR="/mnt/cup/labs/falkner/Name/HPSS"
 AUDIO_CH_NUM=24
 CPUS_PER_TASK=4
 MEMORY_PER_CPU="40G"
@@ -22,7 +22,6 @@ HPSS_ENV="hpss"
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
-WORK_DIR="/mnt/cup/labs/falkner/$HPSS_ROOT/HPSS"
 JOB_SCRIPT="$WORK_DIR/hpss_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
@@ -44,7 +43,7 @@ echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
 echo "conda activate $HPSS_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "python /mnt/cup/labs/falkner/$HPSS_ROOT/HPSS/hpss.py \"\$1\" \"\$2\" \"\$3\"" >> "$JOB_SCRIPT"
+echo "python $WORK_DIR/hpss.py \"\$1\" \"\$2\" \"\$3\"" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB ARRAY ---------------- #

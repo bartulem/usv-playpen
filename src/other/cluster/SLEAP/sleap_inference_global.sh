@@ -5,7 +5,7 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-SLEAP_ROOT="Name"
+WORK_DIR="/mnt/cup/labs/falkner/Name/SLEAP/inference"
 CPUS_PER_TASK=2
 MEMORY_PER_CPU="96G"
 TIME_RESTRICTION="05:00:00"
@@ -30,7 +30,6 @@ SLEAP_PRECULL_TO_TARGET=2
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
-WORK_DIR="/mnt/cup/labs/falkner/$SLEAP_ROOT/SLEAP/inference"
 JOB_SCRIPT="$WORK_DIR/sleap_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
