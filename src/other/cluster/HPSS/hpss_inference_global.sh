@@ -12,8 +12,11 @@ CPUS_PER_TASK=4
 MEMORY_PER_CPU="40G"
 TIME_RESTRICTION="02:02:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
-EMAIL_TYPE="FAIL"
-CONDA_VERSION="anacondapy/2024.02"
+EMAIL_TYPE="NONE"
+CONDA_NAME="anacondapy"
+CONDA_DATE="2024.02"
+CONDA_NAME_UPPERCASE="${CONDA_NAME^^}"
+CONDA_VERSION="$CONDA_NAME/$CONDA_DATE"
 HPSS_ENV="hpss"
 
 # -------------------------------------------------- #
@@ -22,11 +25,13 @@ HPSS_ENV="hpss"
 WORK_DIR="/mnt/cup/labs/falkner/$HPSS_ROOT/HPSS"
 JOB_SCRIPT="$WORK_DIR/hpss_inference_settings.sh"
 
+mkdir -p "$WORK_DIR/logs"
+
 touch "$JOB_SCRIPT"
 echo "#!/bin/bash" > "$JOB_SCRIPT"
 echo "#SBATCH --job-name=hpss" >> "$JOB_SCRIPT"
-echo "#SBATCH --output=logs/hpss_%j.out" >> "$JOB_SCRIPT"
-echo "#SBATCH --error=logs/hpss_%j.err" >> "$JOB_SCRIPT"
+echo "#SBATCH --output=$WORK_DIR/logs/hpss_%j.out" >> "$JOB_SCRIPT"
+echo "#SBATCH --error=$WORK_DIR/logs/hpss_%j.err" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "#SBATCH --mem-per-cpu=$MEMORY_PER_CPU" >> "$JOB_SCRIPT"
 echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"
@@ -36,9 +41,10 @@ echo "" >> "$JOB_SCRIPT"
 echo "echo \"Working on harmonic=percussive source separation in \$1, channel \$3.\"" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
+echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
 echo "conda activate $HPSS_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "python hpss.py \"\$1\" \"\$2\" \"\$3\"" >> "$JOB_SCRIPT"
+echo "python /mnt/cup/labs/falkner/$HPSS_ROOT/HPSS/hpss.py \"\$1\" \"\$2\" \"\$3\"" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB ARRAY ---------------- #

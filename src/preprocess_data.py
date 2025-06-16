@@ -716,7 +716,7 @@ def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--regularization', 'regularization_function', type=click.Choice(['l1', 'l2'], case_sensitive=False), default=None, required=False, help='Regularization function to use.')
 @click.option('--n-deriv-smooth', type=int, default=None, required=False, help='Number of derivatives to use for smoothing.')
 @click.pass_context
-def conduct_anipose_triangulation_cli(ctx, root_directory, calibration_file_loc, **kwargs) -> None:
+def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
     ----------
@@ -756,7 +756,7 @@ def conduct_anipose_triangulation_cli(ctx, root_directory, calibration_file_loc,
 @click.option('--delete-original/--no-delete-original', 'delete_original_h5', help='If set, deletes the original HDF5 file.')
 @click.option('--ref-len', 'static_reference_len', type=float, default=None, required=False, help='Length of the static reference object (e.g., arena side).')
 @click.pass_context
-def translate_rotate_metric_cli(ctx, root_directory, experimental_codes, original_arena_file_loc, **kwargs) -> None:
+def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
     ----------
