@@ -47,8 +47,8 @@ echo "das_segment_min_len=$DAS_SEGMENT_MIN_LEN" >> "$JOB_SCRIPT"
 echo "das_segment_fill_gap=$DAS_SEGMENT_FILL_GAP" >> "$JOB_SCRIPT"
 echo "das_save_format=\"$DAS_SAVE_FORMAT\"" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "das_model_base=\"$4/model_2024-03-25/20240325_073951\"" >> "$JOB_SCRIPT"
-echo "inference_file=\$(ls /mnt/cup/labs/\$2/\$1/audio/hpss_filtered/*.wav | sort | sed -n \"\$3 p\")" >> "$JOB_SCRIPT"
+echo "das_model_base=\"$WORK_DIR/model_2024-03-25/20240325_073951\"" >> "$JOB_SCRIPT"
+echo "inference_file=\$(ls /mnt/cup/labs/$CUP_ROOT_DIR/\$1/audio/hpss_filtered/*.wav | sort | sed -n \"\$2 p\")" >> "$JOB_SCRIPT"
 echo "inference_file_base_name=\"\${inference_file%.*}\"" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "echo \"Performing DAS inference on \$inference_file.\"" >> "$JOB_SCRIPT"
@@ -57,7 +57,7 @@ echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
 echo "conda activate $DAS_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "das predict \"\$inference_file\" \"\$das_model_base\" --segment-thres \"\$das_confidence_threshold\" --segment-minlen \"\$das_segment_min_len\" --segment-fillgap \"\$das_segment_fill_gap\" --save-format \"\$das_save_format\" && mv \"\${inference_file_base_name}_annotations.\${das_save_format}\" \"/mnt/cup/labs/\$2/\$1/audio/das_annotations\"" >> "$JOB_SCRIPT"
+echo "das predict \"\$inference_file\" \"\$das_model_base\" --segment-thres \"\$das_confidence_threshold\" --segment-minlen \"\$das_segment_min_len\" --segment-fillgap \"\$das_segment_fill_gap\" --save-format \"\$das_save_format\" && mv \"\${inference_file_base_name}_annotations.\${das_save_format}\" \"/mnt/cup/labs/$CUP_ROOT_DIR/\$1/audio/das_annotations\"" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB ARRAY ---------------- #
@@ -77,7 +77,7 @@ do
 	
     for j in $(seq 1 $AUDIO_CH_NUM);
     do  
-        sbatch "$JOB_SCRIPT" "$session_id" "$CUP_ROOT_DIR" "$j" "$WORK_DIR"
+        sbatch "$JOB_SCRIPT" "$session_id" "$j"
     done
 done
 

@@ -17,7 +17,7 @@
     "anipose_triangulation": false,
     "anipose_trm": false,
     "das_infer": false,
-    "das_summarize": false,
+    "das_summarize": true,
     "prepare_assign_vocalizations": false,
     "assign_vocalizations": false
   },
@@ -69,7 +69,9 @@
     }
   },
   "preprocess_data": {
-    "root_directories": []
+    "root_directories": [
+      "/mnt/murthy/Jinrun/Data/20250516_142319"
+    ]
   },
   "extract_phidget_data": {
     "Gatherer": {
