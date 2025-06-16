@@ -37,7 +37,7 @@ class Messenger:
         """
 
         if receivers is None:
-            self.receivers = ['']
+            self.receivers = []
         else:
             self.receivers = receivers
 
