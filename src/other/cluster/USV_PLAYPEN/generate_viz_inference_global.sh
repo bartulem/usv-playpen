@@ -5,7 +5,7 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT="Name"
+WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/visualizations"
 CPUS_PER_TASK=24
 TOTAL_MEMORY="96G"
 TIME_RESTRICTION="24:00:00"
@@ -28,7 +28,6 @@ VIDEO_DURATION=1199.0
 
 SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
 
-WORK_DIR="/mnt/cup/labs/falkner/$CUP_ROOT/USV_PLAYPEN/visualizations"
 JOB_SCRIPT="$WORK_DIR/generate_viz_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
