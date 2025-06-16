@@ -5,7 +5,10 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT="Name"
+WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
+HPSS_WORK_DIR="/mnt/cup/labs/falkner/Name/HPSS"
+DAS_WORK_DIR="/mnt/cup/labs/falkner/Name/DAS"
+
 CPUS_PER_TASK=24
 TOTAL_MEMORY="128G"
 TIME_RESTRICTION="03:00:00"
@@ -24,12 +27,11 @@ SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 
 SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
 
-HPSS_GLOBAL_JOB_LIST="/mnt/cup/labs/falkner/$CUP_ROOT/HPSS/job_list.txt"
-HPSS_GLOBAL_SHELL_SCRIPT="/mnt/cup/labs/falkner/$CUP_ROOT/HPSS/hpss_inference_global.sh"
-DAS_GLOBAL_JOB_LIST="/mnt/cup/labs/falkner/$CUP_ROOT/DAS/job_list.txt"
-DAS_GLOBAL_SHELL_SCRIPT="/mnt/cup/labs/falkner/$CUP_ROOT/DAS/das_inference_global.sh"
+HPSS_GLOBAL_JOB_LIST="$HPSS_WORK_DIR/job_list.txt"
+HPSS_GLOBAL_SHELL_SCRIPT="$HPSS_WORK_DIR/hpss_inference_global.sh"
+DAS_GLOBAL_JOB_LIST="$DAS_WORK_DIR/job_list.txt"
+DAS_GLOBAL_SHELL_SCRIPT="$DAS_WORK_DIR/das_inference_global.sh"
 
-WORK_DIR="/mnt/cup/labs/falkner/$CUP_ROOT/USV_PLAYPEN/processing"
 JOB_SCRIPT="$WORK_DIR/process_data_step_one_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"

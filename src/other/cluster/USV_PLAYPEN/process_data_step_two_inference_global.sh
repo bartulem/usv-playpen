@@ -5,7 +5,7 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT="Name"
+WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
 CPUS_PER_TASK=24
 TOTAL_MEMORY="128G"
 TIME_RESTRICTION="02:00:00"
@@ -26,7 +26,6 @@ EXP_CODE="BCL2MGFGe"
 
 SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
 
-WORK_DIR="/mnt/cup/labs/falkner/$CUP_ROOT/USV_PLAYPEN/processing"
 JOB_SCRIPT="$WORK_DIR/process_data_step_two_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
