@@ -26,8 +26,8 @@ SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
 
 HPSS_GLOBAL_JOB_LIST="/mnt/cup/labs/falkner/$CUP_ROOT/HPSS/job_list.txt"
 HPSS_GLOBAL_SHELL_SCRIPT="/mnt/cup/labs/falkner/$CUP_ROOT/HPSS/hpss_inference_global.sh"
-DAS_GLOBAL_JOB_LIST="/mnt/cup/labs/falkner/$CUP_ROOT/DAS/inference/job_list.txt"
-DAS_GLOBAL_SHELL_SCRIPT="/mnt/cup/labs/falkner/$CUP_ROOT/DAS/inference/das_inference_global.sh"
+DAS_GLOBAL_JOB_LIST="/mnt/cup/labs/falkner/$CUP_ROOT/DAS/job_list.txt"
+DAS_GLOBAL_SHELL_SCRIPT="/mnt/cup/labs/falkner/$CUP_ROOT/DAS/das_inference_global.sh"
 
 WORK_DIR="/mnt/cup/labs/falkner/$CUP_ROOT/USV_PLAYPEN/processing"
 JOB_SCRIPT="$WORK_DIR/process_data_step_one_inference_settings.sh"
