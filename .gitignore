@@ -4,6 +4,9 @@ venv*
 .DS_Store
 .github
 
+# setuptools_scm
+src/*/_version.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -130,3 +133,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# ruff
+.ruff_cache/
+
+# OS specific stuff
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
