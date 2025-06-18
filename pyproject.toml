@@ -47,7 +47,8 @@ dependencies = [
     "sleap-anipose",
     "scikit-learn",
     "toml",
-    "tqdm"
+    "tqdm",
+    "motifapi",
 ]
 
 [project.urls]
@@ -193,3 +194,6 @@ messages_control.disable = [
   "missing-function-docstring",
   "wrong-import-position",
 ]
+
+[tool.uv.sources]
+motifapi = { git = "https://github.com/loopbio/python-motifapi" }
