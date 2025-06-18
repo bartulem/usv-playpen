@@ -1,0 +1,191 @@
+experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Ivan", "Jiayi", "Jinrun", "Mala",]
+avisoft_recorder_exe = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
+avisoft_recorder_program_name = "rec_usgh.exe"
+avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics\\"
+coolterm_basedirectory = "D:\\CoolTerm"
+recording_files_destination_linux = [ "/home/labadmin/falkner/Bartul/Data",]
+recording_files_destination_win = [ "F:\\Bartul\\Data", "M:\\Bartul\\Data",]
+conduct_audio_recording = true
+conduct_tracking_calibration = false
+calibration_duration = 5
+video_session_duration = 20
+disable_ethernet = true
+ethernet_network = "Ethernet 5"
+
+[audio]
+total_device_num = 2
+total_mic_number = 24
+used_mics = [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,]
+cpu_priority = "high"
+cpu_affinity = [ 6,]
+
+[audio.general]
+display = 2
+dcolumns = 3
+total = 1
+disprangewaveform = 100.0
+disprangeamplitude = 100.0
+disprangespectrogram = 250.0
+dispspectrogramcontrast = 0.0
+usvmonitoringflags = 9136
+fftlength = 256
+
+[audio.screen_position]
+x1 = 1653
+y1 = 10
+x2 = 2557
+y2 = 1322
+
+[audio.devices]
+fabtast = 250000
+filter = 0
+filtercutoff = 15.0
+ntaps = 32
+devbuffer = 0.032
+nbrwavehdr = 32
+type = 0
+format = 1
+diff = 0
+usghflags = 1862
+outtype = 7
+outdeviceid = 0
+outfabtast = -22050
+outformat = 2
+outfoverabtast = 2000000
+outfovertaps = 32
+
+[audio.mics_config]
+name = 999
+id = 999
+typech = 13
+deviceid = 999
+channel = 999
+gain = 1
+fullscalespl = 0.0
+triggertype = 41
+toggle = 0
+invert = 0
+ditc = 0
+ditctime = "00:00:00:00"
+whistletracking = 0
+wtbcf = 0
+wtmaxchange = 3
+wtmaxchange2_ = 0
+wtminchange = -10
+wtminchange2_ = 0
+wtoutside = 0
+hilowratioenable = 0
+hilowratio = 2.0
+hilowratiofc = 15000.0
+wtslope = 0
+wtlevel = 0
+wtmindurtotal = 0.0
+wtmindur = 0.005
+wtmindur2_ = 0.0
+wtholdtime = 0.02
+wtmonotonic = 1
+wtbmaxdur = 0
+rejectwind = 0
+rwentropy = 0.5
+rwfpegel = 2.5
+rwdutycycle = 0.2
+rwtimeconstant = 2.0
+rwholdtime = 10.0
+fpegel = 5.0
+energy = 0
+frange = 1
+entropyb = 0
+entropy = 0.35
+increment = 1
+fu = 0.0
+fo = 250000.0
+pretrigger = 0.5
+mint = 0.0
+minst = 0.0
+fhold = 0.5
+
+[audio.monitor]
+mode = 0
+device = 0
+channel = 0
+gain = 0
+decimation = -1
+fd = 5
+bandwidth = 5
+center = 40000
+delay = 0.0
+over = 0
+sayf = 2
+startstop = 0
+timeexpansion = 0
+timeconstant = 0.003
+
+[audio.call]
+callno = 0
+groupno = 0
+logfileno = 0
+
+[video.general]
+browser = "chrome"
+expected_cameras = [ "21372315", "21372316", "21369048", "22085397", "21241563",]
+calibration_frame_rate = 10
+recording_frame_rate = 150
+expected_camera_num = 5
+recording_codec = "hq"
+monitor_recording = false
+monitor_specific_camera = false
+specific_camera_serial = "21372315"
+monitor_url = "http://10.241.1.205:8081/"
+delete_post_copy = true
+
+[video.metadata]
+institution = "PNI"
+laboratory = "Falkner/Murthy"
+experimenter = "Bartul"
+mice_num = "2"
+vacant_arena = false
+ambient_light = true
+record_brain = false
+usv_playback = false
+chemogenetics = false
+optogenetics = false
+brain_lesion = false
+devocalization = false
+female_urine = false
+female_bedding = false
+species = "mus musculus,mus musculus"
+strain = "CD1-WT,CD1-WT"
+cage = ""
+subject = "0,0"
+dob = ""
+sex = "male,female"
+weight = ""
+housing = "group,group"
+implant = ""
+virus = ""
+notes = ""
+
+[video.cameras_config.21372316]
+color_ID = "orange"
+exposure_time = 2500
+gain = 0
+
+[video.cameras_config.21372315]
+color_ID = "white"
+exposure_time = 2500
+gain = 0
+
+[video.cameras_config.21369048]
+color_ID = "red"
+exposure_time = 2500
+gain = 0
+
+[video.cameras_config.22085397]
+color_ID = "cyan"
+exposure_time = 2500
+gain = 0
+
+[video.cameras_config.21241563]
+color_ID = "yellow"
+exposure_time = 2500
+gain = 0

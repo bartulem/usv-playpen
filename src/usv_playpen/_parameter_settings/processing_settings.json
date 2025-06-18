@@ -1,0 +1,244 @@
+{
+  "processing_booleans": {
+    "conduct_video_concatenation": false,
+    "conduct_video_fps_change": false,
+    "conduct_audio_multichannel_to_single_ch": false,
+    "conduct_audio_cropping": false,
+    "conduct_audio_to_mmap": false,
+    "conduct_audio_filtering": false,
+    "conduct_hpss": false,
+    "conduct_audio_video_sync": false,
+    "conduct_ephys_video_sync": false,
+    "conduct_ephys_file_chaining": false,
+    "split_cluster_spikes": false,
+    "prepare_sleap_cluster": false,
+    "sleap_h5_conversion": false,
+    "anipose_calibration": false,
+    "anipose_triangulation": false,
+    "anipose_trm": false,
+    "das_infer": false,
+    "das_summarize": true,
+    "prepare_assign_vocalizations": false,
+    "assign_vocalizations": false
+  },
+  "anipose_operations": {
+    "ConvertTo3D": {
+      "sleap_file_conversion": {
+        "sleap_conda_env_name": "sleap1.3.3"
+      },
+      "conduct_anipose_calibration": {
+        "board_provided_bool": false,
+        "board_xy": [
+          8,
+          11
+        ],
+        "square_len": 24,
+        "marker_len_bits": [
+          18.75,
+          4
+        ],
+        "dict_size": 1000,
+        "img_width_height": [
+          2100,
+          2970
+        ]
+      },
+      "conduct_anipose_triangulation": {
+        "calibration_file_loc": "",
+        "triangulate_arena_points_bool": false,
+        "frame_restriction": null,
+        "excluded_views": [],
+        "display_progress_bool": true,
+        "ransac_bool": false,
+        "rigid_body_constraints": [],
+        "weak_body_constraints": [],
+        "smooth_scale": 4,
+        "weight_weak": 4,
+        "weight_rigid": 1,
+        "reprojection_error_threshold": 5,
+        "regularization_function": "l2",
+        "n_deriv_smooth": 1
+      },
+      "translate_rotate_metric": {
+        "original_arena_file_loc": "",
+        "save_transformed_data": "animal",
+        "delete_original_h5": true,
+        "static_reference_len": 0.615,
+        "experimental_codes": []
+      }
+    }
+  },
+  "preprocess_data": {
+    "root_directories": [
+      "/mnt/murthy/Jinrun/Data/20250516_142319"
+    ]
+  },
+  "extract_phidget_data": {
+    "Gatherer": {
+      "prepare_data_for_analyses": {
+        "extra_data_camera": "22085397"
+      }
+    }
+  },
+  "load_audio_files": {
+    "DataLoader": {
+      "wave_data_loc": [
+        ""
+      ],
+      "load_wavefile_data": {
+        "library": "scipy",
+        "conditional_arg": []
+      }
+    }
+  },
+  "modify_files": {
+    "Operator": {
+      "get_spike_times": {
+        "min_spike_num": 100,
+        "kilosort_version": "4"
+      },
+      "concatenate_audio_files": {
+        "concatenate_audio_format": "wav",
+        "concat_dirs": [
+          "hpss_filtered"
+        ]
+      },
+      "hpss_audio": {
+        "stft_window_length_hop_size": [
+          512,
+          128
+        ],
+        "kernel_size": [
+          5,
+          60
+        ],
+        "hpss_power": 4.0,
+        "margin": [
+          4,
+          1
+        ]
+      },
+      "filter_audio_files": {
+        "filter_audio_format": "wav",
+        "filter_dirs": [
+          "hpss"
+        ],
+        "filter_freq_bounds": [
+          0,
+          30000
+        ]
+      },
+      "concatenate_video_files": {
+        "concatenate_camera_serial_num": [
+          "21372315",
+          "21372316",
+          "21369048",
+          "22085397",
+          "21241563"
+        ],
+        "concatenate_video_extension": "mp4",
+        "concatenated_video_name": "concatenated_temp"
+      },
+      "rectify_video_fps": {
+        "encode_camera_serial_num": [
+          "21372315",
+          "21372316",
+          "21369048",
+          "22085397",
+          "21241563"
+        ],
+        "conversion_target_file": "concatenated_temp",
+        "encode_video_extension": "mp4",
+        "constant_rate_factor": 16,
+        "encoding_preset": "veryfast",
+        "delete_old_file": true
+      }
+    }
+  },
+  "prepare_cluster_job": {
+    "camera_names": [
+      "21372315",
+      "21372316",
+      "21369048",
+      "22085397",
+      "21241563"
+    ],
+    "inference_root_dir": "/mnt/falkner/Bartul/SLEAP/inference",
+    "centroid_model_path": "",
+    "centered_instance_model_path": ""
+  },
+  "preprocessing_plot": {
+    "SummaryPlotter": {
+      "preprocessing_summary": {}
+    }
+  },
+  "send_email": {
+    "Messenger": {
+      "processing_pc_list": [
+        "A84E Backup",
+        "A84E Main",
+        "165B Audio",
+        "165B Neural",
+        "A84I Main"
+      ],
+      "processing_pc_choice": "A84I Main",
+      "experimenter": "Bartul",
+      "send_message": {
+        "receivers": []
+      }
+    }
+  },
+  "synchronize_files": {
+    "Synchronizer": {
+      "validate_ephys_video_sync": {
+        "npx_file_type": "ap",
+        "npx_ms_divergence_tolerance": 12.0
+      },
+      "find_audio_sync_trains": {
+        "sync_ch_receiving_input": 2,
+        "extract_exact_video_frame_times_bool": false,
+        "nidq_sr": 62500.72887,
+        "nidq_num_channels": 9,
+        "nidq_triggerbox_input_bit_position": 5,
+        "nidq_sync_input_bit_position": 7
+      },
+      "find_video_sync_trains": {
+        "sync_camera_serial_num": [
+          "21372315"
+        ],
+        "led_px_version": "current",
+        "led_px_dev": 10,
+        "sync_video_extension": "mp4",
+        "relative_intensity_threshold": 1.0,
+        "millisecond_divergence_tolerance": 12
+      },
+      "crop_wav_files_to_video": {
+        "device_receiving_input": "both",
+        "triggerbox_ch_receiving_input": 4
+      }
+    }
+  },
+  "usv_inference": {
+    "FindMouseVocalizations": {
+      "das_command_line_inference": {
+        "das_conda_env_name": "das",
+        "das_model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
+        "model_name_base": "20240325_073951",
+        "output_file_type": "csv",
+        "segment_confidence_threshold": 0.5,
+        "segment_minlen": 0.015,
+        "segment_fillgap": 0.015
+      },
+      "summarize_das_findings": {
+        "len_win_signal": 512,
+        "low_freq_cutoff": 30000,
+        "noise_corr_cutoff_min": 0.15,
+        "noise_var_cutoff_max": 0.001
+      }
+    }
+  },
+  "vocalocator": {
+    "vcl_conda_env_name": "vcl",
+    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/20250312_earbud_model"
+  }
+}
