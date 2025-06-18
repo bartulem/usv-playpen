@@ -74,10 +74,9 @@ do
     session_id=$(sed -n "$i p" $ARRAY_ARGS_FILE)
     session_id=$(echo "$session_id" | tr -d '\r\n')
 	mkdir -p "/mnt/cup/labs/$CUP_ROOT_DIR/$session_id/audio/das_annotations"
-	
+
     for j in $(seq 1 $AUDIO_CH_NUM);
-    do  
+    do
         sbatch "$JOB_SCRIPT" "$session_id" "$j"
     done
 done
-

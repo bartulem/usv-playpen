@@ -1,4 +1,4 @@
-/* 
+/*
 generateSyncPulses.ino
 
 This arduino sketch generates a train of digital output pulses with random inter-pulse intervals.
@@ -6,10 +6,10 @@ This pulse train can be sent to any number of recording devices to allow precise
 respective system clocks, even if data is lost.
 
 By default, the Arduino will use the same random seed when booted up. Therefore if the random seed is not
-initialized independently, we would get exactly the same pulse train every time. If the arduino were 
-restarted during a recording, the re-occurrence of the same pulse sequence could be a big problem for 
+initialized independently, we would get exactly the same pulse train every time. If the arduino were
+restarted during a recording, the re-occurrence of the same pulse sequence could be a big problem for
 correctly aligning the pulse trains. To avoid this possibility, this sketch attempts to randomly initialize
-the seed of the random number generator, by using the intrinsic jitter in the Arduino's "watchdog" timer to 
+the seed of the random number generator, by using the intrinsic jitter in the Arduino's "watchdog" timer to
 obtain the initial seed value.
 
 Tested on the Arduino Uno.
@@ -44,9 +44,9 @@ const int op[OUTPUT_PINS] = {13};
 void CreateTrulyRandomSeed()
 {
   seed = 0;
-  nrot = 32; // Must be at least 4, but more increased the uniformity of the produced 
+  nrot = 32; // Must be at least 4, but more increased the uniformity of the produced
              // seeds entropy.
-  
+
   // The following five lines of code turn on the watch dog timer interrupt to create
   // the seed value
   cli();
@@ -54,15 +54,15 @@ void CreateTrulyRandomSeed()
   _WD_CONTROL_REG |= (1<<_WD_CHANGE_BIT) | (1<<WDE);
   _WD_CONTROL_REG = (1<<WDIE);
   sei();
- 
+
   while (nrot > 0);  // wait here until seed is created
- 
+
   // The following five lines turn off the watch dog timer interrupt
-  cli();                                             
-  MCUSR = 0;                                         
-  _WD_CONTROL_REG |= (1<<_WD_CHANGE_BIT) | (0<<WDE); 
-  _WD_CONTROL_REG = (0<< WDIE);                      
-  sei();                                             
+  cli();
+  MCUSR = 0;
+  _WD_CONTROL_REG |= (1<<_WD_CHANGE_BIT) | (0<<WDE);
+  _WD_CONTROL_REG = (0<< WDIE);
+  sei();
 }
 
 ISR(WDT_vect)
@@ -73,7 +73,7 @@ ISR(WDT_vect)
 }
 
 void setup() {
-  
+
   // Initialize random seed
   Serial.begin(9600);
   CreateTrulyRandomSeed();
@@ -91,23 +91,23 @@ void setup() {
     pinMode(pins[i], OUTPUT);
     digitalWrite(pins[i], LOW);
   }
-  
+
 }
 
 void loop() {
-  
+
   // Generate the pulse
   for (int j=0; j<OUTPUT_PINS; j++){digitalWrite(op[j], HIGH);}
   for (int i=0; i<N_PINS; i++){digitalWrite(pins[i], HIGH);}
-  
+
   delay(PULSE_LEN);
-  
+
   for (int j=0; j<OUTPUT_PINS; j++){digitalWrite(op[j], LOW);}
   for (int i=0; i<N_PINS; i++){digitalWrite(pins[i], LOW);}
-  
+
   // Wait for random inter-pulse interval
   int random_delay = random(INTERVAL_MIN, INTERVAL_MAX);
   Serial.println(random_delay);
   delay(random_delay);
-  
+
 }

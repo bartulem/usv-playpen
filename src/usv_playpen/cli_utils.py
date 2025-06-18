@@ -3,10 +3,13 @@
 Helper functions for command line interfaces.
 """
 
-import click
+from __future__ import annotations
+
 import json
 import pathlib
 from typing import Any
+
+import click
 
 
 class StringTuple(click.ParamType):
@@ -14,6 +17,7 @@ class StringTuple(click.ParamType):
     A custom click type that accepts a comma-separated pair of strings
     and converts it into a tuple. e.g., "Head, Nose" -> ('Head', 'Nose')
     """
+
     name = "STRING,STRING"  # This name is shown in help text, e.g., [--option STRING,STRING]
 
     def convert(self, value, param, ctx):
@@ -23,7 +27,7 @@ class StringTuple(click.ParamType):
         """
         try:
             # Split the input string by the comma
-            parts = [part.strip() for part in value.split(',')]
+            parts = [part.strip() for part in value.split(",")]
 
             # Validate that there are exactly two parts
             if len(parts) != 2:
@@ -39,12 +43,12 @@ class StringTuple(click.ParamType):
             return tuple(parts)
 
         except ValueError:
-            self.fail(f"'{value}' could not be parsed as a comma-separated pair.", param, ctx)
+            self.fail(
+                f"'{value}' could not be parsed as a comma-separated pair.", param, ctx
+            )
 
 
-def set_nested_key(d: dict = None,
-                   target_key: str = None,
-                   value: Any = None) -> bool:
+def set_nested_key(d: dict = None, target_key: str = None, value: Any = None) -> bool:
     """
     Description
     -----------
@@ -80,10 +84,13 @@ def set_nested_key(d: dict = None,
 
     return False
 
-def modify_settings_json_for_cli(ctx: click.Context = None,
-                                 provided_params: list = None,
-                                 parameters_lists: list = None,
-                                 settings_dict: str = None) -> dict:
+
+def modify_settings_json_for_cli(
+    ctx: click.Context = None,
+    provided_params: list = None,
+    parameters_lists: list = None,
+    settings_dict: str = None,
+) -> dict:
     """
     Description
     -----------
@@ -111,7 +118,9 @@ def modify_settings_json_for_cli(ctx: click.Context = None,
     ----------
     """
 
-    with open((pathlib.Path(__file__).parent / f'_parameter_settings/{settings_dict}.json'), 'r') as input_json_file:
+    with open(
+        pathlib.Path(__file__).parent / f"_parameter_settings/{settings_dict}.json"
+    ) as input_json_file:
         settings_parameter_dict = json.load(input_json_file)
 
     if parameters_lists is None:
@@ -120,15 +129,15 @@ def modify_settings_json_for_cli(ctx: click.Context = None,
     for param_name in provided_params:
         if param_name not in parameters_lists:
             param_value = ctx.params[param_name]
+        elif isinstance(ctx.params[param_name], tuple):
+            param_value = list(ctx.params[param_name])
         else:
-            if isinstance(ctx.params[param_name], tuple):
-                param_value = list(ctx.params[param_name])
-            else:
-                param_value = [ctx.params[param_name]]
+            param_value = [ctx.params[param_name]]
 
         set_nested_key(settings_parameter_dict, param_name, param_value)
 
     return settings_parameter_dict
+
 
 def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     """
@@ -154,11 +163,12 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     ----------
     """
 
-    keys = path.split('.')
+    keys = path.split(".")
     current_level = d
     for key in keys[:-1]:
         current_level = current_level.setdefault(key, {})
     current_level[keys[-1]] = value
+
 
 def _convert_value(s: str) -> Any:
     """
@@ -186,10 +196,10 @@ def _convert_value(s: str) -> Any:
     ----------
     """
 
-    s = s.strip() # Remove leading/trailing whitespace
-    if s.lower() == 'true':
+    s = s.strip()  # Remove leading/trailing whitespace
+    if s.lower() == "true":
         return True
-    if s.lower() == 'false':
+    if s.lower() == "false":
         return False
     try:
         f = float(s)
@@ -197,7 +207,8 @@ def _convert_value(s: str) -> Any:
             return int(f)
         return f
     except ValueError:
-        return s.strip('"\'')
+        return s.strip("\"'")
+
 
 def override_toml_values(overrides: list, exp_settings_dict: dict) -> dict:
     """
@@ -224,14 +235,14 @@ def override_toml_values(overrides: list, exp_settings_dict: dict) -> dict:
     """
 
     for override_str in overrides:
-        if '=' not in override_str:
+        if "=" not in override_str:
             continue
 
-        key_path, value_str = override_str.split('=', 1)
+        key_path, value_str = override_str.split("=", 1)
         final_value: Any
 
-        if ',' in value_str:
-            items = value_str.split(',')
+        if "," in value_str:
+            items = value_str.split(",")
             final_value = [_convert_value(item) for item in items]
         else:
             final_value = _convert_value(value_str)

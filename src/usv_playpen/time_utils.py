@@ -3,10 +3,14 @@
 Utility functions for precise waiting in both GUI and non-GUI contexts.
 """
 
+from __future__ import annotations
+
 import time
+
 from PyQt6.QtCore import QCoreApplication
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
+
 
 def is_gui_context() -> bool:
     """

@@ -31,4 +31,3 @@ the tool correctly. Should you have any questions, please do not hesitate to ope
    Analyze
    Visualize
    CLI
-

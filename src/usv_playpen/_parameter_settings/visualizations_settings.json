@@ -1,12 +1,6 @@
 {
-  "male_colors": [
-    "#9AC0CD",
-    "#8CA252"
-  ],
-  "female_colors": [
-    "#FF6347",
-    "#B851B4"
-  ],
+  "male_colors": ["#9AC0CD", "#8CA252"],
+  "female_colors": ["#FF6347", "#B851B4"],
   "visualize_booleans": {
     "make_behavioral_tuning_figures_bool": false,
     "make_behavioral_videos_bool": false
@@ -52,13 +46,9 @@
     "raster_plot_bool": false,
     "raster_selection_criteria": {
       "brain_areas": [],
-      "other": [
-        "good"
-      ]
+      "other": ["good"]
     },
-    "raster_special_units": [
-      ""
-    ],
+    "raster_special_units": [""],
     "spike_sound_bool": false,
     "beh_features_bool": false,
     "beh_features_to_plot": [],
@@ -104,18 +94,9 @@
       "raster_ll": 0.9,
       "spectrogram_cbar_bool": true,
       "spectrogram_plot_window_size": 1,
-      "spectrogram_power_limit": [
-        -60,
-        0
-      ],
-      "spectrogram_frequency_limit": [
-        30000,
-        125000
-      ],
-      "spectrogram_yticks": [
-        50000,
-        100000
-      ],
+      "spectrogram_power_limit": [-60, 0],
+      "spectrogram_frequency_limit": [30000, 125000],
+      "spectrogram_yticks": [50000, 100000],
       "spectrogram_stft_nfft": 512,
       "plot_usv_segments_bool": true,
       "usv_segments_ypos": 120000,

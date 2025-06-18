@@ -61,7 +61,7 @@ do
     do
         session_id=$(sed -n "$i p" $ARRAY_ARGS_FILE)
         session_id=$(echo "$session_id" | tr -d '\r\n')
-        
+
         sbatch "$JOB_SCRIPT" "$session_id" "$CUP_ROOT_DIR" "$j"
     done
 done

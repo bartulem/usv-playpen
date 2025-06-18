@@ -3,6 +3,8 @@
 Send e-mail notifying users the PC is busy.
 """
 
+from __future__ import annotations
+
 import configparser
 import os
 import smtplib
@@ -11,12 +13,13 @@ from email.message import EmailMessage
 
 
 class Messenger:
-
-    def __init__(self, receivers: list = None,
-                 exp_settings_dict: dict = None,
-                 message_output: callable = None,
-                 no_receivers_notification: bool = True) -> None:
-
+    def __init__(
+        self,
+        receivers: list = None,
+        exp_settings_dict: dict = None,
+        message_output: callable = None,
+        no_receivers_notification: bool = True,
+    ) -> None:
         """
         Initializes the Messenger class.
 
@@ -73,15 +76,23 @@ class Messenger:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/email_config.ini')):
+        if not os.path.exists(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "_config/email_config.ini"
+            )
+        ):
             self.message_output("E-mail config file not found. Try again!")
             sys.exit()
         else:
-            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/email_config.ini'))
-            return config['email']['email_address'], config['email']['email_password']
+            config.read(
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "_config/email_config.ini",
+                )
+            )
+            return config["email"]["email_address"], config["email"]["email_password"]
 
-    def send_message(self, subject: str = None,
-                     message: str = None) -> bool | None:
+    def send_message(self, subject: str = None, message: str = None) -> bool | None:
         """
         Description
         ----------
@@ -107,24 +118,27 @@ class Messenger:
 
                 if email_address is None or email_password is None:
                     # no email address or password
-                    self.message_output("Did you set the e-mail address and password correctly?")
+                    self.message_output(
+                        "Did you set the e-mail address and password correctly?"
+                    )
                     sys.exit()
 
                 # create email
                 msg = EmailMessage()
-                msg['Subject'] = subject
-                msg['From'] = email_address
-                msg['To'] = ', '.join(self.receivers)
+                msg["Subject"] = subject
+                msg["From"] = email_address
+                msg["To"] = ", ".join(self.receivers)
                 msg.set_content(message)
 
                 # send email
-                with smtplib.SMTP_SSL(host='smtp.gmail.com', port=465) as smtp:
+                with smtplib.SMTP_SSL(host="smtp.gmail.com", port=465) as smtp:
                     smtp.login(email_address, email_password)
                     smtp.send_message(msg)
                 return True
             except Exception as e:
                 self.message_output("Error occurred during an attempt to send e-mail.")
                 self.message_output(str(e))
-        else:
-            if self.no_receivers_notification:
-                self.message_output("You chose not to notify anyone via e-mail about PC usage.")
+        elif self.no_receivers_notification:
+            self.message_output(
+                "You chose not to notify anyone via e-mail about PC usage."
+            )

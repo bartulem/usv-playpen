@@ -3,16 +3,20 @@
 Helper functions for making vocalocator datasets.
 """
 
-import h5py
-from joblib import Parallel, delayed
-import numpy as np
+from __future__ import annotations
+
 import pathlib
+from typing import Any
+
+import h5py
+import numpy as np
 import polars as pls
+from joblib import Parallel, delayed
 from scipy.stats import vonmises as sp_vonmises
-from typing import Optional, Any
 from tqdm import tqdm
 
 softplus = lambda x: np.log1p(np.exp(x))
+
 
 def get_arena_dimensions(arena_dims_path: pathlib.Path = None) -> np.ndarray:
     """
@@ -34,17 +38,20 @@ def get_arena_dimensions(arena_dims_path: pathlib.Path = None) -> np.ndarray:
     ----------
     """
 
-    with h5py.File(arena_dims_path, mode='r') as f:
-        arena_nodes = [node_item.decode('utf-8') for node_item in list(f['node_names'])]
-        node_list_indices = [arena_nodes.index('North'),
-                             arena_nodes.index('West'),
-                             arena_nodes.index('South'),
-                             arena_nodes.index('East')]
-        four_corners = f['tracks'][0, 0, node_list_indices, :]
+    with h5py.File(arena_dims_path, mode="r") as f:
+        arena_nodes = [node_item.decode("utf-8") for node_item in list(f["node_names"])]
+        node_list_indices = [
+            arena_nodes.index("North"),
+            arena_nodes.index("West"),
+            arena_nodes.index("South"),
+            arena_nodes.index("East"),
+        ]
+        four_corners = f["tracks"][0, 0, node_list_indices, :]
         x_dim = np.max(four_corners[:, 0]) - np.min(four_corners[:, 0])
         y_dim = np.max(four_corners[:, 1]) - np.min(four_corners[:, 1])
 
     return np.array([x_dim, y_dim])
+
 
 def load_usv_segments(segment_file: pathlib.Path = None) -> np.ndarray:
     """
@@ -69,10 +76,15 @@ def load_usv_segments(segment_file: pathlib.Path = None) -> np.ndarray:
 
     usv_summary_df = pls.read_csv(segment_file)
 
-    return np.stack(arrays=[usv_summary_df['start'].to_numpy(), usv_summary_df['stop'].to_numpy()],
-                    axis=1)
+    return np.stack(
+        arrays=[usv_summary_df["start"].to_numpy(), usv_summary_df["stop"].to_numpy()],
+        axis=1,
+    )
 
-def load_tracks_from_h5(h5_file_path: pathlib.Path = None) -> tuple[np.ndarray, np.ndarray]:
+
+def load_tracks_from_h5(
+    h5_file_path: pathlib.Path = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
     ----------
@@ -92,10 +104,11 @@ def load_tracks_from_h5(h5_file_path: pathlib.Path = None) -> tuple[np.ndarray, 
     ----------
     """
 
-    with h5py.File(name=h5_file_path, mode='r') as f:
-        tracks = f['tracks'][:]
-        names = f['node_names'][:]
+    with h5py.File(name=h5_file_path, mode="r") as f:
+        tracks = f["tracks"][:]
+        names = f["node_names"][:]
         return tracks, names
+
 
 def to_float(input_array: np.ndarray = None) -> np.ndarray:
     """
@@ -117,14 +130,19 @@ def to_float(input_array: np.ndarray = None) -> np.ndarray:
     ----------
     """
 
-    return (input_array.astype(np.float32) / np.iinfo(input_array.dtype).max).astype(np.float16)
+    return (input_array.astype(np.float32) / np.iinfo(input_array.dtype).max).astype(
+        np.float16
+    )
 
-def write_to_h5(output_path: pathlib.Path = None,
-                audio: list[tuple[np.ndarray, Any]] = None,
-                node_names: np.ndarray = None,
-                locations: np.ndarray = None,
-                length_idx: np.ndarray = None,
-                extra_metadata: Optional[dict] = None) -> None:
+
+def write_to_h5(
+    output_path: pathlib.Path = None,
+    audio: list[tuple[np.ndarray, Any]] = None,
+    node_names: np.ndarray = None,
+    locations: np.ndarray = None,
+    length_idx: np.ndarray = None,
+    extra_metadata: dict | None = None,
+) -> None:
     """
     Description
     ----------
@@ -152,22 +170,27 @@ def write_to_h5(output_path: pathlib.Path = None,
     ----------
     """
 
-    with h5py.File(output_path, mode='w') as f:
+    with h5py.File(output_path, mode="w") as f:
         if extra_metadata is not None:
             for k, v in extra_metadata.items():
                 f.attrs[k] = v
-        f.create_dataset(name='audio', data=np.concatenate(audio, axis=0), dtype=np.float16)
-        f.create_dataset(name='node_names', data=node_names)
-        f.create_dataset(name='locations', data=locations)
-        f.create_dataset(name='length_idx', data=length_idx)
+        f.create_dataset(
+            name="audio", data=np.concatenate(audio, axis=0), dtype=np.float16
+        )
+        f.create_dataset(name="node_names", data=node_names)
+        f.create_dataset(name="locations", data=locations)
+        f.create_dataset(name="length_idx", data=length_idx)
 
-def eval_pdf_with_angle(points_spatial: np.ndarray = None,
-                        points_angular: np.ndarray = None,
-                        mean_2d: np.ndarray = None,
-                        cov_2d: np.ndarray = None,
-                        center_rad: Optional[float] = None,
-                        concentration: Optional[float] = None,
-                        histogram: Optional[np.ndarray] = None,) -> np.ndarray:
+
+def eval_pdf_with_angle(
+    points_spatial: np.ndarray = None,
+    points_angular: np.ndarray = None,
+    mean_2d: np.ndarray = None,
+    cov_2d: np.ndarray = None,
+    center_rad: float | None = None,
+    concentration: float | None = None,
+    histogram: np.ndarray | None = None,
+) -> np.ndarray:
     """
     Description
     ----------
@@ -205,7 +228,9 @@ def eval_pdf_with_angle(points_spatial: np.ndarray = None,
     diff = points_spatial - mean_2d
 
     if histogram is None:
-        angular_pdf = sp_vonmises.pdf(points_angular, loc=center_rad, kappa=concentration)
+        angular_pdf = sp_vonmises.pdf(
+            points_angular, loc=center_rad, kappa=concentration
+        )
     else:
         angular_pdf = histogram / histogram.sum()
     try:
@@ -225,8 +250,8 @@ def eval_pdf_with_angle(points_spatial: np.ndarray = None,
 
         return probs.reshape(*points_orig_shape, len(points_angular))
 
-def compute_covs_6d(raw_outputs: np.ndarray,
-                    arena_dims: np.ndarray) -> np.ndarray:
+
+def compute_covs_6d(raw_outputs: np.ndarray, arena_dims: np.ndarray) -> np.ndarray:
     """
     Description
     ----------
@@ -261,10 +286,13 @@ def compute_covs_6d(raw_outputs: np.ndarray,
 
     return covs
 
-def estimate_angle_pdf(pred_6d_mean: np.ndarray,
-                       pred_6d_cov: np.ndarray,
-                       n_samples: int = 1000,
-                       theta_bins: Optional[np.ndarray] = None,) -> tuple[np.ndarray, np.ndarray]:
+
+def estimate_angle_pdf(
+    pred_6d_mean: np.ndarray,
+    pred_6d_cov: np.ndarray,
+    n_samples: int = 1000,
+    theta_bins: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
     ----------
@@ -293,15 +321,21 @@ def estimate_angle_pdf(pred_6d_mean: np.ndarray,
     if theta_bins is None:
         theta_bins = np.linspace(-np.pi, np.pi, 46, endpoint=True)
 
-    gaussian_rv = np.random.multivariate_normal(mean=pred_6d_mean, cov=pred_6d_cov, size=n_samples)
-    angles = np.arctan2(gaussian_rv[:, 1] - gaussian_rv[:, 4], gaussian_rv[:, 0] - gaussian_rv[:, 3])
+    gaussian_rv = np.random.multivariate_normal(
+        mean=pred_6d_mean, cov=pred_6d_cov, size=n_samples
+    )
+    angles = np.arctan2(
+        gaussian_rv[:, 1] - gaussian_rv[:, 4], gaussian_rv[:, 0] - gaussian_rv[:, 3]
+    )
     angle_pdf, _ = np.histogram(angles, bins=theta_bins, density=False)
     angle_pdf = angle_pdf / angle_pdf.sum()
 
     return theta_bins, angle_pdf
 
-def get_confidence_set(pdf: np.ndarray = None,
-                       confidence_level: float = None) -> np.ndarray:
+
+def get_confidence_set(
+    pdf: np.ndarray = None, confidence_level: float = None
+) -> np.ndarray:
     """
     Description
     ----------
@@ -335,8 +369,10 @@ def get_confidence_set(pdf: np.ndarray = None,
     return confidence_set.reshape(orig_shape)
 
 
-def make_xy_grid(arena_dims: np.ndarray = None,
-                 render_dims: np.ndarray = None,) -> np.ndarray:
+def make_xy_grid(
+    arena_dims: np.ndarray = None,
+    render_dims: np.ndarray = None,
+) -> np.ndarray:
     """
     Description
     ----------
@@ -359,12 +395,20 @@ def make_xy_grid(arena_dims: np.ndarray = None,
     ----------
     """
 
-    test_points = np.stack(np.meshgrid(np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, render_dims[0]), np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, render_dims[1]),), axis=-1,)
+    test_points = np.stack(
+        np.meshgrid(
+            np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, render_dims[0]),
+            np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, render_dims[1]),
+        ),
+        axis=-1,
+    )
 
     return test_points
 
-def convert_from_arb(output: np.ndarray = None,
-                     arena_dims: np.ndarray = None) -> np.ndarray:
+
+def convert_from_arb(
+    output: np.ndarray = None, arena_dims: np.ndarray = None
+) -> np.ndarray:
     """
     Description
     ----------
@@ -391,10 +435,13 @@ def convert_from_arb(output: np.ndarray = None,
 
     return output
 
-def get_conf_sets_6d(raw_output: np.ndarray = None,
-                     arena_dims_mm: np.ndarray = None,
-                     temperature: float = 1.0,
-                     return_pdf: bool = False,) -> tuple:
+
+def get_conf_sets_6d(
+    raw_output: np.ndarray = None,
+    arena_dims_mm: np.ndarray = None,
+    temperature: float = 1.0,
+    return_pdf: bool = False,
+) -> tuple:
     """
     Description
     ----------
@@ -427,17 +474,26 @@ def get_conf_sets_6d(raw_output: np.ndarray = None,
     points_angular = 0.5 * (bins_angular[1:] + bins_angular[:-1])  # Bin centers
 
     def routine(mean_6d, cov_6d):
-        _, est_angle_pdf = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, theta_bins=bins_angular)
-        total_pdf = eval_pdf_with_angle(points_spatial=points_spatial,
-                                        points_angular=points_angular,
-                                        mean_2d=mean_6d[:2],
-                                        cov_2d=cov_6d[:2, :2],
-                                        histogram=est_angle_pdf,)
+        _, est_angle_pdf = estimate_angle_pdf(
+            mean_6d, cov_6d, n_samples=500, theta_bins=bins_angular
+        )
+        total_pdf = eval_pdf_with_angle(
+            points_spatial=points_spatial,
+            points_angular=points_angular,
+            mean_2d=mean_6d[:2],
+            cov_2d=cov_6d[:2, :2],
+            histogram=est_angle_pdf,
+        )
         conf_set = get_confidence_set(total_pdf, 0.95)
         conf_set_no_angle = get_confidence_set(total_pdf.sum(axis=-1), 0.95)
         return conf_set, conf_set_no_angle, total_pdf
 
-    results = Parallel(n_jobs=-1)(delayed(routine)(mean_6d, cov_6d) for mean_6d, cov_6d in tqdm(zip(pred_means_mm, pred_cov_6d_mm), total=len(pred_means_mm)))
+    results = Parallel(n_jobs=-1)(
+        delayed(routine)(mean_6d, cov_6d)
+        for mean_6d, cov_6d in tqdm(
+            zip(pred_means_mm, pred_cov_6d_mm, strict=False), total=len(pred_means_mm)
+        )
+    )
 
     conf_sets = np.array([result[0] for result in results])
     conf_sets_noangle = np.array([result[1] for result in results])
@@ -448,9 +504,12 @@ def get_conf_sets_6d(raw_output: np.ndarray = None,
 
     return conf_sets, conf_sets_noangle
 
-def are_points_in_conf_set(confidence_sets: np.ndarray = None,
-                           points: np.ndarray = None,
-                           arena_dims: np.ndarray = None) -> np.ndarray:
+
+def are_points_in_conf_set(
+    confidence_sets: np.ndarray = None,
+    points: np.ndarray = None,
+    arena_dims: np.ndarray = None,
+) -> np.ndarray:
     """
     Description
     ----------
@@ -486,9 +545,16 @@ def are_points_in_conf_set(confidence_sets: np.ndarray = None,
     angle_bin_indices = np.digitize(head_to_nose_yaw, angle_bins) - 1
 
     if len(confidence_sets.shape) == 3:  # no angles in the confidence set
-        in_set = confidence_sets[np.arange(confidence_sets.shape[0]), y_bin_indices, x_bin_indices]
+        in_set = confidence_sets[
+            np.arange(confidence_sets.shape[0]), y_bin_indices, x_bin_indices
+        ]
     elif len(confidence_sets.shape) == 4:  # has angles
-        in_set = confidence_sets[np.arange(len(confidence_sets)), y_bin_indices, x_bin_indices, angle_bin_indices,]
+        in_set = confidence_sets[
+            np.arange(len(confidence_sets)),
+            y_bin_indices,
+            x_bin_indices,
+            angle_bin_indices,
+        ]
     else:
         raise ValueError("Invalid confidence set shape")
 
