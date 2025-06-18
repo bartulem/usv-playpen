@@ -242,6 +242,8 @@ If you plan to send/receive e-mail notifications when jobs start/complete, you n
 
 .. code-block:: ini
 
-   [email]
-   email_address=165b.pni@gmail.com
-   email_password=xxx
+    [email]
+    email_host=smtp.gmail.com
+    email_port=465
+    email_address=165b.pni@gmail.com
+    email_password=xxx

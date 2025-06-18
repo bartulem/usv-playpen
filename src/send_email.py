@@ -78,7 +78,7 @@ class Messenger:
             sys.exit()
         else:
             config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/email_config.ini'))
-            return config['email']['email_address'], config['email']['email_password']
+            return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'],config['email']['email_password']
 
     def send_message(self, subject: str = None,
                      message: str = None) -> bool | None:
@@ -103,7 +103,7 @@ class Messenger:
 
         if len(self.receivers) > 0:
             try:
-                email_address, email_password = self.get_email_params()
+                email_host, email_port, email_address, email_password = self.get_email_params()
 
                 if email_address is None or email_password is None:
                     # no email address or password
@@ -118,7 +118,7 @@ class Messenger:
                 msg.set_content(message)
 
                 # send email
-                with smtplib.SMTP_SSL(host='smtp.gmail.com', port=465) as smtp:
+                with smtplib.SMTP_SSL(host=email_host, port=email_port) as smtp:
                     smtp.login(email_address, email_password)
                     smtp.send_message(msg)
                 return True
