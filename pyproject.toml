@@ -65,9 +65,12 @@ dev = [
 docs = [
   "sphinx>=7.0",
   "myst_parser>=0.13",
+  "sphinx_rtd_theme",
+  "sphinx-rtd-dark-mode",
   "sphinx_copybutton",
   "sphinx_autodoc_typehints",
   "furo>=2023.08.17",
+  "nbsphinx",
 ]
 
 #[tool.setuptools.package-data]
