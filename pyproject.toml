@@ -75,17 +75,6 @@ docs = [
   "nbsphinx",
 ]
 
-#[tool.setuptools.package-data]
-#usv_playpen = [
-#    "img/*.png",
-#    "fonts/*.ttf",
-#    "_config/*",
-#    "_parameter_settings/*.json",
-#    "other/cluster/*/*",
-#    "other/playback/*.py",
-#    "other/synchronization/*.ino"
-#]
-
 [project.scripts]
 usv-playpen = "usv_playpen.usv_playpen_gui:main"
 conduct-calibration = "usv_playpen.behavioral_experiments:conduct_calibration_cli"
