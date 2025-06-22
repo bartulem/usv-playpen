@@ -49,7 +49,7 @@ echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
 echo "conda activate $USV_PLAYPEN_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "generate-viz --root-directory \"$SESSION_ROOT_DIRECTORY\" --arena-directory \"$ARENA_DIRECTORY\" --exp-id $EXP_ID --animate-bool --video-start_time $VIDEO_START_TIME --video-duration $VIDEO_DURATION" >> "$JOB_SCRIPT"
+echo "generate-viz --root-directory \"$SESSION_ROOT_DIRECTORY\" --arena-directory \"$ARENA_DIRECTORY\" --exp-id $EXP_ID --animate --video-start-time $VIDEO_START_TIME --video-duration $VIDEO_DURATION" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

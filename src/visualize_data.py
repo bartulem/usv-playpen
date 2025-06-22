@@ -6,7 +6,6 @@ Visualizes 3D tracking, vocalization and neural data.
 import traceback
 from click.core import ParameterSource
 from datetime import datetime
-from typing import Union
 from .cli_utils import *
 from .send_email import Messenger
 from .visualizations.make_behavioral_tuning_figures import RatemapFigureMaker
@@ -123,13 +122,13 @@ class Visualizer:
 @click.option('--sequence-audio-file', 'sequence_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Audible audio sequence file path.')
 @click.option('--animate/--no-animate', 'animate_bool', default=None, help='Animate visualization.')
 @click.option('--video-start-time', 'video_start_time', type=click.IntRange(min=0), default=None, required=False, help='Video start time (in s).')
-@click.option('--video-duration', 'video_duration', type=Union[int, float], default=None, required=False, help='Video duration (in s).')
+@click.option('--video-duration', 'video_duration', type=float, default=None, required=False, help='Video duration (in s).')
 @click.option('--plot-theme', 'plot_theme', type=str, default=None, required=False, help='Plot background theme (light or dark).')
 @click.option('--save-fig/--no-save-fig', 'save_fig', default=None, help='Save plot as figure to file.')
 @click.option('--view-angle', 'view_angle', type=str, default=None, required=False, help='View angle for 3D visualization ("top" or "side").')
-@click.option('--side-azimuth-start', 'side_azimuth_start', type=Union[int, float], default=None, required=False, help='Azimuth angle for side view (in degrees).')
+@click.option('--side-azimuth-start', 'side_azimuth_start', type=float, default=None, required=False, help='Azimuth angle for side view (in degrees).')
 @click.option('--rotate-side-view/--no-rotate-side-view', 'rotate_side_view_bool', default=None, help='Rotate side view in animation.')
-@click.option('--rotation-speed', 'rotation_speed', type=Union[int, float], default=None, required=False, help='Rotation speed (in degrees/s).')
+@click.option('--rotation-speed', 'rotation_speed', type=float, default=None, required=False, help='Rotation speed (in degrees/s).')
 @click.option('--history/--no-history', 'history_bool', default=None, help='Display history of single mouse node.')
 @click.option('--speaker/--no-speaker', 'speaker_bool', default=None, help='Display speaker node in visualization.')
 @click.option('--spectrogram/--no-spectrogram', 'spectrogram_bool', default=None, help='Display spectrogram of audio sequence.')
