@@ -117,7 +117,7 @@ class Visualizer:
 @click.command(name='generate-viz')
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
 @click.option('--arena-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Arena session path.')
-@click.option('--exp-id', 'experimenter', type=str, default=None, required=True, help='Experimenter ID.')
+@click.option('--exp-id', type=str, default=None, required=True, help='Experimenter ID.')
 @click.option('--speaker-audio-file', 'speaker_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Speaker audio file path.')
 @click.option('--sequence-audio-file', 'sequence_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Audible audio sequence file path.')
 @click.option('--animate/--no-animate', 'animate_bool', default=None, help='Animate visualization.')
