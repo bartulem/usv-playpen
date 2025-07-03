@@ -66,7 +66,7 @@ class Messenger:
 
         Returns
         ----------
-        email_address (str), email_password (str)
+        email_host (str), email_port (str), email_address (str), email_password (str)
             Lab e-mail address and password.
         ----------
         """

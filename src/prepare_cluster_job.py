@@ -53,7 +53,7 @@ class PrepareClusterJob:
         This method creates a text file (job_list.txt) with
         a list of videos to run SLEAP inference on.
 
-        NB: You need this file w/ to run SLEAP inference on the cluster!
+        NB: You need the output text file to run SLEAP inference on the cluster!
         ----------
 
         Parameter

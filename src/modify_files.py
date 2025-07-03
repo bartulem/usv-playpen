@@ -102,7 +102,7 @@ class Operator:
         Returns
         -------
          spike times (np.ndarray)
-            Arrays that contain spike times (in seconds and frames);
+            Arrays that contain spike times: seconds (row 0) and frames (row 1).;
             saved as .npy files in a separate directory.
         """
 
@@ -348,9 +348,6 @@ class Operator:
         This method splits multichannel audio file into single channel files and
         concatenates single channel files via Sox, since multichannel files where
         split due to a size limitation.
-
-        NB: You need to install sox: https://sourceforge.net/projects/sox/files/sox/
-        and add the sox directory to your system PATH prior to running this.
         ----------
 
         Parameters
@@ -490,9 +487,6 @@ class Operator:
         Description
         ----------
         This method filters audio files via Sox.
-
-        NB: You need to install sox: https://sourceforge.net/projects/sox/files/sox/
-        and add the sox directory to your system PATH prior to running this.
 
         It applies a sinc kaiser-windowed low-pass, high-pass, band-pass, or band-reject filter
         to the signal. The freqHP and freqLP parameters give the frequencies of the 6dB points
