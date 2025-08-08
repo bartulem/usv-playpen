@@ -5,13 +5,16 @@ Visualizes 3D tracking, vocalization and neural data.
 
 from __future__ import annotations
 
+import json
+import pathlib
 import traceback
 from datetime import datetime
 from typing import Union
 
+import click
 from click.core import ParameterSource
 
-from .cli_utils import *
+from .cli_utils import modify_settings_json_for_cli
 from .send_email import Messenger
 from .visualizations.make_behavioral_tuning_figures import RatemapFigureMaker
 from .visualizations.make_behavioral_videos import Create3DVideo
