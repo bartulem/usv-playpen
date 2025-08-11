@@ -5,47 +5,18 @@ Test recording module.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import configparser
-import os
-import pathlib
-import sys
 
 import motifapi
-import toml
 
-from usv_playpen.send_email import Messenger
-
-config_dir_global = pathlib.Path(__file__).parent.parent / "src" / "_config"
-exp_settings_dict = toml.load(
-    f"{config_dir_global}{os.sep}behavioral_experiments_settings.toml"
-)
-
-
-# def test_recording_send_email():
-#     try:
-#         email_receiver = [str(email_address)]
-#     except IndexError:
-#         print("Error: Missing e-mail argument. Please provide it.")
-#
-#     # test email sending
-#     try:
-#         Messenger(
-#             receivers=email_receiver, exp_settings_dict=exp_settings_dict
-#         ).send_message(
-#             subject="Test",
-#             message="This is a 165B recording test email. Please do not reply.",
-#         )
-#         email_success = True
-#     except Exception:
-#         email_success = False
-#
-#     assert email_success, "165B not able to send e-mails"
-
+from usv_playpen import config_dir
 
 def test_recording_video_software():
     # test video recording capabilities
     video_config = configparser.ConfigParser()
-    video_config.read(f"{config_dir_global}{os.sep}motif_config.ini")
+    video_config.read(config_dir / "motif_config.ini")
 
     try:
         motif_api = motifapi.MotifApi(
@@ -58,17 +29,13 @@ def test_recording_video_software():
     assert motif_success, "Motif not operational on this PC."
 
 
-def test_recording_audio_sync_software():
+def test_recording_audio_sync_software(behavioral_experiments_settings):
     # test audio / sync_software presence
-    config_file_status = os.path.isfile(
-        f"{config_dir_global}{os.sep}avisoft_config.ini"
-    ) and os.path.isfile(f"{config_dir_global}{os.sep}coolterm_config.stc")
+    config_file_status = (config_dir / "avisoft_config.ini").is_file() and (config_dir / "coolterm_config.stc").is_file()
     assert config_file_status, "Audio/sync software config files missing."
 
-    software_status = os.path.isfile(
-        f"{exp_settings_dict['avisoft_recorder_exe']}{os.sep}rec_usgh.exe"
-    ) and os.path.isfile(
-        f"{exp_settings_dict['coolterm_basedirectory']}{os.sep}CoolTerm.exe"
-    )
+    avisoft_exe = Path(behavioral_experiments_settings["avisoft_recorder_exe"]) / "rec_usgh.exe"
+    coolterm_exe = Path(behavioral_experiments_settings["coolterm_basedirectory"]) / "CoolTerm.exe"
 
-    assert software_status, "Audio / SYNC software not ready for use."
+    assert coolterm_exe.is_file(), "CoolTerm executable not found."
+    assert avisoft_exe.is_file(), "AviSoft recorder executable not found."
