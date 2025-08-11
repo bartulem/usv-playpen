@@ -2,7 +2,6 @@
 .venv*
 venv*
 .DS_Store
-.github
 
 # setuptools_scm
 src/*/_version.py
@@ -145,3 +144,6 @@ dmypy.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# setuptools_scm
+src/*/_version.py
