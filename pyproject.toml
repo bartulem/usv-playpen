@@ -49,6 +49,8 @@ dependencies = [
     "toml",
     "tqdm",
     "motifapi",
+    "ffmpeg-binaries>=1.0.1",
+    "static-sox>=1.0.2",
 ]
 
 [project.urls]

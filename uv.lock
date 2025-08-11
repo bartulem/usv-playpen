@@ -318,6 +318,31 @@ wheels = [
 ]
 
 [[package]]
+name = "ffmpeg-binaries"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "patool" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0a/73/98bef219b81da1de44ece0cff03d28f11b5df7d1ab8af00b24608c32ab7d/ffmpeg_binaries-1.0.1.tar.gz", hash = "sha256:2c5b123956860521460078b2b5b0ae34f83fc0cd68b792a4df89e97f4d6a9d78", size = 7321, upload_time = "2025-03-30T19:06:27.455Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2d/26/9949a715134ef1bc6972adf406ce7e14cc5f6288eccfd7125a5846d59c71/ffmpeg_binaries-1.0.1-py3-none-any.whl", hash = "sha256:820255d74d7597d390ac5760cc0c552d283500c9d1e982838a9a0ac27361f1ce", size = 9064, upload_time = "2025-03-30T19:05:53.384Z" },
+    { url = "https://files.pythonhosted.org/packages/48/3e/4a40ac2c8ca6007b29e3dc412791b2915a36aa0e1e6a80ea4ec10958b463/ffmpeg_binaries-1.0.1-py3-none-macosx_10_13_universal2.whl", hash = "sha256:2e0fccfecc35f88bd626eca19c866574d9118f50399a07f9c8df23b249001bfc", size = 50288531, upload_time = "2025-03-30T19:05:55.688Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/e9/4aa42c957ee81e54eb2385e1199303e25f275dc42963e0e98c0f5f031416/ffmpeg_binaries-1.0.1-py3-none-manylinux1_x86_64.whl", hash = "sha256:e27f2fed8e798ae33e8e749650d9c396f51f1caac57589568664208329933d4e", size = 60252250, upload_time = "2025-03-30T19:05:59.683Z" },
+    { url = "https://files.pythonhosted.org/packages/57/cc/0d76971e84db565e2edba568bc785cb7321c31932ce640d1ac499b985231/ffmpeg_binaries-1.0.1-py3-none-win_amd64.whl", hash = "sha256:da3d6a528fe2e4fe3e4831486a37d59cb5a1e586d513ef7556622db1f9b4711f", size = 88793328, upload_time = "2025-03-30T19:06:08.734Z" },
+]
+
+[[package]]
+name = "filelock"
+version = "3.18.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/10/c23352565a6544bdc5353e0b15fc1c563352101f30e24bf500207a54df9a/filelock-3.18.0.tar.gz", hash = "sha256:adbc88eabb99d2fec8c9c1b229b171f18afa655400173ddc653d5d01501fb9f2", size = 18075, upload_time = "2025-03-14T07:11:40.47Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/36/2a115987e2d8c300a974597416d9de88f2444426de9571f4b59b2cca3acc/filelock-3.18.0-py3-none-any.whl", hash = "sha256:c401f4f8377c4464e6db25fff06205fd89bdd83b65eb0488ed1b160f780e21de", size = 16215, upload_time = "2025-03-14T07:11:39.145Z" },
+]
+
+[[package]]
 name = "fonttools"
 version = "4.58.4"
 source = { registry = "https://pypi.org/simple" }
@@ -907,6 +932,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/70/6f/3dd4940bbe001c06a65f88e36bad298bc7a0de5036115639926b0c5c0458/pandocfilters-1.5.1.tar.gz", hash = "sha256:002b4a555ee4ebc03f8b66307e287fa492e4a77b4ea14d3f934328297bb4939e", size = 8454, upload_time = "2024-01-18T20:08:13.726Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ef/af/4fbc8cab944db5d21b7e2a5b8e9211a03a79852b1157e2c102fcc61ac440/pandocfilters-1.5.1-py2.py3-none-any.whl", hash = "sha256:93be382804a9cdb0a7267585f157e5d1731bbe5545a85b268d6f5fe6232de2bc", size = 8663, upload_time = "2024-01-18T20:08:11.28Z" },
+]
+
+[[package]]
+name = "patool"
+version = "4.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/c7/f9d5c6f9c51433d95399e40c9dd214f2b44bdcb79cbbd86028f55535725e/patool-4.0.1.tar.gz", hash = "sha256:41f7ee21be337a5baf07b2cb4796e9d94397ab741d2379c622f98fc001099802", size = 2006713, upload_time = "2025-05-02T19:08:16.768Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/07/a7aefd5b3ee565b4d959bcf7061666c7fbf66ed83e58d07cdcdca35c9b33/patool-4.0.1-py2.py3-none-any.whl", hash = "sha256:a7430eb08edcbd71feaf9c40f55c46f6a0ac385dc68dd0f5010cfa4ad2e9341a", size = 86512, upload_time = "2025-05-02T19:08:19.407Z" },
 ]
 
 [[package]]
@@ -1551,6 +1585,18 @@ wheels = [
 ]
 
 [[package]]
+name = "static-sox"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "filelock" },
+    { name = "requests" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/df/b1ed5e33214347ffbca29fbcc570f554b502aafc878d99e3377a640f64c7/static_sox-1.0.2-py3-none-any.whl", hash = "sha256:181f2d1cff3ab10ddd099d3c0b70bfe510b2ad6d6415b62d91f5bea62c2153a2", size = 5784, upload_time = "2025-03-30T23:30:03.974Z" },
+]
+
+[[package]]
 name = "threadpoolctl"
 version = "3.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1675,6 +1721,7 @@ dependencies = [
     { name = "astropy" },
     { name = "av" },
     { name = "click" },
+    { name = "ffmpeg-binaries" },
     { name = "h5py" },
     { name = "imgstore" },
     { name = "joblib" },
@@ -1694,6 +1741,7 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "sleap-anipose" },
+    { name = "static-sox" },
     { name = "toml" },
     { name = "tqdm" },
 ]
@@ -1723,6 +1771,7 @@ requires-dist = [
     { name = "astropy" },
     { name = "av" },
     { name = "click" },
+    { name = "ffmpeg-binaries", specifier = ">=1.0.1" },
     { name = "h5py" },
     { name = "imgstore" },
     { name = "joblib" },
@@ -1742,6 +1791,7 @@ requires-dist = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "sleap-anipose" },
+    { name = "static-sox", specifier = ">=1.0.2" },
     { name = "toml" },
     { name = "tqdm" },
 ]
