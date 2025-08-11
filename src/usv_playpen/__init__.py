@@ -8,4 +8,9 @@ from __future__ import annotations
 
 from ._version import version as __version__
 
+# Get the path to the configuration directory, it should be in the package directory
+import pathlib
+
+config_dir = pathlib.Path(__file__).parent / "_config"
+
 __all__ = ["__version__"]
