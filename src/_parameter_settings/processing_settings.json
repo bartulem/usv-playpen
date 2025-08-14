@@ -17,9 +17,9 @@
     "anipose_triangulation": false,
     "anipose_trm": false,
     "das_infer": false,
-    "das_summarize": true,
+    "das_summarize": false,
     "prepare_assign_vocalizations": false,
-    "assign_vocalizations": false
+    "assign_vocalizations": true
   },
   "anipose_operations": {
     "ConvertTo3D": {
@@ -44,7 +44,7 @@
         ]
       },
       "conduct_anipose_triangulation": {
-        "calibration_file_loc": "",
+        "calibration_file_loc": "/mnt/falkner/Jinrun/Data/20250419_123614",
         "triangulate_arena_points_bool": false,
         "frame_restriction": null,
         "excluded_views": [],
@@ -60,7 +60,7 @@
         "n_deriv_smooth": 1
       },
       "translate_rotate_metric": {
-        "original_arena_file_loc": "",
+        "original_arena_file_loc": "/mnt/falkner/Jinrun/Data/20250419_123614",
         "save_transformed_data": "animal",
         "delete_original_h5": true,
         "static_reference_len": 0.615,
@@ -70,7 +70,7 @@
   },
   "preprocess_data": {
     "root_directories": [
-      "/mnt/murthy/Jinrun/Data/20250516_142319"
+      "/mnt/falkner/Jinrun/Data/20250418_155334"
     ]
   },
   "extract_phidget_data": {
@@ -199,7 +199,9 @@
         "extract_exact_video_frame_times_bool": false,
         "nidq_sr": 62500.72887,
         "nidq_num_channels": 9,
+        "nidq_triggerbox_input_bool": false,
         "nidq_triggerbox_input_bit_position": 5,
+        "nidq_sync_input_bool": true,
         "nidq_sync_input_bit_position": 7
       },
       "find_video_sync_trains": {
@@ -238,7 +240,8 @@
     }
   },
   "vocalocator": {
-    "vcl_conda_env_name": "vcl",
-    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/20250312_earbud_model"
+    "vcl_conda_env_name": "vcl-ssl",
+    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/conformer_smol_4.00",
+    "vcl_version": "vcl-ssl"
   }
 }

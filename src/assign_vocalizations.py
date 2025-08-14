@@ -78,51 +78,53 @@ class Vocalocator:
         output_path.mkdir(exist_ok=True, parents=True)
         output_path_file = output_path / 'dset.h5'
 
-        # get arena dimensions
-        arena_dimensions = get_arena_dimensions(arena_dims_path=arena_info_path)
+        if not output_path_file.exists():
 
-        # get USV segments
-        usv_segments = load_usv_segments(usv_segments_path)
+            # get arena dimensions
+            arena_dimensions = get_arena_dimensions(arena_dims_path=arena_info_path)
 
-        # load audio data
-        audio_file_name_components = audio_file_path.stem.split('_')
-        audio_file_dtype = audio_file_name_components[-1]
-        audio_file_channel_num = int(audio_file_name_components[-2])
-        audio_file_sample_num = int(audio_file_name_components[-3])
-        audio_file_sample_rate = int(audio_file_name_components[-4])
+            # get USV segments
+            usv_segments = load_usv_segments(usv_segments_path)
 
-        handle = np.memmap(filename=audio_file_path,
-                           dtype=audio_file_dtype,
-                           mode='r',
-                           shape=(audio_file_sample_num, audio_file_channel_num))
+            # load audio data
+            audio_file_name_components = audio_file_path.stem.split('_')
+            audio_file_dtype = audio_file_name_components[-1]
+            audio_file_channel_num = int(audio_file_name_components[-2])
+            audio_file_sample_num = int(audio_file_name_components[-3])
+            audio_file_sample_rate = int(audio_file_name_components[-4])
 
-        # extract relevant data from each file
-        usv_onsets_in_samples = (usv_segments[:, 0] * audio_file_sample_rate).astype(int)
-        usv_offsets_in_samples = (usv_segments[:, 1] * audio_file_sample_rate).astype(int)
+            handle = np.memmap(filename=audio_file_path,
+                               dtype=audio_file_dtype,
+                               mode='r',
+                               shape=(audio_file_sample_num, audio_file_channel_num))
 
-        tracks, node_names = load_tracks_from_h5(track_file_path)
-        onsets_in_seconds = usv_segments[:, 0]
-        onsets_in_video_frames = (onsets_in_seconds * video_frame_rate).astype(int)
-        track_locations_at_usv_onsets = tracks[onsets_in_video_frames] * 1000
+            # extract relevant data from each file
+            usv_onsets_in_samples = (usv_segments[:, 0] * audio_file_sample_rate).astype(int)
+            usv_offsets_in_samples = (usv_segments[:, 1] * audio_file_sample_rate).astype(int)
 
-        audio = [to_float(np.array(handle[onset:offset, :])) for onset, offset in tqdm(zip(usv_onsets_in_samples, usv_offsets_in_samples),
-                                                                                       total=usv_segments.shape[0])]
-        audio_lengths = usv_offsets_in_samples - usv_onsets_in_samples
-        length_idx = np.cumsum(np.insert(audio_lengths, obj=0, values=0))
+            tracks, node_names = load_tracks_from_h5(track_file_path)
+            onsets_in_seconds = usv_segments[:, 0]
+            onsets_in_video_frames = (onsets_in_seconds * video_frame_rate).astype(int)
+            track_locations_at_usv_onsets = tracks[onsets_in_video_frames] * 1000
 
-        # write data to file
-        extra_metadata = {
-            "arena_dims_units": "mm",
-            "audio_sr": audio_file_sample_rate,
-            "video_fps": video_frame_rate,
-            "arena_dims": arena_dimensions}
+            audio = [to_float(np.array(handle[onset:offset, :])) for onset, offset in tqdm(zip(usv_onsets_in_samples, usv_offsets_in_samples),
+                                                                                           total=usv_segments.shape[0])]
+            audio_lengths = usv_offsets_in_samples - usv_onsets_in_samples
+            length_idx = np.cumsum(np.insert(audio_lengths, obj=0, values=0))
 
-        write_to_h5(output_path=output_path_file,
-                    audio=audio,
-                    node_names=node_names,
-                    locations=track_locations_at_usv_onsets,
-                    length_idx=length_idx,
-                    extra_metadata=extra_metadata)
+            # write data to file
+            extra_metadata = {
+                "arena_dims_units": "mm",
+                "audio_sr": audio_file_sample_rate,
+                "video_fps": video_frame_rate,
+                "arena_dims": arena_dimensions}
+
+            write_to_h5(output_path=output_path_file,
+                        audio=audio,
+                        node_names=node_names,
+                        locations=track_locations_at_usv_onsets,
+                        length_idx=length_idx,
+                        extra_metadata=extra_metadata)
 
     def run_vocalocator(self) -> None:
         """
@@ -222,6 +224,75 @@ class Vocalocator:
         for mouse_idx, mouse in enumerate(track_names):
             usv_summary_df = usv_summary_df.with_columns(
                 pls.when(pls.lit(sound_loc_assignment_arr == mouse_idx))
+                .then(pls.lit(mouse))
+                .otherwise(pls.col('emitter'))
+                .alias('emitter')
+            )
+
+        usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
+
+    def run_vocalocator_ssl(self) -> None:
+        """
+        Description
+        ----------
+        Run vocalocator-ssl inference.
+        ----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        ----------
+        ----------
+        """
+
+        self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']
+        model_directory = self.input_parameter_dict['vocalocator']['vcl_model_directory']
+        data_file_path = f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}"
+        track_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
+        usv_summary_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
+
+        if os.name == 'nt':
+            command_addition = 'cmd /c '
+            shell_usage_bool = False
+        else:
+            command_addition = 'eval "$(conda shell.bash hook)" && '
+            shell_usage_bool = True
+
+
+        subprocess.run(args=f'''{command_addition}conda activate {vcl_conda_name} && python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}calibration_results.npz''',
+                       cwd=model_directory,
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.STDOUT,
+                       shell=shell_usage_bool)
+
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        # load track IDs and the usv_summary file
+        with h5py.File(name=track_file_path, mode='r') as f:
+            track_names = [item.decode('utf-8') for item in list(f['track_names'])]
+
+        usv_summary_df = pls.read_csv(usv_summary_file_path)
+
+        # get assignments
+        model_predictions_archive = np.load(file=f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}model_predictions.npz", allow_pickle=True)
+        assignment_array_id = list(filter(lambda k: k.endswith('assignments'), model_predictions_archive.files))[0]
+        assignments = model_predictions_archive[assignment_array_id]
+
+        # get assignment statistics
+        unique_values, counts = np.unique(assignments, return_counts=True)
+        self.message_output(f"Out of {counts.sum()} vocalizations, {counts[1]+counts[2]} have been assigned, or {round((counts[1]+counts[2])*100/counts.sum(), 2)}%.")
+        self.message_output(f"{counts[0]} vocalizations have not been assigned, or {round(counts[0]*100/counts.sum(), 2)}%.")
+        for track_id, value, count in zip(track_names, unique_values[1:], counts[1:]):
+            self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/counts.sum(), 2)}%.")
+
+        for mouse_idx, mouse in enumerate(track_names):
+            usv_summary_df = usv_summary_df.with_columns(
+                pls.when(pls.lit(assignments == mouse_idx))
                 .then(pls.lit(mouse))
                 .otherwise(pls.col('emitter'))
                 .alias('emitter')

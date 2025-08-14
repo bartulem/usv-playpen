@@ -262,9 +262,14 @@ class Stylist:
 
                     # # # assign vocalizations to mice
                     if self.input_parameter_dict['processing_booleans']['assign_vocalizations']:
-                        Vocalocator(root_directory=one_directory,
-                                    input_parameter_dict=self.input_parameter_dict,
-                                    message_output=self.message_output).run_vocalocator()
+                        if self.input_parameter_dict['vocalocator']['vcl_version'] == 'vcl':
+                            Vocalocator(root_directory=one_directory,
+                                        input_parameter_dict=self.input_parameter_dict,
+                                        message_output=self.message_output).run_vocalocator()
+                        else:
+                            Vocalocator(root_directory=one_directory,
+                                        input_parameter_dict=self.input_parameter_dict,
+                                        message_output=self.message_output).run_vocalocator_ssl()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")

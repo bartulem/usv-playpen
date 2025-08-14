@@ -26,6 +26,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QLabel,
@@ -56,7 +57,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.8.8'
+app_name = 'USV Playpen v0.8.9'
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -448,21 +449,12 @@ class USVPlaypenWindow(QMainWindow):
         coolterm_base_dir_btn.clicked.connect(self._open_coolterm_dialog)
 
         # recording files destination directories (across OS)
-        recording_files_destination_linux_label = QLabel('File destination(s) Linux:', self.Record)
-        recording_files_destination_linux_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        recording_files_destination_linux_label.move(5, 130)
-        self.recording_files_destination_linux = QLineEdit(self.destination_linux_global, self.Record)
-        self.recording_files_destination_linux.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.recording_files_destination_linux.setStyleSheet('QLineEdit { width: 490px; }')
-        self.recording_files_destination_linux.move(220, 130)
+        recording_files_destinations_label = QLabel('Select all desirable lab CUP destinations for your files:', self.Record)
+        recording_files_destinations_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
+        recording_files_destinations_label.move(5, 130)
 
-        recording_files_destination_windows_label = QLabel('File destination(s) Windows:', self.Record)
-        recording_files_destination_windows_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        recording_files_destination_windows_label.move(5, 160)
-        self.recording_files_destination_windows = QLineEdit(self.destination_win_global, self.Record)
-        self.recording_files_destination_windows.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.recording_files_destination_windows.setStyleSheet('QLineEdit { width: 490px; }')
-        self.recording_files_destination_windows.move(220, 160)
+        for lab_idx, lab in enumerate(self.exp_settings_dict['recording_files_destinations_all']):
+            self._create_checkbox_file_destinations(lab_id=lab, x_start=5+(lab_idx*365))
 
         # set main recording parameters
         parameters_label = QLabel('Please set main recording parameters', self.Record)
@@ -562,8 +554,8 @@ class USVPlaypenWindow(QMainWindow):
         gas_label.setStyleSheet('QLabel { font-weight: bold;}')
         gas_label.move(5, 10)
 
-        # change usghflags to '1862 for NO SYNC audio mode, 1574 for SYNC audio mode
-        # NB: The NO SYNC mode for processing only works assuming NO DROPPED SAMPLES!
+        # change usghflags to 1862 for NO SYNC audio mode, 1574 for SYNC audio modes
+        # NB: The NO SYNC mode does NOT guarantee ZERO DROPPED SAMPLES!
 
         self.default_audio_settings = {'name': f"{self.exp_settings_dict['audio']['mics_config']['name']}", 'id': f"{self.exp_settings_dict['audio']['mics_config']['id']}",
                                        'typech': f"{self.exp_settings_dict['audio']['mics_config']['typech']}", 'deviceid': f"{self.exp_settings_dict['audio']['mics_config']['deviceid']}",
@@ -670,21 +662,12 @@ class USVPlaypenWindow(QMainWindow):
         gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
         gvs_label.move(5, 10)
 
-        browser_label = QLabel('Browser:', self.VideoSettings)
-        browser_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        browser_label.move(5, 40)
-        self.browser = QLineEdit(self.exp_settings_dict['video']['general']['browser'], self.VideoSettings)
-        self.browser.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.browser.setStyleSheet('QLineEdit { width: 300px; }')
-        self.browser.move(160, 40)
-
-        use_cam_label = QLabel('Camera(s) to use:', self.VideoSettings)
+        use_cam_label = QLabel('Select camera(s) you wish to use for behavioral recording:', self.VideoSettings)
         use_cam_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        use_cam_label.move(5, 70)
-        self.expected_cameras = QLineEdit(','.join(self.exp_settings_dict['video']['general']['expected_cameras']), self.VideoSettings)
-        self.expected_cameras.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.expected_cameras.setStyleSheet('QLineEdit { width: 300px; }')
-        self.expected_cameras.move(160, 70)
+        use_cam_label.move(5, 40)
+
+        for cam_idx, cam in enumerate(self.exp_settings_dict['video']['general']['available_cameras']):
+            self._create_checkbox_general(camera_id=cam, x_start=5+(cam_idx*85))
 
         """
         'nvenc-fast-yuv420_A' : '-preset','fast','-qmin','15','-qmax','15'
@@ -728,10 +711,12 @@ class USVPlaypenWindow(QMainWindow):
         specific_camera_serial_label = QLabel('ONE camera serial:', self.VideoSettings)
         specific_camera_serial_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         specific_camera_serial_label.move(5, 190)
-        self.specific_camera_serial = QLineEdit(self.exp_settings_dict['video']['general']['specific_camera_serial'], self.VideoSettings)
-        self.specific_camera_serial.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.specific_camera_serial.setStyleSheet('QLineEdit { width: 300px; }')
-        self.specific_camera_serial.move(160, 190)
+        self.specific_camera_serial_list = sorted(self.exp_settings_dict['video']['general']['expected_cameras'], key=lambda x: x == self.exp_settings_dict['video']['general']['specific_camera_serial'], reverse=True)
+        self.specific_camera_serial_cb = QComboBox(self.VideoSettings)
+        self.specific_camera_serial_cb.addItems(self.specific_camera_serial_list)
+        self.specific_camera_serial_cb.setStyleSheet('QComboBox { width: 272px; }')
+        self.specific_camera_serial_cb.activated.connect(partial(self._combo_box_specific_camera, variable_id='specific_camera_serial'))
+        self.specific_camera_serial_cb.move(160, 190)
 
         delete_post_copy_label = QLabel('Delete post copy:', self.VideoSettings)
         delete_post_copy_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
@@ -772,7 +757,7 @@ class USVPlaypenWindow(QMainWindow):
         pcs_label.move(5, 325)
 
         camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
-        for cam_idx, cam in enumerate(self.exp_settings_dict['video']['general']['expected_cameras']):
+        for cam_idx, cam in enumerate(self.exp_settings_dict['video']['general']['available_cameras']):
             self._create_sliders_general(camera_id=cam, camera_color=camera_colors_global[cam_idx], y_start=355+(cam_idx*90))
 
         vm_label = QLabel('Metadata', self.VideoSettings)
@@ -1703,44 +1688,54 @@ class USVPlaypenWindow(QMainWindow):
         self.assign_usv_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='assign_usv_cb_bool'))
         self.assign_usv_cb.move(column_three_x2, 670)
 
+        assign_type_cb_label = QLabel('Assignment type:', self.ProcessSettings)
+        assign_type_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        assign_type_cb_label.move(column_three_x1, 700)
+        self.assign_type_list = sorted(['vcl', 'vcl-ssl'], key=lambda x: x == self.vcl_version, reverse=True)
+        self.assign_type_cb = QComboBox(self.ProcessSettings)
+        self.assign_type_cb.addItems([str(assign_item) for assign_item in self.assign_type_list])
+        self.assign_type_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.assign_type_cb.activated.connect(partial(self._combo_box_vcl_version, variable_id='vcl_version'))
+        self.assign_type_cb.move(column_three_x2, 700)
+
         av_sync_label = QLabel('Synchronization between A/V files', self.ProcessSettings)
         av_sync_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         av_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
-        av_sync_label.move(column_three_x1, 710)
+        av_sync_label.move(column_three_x1, 740)
 
         conduct_sync_cb_label = QLabel('Run A/V sync check:', self.ProcessSettings)
         conduct_sync_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        conduct_sync_cb_label.move(column_three_x1, 740)
+        conduct_sync_cb_label.move(column_three_x1, 770)
         self.conduct_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_sync_cb.addItems(['No', 'Yes'])
         self.conduct_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_sync_cb_bool'))
-        self.conduct_sync_cb.move(column_three_x2, 740)
+        self.conduct_sync_cb.move(column_three_x2, 770)
 
         phidget_extra_data_camera_label = QLabel('Phidget(s) camera serial:', self.ProcessSettings)
         phidget_extra_data_camera_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        phidget_extra_data_camera_label.move(column_three_x1, 770)
+        phidget_extra_data_camera_label.move(column_three_x1, 800)
         self.phidget_extra_data_camera = QLineEdit(f"{self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera']}", self.ProcessSettings)
         self.phidget_extra_data_camera.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.phidget_extra_data_camera.setStyleSheet('QLineEdit { width: 108px; }')
-        self.phidget_extra_data_camera.move(column_three_x2, 770)
+        self.phidget_extra_data_camera.move(column_three_x2, 800)
 
         a_ch_receiving_input_label = QLabel('Arduino-USGH ch (1-12):', self.ProcessSettings)
         a_ch_receiving_input_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        a_ch_receiving_input_label.move(column_three_x1, 800)
+        a_ch_receiving_input_label.move(column_three_x1, 830)
         self.a_ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input']}", self.ProcessSettings)
         self.a_ch_receiving_input.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.a_ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.a_ch_receiving_input.move(column_three_x2, 800)
+        self.a_ch_receiving_input.move(column_three_x2, 830)
 
         v_camera_serial_num_label = QLabel('Sync camera serial num(s):', self.ProcessSettings)
         v_camera_serial_num_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        v_camera_serial_num_label.move(column_three_x1, 830)
+        v_camera_serial_num_label.move(column_three_x1, 860)
         self.v_camera_serial_num = QLineEdit(','.join([str(x) for x in self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_camera_serial_num']]), self.ProcessSettings)
         self.v_camera_serial_num.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.v_camera_serial_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_camera_serial_num.move(column_three_x2, 830)
+        self.v_camera_serial_num.move(column_three_x2, 860)
 
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
                                      button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
@@ -2486,7 +2481,7 @@ class USVPlaypenWindow(QMainWindow):
                           'das_conda', 'das_model_base', 'das_output_type', 'smooth_scale', 'static_reference_len',
                           'weight_rigid', 'weight_weak', 'reprojection_error_threshold', 'regularization_function',
                           'segment_confidence_threshold', 'segment_minlen', 'segment_fillgap',
-                          'rigid_body_constraints', 'weak_body_constraints']
+                          'rigid_body_constraints', 'weak_body_constraints', 'vcl_conda']
         lists_in_string = ['v_camera_serial_num', 'filter_dirs', 'concat_dirs', 'stft_window_hop', 'hpss_kernel_size',
                            'hpss_margin', 'filter_freq_bounds', 'frame_restriction', 'excluded_views']
 
@@ -2541,6 +2536,8 @@ class USVPlaypenWindow(QMainWindow):
 
         if not self.vcl_model_dir_btn_clicked_flag:
             self.processing_input_dict['vocalocator']['vcl_model_directory'] = self.vcl_model_dir_edit.text()
+        self.processing_input_dict['vocalocator']['vcl_version'] = str(getattr(self, 'vcl_version'))
+        self.processing_input_dict['vocalocator']['vcl_conda_env_name'] = self.vcl_conda
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
         self.device_receiving_input = self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input']
@@ -2656,7 +2653,6 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['processing_booleans']['assign_vocalizations'] = self.assign_usv_cb_bool
         self.assign_usv_cb_bool = False
 
-
     def _save_record_one_labels_func(self) -> None:
         """
         Transfers Recording One settings to exp_settings dictionary.
@@ -2669,10 +2665,7 @@ class USVPlaypenWindow(QMainWindow):
         -------
         -------
         """
-        if type(self.recording_files_destination_linux) != str:
-            self.recording_files_destination_linux = self.recording_files_destination_linux.text().split(',')
-        if type(self.recording_files_destination_windows) != str:
-            self.recording_files_destination_windows = self.recording_files_destination_windows.text().split(',')
+
         if type(self.email_recipients) != str:
             self.email_recipients = self.email_recipients.text()
         if type(self.video_session_duration) != str:
@@ -2687,8 +2680,34 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.email_recipients = self.email_recipients.split(',')
 
-        self.exp_settings_dict['recording_files_destination_linux'] = self.recording_files_destination_linux
-        self.exp_settings_dict['recording_files_destination_win'] = self.recording_files_destination_windows
+        if self.falkner_checkbox_bool:
+            if not f"/mnt/falkner/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
+                self.exp_settings_dict['recording_files_destination_linux'].insert(0, f"/mnt/falkner/{self.exp_id}/Data")
+            if not f"F:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
+                self.exp_settings_dict['recording_files_destination_win'].insert(0, f"F:\\{self.exp_id}\\Data")
+        else:
+            if f"/mnt/falkner/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
+                self.exp_settings_dict['recording_files_destination_linux'].pop(self.exp_settings_dict['recording_files_destination_linux'].index(f"/mnt/falkner/{self.exp_id}/Data"))
+                if not f"/mnt/murthy/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
+                    self.exp_settings_dict['recording_files_destination_linux'].insert(0, f"/mnt/murthy/{self.exp_id}/Data")
+            if f"F:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
+                self.exp_settings_dict['recording_files_destination_win'].pop(self.exp_settings_dict['recording_files_destination_win'].index(f"F:\\{self.exp_id}\\Data"))
+                if not f"M:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
+                    self.exp_settings_dict['recording_files_destination_win'].insert(0, f"M:\\{self.exp_id}\\Data")
+
+        if self.murthy_checkbox_bool:
+            if not f"M:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
+                self.exp_settings_dict['recording_files_destination_win'].insert(0, f"M:\\{self.exp_id}\\Data")
+        else:
+            if f"/mnt/murthy/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
+                self.exp_settings_dict['recording_files_destination_linux'].pop(self.exp_settings_dict['recording_files_destination_linux'].index(f"/mnt/murthy/{self.exp_id}/Data"))
+                if not f"/mnt/falkner/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
+                    self.exp_settings_dict['recording_files_destination_linux'].insert(0, f"/mnt/falkner/{self.exp_id}/Data")
+            if f"M:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
+                self.exp_settings_dict['recording_files_destination_win'].pop(self.exp_settings_dict['recording_files_destination_win'].index(f"M:\\{self.exp_id}\\Data"))
+                if not f"F:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
+                    self.exp_settings_dict['recording_files_destination_win'].insert(0, f"F:\\{self.exp_id}\\Data")
+
         self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.video_session_duration)
         self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.calibration_session_duration)
         self.exp_settings_dict['ethernet_network'] = self.ethernet_network
@@ -2756,13 +2775,14 @@ class USVPlaypenWindow(QMainWindow):
         -------
         """
 
-        video_dict_keys = ['browser', 'expected_cameras', 'recording_codec', 'specific_camera_serial',
-                           'institution_entry', 'laboratory_entry', 'experimenter_entry', 'mice_num_entry',
-                           'species_entry', 'strain_entry', 'cage_entry', 'subject_entry', 'dob_entry',
-                           'sex_entry', 'weight_entry', 'housing_entry', 'implant_entry', 'virus_entry', 'notes_entry']
+        video_dict_keys = ['expected_cameras', 'recording_codec','institution_entry', 'laboratory_entry',
+                           'experimenter_entry', 'mice_num_entry', 'species_entry', 'strain_entry', 'cage_entry',
+                           'subject_entry', 'dob_entry', 'sex_entry', 'weight_entry', 'housing_entry',
+                           'implant_entry', 'virus_entry', 'notes_entry']
 
         self.exp_settings_dict['video']['general']['monitor_recording'] = self.monitor_recording_cb_bool
         self.exp_settings_dict['video']['general']['monitor_specific_camera'] = self.monitor_specific_camera_cb_bool
+        self.exp_settings_dict['video']['general']['specific_camera_serial'] = self.specific_camera_serial
         self.exp_settings_dict['video']['general']['delete_post_copy'] = self.delete_post_copy_cb_bool
 
         self.exp_settings_dict['video']['metadata']['vacant_arena'] = self.vacant_arena_cb_bool
@@ -2794,15 +2814,19 @@ class USVPlaypenWindow(QMainWindow):
             if variable != 'expected_cameras':
                 if variable == 'recording_codec':
                     self.exp_settings_dict['video']['general'][variable] = str(getattr(self, variable))
-                elif variable == 'browser' or variable == 'specific_camera_serial':
-                    self.exp_settings_dict['video']['general'][variable] = getattr(self, variable).text()
                 elif variable == 'notes_entry':
                     self.exp_settings_dict['video']['metadata'][variable[:-6]] = getattr(self, variable).toPlainText()
                 else:
                     self.exp_settings_dict['video']['metadata'][variable[:-6]] = getattr(self, variable).text()
             else:
-                self.expected_cameras = self.expected_cameras.text()
-                self.exp_settings_dict['video']['general'][variable] = self.expected_cameras.split(',')
+                expected_cameras_list = self.exp_settings_dict['video']['general'][variable]
+                for camera_id in self.exp_settings_dict['video']['general']['available_cameras']:
+                    rec_status_bool = self.__dict__[f'{camera_id}_rec_checkbox_bool']
+                    if rec_status_bool and camera_id not in expected_cameras_list:
+                        expected_cameras_list.insert(self.exp_settings_dict['video']['general']['available_cameras'].index(camera_id), camera_id)
+                    if not rec_status_bool and camera_id in expected_cameras_list:
+                        expected_cameras_list.pop(expected_cameras_list.index(camera_id))
+                self.exp_settings_dict['video']['general'][variable] = expected_cameras_list
 
     def _save_variables_based_on_exp_id(self) -> None:
         """
@@ -2839,16 +2863,32 @@ class USVPlaypenWindow(QMainWindow):
         self.avisoft_base_dir_global = self.exp_settings_dict['avisoft_basedirectory']
         self.coolterm_base_dir_global = self.exp_settings_dict['coolterm_basedirectory']
 
-        self.destination_linux_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
-                                                             recording_files_destinations=self.exp_settings_dict['recording_files_destination_linux'],
-                                                             exp_id=self.exp_id)
-
-        self.destination_win_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
-                                                           recording_files_destinations=self.exp_settings_dict['recording_files_destination_win'],
-                                                           exp_id=self.exp_id)
-
         self.processing_input_dict['send_email']['Messenger']['experimenter'] = f'{self.exp_id}'
         self.analyses_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
+
+    def _combo_box_specific_camera(self,
+                                index: int,
+                                variable_id: str = None) -> None:
+        """
+        Specific monitoring camera serial number combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        for idx in range(len(self.specific_camera_serial_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.specific_camera_serial_list[idx]
+                break
 
     def _combo_box_fs_channel_id(self,
                                  index: int,
@@ -3066,6 +3106,30 @@ class USVPlaypenWindow(QMainWindow):
                 self.__dict__[variable_id] = self.encoding_preset_list[idx]
                 break
 
+    def _combo_box_vcl_version(self,
+                               index: int,
+                               variable_id: str = None) -> None:
+        """
+        USV assignment vocalocator version.
+
+        Parameters
+        ----------
+         index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        for idx in range(len(self.assign_type_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.assign_type_list[idx]
+                break
+
     def _combo_box_prior_name(self,
                               index: int,
                               variable_id: str = None) -> None:
@@ -3089,6 +3153,83 @@ class USVPlaypenWindow(QMainWindow):
             if index == idx:
                 self.__dict__[variable_id] = self.exp_id_list[idx]
                 break
+
+    def _checkbox_state_read(self, checkbox_id: str = None, variable_id: str = None) -> None:
+        """
+        Reads the state of a checkbox and updates the corresponding variable.
+
+        Parameters
+        ----------
+        checkbox_id (str)
+            Name of the checkbox.
+        variable_id (str)
+            Name of the variable to be updated.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        if self.__dict__[checkbox_id].isChecked():
+            self.__dict__[variable_id] = True
+        else:
+            self.__dict__[variable_id] = False
+
+    def _create_checkbox_general(self,
+                                 camera_id: str = None,
+                                 x_start: int = None) -> None:
+        """
+        Creates checkbox for choosing cameras to record with.
+
+        Parameters
+        ----------
+        camera_id (str)
+            Camera ID (e.g., 21372316).
+        x_start (int)
+            Starting x position for the camera settings.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        self.__dict__[f'{camera_id}_rec_checkbox'] = QCheckBox(self.VideoSettings, text=camera_id)
+        self.__dict__[f'{camera_id}_rec_checkbox'].setStyleSheet("""QCheckBox::indicator {border: 1px solid grey; width: 15px; height: 15px; border-radius: 7.5px;}
+                                                                    QCheckBox::indicator:checked {background-color: #F58025;}""")
+        self.__dict__[f'{camera_id}_rec_checkbox'].setChecked(self.__dict__[f'{camera_id}_rec_checkbox_bool'])
+        self.__dict__[f'{camera_id}_rec_checkbox'].setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.__dict__[f'{camera_id}_rec_checkbox'].move(x_start, 70)
+        self.__dict__[f'{camera_id}_rec_checkbox'].stateChanged.connect(partial(self._checkbox_state_read, checkbox_id=f'{camera_id}_rec_checkbox', variable_id=f'{camera_id}_rec_checkbox_bool'))
+
+    def _create_checkbox_file_destinations(self,
+                                           lab_id: str = None,
+                                           x_start: int = None) -> None:
+        """
+        Creates checkbox for file server destinations for recorded files.
+
+        Parameters
+        ----------
+        lab_id (str)
+            Lab ID (e.g., Falkner).
+        x_start (int)
+            Starting x position for the camera settings.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        self.__dict__[f'{lab_id}_checkbox'] = QCheckBox(self.Record, text=f"{lab_id.capitalize()} (/cup/{lab_id}/{self.exp_id}/Data/)")
+        self.__dict__[f'{lab_id}_checkbox'].setStyleSheet("""QCheckBox {spacing: 5px;}
+                                                             QCheckBox::indicator {border: 2px solid grey; width: 15px; height: 15px; border-radius: 7.5px;}
+                                                             QCheckBox::indicator:checked {background-color: #F58025;}""")
+        self.__dict__[f'{lab_id}_checkbox'].setChecked(self.__dict__[f'{lab_id}_checkbox_bool'])
+        self.__dict__[f'{lab_id}_checkbox'].setFont(QFont(self.font_id, 14 + self.font_size_increase))
+        self.__dict__[f'{lab_id}_checkbox'].move(x_start, 160)
+        self.__dict__[f'{lab_id}_checkbox'].stateChanged.connect(partial(self._checkbox_state_read, checkbox_id=f'{lab_id}_checkbox', variable_id=f'{lab_id}_checkbox_bool'))
 
     def _combo_box_prior_codec(self,
                               index: int,
@@ -4377,7 +4518,15 @@ def main() -> None:
                            'fs_audio_dir': analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], 'fs_device_id': analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'],
                            'fs_channel_id': analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], 'volume_adjust_audio_segment_cb_bool': True,
                            'visualizations_pc_choice': visualizations_input_dict['send_email']['visualizations_pc_choice'], 'analyses_pc_choice': analyses_input_dict['send_email']['analyses_pc_choice'],
-                           'processing_pc_choice': processing_input_dict['send_email']['Messenger']['processing_pc_choice'], 'encoding_preset': processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset']}
+                           'processing_pc_choice': processing_input_dict['send_email']['Messenger']['processing_pc_choice'], 'encoding_preset': processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'],
+                           'vcl_version': processing_input_dict['vocalocator']['vcl_version'], 'specific_camera_serial': _toml['video']['general']['specific_camera_serial'],
+                           '21372315_rec_checkbox_bool': True if '21372315' in _toml['video']['general']['expected_cameras'] else False,
+                           '21372316_rec_checkbox_bool': True if '21372316' in _toml['video']['general']['expected_cameras'] else False,
+                           '21369048_rec_checkbox_bool': True if '21369048' in _toml['video']['general']['expected_cameras'] else False,
+                           '22085397_rec_checkbox_bool': True if '22085397' in _toml['video']['general']['expected_cameras'] else False,
+                           '21241563_rec_checkbox_bool': True if '21241563' in _toml['video']['general']['expected_cameras'] else False,
+                           'falkner_checkbox_bool': any("F:" in cup_path for cup_path in _toml['recording_files_destination_win']),
+                           'murthy_checkbox_bool': any("M:" in cup_path for cup_path in _toml['recording_files_destination_win'])}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

@@ -655,41 +655,43 @@ class Synchronizer:
             nidq_digital_bits = (nidq_digital_ch & (2 ** np.arange(16).reshape([1, 16]))).astype(bool).astype(int)
 
             # find start/end of recording
-            triggerbox_bit_changes = np.where((nidq_digital_bits[1:, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']] - nidq_digital_bits[:-1, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']]) > 0)[0]
-            triggerbox_diffs = triggerbox_bit_changes[1:] - triggerbox_bit_changes[:-1]
-            largest_break_end_hop = np.argmax(triggerbox_diffs) + 1
-            largest_break_end_hop_sec = round((triggerbox_bit_changes[largest_break_end_hop] - triggerbox_bit_changes[largest_break_end_hop - 1]) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'], 3)
-            self.message_output(f"For NIDQ, the largest break in video frame recording is {largest_break_end_hop_sec} seconds.")
+            if self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bool']:
+                triggerbox_bit_changes = np.where((nidq_digital_bits[1:, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']] - nidq_digital_bits[:-1, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']]) > 0)[0]
+                triggerbox_diffs = triggerbox_bit_changes[1:] - triggerbox_bit_changes[:-1]
+                largest_break_end_hop = np.argmax(triggerbox_diffs) + 1
+                largest_break_end_hop_sec = round((triggerbox_bit_changes[largest_break_end_hop] - triggerbox_bit_changes[largest_break_end_hop - 1]) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'], 3)
+                self.message_output(f"For NIDQ, the largest break in video frame recording is {largest_break_end_hop_sec} seconds.")
 
-            loopbio_start_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop] + 1)
-            loopbio_end_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop + total_frame_number] + 1)
-            nidq_rec_duration = (loopbio_end_nidq_sample - loopbio_start_nidq_sample) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr']
-            nidq_video_difference = nidq_rec_duration - total_video_time_least
-            self.message_output(f"For NIDQ, video recording starts at {loopbio_start_nidq_sample} NIDQ sample and ends at {loopbio_end_nidq_sample} NIDQ sample, giving a total NIDQ duration of {nidq_rec_duration:.4f}, which is {nidq_video_difference:.4f} off relative to video duration.")
+                loopbio_start_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop] + 1)
+                loopbio_end_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop + total_frame_number] + 1)
+                nidq_rec_duration = (loopbio_end_nidq_sample - loopbio_start_nidq_sample) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr']
+                nidq_video_difference = nidq_rec_duration - total_video_time_least
+                self.message_output(f"For NIDQ, video recording starts at {loopbio_start_nidq_sample} NIDQ sample and ends at {loopbio_end_nidq_sample} NIDQ sample, giving a total NIDQ duration of {nidq_rec_duration:.4f}, which is {nidq_video_difference:.4f} off relative to video duration.")
 
             # find NIDQ IPI starts and durations in milliseconds
-            nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
-            ipi_start_samples = np.where(np.diff(nidq_rec_) < 0)[0] + 1
-            ipi_end_samples = np.where(np.diff(nidq_rec_) > 0)[0]
+            if self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bool']:
+                nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
+                ipi_start_samples = np.where(np.diff(nidq_rec_) < 0)[0] + 1
+                ipi_end_samples = np.where(np.diff(nidq_rec_) > 0)[0]
 
-            if ipi_start_samples[0] < ipi_end_samples[0]:
-                if ipi_start_samples.size == ipi_end_samples.size:
-                    nidq_ipi_durations_ms = (((ipi_end_samples - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
-                    nidq_ipi_start_samples = ipi_start_samples
+                if ipi_start_samples[0] < ipi_end_samples[0]:
+                    if ipi_start_samples.size == ipi_end_samples.size:
+                        nidq_ipi_durations_ms = (((ipi_end_samples - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                        nidq_ipi_start_samples = ipi_start_samples
+                    else:
+                        nidq_ipi_durations_ms = (((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                        nidq_ipi_start_samples = ipi_start_samples[:-1]
                 else:
-                    nidq_ipi_durations_ms = (((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
-                    nidq_ipi_start_samples = ipi_start_samples[:-1]
-            else:
-                if ipi_start_samples.size == ipi_end_samples.size:
-                    nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
-                    nidq_ipi_start_samples = ipi_start_samples[:-1]
-                else:
-                    nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
-                    nidq_ipi_start_samples = ipi_start_samples
+                    if ipi_start_samples.size == ipi_end_samples.size:
+                        nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                        nidq_ipi_start_samples = ipi_start_samples[:-1]
+                    else:
+                        nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                        nidq_ipi_start_samples = ipi_start_samples
 
-            # save NIDQ IPI data
-            nidq_data_arr = np.vstack((nidq_ipi_durations_ms, nidq_ipi_start_samples))
-            np.save(file=nidq_ipi_data_file, arr=nidq_data_arr)
+                # save NIDQ IPI data
+                nidq_data_arr = np.vstack((nidq_ipi_durations_ms, nidq_ipi_start_samples))
+                np.save(file=nidq_ipi_data_file, arr=nidq_data_arr)
 
         ipi_discrepancy_dict = {}
         audio_devices_start_sample_differences = 0

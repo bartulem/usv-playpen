@@ -7,7 +7,7 @@
 
 WORK_DIR="/mnt/cup/labs/falkner/Name/SLEAP/inference"
 CPUS_PER_TASK=2
-MEMORY_PER_CPU="96G"
+MEMORY_PER_CPU="24G"
 TIME_RESTRICTION="05:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"

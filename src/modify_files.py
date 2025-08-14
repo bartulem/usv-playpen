@@ -397,11 +397,14 @@ class Operator:
         separation_subprocesses = []
         for device_id in ['m', 's']:
             for ch in range(1, 13):
-                mc_to_sc_subp = subprocess.Popen(args=f'''{self.command_addition}sox {device_id}_*_ch{ch:02d}.wav -q {self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav''',
+                partial_input_files = [os.path.basename(p) for p in sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{device_id}_*_ch{ch:02d}.wav"))]
+                output_file = f"{self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav"
+                command_args = ['sox', *partial_input_files, '-q', output_file]
+                mc_to_sc_subp = subprocess.Popen(args=command_args,
                                                  cwd=f"{self.root_directory}{os.sep}audio{os.sep}temp",
                                                  stdout=subprocess.DEVNULL,
                                                  stderr=subprocess.STDOUT,
-                                                 shell=self.shell_usage_bool)
+                                                 shell=False)
 
                 separation_subprocesses.append(mc_to_sc_subp)
 

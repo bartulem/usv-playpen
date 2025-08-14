@@ -121,7 +121,7 @@ class Visualizer:
 @click.option('--speaker-audio-file', 'speaker_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Speaker audio file path.')
 @click.option('--sequence-audio-file', 'sequence_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Audible audio sequence file path.')
 @click.option('--animate/--no-animate', 'animate_bool', default=None, help='Animate visualization.')
-@click.option('--video-start-time', 'video_start_time', type=click.IntRange(min=0), default=None, required=False, help='Video start time (in s).')
+@click.option('--video-start-time', 'video_start_time', type=click.FloatRange(min=0.0), default=None, required=False, help='Video start time (in s).')
 @click.option('--video-duration', 'video_duration', type=float, default=None, required=False, help='Video duration (in s).')
 @click.option('--plot-theme', 'plot_theme', type=str, default=None, required=False, help='Plot background theme (light or dark).')
 @click.option('--save-fig/--no-save-fig', 'save_fig', default=None, help='Save plot as figure to file.')

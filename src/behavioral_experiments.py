@@ -8,6 +8,7 @@ import datetime
 import glob
 import math
 import os
+import paramiko
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,53 @@ import motifapi
 from .cli_utils import *
 from .send_email import Messenger
 from .time_utils import *
+
+def count_last_recording_dropouts(log_file_path: str,
+                                  log_file_ch : str) -> int | None:
+    """
+    Description
+    ----------
+    Reads a log file, identifies the last recording session, and counts the number of dropouts.
+    ----------
+
+    Parameters
+    ----------
+    log_file_path (str)
+        The directory of the log file (typically Avisoft basedirectory).
+    log_file_ch (str)
+        The channel number for which the log file is being read (e.g., 'ch1').
+        This is used to construct the full path to the log file.
+    ----------
+
+    Returns
+    -------
+    (int | None)
+       The number of dropouts in the last recording, or 0 if no recording is found,
+       or None if the chX.log file cannot be found.
+    """
+
+    try:
+        with open(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
+            content = log_txt_file.read()
+    except FileNotFoundError:
+        return None
+
+    recordings = content.split(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}")
+
+    # filter out any empty strings that may result from the split
+    recordings = [rec for rec in recordings if rec.strip()]
+
+    if not recordings:
+        return 0
+
+    # get the last recording block
+    last_recording = recordings[-1]
+
+    # count the occurrences of "dropout" in the last recording
+    dropout_count = last_recording.count('dropout')
+
+    return dropout_count
+
 
 class ExperimentController:
 
@@ -61,6 +109,75 @@ class ExperimentController:
             self.message_output = message_output
 
         self.app_context_bool = is_gui_context()
+
+    def check_remote_mount(self,
+                           hostname: str = None,
+                           port: int = None,
+                           username: str = None,
+                           password: str = None,
+                           mount_path: str = None) -> bool:
+        """
+        Description
+        ----------
+        Connects to a remote host via SSH and checks if a path is a valid mount point.
+        ----------
+
+        Parameters
+        ----------
+        hostname (str)
+            The IP address or hostname of the remote machine.
+        port (int)
+            The SSH port (usually 22).
+        username (str)
+            The username for the SSH connection.
+        password (str)
+            The password for the SSH connection.
+        mount_path (str)
+            The absolute path of the mount point to check.
+        ----------
+
+        Returns
+        -------
+        (bool)
+            True if the path is a mount point, False otherwise.
+        """
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        try:
+            client.connect(hostname=hostname, port=port, username=username, password=password, timeout=10)
+
+            command = f"python3 -c \"import os; print(os.path.ismount('{mount_path}'))\""
+
+            stdin, stdout, stderr = client.exec_command(command)
+            result = stdout.read().decode('utf-8').strip()
+            error = stderr.read().decode('utf-8').strip()
+
+            if error:
+                self.message_output(f"[**Remote mount check**] On {hostname}, an error occurred on the remote machine: {error}")
+                return False
+            elif result == "True":
+                self.message_output(f"[**Remote mount check**] On {hostname} '{mount_path}' is a mounted filesystem.")
+                return True
+            elif result == "False":
+                self.message_output(f"[**Remote mount check**] On {hostname}, '{mount_path}' exists but is not a mount point, or the path does not exist.")
+                return False
+            else:
+                self.message_output(f"[**Remote mount check**] On {hostname}, received an unexpected result: {result}")
+                return False
+
+        except paramiko.AuthenticationException:
+            self.message_output(f"[**Remote mount check**] On {hostname}, authentication failed. Please check your username and password.")
+            return False
+        except paramiko.SSHException as e:
+            self.message_output(f"[**Remote mount check**] On {hostname}, SSH connection error: {e}")
+            return False
+        except Exception as e:
+            self.message_output(f"[**Remote mount check**] On {hostname}, n unexpected error occurred: {e}")
+            return False
+        finally:
+            client.close()
 
     def get_cpu_affinity_mask(self) -> str:
         """
@@ -111,7 +228,9 @@ class ExperimentController:
             sys.exit()
         else:
             config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini'))
-            return config['motif']['master_ip_address'], config['motif']['api']
+            return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
+                    config['motif']['ssh_port'], config['motif']['ssh_username'],
+                    config['motif']['ssh_password'], config['motif']['api'])
 
     def get_custom_dir_names(self, now: float = None) -> tuple:
         """
@@ -167,7 +286,21 @@ class ExperimentController:
         ----------
         """
 
-        ip_address, api_key = self.get_connection_params()
+        ip_address, second_ip_address, ssh_port, ssh_username, ssh_password, api_key  = self.get_connection_params()
+
+        # check the existence and functionality of mount points on both tracking computers
+        for lin_directory in self.exp_settings_dict['recording_files_destination_linux']:
+            mount_check_bool = self.check_remote_mount(hostname=ip_address, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path=lin_directory)
+            if not mount_check_bool:
+                self.message_output(f"Mount point {lin_directory} on {ip_address} is not valid. Please fix the issue and try again.")
+                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+                sys.exit()
+        for lin_directory in self.exp_settings_dict['recording_files_destination_linux']:
+            mount_check_bool = self.check_remote_mount(hostname=second_ip_address, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path=lin_directory)
+            if not mount_check_bool:
+                self.message_output(f"Mount point {lin_directory} on {second_ip_address} is not valid. Please fix the issue and try again.")
+                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+                sys.exit()
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
@@ -605,6 +738,16 @@ class ExperimentController:
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.STDOUT,
                                  shell=False)
+
+        # check number of dropouts in audio recordings
+        if self.exp_settings_dict['conduct_audio_recording'] and self.exp_settings_dict['audio']['devices']['usghflags'] != 1574:
+            for log_ch, log_device in zip(['ch1', 'ch13'], ['m', 's']):
+                dropout_count = count_last_recording_dropouts(log_file_path=self.exp_settings_dict['avisoft_basedirectory'],
+                                                              log_file_ch=log_ch)
+                if dropout_count is None:
+                    self.message_output(f"Could not determine the number of dropouts for {log_device} device, please check the log file.")
+                else:
+                    self.message_output(f"Number of dropouts registered on {log_device} device: {dropout_count}.")
 
         self.message_output(f"Transferring audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 

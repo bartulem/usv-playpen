@@ -501,7 +501,7 @@ Visualize
 
     usage: generate-viz [-h] --root-directory PATH --arena-directory PATH --exp-id TEXT
                         [--speaker-audio-file PATH] [--sequence-audio-file PATH]
-                        [--animate | --no-animate] [--video-start-time INTEGER]
+                        [--animate | --no-animate] [--video-start-time FLOAT]
                         [--video-duration FLOAT] [--plot-theme TEXT]
                         [--save-fig | --no-save-fig]
                         [--view-angle TEXT] [--side-azimuth-start FLOAT]

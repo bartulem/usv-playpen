@@ -1,4 +1,4 @@
-# usv-playpen v0.8.8
+# usv-playpen v0.8.9
 
 ![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
 
@@ -23,7 +23,7 @@ GUI/CLI to facilitate conducting experiments with multi-probe e-phys (Neuropixel
 * [Anaconda](https://www.anaconda.com/download) (if on Windows, add PATH to USER VARIABLES)
 * [sleap](https://sleap.ai/) (install in standalone conda environment)
 * [das](https://janclemenslab.org/das/) (install in standalone conda environment)
-* [vocalocator](https://github.com/neurostatslab/vocalocator) (install in standalone conda environment)
+* [vocalocator-ssl](https://github.com/Aramist/vocalocator-ssl) (install in standalone conda environment)
 
 ## Installation and updating
 
