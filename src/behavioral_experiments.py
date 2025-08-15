@@ -112,11 +112,40 @@ class ExperimentController:
 
         self.app_context_bool = is_gui_context()
 
+    def check_ethernet_connection(self) -> None:
+        """
+        Description
+        -----------
+        Checks if the specified Ethernet adapter is connected;
+        if not, it re-enables the connection
+        -----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+        # check if the Ethernet adapter is connected
+        ethernet_command_list = ["powershell", "-Command", f'''& {{ (Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up" }}''']
+        ethernet_status = subprocess.run(args=ethernet_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
+
+        # reconnect if not connected
+        if ethernet_status.returncode == 0:
+            ethernet_status_output_text = ethernet_status.stdout.strip()
+            if ethernet_status_output_text.lower() == 'false':
+                subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''').wait()
+
+                # pause for N seconds
+                smart_wait(app_context_bool=self.app_context_bool, seconds=15)
+
     def remount_cup_drives_on_windows(self) -> None:
         """
         Description
         -----------
-        Checks if the specified Ethernet adapter is connected; if not, 
+        Checks if the specified Ethernet adapter is connected; if not,
         reconnects and attempts to remount CUP drives (if they are not mounted).
         -----------
 
@@ -133,43 +162,24 @@ class ExperimentController:
 
         drives_to_mount = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
 
-        # check if the Ethernet adapter is connected
-        ethernet_command_list = ["powershell", "-Command", f'''& {{ (Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up" }}''']
-        ethernet_status = subprocess.run(args=ethernet_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
+        self.check_ethernet_connection()
 
-        # reconnect if not connected
-        if ethernet_status.returncode == 0:
-            ethernet_status_output_text = ethernet_status.stdout.strip()
-            if ethernet_status_output_text.lower() == 'false':
-                subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''').wait()
+        # check if all CUP drives are mounted and remount CUP drives if they are not
+        mounted_drives_command_list = ["powershell", "-Command", '''& { gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name }''']
+        mounted_drives_status = subprocess.run(args=mounted_drives_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
 
-                # pause for N seconds
-                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+        if mounted_drives_status.returncode == 0:
+            mounted_drives = sorted(list(set(mounted_drives_status.stdout.strip().split())))
 
-            # check if all CUP drives are mounted and remount CUP drives if they are not
-            mounted_drives_command_list = ["powershell", "-Command", '''& { gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name }''']
-            mounted_drives_status = subprocess.run(args=mounted_drives_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
-
-            if mounted_drives_status.returncode == 0:
-                mounted_drives = sorted(list(set(mounted_drives_status.stdout.strip().split())))
-
-                for drive_letter_with_colon, path in drives_to_mount.items():
-                    drive_letter_only = drive_letter_with_colon.replace(":", "")
-                    if drive_letter_only not in mounted_drives:
-                        subprocess.Popen(args=f'''cmd /c net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
-                                         stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.STDOUT).wait()
-                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
-                    else:
-                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
-            else:
-                self.message_output(f"Error Message: {mounted_drives_status.stderr.strip()}")
-                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-                sys.exit()
-        else:
-            self.message_output(f"Error Message: {ethernet_status.stderr.strip()}")
-            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-            sys.exit()
+            for drive_letter_with_colon, path in drives_to_mount.items():
+                drive_letter_only = drive_letter_with_colon.replace(":", "")
+                if drive_letter_only not in mounted_drives:
+                    subprocess.Popen(args=f'''cmd /c net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.STDOUT).wait()
+                    self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
+                else:
+                    self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
 
 
     def check_remote_mount(self,
@@ -391,30 +401,24 @@ class ExperimentController:
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
-            available_cameras = api.call('cameras')['cameras']
         except motifapi.api.MotifError:
             self.message_output('Motif not running or reachable. Check hardware and connections.')
             smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
         else:
-            self.camera_serial_num = [camera_dict['serial'] for camera_dict in available_cameras]
-            if not set(self.exp_settings_dict['video']['general']['expected_cameras']).issubset(self.camera_serial_num):
-                self.message_output(f"The serial numbers of expected cameras {self.exp_settings_dict['video']['general']['expected_cameras']} do not match the"
-                                    f"serial numbers of available cameras: {self.camera_serial_num}.")
-                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-                sys.exit()
+            if 1 < len(self.exp_settings_dict['video']['general']['expected_cameras']) < 5:
+                temp_available_cameras = api.call('cameras')['cameras']
+                temp_camera_serial_num = [camera_dict['serial'] for camera_dict in temp_available_cameras]
 
-            # connect / disconnect cameras if necessary
-            if len(self.camera_serial_num) < len(self.exp_settings_dict['video']['general']['expected_cameras']):
-                if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 5:
-                    api.call('multicam/connect_camera/__all')
-                else:
-                    for camera_serial in list(set(self.exp_settings_dict['video']['general']['expected_cameras'])-set(self.camera_serial_num)):
+                # connect cameras if necessary
+                if len(list(set(self.exp_settings_dict['video']['general']['expected_cameras'])-set(temp_camera_serial_num))) > 0:
+                    for camera_serial in list(set(self.exp_settings_dict['video']['general']['expected_cameras'])-set(temp_camera_serial_num)):
                         api.call(f'multicam/connect_camera/{camera_serial}')
 
-            if len(self.camera_serial_num) > len(self.exp_settings_dict['video']['general']['expected_cameras']):
-                for camera_serial in list(set(self.camera_serial_num) - set(self.exp_settings_dict['video']['general']['expected_cameras'])):
-                    api.call(f'multicam/disconnect_camera/{camera_serial}')
+                # disconnect cameras if necessary
+                if len(list(set(temp_camera_serial_num) - set(self.exp_settings_dict['video']['general']['expected_cameras']))) > 0:
+                    for camera_serial in list(set(temp_camera_serial_num) - set(self.exp_settings_dict['video']['general']['expected_cameras'])):
+                        api.call(f'multicam/disconnect_camera/{camera_serial}')
 
             available_cameras = api.call('cameras')['cameras']
             self.camera_serial_num = [camera_dict['serial'] for camera_dict in available_cameras]
@@ -676,9 +680,8 @@ class ExperimentController:
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
                                                                                  f"and run by @{self.exp_settings_dict['video']['metadata']['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
-
-        # remount CUP drives if necessary
-        self.remount_cup_drives_on_windows()
+        # reconnect to ethernet if it is off
+        self.check_ethernet_connection()
 
         # start capturing sync LEDS
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):
@@ -768,6 +771,9 @@ class ExperimentController:
                              stderr=subprocess.STDOUT).wait()
             self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
             smart_wait(app_context_bool=self.app_context_bool, seconds=20)
+
+        # remount CUP drives if necessary
+        self.remount_cup_drives_on_windows()
 
         pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}video").mkdir(parents=True, exist_ok=True)
         pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}sync").mkdir(parents=True, exist_ok=True)
