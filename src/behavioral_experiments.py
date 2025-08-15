@@ -629,23 +629,8 @@ class ExperimentController:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'), 'w') as configfile:
                 self.config_1.write(configfile, space_around_delimiters=False)
 
-            if os.path.isfile(f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
-                shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
-                            dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
-            else:
-                shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
-                            dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
-
-            # pause for N seconds
-            smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-
-        else:
-            if not os.path.isfile(f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
-                shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
-                            dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH")
-
-            # pause for N seconds
-            smart_wait(app_context_bool=self.app_context_bool, seconds=5)
+        shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
+                    dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
 
     def conduct_behavioral_recording(self) -> None:
         """
