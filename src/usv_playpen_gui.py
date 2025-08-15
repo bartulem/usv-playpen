@@ -500,7 +500,7 @@ class USVPlaypenWindow(QMainWindow):
         video_duration_label.move(5, 325)
         self.video_session_duration = QLineEdit(f"{self.exp_settings_dict['video_session_duration']}", self.Record)
         self.video_session_duration.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.video_session_duration.setStyleSheet('QLineEdit { width: 492px; }')
+        self.video_session_duration.setStyleSheet('QLineEdit { width: 493px; }')
         self.video_session_duration.move(220, 325)
 
         cal_duration_label = QLabel('Calibration duration (min):', self.Record)
@@ -508,7 +508,7 @@ class USVPlaypenWindow(QMainWindow):
         cal_duration_label.move(5, 355)
         self.calibration_session_duration = QLineEdit(f"{self.exp_settings_dict['calibration_duration']}", self.Record)
         self.calibration_session_duration.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.calibration_session_duration.setStyleSheet('QLineEdit { width: 492px; }')
+        self.calibration_session_duration.setStyleSheet('QLineEdit { width: 493px; }')
         self.calibration_session_duration.move(220, 355)
 
         ethernet_network_label = QLabel('Ethernet network ID:', self.Record)
@@ -516,7 +516,7 @@ class USVPlaypenWindow(QMainWindow):
         ethernet_network_label.move(5, 385)
         self.ethernet_network = QLineEdit(f"{self.exp_settings_dict['ethernet_network']}", self.Record)
         self.ethernet_network.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.ethernet_network.setStyleSheet('QLineEdit { width: 492px; }')
+        self.ethernet_network.setStyleSheet('QLineEdit { width: 493px; }')
         self.ethernet_network.move(220, 385)
 
         email_notification_label = QLabel('Notify e-mail(s) of PC usage:', self.Record)
@@ -524,7 +524,7 @@ class USVPlaypenWindow(QMainWindow):
         email_notification_label.move(5, 415)
         self.email_recipients = QLineEdit('', self.Record)
         self.email_recipients.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.email_recipients.setStyleSheet('QLineEdit { width: 492px; }')
+        self.email_recipients.setStyleSheet('QLineEdit { width: 493px; }')
         self.email_recipients.move(220, 415)
 
         self._create_buttons_record(seq=0, class_option=self.Record,
@@ -667,7 +667,7 @@ class USVPlaypenWindow(QMainWindow):
         use_cam_label.move(5, 40)
 
         for cam_idx, cam in enumerate(self.exp_settings_dict['video']['general']['available_cameras']):
-            self._create_checkbox_general(camera_id=cam, x_start=5+(cam_idx*85))
+            self._create_checkbox_general(camera_id=cam, x_start=5+(cam_idx*90))
 
         """
         'nvenc-fast-yuv420_A' : '-preset','fast','-qmin','15','-qmax','15'
@@ -3196,7 +3196,8 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         self.__dict__[f'{camera_id}_rec_checkbox'] = QCheckBox(self.VideoSettings, text=camera_id)
-        self.__dict__[f'{camera_id}_rec_checkbox'].setStyleSheet("""QCheckBox::indicator {border: 1px solid grey; width: 15px; height: 15px; border-radius: 7.5px;}
+        self.__dict__[f'{camera_id}_rec_checkbox'].setStyleSheet("""QCheckBox {spacing: 2px;}
+                                                                    QCheckBox::indicator {border: 1px solid grey; width: 15px; height: 15px; border-radius: 7.5px;}
                                                                     QCheckBox::indicator:checked {background-color: #F58025;}""")
         self.__dict__[f'{camera_id}_rec_checkbox'].setChecked(self.__dict__[f'{camera_id}_rec_checkbox_bool'])
         self.__dict__[f'{camera_id}_rec_checkbox'].setFont(QFont(self.font_id, 10 + self.font_size_increase))
