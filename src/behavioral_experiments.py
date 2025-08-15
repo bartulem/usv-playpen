@@ -134,23 +134,21 @@ class ExperimentController:
         drives_to_mount = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
 
         # check if the Ethernet adapter is connected
-        ethernet_status = subprocess.run(args=f'''(Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up"''',
-                                         capture_output=True, text=True, check=False, encoding='utf-8')
+        ethernet_command_list = ["powershell", "-Command", f'''& {{ (Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up" }}''']
+        ethernet_status = subprocess.run(args=ethernet_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
 
         # reconnect if not connected
         if ethernet_status.returncode == 0:
             ethernet_status_output_text = ethernet_status.stdout.strip()
             if ethernet_status_output_text.lower() == 'false':
-                subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''',
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.STDOUT).wait()
+                subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''').wait()
 
                 # pause for N seconds
-                smart_wait(app_context_bool=self.app_context_bool, seconds=5)
+                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
 
             # check if all CUP drives are mounted and remount CUP drives if they are not
-            mounted_drives_status = subprocess.run(args='''gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name''',
-                                                   capture_output=True, text=True, check=False, encoding='utf-8')
+            mounted_drives_command_list = ["powershell", "-Command", '''& { gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name }''']
+            mounted_drives_status = subprocess.run(args=mounted_drives_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
 
             if mounted_drives_status.returncode == 0:
                 mounted_drives = sorted(list(set(mounted_drives_status.stdout.strip().split())))
@@ -169,7 +167,7 @@ class ExperimentController:
                 smart_wait(app_context_bool=self.app_context_bool, seconds=10)
                 sys.exit()
         else:
-            self.message_output(f"Error Message: {ethernet_status_result.stderr.strip()}")
+            self.message_output(f"Error Message: {ethernet_status.stderr.strip()}")
             smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
 
