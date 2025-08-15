@@ -134,7 +134,7 @@ class ExperimentController:
         drives_to_mount = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
 
         # check if the Ethernet adapter is connected
-        ethernet_status = subprocess.run(args=f'''powershell -Command (Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up"''',
+        ethernet_status = subprocess.run(args=f'''(Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up"''',
                                          capture_output=True, text=True, check=False, encoding='utf-8')
 
         # reconnect if not connected
@@ -149,7 +149,7 @@ class ExperimentController:
                 smart_wait(app_context_bool=self.app_context_bool, seconds=5)
 
             # check if all CUP drives are mounted and remount CUP drives if they are not
-            mounted_drives_status = subprocess.run(args='''powershell -Command gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name''',
+            mounted_drives_status = subprocess.run(args='''gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name''',
                                                    capture_output=True, text=True, check=False, encoding='utf-8')
 
             if mounted_drives_status.returncode == 0:
@@ -158,7 +158,7 @@ class ExperimentController:
                 for drive_letter_with_colon, path in drives_to_mount.items():
                     drive_letter_only = drive_letter_with_colon.replace(":", "")
                     if drive_letter_only not in mounted_drives:
-                        subprocess.Popen(args=f'''powershell -Command  net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
+                        subprocess.Popen(args=f'''cmd /c net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
                                          stdout=subprocess.DEVNULL,
                                          stderr=subprocess.STDOUT).wait()
                         self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
