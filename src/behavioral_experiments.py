@@ -134,33 +134,44 @@ class ExperimentController:
         drives_to_mount = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
 
         # check if the Ethernet adapter is connected
-        ethernet_status = subprocess.run(args=f'''(Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up"''',
-                                         capture_output=True, text=True, check=True, encoding='utf-8', shell=True)
+        ethernet_status = subprocess.run(args=f'''powershell -Command (Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up"''',
+                                         capture_output=True, text=True, check=False, encoding='utf-8')
 
         # reconnect if not connected
-        if ethernet_status is None or ethernet_status.lower() == 'false':
-            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''',
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.STDOUT).wait()
-
-            # pause for N seconds
-            smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-
-        # check if all CUP drives are mounted and remount CUP drives if they are not
-        mounted_drives_str = subprocess.run(args='''gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name''',
-                                            capture_output=True, text=True, check=True, encoding='utf-8', shell=True)
-
-        mounted_drives = sorted(list(set(mounted_drives_str.split())))
-
-        for drive_letter_with_colon, path in drives_to_mount.items():
-            drive_letter_only = drive_letter_with_colon.replace(":", "")
-            if drive_letter_only not in mounted_drives:
-                subprocess.Popen(args=f'''net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
+        if ethernet_status.returncode == 0:
+            ethernet_status_output_text = ethernet_status.stdout.strip()
+            if ethernet_status_output_text.lower() == 'false':
+                subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''',
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.STDOUT).wait()
-                self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
+
+                # pause for N seconds
+                smart_wait(app_context_bool=self.app_context_bool, seconds=5)
+
+            # check if all CUP drives are mounted and remount CUP drives if they are not
+            mounted_drives_status = subprocess.run(args='''powershell -Command gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name''',
+                                                   capture_output=True, text=True, check=False, encoding='utf-8')
+
+            if mounted_drives_status.returncode == 0:
+                mounted_drives = sorted(list(set(mounted_drives_status.stdout.strip().split())))
+
+                for drive_letter_with_colon, path in drives_to_mount.items():
+                    drive_letter_only = drive_letter_with_colon.replace(":", "")
+                    if drive_letter_only not in mounted_drives:
+                        subprocess.Popen(args=f'''powershell -Command  net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
+                                         stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.STDOUT).wait()
+                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
+                    else:
+                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
             else:
-                self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
+                self.message_output(f"Error Message: {mounted_drives_status.stderr.strip()}")
+                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+                sys.exit()
+        else:
+            self.message_output(f"Error Message: {ethernet_status_result.stderr.strip()}")
+            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+            sys.exit()
 
 
     def check_remote_mount(self,
