@@ -191,7 +191,7 @@ Another thing that needs to be ensured prior to recording is that the file serve
 
 .. code-block:: bash
 
-   sudo mount -t cifs //cup.princeton.edu/famousprof /home/user/famousprof -o username=netid,domain=PRINCETON,iocharset=utf8,rw,file_mode=0664,dir_mode=0775,nolinux,noperm,vers=2.1
+   //cup.princeton.edu/famousprof /mnt/famousprof cifs noauto,x-systemd.automount,credentials=/root/.credentials,iocharset=utf8,rw,file_mode=0664,dir_mode=0775,nolinux,noperm,vers=2.1 0 0
 
 The video data is saved in /mnt/DATA of each computer.
 
@@ -230,13 +230,25 @@ After installing *usv-playpen*, there are two files that should be modified if y
 
    /Users/<username>/mambaforge3/envs/usv/lib/python3.10/site-packages/usv_playpen
 
-If you plan to conduct behavioral recordings, you need to modify */_config/motif_config.ini* to include the actual API key:
+If you plan to conduct behavioral recordings, you need to modify */_config/motif_config.ini* to include the actual API key and SSH password to the tracking PCs:
 
 .. code-block:: ini
 
    [motif]
    master_ip_address=10.241.1.205
+   second_ip_address=10.241.1.183
+   ssh_port=22
+   ssh_username=labadmin
+   ssh_password=XXX
    api=xxx
+
+Likewise, if you plan to conduct behavioral recordings, you need to modify */_config/cup_config.ini* to include the actual username and password for the University Cup server:
+
+.. code-block:: ini
+
+    [cup]
+    username=XXX
+    password=XXX
 
 If you plan to send/receive e-mail notifications when jobs start/complete, you need to modify */_config/email_config.ini*:
 

@@ -19,6 +19,7 @@ from .cli_utils import *
 from .send_email import Messenger
 from .time_utils import *
 
+
 def count_last_recording_dropouts(log_file_path: str,
                                   log_file_ch : str) -> int | None:
     """
@@ -41,6 +42,7 @@ def count_last_recording_dropouts(log_file_path: str,
     (int | None)
        The number of dropouts in the last recording, or 0 if no recording is found,
        or None if the chX.log file cannot be found.
+    -------
     """
 
     try:
@@ -109,6 +111,57 @@ class ExperimentController:
             self.message_output = message_output
 
         self.app_context_bool = is_gui_context()
+
+    def remount_cup_drives_on_windows(self) -> None:
+        """
+        Description
+        -----------
+        Checks if the specified Ethernet adapter is connected; if not, 
+        reconnects and attempts to remount CUP drives (if they are not mounted).
+        -----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        cup_username, cup_password = self.get_cup_mount_params()
+
+        drives_to_mount = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
+
+        # check if the Ethernet adapter is connected
+        ethernet_status = subprocess.run(args=f'''(Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up"''',
+                                         capture_output=True, text=True, check=True, encoding='utf-8', shell=True)
+
+        # reconnect if not connected
+        if ethernet_status is None or ethernet_status.lower() == 'false':
+            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''',
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT).wait()
+
+            # pause for N seconds
+            smart_wait(app_context_bool=self.app_context_bool, seconds=5)
+
+        # check if all CUP drives are mounted and remount CUP drives if they are not
+        mounted_drives_str = subprocess.run(args='''gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name''',
+                                            capture_output=True, text=True, check=True, encoding='utf-8', shell=True)
+
+        mounted_drives = sorted(list(set(mounted_drives_str.split())))
+
+        for drive_letter_with_colon, path in drives_to_mount.items():
+            drive_letter_only = drive_letter_with_colon.replace(":", "")
+            if drive_letter_only not in mounted_drives:
+                subprocess.Popen(args=f'''net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.STDOUT).wait()
+                self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
+            else:
+                self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
+
 
     def check_remote_mount(self,
                            hostname: str = None,
@@ -201,6 +254,34 @@ class ExperimentController:
             bitmask |= 1 << cpu
         return f"0x{bitmask:X}"
 
+    def get_cup_mount_params(self) -> tuple:
+        """
+        Description
+        ----------
+        This method gets the username and password for cup mounting.
+        ----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        ----------
+        username (str), password (str)
+            Username and password for cup mounting.
+        ----------
+        """
+
+        config = configparser.ConfigParser()
+
+        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/cup_config.ini')):
+            self.message_output("Cup config file not found. Try again!")
+            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+            sys.exit()
+        else:
+            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/cup_config.ini'))
+            return config['cup']['username'], config['cup']['password']
+
     def get_connection_params(self) -> tuple:
         """
         Description
@@ -214,9 +295,10 @@ class ExperimentController:
 
         Returns
         ----------
-        master_ip_address (str), api_key (str)
-            IP address of the main PC,
-            and API key to run Motif.
+        master_ip_address (str), api_key (str), second_ip_address (str),
+        ssh_port (str), ssh_username (str), ssh_password (str)
+            IP address of the main PC, API key to run Motif remotely, IP address of the second PC,
+            SSH port, SSH username, and SSH password.
         ----------
         """
 
@@ -307,15 +389,28 @@ class ExperimentController:
             sys.exit()
         else:
             self.camera_serial_num = [camera_dict['serial'] for camera_dict in available_cameras]
-            self.message_output(f"The system is running Motif v{api.call('version')['software']} "
-                                f"and {len(available_cameras)} camera(s) is/are online: {self.camera_serial_num}")
-
-            if len(self.camera_serial_num) != self.exp_settings_dict['video']['general']['expected_camera_num']:
-                self.message_output(f"The number of connected cameras ({len(self.camera_serial_num)}) does not match the expected "
-                                    f"number of connected cameras, which is {self.exp_settings_dict['video']['general']['expected_camera_num']}.")
-                self.message_output(self.exp_settings_dict['continue_key'])
+            if not set(self.exp_settings_dict['video']['general']['expected_cameras']).issubset(self.camera_serial_num):
+                self.message_output(f"The serial numbers of expected cameras {self.exp_settings_dict['video']['general']['expected_cameras']} do not match the"
+                                    f"serial numbers of available cameras: {self.camera_serial_num}.")
                 smart_wait(app_context_bool=self.app_context_bool, seconds=10)
                 sys.exit()
+
+            # connect / disconnect cameras if necessary
+            if len(self.camera_serial_num) < len(self.exp_settings_dict['video']['general']['expected_cameras']):
+                if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 5:
+                    api.call('multicam/connect_camera/__all')
+                else:
+                    for camera_serial in list(set(self.exp_settings_dict['video']['general']['expected_cameras'])-set(self.camera_serial_num)):
+                        api.call(f'multicam/connect_camera/{camera_serial}')
+
+            if len(self.camera_serial_num) > len(self.exp_settings_dict['video']['general']['expected_cameras']):
+                for camera_serial in list(set(self.camera_serial_num) - set(self.exp_settings_dict['video']['general']['expected_cameras'])):
+                    api.call(f'multicam/disconnect_camera/{camera_serial}')
+
+            available_cameras = api.call('cameras')['cameras']
+            self.camera_serial_num = [camera_dict['serial'] for camera_dict in available_cameras]
+            self.message_output(f"The system is running Motif v{api.call('version')['software']} "
+                                f"and {len(available_cameras)} camera(s) is/are online: {self.camera_serial_num}")
 
             # configure cameras
             for serial_num in self.exp_settings_dict['video']['general']['expected_cameras']:
@@ -328,8 +423,8 @@ class ExperimentController:
                 api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/configure", AcquisitionFrameRate=camera_fr)
                 self.message_output(f"The camera frame rate is set to {camera_fr} fps for {self.exp_settings_dict['video']['general']['expected_cameras'][0]}.")
             else:
-                api.call('cameras/configure', MotifMulticamFrameRate=camera_fr)
-                self.message_output(f"The camera frame rate is set to {camera_fr} fps for all available cameras.")
+                api.call(f'cameras/configure', MotifMulticamFrameRate=camera_fr)
+                self.message_output(f"The camera frame rate is set to {camera_fr} fps for all chosen cameras.")
 
             # monitor recording via browser
             if self.exp_settings_dict['video']['general']['monitor_recording']:
@@ -572,6 +667,9 @@ class ExperimentController:
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
                                                                                  f"and run by @{self.exp_settings_dict['video']['metadata']['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+
+        # remount CUP drives if necessary
+        self.remount_cup_drives_on_windows()
 
         # start capturing sync LEDS
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):

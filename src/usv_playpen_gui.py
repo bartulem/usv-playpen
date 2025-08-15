@@ -2681,32 +2681,35 @@ class USVPlaypenWindow(QMainWindow):
             self.email_recipients = self.email_recipients.split(',')
 
         if self.falkner_checkbox_bool:
-            if not f"/mnt/falkner/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
-                self.exp_settings_dict['recording_files_destination_linux'].insert(0, f"/mnt/falkner/{self.exp_id}/Data")
-            if not f"F:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
-                self.exp_settings_dict['recording_files_destination_win'].insert(0, f"F:\\{self.exp_id}\\Data")
+            if not f"/mnt/falkner/{self.exp_id}/Data" in self.destination_linux_global:
+                self.destination_linux_global.insert(0, f"/mnt/falkner/{self.exp_id}/Data")
+            if not f"F:\\{self.exp_id}\\Data" in self.destination_win_global:
+                self.destination_win_global.insert(0, f"F:\\{self.exp_id}\\Data")
         else:
-            if f"/mnt/falkner/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
-                self.exp_settings_dict['recording_files_destination_linux'].pop(self.exp_settings_dict['recording_files_destination_linux'].index(f"/mnt/falkner/{self.exp_id}/Data"))
-                if not f"/mnt/murthy/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
-                    self.exp_settings_dict['recording_files_destination_linux'].insert(0, f"/mnt/murthy/{self.exp_id}/Data")
-            if f"F:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
-                self.exp_settings_dict['recording_files_destination_win'].pop(self.exp_settings_dict['recording_files_destination_win'].index(f"F:\\{self.exp_id}\\Data"))
-                if not f"M:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
-                    self.exp_settings_dict['recording_files_destination_win'].insert(0, f"M:\\{self.exp_id}\\Data")
+            if f"/mnt/falkner/{self.exp_id}/Data" in self.destination_linux_global:
+                self.destination_linux_global.pop(self.destination_linux_global.index(f"/mnt/falkner/{self.exp_id}/Data"))
+                if not f"/mnt/murthy/{self.exp_id}/Data" in self.destination_linux_global:
+                    self.destination_linux_global.insert(0, f"/mnt/murthy/{self.exp_id}/Data")
+            if f"F:\\{self.exp_id}\\Data" in self.destination_win_global:
+                self.destination_win_global.pop(self.destination_win_global.index(f"F:\\{self.exp_id}\\Data"))
+                if not f"M:\\{self.exp_id}\\Data" in self.destination_win_global:
+                    self.destination_win_global.insert(0, f"M:\\{self.exp_id}\\Data")
 
         if self.murthy_checkbox_bool:
-            if not f"M:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
-                self.exp_settings_dict['recording_files_destination_win'].insert(0, f"M:\\{self.exp_id}\\Data")
+            if not f"M:\\{self.exp_id}\\Data" in self.destination_win_global:
+                self.destination_win_global.insert(1, f"M:\\{self.exp_id}\\Data")
         else:
-            if f"/mnt/murthy/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
-                self.exp_settings_dict['recording_files_destination_linux'].pop(self.exp_settings_dict['recording_files_destination_linux'].index(f"/mnt/murthy/{self.exp_id}/Data"))
-                if not f"/mnt/falkner/{self.exp_id}/Data" in self.exp_settings_dict['recording_files_destination_linux']:
-                    self.exp_settings_dict['recording_files_destination_linux'].insert(0, f"/mnt/falkner/{self.exp_id}/Data")
-            if f"M:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
-                self.exp_settings_dict['recording_files_destination_win'].pop(self.exp_settings_dict['recording_files_destination_win'].index(f"M:\\{self.exp_id}\\Data"))
-                if not f"F:\\{self.exp_id}\\Data" in self.exp_settings_dict['recording_files_destination_win']:
-                    self.exp_settings_dict['recording_files_destination_win'].insert(0, f"F:\\{self.exp_id}\\Data")
+            if f"/mnt/murthy/{self.exp_id}/Data" in self.destination_linux_global:
+                self.destination_linux_global.pop(self.destination_linux_global.index(f"/mnt/murthy/{self.exp_id}/Data"))
+                if not f"/mnt/falkner/{self.exp_id}/Data" in self.destination_linux_global:
+                    self.destination_linux_global.insert(0, f"/mnt/falkner/{self.exp_id}/Data")
+            if f"M:\\{self.exp_id}\\Data" in self.destination_win_global:
+                self.destination_win_global.pop(self.destination_win_global.index(f"M:\\{self.exp_id}\\Data"))
+                if not f"F:\\{self.exp_id}\\Data" in self.destination_win_global:
+                    self.destination_win_global.insert(0, f"F:\\{self.exp_id}\\Data")
+
+        self.exp_settings_dict['recording_files_destination_linux'] = self.destination_linux_global
+        self.exp_settings_dict['recording_files_destination_win'] = self.destination_win_global
 
         self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.video_session_duration)
         self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.calibration_session_duration)
@@ -2862,6 +2865,14 @@ class USVPlaypenWindow(QMainWindow):
         self.avisoft_rec_dir_global = self.exp_settings_dict['avisoft_recorder_exe']
         self.avisoft_base_dir_global = self.exp_settings_dict['avisoft_basedirectory']
         self.coolterm_base_dir_global = self.exp_settings_dict['coolterm_basedirectory']
+
+        self.destination_linux_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
+                                                             recording_files_destinations=self.exp_settings_dict['recording_files_destination_linux'],
+                                                             exp_id=self.exp_id).split(',')
+
+        self.destination_win_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
+                                                           recording_files_destinations=self.exp_settings_dict['recording_files_destination_win'],
+                                                           exp_id=self.exp_id).split(',')
 
         self.processing_input_dict['send_email']['Messenger']['experimenter'] = f'{self.exp_id}'
         self.analyses_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
