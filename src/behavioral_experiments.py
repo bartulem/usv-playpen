@@ -44,12 +44,12 @@ def count_last_recording_dropouts(log_file_path: str,
     """
 
     try:
-        with open(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
+        with open(f"{log_file_path}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
             content = log_txt_file.read()
     except FileNotFoundError:
         return None
 
-    recordings = content.split(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}")
+    recordings = content.split(f"{log_file_path}{log_file_ch}{os.sep}")
 
     # filter out any empty strings that may result from the split
     recordings = [rec for rec in recordings if rec.strip()]
