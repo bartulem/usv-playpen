@@ -289,18 +289,14 @@ class ExperimentController:
         ip_address, second_ip_address, ssh_port, ssh_username, ssh_password, api_key  = self.get_connection_params()
 
         # check the existence and functionality of mount points on both tracking computers
-        for lin_directory in self.exp_settings_dict['recording_files_destination_linux']:
-            mount_check_bool = self.check_remote_mount(hostname=ip_address, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path=lin_directory)
-            if not mount_check_bool:
-                self.message_output(f"Mount point {lin_directory} on {ip_address} is not valid. Please fix the issue and try again.")
-                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-                sys.exit()
-        for lin_directory in self.exp_settings_dict['recording_files_destination_linux']:
-            mount_check_bool = self.check_remote_mount(hostname=second_ip_address, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path=lin_directory)
-            if not mount_check_bool:
-                self.message_output(f"Mount point {lin_directory} on {second_ip_address} is not valid. Please fix the issue and try again.")
-                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-                sys.exit()
+        for ip_address_pc in [ip_address, second_ip_address]:
+            for lin_directory in self.exp_settings_dict['recording_files_destination_linux']:
+                lin_dir_elements = lin_directory.split('/')[0:3]
+                mount_check_bool = self.check_remote_mount(hostname=ip_address_pc, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path='/'.join(lin_dir_elements))
+                if not mount_check_bool:
+                    self.message_output(f"Mount point {lin_directory} on {ip_address} is not valid. Please fix the issue and try again.")
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+                    sys.exit()
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
