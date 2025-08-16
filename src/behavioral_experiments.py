@@ -117,7 +117,7 @@ class ExperimentController:
         Description
         -----------
         Checks if the specified Ethernet adapter is connected;
-        if not, it re-enables the connection
+        if not, it re-enables the connection.
         -----------
 
         Parameters
@@ -128,6 +128,7 @@ class ExperimentController:
         -------
         -------
         """
+
         # check if the Ethernet adapter is connected
         ethernet_command_list = ["powershell", "-Command", f'''& {{ (Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up" }}''']
         ethernet_status = subprocess.run(args=ethernet_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
@@ -407,8 +408,7 @@ class ExperimentController:
             sys.exit()
         else:
             if 1 < len(self.exp_settings_dict['video']['general']['expected_cameras']) < 5:
-                temp_available_cameras = api.call('cameras')['cameras']
-                temp_camera_serial_num = [camera_dict['serial'] for camera_dict in temp_available_cameras]
+                temp_camera_serial_num = [camera_dict['serial'] for camera_dict in api.call('cameras')['cameras']]
 
                 # connect cameras if necessary
                 if len(list(set(self.exp_settings_dict['video']['general']['expected_cameras'])-set(temp_camera_serial_num))) > 0:
@@ -631,6 +631,8 @@ class ExperimentController:
 
         shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
                     dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
+
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
     def conduct_behavioral_recording(self) -> None:
         """
