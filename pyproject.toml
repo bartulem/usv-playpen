@@ -198,4 +198,4 @@ messages_control.disable = [
 ]
 
 [tool.uv.sources]
-motifapi = { git = "https://github.com/davidt0x/python-motifapi.git" }
+motifapi = { git = "https://github.com/davidt0x/python-motifapi.git", branch = "fix/rstrings_for_regex" }

@@ -719,7 +719,7 @@ wheels = [
 [[package]]
 name = "motifapi"
 version = "0.1.10"
-source = { git = "https://github.com/loopbio/python-motifapi#92d8efbbf6335b751ee54074c76cfb265ab5955c" }
+source = { git = "https://github.com/davidt0x/python-motifapi.git?branch=fix%2Frstrings_for_regex#a39c647b8000dd2b8f39f8d1e6ab2b6074856e16" }
 dependencies = [
     { name = "six" },
 ]
@@ -1777,7 +1777,7 @@ requires-dist = [
     { name = "joblib" },
     { name = "librosa" },
     { name = "matplotlib" },
-    { name = "motifapi", git = "https://github.com/loopbio/python-motifapi" },
+    { name = "motifapi", git = "https://github.com/davidt0x/python-motifapi.git?branch=fix%2Frstrings_for_regex" },
     { name = "noisereduce" },
     { name = "numba" },
     { name = "numpy" },
