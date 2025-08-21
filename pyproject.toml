@@ -198,4 +198,4 @@ messages_control.disable = [
 ]
 
 [tool.uv.sources]
-motifapi = { git = "https://github.com/loopbio/python-motifapi" }
+motifapi = { git = "https://github.com/davidt0x/python-motifapi.git" }
