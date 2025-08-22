@@ -2,8 +2,10 @@
 @author: bartulem
 Test recording module.
 """
-
 from __future__ import annotations
+
+import os
+import pytest
 
 import configparser
 from pathlib import Path
@@ -29,6 +31,10 @@ def test_recording_video_software():
     assert motif_success, "Motif not operational on this PC."
 
 
+@pytest.mark.skipif(
+    "GITHUB_ACTIONS" in os.environ,
+    reason="AviSoft and CoolTerm are not available on CI."
+)
 def test_recording_audio_sync_software(behavioral_experiments_settings):
     # test audio / sync_software presence
     config_file_status = (config_dir / "avisoft_config.ini").is_file() and (
