@@ -161,15 +161,12 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
-    if not provided_params:
-        AudioGenerator().create_usv_playback_wav()
-    else:
-        analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
-                                                                        provided_params=provided_params,
-                                                                        settings_dict='analyses_settings')
-        AudioGenerator(exp_id=exp_id,
-                       create_playback_settings_dict=analyses_settings_parameter_dict['create_usv_playback_wav'],
-                       message_output=print).create_usv_playback_wav()
+    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                    provided_params=provided_params,
+                                                                    settings_dict='analyses_settings')
+    AudioGenerator(exp_id=exp_id,
+                   create_playback_settings_dict=analyses_settings_parameter_dict['create_usv_playback_wav'],
+                   message_output=print).create_usv_playback_wav()
 
 @click.command(name='generate-naturalistic-usv-playback')
 @click.option('--exp-id', type=str, required=True, help='Experimenter ID.')
@@ -202,20 +199,16 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
             try:
                 ctx.params[key] = json.loads(value)
             except json.JSONDecodeError:
-                # raise an error if the JSON is invalid
                 raise click.BadParameter(message=f"Option '--{key.replace('_', '-')}' has invalid JSON.", param_hint=key)
 
-    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == click.core.ParameterSource.COMMANDLINE]
 
-    if not provided_params:
-        AudioGenerator().create_usv_playback_wav()
-    else:
-        analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
-                                                                        provided_params=provided_params,
-                                                                        settings_dict='analyses_settings')
-        AudioGenerator(exp_id=exp_id,
-                       create_playback_settings_dict=analyses_settings_parameter_dict['create_naturalistic_usv_playback_wav'],
-                       message_output=print).create_naturalistic_usv_playback_wav()
+    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                    provided_params=provided_params,
+                                                                    settings_dict='analyses_settings')
+    AudioGenerator(exp_id=exp_id,
+                   create_playback_settings_dict=analyses_settings_parameter_dict['create_naturalistic_usv_playback_wav'],
+                   message_output=print).create_naturalistic_usv_playback_wav()
 
 @click.command(name='generate-rm')
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')

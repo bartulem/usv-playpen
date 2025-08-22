@@ -1116,6 +1116,8 @@ class Create3DVideo:
             File path to speaker tracking data.
         visualizations_parameter_dict (dict)
             Visualization params; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
         ----------
 
         Returns
