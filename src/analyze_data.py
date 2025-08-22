@@ -136,7 +136,7 @@ class Analyst:
 
 
 @click.command(name='generate-usv-playback')
-@click.option('--exp-id', 'experimenter', type=str, required=True, help='Experimenter ID.')
+@click.option('--exp-id', type=str, required=True, help='Experimenter ID.')
 @click.option('--num-usv-files', 'num_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
 @click.option('--total-usv-number', 'total_usv_number', type=int, default=None, required=False, help='Total number of USVs to distribute across files.')
 @click.option('--ipi-duration', 'ipi_duration', type=float, default=None, required=False, help='Inter-USV-interval duration (in s).')
@@ -172,7 +172,7 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
                        message_output=print).create_usv_playback_wav()
 
 @click.command(name='generate-naturalistic-usv-playback')
-@click.option('--exp-id', 'experimenter', type=str, required=True, help='Experimenter ID.')
+@click.option('--exp-id', type=str, required=True, help='Experimenter ID.')
 @click.option('--num-naturalistic-usv-files', 'num_naturalistic_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
 @click.option('--naturalistic-wav-sampling-rate', 'naturalistic_wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in kHz).')
 @click.option('--naturalistic-playback-snippets-dir-prefix', 'naturalistic_playback_snippets_dir_prefix', type=str, default=None, required=False, help='Prefix of directory of the naturalistic USV playback snippets.')
