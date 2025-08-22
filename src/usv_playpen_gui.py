@@ -57,7 +57,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = 'USV Playpen v0.8.9'
+app_name = 'USV Playpen v0.8.10'
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -1793,7 +1793,7 @@ class USVPlaypenWindow(QMainWindow):
         self.AnalysesSettings = AnalysesSettings(self)
         self.setWindowTitle(f'{app_name} (Analyze data > Settings)')
         self.setCentralWidget(self.AnalysesSettings)
-        analyze_one_x, analyze_one_y = (370, 935)
+        analyze_one_x, analyze_one_y = (770, 825)
         self.setFixedSize(analyze_one_x, analyze_one_y)
 
         analyses_dir_label = QLabel('(*) Root directories for analyses', self.AnalysesSettings)
@@ -1848,7 +1848,7 @@ class USVPlaypenWindow(QMainWindow):
         self.calculate_neuronal_tuning_curves_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='calculate_neuronal_tuning_curves_cb_bool'))
         self.calculate_neuronal_tuning_curves_cb.move(275, 495)
 
-        create_usv_playback_wav_label = QLabel('Create USV playback .WAV file:', self.AnalysesSettings)
+        create_usv_playback_wav_label = QLabel('Create artificial playback .WAV file:', self.AnalysesSettings)
         create_usv_playback_wav_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         create_usv_playback_wav_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
         create_usv_playback_wav_label.move(10, 525)
@@ -1858,7 +1858,7 @@ class USVPlaypenWindow(QMainWindow):
         self.create_usv_playback_wav_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='create_usv_playback_wav_cb_bool'))
         self.create_usv_playback_wav_cb.move(275, 525)
 
-        num_usv_files_label = QLabel('Total number of USV playback files:', self.AnalysesSettings)
+        num_usv_files_label = QLabel('Number of artificial playback files:', self.AnalysesSettings)
         num_usv_files_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         num_usv_files_label.move(10, 555)
         self.num_usv_files = QLineEdit(f"{self.analyses_input_dict['create_usv_playback_wav']['num_usv_files']}", self.AnalysesSettings)
@@ -1882,78 +1882,116 @@ class USVPlaypenWindow(QMainWindow):
         self.ipi_duration.setStyleSheet('QLineEdit { width: 85px; }')
         self.ipi_duration.move(275, 615)
 
+        create_naturalistic_usv_playback_wav_label = QLabel('Create naturalistic playback .WAV file:', self.AnalysesSettings)
+        create_naturalistic_usv_playback_wav_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        create_naturalistic_usv_playback_wav_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        create_naturalistic_usv_playback_wav_label.move(10, 645)
+        self.create_naturalistic_usv_playback_wav_cb = QComboBox(self.AnalysesSettings)
+        self.create_naturalistic_usv_playback_wav_cb.addItems(['No', 'Yes'])
+        self.create_naturalistic_usv_playback_wav_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.create_naturalistic_usv_playback_wav_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='create_naturalistic_usv_playback_wav_cb_bool'))
+        self.create_naturalistic_usv_playback_wav_cb.move(275, 645)
+
+        num_naturalistic_usv_files_label = QLabel('Number of naturalistic playback files:', self.AnalysesSettings)
+        num_naturalistic_usv_files_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        num_naturalistic_usv_files_label.move(10, 675)
+        self.num_naturalistic_usv_files = QLineEdit(f"{self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files']}", self.AnalysesSettings)
+        self.num_naturalistic_usv_files.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.num_naturalistic_usv_files.setStyleSheet('QLineEdit { width: 85px; }')
+        self.num_naturalistic_usv_files.move(275, 675)
+
+        total_playback_file_duration_label = QLabel('Total playback file duration (s):', self.AnalysesSettings)
+        total_playback_file_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        total_playback_file_duration_label.move(10, 705)
+        self.total_playback_file_duration = QLineEdit(f"{self.analyses_input_dict['create_naturalistic_usv_playback_wav']['total_acceptable_naturalistic_playback_time']}", self.AnalysesSettings)
+        self.total_playback_file_duration.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.total_playback_file_duration.setStyleSheet('QLineEdit { width: 85px; }')
+        self.total_playback_file_duration.move(275, 705)
+
+        preferred_mouse_sex_label = QLabel('Sex that produced the vocalizations:', self.AnalysesSettings)
+        preferred_mouse_sex_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        preferred_mouse_sex_label.move(10, 735)
+        self.preferred_mouse_sex_list = sorted(['combined', 'male', 'female'], key=lambda x: x == self.analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix'], reverse=True)
+        self.preferred_mouse_sex_cb = QComboBox(self.AnalysesSettings)
+        self.preferred_mouse_sex_cb.addItems(self.preferred_mouse_sex_list)
+        self.preferred_mouse_sex_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.preferred_mouse_sex_cb.activated.connect(partial(self._combo_box_preferred_mouse_sex, variable_id='preferred_mouse_sex'))
+        self.preferred_mouse_sex_cb.move(275, 735)
+
+        analyses_col_two_x1, analyses_col_two_x2 = 380, 645
+
         frequency_shift_audio_segment_label = QLabel('Frequency-shift audio segment:', self.AnalysesSettings)
         frequency_shift_audio_segment_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         frequency_shift_audio_segment_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        frequency_shift_audio_segment_label.move(10, 645)
+        frequency_shift_audio_segment_label.move(analyses_col_two_x1, 40)
         self.frequency_shift_audio_segment_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_audio_segment_cb.addItems(['No', 'Yes'])
         self.frequency_shift_audio_segment_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.frequency_shift_audio_segment_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='frequency_shift_audio_segment_cb_bool'))
-        self.frequency_shift_audio_segment_cb.move(275, 645)
+        self.frequency_shift_audio_segment_cb.move(analyses_col_two_x2, 40)
 
-        frequency_shift_audio_dir_label = QLabel('.WAV audio subdirectory of choice:', self.AnalysesSettings)
+        frequency_shift_audio_dir_label = QLabel('WAV audio subdirectory of choice:', self.AnalysesSettings)
         frequency_shift_audio_dir_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        frequency_shift_audio_dir_label.move(10, 675)
+        frequency_shift_audio_dir_label.move(analyses_col_two_x1, 70)
         self.frequency_shift_audio_dir_list = sorted(['cropped_to_video', 'hpss', 'hpss_filtered'], key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], reverse=True)
         self.frequency_shift_audio_dir_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_audio_dir_cb.addItems(self.frequency_shift_audio_dir_list)
         self.frequency_shift_audio_dir_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.frequency_shift_audio_dir_cb.activated.connect(partial(self._combo_box_fs_audio_dir, variable_id='fs_audio_dir'))
-        self.frequency_shift_audio_dir_cb.move(275, 675)
+        self.frequency_shift_audio_dir_cb.move(analyses_col_two_x2, 70)
 
         frequency_shift_device_id_label = QLabel('Recording device identity (m|s):', self.AnalysesSettings)
         frequency_shift_device_id_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        frequency_shift_device_id_label.move(10, 705)
+        frequency_shift_device_id_label.move(analyses_col_two_x1, 100)
         self.frequency_shift_device_id_list = sorted(['m', 's'], key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'], reverse=True)
         self.frequency_shift_device_id_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_device_id_cb.addItems(self.frequency_shift_device_id_list)
         self.frequency_shift_device_id_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.frequency_shift_device_id_cb.activated.connect(partial(self._combo_box_fs_device_id, variable_id='fs_device_id'))
-        self.frequency_shift_device_id_cb.move(275, 705)
+        self.frequency_shift_device_id_cb.move(analyses_col_two_x2, 100)
 
         frequency_shift_channel_id_label = QLabel('Recording device channel (1-12):', self.AnalysesSettings)
         frequency_shift_channel_id_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        frequency_shift_channel_id_label.move(10, 735)
+        frequency_shift_channel_id_label.move(analyses_col_two_x1, 130)
         self.frequency_shift_channel_id_list = sorted(list(range(1, 13)), key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], reverse=True)
         self.frequency_shift_channel_id_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_channel_id_cb.addItems([str(ch_id_item) for ch_id_item in self.frequency_shift_channel_id_list])
         self.frequency_shift_channel_id_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.frequency_shift_channel_id_cb.activated.connect(partial(self._combo_box_fs_channel_id, variable_id='fs_channel_id'))
-        self.frequency_shift_channel_id_cb.move(275, 735)
+        self.frequency_shift_channel_id_cb.move(analyses_col_two_x2, 130)
 
         fs_sequence_start_label = QLabel('Start of audio sequence (s):', self.AnalysesSettings)
         fs_sequence_start_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        fs_sequence_start_label.move(10, 765)
+        fs_sequence_start_label.move(analyses_col_two_x1, 160)
         self.fs_sequence_start = QLineEdit(f"{self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_start']}", self.AnalysesSettings)
         self.fs_sequence_start.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.fs_sequence_start.setStyleSheet('QLineEdit { width: 85px; }')
-        self.fs_sequence_start.move(275, 765)
+        self.fs_sequence_start.move(analyses_col_two_x2, 160)
 
         fs_sequence_duration_label = QLabel('Total duration of audio sequence (s):', self.AnalysesSettings)
         fs_sequence_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        fs_sequence_duration_label.move(10, 795)
+        fs_sequence_duration_label.move(analyses_col_two_x1, 190)
         self.fs_sequence_duration = QLineEdit(f"{self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_duration']}", self.AnalysesSettings)
         self.fs_sequence_duration.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.fs_sequence_duration.setStyleSheet('QLineEdit { width: 85px; }')
-        self.fs_sequence_duration.move(275, 795)
+        self.fs_sequence_duration.move(analyses_col_two_x2, 190)
 
         fs_octave_shift_label = QLabel('Octave shift (direction and quantity):', self.AnalysesSettings)
         fs_octave_shift_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        fs_octave_shift_label.move(10, 825)
+        fs_octave_shift_label.move(analyses_col_two_x1, 220)
         self.fs_octave_shift = QLineEdit(f"{self.analyses_input_dict['frequency_shift_audio_segment']['fs_octave_shift']}", self.AnalysesSettings)
         self.fs_octave_shift.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.fs_octave_shift.setStyleSheet('QLineEdit { width: 85px; }')
-        self.fs_octave_shift.move(275, 825)
+        self.fs_octave_shift.move(analyses_col_two_x2, 220)
 
         volume_adjust_audio_segment_label = QLabel('Volume-adjust audio segment:', self.AnalysesSettings)
         volume_adjust_audio_segment_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        volume_adjust_audio_segment_label.move(10, 855)
+        volume_adjust_audio_segment_label.move(analyses_col_two_x1, 250)
         self.volume_adjust_audio_segment_cb = QComboBox(self.AnalysesSettings)
         self.volume_adjust_audio_segment_cb.addItems(['Yes', 'No'])
         self.volume_adjust_audio_segment_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.volume_adjust_audio_segment_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='volume_adjust_audio_segment_cb_bool'))
-        self.volume_adjust_audio_segment_cb.move(275, 855)
+        self.volume_adjust_audio_segment_cb.move(analyses_col_two_x2, 250)
 
         self._create_buttons_analyze(seq=0, class_option=self.AnalysesSettings,
                                      button_pos_y=analyze_one_y - 35, next_button_x_pos=analyze_one_x - 100)
@@ -2036,12 +2074,19 @@ class USVPlaypenWindow(QMainWindow):
         self.analyses_input_dict['analyses_booleans']['create_usv_playback_wav_bool'] = self.create_usv_playback_wav_cb_bool
         self.create_usv_playback_wav_cb_bool = False
 
+        self.analyses_input_dict['analyses_booleans']['create_naturalistic_usv_playback_wav_bool'] = self.create_naturalistic_usv_playback_wav_cb_bool
+        self.create_naturalistic_usv_playback_wav_cb_bool = False
+
         self.analyses_input_dict['analyses_booleans']['frequency_shift_audio_segment_bool'] = self.frequency_shift_audio_segment_cb_bool
         self.frequency_shift_audio_segment_cb_bool = False
 
         self.analyses_input_dict['create_usv_playback_wav']['num_usv_files'] = int(ast.literal_eval(self.num_usv_files.text()))
         self.analyses_input_dict['create_usv_playback_wav']['total_usv_number'] = int(ast.literal_eval(self.total_usv_number.text()))
         self.analyses_input_dict['create_usv_playback_wav']['ipi_duration'] = float(ast.literal_eval(self.ipi_duration.text()))
+
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files'] = int(ast.literal_eval(self.num_naturalistic_usv_files.text()))
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['total_acceptable_naturalistic_playback_time'] = int(ast.literal_eval(self.total_playback_file_duration.text()))
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix'] = self.preferred_mouse_sex
 
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'] = self.fs_audio_dir
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'] = self.fs_device_id
@@ -2947,6 +2992,31 @@ class USVPlaypenWindow(QMainWindow):
         for idx in range(len(self.frequency_shift_device_id_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.frequency_shift_device_id_list[idx]
+                break
+
+
+    def _combo_box_preferred_mouse_sex(self,
+                                       index: int,
+                                       variable_id: str = None) -> None:
+        """
+        Preferred sex of the mouse which produced USVs.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        for idx in range(len(self.preferred_mouse_sex_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.preferred_mouse_sex_list[idx]
                 break
 
     def _combo_box_fs_audio_dir(self,
@@ -4538,7 +4608,8 @@ def main() -> None:
                            '22085397_rec_checkbox_bool': True if '22085397' in _toml['video']['general']['expected_cameras'] else False,
                            '21241563_rec_checkbox_bool': True if '21241563' in _toml['video']['general']['expected_cameras'] else False,
                            'falkner_checkbox_bool': any("F:" in cup_path for cup_path in _toml['recording_files_destination_win']),
-                           'murthy_checkbox_bool': any("M:" in cup_path for cup_path in _toml['recording_files_destination_win'])}
+                           'murthy_checkbox_bool': any("M:" in cup_path for cup_path in _toml['recording_files_destination_win']),
+                           'create_naturalistic_usv_playback_wav_cb_bool': False, 'preferred_mouse_sex': analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix']}
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

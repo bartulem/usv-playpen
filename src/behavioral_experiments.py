@@ -632,7 +632,7 @@ class ExperimentController:
         shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
                     dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
 
-        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+        smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
     def conduct_behavioral_recording(self) -> None:
         """
@@ -837,13 +837,26 @@ class ExperimentController:
 
         # check number of dropouts in audio recordings
         if self.exp_settings_dict['conduct_audio_recording'] and self.exp_settings_dict['audio']['devices']['usghflags'] != 1574:
+
+            audio_triggerbox_sync_info_dict = {device: {'start_first_recorded_frame': 0, 'end_last_recorded_frame': 0, 'largest_break_duration': 0,
+                                                        'duration_samples': 0, 'duration_seconds': 0, 'audio_tracking_diff_seconds': 0, 'num_dropouts': 0} for device in ['m', 's']}
+
             for log_ch, log_device in zip(['ch1', 'ch13'], ['m', 's']):
                 dropout_count = count_last_recording_dropouts(log_file_path=self.exp_settings_dict['avisoft_basedirectory'],
                                                               log_file_ch=log_ch)
+
+                audio_triggerbox_sync_info_dict[log_device]['num_dropouts'] = dropout_count
+
                 if dropout_count is None:
                     self.message_output(f"Could not determine the number of dropouts for {log_device} device, please check the log file.")
                 else:
-                    self.message_output(f"Number of dropouts registered on {log_device} device: {dropout_count}.")
+                    if dropout_count > 0:
+                        self.message_output(f"[***Important!***] Number of dropouts registered on {log_device} device: {dropout_count}.")
+                    else:
+                        self.message_output(f"Number of dropouts registered on {log_device} device: {dropout_count}.")
+
+            with open(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}audio_triggerbox_sync_info.json", 'w') as audio_dict_outfile:
+                json.dump(audio_triggerbox_sync_info_dict, audio_dict_outfile, indent=4)
 
         self.message_output(f"Transferring audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
 

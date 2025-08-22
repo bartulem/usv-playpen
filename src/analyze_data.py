@@ -85,10 +85,15 @@ class Analyst:
                                                                f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
         # # # create USV playback WAV files
-        if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool']:
-            AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
-                           create_playback_settings_dict=self.input_parameter_dict['create_usv_playback_wav'],
-                           message_output=self.message_output).create_usv_playback_wav()
+        if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool'] or self.input_parameter_dict['analyses_booleans']['create_naturalistic_usv_playback_wav_bool']:
+            if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool']:
+                AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
+                               create_playback_settings_dict=self.input_parameter_dict['create_usv_playback_wav'],
+                               message_output=self.message_output).create_usv_playback_wav()
+            else:
+                AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
+                               create_playback_settings_dict=self.input_parameter_dict['create_naturalistic_usv_playback_wav'],
+                               message_output=self.message_output).create_naturalistic_usv_playback_wav()
 
         for one_directory in self.root_directories:
             try:
@@ -135,7 +140,7 @@ class Analyst:
 @click.option('--num-usv-files', 'num_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
 @click.option('--total-usv-number', 'total_usv_number', type=int, default=None, required=False, help='Total number of USVs to distribute across files.')
 @click.option('--ipi-duration', 'ipi_duration', type=float, default=None, required=False, help='Inter-USV-interval duration (in s).')
-@click.option('--wav-sampling-rate', 'wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in Hz).')
+@click.option('--wav-sampling-rate', 'wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in kHz).')
 @click.option('--playback-snippets-dir', 'playback_snippets_dir', type=str, default=None, required=False, help='Directory of USV playback snippets.')
 @click.pass_context
 def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
@@ -163,8 +168,54 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
                                                                         provided_params=provided_params,
                                                                         settings_dict='analyses_settings')
         AudioGenerator(exp_id=exp_id,
-                       create_playback_settings_dict=analyses_settings_parameter_dict,
-                       message_output=print).create_usv_playback_wav(spock_cluster_bool=True)
+                       create_playback_settings_dict=analyses_settings_parameter_dict['create_usv_playback_wav'],
+                       message_output=print).create_usv_playback_wav()
+
+@click.command(name='generate-naturalistic-usv-playback')
+@click.option('--exp-id', 'experimenter', type=str, required=True, help='Experimenter ID.')
+@click.option('--num-naturalistic-usv-files', 'num_naturalistic_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
+@click.option('--naturalistic-wav-sampling-rate', 'naturalistic_wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in kHz).')
+@click.option('--naturalistic-playback-snippets-dir-prefix', 'naturalistic_playback_snippets_dir_prefix', type=str, default=None, required=False, help='Prefix of directory of the naturalistic USV playback snippets.')
+@click.option('--total-playback-time', 'total_acceptable_naturalistic_playback_time', type=int, default=None, required=False, help='Maximum amount of seconds for the duration of the naturalistic playback file.')
+@click.option('--inter-seq-interval-dist', 'inter_seq_interval_distribution', type=str, default=None, help='JSON string for inter-sequence interval distribution.')
+@click.option('--usv-seq-length-dist', 'usv_seq_length_distribution', type=str, default=None, help='JSON string for USV sequence length distribution.')
+@click.option('--inter-usv-interval-dist', 'inter_usv_interval_distribution', type=str, default=None, help='JSON string for inter-USV interval distribution.')
+@click.pass_context
+def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
+    """
+    Description
+    ----------
+    A command-line tool to generate USV playback WAV files.
+    ----------
+
+    Parameters
+    ----------
+    ----------
+
+    Returns
+    ----------
+    ----------
+    """
+
+    for key, value in kwargs.items():
+        if isinstance(value, str) and value.strip().startswith('{'):
+            try:
+                ctx.params[key] = json.loads(value)
+            except json.JSONDecodeError:
+                # raise an error if the JSON is invalid
+                raise click.BadParameter(message=f"Option '--{key.replace('_', '-')}' has invalid JSON.", param_hint=key)
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    if not provided_params:
+        AudioGenerator().create_usv_playback_wav()
+    else:
+        analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                        provided_params=provided_params,
+                                                                        settings_dict='analyses_settings')
+        AudioGenerator(exp_id=exp_id,
+                       create_playback_settings_dict=analyses_settings_parameter_dict['create_naturalistic_usv_playback_wav'],
+                       message_output=print).create_naturalistic_usv_playback_wav()
 
 @click.command(name='generate-rm')
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
@@ -196,7 +247,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
                                                                     provided_params=provided_params,
                                                                     settings_dict='analyses_settings')
     NeuronalTuning(root_directory=root_directory,
-                   tuning_parameters_dict=analyses_settings_parameter_dict,
+                   tuning_parameters_dict=analyses_settings_parameter_dict['calculate_neuronal_tuning_curves'],
                    message_output=print).calculate_neuronal_tuning_curves()
 
 @click.command(name='generate-beh-features')
@@ -231,5 +282,5 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
                                                                     provided_params=provided_params,
                                                                     settings_dict='analyses_settings')
     FeatureZoo(root_directory=root_directory,
-               behavioral_parameters_dict=analyses_settings_parameter_dict,
+               behavioral_parameters_dict=analyses_settings_parameter_dict['compute_behavioral_features'],
                message_output=print).save_behavioral_features_to_file()

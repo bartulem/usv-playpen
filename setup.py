@@ -5,7 +5,7 @@ with open('README.md', 'r', encoding='utf-8') as fh:
 
 setup(
     name='usv-playpen',
-    version='0.8.9',
+    version='0.8.10',
     author='@bartulem',
     author_email='mimica.bartul@gmail.com',
     classifiers=[
@@ -55,6 +55,7 @@ setup(
             'split-clusters = usv_playpen.preprocess_data:split_clusters_to_sessions_cli',
             'generate-beh-features = usv_playpen.analyze_data:generate_beh_features_cli',
             'generate-usv-playback = usv_playpen.analyze_data:generate_usv_playback_cli',
+            'generate-naturalistic-usv-playback = usv_playpen.analyze_data:generate_naturalistic_usv_playback_cli',
             'generate-rm = usv_playpen.analyze_data:generate_rm_files_cli',
             'generate-rm-figs = usv_playpen.visualize_data:generate_rm_figures_cli',
             'generate-viz = usv_playpen.visualize_data:visualize_3D_data_cli'

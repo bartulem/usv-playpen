@@ -1,8 +1,9 @@
 {
   "analyses_booleans": {
-    "compute_behavioral_features_bool": true,
+    "compute_behavioral_features_bool": false,
     "compute_behavioral_tuning_bool": false,
     "create_usv_playback_wav_bool": false,
+    "create_naturalistic_usv_playback_wav_bool": true,
     "frequency_shift_audio_segment_bool": false
   },
   "compute_behavioral_features": {
@@ -27,9 +28,7 @@
     "derivative_bins": 10
   },
   "analyze_data": {
-    "root_directories": [
-      "/mnt/falkner/Jinrun/Data/20250516_122134"
-    ]
+    "root_directories": []
   },
   "send_email": {
     "analyses_pc_list": [
@@ -44,6 +43,35 @@
     "send_message": {
       "receivers": []
     }
+  },
+  "create_naturalistic_usv_playback_wav": {
+    "num_naturalistic_usv_files": 1,
+    "naturalistic_wav_sampling_rate": 250,
+    "naturalistic_playback_snippets_dir_prefix": "female",
+    "inter_seq_interval_distribution": {
+      "2.5": 0.125,
+      "5": 0.5,
+      "7.5": 0.25,
+      "10": 0.125
+    },
+    "usv_seq_length_distribution": {
+      "5": 0.5,
+      "10": 0.25,
+      "20": 0.125,
+      "40": 0.0625,
+      "80": 0.0625
+    },
+    "inter_usv_interval_distribution": {
+      "0.02": 0.02,
+      "0.04": 0.33,
+      "0.06": 0.45,
+      "0.08": 0.1,
+      "0.1": 0.025,
+      "0.15": 0.045,
+      "0.2": 0.025,
+      "0.25": 0.005
+    },
+    "total_acceptable_naturalistic_playback_time": 1080
   },
   "create_usv_playback_wav": {
     "num_usv_files": 1,

@@ -54,7 +54,145 @@ class AudioGenerator:
 
         self.app_context_bool = is_gui_context()
 
-    def create_usv_playback_wav(self, spock_cluster_bool: bool = False) -> None:
+    def create_naturalistic_usv_playback_wav(self) -> None:
+        """
+        Description
+        ----------
+        We tried to extract female-assigned USVs and construct sequences
+        using them. It should be noted that ideally in the future, sequences
+        should not be constructed from randomly picked USVs, but should be
+        taken from a genuine USV sequence.
+
+        The way the code works is as follows:
+        (1) it finds all .wav files in the specified directory (female or male or whatever)
+        (2) it draws long inter-sequence quiet intervals from the following probability distribution:
+            {"2.5s": 0.125, "5s": 0.50, "7.5s": 0.25, "10s": 0.125}
+        (3) it draws short inter-USV quiet intervals from the following probability distribution:
+            {"0.02s": 0.02, "0.04s": 0.33, "0.06s": 0.45, "0.08s": 0.1, "0.1s": 0.025, "0.15s": 0.045, "0.2s": 0.025, "0.25s": 0.005}
+        (4) it draws USV-sequence length from the following probability distribution:
+            {"5": 0.5, "10": 0.25, "20": 0.125, "40": 0.0625, "80": 0.0625}
+        (5) it starts with a long quiet interval
+        (6) it chooses a USV-sequence length
+        (7) it plays that many pseudo-randomly chosen USVs, each separated by a short quiet interval
+        (8) it goes back to (5) and repeats until exceeds the total playback time
+
+        NB: Run time for ~18 min .wav file is ~2 minutes.
+        ----------
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        ----------
+        usv_playback (.wav file(s))
+            Wave file(s) with naturalistic sequences of  USVs.
+        """
+
+        self.message_output(f"Creating naturalistic USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        os_base_path = find_base_path()
+        local_cup_mount_bool = os.path.ismount(os_base_path)
+        if local_cup_mount_bool:
+            playback_snippets_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}{self.create_playback_settings_dict['naturalistic_playback_snippets_dir_prefix']}_usv_playback_snippets"
+            output_file_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}naturalistic_usv_playback_files"
+        else:
+            playback_snippets_dir = f"/mnt/cup/labs/falkner/{self.exp_id}/usv_playback_experiments{os.sep}{self.create_playback_settings_dict['naturalistic_playback_snippets_dir_prefix']}_usv_playback_snippets"
+            output_file_dir = f"/mnt/cup/labs/falkner/{self.exp_id}/usv_playback_experiments{os.sep}naturalistic_usv_playback_files"
+
+        Path(output_file_dir).mkdir(parents=True, exist_ok=True)
+
+        wav_sampling_rate = self.create_playback_settings_dict['naturalistic_wav_sampling_rate']
+        inter_seq_interval_distribution = self.create_playback_settings_dict['inter_seq_interval_distribution']
+        usv_seq_length_distribution = self.create_playback_settings_dict['usv_seq_length_distribution']
+        inter_usv_interval_distribution = self.create_playback_settings_dict['inter_usv_interval_distribution']
+        total_acceptable_playback_time = self.create_playback_settings_dict['total_acceptable_naturalistic_playback_time']
+
+        inter_seq_interval_distribution_periods = [float(isi_key) for isi_key in inter_seq_interval_distribution.keys()]
+        inter_seq_interval_distribution_probabilities = list(inter_seq_interval_distribution.values())
+        usv_seq_length_distribution_periods = [int(usv_length_key) for usv_length_key in usv_seq_length_distribution.keys()]
+        usv_seq_length_distribution_probabilities = list(usv_seq_length_distribution.values())
+        inter_usv_interval_distribution_periods = [float(iui_key) for iui_key in inter_usv_interval_distribution.keys()]
+        inter_usv_interval_distribution_probabilities = list(inter_usv_interval_distribution.values())
+
+        for number in range(self.create_playback_settings_dict['num_naturalistic_usv_files']):
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+            current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
+
+            wav_files_list = sorted(glob.glob(f"{playback_snippets_dir}{os.sep}*.wav"))
+            replay_wav_arr = np.array(object=[], dtype=np.int16)
+
+            total_playback_time_created = 0
+            last_time_updated = 0  # Variable to track progress for tqdm
+
+            replay_txt_path = f"{output_file_dir}{os.sep}{self.create_playback_settings_dict['naturalistic_playback_snippets_dir_prefix']}_usv_playback_{total_acceptable_playback_time}s_{current_time}_spacing.txt"
+            usv_id_txt_path = f"{output_file_dir}{os.sep}{self.create_playback_settings_dict['naturalistic_playback_snippets_dir_prefix']}_usv_playback_{total_acceptable_playback_time}s_{current_time}_usvids.txt"
+
+            # This ensures files are opened only once and not overwritten.
+            with (open(replay_txt_path, 'w+') as replay_txt_file,
+                  open(usv_id_txt_path, 'w+') as usv_id_txt_file,
+                  tqdm(total=total_acceptable_playback_time, desc="Generating Playback", unit="s") as pbar):
+
+                while total_playback_time_created < total_acceptable_playback_time:
+                    # inter-sequence interval
+                    isi = random.choices(inter_seq_interval_distribution_periods, inter_seq_interval_distribution_probabilities, k=1)[0]
+                    isi_samples = int(np.ceil(isi * wav_sampling_rate * 1e3))
+
+                    if total_playback_time_created == 0:
+                        arr_start_with_isi = np.zeros(isi_samples).astype(np.int16)
+                        replay_wav_arr = arr_start_with_isi.copy()
+                        usv_id_txt_file.write('ISI \n')
+                    else:
+                        isi_arr = np.zeros(isi_samples).astype(np.int16)
+                        replay_wav_arr = np.concatenate((replay_wav_arr, isi_arr))
+                        usv_id_txt_file.write('ISI \n')
+
+                    total_playback_time_created += isi
+                    replay_txt_file.write(f'{isi_samples} \n')
+
+                    # choose sequence length
+                    usv_seq_length = random.choices(usv_seq_length_distribution_periods, usv_seq_length_distribution_probabilities, k=1)[0]
+                    for usv_idx in range(usv_seq_length):
+                        # pick USV file
+                        random_wav_file = random.choice(wav_files_list)
+                        random_wav_file_sr, random_wav_file_data = wavfile.read(random_wav_file)
+                        total_playback_time_created += (random_wav_file_data.shape[0] / (wav_sampling_rate * 1e3))
+
+                        replay_txt_file.write(f'{random_wav_file_data.shape[0]} \n')
+                        usv_id_txt_file.write(f'{Path(random_wav_file).name} \n')
+
+                        if usv_idx < (usv_seq_length - 1):
+                            # inter-USV interval
+                            iui = random.choices(inter_usv_interval_distribution_periods, inter_usv_interval_distribution_probabilities, k=1)[0]
+                            iui_samples = int(np.ceil(iui * wav_sampling_rate * 1e3))
+                            total_playback_time_created += iui
+
+                            replay_wav_arr = np.concatenate((replay_wav_arr, random_wav_file_data, np.zeros(iui_samples).astype(np.int16)))
+                            replay_txt_file.write(f'{iui_samples} \n')
+                            usv_id_txt_file.write('IUI \n')
+                        else:
+                            replay_wav_arr = np.concatenate((replay_wav_arr, random_wav_file_data))
+
+                    # manually update the progress bar at the end of each loop
+                    update_amount = int(np.floor(total_playback_time_created - last_time_updated))
+                    pbar.update(update_amount)
+                    last_time_updated = total_playback_time_created
+
+                if pbar.n < pbar.total:
+                    pbar.update(pbar.total - pbar.n)
+
+            actual_total_time_sec = int(np.ceil(replay_wav_arr.shape[0] / (wav_sampling_rate * 1e3)))
+            self.message_output(f"The total duration of the generated naturalistic playback file is {round(actual_total_time_sec / 60, 2)} min.")
+
+            wavfile.write(filename=f"{output_file_dir}{os.sep}{self.create_playback_settings_dict['naturalistic_playback_snippets_dir_prefix']}_usv_playback_{total_acceptable_playback_time}s_{current_time}.wav",
+                          rate=int(wav_sampling_rate * 1e3),
+                          data=replay_wav_arr)
+
+        self.message_output(f"Creating naturalistic USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+
+
+    def create_usv_playback_wav(self) -> None:
         """
         Description
         ----------
@@ -79,7 +217,9 @@ class AudioGenerator:
         self.message_output(f"Creating USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        if not spock_cluster_bool:
+        os_base_path = find_base_path()
+        local_cup_mount_bool = os.path.ismount(os_base_path)
+        if local_cup_mount_bool:
             os_base_path = find_base_path()
             playback_snippets_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}{self.create_playback_settings_dict['playback_snippets_dir']}"
             output_file_dir = f"{os_base_path}{os.sep}{self.exp_id}{os.sep}usv_playback_experiments{os.sep}usv_playback_files"

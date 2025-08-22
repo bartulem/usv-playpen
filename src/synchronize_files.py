@@ -814,10 +814,15 @@ class Synchronizer:
         else:
             device_ids = [self.input_parameter_dict['crop_wav_files_to_video']['device_receiving_input']]
 
-        # find camera frame trigger pulses and IPIs in channel file
-        start_end_video = {device: {'start_first_recorded_frame': 0, 'end_last_recorded_frame': 0, 'largest_break_duration': 0,
-                                    'duration_samples': 0, 'duration_seconds': 0, 'audio_tracking_diff_seconds': 0} for device in device_ids}
+        # find start/end video frame information file or create a new one
+        if os.path.isfile(f"{self.root_directory}{os.sep}audio{os.sep}audio_triggerbox_sync_info.json"):
+            with open(f"{self.root_directory}{os.sep}audio{os.sep}audio_triggerbox_sync_info.json", 'r') as audio_dict_infile:
+                start_end_video = json.load(audio_dict_infile)
+        else:
+            start_end_video = {device: {'start_first_recorded_frame': 0, 'end_last_recorded_frame': 0, 'largest_break_duration': 0,
+                                        'duration_samples': 0, 'duration_seconds': 0, 'audio_tracking_diff_seconds': 0} for device in device_ids}
 
+        # find camera frame trigger pulses and IPIs in channel file
         for device in device_ids:
             for audio_file in wave_data_dict.keys():
                 if f'{device}_' in audio_file:
@@ -843,11 +848,16 @@ class Synchronizer:
                                         f"{start_end_video[device]['end_last_recorded_frame']} samples, giving a total audio recording time of {start_end_video[device]['duration_seconds']} seconds, "
                                         f"which is {start_end_video[device]['audio_tracking_diff_seconds']} seconds off relative to tracking.")
 
+                    if 'num_dropouts' in start_end_video[device].keys():
+                        self.message_output(f"Also, on {device} device, {start_end_video[device]['num_dropouts']} recording dropout instances were detected.")
+
                     break
 
-        # create new directory for cropped files and HPSS files
+        # save start/end video frame information
         with open(f"{self.root_directory}{os.sep}audio{os.sep}audio_triggerbox_sync_info.json", 'w') as audio_dict_outfile:
             json.dump(start_end_video, audio_dict_outfile, indent=4)
+
+        # create new directory for cropped files and HPSS files
         new_directory_cropped_files = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video"
         pathlib.Path(new_directory_cropped_files).mkdir(parents=True, exist_ok=True)
 
