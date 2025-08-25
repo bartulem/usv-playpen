@@ -25,31 +25,30 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    "astropy",
-    "av",
-    "click",
-    "h5py",
+    "astropy==6.1.7",
+    "av==10.0.0",
+    "click==8.2.1",
+    "h5py==3.11.0",
     "imgstore",
-    "joblib",
-    "librosa",
-    "matplotlib",
-    "noisereduce",
-    "numpy",
-    "numba",
-    "opencv-contrib-python",
-    "pandas",
-    "paramiko",
-    "PIMS",
-    "PyQt6",
-    "polars",
-    "pydub",
-    "requests",
-    "scipy",
-    "sleap-anipose",
-    "scikit-learn",
-    "toml",
-    "tqdm",
-    "motifapi",
+    "joblib==1.4.2",
+    "librosa==0.10.2",
+    "matplotlib==3.10.0",
+    "noisereduce==3.0.3",
+    "numpy==1.24.4",
+    "numba==0.58.1",
+    "opencv-contrib-python==4.6.0.66",
+    "pandas==2.2.3",
+    "paramiko==4.0.0",
+    "PIMS==0.6.1",
+    "PyQt6==6.7.0",
+    "polars==1.28.1",
+    "pydub==0.25.1",
+    "requests==2.32.4",
+    "scipy==1.10.0",
+    "sleap-anipose==0.1.7",
+    "scikit-learn==1.5.2",
+    "toml==0.10.2",
+    "tqdm==4.67.1",
     "ffmpeg-binaries>=1.0.1",
     "static-sox>=1.0.2",
 ]
@@ -97,6 +96,15 @@ anipose-calibrate = "usv_playpen.preprocess_data:conduct_anipose_calibration_cli
 anipose-triangulate = "usv_playpen.preprocess_data:conduct_anipose_triangulation_cli"
 anipose-trm = "usv_playpen.preprocess_data:translate_rotate_metric_cli"
 das-infer = "usv_playpen.preprocess_data:das_command_line_inference_cli"
+das-summarize = "usv_playpen.preprocess_data:summarize_das_findings_cli"
+concatenate-ephys-files = "usv_playpen.preprocess_data:concatenate_binary_files_cli"
+split-clusters = "usv_playpen.preprocess_data:split_clusters_to_sessions_cli"
+generate-beh-features = "usv_playpen.analyze_data:generate_beh_features_cli"
+generate-usv-playback = "usv_playpen.analyze_data:generate_usv_playback_cli"
+generate-naturalistic-usv-playback = "usv_playpen.analyze_data:generate_naturalistic_usv_playback_cli"
+generate-rm = "usv_playpen.analyze_data:generate_rm_files_cli"
+generate-rm-figs = "usv_playpen.visualize_data:generate_rm_figures_cli"
+generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
 
 
 [tool.hatch]
