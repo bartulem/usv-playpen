@@ -51,6 +51,7 @@ dependencies = [
     "motifapi",
     "ffmpeg-binaries>=1.0.1",
     "static-sox>=1.0.2",
+    "paramiko>=4.0.0",
 ]
 
 [project.urls]
