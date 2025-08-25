@@ -1,6 +1,6 @@
 # usv-playpen v0.8.10
 
-![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
+![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/usv_playpen/img/usv_playpen_gui.png)
 
 GUI/CLI to facilitate conducting experiments with multi-probe e-phys
 (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio)
