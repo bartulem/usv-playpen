@@ -1051,7 +1051,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 
 Prepare and run USV assignment
 """"""""""""""""""""""""""""""
-You might also want to know which animal emitted which vocalization. To do this, *usv-playpen* relies on `vocalocator <https://github.com/neurostatslab/vocalocator>`_, a tool for localizing animal vocalizations in 3D space, and it assumes you already have a trained model. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select the arena directory, select the conda environment name for vocalocator, select the directory of the vocalocator model, select *Prepare USV assignment* and *Run USV assignment*, click *Next* and then *Process*:
+You might also want to know which animal emitted which vocalization. To do this, *usv-playpen* relies on `vocalocator <https://github.com/neurostatslab/vocalocator>`_, a tool for localizing animal vocalizations in 3D space, and it assumes you already have a trained model. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select the arena directory, select the conda environment name for vocalocator, select the directory of the vocalocator model, select *Prepare USV assignment* and *Run USV assignment*, select the *Assignment type* (vocalocator or click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_14.png
    :align: center
@@ -1078,8 +1078,7 @@ This will create a *sound_localization* subdirectory which will contain several 
     │   │   ├── original_mc
     │   │   │   ...
     │   │   ├── **sound_localization**
-    │   │   │   ├── **assessment_assn.npy**
-    │   │   │   ├── **assessment.h5**
+    │   │   │   ├── **model_predictions.npz**
     │   │   │   ├── **dset.h5**
     │   │   ├── **20250430_145017_usv_summary.csv**
     │   │   ├── 20250430_145017_usv_signal_correlation_histogram.svg
@@ -1116,13 +1115,15 @@ The modified *usv_summary.csv* file now contains information in the last column 
 The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **vcl_conda_env_name** : name of the local conda environment used for running Vocalocator
-* **model_directory** : directory containing the trained Vocalocator model
+* **vcl_model_directory** : directory containing the trained Vocalocator model
+* **vcl_version** : version of the Vocalocator model (e.g., "vcl-ssl" for the SSL model)
 
 .. code-block:: json
 
    "vocalocator": {
     "vcl_conda_env_name": "vcl",
-    "model_directory": "/mnt/falkner/Bartul/sound_localization/earbud_6d_output_2025-03-12"
+    "vcl_model_directory": "",
+    "vcl_version": "vcl-ssl",
    }
 
 A/V Synchronization
@@ -1183,7 +1184,9 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 * **extract_exact_video_frame_times_bool** : instead of using frame indices multiplied by empirical frame rate, use Loopbio times directly (which is less precise!)
 * **nidq_sr** : sampling rate of the NIDQ device (in Hz)
 * **nidq_num_channels** : number of channels on the NIDQ device (9 on BNC-2110)
+* **nidq_triggerbox_input_bool** : whether NIDQ device received Triggerbox input
 * **nidq_triggerbox_input_bit_position** : triggerbox input bit position on the NIDQ device digital channel (assumes last channel is digital!)
+* **nidq_sync_input_bool** : whether NIDQ device received sync input
 * **nidq_sync_input_bit_position** : sync input bit position on the NIDQ device digital channel (assumes last channel is digital!)
 * **camera_serial_num** : serial numbers of cameras that can detect flashing LEDs
 * **led_px_version** : version of the LED pixel positions

@@ -432,7 +432,7 @@ Analyze
 
 ``generate-usv-playback``
 -------------------------
-``generate-usv-playback`` is the command-line interface for generating USV playback files.
+``generate-usv-playback`` is the command-line interface for generating artificial USV playback files.
 
 .. code-block:: plaintext
 
@@ -451,6 +451,33 @@ Analyze
         --ipi-duration               Inter-USV-interval duration (in s).
         --wav-sampling-rate          Sampling rate for the output WAV file (in Hz).
         --playback-snippets-dir      Directory of USV playback snippets.
+
+``generate-naturalistic-usv-playback``
+--------------------------------------
+``generate-naturalistic-usv-playback`` is the command-line interface for generating naturalistic USV playback files.
+
+.. code-block:: plaintext
+
+    usage: generate-usv-playback [-h] --exp-id TEXT [--num-naturalistic-usv-files INTEGER]
+                                 [--naturalistic-wav-sampling-rate INTEGER]
+                                 [--total-playback-time INTEGER]
+                                 [--naturalistic-playback-snippets-dir-prefix TEXT]
+                                 [--inter-seq-interval-dist TEXT]
+                                 [--usv-seq-length-dist TEXT]
+                                 [--inter-usv-interval-dist TEXT]
+
+    required arguments:
+        --exp-id                                      Experimenter ID.
+
+    optional arguments:
+        -h, --help                                    Show this help message and exit.
+        --num-naturalistic-usv-files                  Number of naturalistic playback files to be created.
+        --naturalistic-wav-sampling-rate              Sampling rate of the naturalistic playback .WAV file in kHz.
+        --naturalistic-playback-snippets-dir-prefix   Prefix of the snippet subdirectory (the rest of its name should be "_usv_playback_snippets".
+        --total-playback-time                         Total acceptable time of the playback time (in s).
+        --inter-seq-interval-dist                     Distribution of inter-sequence intervals (time (s) : probability (sums to 1).
+        --usv-seq-length-dist                         Distribution of USV sequence lengths (time (s) : probability (sums to 1).
+        --inter-usv-interval-dist                     Distribution of inter-USV intervals (time (s) : probability (sums to 1).
 
 ``generate-rm``
 ---------------
@@ -501,7 +528,7 @@ Visualize
 
     usage: generate-viz [-h] --root-directory PATH --arena-directory PATH --exp-id TEXT
                         [--speaker-audio-file PATH] [--sequence-audio-file PATH]
-                        [--animate | --no-animate] [--video-start-time INTEGER]
+                        [--animate | --no-animate] [--video-start-time FLOAT]
                         [--video-duration FLOAT] [--plot-theme TEXT]
                         [--save-fig | --no-save-fig]
                         [--view-angle TEXT] [--side-azimuth-start FLOAT]

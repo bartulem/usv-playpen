@@ -3,8 +3,9 @@ avisoft_recorder_exe = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER 
 avisoft_recorder_program_name = "rec_usgh.exe"
 avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics\\"
 coolterm_basedirectory = "D:\\CoolTerm"
-recording_files_destination_linux = [ "/home/labadmin/falkner/Bartul/Data",]
-recording_files_destination_win = [ "F:\\Bartul\\Data", "M:\\Bartul\\Data",]
+recording_files_destination_linux = [ "/mnt/falkner/Bartul/Data",]
+recording_files_destination_win = [ "F:\\Bartul\\Data",]
+recording_files_destinations_all = [ "falkner", "murthy",]
 conduct_audio_recording = true
 conduct_tracking_calibration = false
 calibration_duration = 5
@@ -127,10 +128,10 @@ logfileno = 0
 
 [video.general]
 browser = "chrome"
+available_cameras = [ "21372315", "21372316", "21369048", "22085397", "21241563",]
 expected_cameras = [ "21372315", "21372316", "21369048", "22085397", "21241563",]
 calibration_frame_rate = 10
 recording_frame_rate = 150
-expected_camera_num = 5
 recording_codec = "hq"
 monitor_recording = false
 monitor_specific_camera = false
