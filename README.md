@@ -25,11 +25,15 @@ branches of the GUI are platform-independent.
 
 ## Prerequisites
 
-* [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio recording PC)
-* [Anaconda](https://www.anaconda.com/download) (if on Windows, add PATH to USER VARIABLES)
-* [sleap](https://sleap.ai/) (install in standalone conda environment)
-* [das](https://janclemenslab.org/das/) (install in standalone conda environment)
-* [vocalocator-ssl](https://github.com/Aramist/vocalocator-ssl) (install in standalone conda environment)
+- [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio
+  recording PC)
+- [Anaconda](https://www.anaconda.com/download) (if on Windows, add PATH to USER
+  VARIABLES)
+- [sleap](https://sleap.ai/) (install in standalone conda environment)
+- [das](https://janclemenslab.org/das/) (install in standalone conda
+  environment)
+- [vocalocator-ssl](https://github.com/Aramist/vocalocator-ssl) (install in
+  standalone conda environment)
 
 ## Installation and updating
 
