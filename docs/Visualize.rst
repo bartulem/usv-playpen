@@ -320,6 +320,9 @@ Parameters specific to subplots include:
         "general_figure_specs": {
           "fig_format": "png",
           "fig_dpi": 600,
+          "animation_codec": "h264_nvenc",
+          "animation_codec_preset_flag": "p5",
+          "animation_codec_tune_flag": "hq",
           "animation_writer": "ffmpeg",
           "animation_format": "mp4"
         },

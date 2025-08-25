@@ -10,7 +10,7 @@ import h5py
 import librosa
 import librosa.display
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.font_manager as fm
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
@@ -1894,17 +1894,53 @@ class Create3DVideo:
 
                 animation_file_name = f"{session_id}_3D_{frame_start}-{frame_start + frame_span}fr_{name_addition}"
                 animation_file_path = f"{putative_save_directory}{os.sep}{animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
-                anima.save(filename=animation_file_path,
-                           writer=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_writer'],
-                           fps=int(np.floor(empirical_camera_sr)),
-                           dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+
+                if self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec'] is not None:
+                    # create a custom writer for NVIDIA GPU acceleration
+                    self.message_output("Using GPU (h264_nvenc) for video encoding...")
+                    animation_writer = FFMpegWriter(
+                        fps=int(np.floor(empirical_camera_sr)),
+                        codec=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec'],
+                        extra_args=['-preset',
+                                    self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec_preset_flag'],
+                                    '-tune',
+                                    self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec_tune_flag']]
+                    )
+                else:
+                    self.message_output("Using default CPU for video encoding...")
+                    animation_writer = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_writer']
+
+                try:
+                    anima.save(filename=animation_file_path,
+                               writer=animation_writer,
+                               fps=int(np.floor(empirical_camera_sr)),
+                               dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+
+                except Exception as write_error:
+                    self.message_output(f"WARNING: Video saving failed with the initial writer. Error: {write_error}")
+
+                    if isinstance(animation_writer, FFMpegWriter):
+                        self.message_output("Falling back to the default CPU encoder...")
+
+                        # get the default CPU writer string (e.g., 'ffmpeg')
+                        cpu_writer_fallback = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_writer']
+
+                        # retry the save operation with the CPU writer
+                        anima.save(filename=animation_file_path,
+                                   writer=cpu_writer_fallback,
+                                   fps=int(np.floor(empirical_camera_sr)),
+                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+                    else:
+                        # if the CPU writer failed, there's no fallback, so re-raise the error
+                        self.message_output("CPU encoding failed. No fallback available.")
+                        raise write_error
 
                 if (self.visualizations_parameter_dict['make_behavioral_videos']['animate_bool'] and
                         self.visualizations_parameter_dict['make_behavioral_videos']['spike_sound_bool']):
                     for unit_id in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']:
                         audio_file_name = animation_file_name + f"_spike_sound_{unit_id}.wav"
                         output_video_name = animation_file_name + f"_spike_sound_{unit_id}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
-                        subprocess.Popen(f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {audio_file_name} -c:v copy -c:a aac {output_video_name}",
+                        subprocess.Popen(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {audio_file_name} -c:v copy -c:a aac {output_video_name}",
                                          stdout=subprocess.DEVNULL,
                                          stderr=subprocess.STDOUT,
                                          cwd=putative_save_directory,
@@ -1918,7 +1954,6 @@ class Create3DVideo:
                                      stderr=subprocess.STDOUT,
                                      cwd=putative_save_directory,
                                      shell=self.shell_usage_bool).wait()
-
 
             else:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:

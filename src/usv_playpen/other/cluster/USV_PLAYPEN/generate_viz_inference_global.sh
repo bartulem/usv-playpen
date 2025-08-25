@@ -22,6 +22,9 @@ SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 ARENA_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_091231"
 VIDEO_START_TIME=0.0
 VIDEO_DURATION=1199.0
+ANIMATION_CODEC="h264_nvenc"
+ANIMATION_CODEC_PRESET="p5"
+ANIMATION_CODEC_TUNE="hq"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
@@ -49,7 +52,7 @@ echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
 echo "conda activate $USV_PLAYPEN_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "generate-viz --root-directory \"$SESSION_ROOT_DIRECTORY\" --arena-directory \"$ARENA_DIRECTORY\" --exp-id $EXP_ID --animate --video-start-time $VIDEO_START_TIME --video-duration $VIDEO_DURATION" >> "$JOB_SCRIPT"
+echo "generate-viz --root-directory \"$SESSION_ROOT_DIRECTORY\" --arena-directory \"$ARENA_DIRECTORY\" --exp-id $EXP_ID --animate --video-start-time $VIDEO_START_TIME --video-duration $VIDEO_DURATION --animation-codec $ANIMATION_CODEC --animation-codec-preset $ANIMATION_CODEC_PRESET --animation-codec-tune $ANIMATION_CODEC_TUNE" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #
