@@ -1897,7 +1897,6 @@ class Create3DVideo:
 
                 if self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec'] is not None:
                     # create a custom writer for NVIDIA GPU acceleration
-                    self.message_output("Using GPU (h264_nvenc) for video encoding...")
                     animation_writer = FFMpegWriter(
                         fps=int(np.floor(empirical_camera_sr)),
                         codec=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec'],
@@ -1907,32 +1906,42 @@ class Create3DVideo:
                                     self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec_tune_flag']]
                     )
                 else:
-                    self.message_output("Using default CPU for video encoding...")
                     animation_writer = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_writer']
 
                 try:
-                    anima.save(filename=animation_file_path,
-                               writer=animation_writer,
-                               fps=int(np.floor(empirical_camera_sr)),
-                               dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+                    if isinstance(animation_writer, FFMpegWriter):
+                        self.message_output("Using GPU (h264_nvenc) for video encoding...")
+                        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+                        anima.save(filename=animation_file_path,
+                                   writer=animation_writer,
+                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+                    else:
+                        # CPU attempt: Pass the string AND the fps.
+                        self.message_output("Using default CPU for video encoding...")
+                        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+                        anima.save(filename=animation_file_path,
+                                   writer=animation_writer,
+                                   fps=int(np.floor(empirical_camera_sr)),
+                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
 
                 except Exception as write_error:
-                    self.message_output(f"WARNING: Video saving failed with the initial writer. Error: {write_error}")
+                    self.message_output(f"WARNING: Video saving failed. Error: {write_error}")
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
+                    # Check if the failed attempt was with the GPU
                     if isinstance(animation_writer, FFMpegWriter):
                         self.message_output("Falling back to the default CPU encoder...")
-
-                        # get the default CPU writer string (e.g., 'ffmpeg')
+                        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
                         cpu_writer_fallback = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_writer']
 
-                        # retry the save operation with the CPU writer
+                        # The fallback CPU call MUST include fps.
                         anima.save(filename=animation_file_path,
                                    writer=cpu_writer_fallback,
                                    fps=int(np.floor(empirical_camera_sr)),
                                    dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
                     else:
-                        # if the CPU writer failed, there's no fallback, so re-raise the error
                         self.message_output("CPU encoding failed. No fallback available.")
+                        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
                         raise write_error
 
                 if (self.visualizations_parameter_dict['make_behavioral_videos']['animate_bool'] and
