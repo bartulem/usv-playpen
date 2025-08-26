@@ -1,16 +1,3 @@
-# usv-playpen v0.8.10
-
-![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/usv_playpen/img/usv_playpen_gui.png)
-
-GUI/CLI to facilitate conducting experiments with multi-probe e-phys
-(Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio)
-acquisition. Developed for behavioral recording purposes at the
-[Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-26
-([Falkner](https://www.falknerlab.com/)/[Murthy](https://murthylab.princeton.edu/)
-labs). Due to proprietary software design and limitations, recordings can only
-be performed on OS Windows. The data processing, analysis and visualization
-branches of the GUI are platform-independent.
-
 [![Python version](https://img.shields.io/badge/Python-3.10-blue)](https://img.shields.io/badge/Python-3.10-blue)
 [![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
 [![repo size](https://img.shields.io/github/repo-size/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/)
@@ -22,6 +9,19 @@ branches of the GUI are platform-independent.
 [![All Contributors](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)
 [![GitHub stars](https://img.shields.io/github/stars/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
 [![GitHub forks](https://img.shields.io/github/forks/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
+
+# usv-playpen
+
+![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/usv_playpen/img/usv_playpen_gui.png)
+
+GUI/CLI to facilitate conducting experiments with multi-probe e-phys
+(Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio)
+acquisition. Developed for behavioral recording purposes at the
+[Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-26
+([Falkner](https://www.falknerlab.com/)/[Murthy](https://murthylab.princeton.edu/)
+labs). Due to proprietary software design and limitations, recordings can only
+be performed on OS Windows. The data processing, analysis and visualization
+branches of the GUI are platform-independent.
 
 ## Prerequisites
 
