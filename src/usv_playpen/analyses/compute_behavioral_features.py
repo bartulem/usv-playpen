@@ -1250,7 +1250,7 @@ class FeatureZoo:
         for mouse_num in range(mouse_data.shape[1]):
             # # head position (in cm)
             head_position[mouse_num, :, :] = (
-                mouse_data[:, mouse_num, mouse_nodes.index("Head"), :] * 100
+                    mouse_data[:, mouse_num, mouse_nodes.index("Head"), :] * 100
             )
 
             # # speed (cm/s) and acceleration (cm/s^2)
@@ -1280,7 +1280,7 @@ class FeatureZoo:
 
             # # neck elevation (cm)
             neck_elevation_temp = (
-                mouse_data[:, mouse_num, mouse_nodes.index("Neck"), 2] * 100
+                    mouse_data[:, mouse_num, mouse_nodes.index("Neck"), 2] * 100
             )
             neck_elevation_temp[neck_elevation_temp < 0] = np.nan
             neck_elevation[mouse_num, :, 0] = neck_elevation_temp
@@ -1344,19 +1344,19 @@ class FeatureZoo:
 
             # in some sessions, the average ear points end up. e.g., being tracked more posterior to the head point, so a rotation matrix modification is necessary
             roll_extreme_proportion = (
-                np.count_nonzero(
-                    (global_head_angles[mouse_num, :, 0] < -120)
-                    | (global_head_angles[mouse_num, :, 0] > 120)
-                )
-                / global_head_angles[mouse_num, :, 0].shape[0]
+                    np.count_nonzero(
+                        (global_head_angles[mouse_num, :, 0] < -120)
+                        | (global_head_angles[mouse_num, :, 0] > 120)
+                    )
+                    / global_head_angles[mouse_num, :, 0].shape[0]
             )
             pitch_positive_proportion = (
-                np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0)
-                / global_head_angles[mouse_num, :, 1].shape[0]
+                    np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0)
+                    / global_head_angles[mouse_num, :, 1].shape[0]
             )
             roll_correction_necessary = roll_extreme_proportion > 0.5
             pitch_correction_necessary = (pitch_positive_proportion > 0.5) and (
-                np.nanmean(neck_elevation[mouse_num, :, 0]) < 5.0
+                    np.nanmean(neck_elevation[mouse_num, :, 0]) < 5.0
             )
             if roll_correction_necessary and not pitch_correction_necessary:
                 global_head_root = get_head_root(
@@ -1364,12 +1364,12 @@ class FeatureZoo:
                 )
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
                 if (
-                    np.count_nonzero(
-                        (global_head_angles[mouse_num, :, 0] < -120)
-                        | (global_head_angles[mouse_num, :, 0] > 120)
-                    )
-                    / global_head_angles[mouse_num, :, 0].shape[0]
-                    > 0.5
+                        np.count_nonzero(
+                            (global_head_angles[mouse_num, :, 0] < -120)
+                            | (global_head_angles[mouse_num, :, 0] > 120)
+                        )
+                        / global_head_angles[mouse_num, :, 0].shape[0]
+                        > 0.5
                 ):
                     global_head_root = get_head_root(
                         head_input_arr, average_head_point, rotation_type="regularYX"
@@ -1385,9 +1385,9 @@ class FeatureZoo:
                 global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
                 global_head_angles[mouse_num, :, 0] = -original_roll
                 if (
-                    np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0)
-                    / global_head_angles[mouse_num, :, 1].shape[0]
-                    > 0.5
+                        np.count_nonzero(global_head_angles[mouse_num, :, 1] > 0)
+                        / global_head_angles[mouse_num, :, 1].shape[0]
+                        > 0.5
                 ):
                     global_head_root = get_head_root(
                         head_input_arr,
@@ -1476,22 +1476,22 @@ class FeatureZoo:
             )
 
             inv_back_vector = (
-                mouse_data[
-                    :,
-                    mouse_num,
-                    mouse_nodes.index(
-                        self.behavioral_parameters_dict["back_root_points"][0]
-                    ),
-                    :,
-                ]
-                - mouse_data[
-                    :,
-                    mouse_num,
-                    mouse_nodes.index(
-                        self.behavioral_parameters_dict["back_root_points"][1]
-                    ),
-                    :,
-                ]
+                    mouse_data[
+                        :,
+                        mouse_num,
+                        mouse_nodes.index(
+                            self.behavioral_parameters_dict["back_root_points"][0]
+                        ),
+                        :,
+                    ]
+                    - mouse_data[
+                        :,
+                        mouse_num,
+                        mouse_nodes.index(
+                            self.behavioral_parameters_dict["back_root_points"][1]
+                        ),
+                        :,
+                    ]
             )
             inv_normalized_back_vector = inv_back_vector / np.linalg.norm(
                 inv_back_vector
@@ -1596,104 +1596,7 @@ class FeatureZoo:
                 capture_fr=empirical_camera_sr,
             )
 
-        # # # compute social features
-        if mouse_data.shape[1] == 2:
-            # # social distances (cm or cm/s)
-            social_distances = np.zeros((mouse_data.shape[0], 6))
-
-            # nose to nose distance between mice
-            social_distances[:, 0] = (
-                np.linalg.norm(
-                    mouse_data[:, 0, mouse_nodes.index("Nose"), :]
-                    - mouse_data[:, 1, mouse_nodes.index("Nose"), :],
-                    axis=1,
-                )
-                * 100
-            )
-
-            # TTI to TTI distance between mice
-            social_distances[:, 1] = (
-                np.linalg.norm(
-                    mouse_data[:, 0, mouse_nodes.index("TTI"), :]
-                    - mouse_data[:, 1, mouse_nodes.index("TTI"), :],
-                    axis=1,
-                )
-                * 100
-            )
-
-            # nose (first mouse) to TTI (second mouse) distance between mice
-            social_distances[:, 2] = (
-                np.linalg.norm(
-                    mouse_data[:, 0, mouse_nodes.index("Nose"), :]
-                    - mouse_data[:, 1, mouse_nodes.index("TTI"), :],
-                    axis=1,
-                )
-                * 100
-            )
-
-            # TTI (first mouse) to nose (second mouse) distance between mice
-            social_distances[:, 3] = (
-                np.linalg.norm(
-                    mouse_data[:, 0, mouse_nodes.index("TTI"), :]
-                    - mouse_data[:, 1, mouse_nodes.index("Nose"), :],
-                    axis=1,
-                )
-                * 100
-            )
-
-            # neck elevation distance
-            social_distances[:, 4] = neck_elevation[0, :, 0] - neck_elevation[1, :, 0]
-
-            # speed difference
-            social_distances[:, 5] = speed[0, :, 0] - speed[1, :, 0]
-
-            # compute derivatives
-            social_distances_1st_der, social_distances_2nd_der = calculate_derivatives(
-                input_arr=social_distances,
-                diff_bins=self.behavioral_parameters_dict["derivative_bins"],
-                is_angle=False,
-                capture_fr=empirical_camera_sr,
-            )
-
-            # # social angles (in degrees)
-            social_angles = np.zeros((mouse_data.shape[0], 4))
-
-            # planar head direction(mouse1)-Nose(mouse2) angle
-            social_angles[:, 0] = calculate_planar_social_angle(
-                point1_arr=mouse_data[:, 0, mouse_nodes.index("Head"), :2],
-                point2_arr=mouse_data[:, 0, mouse_nodes.index("Nose"), :2],
-                point3_arr=mouse_data[:, 1, mouse_nodes.index("Nose"), :2],
-            )
-
-            # planar head direction(mouse2)-Nose(mouse1) angle
-            social_angles[:, 1] = calculate_planar_social_angle(
-                point1_arr=mouse_data[:, 1, mouse_nodes.index("Head"), :2],
-                point2_arr=mouse_data[:, 1, mouse_nodes.index("Nose"), :2],
-                point3_arr=mouse_data[:, 0, mouse_nodes.index("Nose"), :2],
-            )
-
-            # planar head direction(mouse1)-TTI(mouse2) angle
-            social_angles[:, 2] = calculate_planar_social_angle(
-                point1_arr=mouse_data[:, 0, mouse_nodes.index("Head"), :2],
-                point2_arr=mouse_data[:, 0, mouse_nodes.index("Nose"), :2],
-                point3_arr=mouse_data[:, 1, mouse_nodes.index("TTI"), :2],
-            )
-
-            # planar head direction(mouse2)-TTI(mouse1) angle
-            social_angles[:, 3] = calculate_planar_social_angle(
-                point1_arr=mouse_data[:, 1, mouse_nodes.index("Head"), :2],
-                point2_arr=mouse_data[:, 1, mouse_nodes.index("Nose"), :2],
-                point3_arr=mouse_data[:, 0, mouse_nodes.index("TTI"), :2],
-            )
-
-            social_angles_1st_der, social_angles_2nd_der = calculate_derivatives(
-                input_arr=social_angles,
-                diff_bins=self.behavioral_parameters_dict["derivative_bins"],
-                is_angle=True,
-                capture_fr=empirical_camera_sr,
-            )
-
-        # # # save data to .csv file
+        # # # save individual data to .csv file
         behavioral_features_df = pls.DataFrame()
 
         for mouse_num in range(mouse_data.shape[1]):
@@ -1894,195 +1797,210 @@ class FeatureZoo:
                 )
             )
 
-        if mouse_data.shape[1] == 2:
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-nose",
-                    social_distances[:, 0],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-nose_1st_der",
-                    social_distances_1st_der[:, 0],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-nose_2nd_der",
-                    social_distances_2nd_der[:, 0],
-                )
-            )
+        # # # [MODIFIED] Compute and save social features for all unique pairs
+        if mouse_data.shape[1] >= 2:
+            # Generate all unique pairs of mouse indices
+            mouse_pairs = list(itertools.combinations(range(mouse_data.shape[1]), 2))
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-TTI", social_distances[:, 1]
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-TTI_1st_der",
-                    social_distances_1st_der[:, 1],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-TTI_2nd_der",
-                    social_distances_2nd_der[:, 1],
-                )
-            )
+            for mouse1_idx, mouse2_idx in mouse_pairs:
+                # # social distances (cm or cm/s) for the current pair
+                social_distances = np.zeros((mouse_data.shape[0], 6))
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-TTI",
-                    social_distances[:, 2],
+                # nose to nose distance
+                social_distances[:, 0] = (
+                        np.linalg.norm(
+                            mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :]
+                            - mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :],
+                            axis=1,
+                        )
+                        * 100
                 )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-TTI_1st_der",
-                    social_distances_1st_der[:, 2],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-TTI_2nd_der",
-                    social_distances_2nd_der[:, 2],
-                )
-            )
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-nose",
-                    social_distances[:, 3],
+                # TTI to TTI distance
+                social_distances[:, 1] = (
+                        np.linalg.norm(
+                            mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :]
+                            - mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :],
+                            axis=1,
+                        )
+                        * 100
                 )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-nose_1st_der",
-                    social_distances_1st_der[:, 3],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-nose_2nd_der",
-                    social_distances_2nd_der[:, 3],
-                )
-            )
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.neck_elevation_diff",
-                    social_distances[:, 4],
+                # nose (mouse1) to TTI (mouse2) distance
+                social_distances[:, 2] = (
+                        np.linalg.norm(
+                            mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :]
+                            - mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :],
+                            axis=1,
+                        )
+                        * 100
                 )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.neck_elevation_diff_1st_der",
-                    social_distances_1st_der[:, 4],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.neck_elevation_diff_2nd_der",
-                    social_distances_2nd_der[:, 4],
-                )
-            )
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.speed_diff",
-                    social_distances[:, 5],
+                # TTI (mouse1) to nose (mouse2) distance
+                social_distances[:, 3] = (
+                        np.linalg.norm(
+                            mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :]
+                            - mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :],
+                            axis=1,
+                        )
+                        * 100
                 )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.speed_diff_1st_der",
-                    social_distances_1st_der[:, 5],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.speed_diff_2nd_der",
-                    social_distances_2nd_der[:, 5],
-                )
-            )
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.allo_yaw-nose",
-                    social_angles[:, 0],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.allo_yaw-nose_1st_der",
-                    social_angles_1st_der[:, 0],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.allo_yaw-nose_2nd_der",
-                    social_angles_2nd_der[:, 0],
-                )
-            )
+                # neck elevation difference
+                social_distances[:, 4] = neck_elevation[mouse1_idx, :, 0] - neck_elevation[mouse2_idx, :, 0]
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-allo_yaw",
-                    social_angles[:, 1],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-allo_yaw_1st_der",
-                    social_angles_1st_der[:, 1],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.nose-allo_yaw_2nd_der",
-                    social_angles_2nd_der[:, 1],
-                )
-            )
+                # speed difference
+                social_distances[:, 5] = speed[mouse1_idx, :, 0] - speed[mouse2_idx, :, 0]
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.allo_yaw-TTI",
-                    social_angles[:, 2],
+                # compute derivatives for distances
+                social_distances_1st_der, social_distances_2nd_der = calculate_derivatives(
+                    input_arr=social_distances,
+                    diff_bins=self.behavioral_parameters_dict["derivative_bins"],
+                    is_angle=False,
+                    capture_fr=empirical_camera_sr,
                 )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.allo_yaw-TTI_1st_der",
-                    social_angles_1st_der[:, 2],
-                )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.allo_yaw-TTI_2nd_der",
-                    social_angles_2nd_der[:, 2],
-                )
-            )
 
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-allo_yaw",
-                    social_angles[:, 3],
+                # # social angles (in degrees) for the current pair
+                social_angles = np.zeros((mouse_data.shape[0], 4))
+
+                # planar head direction(mouse1)-Nose(mouse2) angle
+                social_angles[:, 0] = calculate_planar_social_angle(
+                    point1_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Head"), :2],
+                    point2_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :2],
+                    point3_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :2],
                 )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-allo_yaw_1st_der",
-                    social_angles_1st_der[:, 3],
+
+                # planar head direction(mouse2)-Nose(mouse1) angle
+                social_angles[:, 1] = calculate_planar_social_angle(
+                    point1_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Head"), :2],
+                    point2_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :2],
+                    point3_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :2],
                 )
-            )
-            behavioral_features_df = behavioral_features_df.with_columns(
-                pls.Series(
-                    f"{track_names[0]}-{track_names[1]}.TTI-allo_yaw_2nd_der",
-                    social_angles_2nd_der[:, 3],
+
+                # planar head direction(mouse1)-TTI(mouse2) angle
+                social_angles[:, 2] = calculate_planar_social_angle(
+                    point1_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Head"), :2],
+                    point2_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :2],
+                    point3_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :2],
                 )
-            )
+
+                # planar head direction(mouse2)-TTI(mouse1) angle
+                social_angles[:, 3] = calculate_planar_social_angle(
+                    point1_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Head"), :2],
+                    point2_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :2],
+                    point3_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :2],
+                )
+
+                # compute derivatives for angles
+                social_angles_1st_der, social_angles_2nd_der = calculate_derivatives(
+                    input_arr=social_angles,
+                    diff_bins=self.behavioral_parameters_dict["derivative_bins"],
+                    is_angle=True,
+                    capture_fr=empirical_camera_sr,
+                )
+
+                # Add this pair's social features to the DataFrame
+                pair_name = f"{track_names[mouse1_idx]}-{track_names[mouse2_idx]}"
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-nose", social_distances[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-nose_1st_der", social_distances_1st_der[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-nose_2nd_der", social_distances_2nd_der[:, 0])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-TTI", social_distances[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-TTI_1st_der", social_distances_1st_der[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-TTI_2nd_der", social_distances_2nd_der[:, 1])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-TTI", social_distances[:, 2])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-TTI_1st_der", social_distances_1st_der[:, 2])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-TTI_2nd_der", social_distances_2nd_der[:, 2])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-nose", social_distances[:, 3])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-nose_1st_der", social_distances_1st_der[:, 3])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-nose_2nd_der", social_distances_2nd_der[:, 3])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.neck_elevation_diff", social_distances[:, 4])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.neck_elevation_diff_1st_der", social_distances_1st_der[:, 4])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.neck_elevation_diff_2nd_der", social_distances_2nd_der[:, 4])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.speed_diff", social_distances[:, 5])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.speed_diff_1st_der", social_distances_1st_der[:, 5])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.speed_diff_2nd_der", social_distances_2nd_der[:, 5])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-nose", social_angles[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-nose_1st_der", social_angles_1st_der[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-nose_2nd_der", social_angles_2nd_der[:, 0])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-allo_yaw", social_angles[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-allo_yaw_1st_der", social_angles_1st_der[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-allo_yaw_2nd_der", social_angles_2nd_der[:, 1])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-TTI", social_angles[:, 2])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-TTI_1st_der", social_angles_1st_der[:, 2])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-TTI_2nd_der", social_angles_2nd_der[:, 2])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-allo_yaw", social_angles[:, 3])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-allo_yaw_1st_der", social_angles_1st_der[:, 3])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-allo_yaw_2nd_der", social_angles_2nd_der[:, 3])
+                )
 
         # # # # compute feature distributions
         feature_distribution_dict = {}
