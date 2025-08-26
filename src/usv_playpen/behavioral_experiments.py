@@ -159,28 +159,39 @@ class ExperimentController:
         -------
         """
 
-        cup_username, cup_password = self.get_cup_mount_params()
+        ps_script_path = Path(__file__).parent / '_config/RemountCUPDrives.ps1'
 
-        drives_to_mount = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
+        # 1. Get credentials securely.
+        cup_username, cup_password = self.get_cup_mount_params()
+        status_filepath = "C:\\temp\\remount_status.txt"
+        task_name = "RemountCUPDrives"
 
         self.check_ethernet_connection()
+        if os.path.exists(status_filepath):
+            os.remove(status_filepath)
 
-        # check if all CUP drives are mounted and remount CUP drives if they are not
-        mounted_drives_command_list = ["powershell", "-Command", '''& { gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name }''']
-        mounted_drives_status = subprocess.run(args=mounted_drives_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
+        command = [
+            "powershell",
+            "-Command",
+            f'Get-ScheduledTask -TaskName "{task_name}" |',
+            f'Set-ScheduledTask -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-File \\"{ps_script_path}\\" -Username \\"{cup_username}@princeton.edu\\" -Password \\"{cup_password}\\"") |',
+            f'Start-ScheduledTask -TaskName "{task_name}"'
+        ]
+        subprocess.run(" ".join(command), capture_output=True)
 
-        if mounted_drives_status.returncode == 0:
-            mounted_drives = sorted(list(set(mounted_drives_status.stdout.strip().split())))
+        timeout_seconds = 30
+        start_time = time.time()
+        while not os.path.exists(status_filepath):
+            if time.time() - start_time > timeout_seconds:
+                self.message_output("[**Error**] Task timed out. Could not verify drives.")
+                return
+            time.sleep(0.2)
 
-            for drive_letter_with_colon, path in drives_to_mount.items():
-                drive_letter_only = drive_letter_with_colon.replace(":", "")
-                if drive_letter_only not in mounted_drives:
-                    subprocess.Popen(args=f'''cmd /c net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.STDOUT).wait()
-                    self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
-                else:
-                    self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
+        with open(status_filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                self.message_output(line.strip())
+
+        os.remove(status_filepath)
 
 
     def check_remote_mount(self,
