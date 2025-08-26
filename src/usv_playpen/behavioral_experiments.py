@@ -15,6 +15,7 @@ import sys
 import toml
 import webbrowser
 import motifapi
+from pathlib import Path
 from .cli_utils import *
 from .send_email import Messenger
 from .time_utils import *
