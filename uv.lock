@@ -1142,12 +1142,12 @@ wheels = [
 ]
 
 [[package]]
-name = "pydub"
-version = "0.25.1"
+name = "pydub-ng"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fe/9a/e6bca0eed82db26562c73b5076539a4a08d3cffd19c3cc5913a3e61145fd/pydub-0.25.1.tar.gz", hash = "sha256:980a33ce9949cab2a569606b65674d748ecbca4f0796887fd6f46173a7b0d30f", size = 38326, upload_time = "2021-03-10T02:09:54.659Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/4e/249f66909063c8136123c2ff6f56e98ca9b856ce189cd7c740c1d1ce16f4/pydub_ng-0.2.0.tar.gz", hash = "sha256:d5e82e59395afa5a36a329b3d19651143f8281afad9c0b13d8a2bb646c5a3f01", size = 51867, upload_time = "2025-03-13T07:12:31.735Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/53/d78dc063216e62fc55f6b2eebb447f6a4b0a59f55c8406376f76bf959b08/pydub-0.25.1-py2.py3-none-any.whl", hash = "sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6", size = 32327, upload_time = "2021-03-10T02:09:53.503Z" },
+    { url = "https://files.pythonhosted.org/packages/81/49/5402be8f13fcbaacf3f387d2320b8a9c605d5ce5c1d66fce2fc1e9bb652e/pydub_ng-0.2.0-py3-none-any.whl", hash = "sha256:dc3bf2b13152fc94c1110d926b0223c65305a71e81bba3a7936772923833d0d3", size = 37232, upload_time = "2025-03-13T07:12:30.794Z" },
 ]
 
 [[package]]
@@ -1865,7 +1865,7 @@ dependencies = [
     { name = "paramiko" },
     { name = "pims" },
     { name = "polars" },
-    { name = "pydub" },
+    { name = "pydub-ng" },
     { name = "pyqt6" },
     { name = "requests" },
     { name = "scikit-learn" },
@@ -1916,7 +1916,7 @@ requires-dist = [
     { name = "paramiko", specifier = ">=4.0.0" },
     { name = "pims" },
     { name = "polars" },
-    { name = "pydub" },
+    { name = "pydub-ng" },
     { name = "pyqt6" },
     { name = "requests" },
     { name = "scikit-learn" },
