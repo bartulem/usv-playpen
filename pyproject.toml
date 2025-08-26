@@ -34,7 +34,7 @@ dependencies = [
     "librosa",
     "matplotlib",
     "noisereduce",
-    "numpy",
+    "numpy<2",
     "numba",
     "opencv-contrib-python",
     "pandas",
