@@ -373,7 +373,7 @@ class Operator:
             separate_ch_subprocesses = []
             for ch in range(1, 13):
                 output_file = f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{mc_audio_file_basename[:-4]}_ch{ch:02d}.wav"
-                sep_ch_subp = subprocess.Popen(args=f'''{self.command_addition}sox {mc_audio_file_basename} {output_file} remix {ch}''',
+                sep_ch_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox {mc_audio_file_basename} {output_file} remix {ch}''',
                                                cwd=f"{self.root_directory}{os.sep}audio{os.sep}original_mc",
                                                stdout=subprocess.DEVNULL,
                                                stderr=subprocess.STDOUT,
@@ -399,7 +399,7 @@ class Operator:
             for ch in range(1, 13):
                 partial_input_files = [os.path.basename(p) for p in sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{device_id}_*_ch{ch:02d}.wav"))]
                 output_file = f"{self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav"
-                command_args = ['sox', *partial_input_files, '-q', output_file]
+                command_args = ['static_sox', *partial_input_files, '-q', output_file]
                 mc_to_sc_subp = subprocess.Popen(args=command_args,
                                                  cwd=f"{self.root_directory}{os.sep}audio{os.sep}temp",
                                                  stdout=subprocess.DEVNULL,
@@ -531,7 +531,7 @@ class Operator:
 
             if len(all_audio_files) > 0:
                 for one_file in all_audio_files:
-                    filter_subp = subprocess.Popen(args=f'''{self.command_addition}sox --ignore-length {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
+                    filter_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox --ignore-length {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
                                                    cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}",
                                                    stdout=subprocess.DEVNULL,
                                                    stderr=subprocess.STDOUT,

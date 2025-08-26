@@ -341,7 +341,7 @@ class AudioGenerator:
 
             if volume_adjustment:
                 # increase volume
-                subprocess.Popen(args=f'''{self.command_addition}sox {output_file_name}.wav {output_file_name}_audible.wav compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
+                subprocess.Popen(args=f'''{self.command_addition}static_sox {output_file_name}.wav {output_file_name}_audible.wav compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
                                  cwd=output_dir,
                                  shell=self.shell_usage_bool).wait()
 
@@ -369,11 +369,11 @@ class AudioGenerator:
             tempo_adjustment_factor = audio_seq.frame_rate / denoised_segment.frame_rate
             if 'filtered' not in audio_dir:
                 upper_cutoff_freq = int(np.ceil(25000 / (2 ** abs(octave_shift))))
-                subprocess.Popen(args=f'''{self.command_addition}sox {output_file_name}_audible_denoised.wav {output_file_name}_audible_denoised_tempo_adjusted.wav sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
+                subprocess.Popen(args=f'''{self.command_addition}static_sox {output_file_name}_audible_denoised.wav {output_file_name}_audible_denoised_tempo_adjusted.wav sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
                                  cwd=output_dir,
                                  shell=self.shell_usage_bool).wait()
             else:
-                subprocess.Popen(args=f'''{self.command_addition}sox {output_file_name}_audible_denoised.wav {output_file_name}_audible_denoised_tempo_adjusted.wav tempo -s {tempo_adjustment_factor}''',
+                subprocess.Popen(args=f'''{self.command_addition}static_sox {output_file_name}_audible_denoised.wav {output_file_name}_audible_denoised_tempo_adjusted.wav tempo -s {tempo_adjustment_factor}''',
                                  cwd=output_dir,
                                  shell=self.shell_usage_bool).wait()
 

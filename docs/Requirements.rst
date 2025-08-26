@@ -43,7 +43,7 @@ Video recording essentials
 * `IR filter LP780-37.5: FILTER NIR LONGPASS M37.5 <https://midopt.com/filters/lp780/>`_ (5x)
 * `Light phidget <https://phidgets.com/?tier=3&catid=8&pcid=6&prodid=707>`_ (1x)
 * `Humidity/temperature phidget <https://phidgets.com/?tier=3&catid=14&pcid=12&prodid=1179>`_ (1x)
-* `Loopbio Triggerbox <http://loopbio.com/recording/>`_  with 5 *Trigger Ports* and 3 *State Ports* (1x): comes with Binder (3-pole) connectors for triggering cameras (5x), and Binder (6-pole) connectors for synchronization with external hardware (3x)
+* `Loopbio Triggerbox <http://loopbio.com/recording/>`_  with 5 *Trigger Ports* and 8 *State Ports* (1x): comes with Binder (3-pole) connectors for triggering cameras (5x), and Binder (6-pole) connectors for synchronization with external hardware (3x)
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/video_recording_hardware.png
    :width: 800
@@ -101,42 +101,14 @@ Software Requirements
 Audio PC essentials
 ^^^^^^^^^^^^^^^^^^^
 
-Whatever operating system you are using, you will need to ensure the existence of the following software *prior to* using *usv-playpen*: (1) `Helvetica <https://freefontsfamily.net/helvetica-font-family/>`_ (you can also find the ttf file in *usv-playpen/fonts*; how to install a font in Windows is described `here <https://support.microsoft.com/en-us/office/add-a-font-b7c5f17c-4426-4b53-967f-455339c564c1>`_),
-(2) `Anaconda <https://www.anaconda.com/download>`_ (and add PATH to USER VARIABLES on Windows), (3) `git <https://git-scm.com/downloads/win>`_, (4) `ffmpeg <https://ffmpeg.org/download.html>`_ (and add PATH to USER VARIABLES on Windows), and (5) `sox <https://sourceforge.net/projects/sox/>`_ (and add PATH to USER VARIABLES on Windows). How to add PATH to USER VARIABLES on Windows 11 is described `here <https://www.c-sharpcorner.com/article/how-to-addedit-path-environment-variable-in-windows-11/>`_.
+Whatever operating system you are using, you will need to ensure the existence of the following software *prior to* using *usv-playpen*: (1) `git <https://git-scm.com/downloads>`_ (and add PATH to USER VARIABLES on Windows), (2) `uv <https://docs.astral.sh/uv/getting-started/installation/>`_ (and add PATH to USER VARIABLES on Windows).
 
 You can verify that the installation was successful by running the following commands in the terminal:
 
 .. code-block:: bash
 
-   conda init powershell
-   conda --version
    git --version
-   sox --version
-   ffmpeg -version
-
-You should something like the following output:
-
-.. code-block:: bash
-
-    (pni) bmimica@PNI-NV6T43LF74 ~ % conda --version
-    conda 24.7.1
-    (pni) bmimica@PNI-NV6T43LF74 ~ % git --version
-    git version 2.39.5 (Apple Git-154)
-    (pni) bmimica@PNI-NV6T43LF74 ~ % sox --version
-    sox:      SoX v
-    (pni) bmimica@PNI-NV6T43LF74 ~ % ffmpeg -version
-    ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers
-    built with Apple clang version 16.0.0 (clang-1600.0.26.6)
-    configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/7.1.1_2 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags='-Wl,-ld_classic' --enable-ffplay --enable-gnutls --enable-gpl --enable-libaom --enable-libaribb24 --enable-libbluray --enable-libdav1d --enable-libharfbuzz --enable-libjxl --enable-libmp3lame --enable-libopus --enable-librav1e --enable-librist --enable-librubberband --enable-libsnappy --enable-libsrt --enable-libssh --enable-libsvtav1 --enable-libtesseract --enable-libtheora --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libxvid --enable-lzma --enable-libfontconfig --enable-libfreetype --enable-frei0r --enable-libass --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libspeex --enable-libsoxr --enable-libzmq --enable-libzimg --disable-libjack --disable-indev=jack --enable-videotoolbox --enable-audiotoolbox --enable-neon
-    libavutil      59. 39.100 / 59. 39.100
-    libavcodec     61. 19.101 / 61. 19.101
-    libavformat    61.  7.100 / 61.  7.100
-    libavdevice    61.  3.100 / 61.  3.100
-    libavfilter    10.  4.100 / 10.  4.100
-    libswscale      8.  3.100 /  8.  3.100
-    libswresample   5.  3.100 /  5.  3.100
-    libpostproc    58.  3.100 / 58.  3.100
-
+   uv --version
 
 `Avisoft Recorder USGH <https://avisoft.com/downloads/>`_ works on Windows 11. You should download a version of the software that does not require an USB license key. There is a known issue that the configuration file can occasionally contain invalid settings that lead to various unexpected behaviors. This potential issue can be avoided by disabling the automatic saving of the configuration when the program is closed (*Options > Configuration management > Save mode on exit > Save current configuration automatically*).
 `CoolTerm <https://coolterm.en.lo4d.com/windows>`_ is a serial port terminal application, which allows you to record and keep Arduino print statements in the form of a text file. In the *usv-playpen/_config* directory,
@@ -164,7 +136,7 @@ One can also enable/disable the Ethernet connection with:
 
 .. code-block:: powershell
 
-   netsh interface set interface "ethernet_network_name" disable
+   netsh interface set interface "ethernet_network_name" enable
 
 Video PC essentials
 ^^^^^^^^^^^^^^^^^^^
@@ -215,21 +187,6 @@ To make SpikeGLX functional (once the module and card are connected, and probe i
 Setting up *usv-playpen*
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-After installing *usv-playpen*, there are two files that should be modified if you plan to utilize certain functionalities. Depending on the OS and the installation, *usv-playpen* can usually be found in one of the following directories:
-
-
-.. code-block:: powershell
-
-   C:\Users\<username>\.conda\envs\usv\Lib\site-packages\usv_playpen
-
-.. code-block:: bash
-
-   /home/<username>/miniforge3/envs/usv/lib/python3.10/site-packages/usv_playpen
-
-.. code-block:: zsh
-
-   /Users/<username>/mambaforge3/envs/usv/lib/python3.10/site-packages/usv_playpen
-
 If you plan to conduct behavioral recordings, you need to modify */_config/motif_config.ini* to include the actual API key and SSH password to the tracking PCs:
 
 .. code-block:: ini
@@ -258,4 +215,4 @@ If you plan to send/receive e-mail notifications when jobs start/complete, you n
     email_host=smtp.gmail.com
     email_port=465
     email_address=165b.pni@gmail.com
-    email_password=xxx
+    email_password=XXX

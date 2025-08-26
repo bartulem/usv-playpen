@@ -886,7 +886,7 @@ class Synchronizer:
                 outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{os.path.basename(audio_file)[:-4]}_cropped_to_video.wav"
                 start_cut_sample = start_end_video[device_ids[0]]['start_first_recorded_frame']
                 cut_duration_samples = start_end_video[device_ids[0]]['duration_samples']
-                cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {start_cut_sample}s {cut_duration_samples}s''',
+                cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox {os.path.basename(audio_file)} {outfile_loc} trim {start_cut_sample}s {cut_duration_samples}s''',
                                                   stdout=subprocess.DEVNULL,
                                                   stderr=subprocess.STDOUT,
                                                   cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
@@ -904,7 +904,7 @@ class Synchronizer:
 
                         # trim and adjust tempo
                         tempo_adjustment_factor = start_end_video['m']['duration_samples'] / start_end_video['s']['duration_samples']
-                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {m_start_cut_sample}s {m_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
+                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox {os.path.basename(audio_file)} {outfile_loc} trim {m_start_cut_sample}s {m_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
                                                           stdout=subprocess.DEVNULL,
                                                           stderr=subprocess.STDOUT,
                                                           cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
@@ -913,7 +913,7 @@ class Synchronizer:
 
                     else:
                         outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{os.path.basename(audio_file)[:-4]}_cropped_to_video.wav"
-                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {m_start_cut_sample}s {m_cut_duration_samples}s''',
+                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox {os.path.basename(audio_file)} {outfile_loc} trim {m_start_cut_sample}s {m_cut_duration_samples}s''',
                                                           stdout=subprocess.DEVNULL,
                                                           stderr=subprocess.STDOUT,
                                                           cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
@@ -930,7 +930,7 @@ class Synchronizer:
 
                         # trim and adjust tempo
                         tempo_adjustment_factor = start_end_video['s']['duration_samples'] / start_end_video['m']['duration_samples']
-                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {s_start_cut_sample}s {s_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
+                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox {os.path.basename(audio_file)} {outfile_loc} trim {s_start_cut_sample}s {s_cut_duration_samples}s tempo -s {tempo_adjustment_factor}''',
                                                           stdout=subprocess.DEVNULL,
                                                           stderr=subprocess.STDOUT,
                                                           cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",
@@ -939,7 +939,7 @@ class Synchronizer:
 
                     else:
                         outfile_loc = f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}{os.path.basename(audio_file)[:-4]}_cropped_to_video.wav"
-                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}sox {os.path.basename(audio_file)} {outfile_loc} trim {s_start_cut_sample}s {s_cut_duration_samples}s''',
+                        cut_audio_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox {os.path.basename(audio_file)} {outfile_loc} trim {s_start_cut_sample}s {s_cut_duration_samples}s''',
                                                           stdout=subprocess.DEVNULL,
                                                           stderr=subprocess.STDOUT,
                                                           cwd=f"{self.root_directory}{os.sep}audio{os.sep}original",

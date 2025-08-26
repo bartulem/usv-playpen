@@ -1,6 +1,6 @@
 # usv-playpen v0.8.10
 
-![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/img/usv_playpen_gui.png)
+![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/usv_playpen/img/usv_playpen_gui.png)
 
 GUI/CLI to facilitate conducting experiments with multi-probe e-phys
 (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio)
@@ -27,7 +27,9 @@ branches of the GUI are platform-independent.
 
 - [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio
   recording PC)
-- [Anaconda](https://www.anaconda.com/download) (if on Windows, add PATH to USER
+- [git](https://git-scm.com/download/)  (if on Windows, add PATH to USER
+  VARIABLES)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) (if on Windows, add PATH to USER
   VARIABLES)
 - [sleap](https://sleap.ai/) (install in standalone conda environment)
 - [das](https://janclemenslab.org/das/) (install in standalone conda
@@ -37,38 +39,54 @@ branches of the GUI are platform-independent.
 
 ## Installation and updating
 
-Set up a new conda environment with Python 3.10 and give it any name, _e.g._,
-pni.
+Clone the repository and set up virtual environment with *uv*:
 
 ```bash
-conda create -n pni python=3.10 ffmpeg git sox -c conda-forge -y
+git clone https://github.com/bartulem/usv-playpen.git
+cd usv-playpen
+uv venv --python=3.10
 ```
 
-Activate the virtual environment with:
+### Linux (terminal) instructions
 
 ```bash
-conda activate pni
+echo 'alias go-vpp="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.bashrc
+source ~/.bashrc
+go-vpp
+uv sync
 ```
 
-Install GUI with command below. Also, rerun the same command to check for and
-install updates.
+### macOS (terminal) instructions
 
 ```bash
-pip install git+https://github.com/bartulem/usv-playpen --use-pep517
+echo 'alias go-vpp="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.zshrc
+source ~/.zshrc
+go-vpp
+uv sync
 ```
 
-Add the python-motifapi package to your virtual environment:
+### Windows (powershell) instructions
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+Add-Content -Path $PROFILE -Value "`nfunction go-vpp {`n    . 'C:\path\...\usv-playpen\.venv\Scripts\Activate.ps1'`n}"
+. $PROFILE
+go-vpp
+uv sync
+```
+
+Navigate to the cloned repository and use the following command to check for and install updates:
 
 ```bash
-pip install git+https://github.com/loopbio/python-motifapi --use-pep517
+git pull && uv sync
 ```
 
 ## Usage
 
-Load the environment with the appropriate name, _e.g._, pni, and run the GUI:
+Run the GUI with:
 
 ```bash
-conda activate pni && usv-playpen
+go-vpp && usv-playpen
 ```
 
 User guide with detailed instructions is available

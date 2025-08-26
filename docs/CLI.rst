@@ -543,6 +543,9 @@ Visualize
                         [--beh-features-to-plot TEXT...]
                         [--special-beh-features TEXT...]
                         [--fig-format TEXT] [--fig-dpi INTEGER]
+                        [--animation-codec TEXT]
+                        [--animation-codec-preset TEXT]
+                        [--animation-codec-tune TEXT]
                         [--animation-writer TEXT]
                         [--animation-format TEXT]
                         [--arena-node-connections | --no-arena-node-connections]
@@ -610,6 +613,9 @@ Visualize
       --special-beh-features           Behavioral feature(s) to accentuate in display.
       --fig-format                     Figure format.
       --fig-dpi                        Figure resolution in dots per inch.
+      --animation-codec                The video codec for the animation writer.
+      --animation-codec-preset         The preset flag for the animation codec.
+      --animation-codec-tune           The tune flag for the animation codec.
       --animation-writer               Animation writer backend.
       --animation-format               Video format.
       --arena-node-connections / --no-arena-node-connections

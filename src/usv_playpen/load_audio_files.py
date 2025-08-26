@@ -146,7 +146,7 @@ class DataLoader:
                             ) = wavfile.read(f"{one_dir}{os.sep}{one_file}")
                         except struct.error:
                             subprocess.run(
-                                args=f"""{self.command_addition}sox {one_file} {one_file[:-4]}_correct.wav && {self.remove_command} {one_file} && {self.move_command} {one_file[:-4]}_correct.wav {one_file}""",
+                                args=f"""{self.command_addition}static_sox {one_file} {one_file[:-4]}_correct.wav && {self.remove_command} {one_file} && {self.move_command} {one_file[:-4]}_correct.wav {one_file}""",
                                 shell=self.shell_usage_bool,
                                 cwd=one_dir,
                                 stdout=subprocess.DEVNULL,
