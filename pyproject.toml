@@ -41,7 +41,7 @@ dependencies = [
     "PIMS",
     "PyQt6",
     "polars",
-    "pydub",
+    "pydub-ng",
     "requests",
     "scipy",
     "sleap-anipose",
