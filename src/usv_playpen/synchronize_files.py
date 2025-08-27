@@ -6,7 +6,6 @@ Synchronizes files:
 (3) performs a check on the e-phys data stream to see if the video duration matches the e-phys recording.
 """
 
-import av
 import configparser
 import cv2
 import glob
@@ -14,7 +13,6 @@ import json
 import operator
 import os
 import pathlib
-import pims
 import shutil
 import subprocess
 import numpy as np
@@ -25,43 +23,6 @@ from numba import njit
 from scipy.io import wavfile
 from .load_audio_files import DataLoader
 from .time_utils import *
-
-@pims.pipeline
-def modify_memmap_array(frame: np.ndarray = None,
-                        mmap_arr: np.ndarray = None,
-                        frame_idx: int = None,
-                        led_0: list = None,
-                        led_1: list = None,
-                        led_2: list = None) -> np.ndarray | None:
-    """
-    Description
-    ----------
-    This function .
-    ----------
-
-    Parameters
-    ----------
-    frame (np.ndarray)
-        The frame to perform extraction on.
-    mmap_arr (memmap np.ndarray)
-        The array to fill data with.
-    frame_idx (int)
-        The corresponding frame index.
-    led_0 (list)
-        XY px coordinates for top LED.
-    led_1 (list)
-        XY px coordinates for middle LED.
-    led_2 (list)
-        XY px coordinates for bottom LED.
-    ----------
-
-    Returns
-    ----------
-    ----------
-    """
-    mmap_arr[frame_idx, 0, :] = np.array(frame)[led_0[0], led_0[1], :]
-    mmap_arr[frame_idx, 1, :] = np.array(frame)[led_1[0], led_1[1], :]
-    mmap_arr[frame_idx, 2, :] = np.array(frame)[led_2[0], led_2[1], :]
 
 
 class Synchronizer:
@@ -428,50 +389,73 @@ class Synchronizer:
         ----------
         """
 
-        # load video
-        loaded_video = pims.Video(video_of_interest)
+        cap = cv2.VideoCapture(video_of_interest)
 
-        # find camera sync pxl
+        # get video dimensions
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+
         max_frame_num = int(round(sync_camera_fps + (sync_camera_fps / 2)))
         led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
         led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
         used_camera = camera_id
 
-        peak_intensity_frame_loc = 'zero'
+        peak_intensity_frame_loc = 0
         for led_idx, led_position in enumerate(self.led_px_dict[led_px_version][used_camera].keys()):
             led_dim1, led_dim2 = self.led_px_dict[led_px_version][used_camera][led_position]
             dim1_floor_pxl = max(0, led_dim1 - led_px_dev)
-            dim1_ceil_pxl = min(loaded_video[0].shape[0], led_dim1 + led_px_dev)
+            dim1_ceil_pxl = min(frame_height, led_dim1 + led_px_dev)
             dim2_floor_pxl = max(0, led_dim2 - led_px_dev)
-            dim2_ceil_pxl = min(loaded_video[0].shape[1], led_dim2 + led_px_dev)
+            dim2_ceil_pxl = min(frame_width, led_dim2 + led_px_dev)
 
             if led_idx == 0:
                 fame_pxl_values = np.zeros(max_frame_num)
                 for one_num in range(max_frame_num):
-                    fame_pxl_values[one_num] = loaded_video[one_num][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl].max()
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, one_num)
+                    ret, frame = cap.read()
+                    if not ret: continue
+                    # convert to grayscale for accurate intensity check
+                    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    fame_pxl_values[one_num] = frame_gray[dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl].max()
                 peak_intensity_frame_loc = fame_pxl_values.argmax()
 
-            frame_of_choice = loaded_video[peak_intensity_frame_loc][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl]
-            screen_results = np.where(frame_of_choice == frame_of_choice.max())
-            result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
-            self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
-            self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, peak_intensity_frame_loc)
+            ret, frame = cap.read()
+            if ret:
+                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frame_of_choice = frame_gray[dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl]
+                screen_results = np.where(frame_of_choice == frame_of_choice.max())
+                result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
+                self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
+                self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
 
-        # create memmap array to store the data for posterity
         mm_arr = np.memmap(filename=f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
-                           dtype=DataLoader(input_parameter_dict={}).known_dtypes['np.uint8'], mode='w+', shape=(total_frame_number, 3, 3))
+                           dtype=np.uint8, mode='w+', shape=(total_frame_number, 3, 3))
+
+        led_coords = np.array([
+            self.led_px_dict[led_px_version][used_camera]['LED_top'],
+            self.led_px_dict[led_px_version][used_camera]['LED_middle'],
+            self.led_px_dict[led_px_version][used_camera]['LED_bottom']
+        ])
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
         for fr_idx in range(total_frame_number):
-            try:
-                processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
-                                                      self.led_px_dict[led_px_version][used_camera]['LED_top'],
-                                                      self.led_px_dict[led_px_version][used_camera]['LED_middle'],
-                                                      self.led_px_dict[led_px_version][used_camera]['LED_bottom'])
-            except av.error.EOFError:
-                self.message_output(f"WARNING: Reached end of decodable frames at index {fr_idx}, while PIMS reported {total_frame_number} total frames.")
+            ret, frame = cap.read()
+
+            if not ret:
+                self.message_output(f"WARNING: Reached end of decodable frames at index {fr_idx}, while total_frame_number was {total_frame_number}.")
                 break
 
-        # the following line is important for saving memmap file changes
+            if frame.ndim == 3:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pixel_values = frame_rgb[led_coords[:, 0], led_coords[:, 1]]
+                mm_arr[fr_idx] = pixel_values
+            else:
+                pixel_values = frame[led_coords[:, 0], led_coords[:, 1]]
+                mm_arr[fr_idx] = np.repeat(pixel_values[:, np.newaxis], repeats=3, axis=1)
+
+        cap.release()
         mm_arr.flush()
 
     def find_video_sync_trains(self, camera_fps: list = None,

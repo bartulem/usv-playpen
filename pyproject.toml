@@ -26,7 +26,6 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "astropy",
-    "av",
     "click",
     "h5py",
     "imgstore",
@@ -38,13 +37,12 @@ dependencies = [
     "numba",
     "opencv-contrib-python",
     "pandas",
-    "PIMS",
     "PyQt6",
     "polars",
-    "pydub",
     "requests",
     "scipy",
     "sleap-anipose",
+    "soundfile",
     "scikit-learn",
     "toml",
     "tqdm",

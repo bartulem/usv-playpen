@@ -5,13 +5,14 @@ Generates playback WAV files and frequency shifts audio segment.
 
 from datetime import datetime
 import glob
+import librosa
 import noisereduce as nr
 import numpy as np
 import os
 from pathlib import Path
-from pydub import AudioSegment
 import random
 from scipy.io import wavfile
+import soundfile as sf
 import subprocess
 from tqdm import tqdm
 from ..os_utils import find_base_path
@@ -325,62 +326,43 @@ class AudioGenerator:
 
         if len(audio_file_loc) == 1:
 
-            # load audio sequence
-            audio_seq = AudioSegment.from_file(file=audio_file_loc[0],
-                                               format='wav',
-                                               frame_rate=int(wav_sampling_rate * 1e3),
-                                               start_second=seq_start,
-                                               duration=seq_duration)
+            audio_data, sample_rate = librosa.load(
+                audio_file_loc[0],
+                sr=int(wav_sampling_rate * 1e3),
+                offset=seq_start,
+                duration=seq_duration
+            )
 
-            # pitch shift by desired amount
-            new_sr = int(audio_seq.frame_rate * (2.0 ** octave_shift))
-            audible_seq = audio_seq._spawn(audio_seq.raw_data, overrides={'frame_rate': new_sr})
+            # calculate the pitch shift in semitones (1 octave = 12 semitones)
+            n_steps = octave_shift * 12
+            # apply the high-quality pitch shift without changing the tempo
+            shifted_audio = librosa.effects.pitch_shift(y=audio_data, sr=sample_rate, n_steps=n_steps)
 
-            audible_seq.export(out_f=f"{output_dir}{os.sep}{output_file_name}.wav",
-                               format='wav')
+            final_output_file = f"{output_dir}{os.sep}{output_file_name}_audible_final.wav"
 
             if volume_adjustment:
-                # increase volume
-                subprocess.Popen(args=f'''{self.command_addition}static_sox {output_file_name}.wav {output_file_name}_audible.wav compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
+                temp_shifted_file = f"{output_dir}{os.sep}{output_file_name}_temp_shifted.wav"
+                temp_audible_file = f"{output_dir}{os.sep}{output_file_name}_temp_audible.wav"
+
+                sf.write(temp_shifted_file, shifted_audio, sample_rate)
+
+                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_shifted_file} {temp_audible_file} compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
                                  cwd=output_dir,
                                  shell=self.shell_usage_bool).wait()
 
-                # noise reduction
-                shifted_seq = AudioSegment.from_file(file=f"{output_dir}{os.sep}{output_file_name}_audible.wav",
-                                                     format='wav',
-                                                     frame_rate=new_sr)
+                processed_audio, _ = librosa.load(temp_audible_file, sr=sample_rate)
+
             else:
-                shifted_seq = AudioSegment.from_file(file=f"{output_dir}{os.sep}{output_file_name}.wav",
-                                                     format='wav',
-                                                     frame_rate=new_sr)
+                processed_audio = shifted_audio
 
-            numpy_audio = shifted_seq.get_array_of_samples()
-            reduced_noise = nr.reduce_noise(y=numpy_audio, sr=new_sr, stationary=True, n_std_thresh_stationary=3)
+            reduced_noise = nr.reduce_noise(y=processed_audio, sr=sample_rate, stationary=True, n_std_thresh_stationary=3)
 
-            denoised_segment = AudioSegment(np.int16(reduced_noise).tobytes(),
-                                           frame_rate=new_sr,
-                                           sample_width=shifted_seq.sample_width,
-                                           channels=shifted_seq.channels)
+            sf.write(final_output_file, reduced_noise, sample_rate)
 
-            denoised_segment.export(out_f=f"{output_dir}{os.sep}{output_file_name}_audible_denoised.wav",
-                                    format='wav')
-
-            # adjust tempo
-            tempo_adjustment_factor = audio_seq.frame_rate / denoised_segment.frame_rate
-            if 'filtered' not in audio_dir:
-                upper_cutoff_freq = int(np.ceil(25000 / (2 ** abs(octave_shift))))
-                subprocess.Popen(args=f'''{self.command_addition}static_sox {output_file_name}_audible_denoised.wav {output_file_name}_audible_denoised_tempo_adjusted.wav sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
-                                 cwd=output_dir,
-                                 shell=self.shell_usage_bool).wait()
-            else:
-                subprocess.Popen(args=f'''{self.command_addition}static_sox {output_file_name}_audible_denoised.wav {output_file_name}_audible_denoised_tempo_adjusted.wav tempo -s {tempo_adjustment_factor}''',
-                                 cwd=output_dir,
-                                 shell=self.shell_usage_bool).wait()
-
-            os.remove(f"{output_dir}{os.sep}{output_file_name}.wav")
             if volume_adjustment:
-                os.remove(f"{output_dir}{os.sep}{output_file_name}_audible.wav")
-            os.remove(f"{output_dir}{os.sep}{output_file_name}_audible_denoised.wav")
+                os.remove(temp_shifted_file)
+                os.remove(temp_audible_file)
 
         else:
             self.message_output(f"Requested audio file not found. Please try again.")
+
