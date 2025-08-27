@@ -84,20 +84,6 @@ wheels = [
 ]
 
 [[package]]
-name = "av"
-version = "10.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/09/45/eb750ba15c44e8106f58a22e6789f5ddbe5584d9dcb4e755b08d47ed6261/av-10.0.0.tar.gz", hash = "sha256:8afd3d5610e1086f3b2d8389d66672ea78624516912c93612de64dcaa4c67e05", size = 2434348, upload_time = "2022-10-18T00:55:10.543Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/f4/47de1de3fcc23cb199a1ead44a207457933e535efcdea433a8d15edbd9a6/av-10.0.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:d19bb54197155d045a2b683d993026d4bcb06e31c2acad0327e3e8711571899c", size = 26054619, upload_time = "2022-10-18T00:52:17.05Z" },
-    { url = "https://files.pythonhosted.org/packages/a5/39/da12543d3d91252a8c15834103119c130fc5b6a2f2f9366e67c0130ad407/av-10.0.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:7dba96a85cd37315529998e6dbbe3fa05c2344eb19a431dc24996be030a904ee", size = 19602103, upload_time = "2022-10-18T00:52:20.951Z" },
-    { url = "https://files.pythonhosted.org/packages/0e/98/1b3c53e1fd44e8e7ee05d8d525fc9df86aa53ad9ca4ccef0e68a99cf4428/av-10.0.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:27d6d38c7c8d46d578c008ffcb8aad1eae14d0621fff41f4ad62395589045fe4", size = 29219302, upload_time = "2022-10-18T00:52:25.281Z" },
-    { url = "https://files.pythonhosted.org/packages/26/86/5b80417f0f882c08eda6b05fa81d79cd1f8aa56d555a9109fa2df711d73c/av-10.0.0-cp310-cp310-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:51037f4bde03daf924236af4f444e17345792ad7f6f70760a5e5863407e14f2b", size = 28793453, upload_time = "2022-10-18T00:52:29.334Z" },
-    { url = "https://files.pythonhosted.org/packages/85/d7/0c0b99b302f8973481fe08b9ec5043bcf0708e56f21512ae0fb697fa02d8/av-10.0.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0577a38664e453b4ffb63d616a0d23c295827b16ae96a090e89527a753de8718", size = 30972117, upload_time = "2022-10-18T00:52:34.224Z" },
-    { url = "https://files.pythonhosted.org/packages/ea/30/520d0c1b2e7e8a49818e905bd3968d331f5310cd55fdb3f451b5d0c0d449/av-10.0.0-cp310-cp310-win_amd64.whl", hash = "sha256:07c971573035d22ce50069d3f2bbdb4d6d02d626ab13db12fda3ce519cda3f22", size = 25307349, upload_time = "2022-10-18T00:52:38.318Z" },
-]
-
-[[package]]
 name = "babel"
 version = "2.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -970,17 +956,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pims"
-version = "0.6.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "imageio" },
-    { name = "numpy" },
-    { name = "slicerator" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a8/aa/5f779c3c4a471a0b6f8b641d41758b286a451e8fd9e777a52d075c6bf551/PIMS-0.6.1.tar.gz", hash = "sha256:e2b704461d4ea9bce8b6a22ca35836fe67d6d34537736b405341ae5547194f3b", size = 86016, upload_time = "2022-05-28T19:14:08.469Z" }
-
-[[package]]
 name = "platformdirs"
 version = "4.3.8"
 source = { registry = "https://pypi.org/simple" }
@@ -1033,15 +1008,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1d/b2/31537cf4b1ca988837256c910a668b553fceb8f069bedc4b1c826024b52c/pycparser-2.22.tar.gz", hash = "sha256:491c8be9c040f5390f5bf44a5b07752bd07f56edf992381b05c701439eec10f6", size = 172736, upload_time = "2024-03-30T13:22:22.564Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/a3/a812df4e2dd5696d1f351d58b8fe16a405b234ad2886a0dab9183fb78109/pycparser-2.22-py3-none-any.whl", hash = "sha256:c3702b6d3dd8c7abc1afa565d7e63d53a1d0bd86cdc24edd75470f4de499cfcc", size = 117552, upload_time = "2024-03-30T13:22:20.476Z" },
-]
-
-[[package]]
-name = "pydub"
-version = "0.25.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fe/9a/e6bca0eed82db26562c73b5076539a4a08d3cffd19c3cc5913a3e61145fd/pydub-0.25.1.tar.gz", hash = "sha256:980a33ce9949cab2a569606b65674d748ecbca4f0796887fd6f46173a7b0d30f", size = 38326, upload_time = "2021-03-10T02:09:54.659Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/53/d78dc063216e62fc55f6b2eebb447f6a4b0a59f55c8406376f76bf959b08/pydub-0.25.1-py2.py3-none-any.whl", hash = "sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6", size = 32327, upload_time = "2021-03-10T02:09:53.503Z" },
 ]
 
 [[package]]
@@ -1719,7 +1685,6 @@ name = "usv-playpen"
 source = { editable = "." }
 dependencies = [
     { name = "astropy" },
-    { name = "av" },
     { name = "click" },
     { name = "ffmpeg-binaries" },
     { name = "h5py" },
@@ -1733,9 +1698,7 @@ dependencies = [
     { name = "numpy" },
     { name = "opencv-contrib-python" },
     { name = "pandas" },
-    { name = "pims" },
     { name = "polars" },
-    { name = "pydub" },
     { name = "pyqt6" },
     { name = "requests" },
     { name = "scikit-learn" },
@@ -1769,7 +1732,6 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "astropy" },
-    { name = "av" },
     { name = "click" },
     { name = "ffmpeg-binaries", specifier = ">=1.0.1" },
     { name = "h5py" },
@@ -1783,9 +1745,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "opencv-contrib-python" },
     { name = "pandas" },
-    { name = "pims" },
     { name = "polars" },
-    { name = "pydub" },
     { name = "pyqt6" },
     { name = "requests" },
     { name = "scikit-learn" },
