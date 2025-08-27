@@ -326,42 +326,57 @@ class AudioGenerator:
 
         if len(audio_file_loc) == 1:
 
-            audio_data, sample_rate = librosa.load(
+            # load audio sequence with Librosa
+            original_audio, original_sr = librosa.load(
                 audio_file_loc[0],
                 sr=int(wav_sampling_rate * 1e3),
                 offset=seq_start,
                 duration=seq_duration
             )
 
-            # calculate the pitch shift in semitones (1 octave = 12 semitones)
-            n_steps = octave_shift * 12
-            # apply the high-quality pitch shift without changing the tempo
-            shifted_audio = librosa.effects.pitch_shift(y=audio_data, sr=sample_rate, n_steps=n_steps)
+            # calculate the new sample rate for resampling (changes pitch AND speed)
+            new_sr = int(original_sr * (2.0 ** octave_shift))
 
-            final_output_file = f"{output_dir}{os.sep}{output_file_name}_audible_final.wav"
+            # intermediate filenames for the processing pipeline
+            temp_resampled_file = f"{output_dir}{os.sep}{output_file_name}_temp_resampled.wav"
+            temp_audible_file = f"{output_dir}{os.sep}{output_file_name}_temp_audible.wav"
+            temp_denoised_file = f"{output_dir}{os.sep}{output_file_name}_temp_denoised.wav"
+            final_output_file = f"{output_dir}{os.sep}{output_file_name}_audible_denoised_tempo_adjusted.wav"
 
+            # export the resampled audio (this is the pitch/speed shift)
+            sf.write(temp_resampled_file, original_audio, new_sr)
+
+            # perform volume adjustment with SoX (if needed)
             if volume_adjustment:
-                temp_shifted_file = f"{output_dir}{os.sep}{output_file_name}_temp_shifted.wav"
-                temp_audible_file = f"{output_dir}{os.sep}{output_file_name}_temp_audible.wav"
-
-                sf.write(temp_shifted_file, shifted_audio, sample_rate)
-
-                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_shifted_file} {temp_audible_file} compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
+                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
                                  cwd=output_dir,
                                  shell=self.shell_usage_bool).wait()
 
-                processed_audio, _ = librosa.load(temp_audible_file, sr=sample_rate)
-
+                processed_audio, _ = librosa.load(temp_audible_file, sr=new_sr)
             else:
-                processed_audio = shifted_audio
+                processed_audio, _ = librosa.load(temp_resampled_file, sr=new_sr)
 
-            reduced_noise = nr.reduce_noise(y=processed_audio, sr=sample_rate, stationary=True, n_std_thresh_stationary=3)
+            # perform noise reduction
+            reduced_noise = nr.reduce_noise(y=processed_audio, sr=new_sr, stationary=True, n_std_thresh_stationary=3)
+            sf.write(temp_denoised_file, reduced_noise, new_sr)
 
-            sf.write(final_output_file, reduced_noise, sample_rate)
+            # correct the tempo back to the original duration using SoX
+            tempo_adjustment_factor = original_sr / new_sr
 
+            if 'filtered' not in audio_dir:
+                upper_cutoff_freq = int(np.ceil(25000 / (2 ** abs(octave_shift))))
+                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
+                                 cwd=output_dir,
+                                 shell=self.shell_usage_bool).wait()
+            else:
+                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''',
+                                 cwd=output_dir,
+                                 shell=self.shell_usage_bool).wait()
+
+            os.remove(temp_resampled_file)
             if volume_adjustment:
-                os.remove(temp_shifted_file)
                 os.remove(temp_audible_file)
+            os.remove(temp_denoised_file)
 
         else:
             self.message_output(f"Requested audio file not found. Please try again.")
