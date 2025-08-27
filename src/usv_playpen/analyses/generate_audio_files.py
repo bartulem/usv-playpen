@@ -350,6 +350,8 @@ class AudioGenerator:
             if volume_adjustment:
                 subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
                                  cwd=output_dir,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.STDOUT,
                                  shell=self.shell_usage_bool).wait()
 
                 processed_audio, _ = librosa.load(temp_audible_file, sr=new_sr)
@@ -367,10 +369,14 @@ class AudioGenerator:
                 upper_cutoff_freq = int(np.ceil(25000 / (2 ** abs(octave_shift))))
                 subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
                                  cwd=output_dir,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.STDOUT,
                                  shell=self.shell_usage_bool).wait()
             else:
                 subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''',
                                  cwd=output_dir,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.STDOUT,
                                  shell=self.shell_usage_bool).wait()
 
             os.remove(temp_resampled_file)
