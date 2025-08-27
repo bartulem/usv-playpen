@@ -50,18 +50,18 @@ uv venv --python=3.10
 ### Linux (terminal) instructions
 
 ```bash
-echo 'alias go-vpp="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.bashrc
+echo 'alias activate-pni="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.bashrc
 source ~/.bashrc
-go-vpp
+activate-pni
 uv sync
 ```
 
 ### macOS (terminal) instructions
 
 ```bash
-echo 'alias go-vpp="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.zshrc
+echo 'alias activate-pni="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.zshrc
 source ~/.zshrc
-go-vpp
+activate-pni
 uv sync
 ```
 
@@ -69,9 +69,9 @@ uv sync
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
-Add-Content -Path $PROFILE -Value "`nfunction go-vpp {`n    . 'C:\path\...\usv-playpen\.venv\Scripts\Activate.ps1'`n}"
+Add-Content -Path $PROFILE -Value "`nfunction activate-pni {`n    . 'C:\path\...\usv-playpen\.venv\Scripts\Activate.ps1'`n}"
 . $PROFILE
-go-vpp
+activate-pni
 uv sync
 ```
 
@@ -86,7 +86,7 @@ git pull && uv sync
 Run the GUI with:
 
 ```bash
-go-vpp && usv-playpen
+activate-pni && usv-playpen
 ```
 
 User guide with detailed instructions is available
