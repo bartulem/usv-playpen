@@ -10,10 +10,10 @@ import os
 import platform
 import sys
 from functools import partial
+from importlib import metadata
 from pathlib import Path
 import re
 import toml
-import src.usv_playpen
 from PyQt6.QtCore import (
     Qt, QEvent
 )
@@ -58,7 +58,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = f"USV Playpen v{src.usv_playpen.__version__.split('dev')[0]}"
+app_name = f"{metadata.version('usv-playpen').split('dev')[0]}"
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'

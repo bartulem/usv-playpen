@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from urllib.request import urlretrieve
-import src.usv_playpen
+from importlib import metadata
 
 urlretrieve(
     url="https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/README.md",
@@ -16,7 +16,7 @@ urlretrieve(
 project = "usv-playpen"
 copyright = "2025, github/bartulem"
 author = "Bartul Mimica (documentation)"
-release = f"{src.usv_playpen.__version__.split('dev')[0]}"
+release = f"{metadata.version('usv-playpen').split('dev')[0]}"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
