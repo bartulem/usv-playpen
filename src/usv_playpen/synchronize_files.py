@@ -8,6 +8,7 @@ Synchronizes files:
 
 import av
 import configparser
+import cv2
 import glob
 import json
 import operator
