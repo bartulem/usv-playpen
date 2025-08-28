@@ -4,6 +4,7 @@ GUI to run behavioral experiments, data processing and analyses.
 """
 
 import ast
+import configparser
 import ctypes
 import json
 import os
@@ -63,6 +64,8 @@ app_name = f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0]}"
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
 gui_icon = f'{basedir}{os.sep}img{os.sep}gui_icon.png'
+password_icon = f'{basedir}{os.sep}img{os.sep}password.png'
+save_icon = f'{basedir}{os.sep}img{os.sep}save.png'
 splash_icon = f'{basedir}{os.sep}img{os.sep}uncle_stefan.png'
 process_icon = f'{basedir}{os.sep}img{os.sep}process.png'
 record_icon = f'{basedir}{os.sep}img{os.sep}record.png'
@@ -142,6 +145,21 @@ class Main(QWidget):
         paint_main.drawPixmap(self.rect(), QPixmap(f'{background_img}'))
         QWidget.paintEvent(self, event)
 
+class Credentials(QWidget):
+    def __init__(self, parent: QWidget = Main) -> None:
+        """
+        Initializes the Record class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget; defaults to Main.
+
+        Returns
+        -------
+        -------
+        """
+        super(Credentials, self).__init__(parent)
 
 class Record(QWidget):
     def __init__(self, parent: QWidget = Main) -> None:
@@ -382,6 +400,170 @@ class USVPlaypenWindow(QMainWindow):
         self.exp_id_cb.move(215, 325)
 
         self._create_buttons_main()
+
+    def credentials_window(self) -> None:
+        """
+        Initializes the usv-playpen Main window.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        self.Credentials = Credentials(self)
+        self.setWindowTitle(f'{app_name} (Set credentials)')
+        self.setCentralWidget(self.Credentials)
+        self.setFixedSize(420, 500)
+
+        credentials_label = QLabel('Please insert information to be saved to the credential files', self.Credentials)
+        credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        credentials_label.setStyleSheet('QLabel { font-weight: bold;}')
+        credentials_label.move(5, 10)
+
+        credentials_save_dir_label = QLabel('Save directory:', self.Credentials)
+        credentials_save_dir_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        credentials_save_dir_label.move(5, 40)
+        self.credentials_save_dir_edit = QLineEdit("", self.Credentials)
+        self.credentials_save_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.credentials_save_dir_edit.setStyleSheet('QLineEdit { width: 205px; }')
+        self.credentials_save_dir_edit.move(115, 40)
+        credentials_save_dir_btn = QPushButton('Browse', self.Credentials)
+        credentials_save_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
+        credentials_save_dir_btn.move(325, 40)
+        credentials_save_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
+        credentials_save_dir_btn.clicked.connect(self._open_credentials_dialog)
+
+        credentials_label = QLabel('E-MAIL credentials', self.Credentials)
+        credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        credentials_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        credentials_label.move(5, 70)
+
+        email_host_label = QLabel('[provider]:', self.Credentials)
+        email_host_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        email_host_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_host_label.move(5, 95)
+        self.email_host = QLineEdit("smtp.gmail.com", self.Credentials)
+        self.email_host.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.email_host.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.email_host.move(75, 95)
+
+        email_port_label = QLabel('[port num]:', self.Credentials)
+        email_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        email_port_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_port_label.move(5, 120)
+        self.email_port = QLineEdit("465", self.Credentials)
+        self.email_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.email_port.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.email_port.move(75, 120)
+
+        email_address_label = QLabel('[address]:', self.Credentials)
+        email_address_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        email_address_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_address_label.move(5, 145)
+        self.email_address = QLineEdit("165b.pni@gmail.com", self.Credentials)
+        self.email_address.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.email_address.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.email_address.move(75, 145)
+
+        email_password_label = QLabel('[password]:', self.Credentials)
+        email_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        email_password_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_password_label.move(5, 170)
+        self.email_password = QLineEdit("XXX", self.Credentials)
+        self.email_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.email_password.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.email_password.move(75, 170)
+
+        credentials_label = QLabel('UNIVERSITY credentials', self.Credentials)
+        credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        credentials_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        credentials_label.move(5, 200)
+
+        university_username_label = QLabel('[username]:', self.Credentials)
+        university_username_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        university_username_label.setStyleSheet('QLabel { font-weight: bold;}')
+        university_username_label.move(5, 225)
+        self.university_username = QLineEdit("bmimica", self.Credentials)
+        self.university_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.university_username.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.university_username.move(75, 225)
+
+        university_password_label = QLabel('[password]:', self.Credentials)
+        university_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        university_password_label.setStyleSheet('QLabel { font-weight: bold;}')
+        university_password_label.move(5, 250)
+        self.university_password = QLineEdit("XXX", self.Credentials)
+        self.university_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.university_password.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.university_password.move(75, 250)
+
+        credentials_label = QLabel('MOTIF credentials', self.Credentials)
+        credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        credentials_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        credentials_label.move(5, 280)
+
+        motif_master_ip_label = QLabel('[primary ip]:', self.Credentials)
+        motif_master_ip_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        motif_master_ip_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_master_ip_label.move(5, 305)
+        self.motif_master_ip = QLineEdit("10.241.1.205", self.Credentials)
+        self.motif_master_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.motif_master_ip.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.motif_master_ip.move(75, 305)
+
+        motif_second_ip_label = QLabel('[second ip]:', self.Credentials)
+        motif_second_ip_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        motif_second_ip_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_second_ip_label.move(5, 330)
+        self.motif_second_ip = QLineEdit("10.241.1.183", self.Credentials)
+        self.motif_second_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.motif_second_ip.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.motif_second_ip.move(75, 330)
+
+        motif_ssh_port_label = QLabel('[ssh port]:', self.Credentials)
+        motif_ssh_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        motif_ssh_port_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_ssh_port_label.move(5, 355)
+        self.motif_ssh_port = QLineEdit("22", self.Credentials)
+        self.motif_ssh_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.motif_ssh_port.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.motif_ssh_port.move(75, 355)
+
+        motif_username_label = QLabel('[username]:', self.Credentials)
+        motif_username_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        motif_username_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_username_label.move(5, 380)
+        self.motif_username = QLineEdit("labadmin", self.Credentials)
+        self.motif_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.motif_username.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.motif_username.move(75, 380)
+
+        motif_password_label = QLabel('[password]:', self.Credentials)
+        motif_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        motif_password_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_password_label.move(5, 405)
+        self.motif_password = QLineEdit("XXX", self.Credentials)
+        self.motif_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.motif_password.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.motif_password.move(75, 405)
+
+        motif_api_label = QLabel('[api key]:', self.Credentials)
+        motif_api_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        motif_api_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_api_label.move(5, 430)
+        self.motif_api = QLineEdit("XXX", self.Credentials)
+        self.motif_api.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.motif_api.setStyleSheet('QLineEdit { height: 15px; width: 340px; }')
+        self.motif_api.move(75, 430)
+
+        self._create_buttons_credentials(class_option=self.Credentials,
+                                         button_pos_y=465,
+                                         next_button_x_pos=320)
+
 
     def record_one(self) -> None:
         """
@@ -2790,7 +2972,10 @@ class USVPlaypenWindow(QMainWindow):
         for variable in self.default_audio_settings.keys():
             if variable in self.exp_settings_dict['audio'].keys():
                 if variable == 'used_mics' or variable == 'cpu_affinity':
-                    self.exp_settings_dict['audio'][f'{variable}'] = [int(x) for x in getattr(self, variable).text().split(',')]
+                    if not getattr(self, variable).text() == '':
+                        self.exp_settings_dict['audio'][f'{variable}'] = [int(x) for x in getattr(self, variable).text().split(',')]
+                    else:
+                        self.exp_settings_dict['audio'][f'{variable}'] = []
                 elif variable == 'cpu_priority':
                     self.exp_settings_dict['audio'][f'{variable}'] = getattr(self, variable).text()
                 else:
@@ -3637,6 +3822,53 @@ class USVPlaypenWindow(QMainWindow):
         self.button_map['Visualize'].setFont(QFont(self.font_id, 8+self.font_size_increase))
         self.button_map['Visualize'].clicked.connect(self.visualize_one)
 
+        self.login_button = QPushButton(QIcon(password_icon), "", self.Main)
+        self.login_button.setToolTip("login credentials")
+        self.login_button.setObjectName("loginButton")
+        self.login_button.setFixedSize(32, 32)
+        self.login_button.move(385, 2)
+        self.login_button.clicked.connect(self.credentials_window)
+
+    def _create_buttons_credentials(self,
+                                    class_option: str = None,
+                                    button_pos_y: int = None,
+                                    next_button_x_pos: int = None) -> None:
+
+        """
+        Creates buttons for Credentials window.
+
+        Parameters
+        ----------
+        class_option (str)
+            Class option for the button.
+        button_pos_y (int)
+            Y position for the button.
+        next_button_x_pos (int)
+            X position for the next button.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        self.button_map = {'Previous': QPushButton(QIcon(previous_icon), 'Previous', class_option),
+                           'Main': QPushButton(QIcon(main_icon), 'Main', class_option),
+                           'Save': QPushButton(QIcon(save_icon), 'Save', class_option)}
+
+        self.button_map['Previous'].move(5, button_pos_y)
+        self.button_map['Previous'].setFont(QFont(self.font_id, 8+self.font_size_increase))
+        self.button_map['Previous'].clicked.connect(self.main_window)
+
+        self.button_map['Main'].move(100, button_pos_y)
+        self.button_map['Main'].setFont(QFont(self.font_id, 8+self.font_size_increase))
+        self.button_map['Main'].clicked.connect(self.main_window)
+
+        self.button_map['Save'].move(next_button_x_pos, button_pos_y)
+        self.button_map['Save'].setFont(QFont(self.font_id, 8 + self.font_size_increase))
+        self.button_map['Save'].clicked.connect(self._start_saving)
+
+
     def _create_buttons_record(self,
                                seq: int = None,
                                class_option: str = None,
@@ -3875,6 +4107,57 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Visualize'].clicked.connect(self._disable_visualize_buttons)
             self.button_map['Visualize'].clicked.connect(self._start_visualizations)
             self.button_map['Visualize'].clicked.connect(self._enable_visualize_buttons)
+
+    def _start_saving(self) -> None:
+        """
+        Saves credential files:
+        - e-mail credentials file
+        - CUP credentials file
+        - Motif credentials file.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        # hide credentials directory
+        credentials_dir = Path(f"{self.credentials_save_dir_edit.text()}{os.sep}.usv_playpen_credentials_{self.exp_id}")
+        credentials_dir.mkdir(parents=True, exist_ok=True)
+
+        if platform.system() == 'Windows':
+            file_attribute_hidden = 0x02
+            ctypes.windll.kernel32.SetFileAttributesW(str(credentials_dir), file_attribute_hidden)
+
+        motif_config = configparser.ConfigParser()
+        motif_config['motif'] = {
+            'master_ip_address': f"{self.motif_master_ip.text()}",
+            'second_ip_address': f"{self.motif_second_ip.text()}",
+            'ssh_port': f"{self.motif_ssh_port.text()}",
+            'ssh_username': f"{self.motif_username.text()}",
+            'ssh_password': f"{self.motif_password.text()}",
+            'api': f"{self.motif_api.text()}"}
+        with open(f"{credentials_dir}{os.sep}motif_config.ini", mode='w') as motif_configfile:
+            motif_config.write(motif_configfile, space_around_delimiters=False)
+
+        university_config = configparser.ConfigParser()
+        university_config['cup'] = {
+            'username': f"{self.university_username.text()}",
+            'password': f"{self.university_password.text()}"}
+        with open(f"{credentials_dir}{os.sep}cup_config.ini", mode='w') as university_configfile:
+            university_config.write(university_configfile, space_around_delimiters=False)
+
+        emai_config = configparser.ConfigParser()
+        emai_config['email'] = {
+            'email_host': f"{self.email_host.text()}",
+            'email_port': f"{self.email_port.text()}",
+            'email_address': f"{self.email_address.text()}",
+            'email_password': f"{self.email_password.text()}"}
+        with open(f"{credentials_dir}{os.sep}email_config.ini", mode='w') as email_configfile:
+            emai_config.write(email_configfile, space_around_delimiters=False)
 
     def _start_visualizations(self) -> None:
         """
@@ -4272,6 +4555,29 @@ class USVPlaypenWindow(QMainWindow):
                 self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = str(inference_root_dir_name_path)
         else:
             self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = self.inference_root_dir_edit.text()
+
+    def _open_credentials_dialog(self) -> None:
+        """
+        Creates dialog for credentials directory.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        credentials_dir_name = QFileDialog.getExistingDirectory(
+            self,
+            'Save credentials directory',
+            '')
+        if credentials_dir_name:
+            credentials_dir_name_path = Path(credentials_dir_name)
+            self.credentials_save_dir_edit.setText(str(credentials_dir_name_path))
+        else:
+            self.credentials_save_dir_edit.setText('')
 
     def _open_recorder_dialog(self) -> None:
         """

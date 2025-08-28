@@ -690,12 +690,17 @@ class ExperimentController:
             self.message_output(f"Audio recording in progress since {start_hour_min_sec}, it will last {round(self.exp_settings_dict['video_session_duration'] + .36, 2)} minute(s). Please be patient.")
 
             avisoft_recorder_program_name = self.exp_settings_dict['avisoft_recorder_program_name']
-            cpu_affinity_mask = self.get_cpu_affinity_mask()
+
             cpu_priority = self.exp_settings_dict['audio']['cpu_priority']
+
+            affinity_arg = ""
+            if self.exp_settings_dict['audio']['cpu_affinity']:
+                cpu_affinity_mask = self.get_cpu_affinity_mask()
+                affinity_arg = f" /affinity {cpu_affinity_mask}"
 
             # run command to start Avisoft Recorder and keep executing the rest of the script
             if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
-                subprocess.Popen(args=f'''cmd /c "start /{cpu_priority} /affinity {cpu_affinity_mask} {avisoft_recorder_program_name} /CFG=avisoft_config.ini /AUT"''',
+                subprocess.Popen(args=f'''cmd /c "start /{cpu_priority}{affinity_arg} {avisoft_recorder_program_name} /CFG=avisoft_config.ini /AUT"''',
                                  stdout=subprocess.PIPE,
                                  cwd=self.exp_settings_dict['avisoft_recorder_exe'])
 

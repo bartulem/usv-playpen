@@ -37,6 +37,7 @@ dependencies = [
     "numba",
     "opencv-contrib-python",
     "pandas",
+    "platformdirs",
     "PyQt6",
     "polars",
     "requests",
