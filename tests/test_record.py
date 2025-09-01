@@ -48,14 +48,17 @@ def default_exp_settings():
 @pytest.fixture
 def controller(default_exp_settings):
     """Provides an ExperimentController instance with default settings."""
+
     return ExperimentController(exp_settings_dict=default_exp_settings)
 
 def test_count_dropouts_file_not_found():
     """Test that count_last_recording_dropouts returns None if the file doesn't exist."""
+
     assert count_last_recording_dropouts('/nonexistent/path', 'ch1') is None
 
 def test_count_dropouts_parsing(mocker):
     """Tests the dropout counting logic with a simulated log file."""
+
     log_content = (
         "Recording started: C:\\Avisoft\\ch1\\rec1.wav\n"
         "Some info here.\n"
@@ -78,6 +81,7 @@ def test_count_dropouts_parsing(mocker):
 
 def test_count_dropouts_no_dropouts(mocker):
     """Tests the case where the last recording has no dropouts."""
+
     log_content = (
         "Recording started: C:\\Avisoft\\ch1\\rec1.wav\n"
         "dropout detected\n"
@@ -90,6 +94,7 @@ def test_count_dropouts_no_dropouts(mocker):
 
 def test_get_cpu_affinity_mask(controller):
     """Tests the CPU affinity mask calculation."""
+
     controller.exp_settings_dict['audio']['cpu_affinity'] = [0, 1, 4]
     # 2^0 + 2^1 + 2^4 = 1 + 2 + 16 = 19, which is 0x13 in hex
     assert controller.get_cpu_affinity_mask() == '0x13'
@@ -97,6 +102,7 @@ def test_get_cpu_affinity_mask(controller):
 
 def test_get_connection_params(mocker, tmp_path, controller):
     """Tests reading of connection parameters from a simulated config file."""
+
     # tmp_path is a pytest fixture that provides a temporary directory
     config_dir = tmp_path
     controller.exp_settings_dict['credentials_directory'] = str(config_dir)
@@ -121,7 +127,8 @@ def test_get_connection_params(mocker, tmp_path, controller):
 
 def test_check_remote_mount_success(mocker, controller):
     """Simulates a successful remote mount check."""
-    #mMock the entire paramiko SSHClient
+
+    # mock the entire paramiko SSHClient
     mock_ssh_client = MagicMock()
     mocker.patch('paramiko.SSHClient', return_value=mock_ssh_client)
 
@@ -139,6 +146,7 @@ def test_check_remote_mount_success(mocker, controller):
 
 def test_check_remote_mount_auth_failure(mocker, controller):
     """Simulates an authentication failure during SSH connection."""
+
     mock_ssh_client = MagicMock()
     # make the connect method raise an exception
     mock_ssh_client.connect.side_effect = paramiko.AuthenticationException("Auth failed")

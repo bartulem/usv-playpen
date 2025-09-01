@@ -32,6 +32,7 @@ def mock_configs(mocker):
 @pytest.fixture
 def mock_backend_classes(mocker):
     """Mocks the backend classes (ExperimentController, Analyst, etc.) that the GUI calls."""
+
     mocked_classes = {
         'ExperimentController': mocker.patch('usv_playpen.usv_playpen_gui.ExperimentController'),
         'Stylist': mocker.patch('usv_playpen.usv_playpen_gui.Stylist'),
@@ -46,6 +47,7 @@ def app(qtbot, mock_configs, mock_backend_classes):
     Creates an instance of the main GUI window for testing.
     The `qtbot` fixture is provided by pytest-qt.
     """
+
     # the splash screen can cause issues in a test environment, so we mock it.
     with patch('usv_playpen.usv_playpen_gui.QSplashScreen'):
         test_app = USVPlaypenWindow()
@@ -56,6 +58,7 @@ def test_main_window_initialization(app):
     """
     Tests if the main window initializes correctly.
     """
+
     assert app.windowTitle() == "USV Playpen v0.1.0"
     assert app.exp_id_cb.currentText() == "default_user"
 
@@ -64,6 +67,7 @@ def test_navigation_to_record_window(app, qtbot):
     """
     Tests the button click to navigate from the main menu to the first record screen.
     """
+
     # simulate a click on the 'Record' button
     qtbot.mouseClick(app.button_map['Record'], 'left')
 
@@ -79,6 +83,7 @@ def test_record_one_settings_are_saved(app, qtbot):
     Tests that user input on the 'record_one' screen correctly updates the settings dictionary
     when the 'Next' button is clicked.
     """
+
     # navigate to the record screen
     qtbot.mouseClick(app.button_map['Record'], 'left')
 

@@ -39,6 +39,7 @@ def mock_settings():
 @pytest.fixture
 def mock_dependencies(mocker):
     """Mocks all external class dependencies for the Stylist class."""
+
     mocked_classes = {
         'ConvertTo3D': mocker.patch('usv_playpen.process_data.ConvertTo3D'),
         'Vocalocator': mocker.patch('usv_playpen.process_data.Vocalocator'),
@@ -58,6 +59,7 @@ def mock_dependencies(mocker):
 @pytest.mark.skipif(not FFMPEG_INSTALLED, reason="ffmpeg executable not found in PATH")
 def test_environment_ffmpeg_is_functional():
     """Checks if the ffmpeg command runs successfully."""
+
     assert subprocess.Popen(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait() == 0, \
         "FFMPEG failed to execute. Check installation."
 
@@ -72,6 +74,7 @@ def test_prepare_data_no_booleans_true(mock_settings, mock_dependencies):
     """
     Tests that if all boolean flags are False, no processing methods are called.
     """
+
     stylist = Stylist(
         input_parameter_dict=mock_settings,
         root_directories=['/fake/dir1']
@@ -89,6 +92,7 @@ def test_single_directory_video_concatenation(mock_settings, mock_dependencies):
     """
     Tests that `Operator.concatenate_video_files` is called when the flag is True.
     """
+
     mock_settings['processing_booleans']['conduct_video_concatenation'] = True
 
     stylist = Stylist(
@@ -107,6 +111,7 @@ def test_multiple_directory_looping(mock_settings, mock_dependencies):
     """
     Tests that per-directory tasks initialize the worker class for each directory.
     """
+
     mock_settings['processing_booleans']['anipose_calibration'] = True
     root_dirs = ['/fake/dir1', '/fake/dir2']
 
@@ -125,6 +130,7 @@ def test_audio_video_sync_chain(mock_settings, mock_dependencies):
     """
     Tests the logic for `conduct_audio_video_sync`, which involves multiple classes.
     """
+
     mock_settings['processing_booleans']['conduct_audio_video_sync'] = True
 
     stylist = Stylist(
@@ -146,6 +152,7 @@ def test_ephys_chaining_logic(mock_settings, mock_dependencies):
     """
     Tests the special "all directories at once" logic for e-phys file chaining.
     """
+
     mock_settings['processing_booleans']['conduct_ephys_file_chaining'] = True
     root_dirs = ['/fake/dir1', '/fake/dir2']  # Multiple directories
 
@@ -170,6 +177,7 @@ def test_vocalocator_version_routing(mock_settings, mock_dependencies):
     """
     Tests that the correct Vocalocator method is called based on the 'vcl_version' setting.
     """
+
     mock_settings['processing_booleans']['assign_vocalizations'] = True
 
     # case 1: Test the 'vcl-ssl' path (the default in your settings)
@@ -195,6 +203,7 @@ def test_vocalocator_version_routing(mock_settings, mock_dependencies):
 @pytest.fixture
 def mock_sync_settings():
     """Provides a default settings dictionary for Synchronizer tests."""
+
     return {
         'synchronize_files': {
             'Synchronizer': {
@@ -238,6 +247,7 @@ def test_find_ipi_intervals_static_method():
     """
     Tests the core logic of the `find_ipi_intervals` static method.
     """
+
     # arrange: create a fake audio signal with sync pulses
     sr = 250000  # 250 kHz sampling rate
     signal = np.zeros(sr, dtype=np.int16)  # 1 second of silence
