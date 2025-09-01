@@ -294,12 +294,12 @@ class ExperimentController:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/cup_config.ini')):
+        if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini"):
             self.message_output("Cup config file not found. Try again!")
             smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
         else:
-            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/cup_config.ini'))
+            config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini")
             return config['cup']['username'], config['cup']['password']
 
     def get_connection_params(self) -> tuple:
@@ -324,12 +324,14 @@ class ExperimentController:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini')):
+
+
+        if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini"):
             self.message_output("Motif config file not found. Try again!")
             smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
         else:
-            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini'))
+            config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini")
             return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
                     config['motif']['ssh_port'], config['motif']['ssh_username'],
                     config['motif']['ssh_password'], config['motif']['api'])
@@ -662,6 +664,7 @@ class ExperimentController:
 
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
                                                                          message=f"Experiment in progress, started at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
@@ -868,6 +871,7 @@ class ExperimentController:
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
                   no_receivers_notification=False,
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, recording has been completed.",
                                                                          message=f"Thank you for your patience, recording by @{self.exp_settings_dict['video']['metadata']['experimenter']} was completed at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "

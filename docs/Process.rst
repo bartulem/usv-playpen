@@ -6,7 +6,7 @@ This page explains how to use the data processing functionalities in the *usv-pl
 
 In order to run any of the functions detailed below, select an experimenter name from the dropdown menu and click the *Process* button on the GUI main display:
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_0a.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_0a.png
    :align: center
    :alt: Processing Step 0
 
@@ -16,7 +16,7 @@ In order to run any of the functions detailed below, select an experimenter name
 
 Clicking the *Process* button will open a new window with all the processing functionalities (see below):
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_0b.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_0b.png
    :align: center
    :alt: Processing Step 0b
 
@@ -40,9 +40,9 @@ The *Root directories* field enables you to list the directories containing the 
 
 .. parsed-literal::
 
-    F:\\Bartul\\Data\\20250430_145017
-    F:\\Bartul\\Data\\20250430_165730
-    F:\\Bartul\\Data\\20250430_182145
+    /mnt/falkner/Bartul/Data/20250430_145017
+    /mnt/falkner/Bartul/Data/20250430_165730
+    /mnt/falkner/Bartul/Data/20250430_182145
 
 Certain processing functions take all root sessions *together* when operating on data, and others process each session *separately*. Additionally, in both of these categories, there is a specific order in executing individual functions.
 
@@ -76,13 +76,14 @@ If you recorded a session with audio, e-phys and video data (imaginary example: 
 
 .. parsed-literal::
 
-    F:\\Bartul\\Data:
+    /mnt/falkner/Bartul/Data/:
     ├── 20250430_145017
     │   ├── audio
     │   │   ├── original (empty)
     │   │   ├── original_mc
     │   │       ├── m_250430145009.wav
     │   │           ...
+    │   │   ├── audio_triggerbox_sync_info.json
     │   ├── ephys
     │   │   ├── imec0
     │   │   │   ├── 20250430_145017.imec0.ap.bin
@@ -145,11 +146,11 @@ To run the e-phys/video synchronization check, you need to list the root directo
 
    <br>
 
-Neural recording data is aligned to the start of video recording, which is identifiable by searching for a ~2.3 s break in Loopbio Triggerbox pulses, which are constantly being transmitted to the Neuropixels digital input channel. The code recursively finds all the *ap.bin* files in the root directory and saves the digital input channel data (385th or last channel) to a separate Numpy file (which ends with *_sync_ch_data.npy*), if it hasn't been saved already. After finding the tracking start and end (based on the largest Triggerbox break duration and total number of recording frames) in this Numpy file. The total video duration will then be compared to the total video-aligned neural recording, and you will get a report back whether that discrepancy is below 12 ms (in other words, less than 2 video frames, which is an acceptable level of distortion). Information at what Neuropixels sample the first and last video recording frame were detected will be saved to, for instance. *F:\\Bartul\\EPHYS\\20250430_imec0\\changepoints_info_20250430_imec0.json*, as exemplified below:
+Neural recording data is aligned to the start of video recording, which is identifiable by searching for a ~2.3 s break in Loopbio Triggerbox pulses, which are constantly being transmitted to the Neuropixels digital input channel. The code recursively finds all the *ap.bin* files in the root directory and saves the digital input channel data (385th or last channel) to a separate Numpy file (which ends with *_sync_ch_data.npy*), if it hasn't been saved already. After finding the tracking start and end (based on the largest Triggerbox break duration and total number of recording frames) in this Numpy file. The total video duration will then be compared to the total video-aligned neural recording, and you will get a report back whether that discrepancy is below 12 ms (in other words, less than 2 video frames, which is an acceptable level of distortion). Information at what Neuropixels sample the first and last video recording frame were detected will be saved to, for instance. */mnt/falkner/Bartul/EPHYS/20250430_imec0/changepoints_info_20250430_imec0.json*, as exemplified below:
 
 .. parsed-literal::
 
-    F:\\Bartul\\Data:
+    /mnt/falkner/Bartul/Data/:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
@@ -167,7 +168,7 @@ Neural recording data is aligned to the start of video recording, which is ident
     │   │
     │   └── video
     │       ...
-    F:\\Bartul\\EPHYS:
+    /mnt/falkner/Bartul/EPHYS:
     ├── 20250430_imec0
     │   ├── **changepoints_info_20250430_imec0.json**
     ├── 20250430_imec1
@@ -224,7 +225,7 @@ The code will find all the *ap.bin* files for each probe and conduct the concate
 
 .. parsed-literal::
 
-    F:\\Bartul\\Data:
+    /mnt/falkner/Bartul/Data/:
     ├── 20250430_145017
     │   ├── audio
     │   │   ...
@@ -242,7 +243,7 @@ The code will find all the *ap.bin* files for each probe and conduct the concate
     │   │
     │   └── video
     │       ...
-    F:\\Bartul\\EPHYS:
+    /mnt/falkner/Bartul/EPHYS:
     ├── 20250430_imec0
     │   ├── changepoints_info_20250430_imec0.json
     │   ├── **concatenated_20250430_imec0.ap.bin**
@@ -456,11 +457,11 @@ To run the SLEAP cluster job preparation, you need to list the root directories 
 
    <br>
 
-This shouldn’t take longer than several seconds - it will create/update the *job_list.txt* file in, for example, *F:\\Bartul\\SLEAP\\inference* directory:
+This shouldn’t take longer than several seconds - it will create/update the *job_list.txt* file in, for example, */mnt/falkner/Bartul/SLEAP/inference* directory:
 
 .. parsed-literal::
 
-    F:\\Bartul\\SLEAP\\inference:
+    /mnt/falkner/Bartul/SLEAP/inference:
     ├── **job_list.txt**
     │   ...
 
@@ -547,7 +548,7 @@ It was previously explained how to record a calibration session, and in that ses
 
 After labeling the first frame on each view, you can export the data as H5 files going to *File > Export Analysis HDF5*. You are now ready to run arena triangulation.
 
-To do this, you need to list the root directories of interest, select the same root directory under *Tracking calibration / arena root directory*, select *Run AP triangulation* and *Re-coordinate*, select *Triangulate arena nodes*, put "0,1" in *Frame restriction*, select "arena" for *Save transformation type* and choose "No" for *Delete original .h5*. Finally, click *Next* and then *Process*:
+To do this, you need to list the root directories of interest, select the same root directory under *Tracking calibration / arena root directory*, select *Run AP triangulation* and *Re-coordinate*, select *Triangulate arena nodes*, select "arena" for *Save transformation type* and choose "No" for *Delete original .h5*. Finally, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_7.png
    :align: center
@@ -759,7 +760,8 @@ The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_tr
             "largest_break_duration": 578805,
             "duration_samples": 299885168,
             "duration_seconds": 1199.5407,
-            "audio_tracking_diff_seconds": -0.0071
+            "audio_tracking_diff_seconds": -0.0071,
+            "num_dropouts": 0
         }
     }
 

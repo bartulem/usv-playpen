@@ -162,9 +162,9 @@ class FindMouseVocalizations:
 
             inference_subp = subprocess.Popen(
                 args=f"""{command_addition}conda activate {das_conda_name} && das predict {one_file} {model_base} --segment-thres {thresh} --segment-minlen {min_len} --segment-fillgap {fill_gap} --save-format {save_format}""",
+                cwd=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered",
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
-                cwd=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered",
                 shell=shell_usage_bool,
             )
 

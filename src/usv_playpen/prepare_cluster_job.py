@@ -5,6 +5,7 @@ Creates/saves text file with list of videos to run SLEAP inference on.
 
 import json
 import os
+import pathlib
 import platform
 
 class PrepareClusterJob:
@@ -91,6 +92,8 @@ class PrepareClusterJob:
                 spock_converted_second_model_path = ''
             else:
                 spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('Volumes', 'mnt/cup/labs')
+
+        pathlib.Path(self.input_parameter_dict['inference_root_dir']).mkdir(parents=True, exist_ok=True)
 
         with open(f"{self.input_parameter_dict['inference_root_dir']}{os.sep}job_list.txt", mode='w') as job_list_file:
             for root_dir in self.root_directory:

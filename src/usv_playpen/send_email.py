@@ -19,6 +19,7 @@ class Messenger:
         exp_settings_dict: dict = None,
         message_output: callable = None,
         no_receivers_notification: bool = True,
+        credentials_file: str = ''
     ) -> None:
         """
         Initializes the Messenger class.
@@ -33,11 +34,18 @@ class Messenger:
             Defines output messages; defaults to None.
         no_receivers_notification (bool)
             Notify if no receivers are set; defaults to True.
+        credentials_file (str)
+            Path to credentials file.
 
         Returns
         -------
         -------
         """
+
+        if credentials_file is None or credentials_file == '':
+            self.credentials_file = ''
+        else:
+            self.credentials_file = credentials_file
 
         if receivers is None:
             self.receivers = []
@@ -76,15 +84,11 @@ class Messenger:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(
-            os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "_config/email_config.ini"
-            )
-        ):
+        if not os.path.exists(self.credentials_file):
             self.message_output("E-mail config file not found. Try again!")
             sys.exit()
         else:
-            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/email_config.ini'))
+            config.read(self.credentials_file)
             return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'],config['email']['email_password']
 
     def send_message(self, subject: str = None, message: str = None) -> bool | None:

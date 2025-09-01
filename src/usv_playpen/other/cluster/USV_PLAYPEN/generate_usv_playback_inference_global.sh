@@ -8,11 +8,10 @@
 CUP_ROOT="Name"
 CPUS_PER_TASK=4
 TOTAL_MEMORY="24G"
-TIME_RESTRICTION="04:00:00"
+TIME_RESTRICTION="02:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
-CONDA_VERSION="anacondapy/2024.02"
-USV_PLAYPEN_ENV="pni"
+VENV_PATH="/usr/people/nsurname/usv-playpen/.venv"
 
 EXP_ID="Name"
 NUM_USV_FILES=1
@@ -36,9 +35,8 @@ echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"
 echo "#SBATCH --mail-type=$EMAIL_TYPE" >> "$JOB_SCRIPT"
 echo "#SBATCH --mail-user=$EMAIL_ADDRESS" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
-echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/ANACONDAPY/2024.02/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
-echo "conda activate $USV_PLAYPEN_ENV" >> "$JOB_SCRIPT"
+echo "source $VENV_PATH/bin/activate" >> "$JOB_SCRIPT"
+echo "uv sync" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "generate-usv-playback --exp_id $EXP_ID --num_usv_files $NUM_USV_FILES" >> "$JOB_SCRIPT"
 

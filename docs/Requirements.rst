@@ -187,32 +187,23 @@ To make SpikeGLX functional (once the module and card are connected, and probe i
 Setting up *usv-playpen*
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-If you plan to conduct behavioral recordings, you need to modify */_config/motif_config.ini* to include the actual API key and SSH password to the tracking PCs:
+If you plan to conduct behavioral recordings and/or send/receive e-mail notifications when jobs start/complete, you need to create and configure 3 *credential files*:
 
-.. code-block:: ini
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/credentials_step_0.png
+   :align: center
+   :alt: Calibration Step 0
 
-   [motif]
-   master_ip_address=10.241.1.205
-   second_ip_address=10.241.1.183
-   ssh_port=22
-   ssh_username=labadmin
-   ssh_password=XXX
-   api=xxx
+.. raw:: html
 
-Likewise, if you plan to conduct behavioral recordings, you need to modify */_config/cup_config.ini* to include the actual username and password for the University Cup server:
+   <br>
 
-.. code-block:: ini
+You do this by selecting a *Save directory* and filling out the form loaded in the window. After you are done, just click the *Save* button:
 
-    [cup]
-    username=XXX
-    password=XXX
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/credentials_step_1.png
+   :align: center
+   :alt: Calibration Step 1
 
-If you plan to send/receive e-mail notifications when jobs start/complete, you need to modify */_config/email_config.ini*:
+.. raw:: html
 
-.. code-block:: ini
+   <br>
 
-    [email]
-    email_host=smtp.gmail.com
-    email_port=465
-    email_address=165b.pni@gmail.com
-    email_password=XXX

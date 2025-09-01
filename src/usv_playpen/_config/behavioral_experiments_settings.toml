@@ -3,6 +3,7 @@ avisoft_recorder_exe = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER 
 avisoft_recorder_program_name = "rec_usgh.exe"
 avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics\\"
 coolterm_basedirectory = "D:\\CoolTerm"
+credentials_directory = ""
 recording_files_destination_linux = [ "/mnt/falkner/Bartul/Data",]
 recording_files_destination_win = [ "F:\\Bartul\\Data",]
 recording_files_destinations_all = [ "falkner", "murthy",]

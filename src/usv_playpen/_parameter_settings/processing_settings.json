@@ -21,6 +21,7 @@
     "prepare_assign_vocalizations": false,
     "assign_vocalizations": false
   },
+  "credentials_directory": "/home/bmimica/.config/usv_playpen/.credentials_Bartul",
   "anipose_operations": {
     "ConvertTo3D": {
       "sleap_file_conversion": {
@@ -162,8 +163,8 @@
       "21241563"
     ],
     "inference_root_dir": "/mnt/falkner/Bartul/SLEAP/inference",
-    "centroid_model_path": "/mnt/falkner/Bartul/SLEAP/models/250505_195550.centroid_N=39644",
-    "centered_instance_model_path": "/mnt/falkner/Bartul/SLEAP/models/250505_195550.centered_instance_N=39644"
+    "centroid_model_path": "",
+    "centered_instance_model_path": ""
   },
   "preprocessing_plot": {
     "SummaryPlotter": {
@@ -173,13 +174,13 @@
   "send_email": {
     "Messenger": {
       "processing_pc_list": [
-        "A84E Backup",
-        "A84E Main",
+        "A84E Windows",
+        "A84I Linux",
+        "A84I Windows",
         "165B Audio",
-        "165B Neural",
-        "A84I Main"
+        "165B Neural"
       ],
-      "processing_pc_choice": "A84I Main",
+      "processing_pc_choice": "A84I Linux",
       "experimenter": "Bartul",
       "send_message": {
         "receivers": []

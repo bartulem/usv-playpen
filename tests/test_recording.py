@@ -15,22 +15,6 @@ import motifapi
 from usv_playpen import config_dir
 
 
-def test_recording_video_software():
-    # test video recording capabilities
-    video_config = configparser.ConfigParser()
-    video_config.read(config_dir / "motif_config.ini")
-
-    try:
-        motif_api = motifapi.MotifApi(
-            video_config["motif"]["master_ip_address"], video_config["motif"]["api"]
-        )
-        motif_success = True
-    except motifapi.api.MotifError:
-        motif_success = False
-
-    assert motif_success, "Motif not operational on this PC."
-
-
 @pytest.mark.skipif(
     "GITHUB_ACTIONS" in os.environ,
     reason="AviSoft and CoolTerm are not available on CI."

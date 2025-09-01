@@ -110,6 +110,7 @@ class Stylist:
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                                          message=f"Data preprocessing in progress, started at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -280,6 +281,7 @@ class Stylist:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, processing has been completed",
                                                                          message=f"Data preprocessing has been completed at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -932,3 +934,75 @@ def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
             root_directory=valid_dirs,
             input_parameter_dict=processing_settings_dict
         ).split_clusters_to_sessions()
+
+@click.command(name="prepare-vcl-assign")
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
+@click.option('--arena-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Arena session root directory path.')
+def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
+    """
+    Description
+    ----------
+    A command-line tool to prepare data for vocalization assignment.
+    ----------
+
+    Parameters
+    ----------
+    ----------
+
+    Returns
+    ----------
+    ----------
+    """
+
+    with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
+        processing_settings_dict = json.load(json_file)
+
+    processing_settings_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = arena_directory
+
+    Vocalocator(
+        root_directory=root_directory,
+        input_parameter_dict=processing_settings_dict
+    ).prepare_for_vocalocator()
+
+
+@click.command(name="vcl-assign")
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
+@click.option('--vcl-version', type=click.Choice(['vcl', 'vcl-ssl'], case_sensitive=False), default=None, required=False, help="Version of Vocalocator to use ('vcl' or 'vcl-ssl').")
+@click.option('--env-name', 'vcl_conda_env_name', type=str, default=None, required=False, help='Name of the Vocalocator conda environment.')
+@click.option('--model-dir', 'vcl_model_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='Directory of the Vocalocator model.')
+@click.pass_context
+def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
+    """
+    Description
+    ----------
+    A command-line tool to assign vocalizations to specific mice.
+    ----------
+
+    Parameters
+    ----------
+    ----------
+
+    Returns
+    ----------
+    ----------
+    """
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    processing_settings_dict = modify_settings_json_for_cli(
+        ctx=ctx,
+        provided_params=provided_params,
+        settings_dict='processing_settings'
+    )
+
+    vcl_version = processing_settings_dict.get('vocalocator', {}).get('vcl_version', 'vcl-ssl')
+
+    if vcl_version == 'vcl':
+        Vocalocator(
+            root_directory=root_directory,
+            input_parameter_dict=processing_settings_dict
+        ).run_vocalocator()
+    else:
+        Vocalocator(
+            root_directory=root_directory,
+            input_parameter_dict=processing_settings_dict
+        ).run_vocalocator_ssl()
