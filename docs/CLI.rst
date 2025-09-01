@@ -696,25 +696,27 @@ Visualize
       --usv-segments-ypos              Y-axis position for USV segment markers (Hz).
       --usv-segments-lw                Line width for USV segment markers.
 
-Set up and use the CLI on the Spock cluster
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Set up and use the CLI on the *Spock* cluster
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In order to exploit the full functionality of *usv-playpen*, one should install subsidiary conda packages (das, sleap, vcl-ssl). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
 
 .. code-block:: bash
 
     $ module load anacondapy/2024.02
+    $ conda init bash
+
+.. code-block:: bash
+
     $ conda create python=3.10 das=0.32.2 -c conda-forge -c nvidia -c ncb -n das -y
 
 .. code-block:: bash
 
-    $ module load anacondapy/2024.02
     $ conda create --name sleap1.3.3 pip python=3.7.12 cudatoolkit=11.3 cudnn=8.2 cuda-nvcc=12.4.131 -c conda-forge -c nvidia -y
     $ conda activate sleap1.3.3 && pip install sleap[pypi]==1.3.3 tensorflow==2.6.3
 
 .. code-block:: bash
 
-    $ module load anacondapy/2024.02
     $ conda create --name vcl-ssl python=3.10 torchaudio -y
     $ git clone https://github.com/Aramist/vocalocator-ssl.git && cd vocalocator-ssl
     $ conda activate vcl-ssl && pip install -e .
