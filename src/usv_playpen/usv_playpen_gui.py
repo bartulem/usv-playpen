@@ -3151,8 +3151,8 @@ class USVPlaypenWindow(QMainWindow):
         self.avisoft_rec_dir_global = self.exp_settings_dict['avisoft_recorder_exe']
         self.avisoft_base_dir_global = self.exp_settings_dict['avisoft_basedirectory']
         self.coolterm_base_dir_global = self.exp_settings_dict['coolterm_basedirectory']
-
         self.recording_credentials_dir_global = f"{platformdirs.user_config_dir(appname='usv_playpen', appauthor='lab')}{os.sep}.credentials_{self.exp_id}"
+        self.exp_settings_dict['credentials_directory'] = self.recording_credentials_dir_global
 
         self.destination_linux_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
                                                              recording_files_destinations=self.exp_settings_dict['recording_files_destination_linux'],
