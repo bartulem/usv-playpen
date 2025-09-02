@@ -5,18 +5,15 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-## SLURM Job Settings
-CUP_ROOT="Name"
+WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/procesing"
 CPUS_PER_TASK=6
 TOTAL_MEMORY="24G"
 TIME_RESTRICTION="04:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
-
 VENV_PATH="/usr/people/nsurname/usv-playpen/.venv"
-VCL_CONDA_ENV="vcl-ssl"
 
-## Command Parameters
+VCL_CONDA_ENV="vcl-ssl"
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 ARENA_SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_092213"
 VCL_VERSION="vcl-ssl" # 'vcl' or 'vcl-ssl'
@@ -26,7 +23,6 @@ VCL_MODEL_DIR="/mnt/cup/labs/falkner/Bartul/sound_localization/conformer_smol_4.
 # ---------------- CREATE JOB SCRIPT --------------- #
 
 SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
-WORK_DIR="/mnt/cup/labs/falkner/$CUP_ROOT/USV_PLAYPEN/vocal_assignment"
 JOB_SCRIPT="$WORK_DIR/assign_vocalizations_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
