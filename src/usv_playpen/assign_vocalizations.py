@@ -290,12 +290,19 @@ class Vocalocator:
         for track_id, value, count in zip(track_names, unique_values[1:], counts[1:]):
             self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/counts.sum(), 2)}%.")
 
-        for mouse_idx, mouse in enumerate(track_names):
-            usv_summary_df = usv_summary_df.with_columns(
-                pls.when(pls.lit(assignments == mouse_idx))
-                .then(pls.lit(mouse))
-                .otherwise(pls.col('emitter'))
-                .alias('emitter')
+        # assign None to all unassigned vocalizations
+        emitter_expression = pls.lit(value=None, dtype=pls.String)
+
+        for mouse_idx, mouse_name in enumerate(track_names):
+            emitter_expression = (
+                pls.when(pls.lit(assignments) == mouse_idx)
+                .then(pls.lit(mouse_name))
+                .otherwise(emitter_expression)
             )
+
+        usv_summary_df = usv_summary_df.with_columns(
+            emitter_expression.alias('emitter')
+        )
+
 
         usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)

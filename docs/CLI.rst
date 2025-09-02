@@ -717,7 +717,7 @@ In order to exploit the full functionality of *usv-playpen*, one should install 
 
 .. code-block:: bash
 
-    $ conda create --name vcl-ssl python=3.10 torchaudio -y
+    $ conda create --name vcl-ssl python=3.10 torchaudio packaging -y
     $ git clone https://github.com/Aramist/vocalocator-ssl.git && cd vocalocator-ssl
     $ conda activate vcl-ssl && pip install -e .
 

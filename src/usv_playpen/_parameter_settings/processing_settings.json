@@ -19,7 +19,7 @@
     "das_infer": false,
     "das_summarize": false,
     "prepare_assign_vocalizations": false,
-    "assign_vocalizations": false
+    "assign_vocalizations": true
   },
   "credentials_directory": "/home/bmimica/.config/usv_playpen/.credentials_Bartul",
   "anipose_operations": {
@@ -70,7 +70,9 @@
     }
   },
   "preprocess_data": {
-    "root_directories": []
+    "root_directories": [
+      "/mnt/falkner/Bartul/Data/20230119_150148"
+    ]
   },
   "extract_phidget_data": {
     "Gatherer": {
