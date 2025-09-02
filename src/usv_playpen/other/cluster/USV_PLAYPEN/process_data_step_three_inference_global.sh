@@ -5,7 +5,7 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/procesing"
+WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
 CPUS_PER_TASK=6
 TOTAL_MEMORY="24G"
 TIME_RESTRICTION="04:00:00"
@@ -23,7 +23,7 @@ VCL_MODEL_DIR="/mnt/cup/labs/falkner/Bartul/sound_localization/conformer_smol_4.
 # ---------------- CREATE JOB SCRIPT --------------- #
 
 SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
-JOB_SCRIPT="$WORK_DIR/assign_vocalizations_inference_settings.sh"
+JOB_SCRIPT="$WORK_DIR/process_data_step_three_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
 
