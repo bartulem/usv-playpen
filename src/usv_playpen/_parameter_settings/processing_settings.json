@@ -70,9 +70,7 @@
     }
   },
   "preprocess_data": {
-    "root_directories": [
-      "/mnt/falkner/Bartul/Data/20230119_150148"
-    ]
+    "root_directories": []
   },
   "extract_phidget_data": {
     "Gatherer": {
