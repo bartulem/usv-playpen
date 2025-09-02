@@ -12,7 +12,7 @@ TIME_RESTRICTION="02:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 SLEAP_CONDA_ENV="sleap1.3.3"
-USV_PLAYPEN_PATH = "/usr/people/nsurname/usv-playpen/"
+USV_PLAYPEN_PATH="/mnt/cup/labs/falkner/NAME/spock/usv-playpen/"
 
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 ARENA_SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_092213"

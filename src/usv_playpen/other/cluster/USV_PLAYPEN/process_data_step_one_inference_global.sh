@@ -14,7 +14,7 @@ TOTAL_MEMORY="128G"
 TIME_RESTRICTION="03:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
-USV_PLAYPEN_PATH = "/usr/people/nsurname/usv-playpen/"
+USV_PLAYPEN_PATH="/mnt/cup/labs/falkner/NAME/spock/usv-playpen/"
 
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 
