@@ -11,7 +11,7 @@ TOTAL_MEMORY="24G"
 TIME_RESTRICTION="02:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
-USV_PLAYPEN_PATH="/mnt/cup/labs/falkner/NAME/spock/usv-playpen/"
+USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 
 EXP_ID="Name"
 NUM_USV_FILES=1
