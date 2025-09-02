@@ -5,14 +5,13 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-## SLURM Job Settings
 CUP_ROOT="Name"
 CPUS_PER_TASK=4
 TOTAL_MEMORY="16G"
 TIME_RESTRICTION="02:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
-VENV_PATH="/usr/people/nsurname/usv-playpen/.venv"
+USV_PLAYPEN_PATH = "/usr/people/nsurname/usv-playpen/"
 
 EXP_ID="Name"
 NUM_USV_FILES=1
@@ -45,8 +44,8 @@ echo "#SBATCH --mail-user=$EMAIL_ADDRESS" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "set -e" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "source $VENV_PATH/bin/activate" >> "$JOB_SCRIPT"
-echo "uv sync" >> "$JOB_SCRIPT"
+echo "source $USV_PLAYPEN_PATH.venv/bin/activate" >> "$JOB_SCRIPT"
+echo "(cd $USV_PLAYPEN_PATH && uv sync)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "generate-naturalistic-usv-playback \\
     --exp-id \"$EXP_ID\" \\
