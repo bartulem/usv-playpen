@@ -703,9 +703,23 @@ class ExperimentController:
 
             # run command to start Avisoft Recorder and keep executing the rest of the script
             if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
-                subprocess.Popen(args=f'''cmd /c "start /{cpu_priority}{affinity_arg} {avisoft_recorder_program_name} /CFG=avisoft_config.ini /AUT"''',
-                                 stdout=subprocess.PIPE,
-                                 cwd=self.exp_settings_dict['avisoft_recorder_exe'])
+
+                # run Avisoft as Administrator
+                run_avisoft_command = f"Start-Process -FilePath '{avisoft_recorder_program_name}' -ArgumentList '/CFG=avisoft_config.ini', '/AUT' -Verb RunAs"
+
+                # add priority/affinity only if they exist
+                if run_avisoft_command or (affinity_arg and affinity_arg.strip()):
+                    run_avisoft_command += "; Start-Sleep 2; $proc = Get-Process 'rec_usgh' -ErrorAction SilentlyContinue; if ($proc) {"
+
+                    if cpu_priority:
+                        run_avisoft_command += f" $proc.PriorityClass = '{cpu_priority}';"
+
+                    if affinity_arg and affinity_arg.strip():
+                        run_avisoft_command += f" $proc.ProcessorAffinity = {affinity_arg};"
+
+                    run_avisoft_command += " }"
+
+                subprocess.Popen(args=f'''powershell -Command "{run_avisoft_command}"''', stdout=subprocess.PIPE, cwd=self.exp_settings_dict['avisoft_recorder_exe'])
 
                 # pause for N seconds
                 smart_wait(app_context_bool=self.app_context_bool, seconds=10)

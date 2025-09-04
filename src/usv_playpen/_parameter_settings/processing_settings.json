@@ -18,7 +18,7 @@
     "anipose_trm": false,
     "das_infer": false,
     "das_summarize": false,
-    "prepare_assign_vocalizations": false,
+    "prepare_assign_vocalizations": true,
     "assign_vocalizations": true
   },
   "credentials_directory": "/home/bmimica/.config/usv_playpen/.credentials_Bartul",
@@ -45,7 +45,7 @@
         ]
       },
       "conduct_anipose_triangulation": {
-        "calibration_file_loc": "",
+        "calibration_file_loc": "/mnt/falkner/Bartul/Data/20230517_170220",
         "triangulate_arena_points_bool": false,
         "frame_restriction": null,
         "excluded_views": [],
