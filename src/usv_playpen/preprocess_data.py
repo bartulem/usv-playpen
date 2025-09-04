@@ -961,7 +961,8 @@ def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
 
     Vocalocator(
         root_directory=root_directory,
-        input_parameter_dict=processing_settings_dict
+        input_parameter_dict=processing_settings_dict,
+        message_output=print
     ).prepare_for_vocalocator()
 
 
@@ -999,10 +1000,12 @@ def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
     if vcl_version == 'vcl':
         Vocalocator(
             root_directory=root_directory,
-            input_parameter_dict=processing_settings_dict
+            input_parameter_dict=processing_settings_dict,
+            message_output=print
         ).run_vocalocator()
     else:
         Vocalocator(
             root_directory=root_directory,
-            input_parameter_dict=processing_settings_dict
+            input_parameter_dict=processing_settings_dict,
+            message_output=print
         ).run_vocalocator_ssl()
