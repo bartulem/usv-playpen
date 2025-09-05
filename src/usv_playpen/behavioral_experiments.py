@@ -46,12 +46,12 @@ def count_last_recording_dropouts(log_file_path: str,
     """
 
     try:
-        with open(f"{log_file_path}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
+        with open(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
             content = log_txt_file.read()
     except FileNotFoundError:
         return None
 
-    recordings = content.split(f"{log_file_path}{log_file_ch}{os.sep}")
+    recordings = content.split(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}")
 
     # filter out any empty strings that may result from the split
     recordings = [rec for rec in recordings if rec.strip()]
@@ -504,8 +504,8 @@ class ExperimentController:
         self.config_1 = configparser.ConfigParser()
         self.config_1.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'))
 
-        if str(self.exp_settings_dict['avisoft_basedirectory']) != self.config_1['Configuration']['basedirectory']:
-            self.config_1['Configuration']['basedirectory'] = self.exp_settings_dict['avisoft_basedirectory']
+        if f"{str(self.exp_settings_dict['avisoft_basedirectory'])}{os.sep}" != self.config_1['Configuration']['basedirectory']:
+            self.config_1['Configuration']['basedirectory'] = f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}"
             changes += 1
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
@@ -528,8 +528,11 @@ class ExperimentController:
                 self.config_1['MaxFileSize']['minutes'] = str(max_file_size)
                 changes += 1
 
-        if self.config_1['Configuration']['configfilename'] != f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini":
-            self.config_1['Configuration']['configfilename'] = f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"
+        if self.config_1['Configuration']['configfilename'] != f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini":
+            self.config_1['Configuration']['configfilename'] = f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"
+
+        if self.config_1['Info']['configfilename'] != f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini":
+            self.config_1['Info']['configfilename'] = f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"
 
         for general_key in self.exp_settings_dict['audio']['general'].keys():
             if str(self.exp_settings_dict['audio']['general'][general_key]) != self.config_1['Configuration'][general_key]:
@@ -632,7 +635,7 @@ class ExperimentController:
                 self.config_1.write(configfile, space_around_delimiters=False)
 
         shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
-                    dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
+                    dst=f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini")
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
@@ -702,7 +705,7 @@ class ExperimentController:
                 affinity_arg = f" /affinity {cpu_affinity_mask}"
 
             # run command to start Avisoft Recorder and keep executing the rest of the script
-            if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
+            if os.path.exists(f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"):
 
                 # run Avisoft as Administrator
                 run_avisoft_command = f"Start-Process -FilePath '{avisoft_recorder_program_name}' -ArgumentList '/CFG=avisoft_config.ini', '/AUT' -Verb RunAs"
@@ -719,7 +722,7 @@ class ExperimentController:
 
                     run_avisoft_command += " }"
 
-                subprocess.Popen(args=f'''powershell -Command "{run_avisoft_command}"''', stdout=subprocess.PIPE, cwd=self.exp_settings_dict['avisoft_recorder_exe'])
+                subprocess.Popen(args=f'''powershell -Command "{run_avisoft_command}"''', stdout=subprocess.PIPE, cwd=self.exp_settings_dict['avisoft_recorder_exe_directory'])
 
                 # pause for N seconds
                 smart_wait(app_context_bool=self.app_context_bool, seconds=10)

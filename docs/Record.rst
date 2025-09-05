@@ -198,6 +198,7 @@ On the next page, you can set some basic parameters:
 
 * **Avisoft Recorder directory** : this is the directory which contains the *rec_usgh.exe* file
 * **Avisoft base directory** : this is the local directory where the recordings will be saved
+* **Avisoft config directory** : this is the local directory where the Avisoft config file is located (must be on C:\ drive!)
 * **Coolterm directory** : this is the local directory where the Arduino serial terminal outputs will be saved
 * **File destination(s) Linux** : these are the directories on both video PCs where the file server is mounted
 * **File destination(s) Windows** : these are the directories on the audio PC where the file server is mounted
