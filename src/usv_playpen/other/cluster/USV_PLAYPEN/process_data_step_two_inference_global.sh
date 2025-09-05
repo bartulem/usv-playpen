@@ -6,7 +6,7 @@
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
 WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
-CPUS_PER_TASK=12
+CPUS_PER_TASK=6
 TOTAL_MEMORY="48G"
 TIME_RESTRICTION="02:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
