@@ -8,7 +8,7 @@
 WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/visualizations"
 CPUS_PER_TASK=6
 TOTAL_MEMORY="8G"
-TIME_RESTRICTION="24:00:00"
+TIME_RESTRICTION="30:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
