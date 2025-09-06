@@ -139,7 +139,7 @@ class ExperimentController:
             if ethernet_status_output_text.lower() == 'false':
 
                 subprocess.Popen(
-                    args=['powershell', '-Command', f"Disable-NetAdapter -Name '{self.exp_settings_dict['ethernet_network']}' -Confirm:$false"],
+                    args=['powershell', '-Command', f"Enable-NetAdapter -Name '{self.exp_settings_dict['ethernet_network']}' -Confirm:$false"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.STDOUT
                 ).wait()
