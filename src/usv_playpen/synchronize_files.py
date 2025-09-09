@@ -640,7 +640,7 @@ class Synchronizer:
             nidq_digital_bits = (nidq_digital_ch & (2 ** np.arange(16).reshape([1, 16]))).astype(bool).astype(int)
 
             # find start/end of recording
-            if self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bool'] and self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bool']:
+            if self.input_parameter_dict['find_audio_sync_trains']['nidq_bool']:
                 triggerbox_bit_changes = np.where((nidq_digital_bits[1:, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']] - nidq_digital_bits[:-1, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']]) > 0)[0]
                 triggerbox_diffs = triggerbox_bit_changes[1:] - triggerbox_bit_changes[:-1]
                 largest_break_end_hop = np.argmax(triggerbox_diffs) + 1

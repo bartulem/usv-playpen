@@ -198,9 +198,8 @@
         "extract_exact_video_frame_times_bool": false,
         "nidq_sr": 62500.72887,
         "nidq_num_channels": 9,
-        "nidq_triggerbox_input_bool": false,
+        "nidq_bool": false,
         "nidq_triggerbox_input_bit_position": 5,
-        "nidq_sync_input_bool": true,
         "nidq_sync_input_bit_position": 7
       },
       "find_video_sync_trains": {

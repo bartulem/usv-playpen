@@ -1186,9 +1186,8 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 * **extract_exact_video_frame_times_bool** : instead of using frame indices multiplied by empirical frame rate, use Loopbio times directly (which is less precise!)
 * **nidq_sr** : sampling rate of the NIDQ device (in Hz)
 * **nidq_num_channels** : number of channels on the NIDQ device (9 on BNC-2110)
-* **nidq_triggerbox_input_bool** : whether NIDQ device received Triggerbox input
+* **nidq_bool** : whether NIDQ device received Triggerbox AND sync input
 * **nidq_triggerbox_input_bit_position** : triggerbox input bit position on the NIDQ device digital channel (assumes last channel is digital!)
-* **nidq_sync_input_bool** : whether NIDQ device received sync input
 * **nidq_sync_input_bit_position** : sync input bit position on the NIDQ device digital channel (assumes last channel is digital!)
 * **camera_serial_num** : serial numbers of cameras that can detect flashing LEDs
 * **led_px_version** : version of the LED pixel positions
