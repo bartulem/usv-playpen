@@ -655,7 +655,10 @@ class Synchronizer:
 
             # find NIDQ IPI starts and durations in milliseconds
             if self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bool']:
-                nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
+                if self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bool']:
+                    nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
+                else:
+                    nidq_rec_ = nidq_digital_bits[:, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
                 ipi_start_samples = np.where(np.diff(nidq_rec_) < 0)[0] + 1
                 ipi_end_samples = np.where(np.diff(nidq_rec_) > 0)[0]
 
