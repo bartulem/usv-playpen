@@ -640,7 +640,7 @@ class Synchronizer:
             nidq_digital_bits = (nidq_digital_ch & (2 ** np.arange(16).reshape([1, 16]))).astype(bool).astype(int)
 
             # find start/end of recording
-            if self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bool']:
+            if self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bool'] and self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bool']:
                 triggerbox_bit_changes = np.where((nidq_digital_bits[1:, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']] - nidq_digital_bits[:-1, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']]) > 0)[0]
                 triggerbox_diffs = triggerbox_bit_changes[1:] - triggerbox_bit_changes[:-1]
                 largest_break_end_hop = np.argmax(triggerbox_diffs) + 1
@@ -653,12 +653,8 @@ class Synchronizer:
                 nidq_video_difference = nidq_rec_duration - total_video_time_least
                 self.message_output(f"For NIDQ, video recording starts at {loopbio_start_nidq_sample} NIDQ sample and ends at {loopbio_end_nidq_sample} NIDQ sample, giving a total NIDQ duration of {nidq_rec_duration:.4f}, which is {nidq_video_difference:.4f} off relative to video duration.")
 
-            # find NIDQ IPI starts and durations in milliseconds
-            if self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bool']:
-                if self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bool']:
-                    nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
-                else:
-                    nidq_rec_ = nidq_digital_bits[:, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
+                # find NIDQ IPI starts and durations in milliseconds
+                nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
                 ipi_start_samples = np.where(np.diff(nidq_rec_) < 0)[0] + 1
                 ipi_end_samples = np.where(np.diff(nidq_rec_) > 0)[0]
 
