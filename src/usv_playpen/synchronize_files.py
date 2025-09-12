@@ -575,7 +575,7 @@ class Synchronizer:
                                             arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
 
                                             result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
-                                            all_zero_matches = np.all(result_array <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
+                                            all_zero_matches = np.all(np.abs(result_array) <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
                                                                       axis=1)
                                             any_all_zeros = np.any(all_zero_matches)
                                             if any_all_zeros:
