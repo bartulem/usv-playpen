@@ -693,7 +693,7 @@ class ExperimentController:
 
         # start capturing sync LEDS
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):
-            shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/coolterm_config.ini'),
+            shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), f"_config{os.sep}coolterm_config.stc"),
                         dst=f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc")
 
         coolterm_config_path = os.path.join(
