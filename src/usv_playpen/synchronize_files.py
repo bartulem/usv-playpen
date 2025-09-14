@@ -503,6 +503,7 @@ class Synchronizer:
                             for threshold_value in np.arange(0.2, relative_intensity_threshold, .01)[::-1]:
                                 if not sequence_found:
 
+                                    # this step finds candidate events and removes duplicate detections of the same type.
                                     diff_mask_neg = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] < -threshold_value)
                                     neg_significant_events = np.where(diff_mask_neg)[0] + 1
                                     neg_significant_events = np.delete(neg_significant_events, np.argwhere(np.ediff1d(neg_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
@@ -510,6 +511,42 @@ class Synchronizer:
                                     diff_mask_pos = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] > threshold_value)
                                     pos_significant_events = np.where(diff_mask_pos)[0]
                                     pos_significant_events = np.delete(pos_significant_events, np.argwhere(np.ediff1d(pos_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
+
+                                    # this step validates the states defined by the events, removing those caused by short occlusions.
+                                    pos_tuples = [(frame, 1) for frame in pos_significant_events]
+                                    neg_tuples = [(frame, -1) for frame in neg_significant_events]
+                                    all_events = sorted(pos_tuples + neg_tuples)
+
+                                    final_pos_events = np.array([])
+                                    final_neg_events = np.array([])
+
+                                    if all_events:
+                                        # set a minimum duration for a state to be considered valid
+                                        min_duration_frames = 10
+
+                                        # start by assuming the first event is the beginning of a valid state
+                                        valid_events = [all_events[0]]
+
+                                        # iterate through the events to find and validate the states
+                                        for i in range(1, len(all_events)):
+                                            prev_frame, prev_type = valid_events[-1]
+                                            current_frame, current_type = all_events[i]
+
+                                            duration = current_frame - prev_frame
+
+                                            # if the state's duration is too short, and it's a flip (ON->OFF or OFF->ON),
+                                            # then it's a glitch - we remove the event that started the glitch state.
+                                            if duration < min_duration_frames and prev_type == -current_type:
+                                                valid_events.pop()
+                                            else:
+                                                valid_events.append(all_events[i])
+
+                                        # separate the filtered, valid events back into ON and OFF numpy arrays
+                                        final_pos_events = np.array([frame for frame, type in valid_events if type == 1])
+                                        final_neg_events = np.array([frame for frame, type in valid_events if type == -1])
+
+                                    pos_significant_events = final_pos_events
+                                    neg_significant_events = final_neg_events
 
                                     if pos_significant_events.size > 0 and neg_significant_events.size > 0:
                                         if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
