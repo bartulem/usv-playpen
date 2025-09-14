@@ -322,40 +322,6 @@ class Synchronizer:
 
         return ipi_durations_ms, audio_ipi_start_samples
 
-    @staticmethod
-    @njit(parallel=True)
-    def relative_change_across_array(input_array: np.ndarray = None,
-                                     desired_axis: int = 0) -> np.ndarray:
-
-        """
-        Description
-        ----------
-        This method takes a 2-D array, and computes the relative
-        change, element-wise along the first (X) or second (Y) axis.
-        ----------
-
-        Parameters
-        ----------
-        input_array (np.ndarray)
-            Input array.
-        desired_axis (int)
-            Axis to compute the change over.
-        ----------
-
-        Returns
-        ----------
-        relative_change_array (np.ndarray)
-            Proportional change relative to a previous element along the desired axis.
-        ----------
-        """
-
-        if desired_axis == 0:
-            relative_change_array = 1 - (input_array[1:, :] / input_array[:-1, :])
-        else:
-            relative_change_array = 1 - (input_array[:, 1:] / input_array[:, :-1])
-
-        return relative_change_array
-
     def gather_px_information(self, video_of_interest: str = None,
                               sync_camera_fps: int | float = None,
                               camera_id: str = None,
@@ -513,8 +479,12 @@ class Synchronizer:
                             # take mean across all three (RGB) channels
                             mean_across_rgb = leds_array.mean(axis=-1)
 
-                            # compute relative change across frames and take median across LEDs
-                            diff_across_leds = np.median(self.relative_change_across_array(input_array=mean_across_rgb), axis=1)
+                            # create a single robust signal by taking the median brightness across the 3 LEDs for each frame.
+                            # add a small epsilon to prevent division by zero when LEDs are fully off.
+                            median_brightness_signal = np.median(mean_across_rgb, axis=1) + 1e-6
+
+                            # compute the relative change of this single, robust signal.
+                            diff_across_leds = 1 - (median_brightness_signal[1:] / median_brightness_signal[:-1])
 
                             # get actual IPI from CoolTerm-recorded .txt file
                             arduino_ipi_durations = []
