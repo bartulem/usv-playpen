@@ -25,6 +25,161 @@ from .load_audio_files import DataLoader
 from .time_utils import *
 
 
+def find_events(diffs: np.ndarray,
+                threshold: float,
+                min_separation: int) -> tuple:
+
+    """
+    Description
+    ----------
+    This function finds initial event candidates (rising/falling edges) in a
+    signal and debounces them by removing duplicate-like detections.
+    ----------
+
+    Parameters
+    ----------
+    diffs (np.ndarray)
+        The 1D input signal representing frame-to-frame changes.
+    threshold (float)
+        The value above which a change is considered significant.
+    min_separation (int)
+        Minimum frames between two events of the same type to be kept.
+    ----------
+
+    Returns
+    ----------
+    pos_events (np.ndarray), neg_events (np.ndarray)
+        A tuple of two arrays containing the frame indices for debounced
+        positive (ON) and negative (OFF) events, respectively.
+    ----------
+    """
+
+    stable = np.abs(diffs[:-1]) < threshold
+    rising = diffs[1:] > threshold
+    falling = diffs[1:] < -threshold
+
+    pos_events = np.where(stable & rising)[0]
+    neg_events = np.where(stable & falling)[0] + 1
+
+    if len(pos_events) > 1:
+        keep_mask = np.concatenate(([True], np.diff(pos_events) > min_separation))
+        pos_events = pos_events[keep_mask]
+
+    if len(neg_events) > 1:
+        keep_mask = np.concatenate(([True], np.diff(neg_events) > min_separation))
+        neg_events = neg_events[keep_mask]
+
+    return pos_events, neg_events
+
+def _combine_and_sort_events(pos_events: np.ndarray, neg_events: np.ndarray) -> np.ndarray:
+    """
+    Description
+    ----------
+    Internal helper function to combine separate ON and OFF event arrays
+    into a single, sorted (N, 2) array of [frame, type].
+    ----------
+
+    Parameters
+    ----------
+    pos_events (np.ndarray)
+        Array of frame indices for positive (ON) events.
+    neg_events (np.ndarray)
+        Array of frame indices for negative (OFF) events.
+    ----------
+
+    Returns
+    ----------
+    (np.ndarray)
+        A single (N, 2) array of all events sorted by frame number,
+        with type 1 for ON and -1 for OFF.
+    ----------
+    """
+
+    pos_array = np.stack((pos_events, np.ones_like(pos_events)), axis=1)
+    neg_array = np.stack((neg_events, -np.ones_like(neg_events)), axis=1)
+    all_events = np.vstack((pos_array, neg_array))
+    return all_events[all_events[:, 0].argsort()]
+
+def filter_events_by_duration(pos_events: np.ndarray, neg_events: np.ndarray, min_duration: int) -> tuple:
+    """
+    Description
+    ----------
+    This function filters event pairs that define a state (e.g., an 'ON'
+    state) that is shorter than a minimum duration, removing glitches.
+    ----------
+
+    Parameters
+    ----------
+    pos_events (np.ndarray)
+        Array of frame indices for candidate positive (ON) events.
+    neg_events (np.ndarray)
+        Array of frame indices for candidate negative (OFF) events.
+    min_duration (int)
+        The minimum number of frames a state must last to be considered valid.
+    ----------
+
+    Returns
+    ----------
+    final_pos (np.ndarray), final_neg (np.ndarray)
+        A tuple of two arrays containing the filtered frame indices for
+        valid positive (ON) and negative (OFF) events.
+    ----------
+    """
+
+    if len(pos_events) == 0 and len(neg_events) == 0:
+        return np.array([]), np.array([])
+
+    all_events = _combine_and_sort_events(pos_events, neg_events)
+
+    durations = np.diff(all_events[:, 0])
+    is_short = durations < min_duration
+    is_flip = all_events[:-1, 1] == -all_events[1:, 1]
+
+    glitch_starts = np.where(is_short & is_flip)[0]
+    indices_to_remove = np.union1d(glitch_starts, glitch_starts + 1)
+    valid_events = np.delete(all_events, indices_to_remove, axis=0)
+
+    final_pos = valid_events[valid_events[:, 1] == 1, 0].astype(int)
+    final_neg = valid_events[valid_events[:, 1] == -1, 0].astype(int)
+    return final_pos, final_neg
+
+def validate_sequence(pos_events: np.ndarray, neg_events: np.ndarray) -> tuple:
+    """
+    Description
+    ----------
+    Ensures the final event sequence is logical by enforcing that it starts
+    with an ON event, ends with an OFF event, and that event types alternate.
+    ----------
+
+    Parameters
+    ----------
+    pos_events (np.ndarray)
+        Array of frame indices for filtered positive (ON) events.
+    neg_events (np.ndarray)
+        Array of frame indices for filtered negative (OFF) events.
+    ----------
+
+    Returns
+    ----------
+    final_pos (np.ndarray), final_neg (np.ndarray)
+        A tuple of two arrays containing the final, validated frame indices.
+    ----------
+    """
+
+    if len(pos_events) == 0 or len(neg_events) == 0:
+        return np.array([]), np.array([])
+
+    all_events = _combine_and_sort_events(pos_events, neg_events)
+
+    if all_events[0, 1] == -1: all_events = all_events[1:, :]
+    if len(all_events) > 0 and all_events[-1, 1] == 1: all_events = all_events[:-1, :]
+    if len(all_events) < 2: return np.array([]), np.array([])
+
+    final_pos = all_events[all_events[:, 1] == 1, 0].astype(int)
+    final_neg = all_events[all_events[:, 1] == -1, 0].astype(int)
+    return final_pos, final_neg
+
+
 class Synchronizer:
 
     """In the dictionary below, you can find px values
@@ -483,7 +638,7 @@ class Synchronizer:
                             # add a small value to prevent division by zero when LEDs are fully off.
                             median_brightness_signal = np.median(mean_across_rgb, axis=1) + 1e-6
 
-                            # compute the relative change of this robust signal.
+                            # compute the relative change of this robust signal
                             diff_across_leds = 1 - (median_brightness_signal[1:] / median_brightness_signal[:-1])
 
                             # get actual IPI from CoolTerm-recorded .txt file
@@ -503,50 +658,15 @@ class Synchronizer:
                             for threshold_value in np.arange(0.2, relative_intensity_threshold, .01)[::-1]:
                                 if not sequence_found:
 
-                                    # this step finds candidate events and removes duplicate detections of the same type.
-                                    diff_mask_neg = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] < -threshold_value)
-                                    neg_significant_events = np.where(diff_mask_neg)[0] + 1
-                                    neg_significant_events = np.delete(neg_significant_events, np.argwhere(np.ediff1d(neg_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
+                                    pos_significant_events, neg_significant_events = find_events(diffs=diff_across_leds,
+                                                                                                 threshold=threshold_value,
+                                                                                                 min_separation=int(np.ceil(camera_fps[sync_cam_idx] / 2.5)))
 
-                                    diff_mask_pos = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] > threshold_value)
-                                    pos_significant_events = np.where(diff_mask_pos)[0]
-                                    pos_significant_events = np.delete(pos_significant_events, np.argwhere(np.ediff1d(pos_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
+                                    # remove short glitches
+                                    pos_significant_events, neg_significant_events = filter_events_by_duration(pos_significant_events, neg_significant_events, min_duration=35)
 
-                                    # this step validates the states defined by the events, removing those caused by short occlusions.
-                                    pos_tuples = [(frame, 1) for frame in pos_significant_events]
-                                    neg_tuples = [(frame, -1) for frame in neg_significant_events]
-                                    all_events = sorted(pos_tuples + neg_tuples)
-
-                                    final_pos_events = np.array([])
-                                    final_neg_events = np.array([])
-
-                                    if all_events:
-                                        # set a minimum duration for a state to be considered valid
-                                        min_duration_frames = 35
-
-                                        # start by assuming the first event is the beginning of a valid state
-                                        valid_events = [all_events[0]]
-
-                                        # iterate through the events to find and validate the states
-                                        for i in range(1, len(all_events)):
-                                            prev_frame, prev_type = valid_events[-1]
-                                            current_frame, current_type = all_events[i]
-
-                                            duration = current_frame - prev_frame
-
-                                            # if the state's duration is too short, and it's a flip (ON->OFF or OFF->ON),
-                                            # then it's a glitch - we remove the event that started the glitch state.
-                                            if duration < min_duration_frames and prev_type == -current_type:
-                                                valid_events.pop()
-                                            else:
-                                                valid_events.append(all_events[i])
-
-                                        # separate the filtered, valid events back into ON and OFF numpy arrays
-                                        final_pos_events = np.array([frame for frame, type in valid_events if type == 1])
-                                        final_neg_events = np.array([frame for frame, type in valid_events if type == -1])
-
-                                    pos_significant_events = final_pos_events
-                                    neg_significant_events = final_neg_events
+                                    # ensure logical sequence
+                                    pos_significant_events, neg_significant_events = validate_sequence(pos_significant_events, neg_significant_events)
 
                                     if pos_significant_events.size > 0 and neg_significant_events.size > 0:
                                         if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
