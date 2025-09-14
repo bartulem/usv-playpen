@@ -522,7 +522,7 @@ class Synchronizer:
 
                                     if all_events:
                                         # set a minimum duration for a state to be considered valid
-                                        min_duration_frames = 10
+                                        min_duration_frames = 35
 
                                         # start by assuming the first event is the beginning of a valid state
                                         valid_events = [all_events[0]]
