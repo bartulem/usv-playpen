@@ -480,10 +480,10 @@ class Synchronizer:
                             mean_across_rgb = leds_array.mean(axis=-1)
 
                             # create a single robust signal by taking the median brightness across the 3 LEDs for each frame.
-                            # add a small epsilon to prevent division by zero when LEDs are fully off.
+                            # add a small value to prevent division by zero when LEDs are fully off.
                             median_brightness_signal = np.median(mean_across_rgb, axis=1) + 1e-6
 
-                            # compute the relative change of this single, robust signal.
+                            # compute the relative change of this robust signal.
                             diff_across_leds = 1 - (median_brightness_signal[1:] / median_brightness_signal[:-1])
 
                             # get actual IPI from CoolTerm-recorded .txt file
