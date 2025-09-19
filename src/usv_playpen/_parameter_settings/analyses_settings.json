@@ -8,24 +8,9 @@
   },
   "credentials_directory": "",
   "compute_behavioral_features": {
-    "head_points": [
-      "Head",
-      "Ear_R",
-      "Ear_L",
-      "Nose"
-    ],
-    "tail_points": [
-      "TTI",
-      "Tail_0",
-      "Tail_1",
-      "Tail_2",
-      "TailTip"
-    ],
-    "back_root_points": [
-      "Neck",
-      "Trunk",
-      "TTI"
-    ],
+    "head_points": ["Head", "Ear_R", "Ear_L", "Nose"],
+    "tail_points": ["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"],
+    "back_root_points": ["Neck", "Trunk", "TTI"],
     "derivative_bins": 10
   },
   "analyze_data": {
@@ -92,9 +77,7 @@
     "fs_volume_adjustment": true
   },
   "calculate_neuronal_tuning_curves": {
-    "temporal_offsets": [
-      0
-    ],
+    "temporal_offsets": [0],
     "n_shuffles": 1000,
     "total_bin_num": 36,
     "n_spatial_bins": 196,

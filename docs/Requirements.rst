@@ -206,4 +206,3 @@ You do this by selecting a *Save directory* and filling out the form loaded in t
 .. raw:: html
 
    <br>
-

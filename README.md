@@ -27,10 +27,10 @@ branches of the GUI are platform-independent.
 
 - [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio
   recording PC)
-- [git](https://git-scm.com/download/)  (if on Windows, add PATH to USER
+- [git](https://git-scm.com/download/) (if on Windows, add PATH to USER
   VARIABLES)
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) (if on Windows, add PATH to USER
-  VARIABLES)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) (if on Windows,
+  add PATH to USER VARIABLES)
 - [sleap](https://sleap.ai/) (install in standalone conda environment)
 - [das](https://janclemenslab.org/das/) (install in standalone conda
   environment)
@@ -39,7 +39,7 @@ branches of the GUI are platform-independent.
 
 ## Installation and updating
 
-Clone the repository and set up virtual environment with *uv*:
+Clone the repository and set up virtual environment with _uv_:
 
 ```bash
 git clone https://github.com/bartulem/usv-playpen.git
@@ -75,7 +75,8 @@ activate-pni
 uv sync
 ```
 
-Navigate to the cloned repository and use the following command to check for and install updates:
+Navigate to the cloned repository and use the following command to check for and
+install updates:
 
 ```bash
 git pull && uv sync
