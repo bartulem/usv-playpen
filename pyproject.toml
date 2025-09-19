@@ -26,7 +26,6 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "astropy",
-    "av",
     "click",
     "h5py",
     "imgstore",
@@ -38,13 +37,13 @@ dependencies = [
     "numba",
     "opencv-contrib-python",
     "pandas",
-    "PIMS",
+    "platformdirs",
     "PyQt6",
     "polars",
-    "pydub-ng",
     "requests",
     "scipy",
     "sleap-anipose",
+    "soundfile",
     "scikit-learn",
     "toml",
     "tqdm",
@@ -98,6 +97,8 @@ anipose-triangulate = "usv_playpen.preprocess_data:conduct_anipose_triangulation
 anipose-trm = "usv_playpen.preprocess_data:translate_rotate_metric_cli"
 das-infer = "usv_playpen.preprocess_data:das_command_line_inference_cli"
 das-summarize = "usv_playpen.preprocess_data:summarize_das_findings_cli"
+prepare-vcl-assign = "usv_playpen.preprocess_data:prepare_vcl_assign_cli"
+vcl-assign = "usv_playpen.preprocess_data:vcl_assign_cli"
 concatenate-ephys-files = "usv_playpen.preprocess_data:concatenate_binary_files_cli"
 split-clusters = "usv_playpen.preprocess_data:split_clusters_to_sessions_cli"
 generate-beh-features = "usv_playpen.analyze_data:generate_beh_features_cli"

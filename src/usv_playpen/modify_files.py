@@ -253,6 +253,8 @@ class Operator:
             binary_files_info = {}
             changepoints = [0]
             concatenation_command = 'copy /b ' if os.name == 'nt' else 'cat '
+            total_size_bytes = 0
+            total_time_secs = 0.0
             for ord_idx, one_root_dir in enumerate(self.root_directory):
                 if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}'):
                     for one_file, one_meta in zip(sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.bin*"))),
@@ -270,6 +272,10 @@ class Operator:
                                         spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
                                     elif key == 'imDatPrb_sn':
                                         imec_probe_sn = value
+                                    elif key == 'fileSizeBytes':
+                                        total_size_bytes += int(value)
+                                    elif key == 'fileTimeSecs':
+                                        total_time_secs += float(value)
 
                             binary_file_info_id = pathlib.Path(one_file).name.split(os.sep)[-1][:-7]
                             binary_files_info[binary_file_info_id] = {'session_start_end': [np.nan, np.nan],
@@ -301,6 +307,19 @@ class Operator:
                                     concatenation_command += '+ {} '.format(one_file)
                                 else:
                                     concatenation_command += '{} '.format(one_file)
+
+            # save concatenated META file
+            concatenated_meta_file = f"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.meta"
+            if not os.path.isfile(concatenated_meta_file):
+                with open(sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.meta*")))[0], 'r', encoding='utf-8') as f_in, \
+                        open(concatenated_meta_file, 'w', encoding='utf-8') as f_out:
+                    for line in f_in:
+                        if line.strip().startswith('fileSizeBytes='):
+                            f_out.write(f"fileSizeBytes={total_size_bytes}\n")
+                        elif line.strip().startswith('fileTimeSecs='):
+                            f_out.write(f"fileTimeSecs={total_time_secs}\n")
+                        else:
+                            f_out.write(line)
 
             if os.name == 'nt':
                 concatenation_command += f'"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.bin"'

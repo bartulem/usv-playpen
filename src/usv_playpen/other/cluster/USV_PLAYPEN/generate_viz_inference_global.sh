@@ -8,14 +8,10 @@
 WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/visualizations"
 CPUS_PER_TASK=6
 TOTAL_MEMORY="8G"
-TIME_RESTRICTION="24:00:00"
+TIME_RESTRICTION="30:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
-CONDA_NAME="anacondapy"
-CONDA_DATE="2024.02"
-CONDA_NAME_UPPERCASE="${CONDA_NAME^^}"
-CONDA_VERSION="$CONDA_NAME/$CONDA_DATE"
-USV_PLAYPEN_ENV="pni"
+USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 
 EXP_ID="Name"
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
@@ -40,19 +36,25 @@ echo "#!/bin/bash" > "$JOB_SCRIPT"
 echo "#SBATCH --job-name=visualize-video-$SESSION_ID" >> "$JOB_SCRIPT"
 echo "#SBATCH --output=$WORK_DIR/logs/visualize-video-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
 echo "#SBATCH --error=$WORK_DIR/logs/visualize-video-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
-echo "#SBATCH --gpus=1" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "#SBATCH --mem=$TOTAL_MEMORY" >> "$JOB_SCRIPT"
 echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"
 echo "#SBATCH --mail-type=$EMAIL_TYPE" >> "$JOB_SCRIPT"
 echo "#SBATCH --mail-user=$EMAIL_ADDRESS" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "module load ffmpeg" >> "$JOB_SCRIPT"
-echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
-echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
-echo "conda activate $USV_PLAYPEN_ENV" >> "$JOB_SCRIPT"
+echo "source $USV_PLAYPEN_PATH.venv/bin/activate" >> "$JOB_SCRIPT"
+echo "(cd $USV_PLAYPEN_PATH && uv sync)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "generate-viz --root-directory \"$SESSION_ROOT_DIRECTORY\" --arena-directory \"$ARENA_DIRECTORY\" --exp-id $EXP_ID --animate --video-start-time $VIDEO_START_TIME --video-duration $VIDEO_DURATION --animation-codec $ANIMATION_CODEC --animation-codec-preset $ANIMATION_CODEC_PRESET --animation-codec-tune $ANIMATION_CODEC_TUNE" >> "$JOB_SCRIPT"
+echo "generate-viz \\
+    --root-directory \"$SESSION_ROOT_DIRECTORY\" \\
+    --arena-directory \"$ARENA_DIRECTORY\" \\
+    --exp-id \"$EXP_ID\" \\
+    --animate \\
+    --video-start-time $VIDEO_START_TIME \\
+    --video-duration $VIDEO_DURATION \\
+    --animation-codec \"$ANIMATION_CODEC\" \\
+    --animation-codec-preset \"$ANIMATION_CODEC_PRESET\" \\
+    --animation-codec-tune \"$ANIMATION_CODEC_TUNE\"" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

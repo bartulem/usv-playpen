@@ -404,6 +404,40 @@ Process
       --corr-cutoff         Minimum noise correlation cutoff.
       --var-cutoff          Maximum noise variance cutoff.
 
+``prepare-vcl-assign``
+----------------------
+``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using Vocalocator.
+
+.. code-block:: plaintext
+
+    usage: prepare-vcl-assign [-h] --root-directory PATH --arena-directory PATH
+
+    required arguments:
+      --root-directory      Session root directory path.
+      --arena-directory     Arena session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+
+
+``vcl-assign``
+--------------
+``vcl-assign`` is the command-line interface for assigning vocalizations to specific animals using Vocalocator.
+
+.. code-block:: plaintext
+
+    usage: vcl-assign        [-h] --root-directory PATH [--vcl-version TEXT]
+                             [--env-name TEXT] [--model-dir PATH]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --vcl-version         Version of Vocalocator to use ('vcl' or 'vcl-ssl').
+      --env-name            Name of the Vocalocator conda environment.
+      --model-dir           Directory of the Vocalocator model.
+
 Analyze
 ^^^^^^^
 
@@ -661,3 +695,36 @@ Visualize
                                        Display USV assignments on the spectrogram.
       --usv-segments-ypos              Y-axis position for USV segment markers (Hz).
       --usv-segments-lw                Line width for USV segment markers.
+
+Set up and use the CLI on the *Spock* cluster
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In order to exploit the full functionality of *usv-playpen*, one should install subsidiary conda packages (das, sleap, vcl-ssl). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
+
+.. code-block:: bash
+
+    $ module load anacondapy/2024.02
+    $ conda init bash
+
+.. code-block:: bash
+
+    $ conda create python=3.10 das=0.32.2 -c conda-forge -c nvidia -c ncb -n das -y
+
+.. code-block:: bash
+
+    $ conda create --name sleap1.3.3 pip python=3.7.12 cudatoolkit=11.3 cudnn=8.2 cuda-nvcc=12.4.131 -c conda-forge -c nvidia -y
+    $ conda activate sleap1.3.3 && pip install sleap[pypi]==1.3.3 tensorflow==2.6.3
+
+.. code-block:: bash
+
+    $ conda create --name vcl-ssl python=3.10 torchaudio packaging -y
+    $ git clone https://github.com/Aramist/vocalocator-ssl.git && cd vocalocator-ssl
+    $ conda activate vcl-ssl && pip install -e .
+
+On should also install *usv-playpen* on the cluster (in its own *virtual environment*) and set up an additional environment (hpss):
+
+.. code-block:: bash
+
+    $ conda create -n hpss python=3.10 librosa=0.10.1 numpy=1.26.4 scipy=1.11.4 -c conda-forge -y
+
+Having set up these environments, you can set up directories with bash scripts in /src/other/DAS, /src/other/HPSS, /src/other/SLEAP and /src/other/USV_PLAYPEN and run them to expedite your data processing or analysis.

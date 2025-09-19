@@ -46,12 +46,12 @@ def count_last_recording_dropouts(log_file_path: str,
     """
 
     try:
-        with open(f"{log_file_path}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
+        with open(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
             content = log_txt_file.read()
     except FileNotFoundError:
         return None
 
-    recordings = content.split(f"{log_file_path}{log_file_ch}{os.sep}")
+    recordings = content.split(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}")
 
     # filter out any empty strings that may result from the split
     recordings = [rec for rec in recordings if rec.strip()]
@@ -137,7 +137,12 @@ class ExperimentController:
         if ethernet_status.returncode == 0:
             ethernet_status_output_text = ethernet_status.stdout.strip()
             if ethernet_status_output_text.lower() == 'false':
-                subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''').wait()
+
+                subprocess.Popen(
+                    args=['powershell', '-Command', f"Enable-NetAdapter -Name '{self.exp_settings_dict['ethernet_network']}' -Confirm:$false"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT
+                ).wait()
 
                 # pause for N seconds
                 smart_wait(app_context_bool=self.app_context_bool, seconds=15)
@@ -175,9 +180,19 @@ class ExperimentController:
             for drive_letter_with_colon, path in drives_to_mount.items():
                 drive_letter_only = drive_letter_with_colon.replace(":", "")
                 if drive_letter_only not in mounted_drives:
-                    subprocess.Popen(args=f'''cmd /c net use {drive_letter_with_colon.lower()} {path} /user:{cup_username}@princeton.edu {cup_password} /persistent:yes''',
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.STDOUT).wait()
+
+                    mount_drive_ps_command = (
+                        f"$password = ConvertTo-SecureString -String '{cup_password}' -AsPlainText -Force; "
+                        f"$credential = New-Object System.Management.Automation.PSCredential('{cup_username}@princeton.edu', $password); "
+                        f"New-PSDrive -Name '{drive_letter_only}' -PSProvider FileSystem -Root '{path}' -Credential $credential -Persist"
+                    )
+
+                    subprocess.Popen(
+                        args=['powershell', '-Command', mount_drive_ps_command],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.STDOUT
+                    ).wait()
+
                     self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
                 else:
                     self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
@@ -294,12 +309,12 @@ class ExperimentController:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/cup_config.ini')):
+        if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini"):
             self.message_output("Cup config file not found. Try again!")
             smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
         else:
-            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/cup_config.ini'))
+            config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini")
             return config['cup']['username'], config['cup']['password']
 
     def get_connection_params(self) -> tuple:
@@ -324,12 +339,14 @@ class ExperimentController:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini')):
+
+
+        if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini"):
             self.message_output("Motif config file not found. Try again!")
             smart_wait(app_context_bool=self.app_context_bool, seconds=10)
             sys.exit()
         else:
-            config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/motif_config.ini'))
+            config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini")
             return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
                     config['motif']['ssh_port'], config['motif']['ssh_username'],
                     config['motif']['ssh_password'], config['motif']['api'])
@@ -502,8 +519,8 @@ class ExperimentController:
         self.config_1 = configparser.ConfigParser()
         self.config_1.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'))
 
-        if str(self.exp_settings_dict['avisoft_basedirectory']) != self.config_1['Configuration']['basedirectory']:
-            self.config_1['Configuration']['basedirectory'] = self.exp_settings_dict['avisoft_basedirectory']
+        if f"{str(self.exp_settings_dict['avisoft_basedirectory'])}{os.sep}" != self.config_1['Configuration']['basedirectory']:
+            self.config_1['Configuration']['basedirectory'] = f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}"
             changes += 1
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
@@ -526,8 +543,11 @@ class ExperimentController:
                 self.config_1['MaxFileSize']['minutes'] = str(max_file_size)
                 changes += 1
 
-        if self.config_1['Configuration']['configfilename'] != f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini":
-            self.config_1['Configuration']['configfilename'] = f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"
+        if self.config_1['Configuration']['configfilename'] != f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini":
+            self.config_1['Configuration']['configfilename'] = f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"
+
+        if self.config_1['Info']['configfilename'] != f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini":
+            self.config_1['Info']['configfilename'] = f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"
 
         for general_key in self.exp_settings_dict['audio']['general'].keys():
             if str(self.exp_settings_dict['audio']['general'][general_key]) != self.config_1['Configuration'][general_key]:
@@ -630,7 +650,7 @@ class ExperimentController:
                 self.config_1.write(configfile, space_around_delimiters=False)
 
         shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
-                    dst=f"{self.exp_settings_dict['avisoft_basedirectory']}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini")
+                    dst=f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini")
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
@@ -662,6 +682,7 @@ class ExperimentController:
 
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
                                                                          message=f"Experiment in progress, started at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
@@ -672,10 +693,19 @@ class ExperimentController:
 
         # start capturing sync LEDS
         if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):
-            shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/coolterm_config.ini'),
+            shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), f"_config{os.sep}coolterm_config.stc"),
                         dst=f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc")
-        subprocess.Popen(args=f'''cmd /c "start /MIN {self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"''',
-                         stdout=subprocess.PIPE)
+
+        coolterm_config_path = os.path.join(
+            self.exp_settings_dict['coolterm_basedirectory'],
+            'Connection_settings',
+            'coolterm_config.stc'
+        )
+
+        subprocess.Popen(
+            args=['powershell', '-Command', f"Start-Process -FilePath '{coolterm_config_path}' -WindowStyle Minimized"],
+            stdout=subprocess.PIPE
+        )
 
         self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['recording_frame_rate'])
 
@@ -690,14 +720,33 @@ class ExperimentController:
             self.message_output(f"Audio recording in progress since {start_hour_min_sec}, it will last {round(self.exp_settings_dict['video_session_duration'] + .36, 2)} minute(s). Please be patient.")
 
             avisoft_recorder_program_name = self.exp_settings_dict['avisoft_recorder_program_name']
-            cpu_affinity_mask = self.get_cpu_affinity_mask()
+
             cpu_priority = self.exp_settings_dict['audio']['cpu_priority']
 
+            affinity_arg = ""
+            if self.exp_settings_dict['audio']['cpu_affinity']:
+                cpu_affinity_mask = self.get_cpu_affinity_mask()
+                affinity_arg = f" /affinity {cpu_affinity_mask}"
+
             # run command to start Avisoft Recorder and keep executing the rest of the script
-            if os.path.exists(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}Configurations{os.sep}RECORDER_USGH{os.sep}avisoft_config.ini"):
-                subprocess.Popen(args=f'''cmd /c "start /{cpu_priority} /affinity {cpu_affinity_mask} {avisoft_recorder_program_name} /CFG=avisoft_config.ini /AUT"''',
-                                 stdout=subprocess.PIPE,
-                                 cwd=self.exp_settings_dict['avisoft_recorder_exe'])
+            if os.path.exists(f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"):
+
+                # run Avisoft as Administrator
+                run_avisoft_command = f"Start-Process -FilePath '{avisoft_recorder_program_name}' -ArgumentList '/CFG=avisoft_config.ini', '/AUT' -Verb RunAs"
+
+                # add priority/affinity only if they exist
+                if run_avisoft_command or (affinity_arg and affinity_arg.strip()):
+                    run_avisoft_command += "; Start-Sleep 2; $proc = Get-Process 'rec_usgh' -ErrorAction SilentlyContinue; if ($proc) {"
+
+                    if cpu_priority:
+                        run_avisoft_command += f" $proc.PriorityClass = '{cpu_priority}';"
+
+                    if affinity_arg and affinity_arg.strip():
+                        run_avisoft_command += f" $proc.ProcessorAffinity = {affinity_arg};"
+
+                    run_avisoft_command += " }"
+
+                subprocess.Popen(args=f'''powershell -Command "{run_avisoft_command}"''', stdout=subprocess.PIPE, cwd=self.exp_settings_dict['avisoft_recorder_exe_directory'])
 
                 # pause for N seconds
                 smart_wait(app_context_bool=self.app_context_bool, seconds=10)
@@ -716,9 +765,10 @@ class ExperimentController:
                     else:
                         is_frozen = True
                 if not is_running:
-                    subprocess.Popen(f'''cmd /c "taskkill /IM CoolTerm.exe /T /F 1>nul 2>&1"''').wait()
+                    subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
                     if is_frozen:
-                        subprocess.Popen(f'''cmd /c "taskkill /IM {avisoft_recorder_program_name} /T /F 1>nul 2>&1"''').wait()
+                        subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
+                        subprocess.Popen(['powershell', '-Command', f"Stop-Process -Name '{avisoft_recorder_program_name}' -Force -ErrorAction SilentlyContinue"]).wait()
                     print("Aborted experiment as Avisoft Recorder was not running or was frozen.")
                     sys.exit(1)
 
@@ -738,9 +788,13 @@ class ExperimentController:
         self.message_output(f"Video recording in progress since {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}, it will last {round(self.exp_settings_dict['video_session_duration'], 2)} minute(s). Please be patient.")
 
         if self.exp_settings_dict['disable_ethernet']:
-            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" disable''',
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.STDOUT).wait()
+
+            subprocess.Popen(
+                args=['powershell', '-Command', f"Disable-NetAdapter -Name '{self.exp_settings_dict['ethernet_network']}' -Confirm:$false"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT
+            ).wait()
+
             self.message_output(f"Ethernet DISCONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
         # wait until cameras have finished recording
@@ -750,13 +804,18 @@ class ExperimentController:
         self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
 
         # close serial monitor sync LED capture
-        subprocess.Popen(f'''cmd /c "taskkill /IM CoolTerm.exe /T /F 1>nul 2>&1"''').wait()
+        subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
 
         if self.exp_settings_dict['disable_ethernet']:
-            subprocess.Popen(args=f'''cmd /c netsh interface set interface "{self.exp_settings_dict['ethernet_network']}" enable''',
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.STDOUT).wait()
+
+            subprocess.Popen(
+                args=['powershell', '-Command', f"Enable-NetAdapter -Name '{self.exp_settings_dict['ethernet_network']}' -Confirm:$false"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT
+            ).wait()
+
             self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
+
             smart_wait(app_context_bool=self.app_context_bool, seconds=20)
 
         # remount CUP drives if necessary
@@ -791,11 +850,18 @@ class ExperimentController:
                 for mic_idx in self.exp_settings_dict['audio']['used_mics']:
                     last_modified_audio_file = max(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"),
                                                    key=os.path.getctime)
-                    single_audio_copy_subp = subprocess.Popen(args=f'''cmd /c move "{last_modified_audio_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original{os.sep}ch{mic_idx + 1}_{last_modified_audio_file.split(os.sep)[-1]}"''',
-                                                              cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
-                                                              stdout=subprocess.DEVNULL,
-                                                              stderr=subprocess.STDOUT,
-                                                              shell=False)
+
+                    full_destination_path = os.path.join(os.path.join(total_dir_name_windows[0], 'audio', 'original'), f"ch{mic_idx + 1}_{os.path.basename(last_modified_audio_file)}")
+                    move_file_ps_command = f"Move-Item -Path '{os.path.basename(last_modified_audio_file)}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
+
+                    single_audio_copy_subp = subprocess.Popen(
+                        args=['powershell', '-Command', move_file_ps_command],
+                        cwd=os.path.join(self.exp_settings_dict['avisoft_basedirectory'], f"ch{mic_idx + 1}"),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.STDOUT,
+                        shell=False
+                    )
+
                     audio_copy_subprocesses.append(single_audio_copy_subp)
             else:
                 relevant_file_count = max(1, int(round((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
@@ -803,11 +869,18 @@ class ExperimentController:
                 for mic_pos_idx, mic_idx in enumerate([0, 12]):
                     audio_file_list = sorted(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"), key=os.path.getctime, reverse=True)[:relevant_file_count]
                     for aud_file in audio_file_list:
-                        multi_audio_copy_subp = subprocess.Popen(args=f'''cmd /c move "{aud_file.split(os.sep)[-1]}" "{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc{os.sep}{device_id[mic_pos_idx]}_{aud_file.split(os.sep)[-1]}"''',
-                                                                 cwd=f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}",
-                                                                 stdout=subprocess.DEVNULL,
-                                                                 stderr=subprocess.STDOUT,
-                                                                 shell=False)
+
+                        full_destination_path = os.path.join(os.path.join(total_dir_name_windows[0], 'audio', 'original_mc'), f"{device_id[mic_pos_idx]}_{os.path.basename(aud_file)}")
+                        move_file_ps_command = f"Move-Item -Path '{os.path.basename(aud_file)}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
+
+                        multi_audio_copy_subp = subprocess.Popen(
+                            args=['powershell', '-Command', move_file_ps_command],
+                            cwd=os.path.join(self.exp_settings_dict['avisoft_basedirectory'], f"ch{mic_idx + 1}"),
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.STDOUT,
+                            shell=False
+                        )
+
                         audio_copy_subprocesses.append(multi_audio_copy_subp)
 
             while True:
@@ -829,11 +902,13 @@ class ExperimentController:
         # copy the audio, sync and video directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
             for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
-                subprocess.Popen(args=f'''cmd /c robocopy "{total_dir_name_windows[0]}" "{win_dir}" /MIR''',
-                                 cwd=f"{total_dir_name_windows[0]}",
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.STDOUT,
-                                 shell=False)
+                subprocess.Popen(
+                    args=['robocopy', total_dir_name_windows[0], win_dir, '/MIR'],
+                    cwd=total_dir_name_windows[0],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
+                    shell=False
+                )
 
         # check number of dropouts in audio recordings
         if self.exp_settings_dict['conduct_audio_recording'] and self.exp_settings_dict['audio']['devices']['usghflags'] != 1574:
@@ -863,6 +938,7 @@ class ExperimentController:
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
                   no_receivers_notification=False,
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, recording has been completed.",
                                                                          message=f"Thank you for your patience, recording by @{self.exp_settings_dict['video']['metadata']['experimenter']} was completed at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "

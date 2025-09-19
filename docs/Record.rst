@@ -93,6 +93,16 @@ Calibrate (execution)
 ---------------------
 In the GUI main window, select an experimenter name from the dropdown menu and click *Record*:
 
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_0.png
+   :align: center
+   :alt: Calibration Step 0
+
+.. raw:: html
+
+   <br>
+
+Should you require a name that is not present in the loaded list, you can manually add it to **/usv-playpen/_config/behavioral_experiments_settings.toml** to the very top variable *experimenter_list* (NB: be sure to leave a trailing comma at the end). Depending on the choice of experimenter name, you can see file server directory destinations of files created during recording. You can naturally change these settings as you please. Several important details, however, are present in the section below. For a camera Calibration session, we choose not to conduct an audio recording, but to conduct video calibration. By default, calibration duration is 5 minutes long and the recording of the empty arena after it is 1 minute long, but these are arbitrary and should be adjusted to particular needs. For calibration purposes, it is not necessary to disable the ethernet connection:
+
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_1.png
    :align: center
    :alt: Calibration Step 1
@@ -101,21 +111,11 @@ In the GUI main window, select an experimenter name from the dropdown menu and c
 
    <br>
 
-Should you require a name that is not present in the loaded list, you can manually add it to **/usv-playpen/_config/behavioral_experiments_settings.toml** to the very top variable *experimenter_list* (NB: be sure to leave a trailing comma at the end). Depending on the choice of experimenter name, you can see file server directory destinations of files created during recording. You can naturally change these settings as you please. Several important details, however, are present in the section below. For a camera Calibration session, we choose not to conduct an audio recording, but to conduct video calibration. By default, calibration duration is 5 minutes long and the recording of the empty arena after it is 1 minute long, but these are arbitrary and should be adjusted to particular needs. For calibration purposes, it is not necessary to disable the ethernet connection:
+One can skip the *Audio Settings* step as it is not relevant here, and adjust *Video Settings*. Each video recording is associated with a particular metadata file and below you can see an example of how one might fill out the metadata form for calibration. On the left, you can use a slider to choose the acquisition frame rate of cameras during calibration. By default, this is set to 10 fps, as **lower frame rates provide better board detection performance**:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_2.png
    :align: center
-   :alt: Calibration Step 2s
-
-.. raw:: html
-
-   <br>
-
-One can skip the *Audio Settings* step as it is not relevant here, and adjust *Video Settings*. Each video recording is associated with a particular metadata file and below you can see an example of how one might fill out the metadata form for calibration. On the left, you can use a slider to choose the acquisition frame rate of cameras during calibration. By default, this is set to 10 fps, as **lower frame rates provide better board detection performance**:
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_3.png
-   :align: center
-   :alt: Calibration Step 3
+   :alt: Calibration Step 2
 
 .. raw:: html
 
@@ -123,9 +123,9 @@ One can skip the *Audio Settings* step as it is not relevant here, and adjust *V
 
 Finally, when ready to head over to the arena and move the calibration board, simply click the *Calibrate* button. You have several seconds before the video starts recording:
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_4.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_3.png
    :align: center
-   :alt: Calibration Step 4
+   :alt: Calibration Step 3
 
 .. raw:: html
 
@@ -150,9 +150,9 @@ Calibrate (assessment)
 ----------------------
 To assess the quality of the calibration, you first click the *Process* button on the GUI main display:
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_5.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_4.png
    :align: center
-   :alt: Calibration Step 5
+   :alt: Calibration Step 4
 
 .. raw:: html
 
@@ -160,9 +160,9 @@ To assess the quality of the calibration, you first click the *Process* button o
 
 In the *Root directories for processing* window, either write or c/p the path to the directory of the calibration session you just recorded. Select *Run video re-encoding* and change the *Concatenation name* to 000000. Finally, select *Run AP Calibration*. Hit *Next*, and *Process*. In the terminal/powershell, you should be able to see the amount of CharUco Boards detected by reprojection on each camera, as progress bars will appear.
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_6.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_5.png
    :align: center
-   :alt: Calibration Step 6
+   :alt: Calibration Step 5
 
 .. raw:: html
 
@@ -186,7 +186,7 @@ Firstly, you want to remove the retro-reflective markers, install the screen doo
 
 In the GUI main window, select an experimenter name from the dropdown menu and click *Record*:
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_1.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_0.png
    :align: center
    :alt: Recording Step 0
 
@@ -198,6 +198,7 @@ On the next page, you can set some basic parameters:
 
 * **Avisoft Recorder directory** : this is the directory which contains the *rec_usgh.exe* file
 * **Avisoft base directory** : this is the local directory where the recordings will be saved
+* **Avisoft config directory** : this is the local directory where the Avisoft config file is located (must be on C:\\ drive!)
 * **Coolterm directory** : this is the local directory where the Arduino serial terminal outputs will be saved
 * **File destination(s) Linux** : these are the directories on both video PCs where the file server is mounted
 * **File destination(s) Windows** : these are the directories on the audio PC where the file server is mounted

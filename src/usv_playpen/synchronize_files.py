@@ -6,14 +6,13 @@ Synchronizes files:
 (3) performs a check on the e-phys data stream to see if the video duration matches the e-phys recording.
 """
 
-import av
 import configparser
+import cv2
 import glob
 import json
 import operator
 import os
 import pathlib
-import pims
 import shutil
 import subprocess
 import numpy as np
@@ -25,42 +24,173 @@ from scipy.io import wavfile
 from .load_audio_files import DataLoader
 from .time_utils import *
 
-@pims.pipeline
-def modify_memmap_array(frame: np.ndarray = None,
-                        mmap_arr: np.ndarray = None,
-                        frame_idx: int = None,
-                        led_0: list = None,
-                        led_1: list = None,
-                        led_2: list = None) -> np.ndarray | None:
+
+def find_events(diffs: np.ndarray,
+                threshold: float,
+                min_separation: int) -> tuple:
     """
     Description
     ----------
-    This function .
+    This function finds initial event candidates (rising/falling edges) in a
+    signal and debounces them by removing duplicate-like detections.
     ----------
 
     Parameters
     ----------
-    frame (np.ndarray)
-        The frame to perform extraction on.
-    mmap_arr (memmap np.ndarray)
-        The array to fill data with.
-    frame_idx (int)
-        The corresponding frame index.
-    led_0 (list)
-        XY px coordinates for top LED.
-    led_1 (list)
-        XY px coordinates for middle LED.
-    led_2 (list)
-        XY px coordinates for bottom LED.
+    diffs (np.ndarray)
+        The 1D input signal representing frame-to-frame changes.
+    threshold (float)
+        The value above which a change is considered significant.
+    min_separation (int)
+        Minimum frames between two events of the same type to be kept.
     ----------
 
     Returns
     ----------
+    pos_events (np.ndarray), neg_events (np.ndarray)
+        A tuple of two arrays containing the frame indices for debounced
+        positive (ON) and negative (OFF) events, respectively.
     ----------
     """
-    mmap_arr[frame_idx, 0, :] = np.array(frame)[led_0[0], led_0[1], :]
-    mmap_arr[frame_idx, 1, :] = np.array(frame)[led_1[0], led_1[1], :]
-    mmap_arr[frame_idx, 2, :] = np.array(frame)[led_2[0], led_2[1], :]
+
+    stable = np.abs(diffs[:-1]) < threshold
+    rising = diffs[1:] > threshold
+    falling = diffs[1:] < -threshold
+
+    pos_events = np.where(stable & rising)[0]
+    neg_events = np.where(stable & falling)[0] + 1
+
+    if len(pos_events) > 1:
+        keep_mask = np.concatenate(([True], np.diff(pos_events) > min_separation))
+        pos_events = pos_events[keep_mask]
+
+    if len(neg_events) > 1:
+        keep_mask = np.concatenate(([True], np.diff(neg_events) > min_separation))
+        neg_events = neg_events[keep_mask]
+
+    return pos_events, neg_events
+
+def _combine_and_sort_events(pos_events: np.ndarray,
+                             neg_events: np.ndarray) -> np.ndarray:
+    """
+    Description
+    ----------
+    Internal helper function to combine separate ON and OFF event arrays
+    into a single, sorted (N, 2) array of [frame, type].
+    ----------
+
+    Parameters
+    ----------
+    pos_events (np.ndarray)
+        Array of frame indices for positive (ON) events.
+    neg_events (np.ndarray)
+        Array of frame indices for negative (OFF) events.
+    ----------
+
+    Returns
+    ----------
+    (np.ndarray)
+        A single (N, 2) array of all events sorted by frame number,
+        with type 1 for ON and -1 for OFF.
+    ----------
+    """
+
+    pos_array = np.stack(arrays=(pos_events, np.ones_like(pos_events)), axis=1)
+    neg_array = np.stack(arrays=(neg_events, -np.ones_like(neg_events)), axis=1)
+    all_events = np.vstack((pos_array, neg_array))
+    return all_events[all_events[:, 0].argsort()]
+
+def filter_events_by_duration(pos_events: np.ndarray,
+                              neg_events: np.ndarray,
+                              min_duration: int) -> tuple:
+    """
+    Description
+    ----------
+    This function filters event pairs that define a state (e.g., an 'ON'
+    state) that is shorter than a minimum duration, removing glitches.
+    ----------
+
+    Parameters
+    ----------
+    pos_events (np.ndarray)
+        Array of frame indices for candidate positive (ON) events.
+    neg_events (np.ndarray)
+        Array of frame indices for candidate negative (OFF) events.
+    min_duration (int)
+        The minimum number of frames a state must last to be considered valid.
+    ----------
+
+    Returns
+    ----------
+    final_pos (np.ndarray), final_neg (np.ndarray)
+        A tuple of two arrays containing the filtered frame indices for
+        valid positive (ON) and negative (OFF) events.
+    ----------
+    """
+
+    if len(pos_events) == 0 and len(neg_events) == 0:
+        return np.array([]), np.array([])
+
+    all_events = _combine_and_sort_events(pos_events, neg_events)
+
+    durations = np.diff(all_events[:, 0])
+    is_short = durations < min_duration
+    is_flip = all_events[:-1, 1] == -all_events[1:, 1]
+
+    glitch_starts = np.where(is_short & is_flip)[0]
+    indices_to_remove = np.union1d(glitch_starts, glitch_starts + 1)
+    valid_events = np.delete(all_events, indices_to_remove, axis=0)
+
+    final_pos = valid_events[valid_events[:, 1] == 1, 0].astype(int)
+    final_neg = valid_events[valid_events[:, 1] == -1, 0].astype(int)
+    return final_pos, final_neg
+
+def validate_sequence(pos_events: np.ndarray,
+                      neg_events: np.ndarray) -> tuple:
+    """
+    Description
+    ----------
+    Ensures the final event sequence is logical by enforcing that event
+    types strictly alternate (e.g., ON, OFF, ON...).
+    ----------
+
+    Parameters
+    ----------
+    pos_events (np.ndarray)
+        Array of frame indices for filtered positive (ON) events.
+    neg_events (np.ndarray)
+        Array of frame indices for filtered negative (OFF) events.
+    ----------
+
+    Returns
+    ----------
+    final_pos (np.ndarray), final_neg (np.ndarray)
+        A tuple of two arrays containing the final, validated frame indices.
+    ----------
+    """
+
+    if len(pos_events) == 0 and len(neg_events) == 0:
+        return np.array([]), np.array([])
+
+    all_events = _combine_and_sort_events(pos_events, neg_events)
+
+    if len(all_events) < 2:
+        return pos_events, neg_events
+
+    # find indices where an event is the same type as the one following it
+    non_alternating_indices = np.where(all_events[:-1, 1] == all_events[1:, 1])[0]
+
+    if len(non_alternating_indices) > 0:
+        # keep the first event of a non-alternating pair, remove the second
+        indices_to_remove = non_alternating_indices + 1
+        valid_events = np.delete(all_events, indices_to_remove, axis=0)
+    else:
+        valid_events = all_events
+
+    final_pos = valid_events[valid_events[:, 1] == 1, 0].astype(int)
+    final_neg = valid_events[valid_events[:, 1] == -1, 0].astype(int)
+
+    return final_pos, final_neg
 
 
 class Synchronizer:
@@ -70,6 +200,7 @@ class Synchronizer:
     NB: changes in camera positions will change
     these values!
     """
+
     led_px_dict = {'<2022_08_15': {'21241563': {'LED_top': [276, 1248], 'LED_middle': [348, 1260], 'LED_bottom': [377, 1227]},
                                    '21372315': {'LED_top': [499, 1251], 'LED_middle': [567, 1225], 'LED_bottom': [575, 1249]}},
                    '<2022_12_09': {'21241563': {'LED_top': [276, 1243], 'LED_middle': [348, 1258], 'LED_bottom': [377, 1225]},
@@ -360,40 +491,6 @@ class Synchronizer:
 
         return ipi_durations_ms, audio_ipi_start_samples
 
-    @staticmethod
-    @njit(parallel=True)
-    def relative_change_across_array(input_array: np.ndarray = None,
-                                     desired_axis: int = 0) -> np.ndarray:
-
-        """
-        Description
-        ----------
-        This method takes a 2-D array, and computes the relative
-        change, element-wise along the first (X) or second (Y) axis.
-        ----------
-
-        Parameters
-        ----------
-        input_array (np.ndarray)
-            Input array.
-        desired_axis (int)
-            Axis to compute the change over.
-        ----------
-
-        Returns
-        ----------
-        relative_change_array (np.ndarray)
-            Proportional change relative to a previous element along the desired axis.
-        ----------
-        """
-
-        if desired_axis == 0:
-            relative_change_array = 1 - (input_array[1:, :] / input_array[:-1, :])
-        else:
-            relative_change_array = 1 - (input_array[:, 1:] / input_array[:, :-1])
-
-        return relative_change_array
-
     def gather_px_information(self, video_of_interest: str = None,
                               sync_camera_fps: int | float = None,
                               camera_id: str = None,
@@ -427,50 +524,73 @@ class Synchronizer:
         ----------
         """
 
-        # load video
-        loaded_video = pims.Video(video_of_interest)
+        cap = cv2.VideoCapture(video_of_interest)
 
-        # find camera sync pxl
+        # get video dimensions
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+
         max_frame_num = int(round(sync_camera_fps + (sync_camera_fps / 2)))
         led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
         led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
         used_camera = camera_id
 
-        peak_intensity_frame_loc = 'zero'
+        peak_intensity_frame_loc = 0
         for led_idx, led_position in enumerate(self.led_px_dict[led_px_version][used_camera].keys()):
             led_dim1, led_dim2 = self.led_px_dict[led_px_version][used_camera][led_position]
             dim1_floor_pxl = max(0, led_dim1 - led_px_dev)
-            dim1_ceil_pxl = min(loaded_video[0].shape[0], led_dim1 + led_px_dev)
+            dim1_ceil_pxl = min(frame_height, led_dim1 + led_px_dev)
             dim2_floor_pxl = max(0, led_dim2 - led_px_dev)
-            dim2_ceil_pxl = min(loaded_video[0].shape[1], led_dim2 + led_px_dev)
+            dim2_ceil_pxl = min(frame_width, led_dim2 + led_px_dev)
 
             if led_idx == 0:
                 fame_pxl_values = np.zeros(max_frame_num)
                 for one_num in range(max_frame_num):
-                    fame_pxl_values[one_num] = loaded_video[one_num][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl].max()
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, one_num)
+                    ret, frame = cap.read()
+                    if not ret: continue
+                    # convert to grayscale for accurate intensity check
+                    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    fame_pxl_values[one_num] = frame_gray[dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl].max()
                 peak_intensity_frame_loc = fame_pxl_values.argmax()
 
-            frame_of_choice = loaded_video[peak_intensity_frame_loc][dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl]
-            screen_results = np.where(frame_of_choice == frame_of_choice.max())
-            result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
-            self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
-            self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, peak_intensity_frame_loc)
+            ret, frame = cap.read()
+            if ret:
+                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frame_of_choice = frame_gray[dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl]
+                screen_results = np.where(frame_of_choice == frame_of_choice.max())
+                result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
+                self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
+                self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
 
-        # create memmap array to store the data for posterity
         mm_arr = np.memmap(filename=f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
-                           dtype=DataLoader(input_parameter_dict={}).known_dtypes['np.uint8'], mode='w+', shape=(total_frame_number, 3, 3))
+                           dtype=np.uint8, mode='w+', shape=(total_frame_number, 3, 3))
+
+        led_coords = np.array([
+            self.led_px_dict[led_px_version][used_camera]['LED_top'],
+            self.led_px_dict[led_px_version][used_camera]['LED_middle'],
+            self.led_px_dict[led_px_version][used_camera]['LED_bottom']
+        ])
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
         for fr_idx in range(total_frame_number):
-            try:
-                processed_frame = modify_memmap_array(loaded_video[fr_idx], mm_arr, fr_idx,
-                                                      self.led_px_dict[led_px_version][used_camera]['LED_top'],
-                                                      self.led_px_dict[led_px_version][used_camera]['LED_middle'],
-                                                      self.led_px_dict[led_px_version][used_camera]['LED_bottom'])
-            except av.error.EOFError:
-                self.message_output(f"WARNING: Reached end of decodable frames at index {fr_idx}, while PIMS reported {total_frame_number} total frames.")
+            ret, frame = cap.read()
+
+            if not ret:
+                self.message_output(f"WARNING: Reached end of decodable frames at index {fr_idx}, while total_frame_number was {total_frame_number}.")
                 break
 
-        # the following line is important for saving memmap file changes
+            if frame.ndim == 3:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pixel_values = frame_rgb[led_coords[:, 0], led_coords[:, 1]]
+                mm_arr[fr_idx] = pixel_values
+            else:
+                pixel_values = frame[led_coords[:, 0], led_coords[:, 1]]
+                mm_arr[fr_idx] = np.repeat(pixel_values[:, np.newaxis], repeats=3, axis=1)
+
+        cap.release()
         mm_arr.flush()
 
     def find_video_sync_trains(self, camera_fps: list = None,
@@ -528,8 +648,12 @@ class Synchronizer:
                             # take mean across all three (RGB) channels
                             mean_across_rgb = leds_array.mean(axis=-1)
 
-                            # compute relative change across frames and take median across LEDs
-                            diff_across_leds = np.median(self.relative_change_across_array(input_array=mean_across_rgb), axis=1)
+                            # create a single robust signal by taking the median brightness across the 3 LEDs for each frame.
+                            # add a small value to prevent division by zero when LEDs are fully off.
+                            median_brightness_signal = np.median(mean_across_rgb, axis=1) + 1e-6
+
+                            # compute the relative change of this robust signal
+                            diff_across_leds = 1 - (median_brightness_signal[1:] / median_brightness_signal[:-1])
 
                             # get actual IPI from CoolTerm-recorded .txt file
                             arduino_ipi_durations = []
@@ -548,13 +672,15 @@ class Synchronizer:
                             for threshold_value in np.arange(0.2, relative_intensity_threshold, .01)[::-1]:
                                 if not sequence_found:
 
-                                    diff_mask_neg = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] < -threshold_value)
-                                    neg_significant_events = np.where(diff_mask_neg)[0] + 1
-                                    neg_significant_events = np.delete(neg_significant_events, np.argwhere(np.ediff1d(neg_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
+                                    pos_significant_events, neg_significant_events = find_events(diffs=diff_across_leds,
+                                                                                                 threshold=threshold_value,
+                                                                                                 min_separation=int(np.ceil(camera_fps[sync_cam_idx] / 2.5)))
 
-                                    diff_mask_pos = np.logical_and(np.logical_and(diff_across_leds[:-1] > -threshold_value, diff_across_leds[:-1] < threshold_value), diff_across_leds[1:] > threshold_value)
-                                    pos_significant_events = np.where(diff_mask_pos)[0]
-                                    pos_significant_events = np.delete(pos_significant_events, np.argwhere(np.ediff1d(pos_significant_events) <= int(np.ceil(camera_fps[sync_cam_idx] / 2.5))) + 1)
+                                    # remove short glitches
+                                    pos_significant_events, neg_significant_events = filter_events_by_duration(pos_significant_events, neg_significant_events, min_duration=35)
+
+                                    # ensure logical sequence
+                                    pos_significant_events, neg_significant_events = validate_sequence(pos_significant_events, neg_significant_events)
 
                                     if pos_significant_events.size > 0 and neg_significant_events.size > 0:
                                         if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
@@ -590,7 +716,7 @@ class Synchronizer:
                                             arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
 
                                             result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
-                                            all_zero_matches = np.all(result_array <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
+                                            all_zero_matches = np.all(np.abs(result_array) <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
                                                                       axis=1)
                                             any_all_zeros = np.any(all_zero_matches)
                                             if any_all_zeros:
@@ -655,7 +781,7 @@ class Synchronizer:
             nidq_digital_bits = (nidq_digital_ch & (2 ** np.arange(16).reshape([1, 16]))).astype(bool).astype(int)
 
             # find start/end of recording
-            if self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bool']:
+            if self.input_parameter_dict['find_audio_sync_trains']['nidq_bool']:
                 triggerbox_bit_changes = np.where((nidq_digital_bits[1:, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']] - nidq_digital_bits[:-1, self.input_parameter_dict['find_audio_sync_trains']['nidq_triggerbox_input_bit_position']]) > 0)[0]
                 triggerbox_diffs = triggerbox_bit_changes[1:] - triggerbox_bit_changes[:-1]
                 largest_break_end_hop = np.argmax(triggerbox_diffs) + 1
@@ -668,8 +794,7 @@ class Synchronizer:
                 nidq_video_difference = nidq_rec_duration - total_video_time_least
                 self.message_output(f"For NIDQ, video recording starts at {loopbio_start_nidq_sample} NIDQ sample and ends at {loopbio_end_nidq_sample} NIDQ sample, giving a total NIDQ duration of {nidq_rec_duration:.4f}, which is {nidq_video_difference:.4f} off relative to video duration.")
 
-            # find NIDQ IPI starts and durations in milliseconds
-            if self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bool']:
+                # find NIDQ IPI starts and durations in milliseconds
                 nidq_rec_ = nidq_digital_bits[loopbio_start_nidq_sample:loopbio_end_nidq_sample, self.input_parameter_dict['find_audio_sync_trains']['nidq_sync_input_bit_position']].copy()
                 ipi_start_samples = np.where(np.diff(nidq_rec_) < 0)[0] + 1
                 ipi_end_samples = np.where(np.diff(nidq_rec_) > 0)[0]

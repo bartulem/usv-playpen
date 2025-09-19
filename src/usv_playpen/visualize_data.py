@@ -3,6 +3,7 @@
 Visualizes 3D tracking, vocalization and neural data.
 """
 
+import os
 import traceback
 from click.core import ParameterSource
 from datetime import datetime
@@ -72,6 +73,7 @@ class Visualizer:
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                        message=f"Data visualizations in progress, started at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -107,6 +109,7 @@ class Visualizer:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is available again, visualizations have been completed",
                                                        message=f"Data visualizations have been completed at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "

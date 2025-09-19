@@ -1,8 +1,10 @@
 experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Ivan", "Jiayi", "Jinrun", "Mala",]
-avisoft_recorder_exe = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
+avisoft_recorder_exe_directory = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
 avisoft_recorder_program_name = "rec_usgh.exe"
-avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics\\"
+avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics"
+avisoft_config_directory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics\\Configurations\\RECORDER_USGH"
 coolterm_basedirectory = "D:\\CoolTerm"
+credentials_directory = "/home/bmimica/.config/usv_playpen/.credentials_Bartul"
 recording_files_destination_linux = [ "/mnt/falkner/Bartul/Data",]
 recording_files_destination_win = [ "F:\\Bartul\\Data",]
 recording_files_destinations_all = [ "falkner", "murthy",]
@@ -17,8 +19,8 @@ ethernet_network = "Ethernet 5"
 total_device_num = 2
 total_mic_number = 24
 used_mics = [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,]
-cpu_priority = "high"
-cpu_affinity = [ 6,]
+cpu_priority = ""
+cpu_affinity = []
 
 [audio.general]
 display = 2

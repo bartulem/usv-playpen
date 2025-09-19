@@ -46,6 +46,28 @@ QPushButton:disabled {
   color: #cccccc;
   border-color: #808080;
 }
+
+QPushButton#loginButton {
+  background-color: #ffffff;
+  border-radius: 16px;
+  margin: 0px;
+  padding: 0px;
+  min-width: 0px;
+  min-height: 0px;
+  max-width: none;
+  max-height: none;
+}
+
+QPushButton#loginButton:hover {
+  border-radius: 10px;
+  margin: 0px;
+  border: 1px solid #6c6c6c;
+}
+
+QPushButton#loginButton:pressed {
+  background-color: #6c6c6c;
+}
+
 QSlider:handle {
   background-color: #f58025;
 }

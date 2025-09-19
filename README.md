@@ -1,4 +1,16 @@
-# usv-playpen v0.8.10
+[![Python version](https://img.shields.io/badge/Python-3.10-blue)](https://img.shields.io/badge/Python-3.10-blue)
+[![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
+[![repo size](https://img.shields.io/github/repo-size/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/)
+[![Documentation Status](https://readthedocs.org/projects//usv-playpen/badge/?version=latest)](https://usv-playpen.readthedocs.io/en/latest/?badge=latest)
+[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
+![shields.io-issues](https://img.shields.io/github/issues/bartulem/usv-playpen)
+[![Release](https://img.shields.io/github/v/release/bartulem/usv-playpen)](https://img.shields.io/github/v/release/bartulem/usv-playpen)
+[![MIT Licence](https://img.shields.io/github/license/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/blob/main/LICENSE)
+[![All Contributors](https://img.shields.io/badge/all_contributors-2-orange.svg?style=flat-square)](https://img.shields.io/badge/all_contributors-2-orange.svg?style=flat-square)
+[![GitHub stars](https://img.shields.io/github/stars/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
+[![GitHub forks](https://img.shields.io/github/forks/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
+
+# usv-playpen
 
 ![](https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/src/usv_playpen/img/usv_playpen_gui.png)
 
@@ -10,18 +22,6 @@ acquisition. Developed for behavioral recording purposes at the
 labs). Due to proprietary software design and limitations, recordings can only
 be performed on OS Windows. The data processing, analysis and visualization
 branches of the GUI are platform-independent.
-
-[![Python version](https://img.shields.io/badge/Python-3.10-blue)](https://img.shields.io/badge/Python-3.10-blue)
-[![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
-[![repo size](https://img.shields.io/github/repo-size/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/)
-[![Documentation Status](https://readthedocs.org/projects//usv-playpen/badge/?version=latest)](https://usv-playpen.readthedocs.io/en/latest/?badge=latest)
-[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
-![shields.io-issues](https://img.shields.io/github/issues/bartulem/usv-playpen)
-[![Release](https://img.shields.io/github/v/release/bartulem/usv-playpen)](https://img.shields.io/github/v/release/bartulem/usv-playpen)
-[![MIT Licence](https://img.shields.io/github/license/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/blob/main/LICENSE)
-[![All Contributors](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)](https://img.shields.io/badge/all_contributors-1-orange.svg?style=flat-square)
-[![GitHub stars](https://img.shields.io/github/stars/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
-[![GitHub forks](https://img.shields.io/github/forks/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
 
 ## Prerequisites
 
@@ -50,18 +50,18 @@ uv venv --python=3.10
 ### Linux (terminal) instructions
 
 ```bash
-echo 'alias go-vpp="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.bashrc
+echo 'alias activate-pni="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.bashrc
 source ~/.bashrc
-go-vpp
+activate-pni
 uv sync
 ```
 
 ### macOS (terminal) instructions
 
 ```bash
-echo 'alias go-vpp="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.zshrc
+echo 'alias activate-pni="source /path/.../usv-playpen/.venv/bin/activate"' >> ~/.zshrc
 source ~/.zshrc
-go-vpp
+activate-pni
 uv sync
 ```
 
@@ -69,9 +69,9 @@ uv sync
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
-Add-Content -Path $PROFILE -Value "`nfunction go-vpp {`n    . 'C:\path\...\usv-playpen\.venv\Scripts\Activate.ps1'`n}"
+Add-Content -Path $PROFILE -Value "`nfunction activate-pni {`n    . 'C:\path\...\usv-playpen\.venv\Scripts\Activate.ps1'`n}"
 . $PROFILE
-go-vpp
+activate-pni
 uv sync
 ```
 
@@ -86,7 +86,7 @@ git pull && uv sync
 Run the GUI with:
 
 ```bash
-go-vpp && usv-playpen
+activate-pni && usv-playpen
 ```
 
 User guide with detailed instructions is available

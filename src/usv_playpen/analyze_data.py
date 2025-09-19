@@ -4,6 +4,7 @@ Conduct analyses of choice on the data of choice (on the PC of choice).
 """
 
 from datetime import datetime
+import os
 import traceback
 import warnings
 from click.core import ParameterSource
@@ -78,6 +79,7 @@ class Analyst:
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                        message=f"Data analyses in progress, started at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -127,6 +129,7 @@ class Analyst:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, analyses have been completed",
                                                        message=f"Data analyses have been completed at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
