@@ -63,6 +63,8 @@ Changelog = "https://github.com/bartulem/usv_playpen/releases"
 test = [
   "pytest >=6",
   "pytest-cov >=3",
+  "pytest-mock",
+  "pytest-qt",
 ]
 dev = [
   { include-group = "test" },
