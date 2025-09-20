@@ -219,4 +219,3 @@ def test_find_ipi_intervals_static_method():
     # check the results
     assert np.array_equal(audio_ipi_start_samples, np.array([1250]))
     assert np.allclose(ipi_durations_ms, np.array([((5000-1250)/sr)*1000]))
-

@@ -61,7 +61,8 @@ jobs:
 
       - name: Install Qt OpenGL dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-glx
+        run:
+          sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-glx
 
       - name: Install package
         run: uv sync

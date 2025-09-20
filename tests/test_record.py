@@ -118,4 +118,3 @@ def test_check_remote_mount_auth_failure(mocker, controller):
 
     result = controller.check_remote_mount('host', 22, 'user', 'pw', '/mnt/data')
     assert result is False
-
