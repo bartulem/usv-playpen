@@ -47,6 +47,9 @@ jobs:
         python-version: ["3.10"]
         runs-on: [ubuntu-latest, windows-latest, macos-latest]
 
+    env:
+      QT_QPA_PLATFORM: offscreen
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,15 +62,27 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Install Qt OpenGL dependencies (Linux)
+      - name: Install Qt deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libopengl0 \
+            libxkbcommon-x11-0 libxcb-xinerama0 libxcb-cursor0 \
+            libxcb-keysyms1 libxcb-image0 libxcb-render-util0 \
+            xvfb
 
       - name: Install package
         run: uv sync
 
-      - name: Test package
-        run: >-
+      - name: Test package (Linux headless)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a uv run pytest -ra --cov --cov-report=xml --cov-report=term --durations=20
+
+      - name: Test package (non-Linux)
+        if: runner.os != 'Linux'
+        run:
           uv run pytest -ra --cov --cov-report=xml --cov-report=term
           --durations=20
 
