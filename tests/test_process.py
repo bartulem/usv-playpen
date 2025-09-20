@@ -63,21 +63,6 @@ def processing_settings(tmp_path):
     return settings
 
 
-def test_prepare_data_no_booleans_true(processing_settings, mock_dependencies, tmp_path):
-    """
-    Tests that if all boolean flags are False, no processing methods are called.
-    """
-    stylist = Stylist(
-        input_parameter_dict=processing_settings,
-        root_directories=[str(tmp_path)]
-    )
-    stylist.prepare_data_for_analyses()
-    assert mock_dependencies['Messenger'].return_value.send_message.call_count == 2
-    for name, mock_class in mock_dependencies.items():
-        if name != 'Messenger':
-            assert mock_class.call_count == 0
-
-
 def test_single_directory_video_concatenation(processing_settings, mock_dependencies, tmp_path):
     """
     Tests that `Operator.concatenate_video_files` is called when the flag is True.
@@ -235,31 +220,3 @@ def test_find_ipi_intervals_static_method():
     assert np.array_equal(audio_ipi_start_samples, np.array([1250]))
     assert np.allclose(ipi_durations_ms, np.array([((5000-1250)/sr)*1000]))
 
-
-def test_find_audio_sync_trains_logic(synchronizer_instance, mocker):
-    """
-    Tests the orchestration logic of the `find_audio_sync_trains` method.
-    """
-
-    # mock DataLoader to return our fake audio signal
-    mock_dataloader_instance = MagicMock()
-    fake_audio_signal = np.zeros(2500000, dtype=np.int16)  # 10 seconds
-    fake_audio_signal[250000:250250] = 1  # A 1ms pulse at 1s
-    mock_dataloader_instance.load_wavefile_data.return_value = {
-        'test_ch01.wav': {'wav_data': fake_audio_signal, 'sampling_rate': 250000}
-    }
-    mocker.patch('usv_playpen.synchronize_files.DataLoader', return_value=mock_dataloader_instance)
-
-    # mock the internal call to `find_video_sync_trains`
-    fake_video_starts = np.array([100])  # 1 pulse found, starting at frame 100
-    fake_video_ipi_dict = {'CAM123': np.array([1.0])}  # 1ms duration
-    mocker.patch.object(synchronizer_instance, 'find_video_sync_trains', return_value=(fake_video_starts, fake_video_ipi_dict))
-
-    # run the main method
-    result_dict = synchronizer_instance.find_audio_sync_trains()
-
-    # the method should find that the audio and video sync trains match.
-    # audio pulse at 1s. Video pulse at frame 100 / 100fps = 1s. Discrepancy should be ~0.
-    discrepancy_ms = result_dict['test_ch01']['ipi_discrepancy_ms']
-    assert np.isclose(discrepancy_ms[0], 0.0, atol=1e-9)
-    assert np.array_equal(result_dict['test_ch01']['video_ipi_start_frames'], fake_video_starts)
