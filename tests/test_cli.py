@@ -5,7 +5,7 @@ Test CLI.
 
 import pytest
 from click.testing import CliRunner
-from unittest.mock import patch
+
 from usv_playpen.analyze_data import (
     generate_beh_features_cli,
     generate_usv_playback_cli,
@@ -14,8 +14,6 @@ from usv_playpen.analyze_data import (
 from usv_playpen.preprocess_data import (
     concatenate_video_files_cli,
     rectify_video_fps_cli,
-    # das_infer_cli,
-    # concatenate_ephys_files_cli,
     crop_wav_files_to_video_cli,
     av_sync_check_cli
 )
@@ -233,46 +231,6 @@ def test_av_sync_check_cli_success(runner, mocker, tmp_path):
     mock_gatherer.return_value.prepare_data_for_analyses.assert_called_once()
     mock_synchronizer.return_value.find_audio_sync_trains.assert_called_once()
     mock_plotter.return_value.preprocessing_summary.assert_called_once()
-
-def test_das_infer_cli_success(runner, mocker, tmp_path):
-    """
-    Tests the 'das-infer' command.
-    """
-
-    mock_das = mocker.patch('usv_playpen.preprocess_data.FindMouseVocalizations')
-    mocker.patch(
-        'usv_playpen.preprocess_data.modify_settings_json_for_cli',
-        return_value={'usv_inference': {'FindMouseVocalizations': {}}}
-    )
-
-    result = runner.invoke(das_infer_cli, ['--root-directory', str(tmp_path)])
-
-    assert result.exit_code == 0, f"CLI failed: {result.output}"
-    assert result.exception is None, f"Exception occurred: {result.output}"
-    mock_das.assert_called_once()
-    init_kwargs = mock_das.call_args.kwargs
-    assert init_kwargs['root_directory'] == str(tmp_path)
-    mock_das.return_value.das_command_line_inference.assert_called_once()
-
-def test_concatenate_ephys_cli_parses_list(runner, mocker, tmp_path):
-    """
-    Tests that the 'concatenate-ephys-files' command correctly parses a
-    comma-separated string into a list of directories.
-    """
-
-    mock_operator = mocker.patch('usv_playpen.preprocess_data.Operator')
-    mocker.patch('pathlib.Path.is_dir', return_value=True)
-
-    dirs_string = f'{str(tmp_path)}, {str(tmp_path)}, {str(tmp_path)}'
-    result = runner.invoke(concatenate_ephys_files_cli, ['--root-directories', dirs_string])
-
-    assert result.exit_code == 0, f"CLI failed: {result.output}"
-    assert result.exception is None, f"Exception occurred: {result.output}"
-    mock_operator.assert_called_once()
-    init_kwargs = mock_operator.call_args.kwargs
-    expected_list = [str(tmp_path), str(tmp_path), str(tmp_path)]
-    assert init_kwargs['root_directory'] == expected_list
-    mock_operator.return_value.concatenate_binary_files.assert_called_once()
 
 def test_cli_fails_with_missing_required_directory(runner):
     """
