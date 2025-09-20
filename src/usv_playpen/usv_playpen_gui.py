@@ -630,7 +630,7 @@ class USVPlaypenWindow(QMainWindow):
         avisoft_config_dir_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         avisoft_config_dir_label.move(5, 100)
         self.avisoft_config_edit = QLineEdit(self.avisoft_config_dir_global, self.Record)
-        self.avisoft_config_edit.setPlaceholderText('Select Avisoft config directory (must be on C:\ drive!)')
+        self.avisoft_config_edit.setPlaceholderText('Select Avisoft config directory (must be on C:\\ drive!)')
         update_avisoft_config_dir = partial(self._update_nested_dict_value, self.exp_settings_dict, ('avisoft_config_directory',))
         self.avisoft_config_edit.textChanged.connect(update_avisoft_config_dir)
         self.avisoft_config_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -4652,17 +4652,17 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.appendPlainText(s)
 
 
-def main() -> None:
+def initialize_main_window(no_splash: bool = False) -> QMainWindow:
     """
-    Creates GUI application.
+    Initialize the main GUI window and return the object.
 
     Parameters
     ----------
-    ----------
+    no_splash: Whether to display the splash screen or not.
 
     Returns
     -------
-    -------
+    The intialized GUI windows.
     """
 
     # Handle high-resolution displays:
@@ -4671,7 +4671,10 @@ def main() -> None:
     if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, on=True)
 
-    usv_playpen_app = QApplication([])
+    # Reuse existing app if present
+    usv_playpen_app = QApplication.instance()
+    if usv_playpen_app is None:
+        usv_playpen_app = QApplication(sys.argv)
 
     usv_playpen_app.setStyle('Fusion')
 
@@ -4691,10 +4694,12 @@ def main() -> None:
     with open((Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'r') as visualizations_json_file:
         visualizations_input_dict = json.load(visualizations_json_file)
 
-    splash = QSplashScreen(QPixmap(splash_icon))
-    splash.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-    splash.show()
-    QTest.qWait(2500)
+    splash = None
+    if not no_splash:
+        splash = QSplashScreen(QPixmap(splash_icon))
+        splash.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        splash.show()
+        QTest.qWait(2500)
 
     initial_values_dict = {'exp_id': _toml['video']['metadata']['experimenter'],
                            'conduct_audio_cb_bool': _toml['conduct_audio_recording'], 'conduct_tracking_calibration_cb_bool': _toml['conduct_tracking_calibration'],
@@ -4741,11 +4746,28 @@ def main() -> None:
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 
-    splash.finish(usv_playpen_window)
+    if splash is not None:
+        splash.finish(usv_playpen_window)
 
-    usv_playpen_window.show()
+    return usv_playpen_app, usv_playpen_window
 
-    sys.exit(usv_playpen_app.exec())
+
+def main() -> None:
+    """
+    Creates GUI application.
+
+    Parameters
+    ----------
+    ----------
+
+    Returns
+    -------
+    -------
+    """
+
+    app, window = initialize_main_window()
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
