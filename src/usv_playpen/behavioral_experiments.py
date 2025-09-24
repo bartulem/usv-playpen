@@ -154,26 +154,13 @@ class ExperimentController:
                 "enable"
             ]
 
-            try:
-                subprocess.run(
-                    enable_command,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    encoding='utf-8'
-                )
-
-            except subprocess.CalledProcessError as e:
-                # This block will run only if the command fails
-                print("--- NETSH COMMAND FAILED ---")
-                print("Please check the error message below to see why.")
-                print("\n--- Standard Error (stderr) from netsh ---")
-                print(e.stderr)  # This is the crucial error message from the command.
-                print("\n--- Standard Output (stdout) from netsh ---")
-                print(e.stdout)
-                print("---------------------------------------")
-                # The script will now exit so you can fix the issue.
-                sys.exit(1)
+            subprocess.run(
+                enable_command,
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding='utf-8'
+            )
 
             max_wait_seconds = 20
             poll_interval_seconds = 5
