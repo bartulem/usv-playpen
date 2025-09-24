@@ -150,8 +150,8 @@ class ExperimentController:
 
             enable_command = [
                 "netsh", "interface", "set", "interface",
-                f'name="{ethernet_name}"',
-                "admin=enabled"
+                ethernet_name,
+                "enable"
             ]
 
             try:
