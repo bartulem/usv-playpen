@@ -30,8 +30,8 @@ def find_events(diffs: np.ndarray,
     """
     Description
     ----------
-    This function finds initial event candidates (rising/falling edges) in a
-    signal and debounces them by removing duplicate-like detections.
+    This function finds initial event candidates (rising/falling edges)
+    in a signal.
     ----------
 
     Parameters
