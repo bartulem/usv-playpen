@@ -26,8 +26,7 @@ from .time_utils import *
 
 
 def find_events(diffs: np.ndarray,
-                threshold: float,
-                min_separation: int) -> tuple:
+                threshold: float) -> tuple:
     """
     Description
     ----------
@@ -41,8 +40,6 @@ def find_events(diffs: np.ndarray,
         The 1D input signal representing frame-to-frame changes.
     threshold (float)
         The value above which a change is considered significant.
-    min_separation (int)
-        Minimum frames between two events of the same type to be kept.
     ----------
 
     Returns
@@ -59,14 +56,6 @@ def find_events(diffs: np.ndarray,
 
     pos_events = np.where(stable & rising)[0]
     neg_events = np.where(stable & falling)[0] + 1
-
-    if len(pos_events) > 1:
-        keep_mask = np.concatenate(([True], np.diff(pos_events) > min_separation))
-        pos_events = pos_events[keep_mask]
-
-    if len(neg_events) > 1:
-        keep_mask = np.concatenate(([True], np.diff(neg_events) > min_separation))
-        neg_events = neg_events[keep_mask]
 
     return pos_events, neg_events
 
@@ -98,6 +87,7 @@ def _combine_and_sort_events(pos_events: np.ndarray,
     pos_array = np.stack(arrays=(pos_events, np.ones_like(pos_events)), axis=1)
     neg_array = np.stack(arrays=(neg_events, -np.ones_like(neg_events)), axis=1)
     all_events = np.vstack((pos_array, neg_array))
+
     return all_events[all_events[:, 0].argsort()]
 
 def filter_events_by_duration(pos_events: np.ndarray,
@@ -143,6 +133,7 @@ def filter_events_by_duration(pos_events: np.ndarray,
 
     final_pos = valid_events[valid_events[:, 1] == 1, 0].astype(int)
     final_neg = valid_events[valid_events[:, 1] == -1, 0].astype(int)
+
     return final_pos, final_neg
 
 def validate_sequence(pos_events: np.ndarray,
@@ -663,8 +654,7 @@ class Synchronizer:
             # step 1: find raw candidate events
             pos_significant_events, neg_significant_events = find_events(
                 diffs=diff_across_leds,
-                threshold=threshold_value,
-                min_separation=int(np.ceil(camera_fps / 2.5))
+                threshold=threshold_value
             )
 
             # step 2: filter out short-lived glitches

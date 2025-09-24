@@ -8,7 +8,7 @@
 CUP_ROOT="Name"
 CPUS_PER_TASK=4
 TOTAL_MEMORY="48G"
-TIME_RESTRICTION="05:00:00"
+TIME_RESTRICTION="18:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
