@@ -178,7 +178,7 @@ class ExperimentController:
 
                 if current_status.lower() == 'up':
                     self.message_output(f"Success! Adapter '{ethernet_name}' is now Up.")
-                    smart_wait(app_context_bool=self.app_context_bool, seconds=5)
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=10)
                     break
 
                 if attempt < num_attempts - 1:
