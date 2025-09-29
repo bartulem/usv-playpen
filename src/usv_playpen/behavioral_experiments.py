@@ -718,7 +718,7 @@ class ExperimentController:
 
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
-                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
                                                                          message=f"Experiment in progress, started at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
@@ -974,7 +974,7 @@ class ExperimentController:
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
                   no_receivers_notification=False,
-                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, recording has been completed.",
                                                                          message=f"Thank you for your patience, recording by @{self.exp_settings_dict['video']['metadata']['experimenter']} was completed at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "

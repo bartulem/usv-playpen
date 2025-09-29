@@ -84,9 +84,10 @@ class Messenger:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(self.credentials_file):
-            self.message_output("E-mail config file not found. Try again!")
-            sys.exit()
+        if not os.path.isfile(self.credentials_file):
+            print(self.credentials_file)
+            print("E-mail config file not found. Try again!")
+            sys.exit(1)
         else:
             config.read(self.credentials_file)
             return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'],config['email']['email_password']
