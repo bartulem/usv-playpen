@@ -70,9 +70,7 @@
     }
   },
   "preprocess_data": {
-    "root_directories": [
-      "/mnt/falkner/Bartul/Data/20250928_212046"
-    ]
+    "root_directories": []
   },
   "extract_phidget_data": {
     "Gatherer": {
@@ -185,9 +183,7 @@
       "processing_pc_choice": "A84I Linux",
       "experimenter": "Bartul",
       "send_message": {
-        "receivers": [
-          "bmimica@princeton.edu"
-        ]
+        "receivers": []
       }
     }
   },
