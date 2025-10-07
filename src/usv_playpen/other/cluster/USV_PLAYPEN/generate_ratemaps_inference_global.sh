@@ -6,9 +6,9 @@
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
 CUP_ROOT="Name"
-CPUS_PER_TASK=12
+CPUS_PER_TASK=4
 TOTAL_MEMORY="48G"
-TIME_RESTRICTION="48:00:00"
+TIME_RESTRICTION="18:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
@@ -27,9 +27,9 @@ mkdir -p "$WORK_DIR/logs"
 
 touch "$JOB_SCRIPT"
 echo "#!/bin/bash" > "$JOB_SCRIPT"
-echo "#SBATCH --job-name=visualize-video-$SESSION_ID" >> "$JOB_SCRIPT"
-echo "#SBATCH --output=$WORK_DIR/logs/visualize-video-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
-echo "#SBATCH --error=$WORK_DIR/logs/visualize-video-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
+echo "#SBATCH --job-name=generate-ratemaps-$SESSION_ID" >> "$JOB_SCRIPT"
+echo "#SBATCH --output=$WORK_DIR/logs/generate-ratemaps-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
+echo "#SBATCH --error=$WORK_DIR/logs/generate-ratemaps-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "#SBATCH --mem=$TOTAL_MEMORY" >> "$JOB_SCRIPT"
 echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"

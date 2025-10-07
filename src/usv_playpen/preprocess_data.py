@@ -110,7 +110,7 @@ class Stylist:
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
-                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                                          message=f"Data preprocessing in progress, started at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -281,7 +281,7 @@ class Stylist:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
-                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config_record.ini",
+                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, processing has been completed",
                                                                          message=f"Data preprocessing has been completed at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "

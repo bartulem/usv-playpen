@@ -129,23 +129,63 @@ class ExperimentController:
         -------
         """
 
-        # check if the Ethernet adapter is connected
-        ethernet_command_list = ["powershell", "-Command", f'''& {{ (Get-NetAdapter -Name "{self.exp_settings_dict['ethernet_network']}").Status -eq "Up" }}''']
-        ethernet_status = subprocess.run(args=ethernet_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
+        ethernet_name = self.exp_settings_dict['ethernet_network']
 
-        # reconnect if not connected
-        if ethernet_status.returncode == 0:
-            ethernet_status_output_text = ethernet_status.stdout.strip()
-            if ethernet_status_output_text.lower() == 'false':
+        status_check_command = [
+            "powershell", "-Command",
+            f'(Get-NetAdapter -Name "{ethernet_name}").Status'
+        ]
 
-                subprocess.Popen(
-                    args=['powershell', '-Command', f"Enable-NetAdapter -Name '{self.exp_settings_dict['ethernet_network']}' -Confirm:$false"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.STDOUT
-                ).wait()
+        status_result = subprocess.run(
+            status_check_command,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding='utf-8'
+        )
+        adapter_status = status_result.stdout.strip()
 
-                # pause for N seconds
-                smart_wait(app_context_bool=self.app_context_bool, seconds=15)
+        if adapter_status.lower() != 'up':
+            self.message_output(f"Adapter '{ethernet_name}' is not Up. Attempting to enable...")
+
+            enable_command = [
+                "netsh", "interface", "set", "interface",
+                ethernet_name,
+                "enable"
+            ]
+
+            subprocess.run(
+                enable_command,
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding='utf-8'
+            )
+
+            max_wait_seconds = 20
+            poll_interval_seconds = 5
+            num_attempts = max(1, max_wait_seconds // poll_interval_seconds)
+
+            for attempt in range(num_attempts):
+                status_result = subprocess.run(
+                    status_check_command,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    encoding='utf-8'
+                )
+                current_status = status_result.stdout.strip()
+
+                if current_status.lower() == 'up':
+                    self.message_output(f"Success! Adapter '{ethernet_name}' is now Up.")
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=10)
+                    break
+
+                if attempt < num_attempts - 1:
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=poll_interval_seconds)
+            else:
+                self.message_output(f"Timeout: Adapter '{ethernet_name}' did not come Up after {max_wait_seconds} seconds.")
+                sys.exit(1)
 
     def remount_cup_drives_on_windows(self) -> None:
         """
@@ -310,9 +350,8 @@ class ExperimentController:
         config = configparser.ConfigParser()
 
         if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini"):
-            self.message_output("Cup config file not found. Try again!")
-            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-            sys.exit()
+            print("Cup config file not found. Try again!")
+            sys.exit(1)
         else:
             config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini")
             return config['cup']['username'], config['cup']['password']
@@ -342,9 +381,8 @@ class ExperimentController:
 
 
         if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini"):
-            self.message_output("Motif config file not found. Try again!")
-            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-            sys.exit()
+            print("Motif config file not found. Try again!")
+            sys.exit(1)
         else:
             config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini")
             return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
@@ -413,16 +451,14 @@ class ExperimentController:
                 lin_dir_elements = lin_directory.split('/')[0:3]
                 mount_check_bool = self.check_remote_mount(hostname=ip_address_pc, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path='/'.join(lin_dir_elements))
                 if not mount_check_bool:
-                    self.message_output(f"Mount point {lin_directory} on {ip_address} is not valid. Please fix the issue and try again.")
-                    smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-                    sys.exit()
+                    print(f"Mount point {lin_directory} on {ip_address} is not valid. Please fix the issue and try again.")
+                    sys.exit(1)
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
         except motifapi.api.MotifError:
-            self.message_output('Motif not running or reachable. Check hardware and connections.')
-            smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-            sys.exit()
+            print('Motif not running or reachable. Check hardware and connections.')
+            sys.exit(1)
         else:
             if 1 < len(self.exp_settings_dict['video']['general']['expected_cameras']) < 5:
                 temp_camera_serial_num = [camera_dict['serial'] for camera_dict in api.call('cameras')['cameras']]
@@ -682,7 +718,7 @@ class ExperimentController:
 
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
-                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
                                                                          message=f"Experiment in progress, started at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
@@ -938,7 +974,7 @@ class ExperimentController:
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
                   no_receivers_notification=False,
-                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config_record.ini",
+                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, recording has been completed.",
                                                                          message=f"Thank you for your patience, recording by @{self.exp_settings_dict['video']['metadata']['experimenter']} was completed at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "

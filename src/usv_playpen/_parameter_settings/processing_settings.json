@@ -8,10 +8,10 @@
     "conduct_audio_filtering": false,
     "conduct_hpss": false,
     "conduct_audio_video_sync": false,
-    "conduct_ephys_video_sync": true,
+    "conduct_ephys_video_sync": false,
     "conduct_ephys_file_chaining": false,
     "split_cluster_spikes": false,
-    "prepare_sleap_cluster": false,
+    "prepare_sleap_cluster": true,
     "sleap_h5_conversion": false,
     "anipose_calibration": false,
     "anipose_triangulation": false,
@@ -61,7 +61,7 @@
     }
   },
   "preprocess_data": {
-    "root_directories": ["/mnt/falkner/Bartul/Data/20250912_125331"]
+  "root_directories": []
   },
   "extract_phidget_data": {
     "Gatherer": {

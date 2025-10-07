@@ -26,13 +26,12 @@ from .time_utils import *
 
 
 def find_events(diffs: np.ndarray,
-                threshold: float,
-                min_separation: int) -> tuple:
+                threshold: float) -> tuple:
     """
     Description
     ----------
-    This function finds initial event candidates (rising/falling edges) in a
-    signal and debounces them by removing duplicate-like detections.
+    This function finds initial event candidates (rising/falling edges)
+    in a signal.
     ----------
 
     Parameters
@@ -41,8 +40,6 @@ def find_events(diffs: np.ndarray,
         The 1D input signal representing frame-to-frame changes.
     threshold (float)
         The value above which a change is considered significant.
-    min_separation (int)
-        Minimum frames between two events of the same type to be kept.
     ----------
 
     Returns
@@ -59,14 +56,6 @@ def find_events(diffs: np.ndarray,
 
     pos_events = np.where(stable & rising)[0]
     neg_events = np.where(stable & falling)[0] + 1
-
-    if len(pos_events) > 1:
-        keep_mask = np.concatenate(([True], np.diff(pos_events) > min_separation))
-        pos_events = pos_events[keep_mask]
-
-    if len(neg_events) > 1:
-        keep_mask = np.concatenate(([True], np.diff(neg_events) > min_separation))
-        neg_events = neg_events[keep_mask]
 
     return pos_events, neg_events
 
@@ -98,6 +87,7 @@ def _combine_and_sort_events(pos_events: np.ndarray,
     pos_array = np.stack(arrays=(pos_events, np.ones_like(pos_events)), axis=1)
     neg_array = np.stack(arrays=(neg_events, -np.ones_like(neg_events)), axis=1)
     all_events = np.vstack((pos_array, neg_array))
+
     return all_events[all_events[:, 0].argsort()]
 
 def filter_events_by_duration(pos_events: np.ndarray,
@@ -143,6 +133,7 @@ def filter_events_by_duration(pos_events: np.ndarray,
 
     final_pos = valid_events[valid_events[:, 1] == 1, 0].astype(int)
     final_neg = valid_events[valid_events[:, 1] == -1, 0].astype(int)
+
     return final_pos, final_neg
 
 def validate_sequence(pos_events: np.ndarray,
@@ -216,8 +207,10 @@ class Synchronizer:
                                    '21372315': {'LED_top': [510, 1268], 'LED_middle': [555, 1268], 'LED_bottom': [603, 1266]}},
                    '<2025_05_08': {'21241563': {'LED_top': [317, 1247], 'LED_middle': [360, 1254], 'LED_bottom': [403, 1262]},
                                    '21372315': {'LED_top': [507, 1267], 'LED_middle': [554, 1267], 'LED_bottom': [601, 1266]}},
-                   'current': {'21241563': {'LED_top': [310, 1245], 'LED_middle': [358, 1248], 'LED_bottom': [402, 1255]},
-                               '21372315': {'LED_top': [504, 1261], 'LED_middle': [551, 1260], 'LED_bottom': [598, 1260]}}}
+                   '<2025_09_21': {'21241563': {'LED_top': [310, 1245], 'LED_middle': [358, 1248], 'LED_bottom': [402, 1255]},
+                                   '21372315': {'LED_top': [504, 1261], 'LED_middle': [551, 1260], 'LED_bottom': [598, 1260]}},
+                   'current': {'21241563': {'LED_top': [296, 1234], 'LED_middle': [339, 1244], 'LED_bottom': [383, 1252]},
+                               '21372315': {'LED_top': [504, 1267], 'LED_middle': [551, 1268], 'LED_bottom': [599, 1265]}}}
 
     if os.name == 'nt':
         command_addition = 'cmd /c '
@@ -535,34 +528,59 @@ class Synchronizer:
         led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
         used_camera = camera_id
 
-        peak_intensity_frame_loc = 0
-        for led_idx, led_position in enumerate(self.led_px_dict[led_px_version][used_camera].keys()):
+        for led_position in self.led_px_dict[led_px_version][used_camera].keys():
             led_dim1, led_dim2 = self.led_px_dict[led_px_version][used_camera][led_position]
-            dim1_floor_pxl = max(0, led_dim1 - led_px_dev)
-            dim1_ceil_pxl = min(frame_height, led_dim1 + led_px_dev)
-            dim2_floor_pxl = max(0, led_dim2 - led_px_dev)
-            dim2_ceil_pxl = min(frame_width, led_dim2 + led_px_dev)
 
-            if led_idx == 0:
-                fame_pxl_values = np.zeros(max_frame_num)
-                for one_num in range(max_frame_num):
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, one_num)
-                    ret, frame = cap.read()
-                    if not ret: continue
-                    # convert to grayscale for accurate intensity check
-                    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    fame_pxl_values[one_num] = frame_gray[dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl].max()
-                peak_intensity_frame_loc = fame_pxl_values.argmax()
+            # define a search area (Region of Interest - ROI) around the approximate coordinate
+            y_start = max(0, led_dim1 - led_px_dev)
+            y_end = min(frame_height, led_dim1 + led_px_dev)
+            x_start = max(0, led_dim2 - led_px_dev)
+            x_end = min(frame_width, led_dim2 + led_px_dev)
 
+            peak_intensity = -1
+            peak_intensity_frame_loc = -1
+
+            # find the brightest frame for THIS SPECIFIC LED
+            for frame_num in range(max_frame_num):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
+                if not ret: continue
+
+                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                roi_intensity = np.max(frame_gray[y_start:y_end, x_start:x_end])
+
+                if roi_intensity > peak_intensity:
+                    peak_intensity = roi_intensity
+                    peak_intensity_frame_loc = frame_num
+
+            # go to that brightest frame and find the centroid of the LED spot
             cap.set(cv2.CAP_PROP_POS_FRAMES, peak_intensity_frame_loc)
             ret, frame = cap.read()
             if ret:
                 frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                frame_of_choice = frame_gray[dim1_floor_pxl:dim1_ceil_pxl, dim2_floor_pxl:dim2_ceil_pxl]
-                screen_results = np.where(frame_of_choice == frame_of_choice.max())
-                result_dim1, result_dim2 = [dim1_floor_pxl + screen_results[0][0], dim2_floor_pxl + screen_results[1][0]]
-                self.led_px_dict[led_px_version][used_camera][led_position] = [result_dim1, result_dim2]
-                self.message_output(f"For camera {used_camera}, {led_position} the highest intensity pixel is in position {result_dim1},{result_dim2}.")
+                roi = frame_gray[y_start:y_end, x_start:x_end]
+
+                # use Otsu's method to automatically find the best threshold
+                # to separate the bright LED from the darker background within the ROI.
+                _, binary_roi = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                # calculate image moments of the resulting binary mask
+                M = cv2.moments(binary_roi)
+
+                # compute centroid
+                if M['m00'] != 0:
+                    # find the center (cx, cy) *relative to the top-left corner of the small ROI box*
+                    cx_relative = int(M['m10'] / M['m00'])
+                    cy_relative = int(M['m01'] / M['m00'])
+
+                    # crucially, add the box's offset (y_start, x_start) to convert back to full-frame coordinates
+                    final_y = y_start + cy_relative
+                    final_x = x_start + cx_relative
+
+                    self.led_px_dict[led_px_version][used_camera][led_position] = [final_y, final_x]
+                    self.message_output(f"For {led_position}, centroid found at frame {peak_intensity_frame_loc}: ({final_y}, {final_x})")
+                else:
+                    self.message_output(f"Could not find centroid for {led_position}, using original coordinate.")
 
         mm_arr = np.memmap(filename=f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
                            dtype=np.uint8, mode='w+', shape=(total_frame_number, 3, 3))
@@ -593,13 +611,118 @@ class Synchronizer:
         cap.release()
         mm_arr.flush()
 
+    def attempt_sequence_match(self, brightness_signal: np.ndarray,
+                                camera_fps: float,
+                                arduino_ipi_durations: np.ndarray,
+                                camera_dir: str) -> tuple:
+        """
+        Description
+        ----------
+        This helper function takes a 1D brightness signal and attempts to find a
+        match for the ground-truth Arduino IPI sequence. It contains the full
+        pipeline of event detection, filtering, and sequence comparison.
+        ----------
+
+        Parameters
+        ----------
+        brightness_signal (np.ndarray)
+            The 1D brightness signal generated from either median or max of LEDs.
+        camera_fps (float)
+            The sampling rate of the camera in frames per second.
+        arduino_ipi_durations (np.ndarray)
+            The ground-truth sequence of IPIs from the CoolTerm log.
+        camera_dir (str)
+            The identifier for the camera being processed.
+        ----------
+
+        Returns
+        ----------
+        (dict, np.ndarray, bool)
+            A tuple containing the sync_sequence_dict, the ipi_start_frames,
+            and a boolean indicating if the sequence was found. Returns
+            (None, None, False) on failure.
+        ----------
+        """
+
+        # compute the relative change of the provided signal
+        diff_across_leds = 1 - (brightness_signal[1:] / brightness_signal[:-1])
+
+        # find indices where the largest changes occur by iterating through thresholds
+        relative_intensity_threshold = self.input_parameter_dict['find_video_sync_trains']['relative_intensity_threshold']
+
+        for threshold_value in np.arange(0.2, relative_intensity_threshold, .01)[::-1]:
+            # step 1: find raw candidate events
+            pos_significant_events, neg_significant_events = find_events(
+                diffs=diff_across_leds,
+                threshold=threshold_value
+            )
+
+            # step 2: filter out short-lived glitches
+            pos_significant_events, neg_significant_events = filter_events_by_duration(
+                pos_significant_events, neg_significant_events, min_duration=35
+            )
+
+            # step 3: ensure the sequence of events is logical (alternating)
+            pos_significant_events, neg_significant_events = validate_sequence(
+                pos_significant_events, neg_significant_events
+            )
+
+            if pos_significant_events.size > 0 and neg_significant_events.size > 0:
+                # check for a reasonable number of ON/OFF events before proceeding
+                if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or \
+                        (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
+
+                    if neg_significant_events.size > pos_significant_events.size:
+                        neg_significant_events = neg_significant_events[1:]
+
+                    if pos_significant_events[0] < neg_significant_events[0]:
+                        if pos_significant_events.size == neg_significant_events.size:
+                            ipi_durations_frames = (neg_significant_events - pos_significant_events) - 1
+                            temp_ipi_start_frames = pos_significant_events + 1
+                        else:
+                            ipi_durations_frames = (neg_significant_events - pos_significant_events[:-1]) - 1
+                            temp_ipi_start_frames = pos_significant_events[:-1] + 1
+                    else:
+                        if pos_significant_events.size == neg_significant_events.size:
+                            ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:-1]) - 1
+                            temp_ipi_start_frames = pos_significant_events[:-1] + 1
+                        else:
+                            if pos_significant_events.size > neg_significant_events.size:
+                                ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:neg_significant_events.size - 1]) - 1
+                                temp_ipi_start_frames = pos_significant_events[:neg_significant_events.size - 1] + 1
+                            else:
+                                ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
+                                temp_ipi_start_frames = pos_significant_events + 1
+
+                    ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps))
+
+                    # match IPI sequences
+                    if ipi_durations_ms.shape[0] > 0 and ipi_durations_ms.shape[0] <= len(arduino_ipi_durations):
+                        subarray_size = ipi_durations_ms.shape[0]
+                        start_indices = np.arange(len(arduino_ipi_durations) - subarray_size + 1)
+                        index_matrix = start_indices[:, np.newaxis] + np.arange(subarray_size)
+                        arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
+
+                        result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
+                        tolerance = self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']
+                        all_zero_matches = np.all(np.abs(result_array) <= tolerance, axis=1)
+
+                        if np.any(all_zero_matches):
+                            sync_sequence_dict = {camera_dir: np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])}
+                            ipi_start_frames = temp_ipi_start_frames
+                            return sync_sequence_dict, ipi_start_frames, True
+
+        return None, None, False
+
     def find_video_sync_trains(self, camera_fps: list = None,
                                total_frame_number: int = None) -> tuple:
+
         """
         Description
         ----------
         This method takes video(s) and identifies sync events (from intensity
-        changes of sync LEDs) to check sync between different data streams.
+        changes of sync LEDs) to check sync between different data streams. It uses
+        a robust temporal validation method based on known pulse durations.
         ----------
 
         Parameters
@@ -612,123 +735,87 @@ class Synchronizer:
 
         Returns
         ----------
-        led_on_frames (np.ndarray), sync_sequence_dict (dict)
-            Frames when LED on events start and
-            dictionary for IPI values (in ms) for each camera.
+        (np.ndarray, dict)
+            A tuple containing an array of the OFF-event start frames (as per user
+            definition) and a dictionary of the matched IPI sequences for each camera.
         ----------
         """
 
         sync_sequence_dict = {}
-        ipi_start_frames = 0
+        ipi_start_frames = np.array([])
 
         for video_subdir in os.listdir(f"{self.root_directory}{os.sep}video"):
-            if '_' not in video_subdir and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
-                sync_cam_idx = 0
-                for camera_dir in os.listdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
-                    if camera_dir != '.DS_Store' and os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}") and camera_dir in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']:
-                        video_name = sorted(glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}*.mp4"))[0].split(os.sep)[-1]
-                        if 'calibration' not in video_name \
-                                and video_name.split('-')[0] in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num'] \
-                                and self.input_parameter_dict['find_video_sync_trains']['sync_video_extension'] in video_name:
+            if '_' in video_subdir or not os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"): continue
 
-                            current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}"
-                            video_of_interest = f"{current_working_dir}{os.sep}{video_name}"
+            sync_cam_idx = 0
+            for camera_dir in os.listdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}"):
+                if (camera_dir == '.DS_Store' or not os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}")
+                        or camera_dir not in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']): continue
 
-                            if not os.path.exists(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}"):
-                                self.gather_px_information(video_of_interest=video_of_interest,
-                                                           sync_camera_fps=camera_fps[sync_cam_idx],
-                                                           camera_id=camera_dir,
-                                                           video_name=video_name,
-                                                           total_frame_number=total_frame_number)
+                video_name_glob = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}*.mp4")
+                if not video_name_glob: continue
+                video_name = sorted(video_name_glob)[0].split(os.sep)[-1]
 
-                            # load memmap data
-                            leds_array = np.memmap(filename=f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
-                                                   dtype=DataLoader(input_parameter_dict={}).known_dtypes['np.uint8'], mode='r', shape=(total_frame_number, 3, 3))
+                if ('calibration' in video_name or video_name.split('-')[0] not in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']
+                        or self.input_parameter_dict['find_video_sync_trains']['sync_video_extension'] not in video_name): continue
 
-                            # take mean across all three (RGB) channels
-                            mean_across_rgb = leds_array.mean(axis=-1)
+                video_of_interest = f"{self.root_directory}{os.sep}video{os.sep}{video_subdir}{os.sep}{camera_dir}{os.sep}{video_name}"
 
-                            # create a single robust signal by taking the median brightness across the 3 LEDs for each frame.
-                            # add a small value to prevent division by zero when LEDs are fully off.
-                            median_brightness_signal = np.median(mean_across_rgb, axis=1) + 1e-6
+                if not os.path.exists(f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}"):
+                    self.gather_px_information(
+                        video_of_interest=video_of_interest,
+                        sync_camera_fps=camera_fps[sync_cam_idx],
+                        camera_id=camera_dir,
+                        video_name=video_name,
+                        total_frame_number=total_frame_number
+                    )
 
-                            # compute the relative change of this robust signal
-                            diff_across_leds = 1 - (median_brightness_signal[1:] / median_brightness_signal[:-1])
+                arduino_ipi_durations = []
+                for txt_file in os.listdir(f"{self.root_directory}{os.sep}sync"):
+                    if 'CoolTerm' in txt_file:
+                        with open(f"{self.root_directory}{os.sep}sync{os.sep}{txt_file}", 'r') as ipi_txt_file:
+                            for line_num, line in enumerate(ipi_txt_file.readlines()):
+                                if line_num > 2 and line.strip():
+                                    arduino_ipi_durations.append(int(line.strip()))
+                        break
+                arduino_ipi_durations = np.array(arduino_ipi_durations)
 
-                            # get actual IPI from CoolTerm-recorded .txt file
-                            arduino_ipi_durations = []
-                            for txt_file in os.listdir(f"{self.root_directory}{os.sep}sync"):
-                                if 'CoolTerm' in txt_file:
-                                    with open(f"{self.root_directory}{os.sep}sync{os.sep}{txt_file}", 'r') as ipi_txt_file:
-                                        for line_num, line in enumerate(ipi_txt_file.readlines()):
-                                            if line_num > 2 and line.strip():
-                                                arduino_ipi_durations.append(int(line.strip()))
-                                    break
-                            arduino_ipi_durations = np.array(arduino_ipi_durations)
+                leds_array = np.memmap(filename=f"{self.root_directory}{os.sep}sync{os.sep}sync_px_{video_name[:-4]}",
+                                       dtype=np.uint8, mode='r', shape=(total_frame_number, 3, 3))
 
-                            # find indices where the largest changes occur
-                            relative_intensity_threshold = self.input_parameter_dict['find_video_sync_trains']['relative_intensity_threshold']
-                            sequence_found = False
-                            for threshold_value in np.arange(0.2, relative_intensity_threshold, .01)[::-1]:
-                                if not sequence_found:
+                mean_across_rgb = leds_array.mean(axis=-1)
 
-                                    pos_significant_events, neg_significant_events = find_events(diffs=diff_across_leds,
-                                                                                                 threshold=threshold_value,
-                                                                                                 min_separation=int(np.ceil(camera_fps[sync_cam_idx] / 2.5)))
+                # --- ATTEMPT 1: Use MEDIAN (robust to bright noise) ---
+                self.message_output(f"Attempting sync detection for {camera_dir} with MEDIAN signal...")
+                brightness_signal_median = np.median(mean_across_rgb, axis=1) + 1e-6
 
-                                    # remove short glitches
-                                    pos_significant_events, neg_significant_events = filter_events_by_duration(pos_significant_events, neg_significant_events, min_duration=35)
+                temp_sync_dict, temp_ipi_frames, sequence_found = self.attempt_sequence_match(
+                    brightness_signal=brightness_signal_median,
+                    camera_fps=camera_fps[sync_cam_idx],
+                    arduino_ipi_durations=arduino_ipi_durations,
+                    camera_dir=camera_dir
+                )
 
-                                    # ensure logical sequence
-                                    pos_significant_events, neg_significant_events = validate_sequence(pos_significant_events, neg_significant_events)
+                # --- ATTEMPT 2: Fallback to MAX if MEDIAN fails (robust to occlusions) ---
+                if not sequence_found:
+                    self.message_output(f"Median method failed for {camera_dir}. Falling back to MAX signal...")
+                    brightness_signal_max = np.max(mean_across_rgb, axis=1) + 1e-6
 
-                                    if pos_significant_events.size > 0 and neg_significant_events.size > 0:
-                                        if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
-                                            if neg_significant_events.size > pos_significant_events.size:
-                                                neg_significant_events = neg_significant_events[1:]
+                    temp_sync_dict, temp_ipi_frames, sequence_found = self.attempt_sequence_match(
+                        brightness_signal=brightness_signal_max,
+                        camera_fps=camera_fps[sync_cam_idx],
+                        arduino_ipi_durations=arduino_ipi_durations,
+                        camera_dir=camera_dir
+                    )
 
-                                            if pos_significant_events[0] < neg_significant_events[0]:
-                                                if pos_significant_events.size == neg_significant_events.size:
-                                                    ipi_durations_frames = (neg_significant_events - pos_significant_events) - 1
-                                                    temp_ipi_start_frames = pos_significant_events + 1
-                                                else:
-                                                    ipi_durations_frames = (neg_significant_events - pos_significant_events[:-1]) - 1
-                                                    temp_ipi_start_frames = pos_significant_events[:-1] + 1
-                                            else:
-                                                if pos_significant_events.size == neg_significant_events.size:
-                                                    ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:-1]) - 1
-                                                    temp_ipi_start_frames = pos_significant_events[:-1] + 1
-                                                else:
-                                                    if pos_significant_events.size > neg_significant_events.size:
-                                                        ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:neg_significant_events.size-1]) - 1
-                                                        temp_ipi_start_frames = pos_significant_events[:neg_significant_events.size-1] + 1
-                                                    else:
-                                                        ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
-                                                        temp_ipi_start_frames = pos_significant_events + 1
+                if sequence_found:
+                    self.message_output(f"SUCCESS: Sync sequence found for {camera_dir}!")
+                    sync_sequence_dict.update(temp_sync_dict)
+                    ipi_start_frames = temp_ipi_frames
+                else:
+                    self.message_output(f"No sequence match found in '{video_name}'!")
 
-                                            # compute IPI durations in milliseconds
-                                            ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps[sync_cam_idx]))
-
-                                            # match IPI sequences
-                                            subarray_size = ipi_durations_ms.shape[0]
-                                            start_indices = np.arange(len(arduino_ipi_durations) - subarray_size + 1)
-                                            index_matrix = start_indices[:, np.newaxis] + np.arange(subarray_size)
-                                            arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
-
-                                            result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
-                                            all_zero_matches = np.all(np.abs(result_array) <= self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance'],
-                                                                      axis=1)
-                                            any_all_zeros = np.any(all_zero_matches)
-                                            if any_all_zeros:
-                                                sync_sequence_dict[camera_dir] = np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])
-                                                ipi_start_frames = temp_ipi_start_frames
-                                                sequence_found = True
-                                else:
-                                    break
-                            else:
-                                self.message_output(f"No IPI sequence match found in video '{video_of_interest.split(os.sep)[-1]}'!")
-
-                            sync_cam_idx += 1
+                sync_cam_idx += 1
 
         return ipi_start_frames, sync_sequence_dict
 
