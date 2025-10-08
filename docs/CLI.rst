@@ -34,9 +34,8 @@ Record
       -h, --help            Show this help message and exit.
       --set                 Override a specific setting using a dot-path. This option
                             can be used multiple times. For example:
-                            --set video_session_duration=25
+                            --set video_session_duration=20
                             --set audio.general.fftlength=512
-                            --set video.metadata.notes="This is a special run."
 
 Process
 ^^^^^^^

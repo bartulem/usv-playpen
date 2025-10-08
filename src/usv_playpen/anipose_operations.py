@@ -381,15 +381,11 @@ class ConvertTo3D:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        sleap_version = self.input_parameter_dict["sleap_file_conversion"][
-            "sleap_conda_env_name"
-        ]
-
         if os.name == "nt":
             command_addition = "cmd /c "
             shell_usage_bool = False
         else:
-            command_addition = 'eval "$(conda shell.bash hook)" && '
+            command_addition = ''
             shell_usage_bool = True
 
         conversion_subprocesses = []
@@ -402,7 +398,7 @@ class ConvertTo3D:
                 ):
                     if one_file.endswith(".slp"):
                         conversion_subp = subprocess.Popen(
-                            args=f'''{command_addition}conda activate {sleap_version} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"''',
+                            args=f'''{command_addition}uvx --from sleap[nn] sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"''',
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT,
                             cwd=os.path.join(

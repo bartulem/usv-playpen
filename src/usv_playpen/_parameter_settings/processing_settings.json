@@ -11,10 +11,10 @@
     "conduct_ephys_video_sync": false,
     "conduct_ephys_file_chaining": false,
     "split_cluster_spikes": false,
-    "prepare_sleap_cluster": true,
+    "prepare_sleap_cluster": false,
     "sleap_h5_conversion": false,
     "anipose_calibration": false,
-    "anipose_triangulation": false,
+    "anipose_triangulation": true,
     "anipose_trm": false,
     "das_infer": false,
     "das_summarize": false,
@@ -24,19 +24,25 @@
   "credentials_directory": "/home/bmimica/.config/usv_playpen/.credentials_Bartul",
   "anipose_operations": {
     "ConvertTo3D": {
-      "sleap_file_conversion": {
-        "sleap_conda_env_name": "sleap1.3.3"
-      },
       "conduct_anipose_calibration": {
         "board_provided_bool": false,
-        "board_xy": [8, 11],
+        "board_xy": [
+          8,
+          11
+        ],
         "square_len": 24,
-        "marker_len_bits": [18.75, 4],
+        "marker_len_bits": [
+          18.75,
+          4
+        ],
         "dict_size": 1000,
-        "img_width_height": [2100, 2970]
+        "img_width_height": [
+          2100,
+          2970
+        ]
       },
       "conduct_anipose_triangulation": {
-        "calibration_file_loc": "/mnt/falkner/Bartul/Data/20230517_170220",
+        "calibration_file_loc": "",
         "triangulate_arena_points_bool": false,
         "frame_restriction": null,
         "excluded_views": [],
@@ -61,7 +67,7 @@
     }
   },
   "preprocess_data": {
-  "root_directories": []
+    "root_directories": []
   },
   "extract_phidget_data": {
     "Gatherer": {
@@ -72,7 +78,9 @@
   },
   "load_audio_files": {
     "DataLoader": {
-      "wave_data_loc": [""],
+      "wave_data_loc": [
+        ""
+      ],
       "load_wavefile_data": {
         "library": "scipy",
         "conditional_arg": []
@@ -87,18 +95,34 @@
       },
       "concatenate_audio_files": {
         "concatenate_audio_format": "wav",
-        "concat_dirs": ["hpss_filtered"]
+        "concat_dirs": [
+          "hpss_filtered"
+        ]
       },
       "hpss_audio": {
-        "stft_window_length_hop_size": [512, 128],
-        "kernel_size": [5, 60],
+        "stft_window_length_hop_size": [
+          512,
+          128
+        ],
+        "kernel_size": [
+          5,
+          60
+        ],
         "hpss_power": 4.0,
-        "margin": [4, 1]
+        "margin": [
+          4,
+          1
+        ]
       },
       "filter_audio_files": {
         "filter_audio_format": "wav",
-        "filter_dirs": ["hpss"],
-        "filter_freq_bounds": [0, 30000]
+        "filter_dirs": [
+          "hpss"
+        ],
+        "filter_freq_bounds": [
+          0,
+          30000
+        ]
       },
       "concatenate_video_files": {
         "concatenate_camera_serial_num": [
@@ -176,7 +200,9 @@
         "nidq_sync_input_bit_position": 7
       },
       "find_video_sync_trains": {
-        "sync_camera_serial_num": ["21372315"],
+        "sync_camera_serial_num": [
+          "21372315"
+        ],
         "led_px_version": "current",
         "led_px_dev": 10,
         "sync_video_extension": "mp4",

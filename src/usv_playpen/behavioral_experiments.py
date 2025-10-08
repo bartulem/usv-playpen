@@ -813,13 +813,11 @@ class ExperimentController:
             self.message_output(f"You chose to conduct the recording with one camera only (camera serial num: {self.exp_settings_dict['video']['general']['expected_cameras'][0]}).")
             self.api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recording/start",
                           duration=self.exp_settings_dict['video_session_duration'] * 60,
-                          codec=self.exp_settings_dict['video']['general']['recording_codec'],
-                          metadata=self.exp_settings_dict['video']['metadata'])
+                          codec=self.exp_settings_dict['video']['general']['recording_codec'])
         else:
             self.api.call('recording/start',
                           duration=self.exp_settings_dict['video_session_duration'] * 60,
-                          codec=self.exp_settings_dict['video']['general']['recording_codec'],
-                          metadata=self.exp_settings_dict['video']['metadata'])
+                          codec=self.exp_settings_dict['video']['general']['recording_codec'])
 
         self.message_output(f"Video recording in progress since {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}, it will last {round(self.exp_settings_dict['video_session_duration'], 2)} minute(s). Please be patient.")
 
@@ -1008,7 +1006,7 @@ def conduct_calibration_cli( overrides):
     ExperimentController(exp_settings_dict=exp_settings_dict).conduct_tracking_calibration()
 
 @click.command(name="conduct-recording")
-@click.option('--set', 'overrides', multiple=True, help='Override a setting, e.g., --set video.metadata.notes="Test run"')
+@click.option('--set', 'overrides', multiple=True, help='Override a setting, e.g., --set video_session_duration=20')
 def conduct_recording_cli(overrides):
     """
     Description

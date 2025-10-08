@@ -142,31 +142,7 @@ monitor_url = "http://10.241.1.205:8081/"
 delete_post_copy = true
 
 [video.metadata]
-institution = "PNI"
-laboratory = "Falkner/Murthy"
 experimenter = "Bartul"
-mice_num = "2"
-vacant_arena = false
-ambient_light = true
-record_brain = false
-usv_playback = false
-chemogenetics = false
-optogenetics = false
-brain_lesion = false
-devocalization = false
-female_urine = false
-female_bedding = false
-species = "mus musculus,mus musculus"
-strain = "CD1-WT,CD1-WT"
-cage = ""
-subject = "0,0"
-dob = ""
-sex = "male,female"
-weight = ""
-housing = "group,group"
-implant = ""
-virus = ""
-notes = ""
 
 [video.cameras_config.21372316]
 color_ID = "orange"

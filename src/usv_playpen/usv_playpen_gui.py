@@ -759,6 +759,115 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_record(seq=0, class_option=self.Record,
                                     button_pos_y=record_one_y-35, next_button_x_pos=record_one_x-100)
 
+    # def record_two(self) -> None:
+    #     """
+    #     Initializes the usv-playpen Record Two window.
+    #
+    #     Parameters
+    #     ----------
+    #     ----------
+    #
+    #     Returns
+    #     -------
+    #     -------
+    #     """
+    #
+    #     self.AudioSettings = AudioSettings(self)
+    #     self.setWindowTitle(f'{app_name} (Record > Audio Settings)')
+    #     self.setCentralWidget(self.AudioSettings)
+    #     record_two_x, record_two_y = (875, 875)
+    #     self.setFixedSize(record_two_x, record_two_y)
+    #
+    #     gas_label = QLabel('General audio recording settings', self.AudioSettings)
+    #     gas_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
+    #     gas_label.setStyleSheet('QLabel { font-weight: bold;}')
+    #     gas_label.move(5, 10)
+    #
+    #     # change usghflags to 1862 for NO SYNC audio mode, 1574 for SYNC audio modes
+    #     # NB: The NO SYNC mode does NOT guarantee ZERO DROPPED SAMPLES!
+    #
+    #     self.default_audio_settings = {'name': f"{self.exp_settings_dict['audio']['mics_config']['name']}", 'id': f"{self.exp_settings_dict['audio']['mics_config']['id']}",
+    #                                    'typech': f"{self.exp_settings_dict['audio']['mics_config']['typech']}", 'deviceid': f"{self.exp_settings_dict['audio']['mics_config']['deviceid']}",
+    #                                    'channel': f"{self.exp_settings_dict['audio']['mics_config']['channel']}", 'gain': f"{self.exp_settings_dict['audio']['mics_config']['gain']}",
+    #                                    'fullscalespl': f"{self.exp_settings_dict['audio']['mics_config']['fullscalespl']}", 'triggertype': f"{self.exp_settings_dict['audio']['mics_config']['triggertype']}",
+    #                                    'toggle': f"{self.exp_settings_dict['audio']['mics_config']['toggle']}", 'invert': f"{self.exp_settings_dict['audio']['mics_config']['invert']}",
+    #                                    'ditc': f"{self.exp_settings_dict['audio']['mics_config']['ditc']}", 'ditctime': self.exp_settings_dict['audio']['mics_config']['ditctime'],
+    #                                    'whistletracking': f"{self.exp_settings_dict['audio']['mics_config']['whistletracking']}", 'wtbcf': f"{self.exp_settings_dict['audio']['mics_config']['wtbcf']}",
+    #                                    'wtmaxchange': f"{self.exp_settings_dict['audio']['mics_config']['wtmaxchange']}", 'wtmaxchange2_': f"{self.exp_settings_dict['audio']['mics_config']['wtmaxchange2_']}",
+    #                                    'wtminchange': f"{self.exp_settings_dict['audio']['mics_config']['wtminchange']}", 'wtminchange2_': f"{self.exp_settings_dict['audio']['mics_config']['wtminchange2_']}",
+    #                                    'wtoutside': f"{self.exp_settings_dict['audio']['mics_config']['wtoutside']}", 'hilowratioenable': f"{self.exp_settings_dict['audio']['mics_config']['hilowratioenable']}",
+    #                                    'hilowratio': f"{self.exp_settings_dict['audio']['mics_config']['hilowratio']}", 'hilowratiofc': f"{self.exp_settings_dict['audio']['mics_config']['hilowratiofc']}",
+    #                                    'wtslope': f"{self.exp_settings_dict['audio']['mics_config']['wtslope']}", 'wtlevel': f"{self.exp_settings_dict['audio']['mics_config']['wtlevel']}",
+    #                                    'wtmindurtotal': f"{self.exp_settings_dict['audio']['mics_config']['wtmindurtotal']}", 'wtmindur': f"{self.exp_settings_dict['audio']['mics_config']['wtmindur']}",
+    #                                    'wtmindur2_': f"{self.exp_settings_dict['audio']['mics_config']['wtmindur2_']}", 'wtholdtime': f"{self.exp_settings_dict['audio']['mics_config']['wtholdtime']}",
+    #                                    'wtmonotonic': f"{self.exp_settings_dict['audio']['mics_config']['wtmonotonic']}", 'wtbmaxdur': f"{self.exp_settings_dict['audio']['mics_config']['wtbmaxdur']}",
+    #                                    'rejectwind': f"{self.exp_settings_dict['audio']['mics_config']['rejectwind']}", 'rwentropy': f"{self.exp_settings_dict['audio']['mics_config']['rwentropy']}",
+    #                                    'rwfpegel': f"{self.exp_settings_dict['audio']['mics_config']['rwfpegel']}", 'rwdutycycle': f"{self.exp_settings_dict['audio']['mics_config']['rwdutycycle']}",
+    #                                    'rwtimeconstant': f"{self.exp_settings_dict['audio']['mics_config']['rwtimeconstant']}", 'rwholdtime': f"{self.exp_settings_dict['audio']['mics_config']['rwholdtime']}",
+    #                                    'fpegel': f"{self.exp_settings_dict['audio']['mics_config']['fpegel']}", 'energy': f"{self.exp_settings_dict['audio']['mics_config']['energy']}",
+    #                                    'frange': f"{self.exp_settings_dict['audio']['mics_config']['frange']}", 'entropyb': f"{self.exp_settings_dict['audio']['mics_config']['entropyb']}",
+    #                                    'entropy': f"{self.exp_settings_dict['audio']['mics_config']['entropy']}", 'increment': f"{self.exp_settings_dict['audio']['mics_config']['increment']}",
+    #                                    'fu': f"{self.exp_settings_dict['audio']['mics_config']['fu']}", 'fo': f"{self.exp_settings_dict['audio']['mics_config']['fo']}",
+    #                                    'pretrigger': f"{self.exp_settings_dict['audio']['mics_config']['pretrigger']}", 'mint': f"{self.exp_settings_dict['audio']['mics_config']['mint']}",
+    #                                    'minst': f"{self.exp_settings_dict['audio']['mics_config']['minst']}", 'fhold': f"{self.exp_settings_dict['audio']['mics_config']['fhold']}",
+    #
+    #                                    'logfileno': f"{self.exp_settings_dict['audio']['call']['logfileno']}", 'groupno': f"{self.exp_settings_dict['audio']['call']['groupno']}", 'callno': f"{self.exp_settings_dict['audio']['call']['callno']}",
+    #
+    #                                    'timeconstant': f"{self.exp_settings_dict['audio']['monitor']['timeconstant']}", 'timeexpansion': f"{self.exp_settings_dict['audio']['monitor']['timeexpansion']}",
+    #                                    'startstop': f"{self.exp_settings_dict['audio']['monitor']['startstop']}", 'sayf': f"{self.exp_settings_dict['audio']['monitor']['sayf']}",
+    #                                    'over': f"{self.exp_settings_dict['audio']['monitor']['over']}", 'delay': f"{self.exp_settings_dict['audio']['monitor']['delay']}",
+    #                                    'center': f"{self.exp_settings_dict['audio']['monitor']['center']}", 'bandwidth': f"{self.exp_settings_dict['audio']['monitor']['bandwidth']}", 'fd': f"{self.exp_settings_dict['audio']['monitor']['fd']}",
+    #                                    'decimation': f"{self.exp_settings_dict['audio']['monitor']['decimation']}", 'device': f"{self.exp_settings_dict['audio']['monitor']['device']}", 'mode': f"{self.exp_settings_dict['audio']['monitor']['mode']}",
+    #
+    #                                    'outfovertaps': f"{self.exp_settings_dict['audio']['devices']['outfovertaps']}", 'outfoverabtast': f"{self.exp_settings_dict['audio']['devices']['outfoverabtast']}",
+    #                                    'outformat': f"{self.exp_settings_dict['audio']['devices']['outformat']}", 'outfabtast': f"{self.exp_settings_dict['audio']['devices']['outfabtast']}",
+    #                                    'outdeviceid': f"{self.exp_settings_dict['audio']['devices']['outdeviceid']}",'outtype': f"{self.exp_settings_dict['audio']['devices']['outtype']}",
+    #                                    'usghflags': f"{self.exp_settings_dict['audio']['devices']['usghflags']}", 'diff': f"{self.exp_settings_dict['audio']['devices']['diff']}",
+    #                                    'format': f"{self.exp_settings_dict['audio']['devices']['format']}", 'type': f"{self.exp_settings_dict['audio']['devices']['type']}",
+    #                                    'nbrwavehdr': f"{self.exp_settings_dict['audio']['devices']['nbrwavehdr']}", 'devbuffer': f"{self.exp_settings_dict['audio']['devices']['devbuffer']}",
+    #                                    'ntaps': f"{self.exp_settings_dict['audio']['devices']['ntaps']}", 'filtercutoff': f"{self.exp_settings_dict['audio']['devices']['filtercutoff']}",
+    #                                    'filter': f"{self.exp_settings_dict['audio']['devices']['filter']}", 'fabtast': f"{self.exp_settings_dict['audio']['devices']['fabtast']}",
+    #
+    #                                    'y2': f"{self.exp_settings_dict['audio']['screen_position']['y2']}", 'x2': f"{self.exp_settings_dict['audio']['screen_position']['x2']}",
+    #                                    'y1': f"{self.exp_settings_dict['audio']['screen_position']['y1']}", 'x1': f"{self.exp_settings_dict['audio']['screen_position']['x1']}",
+    #
+    #                                    'display': f"{self.exp_settings_dict['audio']['general']['display']}", 'dcolumns': f"{self.exp_settings_dict['audio']['general']['dcolumns']}",
+    #                                    'total': f"{self.exp_settings_dict['audio']['general']['total']}", 'dispspectrogramcontrast': f"{self.exp_settings_dict['audio']['general']['dispspectrogramcontrast']}",
+    #                                    'disprangespectrogram': f"{self.exp_settings_dict['audio']['general']['disprangespectrogram']}", 'disprangeamplitude': f"{self.exp_settings_dict['audio']['general']['disprangeamplitude']}",
+    #                                    'disprangewaveform': f"{self.exp_settings_dict['audio']['general']['disprangewaveform']}", 'fftlength': f"{self.exp_settings_dict['audio']['general']['fftlength']}",
+    #                                    'usvmonitoringflags': f"{self.exp_settings_dict['audio']['general']['usvmonitoringflags']}",
+    #
+    #                                    'total_mic_number': f"{self.exp_settings_dict['audio']['total_mic_number']}", 'total_device_num': f"{self.exp_settings_dict['audio']['total_device_num']}",
+    #                                    'used_mics': ','.join([str(x) for x in self.exp_settings_dict['audio']['used_mics']]),
+    #                                    'cpu_priority': self.exp_settings_dict['audio']['cpu_priority'],
+    #                                    'cpu_affinity': ','.join([str(x) for x in self.exp_settings_dict['audio']['cpu_affinity']])}
+    #
+    #     row_start_position_label = 5
+    #     row_start_position_line_edit = 120
+    #     row_counter = 0
+    #     column_counter = 0
+    #     for audio_idx, (audio_attr, audio_value) in enumerate(self.default_audio_settings.items()):
+    #         setting_label = QLabel(f'{audio_attr}:', self.AudioSettings)
+    #         setting_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
+    #         setting_label.move(row_start_position_label, 45+(row_counter*30))
+    #         setattr(self, audio_attr, QLineEdit(audio_value, self.AudioSettings))
+    #         getattr(self, audio_attr).setFixedWidth(50)
+    #         getattr(self, audio_attr).setFont(QFont(self.font_id, 10+self.font_size_increase))
+    #         getattr(self, audio_attr).move(row_start_position_line_edit, 45+(row_counter*30))
+    #         if (audio_idx + 1) % 25 == 0:
+    #             column_counter += 1
+    #             row_counter = 0
+    #             row_start_position_label += 200
+    #             if column_counter < 3:
+    #                 row_start_position_line_edit += 200
+    #             else:
+    #                 row_start_position_line_edit += 275
+    #         else:
+    #             row_counter += 1
+    #
+    #     self._create_buttons_record(seq=1, class_option=self.AudioSettings,
+    #                                 button_pos_y=record_two_y-35, next_button_x_pos=record_two_x-100)
+
     def record_two(self) -> None:
         """
         Initializes the usv-playpen Record Two window.
@@ -771,122 +880,21 @@ class USVPlaypenWindow(QMainWindow):
         -------
         -------
         """
-
-        self.AudioSettings = AudioSettings(self)
-        self.setWindowTitle(f'{app_name} (Record > Audio Settings)')
-        self.setCentralWidget(self.AudioSettings)
-        record_two_x, record_two_y = (875, 875)
+        self.VideoSettings = VideoSettings(self)
+        self.setWindowTitle(f'{app_name} (Record > Audio and Video Settings)')
+        self.setCentralWidget(self.VideoSettings)
+        record_two_x, record_two_y = (980, 900)
         self.setFixedSize(record_two_x, record_two_y)
 
-        gas_label = QLabel('General audio recording settings', self.AudioSettings)
-        gas_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        gas_label.setStyleSheet('QLabel { font-weight: bold;}')
-        gas_label.move(5, 10)
-
-        # change usghflags to 1862 for NO SYNC audio mode, 1574 for SYNC audio modes
-        # NB: The NO SYNC mode does NOT guarantee ZERO DROPPED SAMPLES!
-
-        self.default_audio_settings = {'name': f"{self.exp_settings_dict['audio']['mics_config']['name']}", 'id': f"{self.exp_settings_dict['audio']['mics_config']['id']}",
-                                       'typech': f"{self.exp_settings_dict['audio']['mics_config']['typech']}", 'deviceid': f"{self.exp_settings_dict['audio']['mics_config']['deviceid']}",
-                                       'channel': f"{self.exp_settings_dict['audio']['mics_config']['channel']}", 'gain': f"{self.exp_settings_dict['audio']['mics_config']['gain']}",
-                                       'fullscalespl': f"{self.exp_settings_dict['audio']['mics_config']['fullscalespl']}", 'triggertype': f"{self.exp_settings_dict['audio']['mics_config']['triggertype']}",
-                                       'toggle': f"{self.exp_settings_dict['audio']['mics_config']['toggle']}", 'invert': f"{self.exp_settings_dict['audio']['mics_config']['invert']}",
-                                       'ditc': f"{self.exp_settings_dict['audio']['mics_config']['ditc']}", 'ditctime': self.exp_settings_dict['audio']['mics_config']['ditctime'],
-                                       'whistletracking': f"{self.exp_settings_dict['audio']['mics_config']['whistletracking']}", 'wtbcf': f"{self.exp_settings_dict['audio']['mics_config']['wtbcf']}",
-                                       'wtmaxchange': f"{self.exp_settings_dict['audio']['mics_config']['wtmaxchange']}", 'wtmaxchange2_': f"{self.exp_settings_dict['audio']['mics_config']['wtmaxchange2_']}",
-                                       'wtminchange': f"{self.exp_settings_dict['audio']['mics_config']['wtminchange']}", 'wtminchange2_': f"{self.exp_settings_dict['audio']['mics_config']['wtminchange2_']}",
-                                       'wtoutside': f"{self.exp_settings_dict['audio']['mics_config']['wtoutside']}", 'hilowratioenable': f"{self.exp_settings_dict['audio']['mics_config']['hilowratioenable']}",
-                                       'hilowratio': f"{self.exp_settings_dict['audio']['mics_config']['hilowratio']}", 'hilowratiofc': f"{self.exp_settings_dict['audio']['mics_config']['hilowratiofc']}",
-                                       'wtslope': f"{self.exp_settings_dict['audio']['mics_config']['wtslope']}", 'wtlevel': f"{self.exp_settings_dict['audio']['mics_config']['wtlevel']}",
-                                       'wtmindurtotal': f"{self.exp_settings_dict['audio']['mics_config']['wtmindurtotal']}", 'wtmindur': f"{self.exp_settings_dict['audio']['mics_config']['wtmindur']}",
-                                       'wtmindur2_': f"{self.exp_settings_dict['audio']['mics_config']['wtmindur2_']}", 'wtholdtime': f"{self.exp_settings_dict['audio']['mics_config']['wtholdtime']}",
-                                       'wtmonotonic': f"{self.exp_settings_dict['audio']['mics_config']['wtmonotonic']}", 'wtbmaxdur': f"{self.exp_settings_dict['audio']['mics_config']['wtbmaxdur']}",
-                                       'rejectwind': f"{self.exp_settings_dict['audio']['mics_config']['rejectwind']}", 'rwentropy': f"{self.exp_settings_dict['audio']['mics_config']['rwentropy']}",
-                                       'rwfpegel': f"{self.exp_settings_dict['audio']['mics_config']['rwfpegel']}", 'rwdutycycle': f"{self.exp_settings_dict['audio']['mics_config']['rwdutycycle']}",
-                                       'rwtimeconstant': f"{self.exp_settings_dict['audio']['mics_config']['rwtimeconstant']}", 'rwholdtime': f"{self.exp_settings_dict['audio']['mics_config']['rwholdtime']}",
-                                       'fpegel': f"{self.exp_settings_dict['audio']['mics_config']['fpegel']}", 'energy': f"{self.exp_settings_dict['audio']['mics_config']['energy']}",
-                                       'frange': f"{self.exp_settings_dict['audio']['mics_config']['frange']}", 'entropyb': f"{self.exp_settings_dict['audio']['mics_config']['entropyb']}",
-                                       'entropy': f"{self.exp_settings_dict['audio']['mics_config']['entropy']}", 'increment': f"{self.exp_settings_dict['audio']['mics_config']['increment']}",
-                                       'fu': f"{self.exp_settings_dict['audio']['mics_config']['fu']}", 'fo': f"{self.exp_settings_dict['audio']['mics_config']['fo']}",
-                                       'pretrigger': f"{self.exp_settings_dict['audio']['mics_config']['pretrigger']}", 'mint': f"{self.exp_settings_dict['audio']['mics_config']['mint']}",
-                                       'minst': f"{self.exp_settings_dict['audio']['mics_config']['minst']}", 'fhold': f"{self.exp_settings_dict['audio']['mics_config']['fhold']}",
-
-                                       'logfileno': f"{self.exp_settings_dict['audio']['call']['logfileno']}", 'groupno': f"{self.exp_settings_dict['audio']['call']['groupno']}", 'callno': f"{self.exp_settings_dict['audio']['call']['callno']}",
-
-                                       'timeconstant': f"{self.exp_settings_dict['audio']['monitor']['timeconstant']}", 'timeexpansion': f"{self.exp_settings_dict['audio']['monitor']['timeexpansion']}",
-                                       'startstop': f"{self.exp_settings_dict['audio']['monitor']['startstop']}", 'sayf': f"{self.exp_settings_dict['audio']['monitor']['sayf']}",
-                                       'over': f"{self.exp_settings_dict['audio']['monitor']['over']}", 'delay': f"{self.exp_settings_dict['audio']['monitor']['delay']}",
-                                       'center': f"{self.exp_settings_dict['audio']['monitor']['center']}", 'bandwidth': f"{self.exp_settings_dict['audio']['monitor']['bandwidth']}", 'fd': f"{self.exp_settings_dict['audio']['monitor']['fd']}",
-                                       'decimation': f"{self.exp_settings_dict['audio']['monitor']['decimation']}", 'device': f"{self.exp_settings_dict['audio']['monitor']['device']}", 'mode': f"{self.exp_settings_dict['audio']['monitor']['mode']}",
-
-                                       'outfovertaps': f"{self.exp_settings_dict['audio']['devices']['outfovertaps']}", 'outfoverabtast': f"{self.exp_settings_dict['audio']['devices']['outfoverabtast']}",
-                                       'outformat': f"{self.exp_settings_dict['audio']['devices']['outformat']}", 'outfabtast': f"{self.exp_settings_dict['audio']['devices']['outfabtast']}",
-                                       'outdeviceid': f"{self.exp_settings_dict['audio']['devices']['outdeviceid']}",'outtype': f"{self.exp_settings_dict['audio']['devices']['outtype']}",
-                                       'usghflags': f"{self.exp_settings_dict['audio']['devices']['usghflags']}", 'diff': f"{self.exp_settings_dict['audio']['devices']['diff']}",
-                                       'format': f"{self.exp_settings_dict['audio']['devices']['format']}", 'type': f"{self.exp_settings_dict['audio']['devices']['type']}",
-                                       'nbrwavehdr': f"{self.exp_settings_dict['audio']['devices']['nbrwavehdr']}", 'devbuffer': f"{self.exp_settings_dict['audio']['devices']['devbuffer']}",
-                                       'ntaps': f"{self.exp_settings_dict['audio']['devices']['ntaps']}", 'filtercutoff': f"{self.exp_settings_dict['audio']['devices']['filtercutoff']}",
-                                       'filter': f"{self.exp_settings_dict['audio']['devices']['filter']}", 'fabtast': f"{self.exp_settings_dict['audio']['devices']['fabtast']}",
-
-                                       'y2': f"{self.exp_settings_dict['audio']['screen_position']['y2']}", 'x2': f"{self.exp_settings_dict['audio']['screen_position']['x2']}",
-                                       'y1': f"{self.exp_settings_dict['audio']['screen_position']['y1']}", 'x1': f"{self.exp_settings_dict['audio']['screen_position']['x1']}",
-
-                                       'display': f"{self.exp_settings_dict['audio']['general']['display']}", 'dcolumns': f"{self.exp_settings_dict['audio']['general']['dcolumns']}",
-                                       'total': f"{self.exp_settings_dict['audio']['general']['total']}", 'dispspectrogramcontrast': f"{self.exp_settings_dict['audio']['general']['dispspectrogramcontrast']}",
-                                       'disprangespectrogram': f"{self.exp_settings_dict['audio']['general']['disprangespectrogram']}", 'disprangeamplitude': f"{self.exp_settings_dict['audio']['general']['disprangeamplitude']}",
-                                       'disprangewaveform': f"{self.exp_settings_dict['audio']['general']['disprangewaveform']}", 'fftlength': f"{self.exp_settings_dict['audio']['general']['fftlength']}",
-                                       'usvmonitoringflags': f"{self.exp_settings_dict['audio']['general']['usvmonitoringflags']}",
-
-                                       'total_mic_number': f"{self.exp_settings_dict['audio']['total_mic_number']}", 'total_device_num': f"{self.exp_settings_dict['audio']['total_device_num']}",
-                                       'used_mics': ','.join([str(x) for x in self.exp_settings_dict['audio']['used_mics']]),
-                                       'cpu_priority': self.exp_settings_dict['audio']['cpu_priority'],
-                                       'cpu_affinity': ','.join([str(x) for x in self.exp_settings_dict['audio']['cpu_affinity']])}
-
-        row_start_position_label = 5
-        row_start_position_line_edit = 120
-        row_counter = 0
-        column_counter = 0
-        for audio_idx, (audio_attr, audio_value) in enumerate(self.default_audio_settings.items()):
-            setting_label = QLabel(f'{audio_attr}:', self.AudioSettings)
-            setting_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-            setting_label.move(row_start_position_label, 45+(row_counter*30))
-            setattr(self, audio_attr, QLineEdit(audio_value, self.AudioSettings))
-            getattr(self, audio_attr).setFixedWidth(50)
-            getattr(self, audio_attr).setFont(QFont(self.font_id, 10+self.font_size_increase))
-            getattr(self, audio_attr).move(row_start_position_line_edit, 45+(row_counter*30))
-            if (audio_idx + 1) % 25 == 0:
-                column_counter += 1
-                row_counter = 0
-                row_start_position_label += 200
-                if column_counter < 3:
-                    row_start_position_line_edit += 200
-                else:
-                    row_start_position_line_edit += 275
-            else:
-                row_counter += 1
-
-        self._create_buttons_record(seq=1, class_option=self.AudioSettings,
-                                    button_pos_y=record_two_y-35, next_button_x_pos=record_two_x-100)
-
-    def record_three(self) -> None:
         """
-        Initializes the usv-playpen Record Three window.
-
-        Parameters
-        ----------
-        ----------
-
-        Returns
-        -------
-        -------
+        Audio recording settings:
+        Sync USGH devices
+        USGH sampling rate
+        cpu priority
+        cpu affinity
         """
-        self.VideoSettings = VideoSettings(self)
-        self.setWindowTitle(f'{app_name} (Record > Video Settings)')
-        self.setCentralWidget(self.VideoSettings)
-        record_three_x, record_three_y = (980, 900)
-        self.setFixedSize(record_three_x, record_three_y)
 
-        gvs_label = QLabel('General video recording settings', self.VideoSettings)
+        gvs_label = QLabel('Video recording settings', self.VideoSettings)
         gvs_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
         gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
         gvs_label.move(5, 10)
@@ -911,7 +919,7 @@ class USVPlaypenWindow(QMainWindow):
                                             'nvenc-fast-yuv420_B','nvenc-ll-yuv420'], key=lambda x: x == self.recording_codec, reverse=True)
         self.recording_codec_cb = QComboBox(self.VideoSettings)
         self.recording_codec_cb.addItems(self.recording_codec_list)
-        self.recording_codec_cb.setStyleSheet('QComboBox { width: 272px; }')
+        self.recording_codec_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.recording_codec_cb.activated.connect(partial(self._combo_box_prior_codec, variable_id='recording_codec'))
         self.recording_codec_cb.move(160, 100)
 
@@ -922,7 +930,7 @@ class USVPlaypenWindow(QMainWindow):
         self.monitor_recording_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_recording'], not self.exp_settings_dict['video']['general']['monitor_recording']], self.boolean_list), reverse=True)]
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
         self.monitor_recording_cb.addItems(self.monitor_recording_cb_list)
-        self.monitor_recording_cb.setStyleSheet('QComboBox { width: 272px; }')
+        self.monitor_recording_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.monitor_recording_cb.activated.connect(partial(self._combo_box_prior_true if self.monitor_recording_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='monitor_recording_cb_bool'))
         self.monitor_recording_cb.move(160, 130)
 
@@ -933,7 +941,7 @@ class USVPlaypenWindow(QMainWindow):
         self.monitor_specific_camera_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_specific_camera'], not self.exp_settings_dict['video']['general']['monitor_specific_camera']], self.boolean_list), reverse=True)]
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
         self.monitor_specific_camera_cb.addItems(self.monitor_specific_camera_cb_list)
-        self.monitor_specific_camera_cb.setStyleSheet('QComboBox { width: 272px; }')
+        self.monitor_specific_camera_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.monitor_specific_camera_cb.activated.connect(partial(self._combo_box_prior_true if self.monitor_specific_camera_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='monitor_specific_camera_cb_bool'))
         self.monitor_specific_camera_cb.move(160, 160)
 
@@ -943,7 +951,7 @@ class USVPlaypenWindow(QMainWindow):
         self.specific_camera_serial_list = sorted(self.exp_settings_dict['video']['general']['expected_cameras'], key=lambda x: x == self.exp_settings_dict['video']['general']['specific_camera_serial'], reverse=True)
         self.specific_camera_serial_cb = QComboBox(self.VideoSettings)
         self.specific_camera_serial_cb.addItems(self.specific_camera_serial_list)
-        self.specific_camera_serial_cb.setStyleSheet('QComboBox { width: 272px; }')
+        self.specific_camera_serial_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.specific_camera_serial_cb.activated.connect(partial(self._combo_box_specific_camera, variable_id='specific_camera_serial'))
         self.specific_camera_serial_cb.move(160, 190)
 
@@ -954,7 +962,7 @@ class USVPlaypenWindow(QMainWindow):
         self.delete_post_copy_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['delete_post_copy'], not self.exp_settings_dict['video']['general']['delete_post_copy']], self.boolean_list), reverse=True)]
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
         self.delete_post_copy_cb.addItems(self.delete_post_copy_cb_list )
-        self.delete_post_copy_cb.setStyleSheet('QComboBox { width: 272px; }')
+        self.delete_post_copy_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.delete_post_copy_cb.activated.connect(partial(self._combo_box_prior_true if self.delete_post_copy_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='delete_post_copy_cb_bool'))
         self.delete_post_copy_cb.move(160, 220)
 
@@ -980,239 +988,26 @@ class USVPlaypenWindow(QMainWindow):
         self.cameras_frame_rate.setValue(self.exp_settings_dict['video']['general']['recording_frame_rate'])
         self.cameras_frame_rate.valueChanged.connect(self._update_fr_label)
 
-        pcs_label = QLabel('Particular camera settings', self.VideoSettings)
-        pcs_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        pcs_label.setStyleSheet('QLabel { font-weight: bold;}')
-        pcs_label.move(5, 325)
+        self._create_buttons_record(seq=1, class_option=self.VideoSettings,
+                                    button_pos_y=record_two_y - 35, next_button_x_pos=record_two_x - 100)
 
-        camera_colors_global = ['white', 'orange', 'red', 'cyan', 'yellow']
-        for cam_idx, cam in enumerate(self.exp_settings_dict['video']['general']['available_cameras']):
-            self._create_sliders_general(camera_id=cam, camera_color=camera_colors_global[cam_idx], y_start=355+(cam_idx*90))
+    def record_three(self) -> None:
+        """
+        Initializes the usv-playpen Record Three window.
 
-        vm_label = QLabel('Metadata', self.VideoSettings)
-        vm_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        vm_label.setStyleSheet('QLabel { font-weight: bold;}')
-        vm_label.move(495, 10)
+        Parameters
+        ----------
+        ----------
 
-        institution_label = QLabel('Institution:', self.VideoSettings)
-        institution_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        institution_label.move(495, 40)
-        self.institution_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['institution']}", self.VideoSettings)
-        self.institution_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.institution_entry.setStyleSheet('QLineEdit { width: 95px; }')
-        self.institution_entry.move(630, 40)
-
-        laboratory_label = QLabel('Laboratory:', self.VideoSettings)
-        laboratory_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        laboratory_label.move(750, 40)
-        self.laboratory_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['laboratory']}", self.VideoSettings)
-        self.laboratory_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.laboratory_entry.setStyleSheet('QLineEdit { width: 95px; }')
-        self.laboratory_entry.move(875, 40)
-
-        experimenter_label = QLabel('Experimenter:', self.VideoSettings)
-        experimenter_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        experimenter_label.move(495, 70)
-        self.experimenter_entry = QLineEdit(f'{self.exp_id}', self.VideoSettings)
-        self.experimenter_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.experimenter_entry.setStyleSheet('QLineEdit { width: 95px; }')
-        self.experimenter_entry.move(630, 70)
-
-        mice_num_label = QLabel('Animal count:', self.VideoSettings)
-        mice_num_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        mice_num_label.move(750, 70)
-        self.mice_num_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['mice_num']}", self.VideoSettings)
-        self.mice_num_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.mice_num_entry.setStyleSheet('QLineEdit { width: 95px; }')
-        self.mice_num_entry.move(875, 70)
-
-        vacant_arena_label = QLabel('Vacant arena:', self.VideoSettings)
-        vacant_arena_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        vacant_arena_label.move(495, 100)
-        self.vacant_arena_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['vacant_arena'], not self.exp_settings_dict['video']['metadata']['vacant_arena']], self.boolean_list), reverse=True)]
-        self.vacant_arena_cb = QComboBox(self.VideoSettings)
-        self.vacant_arena_cb.addItems(self.vacant_arena_cb_list)
-        self.vacant_arena_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.vacant_arena_cb.activated.connect(partial(self._combo_box_prior_true if self.vacant_arena_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='vacant_arena_cb_bool'))
-        self.vacant_arena_cb.move(630, 100)
-
-        ambient_light_label = QLabel('Ambient light:', self.VideoSettings)
-        ambient_light_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        ambient_light_label.move(750, 100)
-        self.ambient_light_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['ambient_light'], not self.exp_settings_dict['video']['metadata']['ambient_light']], self.boolean_list), reverse=True)]
-        self.ambient_light_cb = QComboBox(self.VideoSettings)
-        self.ambient_light_cb.addItems(self.ambient_light_cb_list)
-        self.ambient_light_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.ambient_light_cb.activated.connect(partial(self._combo_box_prior_true if self.ambient_light_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='ambient_light_cb_bool'))
-        self.ambient_light_cb.move(875, 100)
-
-        record_brain_label = QLabel('Record brain:', self.VideoSettings)
-        record_brain_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        record_brain_label.move(495, 130)
-        self.record_brain_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['record_brain'], not self.exp_settings_dict['video']['metadata']['record_brain']], self.boolean_list), reverse=True)]
-        self.record_brain_cb = QComboBox(self.VideoSettings)
-        self.record_brain_cb.addItems(self.record_brain_cb_list)
-        self.record_brain_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.record_brain_cb.activated.connect(partial(self._combo_box_prior_true if self.record_brain_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='record_brain_cb_bool'))
-        self.record_brain_cb.move(630, 130)
-
-        usv_playback_label = QLabel('USV playback:', self.VideoSettings)
-        usv_playback_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        usv_playback_label.move(750, 130)
-        self.usv_playback_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['usv_playback'], not self.exp_settings_dict['video']['metadata']['usv_playback']], self.boolean_list), reverse=True)]
-        self.usv_playback_cb = QComboBox(self.VideoSettings)
-        self.usv_playback_cb.addItems(self.usv_playback_cb_list)
-        self.usv_playback_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.usv_playback_cb.activated.connect(partial(self._combo_box_prior_true if self.usv_playback_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='usv_playback_cb_bool'))
-        self.usv_playback_cb.move(875, 130)
-
-        chemogenetics_label = QLabel('Chemogenetics:', self.VideoSettings)
-        chemogenetics_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        chemogenetics_label.move(495, 160)
-        self.chemogenetics_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['chemogenetics'], not self.exp_settings_dict['video']['metadata']['chemogenetics']], self.boolean_list), reverse=True)]
-        self.chemogenetics_cb = QComboBox(self.VideoSettings)
-        self.chemogenetics_cb.addItems(self.chemogenetics_cb_list)
-        self.chemogenetics_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.chemogenetics_cb.activated.connect(partial(self._combo_box_prior_true if self.chemogenetics_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='chemogenetics_cb_bool'))
-        self.chemogenetics_cb.move(630, 160)
-
-        optogenetics_label = QLabel('Optogenetics:', self.VideoSettings)
-        optogenetics_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        optogenetics_label.move(750, 160)
-        self.optogenetics_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['optogenetics'], not self.exp_settings_dict['video']['metadata']['optogenetics']], self.boolean_list), reverse=True)]
-        self.optogenetics_cb = QComboBox(self.VideoSettings)
-        self.optogenetics_cb.addItems(self.optogenetics_cb_list)
-        self.optogenetics_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.optogenetics_cb.activated.connect(partial(self._combo_box_prior_true if self.optogenetics_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='optogenetics_cb_bool'))
-        self.optogenetics_cb.move(875, 160)
-
-        brain_lesion_label = QLabel('Brain lesion:', self.VideoSettings)
-        brain_lesion_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        brain_lesion_label.move(495, 190)
-        self.brain_lesion_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['brain_lesion'], not self.exp_settings_dict['video']['metadata']['brain_lesion']], self.boolean_list), reverse=True)]
-        self.brain_lesion_cb = QComboBox(self.VideoSettings)
-        self.brain_lesion_cb.addItems(self.brain_lesion_cb_list)
-        self.brain_lesion_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.brain_lesion_cb.activated.connect(partial(self._combo_box_prior_true if self.brain_lesion_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='brain_lesion_cb_bool'))
-        self.brain_lesion_cb.move(630, 190)
-
-        devocalization_label = QLabel('Devocalization:', self.VideoSettings)
-        devocalization_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        devocalization_label.move(750, 190)
-        self.devocalization_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['devocalization'], not self.exp_settings_dict['video']['metadata']['devocalization']], self.boolean_list), reverse=True)]
-        self.devocalization_cb = QComboBox(self.VideoSettings)
-        self.devocalization_cb.addItems(self.devocalization_cb_list)
-        self.devocalization_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.devocalization_cb.activated.connect(partial(self._combo_box_prior_true if self.devocalization_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='devocalization_cb_bool'))
-        self.devocalization_cb.move(875, 190)
-
-        female_urine_label = QLabel('Female urine:', self.VideoSettings)
-        female_urine_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        female_urine_label.move(495, 220)
-        self.female_urine_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['female_urine'], not self.exp_settings_dict['video']['metadata']['female_urine']], self.boolean_list), reverse=True)]
-        self.female_urine_cb = QComboBox(self.VideoSettings)
-        self.female_urine_cb.addItems(self.female_urine_cb_list)
-        self.female_urine_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.female_urine_cb.activated.connect(partial(self._combo_box_prior_true if self.female_urine_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='female_urine_cb_bool'))
-        self.female_urine_cb.move(630, 220)
-
-        female_bedding_label = QLabel('Female bedding:', self.VideoSettings)
-        female_bedding_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        female_bedding_label.move(750, 220)
-        self.female_bedding_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['metadata']['female_bedding'], not self.exp_settings_dict['video']['metadata']['female_bedding']], self.boolean_list), reverse=True)]
-        self.female_bedding_cb = QComboBox(self.VideoSettings)
-        self.female_bedding_cb.addItems(self.female_bedding_cb_list)
-        self.female_bedding_cb.setStyleSheet('QComboBox { width: 68px; }')
-        self.female_bedding_cb.activated.connect(partial(self._combo_box_prior_true if self.female_bedding_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='female_bedding_cb_bool'))
-        self.female_bedding_cb.move(875, 220)
-
-        species_label = QLabel('Species:', self.VideoSettings)
-        species_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        species_label.move(495, 250)
-        self.species_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['species']}", self.VideoSettings)
-        self.species_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.species_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.species_entry.move(570, 250)
-
-        strain_label = QLabel('Strain-GT:', self.VideoSettings)
-        strain_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        strain_label.move(495, 280)
-        self.strain_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['strain']}", self.VideoSettings)
-        self.strain_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.strain_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.strain_entry.move(570, 280)
-
-        cage_label = QLabel('Cage:', self.VideoSettings)
-        cage_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        cage_label.move(495, 310)
-        self.cage_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['cage']}", self.VideoSettings)
-        self.cage_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.cage_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.cage_entry.move(570, 310)
-
-        subject_label = QLabel('Subject:', self.VideoSettings)
-        subject_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        subject_label.move(495, 340)
-        self.subject_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['subject']}", self.VideoSettings)
-        self.subject_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.subject_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.subject_entry.move(570, 340)
-
-        dob_label = QLabel('DOB:', self.VideoSettings)
-        dob_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        dob_label.move(495, 370)
-        self.dob_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['dob']}", self.VideoSettings)
-        self.dob_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.dob_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.dob_entry.move(570, 370)
-
-        sex_label = QLabel('Sex:', self.VideoSettings)
-        sex_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        sex_label.move(495, 400)
-        self.sex_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['sex']}", self.VideoSettings)
-        self.sex_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.sex_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.sex_entry.move(570, 400)
-
-        weight_label = QLabel('Weight:', self.VideoSettings)
-        weight_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        weight_label.move(495, 430)
-        self.weight_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['weight']}", self.VideoSettings)
-        self.weight_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.weight_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.weight_entry.move(570, 430)
-
-        housing_label = QLabel('Housing:', self.VideoSettings)
-        housing_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        housing_label.move(495, 460)
-        self.housing_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['housing']}", self.VideoSettings)
-        self.housing_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.housing_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.housing_entry.move(570, 460)
-
-        implant_label = QLabel('Implant:', self.VideoSettings)
-        implant_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        implant_label.move(495, 490)
-        self.implant_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['implant']}", self.VideoSettings)
-        self.implant_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.implant_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.implant_entry.move(570, 490)
-
-        virus_label = QLabel('Virus:', self.VideoSettings)
-        virus_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        virus_label.move(495, 520)
-        self.virus_entry = QLineEdit(f"{self.exp_settings_dict['video']['metadata']['virus']}", self.VideoSettings)
-        self.virus_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.virus_entry.setStyleSheet('QLineEdit { width: 402px; }')
-        self.virus_entry.move(570, 520)
-
-        notes_label = QLabel('Notes:', self.VideoSettings)
-        notes_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        notes_label.move(495, 550)
-        self.notes_entry = QTextEdit(f"{self.exp_settings_dict['video']['metadata']['notes']}", self.VideoSettings)
-        self.notes_entry.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.notes_entry.move(570, 550)
-        self.notes_entry.setFixedSize(403, 290)
+        Returns
+        -------
+        -------
+        """
+        self.VideoSettings = VideoSettings(self)
+        self.setWindowTitle(f'{app_name} (Record > Metadata)')
+        self.setCentralWidget(self.VideoSettings)
+        record_three_x, record_three_y = (980, 900)
+        self.setFixedSize(record_three_x, record_three_y)
 
         self._create_buttons_record(seq=2, class_option=self.VideoSettings,
                                     button_pos_y=record_three_y - 35, next_button_x_pos=record_three_x - 100)
@@ -1267,8 +1062,8 @@ class USVPlaypenWindow(QMainWindow):
         self.ProcessSettings = ProcessSettings(self)
         self.setWindowTitle(f'{app_name} (Process recordings > Settings)')
         self.setCentralWidget(self.ProcessSettings)
-        record_four_x, record_four_y = (1080, 935)
-        self.setFixedSize(record_four_x, record_four_y)
+        process_one_x, process_one_y = (1080, 935)
+        self.setFixedSize(process_one_x, process_one_y)
 
         # column 1
 
@@ -1304,24 +1099,16 @@ class USVPlaypenWindow(QMainWindow):
         open_dialog = partial(self._open_directory_dialog, self.processing_credentials_dir_edit, 'Select Credentials Directory')
         processing_credentials_dir_btn.clicked.connect(open_dialog)
 
-        sleap_conda_label = QLabel('SLEAP conda environment name:', self.ProcessSettings)
-        sleap_conda_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        sleap_conda_label.move(10, 365)
-        self.sleap_conda = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['sleap_file_conversion']['sleap_conda_env_name']}", self.ProcessSettings)
-        self.sleap_conda.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.sleap_conda.setStyleSheet('QLineEdit { width: 98px; }')
-        self.sleap_conda.move(310, 365)
-
         self.centroid_model_edit = QLineEdit(f"{self.processing_input_dict['prepare_cluster_job']['centroid_model_path']}", self.ProcessSettings)
         update_centroid_model_dir = partial(self._update_nested_dict_value, self.processing_input_dict, ('prepare_cluster_job', 'centroid_model_path'))
         self.centroid_model_edit.textChanged.connect(update_centroid_model_dir)
         self.centroid_model_edit.setPlaceholderText('SLEAP centroid model directory')
         self.centroid_model_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.centroid_model_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.centroid_model_edit.move(10, 395)
+        self.centroid_model_edit.move(10, 365)
         centroid_model_btn = QPushButton('Browse', self.ProcessSettings)
         centroid_model_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        centroid_model_btn.move(310, 395)
+        centroid_model_btn.move(310, 365)
         centroid_model_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         centroid_model_dir_dialog = partial(self._open_directory_dialog, self.centroid_model_edit, 'Select SLEAP centroid model directory')
         centroid_model_btn.clicked.connect(centroid_model_dir_dialog)
@@ -1332,10 +1119,10 @@ class USVPlaypenWindow(QMainWindow):
         self.centered_instance_model_edit.setPlaceholderText('SLEAP centered instance model directory')
         self.centered_instance_model_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.centered_instance_model_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.centered_instance_model_edit.move(10, 425)
+        self.centered_instance_model_edit.move(10, 395)
         centered_instance_btn = QPushButton('Browse', self.ProcessSettings)
         centered_instance_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        centered_instance_btn.move(310, 425)
+        centered_instance_btn.move(310, 395)
         centered_instance_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         open_centered_instance_dir_dialog = partial(self._open_directory_dialog, self.centered_instance_model_edit, 'Select SLEAP centered instance directory')
         centered_instance_btn.clicked.connect(open_centered_instance_dir_dialog)
@@ -1346,10 +1133,10 @@ class USVPlaypenWindow(QMainWindow):
         self.inference_root_dir_edit.setPlaceholderText('SLEAP inference directory')
         self.inference_root_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.inference_root_dir_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.inference_root_dir_edit.move(10, 455)
+        self.inference_root_dir_edit.move(10, 425)
         inference_root_dir_btn = QPushButton('Browse', self.ProcessSettings)
         inference_root_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        inference_root_dir_btn.move(310, 455)
+        inference_root_dir_btn.move(310, 425)
         inference_root_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         inference_root_dir_dialog = partial(self._open_directory_dialog, self.inference_root_dir_edit, 'Select SLEAP inference directory')
         inference_root_dir_btn.clicked.connect(inference_root_dir_dialog)
@@ -1362,21 +1149,21 @@ class USVPlaypenWindow(QMainWindow):
         self.calibration_file_loc_edit.setPlaceholderText('Tracking calibration / Arena root directory')
         self.calibration_file_loc_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.calibration_file_loc_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.calibration_file_loc_edit.move(10, 485)
+        self.calibration_file_loc_edit.move(10, 455)
         calibration_file_loc_btn = QPushButton('Browse', self.ProcessSettings)
         calibration_file_loc_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        calibration_file_loc_btn.move(310, 485)
+        calibration_file_loc_btn.move(310, 455)
         calibration_file_loc_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
         calibration_file_loc_dialog = partial(self._open_directory_dialog, self.calibration_file_loc_edit, 'Select calibration/arena root directory')
         calibration_file_loc_btn.clicked.connect(calibration_file_loc_dialog)
 
         das_conda_label = QLabel('DAS conda environment name:', self.ProcessSettings)
         das_conda_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        das_conda_label.move(10, 515)
+        das_conda_label.move(10, 485)
         self.das_conda = QLineEdit(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_conda_env_name'], self.ProcessSettings)
         self.das_conda.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_conda.setStyleSheet('QLineEdit { width: 98px; }')
-        self.das_conda.move(310, 515)
+        self.das_conda.move(310, 485)
 
         self.das_model_dir_edit = QLineEdit(self.das_model_dir_global, self.ProcessSettings)
         update_das_model_dir = partial(self._update_nested_dict_value, self.processing_input_dict, ('usv_inference', 'FindMouseVocalizations', 'das_command_line_inference', 'das_model_directory'))
@@ -1384,29 +1171,29 @@ class USVPlaypenWindow(QMainWindow):
         self.das_model_dir_edit.setPlaceholderText('DAS model directory')
         self.das_model_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_model_dir_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.das_model_dir_edit.move(10, 545)
+        self.das_model_dir_edit.move(10, 515)
         das_model_dir_btn = QPushButton('Browse', self.ProcessSettings)
         das_model_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        das_model_dir_btn.move(310, 545)
+        das_model_dir_btn.move(310, 515)
         das_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
         open_das_model_dir_dialog = partial(self._open_directory_dialog, self.das_model_dir_edit, 'Select DAS model directory')
         das_model_dir_btn.clicked.connect(open_das_model_dir_dialog)
 
         das_model_base_label = QLabel('DAS model base (timestamp):', self.ProcessSettings)
         das_model_base_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        das_model_base_label.move(10, 575)
+        das_model_base_label.move(10, 545)
         self.das_model_base = QLineEdit(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_name_base'], self.ProcessSettings)
         self.das_model_base.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_model_base.setStyleSheet('QLineEdit { width: 183px; }')
-        self.das_model_base.move(225, 575)
+        self.das_model_base.move(225, 545)
 
         vcl_conda_label = QLabel('Vocalocator conda environment name:', self.ProcessSettings)
         vcl_conda_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        vcl_conda_label.move(10, 605)
+        vcl_conda_label.move(10, 575)
         self.vcl_conda = QLineEdit(self.processing_input_dict['vocalocator']['vcl_conda_env_name'], self.ProcessSettings)
         self.vcl_conda.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.vcl_conda.setStyleSheet('QLineEdit { width: 98px; }')
-        self.vcl_conda.move(310, 605)
+        self.vcl_conda.move(310, 575)
 
         self.vcl_model_dir_edit = QLineEdit(self.vcl_model_dir_global, self.ProcessSettings)
         update_vcl_model_dir = partial(self._update_nested_dict_value, self.processing_input_dict, ('vocalocator', 'vcl_model_directory'))
@@ -1414,74 +1201,74 @@ class USVPlaypenWindow(QMainWindow):
         self.vcl_model_dir_edit.setPlaceholderText('Vocalocator model directory')
         self.vcl_model_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.vcl_model_dir_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.vcl_model_dir_edit.move(10, 635)
+        self.vcl_model_dir_edit.move(10, 605)
         vcl_model_dir_btn = QPushButton('Browse', self.ProcessSettings)
         vcl_model_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        vcl_model_dir_btn.move(310, 635)
+        vcl_model_dir_btn.move(310, 605)
         vcl_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
         vcl_model_dir_dialog = partial(self._open_directory_dialog, self.vcl_model_dir_edit, 'Select VCL model directory')
         vcl_model_dir_btn.clicked.connect(vcl_model_dir_dialog)
 
         pc_usage_process_label = QLabel('Notify e-mail(s) of PC usage:', self.ProcessSettings)
         pc_usage_process_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        pc_usage_process_label.move(10, 665)
+        pc_usage_process_label.move(10, 635)
         self.pc_usage_process = QLineEdit('', self.ProcessSettings)
         self.pc_usage_process.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.pc_usage_process.setStyleSheet('QLineEdit { width: 183px; }')
-        self.pc_usage_process.move(225, 665)
+        self.pc_usage_process.move(225, 635)
 
         processing_pc_label = QLabel('Processing PC of choice:', self.ProcessSettings)
         processing_pc_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        processing_pc_label.move(10, 695)
+        processing_pc_label.move(10, 665)
         self.loaded_processing_pc_list = sorted(self.processing_input_dict['send_email']['Messenger']['processing_pc_list'], key=lambda x: x == self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'], reverse=True)
         self.processing_pc_cb = QComboBox(self.ProcessSettings)
         self.processing_pc_cb.addItems(self.loaded_processing_pc_list)
         self.processing_pc_cb.setStyleSheet('QComboBox { width: 155px; }')
         self.processing_pc_cb.activated.connect(partial(self._combo_box_prior_processing_pc_choice, variable_id='processing_pc_choice'))
-        self.processing_pc_cb.move(225, 695)
+        self.processing_pc_cb.move(225, 665)
 
         ev_sync_label = QLabel('E-PHYS processing settings', self.ProcessSettings)
         ev_sync_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         ev_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
-        ev_sync_label.move(10, 735)
+        ev_sync_label.move(10, 705)
 
         conduct_nv_sync_cb_label = QLabel('Run E/V sync check:', self.ProcessSettings)
         conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        conduct_nv_sync_cb_label.move(10, 765)
+        conduct_nv_sync_cb_label.move(10, 735)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
         self.conduct_nv_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_nv_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_nv_sync_cb_bool'))
-        self.conduct_nv_sync_cb.move(225, 765)
+        self.conduct_nv_sync_cb.move(225, 735)
 
         conduct_ephys_file_chaining_label = QLabel('Concatenate e-phys files:', self.ProcessSettings)
         conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        conduct_ephys_file_chaining_label.move(10, 795)
+        conduct_ephys_file_chaining_label.move(10, 765)
         self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
         self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
         self.conduct_ephys_file_chaining_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_ephys_file_chaining_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_ephys_file_chaining_cb_bool'))
-        self.conduct_ephys_file_chaining_cb.move(225, 795)
+        self.conduct_ephys_file_chaining_cb.move(225, 765)
 
         split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
         split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        split_cluster_spikes_cb_label.move(10, 825)
+        split_cluster_spikes_cb_label.move(10, 795)
         self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
         self.split_cluster_spikes_cb.addItems(['No', 'Yes'])
         self.split_cluster_spikes_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.split_cluster_spikes_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='split_cluster_spikes_cb_bool'))
-        self.split_cluster_spikes_cb.move(225, 825)
+        self.split_cluster_spikes_cb.move(225, 795)
 
         min_spike_num_label = QLabel('Min num of spikes:', self.ProcessSettings)
         min_spike_num_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        min_spike_num_label.move(10, 855)
+        min_spike_num_label.move(10, 825)
         self.min_spike_num = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num']}", self.ProcessSettings)
         self.min_spike_num.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.min_spike_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.min_spike_num.move(225, 855)
+        self.min_spike_num.move(225, 825)
 
         # column 2
         column_two_x1 = 440
@@ -1995,7 +1782,7 @@ class USVPlaypenWindow(QMainWindow):
         self.v_camera_serial_num.move(column_three_x2, 860)
 
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
-                                     button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
+                                     button_pos_y=process_one_y - 35, next_button_x_pos=process_one_x - 100)
 
     def process_two(self) -> None:
         """
@@ -2013,8 +1800,8 @@ class USVPlaypenWindow(QMainWindow):
         self.ConductProcess = ConductProcess(self)
         self.setWindowTitle(f'{app_name} (Conduct Processing)')
         self.setCentralWidget(self.ConductProcess)
-        record_four_x, record_four_y = (870, 1000)
-        self.setFixedSize(record_four_x, record_four_y)
+        process_two_x, process_two_y = (870, 1000)
+        self.setFixedSize(process_two_x, process_two_y)
 
         self.txt_edit_process = QPlainTextEdit(self.ConductProcess)
         self.txt_edit_process.move(5, 5)
@@ -2033,7 +1820,7 @@ class USVPlaypenWindow(QMainWindow):
                                       exp_settings_dict=self.exp_settings_dict)
 
         self._create_buttons_process(seq=1, class_option=self.ConductProcess,
-                                     button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
+                                     button_pos_y=process_two_y - 35, next_button_x_pos=process_two_x - 100)
 
     def analyze_one(self) -> None:
         """
@@ -2804,9 +2591,9 @@ class USVPlaypenWindow(QMainWindow):
 
         qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'ch_receiving_input',
                           'a_ch_receiving_input', 'pc_usage_process', 'min_spike_num', 'phidget_extra_data_camera',
-                          'hpss_power', 'sleap_conda', 'n_deriv_smooth',
-                          'das_conda', 'das_model_base', 'das_output_type', 'smooth_scale', 'static_reference_len',
-                          'weight_rigid', 'weight_weak', 'reprojection_error_threshold', 'regularization_function',
+                          'hpss_power', 'n_deriv_smooth','das_conda', 'das_model_base', 'das_output_type',
+                          'smooth_scale', 'static_reference_len', 'weight_rigid', 'weight_weak',
+                          'reprojection_error_threshold', 'regularization_function',
                           'segment_confidence_threshold', 'segment_minlen', 'segment_fillgap',
                           'rigid_body_constraints', 'weak_body_constraints', 'vcl_conda']
         lists_in_string = ['v_camera_serial_num', 'filter_dirs', 'concat_dirs', 'stft_window_hop', 'hpss_kernel_size',
@@ -2881,7 +2668,6 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_minlen'] = float(ast.literal_eval(self.segment_minlen))
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_fillgap'] = float(ast.literal_eval(self.segment_fillgap))
 
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['sleap_file_conversion']['sleap_conda_env_name'] = self.sleap_conda
         if self.frame_restriction == ['']:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] = None
         else:
@@ -3028,6 +2814,46 @@ class USVPlaypenWindow(QMainWindow):
         self.exp_settings_dict['conduct_audio_recording'] = self.conduct_audio_cb_bool
         self.exp_settings_dict['disable_ethernet'] = self.disable_ethernet_cb_bool
 
+    # def _save_record_two_labels_func(self) -> None:
+    #     """
+    #     Transfers Recording Two settings to exp_settings dictionary.
+    #
+    #     Parameters
+    #     ----------
+    #     ----------
+    #
+    #     Returns
+    #     -------
+    #     -------
+    #     """
+    #
+    #     for variable in self.default_audio_settings.keys():
+    #         if variable in self.exp_settings_dict['audio'].keys():
+    #             if variable == 'used_mics' or variable == 'cpu_affinity':
+    #                 if not getattr(self, variable).text() == '':
+    #                     self.exp_settings_dict['audio'][f'{variable}'] = [int(x) for x in getattr(self, variable).text().split(',')]
+    #                 else:
+    #                     self.exp_settings_dict['audio'][f'{variable}'] = []
+    #             elif variable == 'cpu_priority':
+    #                 self.exp_settings_dict['audio'][f'{variable}'] = getattr(self, variable).text()
+    #             else:
+    #                 self.exp_settings_dict['audio'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+    #         elif variable in self.exp_settings_dict['audio']['general'].keys():
+    #             self.exp_settings_dict['audio']['general'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+    #         elif variable in self.exp_settings_dict['audio']['screen_position'].keys():
+    #             self.exp_settings_dict['audio']['screen_position'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+    #         elif variable in self.exp_settings_dict['audio']['devices'].keys():
+    #             self.exp_settings_dict['audio']['devices'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+    #         elif variable in self.exp_settings_dict['audio']['mics_config'].keys():
+    #             if variable == 'ditctime':
+    #                 self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = getattr(self, variable).text()
+    #             else:
+    #                 self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+    #         elif variable in self.exp_settings_dict['audio']['monitor'].keys():
+    #             self.exp_settings_dict['audio']['monitor'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+    #         elif variable in self.exp_settings_dict['audio']['call'].keys():
+    #             self.exp_settings_dict['audio']['call'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
+
     def _save_record_two_labels_func(self) -> None:
         """
         Transfers Recording Two settings to exp_settings dictionary.
@@ -3041,89 +2867,19 @@ class USVPlaypenWindow(QMainWindow):
         -------
         """
 
-        for variable in self.default_audio_settings.keys():
-            if variable in self.exp_settings_dict['audio'].keys():
-                if variable == 'used_mics' or variable == 'cpu_affinity':
-                    if not getattr(self, variable).text() == '':
-                        self.exp_settings_dict['audio'][f'{variable}'] = [int(x) for x in getattr(self, variable).text().split(',')]
-                    else:
-                        self.exp_settings_dict['audio'][f'{variable}'] = []
-                elif variable == 'cpu_priority':
-                    self.exp_settings_dict['audio'][f'{variable}'] = getattr(self, variable).text()
-                else:
-                    self.exp_settings_dict['audio'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-            elif variable in self.exp_settings_dict['audio']['general'].keys():
-                self.exp_settings_dict['audio']['general'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-            elif variable in self.exp_settings_dict['audio']['screen_position'].keys():
-                self.exp_settings_dict['audio']['screen_position'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-            elif variable in self.exp_settings_dict['audio']['devices'].keys():
-                self.exp_settings_dict['audio']['devices'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-            elif variable in self.exp_settings_dict['audio']['mics_config'].keys():
-                if variable == 'ditctime':
-                    self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = getattr(self, variable).text()
-                else:
-                    self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-            elif variable in self.exp_settings_dict['audio']['monitor'].keys():
-                self.exp_settings_dict['audio']['monitor'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-            elif variable in self.exp_settings_dict['audio']['call'].keys():
-                self.exp_settings_dict['audio']['call'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-
-    def _save_record_three_labels_func(self) -> None:
-        """
-        Transfers Recording Three settings to exp_settings dictionary.
-
-        Parameters
-        ----------
-        ----------
-
-        Returns
-        -------
-        -------
-        """
-
-        video_dict_keys = ['expected_cameras', 'recording_codec','institution_entry', 'laboratory_entry',
-                           'experimenter_entry', 'mice_num_entry', 'species_entry', 'strain_entry', 'cage_entry',
-                           'subject_entry', 'dob_entry', 'sex_entry', 'weight_entry', 'housing_entry',
-                           'implant_entry', 'virus_entry', 'notes_entry']
+        video_dict_keys = ['expected_cameras', 'recording_codec']
 
         self.exp_settings_dict['video']['general']['monitor_recording'] = self.monitor_recording_cb_bool
         self.exp_settings_dict['video']['general']['monitor_specific_camera'] = self.monitor_specific_camera_cb_bool
         self.exp_settings_dict['video']['general']['specific_camera_serial'] = self.specific_camera_serial
         self.exp_settings_dict['video']['general']['delete_post_copy'] = self.delete_post_copy_cb_bool
 
-        self.exp_settings_dict['video']['metadata']['vacant_arena'] = self.vacant_arena_cb_bool
-        self.exp_settings_dict['video']['metadata']['ambient_light'] = self.ambient_light_cb_bool
-        self.exp_settings_dict['video']['metadata']['record_brain'] = self.record_brain_cb_bool
-        self.exp_settings_dict['video']['metadata']['usv_playback'] = self.usv_playback_cb_bool
-        self.exp_settings_dict['video']['metadata']['chemogenetics'] = self.chemogenetics_cb_bool
-        self.exp_settings_dict['video']['metadata']['optogenetics'] = self.optogenetics_cb_bool
-        self.exp_settings_dict['video']['metadata']['brain_lesion'] = self.brain_lesion_cb_bool
-        self.exp_settings_dict['video']['metadata']['devocalization'] = self.devocalization_cb_bool
-        self.exp_settings_dict['video']['metadata']['female_urine'] = self.female_urine_cb_bool
-        self.exp_settings_dict['video']['metadata']['female_bedding'] = self.female_bedding_cb_bool
-
         self.exp_settings_dict['video']['general']['recording_frame_rate'] = self.cameras_frame_rate.value()
         self.exp_settings_dict['video']['general']['calibration_frame_rate'] = self.calibration_frame_rate.value()
 
-        self.exp_settings_dict['video']['cameras_config']['21372316']['exposure_time'] = self.exposure_time_21372316.value()
-        self.exp_settings_dict['video']['cameras_config']['21372316']['gain'] = self.gain_21372316.value()
-        self.exp_settings_dict['video']['cameras_config']['21372315']['exposure_time'] = self.exposure_time_21372315.value()
-        self.exp_settings_dict['video']['cameras_config']['21372315']['gain'] = self.gain_21372315.value()
-        self.exp_settings_dict['video']['cameras_config']['21369048']['exposure_time'] = self.exposure_time_21369048.value()
-        self.exp_settings_dict['video']['cameras_config']['21369048']['gain'] = self.gain_21369048.value()
-        self.exp_settings_dict['video']['cameras_config']['22085397']['exposure_time'] = self.exposure_time_22085397.value()
-        self.exp_settings_dict['video']['cameras_config']['22085397']['gain'] = self.gain_22085397.value()
-        self.exp_settings_dict['video']['cameras_config']['21241563']['exposure_time'] = self.exposure_time_21241563.value()
-        self.exp_settings_dict['video']['cameras_config']['21241563']['gain'] = self.gain_21241563.value()
-
         for variable in video_dict_keys:
-            if variable != 'expected_cameras':
-                if variable == 'recording_codec':
-                    self.exp_settings_dict['video']['general'][variable] = str(getattr(self, variable))
-                elif variable == 'notes_entry':
-                    self.exp_settings_dict['video']['metadata'][variable[:-6]] = getattr(self, variable).toPlainText()
-                else:
-                    self.exp_settings_dict['video']['metadata'][variable[:-6]] = getattr(self, variable).text()
+            if variable == 'recording_codec':
+                self.exp_settings_dict['video']['general'][variable] = str(getattr(self, variable))
             else:
                 expected_cameras_list = self.exp_settings_dict['video']['general'][variable]
                 for camera_id in self.exp_settings_dict['video']['general']['available_cameras']:
@@ -3977,7 +3733,7 @@ class USVPlaypenWindow(QMainWindow):
             next_win_connect = [self._save_record_two_labels_func, self.record_three]
         elif seq == 2:
             previous_win = self.record_two
-            next_win_connect = [self._save_record_three_labels_func, self.record_four]
+            next_win_connect = [self.record_four]
         else:
             previous_win = self.record_three
             next_win_connect = []
@@ -4705,15 +4461,7 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'conduct_audio_cb_bool': _toml['conduct_audio_recording'], 'conduct_tracking_calibration_cb_bool': _toml['conduct_tracking_calibration'],
                            'disable_ethernet_cb_bool': _toml['disable_ethernet'], 'monitor_recording_cb_bool': _toml['video']['general']['monitor_recording'],
                            'monitor_specific_camera_cb_bool': _toml['video']['general']['monitor_specific_camera'], 'delete_post_copy_cb_bool': _toml['video']['general']['delete_post_copy'],
-                           'vacant_arena_cb_bool': _toml['video']['metadata']['vacant_arena'], 'ambient_light_cb_bool': _toml['video']['metadata']['ambient_light'], 'record_brain_cb_bool': _toml['video']['metadata']['record_brain'],
-                           'usv_playback_cb_bool': _toml['video']['metadata']['usv_playback'], 'chemogenetics_cb_bool': _toml['video']['metadata']['chemogenetics'], 'optogenetics_cb_bool': _toml['video']['metadata']['optogenetics'],
-                           'brain_lesion_cb_bool': _toml['video']['metadata']['brain_lesion'], 'devocalization_cb_bool': _toml['video']['metadata']['devocalization'], 'female_urine_cb_bool': _toml['video']['metadata']['female_urine'],
-                           'female_bedding_cb_bool': _toml['video']['metadata']['female_bedding'], 'recording_codec': _toml['video']['general']['recording_codec'],
-                           '21372315_et': _toml['video']['cameras_config']['21372315']['exposure_time'], '21372315_dg': _toml['video']['cameras_config']['21372315']['gain'],
-                           '21372316_et': _toml['video']['cameras_config']['21372316']['exposure_time'], '21372316_dg': _toml['video']['cameras_config']['21372316']['gain'],
-                           '21369048_et': _toml['video']['cameras_config']['21369048']['exposure_time'], '21369048_dg': _toml['video']['cameras_config']['21369048']['gain'],
-                           '22085397_et': _toml['video']['cameras_config']['22085397']['exposure_time'], '22085397_dg': _toml['video']['cameras_config']['22085397']['gain'],
-                           '21241563_et': _toml['video']['cameras_config']['21241563']['exposure_time'], '21241563_dg': _toml['video']['cameras_config']['21241563']['gain'],
+                           'recording_codec': _toml['video']['general']['recording_codec'],
                            'device_receiving_input': processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'],
                            'save_transformed_data': processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['save_transformed_data'],
                            'conduct_video_concatenation_cb_bool': False, 'conduct_video_fps_change_cb_bool': False,
