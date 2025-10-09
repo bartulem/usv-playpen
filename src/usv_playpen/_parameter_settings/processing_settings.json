@@ -61,7 +61,7 @@
     }
   },
   "preprocess_data": {
-  "root_directories": []
+    "root_directories": []
   },
   "extract_phidget_data": {
     "Gatherer": {

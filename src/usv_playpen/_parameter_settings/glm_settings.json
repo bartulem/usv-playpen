@@ -48,10 +48,7 @@
     },
     "logistic_regression_params": {
       "penalty": "l2",
-      "cs": [
-        0.001,
-        0.001
-      ],
+      "cs": [0.001, 0.001],
       "cv": 10,
       "solver": "liblinear",
       "max_iter": 10000,
