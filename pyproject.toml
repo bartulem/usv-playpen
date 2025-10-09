@@ -10,7 +10,7 @@ authors = [
 description = "GUI/CLI to conduct, process and analyze experiments w/ multichannel e-phys, audio and video acquisition"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10"
 keywords = ["neuroscience", "mouse", "usv", "behavior", "social", "courtship"]
 classifiers = [
   "Development Status :: 1 - Planning",
