@@ -78,6 +78,7 @@ If you recorded a session with audio, e-phys and video data (imaginary example: 
 
     /mnt/falkner/Bartul/Data/:
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ├── original (empty)
     │   │   ├── original_mc
@@ -152,6 +153,7 @@ Neural recording data is aligned to the start of video recording, which is ident
 
     /mnt/falkner/Bartul/Data/:
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ...
     │   ├── ephys
@@ -227,6 +229,7 @@ The code will find all the *ap.bin* files for each probe and conduct the concate
 
     /mnt/falkner/Bartul/Data/:
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ...
     │   ├── ephys
@@ -290,6 +293,7 @@ The code will create a *cluster_data* subdirectory in each session's *ephys/imec
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ...
     │   ├── ephys
@@ -384,6 +388,7 @@ These steps change videos and video directory structure from the native Loopbio 
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ...
     │   ├── ephys
@@ -493,7 +498,8 @@ The SLEAP inference and proofreading steps are not implemented in the *usv-playp
 
 Run SLP-H5 conversion
 """""""""""""""""""""
-After proofreading, you convert SLP to H5 files, which is the format SLEAP-Anipose operates on (*usv-playpen* runs this in parallel for all views). To do this, you need to list the root directories of interest, select *Run SLP-H5 conversion*, click *Next* and then *Process*:
+After proofreading, you convert SLP to H5 files, which is the format SLEAP-Anipose operates on (*usv-playpen* runs this in parallel for all views).
+To do this, you need to list the root directories of interest, select *Run SLP-H5 conversion*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_6.png
    :align: center
@@ -508,6 +514,7 @@ This shouldn’t take longer than two minutes; the directory structure and file 
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ...
     │   ├── ephys
@@ -595,6 +602,7 @@ The process results in the creation of an H5 file which ends in *_points3d_trans
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ...
     │   ├── ephys
@@ -732,6 +740,7 @@ The *Convert to single-ch files* step populates the *original* directory with si
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ├── **cropped_to_video**
     │   │   │   ├── **m_250430145009_ch01_cropped_to_video.wav**
@@ -806,6 +815,7 @@ The *Run HPSS* step populates the *hpss* directory with de-noised single channel
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ├── cropped_to_video
     │   │   │   ...
@@ -863,6 +873,7 @@ The purpose of these two functions is to first high-pass filter each audio file 
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ├── cropped_to_video
     │   │   │   ...
@@ -922,6 +933,7 @@ This will create a *das_annotations* subdirectory which will contain a CSV file 
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ├── cropped_to_video
     │   │   │   ...
@@ -983,6 +995,7 @@ This process will create [1] a *20250430_145017_usv_summary.csv* file, and [2] a
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ├── cropped_to_video
     │   │   │   ...
@@ -1068,6 +1081,7 @@ This will create a *sound_localization* subdirectory which will contain several 
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ├── cropped_to_video
     │   │   │   ...
@@ -1145,6 +1159,7 @@ The A/V synchronization procedure will first crate a *sync_px* file for each inp
 .. parsed-literal::
 
     ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
     │   ├── audio
     │   │   ...
     │   ├── ephys

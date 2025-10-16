@@ -5,8 +5,10 @@ GUI to run behavioral experiments, data processing and analyses.
 
 import ast
 import configparser
+import copy
 import ctypes
 import json
+import numbers
 import os
 import platform
 import sys
@@ -16,8 +18,9 @@ from pathlib import Path
 import platformdirs
 import re
 import toml
+import yaml
 from PyQt6.QtCore import (
-    Qt, QEvent
+    Qt, QEvent, QRegularExpression
 )
 from PyQt6.QtGui import (
     QFont,
@@ -25,21 +28,30 @@ from PyQt6.QtGui import (
     QGuiApplication,
     QIcon,
     QPainter,
-    QPixmap
+    QPixmap,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QColor
 )
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSlider,
     QSplashScreen,
     QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
 from PyQt6.QtTest import QTest
@@ -60,7 +72,8 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0]}"
+# app_name = f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0]}"
+app_name = "USV Playpen"
 
 basedir = os.path.dirname(__file__)
 background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
@@ -76,7 +89,638 @@ previous_icon = f'{basedir}{os.sep}img{os.sep}previous.png'
 next_icon = f'{basedir}{os.sep}img{os.sep}next.png'
 main_icon = f'{basedir}{os.sep}img{os.sep}main.png'
 calibrate_icon = f'{basedir}{os.sep}img{os.sep}calibrate.png'
+add_icon = f'{basedir}{os.sep}img{os.sep}add.png'
+remove_icon = f'{basedir}{os.sep}img{os.sep}remove.png'
+accept_icon = f'{basedir}{os.sep}img{os.sep}accept.png'
+cancel_icon = f'{basedir}{os.sep}img{os.sep}cancel.png'
+clear_icon = f'{basedir}{os.sep}img{os.sep}clear.png'
 
+# Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
+# while keeping dictionaries in block style for overall readability.
+class SmartDumper(yaml.Dumper):
+    def represent_list(self, data):
+        is_simple_list = all(isinstance(item, (str, numbers.Number, bool)) or item is None for item in data)
+
+        if is_simple_list:
+            return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
+        else:
+            return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
+
+SmartDumper.add_representer(list, SmartDumper.represent_list)
+
+class YamlHighlighter(QSyntaxHighlighter):
+    """
+    A syntax highlighter for basic YAML files that colors keys.
+    """
+    def __init__(self, parent=None):
+        super(YamlHighlighter, self).__init__(parent)
+
+        self.highlighting_rules = []
+
+        key_format = QTextCharFormat()
+        key_format.setForeground(QColor("#F58025"))
+        key_format.setFontWeight(QFont.Weight.Bold)
+
+        key_pattern = QRegularExpression(r"^\s*[A-Za-z_][A-Za-z0-9_]*:")
+        self.highlighting_rules.append((key_pattern, key_format))
+
+    def highlightBlock(self, text: str) -> None:
+        """
+        This method is called by Qt for each line of text to apply formatting.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+        for pattern, format in self.highlighting_rules:
+            match_iterator = pattern.globalMatch(text)
+            while match_iterator.hasNext():
+                match = match_iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), format)
+
+
+class ChemoDialog(QDialog):
+    def __init__(self, parent=None, subject: dict = None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.subject = subject
+        self.is_edit_mode = (subject is not None)
+        self.intervention_key = 'chemogenetics'
+
+        self.setWindowTitle("Edit Chemogenetic Intervention" if self.is_edit_mode else "Add Chemogenetic Intervention")
+        self.setMinimumWidth(500)
+
+        placeholders = {
+            'virus_vendor': 'addgene',
+            'virus_name': 'pAAV-CaMKIIa-hM4D(Gi)-mCherry',
+            'virus_concentration': 'e.g., 1.0e12 vg/mL',
+            'virus_injection_date': 'YYYY-MM-DD',
+            'target_area': 'lPAG',
+            'agonist_vendor': 'HelloBio',
+            'agonist_name': 'CNO',
+            'agonist_concentration': 'e.g., 5',
+            'agonist_injection_time': 'HH:MM'
+        }
+
+        layout = QVBoxLayout(self)
+        self.form_layout = QFormLayout()
+        self.form_layout.setHorizontalSpacing(25)
+        self.fields = {}
+
+        self.subject_combo = QComboBox()
+        if self.is_edit_mode:
+            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.setEnabled(False)
+        else:
+            self.subject_combo.addItem("--- Select Subject ---")
+            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            self.subject_combo.addItems(subject_ids)
+        self.form_layout.addRow("Subject:", self.subject_combo)
+
+        self.intervention_type_combo = QComboBox()
+        self.intervention_type_combo.addItems(['excitatory', 'inhibitory'])
+        self.form_layout.addRow("Intervention Type:", self.intervention_type_combo)
+        self.fields['name'] = self.intervention_type_combo
+
+        line_edit_fields_part1 = [
+            'virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration',
+            'virus_injection_date', 'target_area',
+        ]
+        for key in line_edit_fields_part1:
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholders.get(key, ""))
+            self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
+            self.fields[key] = widget
+
+        self.target_hemisphere_combo = QComboBox()
+        self.target_hemisphere_combo.addItems(['left', 'right', 'bilateral'])
+        self.form_layout.addRow("Target Hemisphere:", self.target_hemisphere_combo)
+        self.fields['target_hemisphere'] = self.target_hemisphere_combo
+
+        line_edit_fields_part2 = [
+            'agonist_vendor', 'agonist_name', 'agonist_lot', 'agonist_concentration',
+            'agonist_injection_time'
+        ]
+        for key in line_edit_fields_part2:
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholders.get(key, ""))
+            self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
+            self.fields[key] = widget
+
+        self.agonist_injection_type_combo = QComboBox()
+        self.agonist_injection_type_combo.addItems(['subcutaneous', 'intraperitoneal'])
+        self.form_layout.addRow("Agonist Injection Type:", self.agonist_injection_type_combo)
+        self.fields['agonist_injection_type'] = self.agonist_injection_type_combo
+
+        layout.addLayout(self.form_layout)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.save_and_accept)
+        button_box.rejected.connect(self.reject)
+
+        cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button:
+            cancel_button.setIcon(QIcon(cancel_icon))
+
+        self.ok_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if self.ok_button:
+            self.ok_button.setIcon(QIcon(accept_icon))
+
+        if self.is_edit_mode:
+            delete_button = button_box.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
+            delete_button.clicked.connect(self.delete_intervention)
+
+        layout.addWidget(button_box)
+
+        if self.is_edit_mode:
+            self.ok_button.setEnabled(True)
+        else:
+            self.ok_button.setEnabled(False)
+            self.subject_combo.currentIndexChanged.connect(lambda index: self.ok_button.setEnabled(index > 0))
+
+        if self.is_edit_mode:
+            self.populate_form()
+
+    def populate_form(self):
+        """
+        Fills the form widgets with existing intervention data.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        for key, widget in self.fields.items():
+            value = interv_data.get(key, "")
+            if isinstance(widget, QComboBox):
+                widget.setCurrentText(str(value))
+            else:
+                widget.setText(str(value))
+
+    def delete_intervention(self):
+        """
+        Deletes this intervention from the subject.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        reply = QMessageBox.question(self, 'Confirm Delete',
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+
+        if reply == QMessageBox.StandardButton.Yes:
+            if 'interventions' in self.subject and self.intervention_key in self.subject['interventions']:
+                del self.subject['interventions'][self.intervention_key]
+                self.parent_window._save_metadata_to_yaml()
+                self.parent_window._update_subject_in_repository(self.subject)
+            self.accept()
+
+    def save_and_accept(self):
+        """
+        Gathers data from the mixed widgets, saves, and closes.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        selected_id = self.subject_combo.currentText()
+        target_subject = next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+
+        if not target_subject:
+            return
+
+        intervention_data = {}
+        for key, widget in self.fields.items():
+            if isinstance(widget, QComboBox):
+                intervention_data[key] = widget.currentText()
+            else:  # It's a QLineEdit
+                intervention_data[key] = widget.text()
+
+        if 'interventions' not in target_subject or not isinstance(target_subject.get('interventions'), dict):
+            target_subject['interventions'] = {}
+        target_subject['interventions']['chemogenetics'] = intervention_data
+
+        self.parent_window._save_metadata_to_yaml()
+        self.parent_window._update_subject_in_repository(target_subject)
+        self.accept()
+
+
+class EphysDialog(QDialog):
+    """A custom dialog for E-phys Interventions with edit/delete functionality."""
+    def __init__(self, parent=None, subject: dict = None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.subject = subject
+        self.is_edit_mode = (subject is not None)
+        self.intervention_key = 'electrophysiology'
+
+        self.setWindowTitle("Edit E-phys Intervention" if self.is_edit_mode else "Add E-phys Intervention")
+        self.setMinimumWidth(500)
+
+        placeholders = {
+            'surgery_date': '2025-09-29',
+            'cable_sn': 'XSE0048-005413',
+            'hs_sn': '23280190',
+            'hs_sr': '30000.207531380755',
+            'probe_model': 'NP2013',
+            'probe_sn': '22420013594,22420015871',
+            'target_area': 'lPAG',
+            'software_version': 'v20240620-phase30'
+        }
+
+        layout = QVBoxLayout(self)
+        self.form_layout = QFormLayout()
+        self.form_layout.setHorizontalSpacing(25)
+        self.fields = {}
+
+        self.subject_combo = QComboBox()
+        if self.is_edit_mode:
+            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.setEnabled(False)
+        else:
+            self.subject_combo.addItem("--- Select Subject ---")
+            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            self.subject_combo.addItems(subject_ids)
+        self.form_layout.addRow("Subject:", self.subject_combo)
+
+        ephys_setups = self.parent_window.equipment_settings_dict.get('ephys', {})
+        self.setup_combo = QComboBox()
+        self.setup_combo.addItems(ephys_setups.keys())
+        self.form_layout.addRow("Setup:", self.setup_combo)
+        self.fields['name'] = self.setup_combo
+
+        line_edit_fields_part1 = {'surgery_date': 'Surgery Date:', 'cable_sn': 'Cable SN:', 'hs_sn': 'Headstage SN:',
+                                  'hs_sr': 'Headstage SR:', 'probe_model': 'Probe Model:', 'probe_sn': 'Probe SN:'}
+        for key, label_text in line_edit_fields_part1.items():
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholders.get(key, ""))
+            self.form_layout.addRow(label_text, widget)
+            self.fields[key] = widget
+
+        self.probe_reused_combo = QComboBox()
+        self.probe_reused_combo.addItems(['Yes', 'No'])
+        self.form_layout.addRow("Probe Reused:", self.probe_reused_combo)
+        self.fields['probe_reused'] = self.probe_reused_combo
+
+        self.target_area_edit = QLineEdit()
+        self.form_layout.addRow("Target Area:", self.target_area_edit)
+        self.fields['target_area'] = self.target_area_edit
+
+        self.hemisphere_combo = QComboBox()
+        self.hemisphere_combo.addItems(['left', 'right', 'bilateral'])
+        self.form_layout.addRow("Target Hemisphere:", self.hemisphere_combo)
+        self.fields['target_hemisphere'] = self.hemisphere_combo
+
+        self.software_version_edit = QLineEdit()
+        self.form_layout.addRow("Software Version:", self.software_version_edit)
+        self.fields['software_version'] = self.software_version_edit
+
+        layout.addLayout(self.form_layout)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.save_and_accept)
+        button_box.rejected.connect(self.reject)
+
+        cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button:
+            cancel_button.setIcon(QIcon(cancel_icon))
+        self.ok_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if self.ok_button:
+            self.ok_button.setIcon(QIcon(accept_icon))
+        if self.is_edit_mode:
+            delete_button = button_box.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
+            delete_button.clicked.connect(self.delete_intervention)
+        layout.addWidget(button_box)
+
+        if self.is_edit_mode:
+            self.ok_button.setEnabled(True)
+        else:
+            self.ok_button.setEnabled(False)
+            self.subject_combo.currentIndexChanged.connect(lambda index: self.ok_button.setEnabled(index > 0))
+
+        if self.is_edit_mode:
+            self.populate_form()
+
+    def populate_form(self):
+        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        for key, widget in self.fields.items():
+            value = interv_data.get(key, "")
+            if key == 'probe_reused':
+                widget.setCurrentText('Yes' if value else 'No')
+            elif key == 'probe_sn' and isinstance(value, list):
+                widget.setText(', '.join(map(str, value)))
+            elif isinstance(widget, QComboBox):
+                widget.setCurrentText(str(value))
+            else:
+                widget.setText(str(value))
+
+    def delete_intervention(self):
+        reply = QMessageBox.question(self, 'Confirm Delete',
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            if 'interventions' in self.subject and self.intervention_key in self.subject['interventions']:
+                del self.subject['interventions'][self.intervention_key]
+                self.parent_window._save_metadata_to_yaml()
+                self.parent_window._update_subject_in_repository(self.subject)
+
+            self.accept()
+
+    def save_and_accept(self):
+        selected_id = self.subject_combo.currentText()
+        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+        if not target_subject: return
+
+        intervention_data = {}
+        for key, widget in self.fields.items():
+            intervention_data[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
+
+        intervention_data['probe_reused'] = (intervention_data['probe_reused'] == 'Yes')
+        probe_sn_str = intervention_data.get('probe_sn', '')
+        if probe_sn_str:
+            final_sn_list = [item.strip() for item in probe_sn_str.split(',') if item.strip()]
+            intervention_data['probe_sn'] = [int(sn) if sn.isdigit() else sn for sn in final_sn_list]
+        else:
+            intervention_data['probe_sn'] = []
+
+        if 'interventions' not in target_subject: target_subject['interventions'] = {}
+        target_subject['interventions'][self.intervention_key] = intervention_data
+
+        self.parent_window._save_metadata_to_yaml()
+        self.parent_window._update_subject_in_repository(target_subject)
+        self.accept()
+
+
+class LesionDialog(QDialog):
+    """A custom dialog for Lesion Interventions with edit/delete functionality."""
+    def __init__(self, parent=None, subject: dict = None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.subject = subject
+        self.is_edit_mode = (subject is not None)
+        self.intervention_key = 'lesion'
+
+        self.setWindowTitle("Edit Lesion Intervention" if self.is_edit_mode else "Add Lesion Intervention")
+        self.setMinimumWidth(500)
+
+        placeholders = {
+            'name': 'caspase',
+            'virus_vendor': 'addgene',
+            'virus_name': 'pAAV5-flex-taCasp3-TEVp',
+            'virus_injection_date': '2025-08-15',
+            'target_area': 'lPAG'
+        }
+
+        layout = QVBoxLayout(self)
+        self.form_layout = QFormLayout()
+        self.form_layout.setHorizontalSpacing(25)
+        self.fields = {}
+
+        self.subject_combo = QComboBox()
+        if self.is_edit_mode:
+            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.setEnabled(False)
+        else:
+            self.subject_combo.addItem("--- Select Subject ---")
+            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            self.subject_combo.addItems(subject_ids)
+        self.form_layout.addRow("Subject:", self.subject_combo)
+
+        line_edit_fields = ['name', 'virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_injection_date', 'target_area']
+        for key in line_edit_fields:
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholders.get(key, ""))
+            self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
+            self.fields[key] = widget
+
+        self.target_hemisphere_combo = QComboBox()
+        self.target_hemisphere_combo.addItems(['left', 'right', 'bilateral'])
+        self.form_layout.addRow("Target Hemisphere:", self.target_hemisphere_combo)
+        self.fields['target_hemisphere'] = self.target_hemisphere_combo
+
+        layout.addLayout(self.form_layout)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.save_and_accept)
+        button_box.rejected.connect(self.reject)
+
+        cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button:
+            cancel_button.setIcon(QIcon(cancel_icon))
+        self.ok_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if self.ok_button:
+            self.ok_button.setIcon(QIcon(accept_icon))
+        if self.is_edit_mode:
+            delete_button = button_box.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
+            delete_button.clicked.connect(self.delete_intervention)
+        layout.addWidget(button_box)
+
+        if self.is_edit_mode:
+            self.ok_button.setEnabled(True)
+        else:
+            self.ok_button.setEnabled(False)
+            self.subject_combo.currentIndexChanged.connect(lambda index: self.ok_button.setEnabled(index > 0))
+
+        if self.is_edit_mode:
+            self.populate_form()
+
+    def populate_form(self):
+        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        for key, widget in self.fields.items():
+            value = interv_data.get(key, "")
+            if isinstance(widget, QComboBox):
+                widget.setCurrentText(str(value))
+            else:
+                widget.setText(str(value))
+
+    def delete_intervention(self):
+        reply = QMessageBox.question(self, 'Confirm Delete',
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            if 'interventions' in self.subject and self.intervention_key in self.subject['interventions']:
+                del self.subject['interventions'][self.intervention_key]
+                self.parent_window._update_subject_in_repository(self.subject)
+                self.parent_window._save_metadata_to_yaml()
+            self.accept()
+
+    def save_and_accept(self):
+        selected_id = self.subject_combo.currentText()
+        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+        if not target_subject: return
+
+        intervention_data = {}
+        for key, widget in self.fields.items():
+            intervention_data[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
+
+        if 'interventions' not in target_subject: target_subject['interventions'] = {}
+        target_subject['interventions'][self.intervention_key] = intervention_data
+
+        self.parent_window._save_metadata_to_yaml()
+        self.parent_window._update_subject_in_repository(target_subject)
+        self.accept()
+
+
+class OptoDialog(QDialog):
+    """A custom dialog for Optogenetic Interventions with edit/delete functionality."""
+
+    def __init__(self, parent=None, subject: dict = None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.subject = subject
+        self.is_edit_mode = (subject is not None)
+        self.intervention_key = 'optogenetics'
+
+        self.setWindowTitle("Edit Optogenetic Intervention" if self.is_edit_mode else "Add Optogenetic Intervention")
+        self.setMinimumWidth(500)
+
+        placeholders = {
+            'virus_vendor': 'addgene',
+            'virus_name': 'AAV-CAG-ChR2-GFP',
+            'virus_injection_date': '2025-09-29',
+            'virus_target_area': 'lPAG',
+            'fiber_implantation_date': '2025-09-29',
+            'fiber_target_area': 'lPAG',
+            'stimulation_power': '2 mW',
+            'stimulation_frequency': '10 Hz',
+            'stimulation_duty_cycle': '0.5'
+        }
+
+        layout = QVBoxLayout(self)
+        self.form_layout = QFormLayout()
+        self.form_layout.setHorizontalSpacing(25)
+        self.fields = {}
+
+        self.subject_combo = QComboBox()
+        if self.is_edit_mode:
+            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.setEnabled(False)
+        else:
+            self.subject_combo.addItem("--- Select Subject ---")
+            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            self.subject_combo.addItems(subject_ids)
+        self.form_layout.addRow("Subject:", self.subject_combo)
+
+        opto_setups = self.parent_window.equipment_settings_dict.get('opto', {})
+        self.setup_combo = QComboBox()
+        self.setup_combo.addItems(opto_setups.keys())
+        self.form_layout.addRow("Setup:", self.setup_combo)
+        self.fields['name'] = self.setup_combo
+
+        self.intervention_type_combo = QComboBox()
+        self.intervention_type_combo.addItems(['excitatory', 'inhibitory'])
+        self.form_layout.addRow("Intervention Type:", self.intervention_type_combo)
+        self.fields['intervention_type'] = self.intervention_type_combo
+
+        for key in ['virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_injection_date', 'virus_target_area']:
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholders.get(key, ""))
+            self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
+            self.fields[key] = widget
+
+        self.virus_hemisphere_combo = QComboBox()
+        self.virus_hemisphere_combo.addItems(['left', 'right', 'bilateral'])
+        self.form_layout.addRow("Virus Target Hemisphere:", self.virus_hemisphere_combo)
+        self.fields['virus_target_hemisphere'] = self.virus_hemisphere_combo
+
+        for key in ['fiber_implantation_date', 'fiber_target_area']:
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholders.get(key, ""))
+            self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
+            self.fields[key] = widget
+
+        self.fiber_hemisphere_combo = QComboBox()
+        self.fiber_hemisphere_combo.addItems(['left', 'right', 'bilateral'])
+        self.form_layout.addRow("Fiber Target Hemisphere:", self.fiber_hemisphere_combo)
+        self.fields['fiber_target_hemisphere'] = self.fiber_hemisphere_combo
+
+        for key in ['stimulation_power', 'stimulation_frequency', 'stimulation_duty_cycle']:
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholders.get(key, ""))
+            self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
+            self.fields[key] = widget
+
+        layout.addLayout(self.form_layout)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.save_and_accept)
+        button_box.rejected.connect(self.reject)
+
+        cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button:
+            cancel_button.setIcon(QIcon(cancel_icon))
+        self.ok_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if self.ok_button:
+            self.ok_button.setIcon(QIcon(accept_icon))
+        if self.is_edit_mode:
+            delete_button = button_box.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
+            delete_button.clicked.connect(self.delete_intervention)
+        layout.addWidget(button_box)
+
+        if self.is_edit_mode:
+            self.ok_button.setEnabled(True)
+        else:
+            self.ok_button.setEnabled(False)
+            self.subject_combo.currentIndexChanged.connect(lambda index: self.ok_button.setEnabled(index > 0))
+
+        if self.is_edit_mode:
+            self.populate_form()
+
+    def populate_form(self):
+        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        for key, widget in self.fields.items():
+            value = interv_data.get(key, "")
+            if isinstance(widget, QComboBox):
+                widget.setCurrentText(str(value))
+            else:
+                widget.setText(str(value))
+
+    def delete_intervention(self):
+        reply = QMessageBox.question(self, 'Confirm Delete',
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            if 'interventions' in self.subject and self.intervention_key in self.subject['interventions']:
+                del self.subject['interventions'][self.intervention_key]
+                self.parent_window._save_metadata_to_yaml()
+                self.parent_window._update_subject_in_repository(self.subject)
+            self.accept()
+
+    def save_and_accept(self):
+        selected_id = self.subject_combo.currentText()
+        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+        if not target_subject: return
+
+        intervention_data = {}
+        for key, widget in self.fields.items():
+            intervention_data[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
+
+        if 'interventions' not in target_subject: target_subject['interventions'] = {}
+        target_subject['interventions'][self.intervention_key] = intervention_data
+
+        self.parent_window._save_metadata_to_yaml()
+        self.parent_window._update_subject_in_repository(target_subject)
+        self.accept()
 
 def replace_name_in_path(experimenter_list: list = None,
                          recording_files_destinations: list = None,
@@ -356,7 +1000,234 @@ class USVPlaypenWindow(QMainWindow):
 
         self.boolean_list = ['Yes', 'No']
 
+        self.remove_subject_buttons = []
+        self.edit_intervention_widgets = []
+        self.subject_form_widgets = {}
+        self.active_subject_id = None
+        self._is_clearing_form = False
+
+        self.subject_repository = []
+
+        config_dir = Path(platformdirs.user_config_dir(appname='usv_playpen', appauthor='lab'))
+        self.subject_repo_path = config_dir / 'subject_presets.json'
+
         self.main_window()
+
+    def _open_chemo_dialog(self):
+        ChemoDialog(self).exec()
+        self._update_subject_ui()
+
+    def _open_ephys_dialog(self):
+        EphysDialog(self).exec()
+        self._update_subject_ui()
+
+    def _open_lesion_dialog(self):
+        LesionDialog(self).exec()
+        self._update_subject_ui()
+
+    def _open_opto_dialog(self):
+        OptoDialog(self).exec()
+        self._update_subject_ui()
+
+    def _load_subject_repository(self):
+        """
+        Loads the master list of subjects from the JSON repository file.
+        If the file doesn't exist or is corrupted, it starts with an empty list.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        try:
+            if self.subject_repo_path.exists():
+                with open(self.subject_repo_path, 'r') as f:
+                    self.subject_repository = json.load(f)
+                    if not isinstance(self.subject_repository, list):
+                        self.subject_repository = []
+            else:
+                self.subject_repository = []
+        except (json.JSONDecodeError, FileNotFoundError):
+            self.subject_repository = []
+
+    def _save_subject_to_repository(self):
+        """
+        Saves the current state of self.subject_repository to the JSON file.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        try:
+            self.subject_repo_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.subject_repo_path, 'w') as f:
+                json.dump(self.subject_repository, f, indent=4)
+        except Exception as e:
+            print(f"Error saving subject repository: {e}")
+
+    def _on_subject_form_changed(self):
+        """
+        Live-updates the active subject's data whenever a form field is changed.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        if self._is_clearing_form:
+            return
+
+        if not self.active_subject_id:
+            return
+
+        target_subject = next((s for s in self.metadata_settings.get('Subjects', []) if s.get('subject_id') == self.active_subject_id), None)
+        if not target_subject:
+            return
+
+        current_form_data = {}
+        for key, widget in self.subject_form_widgets.items():
+            if isinstance(widget, QComboBox):
+                current_form_data[key] = widget.currentText()
+            else:
+                current_form_data[key] = widget.text()
+
+        try:
+            current_form_data['weight'] = ast.literal_eval(current_form_data['weight'])
+        except (ValueError, SyntaxError):
+            pass
+
+        target_subject.update(current_form_data)
+
+        self._update_subject_in_repository(target_subject)
+        self._save_metadata_to_yaml()
+
+    def _on_subject_selected_from_completer(self, subject_id: str):
+        """
+        Triggered when a subject is selected from the autocomplete dropdown.
+        Finds the full subject data, autofills the form, adds the subject to the
+        current session, and refreshes the UI.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        subject_data = None
+        for subject in self.subject_repository:
+            if subject.get('subject_id') == subject_id:
+                subject_data = subject
+                break
+
+        if not subject_data:
+            return
+
+        for key, value in subject_data.items():
+            if key in self.subject_form_widgets:
+                widget = self.subject_form_widgets[key]
+                if isinstance(widget, QComboBox):
+                    widget.setCurrentText(str(value))
+                else:
+                    widget.setText(str(value))
+
+        self.active_subject_id = subject_id
+
+        current_session_ids = {s.get('subject_id') for s in self.metadata_settings.get('Subjects', []) if s}
+        if subject_id in current_session_ids:
+            QMessageBox.information(
+                self,
+                "Subject Already in Session",
+                f"The subject '{subject_id}' is already in this session. The form has been filled for live editing."
+            )
+
+            self.add_subject_btn.setEnabled(False)
+            return
+
+        subject_to_add = copy.deepcopy(subject_data)
+
+        if 'Subjects' not in self.metadata_settings or not isinstance(self.metadata_settings['Subjects'], list):
+            self.metadata_settings['Subjects'] = []
+        self.metadata_settings['Subjects'].append(subject_to_add)
+
+        self._save_metadata_to_yaml()
+        self._update_subject_ui()
+
+        self.add_subject_btn.setEnabled(False)
+
+    def _update_subject_in_repository(self, subject_data_to_save: dict):
+        """
+        Finds a subject in the master repository by its ID and updates it,
+        or adds it if it's a new subject. Then, saves the repository to disk.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        subject_id = subject_data_to_save.get('subject_id')
+        if not subject_id:
+            return
+
+        existing_subject_index = -1
+        for i, subject in enumerate(self.subject_repository):
+            if subject.get('subject_id') == subject_id:
+                existing_subject_index = i
+                break
+
+        if existing_subject_index != -1:
+            self.subject_repository[existing_subject_index] = subject_data_to_save
+        else:
+            self.subject_repository.append(subject_data_to_save)
+
+        self._save_subject_to_repository()
+
+    def _clear_subject_form(self) -> None:
+        """
+        Clears all QLineEdit fields in the 'Add Subject' form.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        self._is_clearing_form = True
+
+        for widget in self.subject_form_widgets.values():
+            if isinstance(widget, QLineEdit):
+                widget.clear()
+            elif isinstance(widget, QComboBox):
+                widget.setCurrentIndex(0)
+
+        self._is_clearing_form = False
+
+        self.active_subject_id = None
+
+        self._validate_subject_form()
+
 
     def main_window(self) -> None:
         """
@@ -378,7 +1249,14 @@ class USVPlaypenWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, on=False)
         self.setWindowTitle(f'{app_name}')
 
+        self._load_subject_repository()
+
         self.exp_settings_dict = toml.load(Path(__file__).parent / '_config/behavioral_experiments_settings.toml')
+
+        self.equipment_settings_dict = toml.load(Path(__file__).parent / '_config/equipment.toml')
+
+        with open(Path(__file__).parent / '_config/_metadata.yaml', 'r') as metadata_file:
+            self.metadata_settings = yaml.safe_load(metadata_file)
 
         with open((Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as process_json_file:
             self.processing_input_dict = json.load(process_json_file)
@@ -567,6 +1445,347 @@ class USVPlaypenWindow(QMainWindow):
                                          button_pos_y=465,
                                          next_button_x_pos=320)
 
+    def _update_subject_ui(self):
+        """
+        Redraws remove buttons and enables/disables intervention buttons, using separate
+        lists for each UI section to prevent redraw conflicts.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        for button in self.remove_subject_buttons:
+            button.deleteLater()
+        self.remove_subject_buttons.clear()
+
+        for widget in self.edit_intervention_widgets:
+            widget.deleteLater()
+        self.edit_intervention_widgets.clear()
+
+        subjects = self.metadata_settings.get('Subjects', [])
+        if subjects is None:
+            subjects = []
+
+        start_y_remove = 993
+        start_x_remove = 448
+        items_per_row_remove = 4
+        horizontal_spacing_remove = 90
+        vertical_spacing_remove = 30
+
+        for i, subject in enumerate(subjects):
+            subject_id = subject.get('subject_id', f'Index {i}')
+            row, col = divmod(i, items_per_row_remove)
+            button_x = start_x_remove + (col * horizontal_spacing_remove)
+            button_y = start_y_remove + (row * vertical_spacing_remove)
+
+            button = QPushButton(QIcon(remove_icon), f"{subject_id}", self.VideoSettings)
+            button.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 65px; max-height: 13px; }')
+            button.move(button_x, button_y)
+            button.clicked.connect(partial(self._remove_subject, index_to_remove=i))
+            button.show()
+            self.remove_subject_buttons.append(button)
+
+        y_pos_interv_buttons = 920
+        x_pos_interv_buttons = 10
+        abbreviation_map = {
+            'chemogenetics': 'chemo', 'electrophysiology': 'ephys',
+            'lesion': 'lesion', 'optogenetics': 'opto'
+        }
+
+        button_index = 0
+        if subjects:
+            for subject in subjects:
+                if 'interventions' in subject and isinstance(subject['interventions'], dict):
+                    for interv_key in subject['interventions']:
+                        subject_id = subject.get('subject_id', 'Unknown')
+                        row, col = divmod(button_index, 3)
+                        button_x = x_pos_interv_buttons + (col * 130)
+                        button_y = y_pos_interv_buttons + (row * 30)
+
+                        short_name = abbreviation_map.get(interv_key, interv_key)
+                        btn_text = f"{short_name} ({subject_id})"
+
+                        button = QPushButton(btn_text, self.VideoSettings)
+                        button.setStyleSheet('QPushButton { min-width: 105px; min-height: 12px; max-width: 105px; max-height: 13px; }')
+                        button.move(button_x, button_y)
+                        button.clicked.connect(partial(self._open_edit_intervention_dialog, subject_id=subject_id, intervention_key=interv_key))
+                        button.show()
+                        self.edit_intervention_widgets.append(button)
+                        button_index += 1
+
+        has_subjects = bool(subjects)
+        self.add_chemo_btn.setEnabled(has_subjects)
+        self.add_ephys_btn.setEnabled(has_subjects)
+        self.add_lesion_btn.setEnabled(has_subjects)
+        self.add_opto_btn.setEnabled(has_subjects)
+
+    def _open_edit_intervention_dialog(self, subject_id: str, intervention_key: str):
+        """
+        Opens the correct dialog in 'edit mode' for the selected intervention.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        target_subject = next((s for s in self.metadata_settings['Subjects'] if s.get('subject_id') == subject_id), None)
+        if not target_subject:
+            return
+
+        if intervention_key == 'chemogenetics':
+            dialog = ChemoDialog(self, subject=target_subject)
+            dialog.exec()
+        elif intervention_key == 'electrophysiology':
+            dialog = EphysDialog(self, subject=target_subject)
+            dialog.exec()
+        elif intervention_key == 'lesion':
+            dialog = LesionDialog(self, subject=target_subject)
+            dialog.exec()
+        elif intervention_key == 'optogenetics':
+            dialog = OptoDialog(self, subject=target_subject)
+            dialog.exec()
+
+        self._update_subject_ui()
+
+    def _add_subject(self) -> None:
+        """
+        Gathers data from the subject QLineEdits, adds it to the metadata,
+        saves the file, and clears the fields.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        new_subject_id = self.subject_form_widgets['subject_id'].text().strip()
+        if not new_subject_id:
+            return
+
+        subject_data = {}
+        for key, widget in self.subject_form_widgets.items():
+            if isinstance(widget, QComboBox):
+                subject_data[key] = widget.currentText()
+            else:
+                subject_data[key] = widget.text()
+
+        try:
+            subject_data['weight'] = ast.literal_eval(subject_data['weight'])
+        except (ValueError, SyntaxError):
+            pass
+
+        target_subject_in_session = next((s for s in self.metadata_settings.get('Subjects', []) if s.get('subject_id') == new_subject_id), None)
+        if target_subject_in_session:
+            target_subject_in_session.update(subject_data)
+        else:
+            if 'Subjects' not in self.metadata_settings: self.metadata_settings['Subjects'] = []
+            self.metadata_settings['Subjects'].append(subject_data)
+
+        self._update_subject_in_repository(subject_data)
+        self._save_metadata_to_yaml()
+        self._update_subject_ui()
+
+        self.active_subject_id = new_subject_id
+
+    def _remove_subject(self, index_to_remove: int) -> None:
+        """
+        Removes a subject from the metadata list by its index.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        subjects = self.metadata_settings.get('Subjects', [])
+        if subjects and 0 <= index_to_remove < len(subjects):
+            subjects.pop(index_to_remove)
+            self._save_metadata_to_yaml()
+            self._update_subject_ui()
+
+    def _redraw_remove_subject_buttons(self) -> None:
+        """
+        Clears and redraws the list of 'Remove Subject' buttons based on the
+        current subjects in the metadata.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        for button in self.remove_subject_buttons:
+            button.deleteLater()
+        self.remove_subject_buttons.clear()
+
+        start_x = 10
+        start_y = 900
+        horizontal_spacing = 145
+        vertical_spacing = 20
+        buttons_per_row = 3
+
+        subjects = self.metadata_settings.get('Subjects', [])
+        if subjects is None:
+            return
+
+        for i, subject in enumerate(subjects):
+            subject_id = subject.get('subject_id', f'Index {i}')
+            row, col = divmod(i, buttons_per_row)
+            button_x = start_x + (col * horizontal_spacing)
+            button_y = start_y + (row * vertical_spacing)
+
+            button = QPushButton(f"Remove '{subject_id}'", self.VideoSettings)
+            button.setStyleSheet('QPushButton { min-width: 120px; min-height: 12px; max-width: 120px; max-height: 13px; background-color: #552222;}')
+            button.move(button_x, button_y)
+            button.clicked.connect(partial(self._remove_subject, index_to_remove=i))
+            button.show()
+            self.remove_subject_buttons.append(button)
+
+    def _on_equipment_checkbox_toggled(self, state: int, equipment_key: str) -> None:
+        """
+        Handles the toggling of an equipment checkbox.
+
+        Adds or removes the corresponding equipment data from the main metadata
+        dictionary based on the checkbox state.
+
+        Parameters
+        ----------
+        state (int)
+            The new state of the checkbox (provided by the stateChanged signal).
+        equipment_key (str)
+            The key of the equipment from the .toml file (e.g., 'video.Loopbio').
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        yaml_key = equipment_key.replace('.', '_')
+        is_checked = (state == Qt.CheckState.Checked.value)
+
+        if 'Equipment' not in self.metadata_settings or self.metadata_settings['Equipment'] is None:
+            self.metadata_settings['Equipment'] = {}
+
+        if is_checked:
+            category, device_name = equipment_key.split('.')
+            self.metadata_settings['Equipment'][yaml_key] = self.equipment_settings_dict[category][device_name]
+        else:
+            if yaml_key in self.metadata_settings['Equipment']:
+                del self.metadata_settings['Equipment'][yaml_key]
+
+        self._save_metadata_to_yaml()
+
+    def _validate_subject_form(self) -> None:
+        """
+        Checks if required subject fields are filled and toggles the 'Add Subject' button.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        required_fields = ['subject_id', 'species', 'genotype_strain']
+        if not all(hasattr(self, f"{key}_edit") for key in required_fields):
+            return
+
+        is_valid = all([
+            self.subject_id_edit.text().strip(),
+            self.species_edit.text().strip(),
+            self.genotype_strain_edit.text().strip()
+        ])
+
+        self.add_subject_btn.setEnabled(is_valid)
+
+    def _update_metadata_preview(self) -> None:
+        """
+        Updates the metadata preview pane with the current state of self.metadata_settings.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        if hasattr(self, 'metadata_preview_edit'):
+            preview_text = yaml.dump(
+                self.metadata_settings,
+                Dumper=SmartDumper,
+                default_flow_style=False,
+                sort_keys=False,
+                indent=2
+            )
+            self.metadata_preview_edit.setPlainText(preview_text)
+
+    def _save_metadata_to_yaml(self) -> None:
+        """
+        Saves the current state of the metadata UI to _metadata.yaml.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        if not hasattr(self, 'institution_edit'):
+            return
+
+        session = self.metadata_settings['Session']
+        session['institution'] = self.institution_edit.text()
+        session['lab'] = self.lab_edit.text()
+        session['experimenter'] = self.experimenter_edit.text()
+
+        session['ambient_light'] = getattr(self, 'ambient_light_bool', False)
+
+        session['session_experiment_code'] = self.session_experiment_code_edit.text()
+        session['calibration_session'] = self.calibration_session_edit.text()
+        session['session_usv_playback_file'] = self.session_usv_playback_file_edit.text()
+        session['session_description'] = self.session_description_edit.text()
+
+        keywords_str = self.keywords_edit.text()
+        session['keywords'] = [k.strip() for k in keywords_str.split(',') if k.strip()]
+        session['notes'] = self.notes_edit.text()
+
+        metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
+        with open(metadata_path, 'w') as metadata_file:
+            yaml.dump(
+                self.metadata_settings,
+                metadata_file,
+                Dumper=SmartDumper,
+                default_flow_style=False,
+                sort_keys=False,
+                indent=2
+            )
+
+        self._update_metadata_preview()
 
     def record_one(self) -> None:
         """
@@ -759,115 +1978,6 @@ class USVPlaypenWindow(QMainWindow):
         self._create_buttons_record(seq=0, class_option=self.Record,
                                     button_pos_y=record_one_y-35, next_button_x_pos=record_one_x-100)
 
-    # def record_two(self) -> None:
-    #     """
-    #     Initializes the usv-playpen Record Two window.
-    #
-    #     Parameters
-    #     ----------
-    #     ----------
-    #
-    #     Returns
-    #     -------
-    #     -------
-    #     """
-    #
-    #     self.AudioSettings = AudioSettings(self)
-    #     self.setWindowTitle(f'{app_name} (Record > Audio Settings)')
-    #     self.setCentralWidget(self.AudioSettings)
-    #     record_two_x, record_two_y = (875, 875)
-    #     self.setFixedSize(record_two_x, record_two_y)
-    #
-    #     gas_label = QLabel('General audio recording settings', self.AudioSettings)
-    #     gas_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-    #     gas_label.setStyleSheet('QLabel { font-weight: bold;}')
-    #     gas_label.move(5, 10)
-    #
-    #     # change usghflags to 1862 for NO SYNC audio mode, 1574 for SYNC audio modes
-    #     # NB: The NO SYNC mode does NOT guarantee ZERO DROPPED SAMPLES!
-    #
-    #     self.default_audio_settings = {'name': f"{self.exp_settings_dict['audio']['mics_config']['name']}", 'id': f"{self.exp_settings_dict['audio']['mics_config']['id']}",
-    #                                    'typech': f"{self.exp_settings_dict['audio']['mics_config']['typech']}", 'deviceid': f"{self.exp_settings_dict['audio']['mics_config']['deviceid']}",
-    #                                    'channel': f"{self.exp_settings_dict['audio']['mics_config']['channel']}", 'gain': f"{self.exp_settings_dict['audio']['mics_config']['gain']}",
-    #                                    'fullscalespl': f"{self.exp_settings_dict['audio']['mics_config']['fullscalespl']}", 'triggertype': f"{self.exp_settings_dict['audio']['mics_config']['triggertype']}",
-    #                                    'toggle': f"{self.exp_settings_dict['audio']['mics_config']['toggle']}", 'invert': f"{self.exp_settings_dict['audio']['mics_config']['invert']}",
-    #                                    'ditc': f"{self.exp_settings_dict['audio']['mics_config']['ditc']}", 'ditctime': self.exp_settings_dict['audio']['mics_config']['ditctime'],
-    #                                    'whistletracking': f"{self.exp_settings_dict['audio']['mics_config']['whistletracking']}", 'wtbcf': f"{self.exp_settings_dict['audio']['mics_config']['wtbcf']}",
-    #                                    'wtmaxchange': f"{self.exp_settings_dict['audio']['mics_config']['wtmaxchange']}", 'wtmaxchange2_': f"{self.exp_settings_dict['audio']['mics_config']['wtmaxchange2_']}",
-    #                                    'wtminchange': f"{self.exp_settings_dict['audio']['mics_config']['wtminchange']}", 'wtminchange2_': f"{self.exp_settings_dict['audio']['mics_config']['wtminchange2_']}",
-    #                                    'wtoutside': f"{self.exp_settings_dict['audio']['mics_config']['wtoutside']}", 'hilowratioenable': f"{self.exp_settings_dict['audio']['mics_config']['hilowratioenable']}",
-    #                                    'hilowratio': f"{self.exp_settings_dict['audio']['mics_config']['hilowratio']}", 'hilowratiofc': f"{self.exp_settings_dict['audio']['mics_config']['hilowratiofc']}",
-    #                                    'wtslope': f"{self.exp_settings_dict['audio']['mics_config']['wtslope']}", 'wtlevel': f"{self.exp_settings_dict['audio']['mics_config']['wtlevel']}",
-    #                                    'wtmindurtotal': f"{self.exp_settings_dict['audio']['mics_config']['wtmindurtotal']}", 'wtmindur': f"{self.exp_settings_dict['audio']['mics_config']['wtmindur']}",
-    #                                    'wtmindur2_': f"{self.exp_settings_dict['audio']['mics_config']['wtmindur2_']}", 'wtholdtime': f"{self.exp_settings_dict['audio']['mics_config']['wtholdtime']}",
-    #                                    'wtmonotonic': f"{self.exp_settings_dict['audio']['mics_config']['wtmonotonic']}", 'wtbmaxdur': f"{self.exp_settings_dict['audio']['mics_config']['wtbmaxdur']}",
-    #                                    'rejectwind': f"{self.exp_settings_dict['audio']['mics_config']['rejectwind']}", 'rwentropy': f"{self.exp_settings_dict['audio']['mics_config']['rwentropy']}",
-    #                                    'rwfpegel': f"{self.exp_settings_dict['audio']['mics_config']['rwfpegel']}", 'rwdutycycle': f"{self.exp_settings_dict['audio']['mics_config']['rwdutycycle']}",
-    #                                    'rwtimeconstant': f"{self.exp_settings_dict['audio']['mics_config']['rwtimeconstant']}", 'rwholdtime': f"{self.exp_settings_dict['audio']['mics_config']['rwholdtime']}",
-    #                                    'fpegel': f"{self.exp_settings_dict['audio']['mics_config']['fpegel']}", 'energy': f"{self.exp_settings_dict['audio']['mics_config']['energy']}",
-    #                                    'frange': f"{self.exp_settings_dict['audio']['mics_config']['frange']}", 'entropyb': f"{self.exp_settings_dict['audio']['mics_config']['entropyb']}",
-    #                                    'entropy': f"{self.exp_settings_dict['audio']['mics_config']['entropy']}", 'increment': f"{self.exp_settings_dict['audio']['mics_config']['increment']}",
-    #                                    'fu': f"{self.exp_settings_dict['audio']['mics_config']['fu']}", 'fo': f"{self.exp_settings_dict['audio']['mics_config']['fo']}",
-    #                                    'pretrigger': f"{self.exp_settings_dict['audio']['mics_config']['pretrigger']}", 'mint': f"{self.exp_settings_dict['audio']['mics_config']['mint']}",
-    #                                    'minst': f"{self.exp_settings_dict['audio']['mics_config']['minst']}", 'fhold': f"{self.exp_settings_dict['audio']['mics_config']['fhold']}",
-    #
-    #                                    'logfileno': f"{self.exp_settings_dict['audio']['call']['logfileno']}", 'groupno': f"{self.exp_settings_dict['audio']['call']['groupno']}", 'callno': f"{self.exp_settings_dict['audio']['call']['callno']}",
-    #
-    #                                    'timeconstant': f"{self.exp_settings_dict['audio']['monitor']['timeconstant']}", 'timeexpansion': f"{self.exp_settings_dict['audio']['monitor']['timeexpansion']}",
-    #                                    'startstop': f"{self.exp_settings_dict['audio']['monitor']['startstop']}", 'sayf': f"{self.exp_settings_dict['audio']['monitor']['sayf']}",
-    #                                    'over': f"{self.exp_settings_dict['audio']['monitor']['over']}", 'delay': f"{self.exp_settings_dict['audio']['monitor']['delay']}",
-    #                                    'center': f"{self.exp_settings_dict['audio']['monitor']['center']}", 'bandwidth': f"{self.exp_settings_dict['audio']['monitor']['bandwidth']}", 'fd': f"{self.exp_settings_dict['audio']['monitor']['fd']}",
-    #                                    'decimation': f"{self.exp_settings_dict['audio']['monitor']['decimation']}", 'device': f"{self.exp_settings_dict['audio']['monitor']['device']}", 'mode': f"{self.exp_settings_dict['audio']['monitor']['mode']}",
-    #
-    #                                    'outfovertaps': f"{self.exp_settings_dict['audio']['devices']['outfovertaps']}", 'outfoverabtast': f"{self.exp_settings_dict['audio']['devices']['outfoverabtast']}",
-    #                                    'outformat': f"{self.exp_settings_dict['audio']['devices']['outformat']}", 'outfabtast': f"{self.exp_settings_dict['audio']['devices']['outfabtast']}",
-    #                                    'outdeviceid': f"{self.exp_settings_dict['audio']['devices']['outdeviceid']}",'outtype': f"{self.exp_settings_dict['audio']['devices']['outtype']}",
-    #                                    'usghflags': f"{self.exp_settings_dict['audio']['devices']['usghflags']}", 'diff': f"{self.exp_settings_dict['audio']['devices']['diff']}",
-    #                                    'format': f"{self.exp_settings_dict['audio']['devices']['format']}", 'type': f"{self.exp_settings_dict['audio']['devices']['type']}",
-    #                                    'nbrwavehdr': f"{self.exp_settings_dict['audio']['devices']['nbrwavehdr']}", 'devbuffer': f"{self.exp_settings_dict['audio']['devices']['devbuffer']}",
-    #                                    'ntaps': f"{self.exp_settings_dict['audio']['devices']['ntaps']}", 'filtercutoff': f"{self.exp_settings_dict['audio']['devices']['filtercutoff']}",
-    #                                    'filter': f"{self.exp_settings_dict['audio']['devices']['filter']}", 'fabtast': f"{self.exp_settings_dict['audio']['devices']['fabtast']}",
-    #
-    #                                    'y2': f"{self.exp_settings_dict['audio']['screen_position']['y2']}", 'x2': f"{self.exp_settings_dict['audio']['screen_position']['x2']}",
-    #                                    'y1': f"{self.exp_settings_dict['audio']['screen_position']['y1']}", 'x1': f"{self.exp_settings_dict['audio']['screen_position']['x1']}",
-    #
-    #                                    'display': f"{self.exp_settings_dict['audio']['general']['display']}", 'dcolumns': f"{self.exp_settings_dict['audio']['general']['dcolumns']}",
-    #                                    'total': f"{self.exp_settings_dict['audio']['general']['total']}", 'dispspectrogramcontrast': f"{self.exp_settings_dict['audio']['general']['dispspectrogramcontrast']}",
-    #                                    'disprangespectrogram': f"{self.exp_settings_dict['audio']['general']['disprangespectrogram']}", 'disprangeamplitude': f"{self.exp_settings_dict['audio']['general']['disprangeamplitude']}",
-    #                                    'disprangewaveform': f"{self.exp_settings_dict['audio']['general']['disprangewaveform']}", 'fftlength': f"{self.exp_settings_dict['audio']['general']['fftlength']}",
-    #                                    'usvmonitoringflags': f"{self.exp_settings_dict['audio']['general']['usvmonitoringflags']}",
-    #
-    #                                    'total_mic_number': f"{self.exp_settings_dict['audio']['total_mic_number']}", 'total_device_num': f"{self.exp_settings_dict['audio']['total_device_num']}",
-    #                                    'used_mics': ','.join([str(x) for x in self.exp_settings_dict['audio']['used_mics']]),
-    #                                    'cpu_priority': self.exp_settings_dict['audio']['cpu_priority'],
-    #                                    'cpu_affinity': ','.join([str(x) for x in self.exp_settings_dict['audio']['cpu_affinity']])}
-    #
-    #     row_start_position_label = 5
-    #     row_start_position_line_edit = 120
-    #     row_counter = 0
-    #     column_counter = 0
-    #     for audio_idx, (audio_attr, audio_value) in enumerate(self.default_audio_settings.items()):
-    #         setting_label = QLabel(f'{audio_attr}:', self.AudioSettings)
-    #         setting_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-    #         setting_label.move(row_start_position_label, 45+(row_counter*30))
-    #         setattr(self, audio_attr, QLineEdit(audio_value, self.AudioSettings))
-    #         getattr(self, audio_attr).setFixedWidth(50)
-    #         getattr(self, audio_attr).setFont(QFont(self.font_id, 10+self.font_size_increase))
-    #         getattr(self, audio_attr).move(row_start_position_line_edit, 45+(row_counter*30))
-    #         if (audio_idx + 1) % 25 == 0:
-    #             column_counter += 1
-    #             row_counter = 0
-    #             row_start_position_label += 200
-    #             if column_counter < 3:
-    #                 row_start_position_line_edit += 200
-    #             else:
-    #                 row_start_position_line_edit += 275
-    #         else:
-    #             row_counter += 1
-    #
-    #     self._create_buttons_record(seq=1, class_option=self.AudioSettings,
-    #                                 button_pos_y=record_two_y-35, next_button_x_pos=record_two_x-100)
-
     def record_two(self) -> None:
         """
         Initializes the usv-playpen Record Two window.
@@ -883,25 +1993,60 @@ class USVPlaypenWindow(QMainWindow):
         self.VideoSettings = VideoSettings(self)
         self.setWindowTitle(f'{app_name} (Record > Audio and Video Settings)')
         self.setCentralWidget(self.VideoSettings)
-        record_two_x, record_two_y = (980, 900)
+        record_two_x, record_two_y = (450, 530)
         self.setFixedSize(record_two_x, record_two_y)
 
-        """
-        Audio recording settings:
-        Sync USGH devices
-        USGH sampling rate
-        cpu priority
-        cpu affinity
-        """
+        gas_label = QLabel('Audio settings', self.VideoSettings)
+        gas_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
+        gas_label.setStyleSheet('QLabel { font-weight: bold;}')
+        gas_label.move(5, 10)
 
-        gvs_label = QLabel('Video recording settings', self.VideoSettings)
+        usgh_sync_label = QLabel('USGH devices synchronized:', self.VideoSettings)
+        usgh_sync_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usgh_sync_label.move(5, 40)
+        self.usgh_devices_sync_cb_list = [x for _, x in sorted(zip([self.usgh_devices_sync_cb_bool, not self.usgh_devices_sync_cb_bool], self.boolean_list), reverse=True)]
+        self.usgh_devices_sync_cb = QComboBox(self.VideoSettings)
+        self.usgh_devices_sync_cb.addItems(self.usgh_devices_sync_cb_list)
+        self.usgh_devices_sync_cb.setStyleSheet('QComboBox { width: 120px; }')
+        self.usgh_devices_sync_cb.activated.connect(partial(self._combo_box_prior_true if self.usgh_devices_sync_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='usgh_devices_sync_cb_bool'))
+        self.usgh_devices_sync_cb.move(260, 40)
+
+        usgh_sr_label = QLabel('USGH devices sampling rate (Hz):', self.VideoSettings)
+        usgh_sr_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usgh_sr_label.move(5, 70)
+        self.usgh_sr_cb_list = sorted(['250000', '300000'], key=lambda x: x == str(self.exp_settings_dict['audio']['devices']['fabtast']), reverse=True)
+        self.usgh_sr_cb = QComboBox(self.VideoSettings)
+        self.usgh_sr_cb.addItems(self.usgh_sr_cb_list)
+        self.usgh_sr_cb.setStyleSheet('QComboBox { width: 120px; }')
+        self.usgh_sr_cb.activated.connect(partial(self._combo_box_usgh_sr, variable_id='usgh_sr'))
+        self.usgh_sr_cb.move(260, 70)
+
+        cpu_priority_label = QLabel('CPU priority (USGH Recorder):', self.VideoSettings)
+        cpu_priority_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        cpu_priority_label.move(5, 100)
+        self.cpu_priority_cb_list = sorted(['', 'Realtime', 'High', 'Above normal', 'Normal', 'Below normal', 'Low'], key=lambda x: x == str(self.exp_settings_dict['audio']['cpu_priority']), reverse=True)
+        self.cpu_priority_cb = QComboBox(self.VideoSettings)
+        self.cpu_priority_cb.addItems(self.cpu_priority_cb_list)
+        self.cpu_priority_cb.setStyleSheet('QComboBox { width: 120px; }')
+        self.cpu_priority_cb.activated.connect(partial(self._combo_box_cpu_priority, variable_id='cpu_priority'))
+        self.cpu_priority_cb.move(260, 100)
+
+        cpu_affinity_label = QLabel('CPU affinity (USGH Recorder):', self.VideoSettings)
+        cpu_affinity_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        cpu_affinity_label.move(5, 130)
+        self.cpu_affinity_edit = QLineEdit(','.join([str(x) for x in self.exp_settings_dict['audio']['cpu_affinity']]), self.VideoSettings)
+        self.cpu_affinity_edit.setFixedWidth(150)
+        self.cpu_affinity_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.cpu_affinity_edit.move(260, 130)
+
+        gvs_label = QLabel('Video settings', self.VideoSettings)
         gvs_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
         gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
-        gvs_label.move(5, 10)
+        gvs_label.move(5, 170)
 
         use_cam_label = QLabel('Select camera(s) you wish to use for behavioral recording:', self.VideoSettings)
         use_cam_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        use_cam_label.move(5, 40)
+        use_cam_label.move(5, 200)
 
         for cam_idx, cam in enumerate(self.exp_settings_dict['video']['general']['available_cameras']):
             self._create_checkbox_general(camera_id=cam, x_start=5+(cam_idx*90))
@@ -914,65 +2059,65 @@ class USVPlaypenWindow(QMainWindow):
 
         rec_codec_label = QLabel('Recording codec:', self.VideoSettings)
         rec_codec_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        rec_codec_label.move(5, 100)
+        rec_codec_label.move(5, 260)
         self.recording_codec_list = sorted(['hq', 'hq-fast', 'mq', 'lq', 'nvenc-fast-yuv420_A',
                                             'nvenc-fast-yuv420_B','nvenc-ll-yuv420'], key=lambda x: x == self.recording_codec, reverse=True)
         self.recording_codec_cb = QComboBox(self.VideoSettings)
         self.recording_codec_cb.addItems(self.recording_codec_list)
         self.recording_codec_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.recording_codec_cb.activated.connect(partial(self._combo_box_prior_codec, variable_id='recording_codec'))
-        self.recording_codec_cb.move(160, 100)
+        self.recording_codec_cb.move(160, 260)
 
         monitor_rec_label = QLabel('Monitor recording:', self.VideoSettings)
         monitor_rec_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         monitor_rec_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        monitor_rec_label.move(5, 130)
+        monitor_rec_label.move(5, 290)
         self.monitor_recording_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_recording'], not self.exp_settings_dict['video']['general']['monitor_recording']], self.boolean_list), reverse=True)]
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
         self.monitor_recording_cb.addItems(self.monitor_recording_cb_list)
         self.monitor_recording_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.monitor_recording_cb.activated.connect(partial(self._combo_box_prior_true if self.monitor_recording_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='monitor_recording_cb_bool'))
-        self.monitor_recording_cb.move(160, 130)
+        self.monitor_recording_cb.move(160, 290)
 
         monitor_cam_label = QLabel('Monitor ONE camera:', self.VideoSettings)
         monitor_cam_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         monitor_cam_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        monitor_cam_label.move(5, 160)
+        monitor_cam_label.move(5, 320)
         self.monitor_specific_camera_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_specific_camera'], not self.exp_settings_dict['video']['general']['monitor_specific_camera']], self.boolean_list), reverse=True)]
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
         self.monitor_specific_camera_cb.addItems(self.monitor_specific_camera_cb_list)
         self.monitor_specific_camera_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.monitor_specific_camera_cb.activated.connect(partial(self._combo_box_prior_true if self.monitor_specific_camera_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='monitor_specific_camera_cb_bool'))
-        self.monitor_specific_camera_cb.move(160, 160)
+        self.monitor_specific_camera_cb.move(160, 320)
 
         specific_camera_serial_label = QLabel('ONE camera serial:', self.VideoSettings)
         specific_camera_serial_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        specific_camera_serial_label.move(5, 190)
+        specific_camera_serial_label.move(5, 350)
         self.specific_camera_serial_list = sorted(self.exp_settings_dict['video']['general']['expected_cameras'], key=lambda x: x == self.exp_settings_dict['video']['general']['specific_camera_serial'], reverse=True)
         self.specific_camera_serial_cb = QComboBox(self.VideoSettings)
         self.specific_camera_serial_cb.addItems(self.specific_camera_serial_list)
         self.specific_camera_serial_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.specific_camera_serial_cb.activated.connect(partial(self._combo_box_specific_camera, variable_id='specific_camera_serial'))
-        self.specific_camera_serial_cb.move(160, 190)
+        self.specific_camera_serial_cb.move(160, 350)
 
         delete_post_copy_label = QLabel('Delete post copy:', self.VideoSettings)
         delete_post_copy_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         delete_post_copy_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
-        delete_post_copy_label.move(5, 220)
+        delete_post_copy_label.move(5, 380)
         self.delete_post_copy_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['delete_post_copy'], not self.exp_settings_dict['video']['general']['delete_post_copy']], self.boolean_list), reverse=True)]
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
         self.delete_post_copy_cb.addItems(self.delete_post_copy_cb_list )
         self.delete_post_copy_cb.setStyleSheet('QComboBox { width: 120px; }')
         self.delete_post_copy_cb.activated.connect(partial(self._combo_box_prior_true if self.delete_post_copy_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='delete_post_copy_cb_bool'))
-        self.delete_post_copy_cb.move(160, 220)
+        self.delete_post_copy_cb.move(160, 380)
 
         self.cal_fr_label = QLabel('Calibration (10 fps):', self.VideoSettings)
         self.cal_fr_label.setFixedWidth(150)
         self.cal_fr_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        self.cal_fr_label.move(5, 250)
+        self.cal_fr_label.move(5, 410)
         self.calibration_frame_rate = QSlider(Qt.Orientation.Horizontal, self.VideoSettings)
         self.calibration_frame_rate.setFixedWidth(150)
-        self.calibration_frame_rate.move(160, 255)
+        self.calibration_frame_rate.move(160, 415)
         self.calibration_frame_rate.setRange(10, 150)
         self.calibration_frame_rate.setValue(self.exp_settings_dict['video']['general']['calibration_frame_rate'])
         self.calibration_frame_rate.valueChanged.connect(self._update_cal_fr_label)
@@ -980,10 +2125,10 @@ class USVPlaypenWindow(QMainWindow):
         self.fr_label = QLabel('Recording (150 fps):', self.VideoSettings)
         self.fr_label.setFixedWidth(150)
         self.fr_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        self.fr_label.move(5, 280)
+        self.fr_label.move(5, 440)
         self.cameras_frame_rate = QSlider(Qt.Orientation.Horizontal, self.VideoSettings)
         self.cameras_frame_rate.setFixedWidth(150)
-        self.cameras_frame_rate.move(160, 285)
+        self.cameras_frame_rate.move(160, 445)
         self.cameras_frame_rate.setRange(10, 150)
         self.cameras_frame_rate.setValue(self.exp_settings_dict['video']['general']['recording_frame_rate'])
         self.cameras_frame_rate.valueChanged.connect(self._update_fr_label)
@@ -1003,11 +2148,326 @@ class USVPlaypenWindow(QMainWindow):
         -------
         -------
         """
+
+        self.remove_subject_buttons.clear()
+        self.edit_intervention_widgets.clear()
+
         self.VideoSettings = VideoSettings(self)
         self.setWindowTitle(f'{app_name} (Record > Metadata)')
         self.setCentralWidget(self.VideoSettings)
-        record_three_x, record_three_y = (980, 900)
+        record_three_x, record_three_y = (950, 1050)
         self.setFixedSize(record_three_x, record_three_y)
+
+        y_pos = 10
+        x_label = 10
+        x_widget = 160
+        widget_width = 250
+
+        title_label = QLabel('Session Metadata', self.VideoSettings)
+        title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
+        title_label.setStyleSheet('QLabel { font-weight: bold;}')
+        title_label.move(x_label, y_pos)
+        y_pos += 30
+
+        institution_label = QLabel('Institution:', self.VideoSettings)
+        institution_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        institution_label.move(x_label, y_pos)
+        self.institution_edit = QLineEdit(self.metadata_settings['Session']['institution'], self.VideoSettings)
+        self.institution_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.institution_edit.setFixedWidth(widget_width)
+        self.institution_edit.move(x_widget, y_pos)
+        self.institution_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        lab_label = QLabel('Lab:', self.VideoSettings)
+        lab_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        lab_label.move(x_label, y_pos)
+        self.lab_edit = QLineEdit(self.metadata_settings['Session']['lab'], self.VideoSettings)
+        self.lab_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.lab_edit.setFixedWidth(widget_width)
+        self.lab_edit.move(x_widget, y_pos)
+        self.lab_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        experimenter_label = QLabel('Experimenter:', self.VideoSettings)
+        experimenter_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        experimenter_label.move(x_label, y_pos)
+        self.experimenter_edit = QLineEdit(self.exp_id, self.VideoSettings)
+        self.experimenter_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.experimenter_edit.setFixedWidth(widget_width)
+        self.experimenter_edit.move(x_widget, y_pos)
+        self.experimenter_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        ambient_light_label = QLabel('Ambient Light:', self.VideoSettings)
+        ambient_light_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        ambient_light_label.move(x_label, y_pos)
+
+        self.ambient_light_bool = self.metadata_settings['Session'].get('ambient_light', False)
+        on_off_list = ['on', 'off'] if self.ambient_light_bool else ['off', 'on']
+
+        self.ambient_light_cb = QComboBox(self.VideoSettings)
+        self.ambient_light_cb.addItems(on_off_list)
+        self.ambient_light_cb.setStyleSheet(f'QComboBox {{ width: 220px; }}')
+        self.ambient_light_cb.move(x_widget, y_pos)
+
+        def on_ambient_light_changed(index):
+            self.ambient_light_bool = (self.ambient_light_cb.currentText() == 'on')
+            self._save_metadata_to_yaml()
+
+        self.ambient_light_cb.currentIndexChanged.connect(on_ambient_light_changed)
+        y_pos += 30
+
+        exp_code_label = QLabel('Experiment Code:', self.VideoSettings)
+        exp_code_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        exp_code_label.move(x_label, y_pos)
+        self.session_experiment_code_edit = QLineEdit(self.metadata_settings['Session']['session_experiment_code'], self.VideoSettings)
+        self.session_experiment_code_edit.setPlaceholderText('e.g., ECL2MSFSd')
+        self.session_experiment_code_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.session_experiment_code_edit.setFixedWidth(widget_width)
+        self.session_experiment_code_edit.move(x_widget, y_pos)
+        self.session_experiment_code_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        calibration_label = QLabel('Calibration Session:', self.VideoSettings)
+        calibration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        calibration_label.move(x_label, y_pos)
+        self.calibration_session_edit = QLineEdit(self.metadata_settings['Session']['calibration_session'], self.VideoSettings)
+        self.calibration_session_edit.setPlaceholderText('Tracking calibration session')
+        self.calibration_session_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.calibration_session_edit.setFixedWidth(widget_width)
+        self.calibration_session_edit.move(x_widget, y_pos)
+        self.calibration_session_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        playback_file_label = QLabel('USV Playback File:', self.VideoSettings)
+        playback_file_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        playback_file_label.move(x_label, y_pos)
+        self.session_usv_playback_file_edit = QLineEdit(self.metadata_settings['Session']['session_usv_playback_file'], self.VideoSettings)
+        self.session_usv_playback_file_edit.setPlaceholderText('Playback .wav file (if any)')
+        self.session_usv_playback_file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.session_usv_playback_file_edit.setFixedWidth(widget_width)
+        self.session_usv_playback_file_edit.move(x_widget, y_pos)
+        self.session_usv_playback_file_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        description_label = QLabel('Session Description:', self.VideoSettings)
+        description_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        description_label.move(x_label, y_pos)
+        self.session_description_edit = QLineEdit(self.metadata_settings['Session']['session_description'], self.VideoSettings)
+        self.session_description_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.session_description_edit.setFixedWidth(widget_width)
+        self.session_description_edit.move(x_widget, y_pos)
+        self.session_description_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        keywords_label = QLabel('Keywords:', self.VideoSettings)
+        keywords_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        keywords_label.move(x_label, y_pos)
+        self.keywords_edit = QLineEdit(','.join(self.metadata_settings['Session']['keywords']), self.VideoSettings)
+        self.keywords_edit.setPlaceholderText('Comma-separated, e.g., social, e-phys, etc.')
+        self.keywords_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.keywords_edit.setFixedWidth(widget_width)
+        self.keywords_edit.move(x_widget, y_pos)
+        self.keywords_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        notes_label = QLabel('Extra Notes:', self.VideoSettings)
+        notes_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        notes_label.move(x_label, y_pos)
+        self.notes_edit = QLineEdit(self.metadata_settings['Session']['notes'], self.VideoSettings)
+        self.notes_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.notes_edit.setFixedWidth(widget_width)
+        self.notes_edit.move(x_widget, y_pos)
+        self.notes_edit.textChanged.connect(self._save_metadata_to_yaml)
+        y_pos += 30
+
+        # Equipment
+        y_pos += 10
+        equipment_title_label = QLabel('Equipment', self.VideoSettings)
+        equipment_title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
+        equipment_title_label.setStyleSheet('QLabel { font-weight: bold;}')
+        equipment_title_label.move(x_label, y_pos)
+        y_pos += 40
+
+        equipment_items = []
+        for category, devices in self.equipment_settings_dict.items():
+            for device_name in devices.keys():
+                equipment_items.append(f"{category}.{device_name}")
+
+        items_per_row = 3
+        horizontal_spacing = 135
+        vertical_spacing = 30
+
+        for i, equipment_key in enumerate(equipment_items):
+
+            row = i // items_per_row
+            col = i % items_per_row
+
+            checkbox_x = x_label + (col * horizontal_spacing)
+            checkbox_y = y_pos + (row * vertical_spacing)
+
+            category, device_name = equipment_key.split('.')
+            label_text = f"{category} [{device_name}]"
+            yaml_key = equipment_key.replace('.', '_')
+            equipment_dict = self.metadata_settings.get('Equipment')
+            is_checked = bool(equipment_dict and yaml_key in equipment_dict)
+
+            checkbox = QCheckBox(label_text, self.VideoSettings)
+            checkbox.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+            checkbox.setStyleSheet("""QCheckBox {spacing: 5px;}
+                                      QCheckBox::indicator {border: 1px solid grey; width: 15px; height: 15px; border-radius: 7.5px;}
+                                      QCheckBox::indicator:checked {background-color: #F58025;}""")
+            checkbox.setChecked(is_checked)
+
+            checkbox.move(checkbox_x, checkbox_y)
+
+            checkbox.stateChanged.connect(partial(self._on_equipment_checkbox_toggled, equipment_key=equipment_key))
+            setattr(self, f"equip_cb_{yaml_key}", checkbox)
+
+        num_rows = (len(equipment_items) + items_per_row - 1) // items_per_row
+        y_pos += num_rows * vertical_spacing
+
+        # Subjects
+        y_pos += 20
+        subjects_title_label = QLabel('Add Subjects', self.VideoSettings)
+        subjects_title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
+        subjects_title_label.setStyleSheet('QLabel { font-weight: bold;}')
+        subjects_title_label.move(x_label, y_pos)
+        subjects_y_pos = y_pos
+        y_pos += 30
+
+        subject_fields = {
+            'subject_id': ('Subject ID:', '181181_0'), 'species': ('Species:', 'mus musculus'),
+            'genotype_strain': ('Genotype-Strain:', 'CD1-WT'), 'sex': ('Sex:', None),
+            'dob': ('DOB:', '2025-10-12'), 'weight': ('Weight:', '35'), 'housing': ('Housing:', None),
+            'estrous_stage': ('Estrous Stage:', 'E'), 'estrous_sample_time': ('Estrous Sample Time:', '18:25')
+        }
+
+        required_fields = ['subject_id', 'species', 'genotype_strain']
+
+        self.subject_form_widgets.clear()
+
+        for key, (label_text, placeholder) in subject_fields.items():
+            label = QLabel(label_text, self.VideoSettings)
+            label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+            label.move(x_label, y_pos)
+
+            if key == 'sex':
+                widget = QComboBox(self.VideoSettings)
+                widget.addItems(['male', 'female'])
+            elif key == 'housing':
+                widget = QComboBox(self.VideoSettings)
+                widget.addItems(['group', 'single'])
+            elif key == 'estrous_stage':
+                widget = QComboBox(self.VideoSettings)
+                widget.addItems(['N/A', 'proestrus', 'estrus', 'metestrus', 'diestrus'])
+            else:
+                widget = QLineEdit('', self.VideoSettings)
+                widget.setPlaceholderText(placeholder)
+
+            widget.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+            widget.setFixedWidth(230)
+            widget.move(180, y_pos)
+
+            self.subject_form_widgets[key] = widget
+            setattr(self, f"{key}_edit", widget)
+
+            if key in required_fields and isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._validate_subject_form)
+
+            if isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._on_subject_form_changed)
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._on_subject_form_changed)
+
+
+            y_pos += 30
+
+        subject_ids_from_repo = [s.get('subject_id', '') for s in self.subject_repository if s.get('subject_id')]
+
+        # create a QCompleter with the list of IDs
+        completer = QCompleter(subject_ids_from_repo, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+
+        if hasattr(self, 'subject_id_edit'):
+            self.subject_id_edit.setCompleter(completer)
+
+        completer.activated.connect(self._on_subject_selected_from_completer)
+
+        clear_subject_form_btn = QPushButton(QIcon(clear_icon), "Clear Form", self.VideoSettings)
+        clear_subject_form_btn.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        clear_subject_form_btn.setStyleSheet('QPushButton { min-width: 90px; min-height: 12px; max-width: 90px; max-height: 13px; }')
+        clear_subject_form_btn.move(180, subjects_y_pos)
+        clear_subject_form_btn.clicked.connect(self._clear_subject_form)
+
+        self.add_subject_btn = QPushButton(QIcon(add_icon), 'Add Subject', self.VideoSettings)
+        self.add_subject_btn.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.add_subject_btn.setStyleSheet('QPushButton { min-width: 90px; min-height: 12px; max-width: 90px; max-height: 13px; }')
+        self.add_subject_btn.move(297, subjects_y_pos)
+        self.add_subject_btn.clicked.connect(self._add_subject)
+        self.add_subject_btn.setEnabled(False)
+
+        # intervention for subject
+        y_pos += 10
+        self.add_chemo_btn = QPushButton(QIcon(add_icon), "chemo", self.VideoSettings)
+        self.add_ephys_btn = QPushButton(QIcon(add_icon), "e-phys", self.VideoSettings)
+        self.add_lesion_btn = QPushButton(QIcon(add_icon), "lesion", self.VideoSettings)
+        self.add_opto_btn = QPushButton(QIcon(add_icon), "opto", self.VideoSettings)
+
+        buttons = [self.add_chemo_btn, self.add_ephys_btn, self.add_lesion_btn, self.add_opto_btn]
+        callbacks = [self._open_chemo_dialog, self._open_ephys_dialog, self._open_lesion_dialog, self._open_opto_dialog]
+
+        items_per_row = 4
+        horizontal_spacing = 100
+        vertical_spacing = 20
+
+        for i, (button, callback) in enumerate(zip(buttons, callbacks)):
+
+            row, col = divmod(i, items_per_row)
+
+            button_x = x_label + (col * horizontal_spacing)
+            button_y = y_pos + (row * vertical_spacing)
+
+            button.setStyleSheet('QPushButton { min-width: 70px; min-height: 12px; max-width: 70px; max-height: 13px; }')
+
+            button.move(button_x, button_y)
+
+            button.setEnabled(False)
+            button.clicked.connect(callback)
+
+        num_rows = (len(buttons) + items_per_row - 1) // items_per_row
+        y_pos += num_rows * vertical_spacing
+
+        # edit interventions title
+        edit_interv_title_y = 910
+        edit_interv_title_x = 10
+
+        edit_interv_title = QLabel("Edit Subject Interventions", self.VideoSettings)
+        edit_interv_title.setFont(QFont(self.font_id, 13 + self.font_size_increase))
+        edit_interv_title.setStyleSheet('QLabel { font-weight: bold;}')
+        edit_interv_title.move(edit_interv_title_x, edit_interv_title_y - 30)
+
+        # metadata preview
+        preview_x = record_three_x - 500
+        preview_width = 490
+        preview_height = record_three_y - 100
+
+        preview_label = QLabel('Live Preview (_metadata.yaml)', self.VideoSettings)
+        preview_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
+        preview_label.setStyleSheet('QLabel { font-weight: bold;}')
+        preview_label.move(preview_x, 10)
+
+        self.metadata_preview_edit = QPlainTextEdit(self.VideoSettings)
+        self.metadata_preview_edit.setReadOnly(True)
+        self.metadata_preview_edit.setFixedSize(preview_width, preview_height)
+        self.metadata_preview_edit.move(preview_x, 40)
+        self.metadata_preview_edit.setStyleSheet("background-color: #2b2b2b; color: #f8f8f2;")
+        self.highlighter = YamlHighlighter(self.metadata_preview_edit.document())
+
+        self._update_subject_ui()
+        self._update_metadata_preview()
 
         self._create_buttons_record(seq=2, class_option=self.VideoSettings,
                                     button_pos_y=record_three_y - 35, next_button_x_pos=record_three_x - 100)
@@ -1041,7 +2501,8 @@ class USVPlaypenWindow(QMainWindow):
 
         self.run_exp = ExperimentController(message_output=self._message,
                                             email_receivers=self.email_recipients,
-                                            exp_settings_dict=self.exp_settings_dict)
+                                            exp_settings_dict=self.exp_settings_dict,
+                                            metadata_settings=self.metadata_settings)
 
         self._create_buttons_record(seq=3, class_option=self.ConductRecording,
                                     button_pos_y=record_four_y - 35, next_button_x_pos=record_four_x - 100)
@@ -2814,46 +4275,6 @@ class USVPlaypenWindow(QMainWindow):
         self.exp_settings_dict['conduct_audio_recording'] = self.conduct_audio_cb_bool
         self.exp_settings_dict['disable_ethernet'] = self.disable_ethernet_cb_bool
 
-    # def _save_record_two_labels_func(self) -> None:
-    #     """
-    #     Transfers Recording Two settings to exp_settings dictionary.
-    #
-    #     Parameters
-    #     ----------
-    #     ----------
-    #
-    #     Returns
-    #     -------
-    #     -------
-    #     """
-    #
-    #     for variable in self.default_audio_settings.keys():
-    #         if variable in self.exp_settings_dict['audio'].keys():
-    #             if variable == 'used_mics' or variable == 'cpu_affinity':
-    #                 if not getattr(self, variable).text() == '':
-    #                     self.exp_settings_dict['audio'][f'{variable}'] = [int(x) for x in getattr(self, variable).text().split(',')]
-    #                 else:
-    #                     self.exp_settings_dict['audio'][f'{variable}'] = []
-    #             elif variable == 'cpu_priority':
-    #                 self.exp_settings_dict['audio'][f'{variable}'] = getattr(self, variable).text()
-    #             else:
-    #                 self.exp_settings_dict['audio'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-    #         elif variable in self.exp_settings_dict['audio']['general'].keys():
-    #             self.exp_settings_dict['audio']['general'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-    #         elif variable in self.exp_settings_dict['audio']['screen_position'].keys():
-    #             self.exp_settings_dict['audio']['screen_position'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-    #         elif variable in self.exp_settings_dict['audio']['devices'].keys():
-    #             self.exp_settings_dict['audio']['devices'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-    #         elif variable in self.exp_settings_dict['audio']['mics_config'].keys():
-    #             if variable == 'ditctime':
-    #                 self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = getattr(self, variable).text()
-    #             else:
-    #                 self.exp_settings_dict['audio']['mics_config'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-    #         elif variable in self.exp_settings_dict['audio']['monitor'].keys():
-    #             self.exp_settings_dict['audio']['monitor'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-    #         elif variable in self.exp_settings_dict['audio']['call'].keys():
-    #             self.exp_settings_dict['audio']['call'][f'{variable}'] = ast.literal_eval(getattr(self, variable).text())
-
     def _save_record_two_labels_func(self) -> None:
         """
         Transfers Recording Two settings to exp_settings dictionary.
@@ -2868,6 +4289,27 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         video_dict_keys = ['expected_cameras', 'recording_codec']
+
+        if self.usgh_devices_sync_cb_bool:
+            self.exp_settings_dict['audio']['devices']['usghflags'] = 1574
+            self.exp_settings_dict['audio']['usgh_devices_sync'] = True
+        else:
+            self.exp_settings_dict['audio']['devices']['usghflags'] = 1862
+            self.exp_settings_dict['audio']['usgh_devices_sync'] = False
+
+        if self.usgh_sr == '300000':
+            self.exp_settings_dict['audio']['devices']['fabtast'] = 300000
+            self.exp_settings_dict['audio']['mics_config']['fo'] = 300000.0
+        else:
+            self.exp_settings_dict['audio']['devices']['fabtast'] = 250000
+            self.exp_settings_dict['audio']['mics_config']['fo'] = 250000.0
+
+        self.exp_settings_dict['audio']['cpu_priority'] = self.cpu_priority
+
+        if not self.cpu_affinity_edit.text() == '':
+            self.exp_settings_dict['audio']['cpu_affinity'] = [int(x) for x in self.cpu_affinity_edit.text().split(',')]
+        else:
+            self.exp_settings_dict['audio']['cpu_affinity'] = []
 
         self.exp_settings_dict['video']['general']['monitor_recording'] = self.monitor_recording_cb_bool
         self.exp_settings_dict['video']['general']['monitor_specific_camera'] = self.monitor_specific_camera_cb_bool
@@ -2938,10 +4380,59 @@ class USVPlaypenWindow(QMainWindow):
 
         self.processing_input_dict['send_email']['Messenger']['experimenter'] = f'{self.exp_id}'
         self.analyses_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
+        self.exp_settings_dict['experimenter'] = f'{self.exp_id}'
 
-    def _combo_box_specific_camera(self,
+    def _combo_box_cpu_priority(self,
                                 index: int,
                                 variable_id: str = None) -> None:
+        """
+        CPU priority combo box.
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        for idx in range(len(self.cpu_priority_cb_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.cpu_priority_cb_list[idx]
+                break
+
+    def _combo_box_usgh_sr(self,
+                           index: int,
+                           variable_id: str = None) -> None:
+        """
+        USGH devices sampling rate (can be 250 kHz or 300 kHz).
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+        ----------
+
+        Returns
+        -------
+        -------
+        """
+
+        for idx in range(len(self.usgh_sr_cb_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.usgh_sr_cb_list[idx]
+                break
+
+    def _combo_box_specific_camera(self,
+                                   index: int,
+                                   variable_id: str = None) -> None:
         """
         Specific monitoring camera serial number combo box.
 
@@ -3299,7 +4790,7 @@ class USVPlaypenWindow(QMainWindow):
                                                                     QCheckBox::indicator:checked {background-color: #F58025;}""")
         self.__dict__[f'{camera_id}_rec_checkbox'].setChecked(self.__dict__[f'{camera_id}_rec_checkbox_bool'])
         self.__dict__[f'{camera_id}_rec_checkbox'].setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.__dict__[f'{camera_id}_rec_checkbox'].move(x_start, 70)
+        self.__dict__[f'{camera_id}_rec_checkbox'].move(x_start, 230)
         self.__dict__[f'{camera_id}_rec_checkbox'].stateChanged.connect(partial(self._checkbox_state_read, checkbox_id=f'{camera_id}_rec_checkbox', variable_id=f'{camera_id}_rec_checkbox_bool'))
 
     def _create_checkbox_file_destinations(self,
@@ -4063,7 +5554,11 @@ class USVPlaypenWindow(QMainWindow):
         -------
         """
 
-        self.run_exp.conduct_behavioral_recording()
+        updated_metadata = self.run_exp.conduct_behavioral_recording()
+
+        if updated_metadata:
+            self.metadata_settings = updated_metadata
+            self._save_metadata_to_yaml()
 
     def _enable_visualize_buttons(self) -> None:
         """
@@ -4457,13 +5952,14 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
         splash.show()
         QTest.qWait(2500)
 
-    initial_values_dict = {'exp_id': _toml['video']['metadata']['experimenter'],
+    initial_values_dict = {'exp_id': _toml['experimenter'],
                            'conduct_audio_cb_bool': _toml['conduct_audio_recording'], 'conduct_tracking_calibration_cb_bool': _toml['conduct_tracking_calibration'],
                            'disable_ethernet_cb_bool': _toml['disable_ethernet'], 'monitor_recording_cb_bool': _toml['video']['general']['monitor_recording'],
                            'monitor_specific_camera_cb_bool': _toml['video']['general']['monitor_specific_camera'], 'delete_post_copy_cb_bool': _toml['video']['general']['delete_post_copy'],
                            'recording_codec': _toml['video']['general']['recording_codec'],
                            'device_receiving_input': processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'],
                            'save_transformed_data': processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['save_transformed_data'],
+                           'usgh_devices_sync_cb_bool': _toml['audio']['usgh_devices_sync'], 'usgh_sr': str(_toml['audio']['devices']['fabtast']), 'cpu_priority': _toml['audio']['cpu_priority'],
                            'conduct_video_concatenation_cb_bool': False, 'conduct_video_fps_change_cb_bool': False,
                            'conduct_multichannel_conversion_cb_bool': False, 'crop_wav_cam_cb_bool': False, 'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False,
                            'conduct_sync_cb_bool': False, 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,

@@ -15,6 +15,7 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 from imgstore import new_for_filename
+from .yaml_utils import load_session_metadata, save_session_metadata
 
 fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts/Helvetica.ttf")
 plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
@@ -22,7 +23,7 @@ plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
 
 class SummaryPlotter:
     def __init__(
-        self, input_parameter_dict: dict = None, root_directory: str = None
+        self, input_parameter_dict: dict = None, root_directory: str = None, message_output: callable = None
     ) -> None:
         """
         Initializes the SummaryPlotter class.
@@ -64,6 +65,11 @@ class SummaryPlotter:
                 ]
         else:
             self.input_parameter_dict = input_parameter_dict
+
+        if message_output is None:
+            self.message_output = print
+        else:
+            self.message_output = message_output
 
     def preprocessing_summary(
         self, ipi_discrepancy_dict: dict = None, phidget_data_dictionary: dict = None
@@ -155,6 +161,12 @@ class SummaryPlotter:
             audio_sample_number = example_audio_file.getnframes()
         audio_ch_number = len(wav_audio_files)
 
+        # load metadata
+        metadata, metadata_path = load_session_metadata(
+            root_directory=self.root_directory,
+            logger=self.message_output
+        )
+
         # get relevant video metadata
         used_cameras = []
         total_frames = []
@@ -178,6 +190,8 @@ class SummaryPlotter:
         gen_2 = "Ø"
         hou_1 = "Ø"
         hou_2 = "Ø"
+        weight_1 = "Ø"
+        weight_2 = "Ø"
 
         counter = 0
         for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
@@ -208,39 +222,54 @@ class SummaryPlotter:
                     camera_gain = user_meta_data["gain"]
                     camera_exposure = user_meta_data["exposuretime"]
                     camera_frame_rate = user_meta_data["hwframerate"]
-                    for exp_key in user_meta_data.keys():
-                        if exp_key == "experimenter" and user_meta_data[exp_key] != "":
-                            experimenter = user_meta_data[exp_key]
-                        if exp_key == "subject" and user_meta_data[exp_key] != "":
-                            subject_entry = user_meta_data[exp_key].split(",")
-                            animal_1 = subject_entry[0]
-                            if len(subject_entry) > 1:
-                                animal_2 = subject_entry[1]
-                        if exp_key == "cage" and user_meta_data[exp_key] != "":
-                            cage_entry = user_meta_data[exp_key].split(",")
-                            cage_1 = cage_entry[0]
-                            if len(cage_entry) > 1:
-                                cage_2 = cage_entry[1]
-                        if exp_key == "dob" and user_meta_data[exp_key] != "":
-                            dob_entry = user_meta_data[exp_key].split(",")
-                            dob_1 = dob_entry[0]
-                            if len(dob_entry) > 1:
-                                dob_2 = dob_entry[1]
-                        if exp_key == "sex" and user_meta_data[exp_key] != "":
-                            sex_entry = user_meta_data[exp_key].split(",")
-                            sex_1 = sex_entry[0]
-                            if len(sex_entry) > 1:
-                                sex_2 = sex_entry[1]
-                        if exp_key == "strain" and user_meta_data[exp_key] != "":
-                            gen_entry = user_meta_data[exp_key].split(",")
-                            gen_1 = gen_entry[0]
-                            if len(gen_entry) > 1:
-                                gen_2 = gen_entry[1]
-                        if exp_key == "housing" and user_meta_data[exp_key] != "":
-                            hou_entry = user_meta_data[exp_key].split(",")
-                            hou_1 = hou_entry[0]
-                            if len(hou_entry) > 1:
-                                hou_2 = hou_entry[1]
+
+                    if metadata is not None:
+                        subjects_list = metadata.get('Subjects', [])
+                        subject_ids = [subject.get('subject_id') for subject in subjects_list]
+                        genotypes = [subject.get('genotype_strain') for subject in subjects_list]
+                        sexes = [subject.get('sex') for subject in subjects_list]
+                        dobs = [subject.get('dob') for subject in subjects_list]
+                        weights = [subject.get('weight') for subject in subjects_list]
+                        housings = [subject.get('housing') for subject in subjects_list]
+                    else:
+                        for exp_key in user_meta_data.keys():
+                            if exp_key == "experimenter" and user_meta_data[exp_key] != "":
+                                experimenter = user_meta_data[exp_key]
+                            if exp_key == "subject" and user_meta_data[exp_key] != "":
+                                subject_entry = user_meta_data[exp_key].split(",")
+                                animal_1 = subject_entry[0]
+                                if len(subject_entry) > 1:
+                                    animal_2 = subject_entry[1]
+                            if exp_key == "cage" and user_meta_data[exp_key] != "":
+                                cage_entry = user_meta_data[exp_key].split(",")
+                                cage_1 = cage_entry[0]
+                                if len(cage_entry) > 1:
+                                    cage_2 = cage_entry[1]
+                            if exp_key == "weight" and user_meta_data[exp_key] != "":
+                                weight_entry = user_meta_data[exp_key].split(",")
+                                weight_1 = weight_entry[0]
+                                if len(weight_entry) > 1:
+                                    weight_2 = weight_entry[1]
+                            if exp_key == "dob" and user_meta_data[exp_key] != "":
+                                dob_entry = user_meta_data[exp_key].split(",")
+                                dob_1 = dob_entry[0]
+                                if len(dob_entry) > 1:
+                                    dob_2 = dob_entry[1]
+                            if exp_key == "sex" and user_meta_data[exp_key] != "":
+                                sex_entry = user_meta_data[exp_key].split(",")
+                                sex_1 = sex_entry[0]
+                                if len(sex_entry) > 1:
+                                    sex_2 = sex_entry[1]
+                            if exp_key == "strain" and user_meta_data[exp_key] != "":
+                                gen_entry = user_meta_data[exp_key].split(",")
+                                gen_1 = gen_entry[0]
+                                if len(gen_entry) > 1:
+                                    gen_2 = gen_entry[1]
+                            if exp_key == "housing" and user_meta_data[exp_key] != "":
+                                hou_entry = user_meta_data[exp_key].split(",")
+                                hou_1 = hou_entry[0]
+                                if len(hou_entry) > 1:
+                                    hou_2 = hou_entry[1]
                 counter += 1
 
         # optimize histogram
@@ -262,6 +291,12 @@ class SummaryPlotter:
             else:
                 plot_statistics_dict[device_id]["plot_x_min"] = -10.5
                 plot_statistics_dict[device_id]["plot_x_max"] = 10.5
+
+        if metadata is not None:
+            metadata['Environment']['luminance_lux'] = med_lux
+            metadata['Environment']['temperature_celsius'] = med_temp
+            metadata['Environment']['humidity_percent'] = med_hum
+            save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
         fig, ax = plt.subplots(
             nrows=2, ncols=len(plot_statistics_dict.keys()), figsize=(12.8, 9.6)
@@ -395,7 +430,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.115,
                     y=0.9775,
-                    s=f"{animal_1}",
+                    s=subject_ids[0] if metadata is not None else f"{cage_1}_{animal_1}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -403,7 +438,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.245,
                     y=0.9775,
-                    s=f"{animal_2}",
+                    s=subject_ids[1] if metadata is not None else f"{cage_2}_{animal_2}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -412,7 +447,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.005,
                     y=0.945,
-                    s=r"$\bf{cID}$",
+                    s=r"$\bf{gen}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=12,
@@ -420,7 +455,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.115,
                     y=0.9375,
-                    s=f"{cage_1}",
+                    s=genotypes[0] if metadata is not None else f"{gen_1}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -428,7 +463,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.245,
                     y=0.9375,
-                    s=f"{cage_2}",
+                    s=genotypes[1] if metadata is not None else f"{gen_2}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -437,7 +472,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.005,
                     y=0.905,
-                    s=r"$\bf{dob}$",
+                    s=r"$\bf{sex}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=12,
@@ -445,7 +480,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.115,
                     y=0.8975,
-                    s=f"{dob_1}",
+                    s=sexes[0] if metadata is not None else f"{sex_1}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -453,7 +488,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.245,
                     y=0.8975,
-                    s=f"{dob_2}",
+                    s=sexes[1] if metadata is not None else f"{sex_2}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -462,7 +497,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.005,
                     y=0.865,
-                    s=r"$\bf{sex}$",
+                    s=r"$\bf{dob}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=12,
@@ -470,7 +505,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.115,
                     y=0.8575,
-                    s=f"{sex_1}",
+                    s=dobs[0] if metadata is not None else f"{dob_1}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -478,7 +513,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.245,
                     y=0.8575,
-                    s=f"{sex_2}",
+                    s=dobs[1] if metadata is not None else f"{dob_2}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -487,7 +522,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.005,
                     y=0.825,
-                    s=r"$\bf{gen}$",
+                    s=r"$\bf{wei}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=12,
@@ -495,7 +530,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.115,
                     y=0.8175,
-                    s=f"{gen_1}",
+                    s=weights[0] if metadata is not None else f"{weight_1}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -503,7 +538,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.245,
                     y=0.8175,
-                    s=f"{gen_2}",
+                    s=weights[1] if metadata is not None else f"{weight_2}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -520,7 +555,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.115,
                     y=0.7775,
-                    s=f"{hou_1}",
+                    s=housings[0] if metadata is not None else f"{hou_1}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -528,7 +563,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.245,
                     y=0.7775,
-                    s=f"{hou_2}",
+                    s=housings[1] if metadata is not None else f"{hou_2}",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,

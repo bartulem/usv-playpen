@@ -262,14 +262,14 @@ Process
 
 .. code-block:: plaintext
 
-    usage: sleap-to-h5 [-h] --root-directory PATH [--env-name TEXT]
+    usage: sleap-to-h5 [-h] --root-directory PATH [--venv-path TEXT]
 
     required arguments:
       --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --env-name            SLEAP conda environment.
+      --venv-path           SLEAP VENV path.
 
 ``anipose-calibrate``
 ---------------------
@@ -698,7 +698,15 @@ Visualize
 Set up and use the CLI on the *Spock* cluster
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In order to exploit the full functionality of *usv-playpen*, one should install subsidiary conda packages (das, sleap, vcl-ssl). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
+In order to exploit the full functionality of *usv-playpen*, one should install subsidiary uv (sleap) or conda packages (das, vcl-ssl). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
+
+.. code-block:: bash
+
+    $ module load cudatoolkit/11.8.0 cudnn/11.x/8.9.7.29
+    $ git clone https://github.com/talmolab/sleap.git && cd sleap
+    $ uv venv --python=3.13
+    $ source .venv/bin/activate
+    $ uv sync --extra dev --extra nn-cuda118 --index https://download.pytorch.org/whl/cu118 --index https://pypi.org/simple
 
 .. code-block:: bash
 
@@ -711,16 +719,11 @@ In order to exploit the full functionality of *usv-playpen*, one should install 
 
 .. code-block:: bash
 
-    $ conda create --name sleap1.3.3 pip python=3.7.12 cudatoolkit=11.3 cudnn=8.2 cuda-nvcc=12.4.131 -c conda-forge -c nvidia -y
-    $ conda activate sleap1.3.3 && pip install sleap[pypi]==1.3.3 tensorflow==2.6.3
-
-.. code-block:: bash
-
     $ conda create --name vcl-ssl python=3.10 torchaudio packaging -y
     $ git clone https://github.com/Aramist/vocalocator-ssl.git && cd vocalocator-ssl
     $ conda activate vcl-ssl && pip install -e .
 
-On should also install *usv-playpen* on the cluster (in its own *virtual environment*) and set up an additional environment (hpss):
+One should also set up an additional environment (hpss):
 
 .. code-block:: bash
 

@@ -5,8 +5,8 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT_DIR="falkner/Bartul/Data"
-WORK_DIR="/mnt/cup/labs/falkner/Bartul/DAS"
+CUP_ROOT_DIR="falkner/Name/Data"
+WORK_DIR="/mnt/cup/labs/falkner/Name/DAS"
 AUDIO_CH_NUM=24
 CPUS_PER_TASK=2
 MEMORY_PER_CPU="64G"

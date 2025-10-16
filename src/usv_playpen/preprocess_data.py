@@ -188,8 +188,9 @@ class Stylist:
                                                             message_output=self.message_output).find_audio_sync_trains()
 
                         SummaryPlotter(root_directory=one_directory,
-                                       input_parameter_dict=self.input_parameter_dict).preprocessing_summary(ipi_discrepancy_dict=ipi_discrepancy_dict,
-                                                                                                             phidget_data_dictionary=phidget_data_dictionary)
+                                       input_parameter_dict=self.input_parameter_dict,
+                                       message_output=self.message_output).preprocessing_summary(ipi_discrepancy_dict=ipi_discrepancy_dict,
+                                                                                                 phidget_data_dictionary=phidget_data_dictionary)
 
                     # # # check e-phys-video sync
                     if self.input_parameter_dict['processing_booleans']['conduct_ephys_video_sync']:
@@ -634,7 +635,7 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 
 @click.command(name="sleap-to-h5")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--env-name', 'sleap_conda_env_name', type=str, default=None, required=False, help='SLEAP conda environment.')
+@click.option('--venv-path', 'sleap_venv_path', type=str, default=None, required=False, help='SLEAP UV VENV path.')
 @click.pass_context
 def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
     """

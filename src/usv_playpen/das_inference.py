@@ -21,6 +21,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from .time_utils import *
+from .yaml_utils import load_session_metadata, save_session_metadata
 
 fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts/Helvetica.ttf")
 plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
@@ -586,6 +587,15 @@ class FindMouseVocalizations:
             self.message_output(
                 f"In this session, {usv_summary.shape[0]} USVs were detected."
             )
+
+            # load metadata
+            metadata, metadata_path = load_session_metadata(
+                root_directory=self.root_directory,
+                logger=self.message_output
+            )
+            if metadata is not None:
+                metadata['Session']['session_usv_count'] = usv_summary.shape[0]
+                save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
             # save the summary file
             usv_summary.to_csv(

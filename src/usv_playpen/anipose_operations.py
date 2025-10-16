@@ -10,6 +10,7 @@ import json
 import math
 import os
 import pathlib
+import platform
 import subprocess
 from datetime import datetime
 
@@ -19,22 +20,28 @@ import sleap_anipose
 from imgstore import new_for_filename
 
 from .time_utils import *
+from .yaml_utils import load_session_metadata, save_session_metadata
 
 
-def find_mouse_names(root_directory: str = None) -> list:
+def find_mouse_names(root_directory: str = None,
+                     metadata: dict | None = None) -> list:
     """
     Description
     ----------
     This function finds the mouse names from the metadata.yaml file.
 
-    NB: Since the metadata.yaml file was not standardized for a while, the function
+    NB: Since the video metadata file was not standardized for a while, the function
     check for either the old or the new version of the metadata.yaml file.
+
+    NB: from v0.8.12 onwards,it uses the usv_playpen native metadata files.
     ----------
 
     Parameters
     ----------
     root_directory (str)
         The directory where of the session.
+    metadata (dict | None)
+        The metadata dictionary; defaults to None.
     ----------
 
     Returns
@@ -45,59 +52,62 @@ def find_mouse_names(root_directory: str = None) -> list:
     """
 
     track_names = []
-    for sub_directory in os.listdir(f"{root_directory}{os.sep}video"):
-        if (
-            os.path.isdir(f"{root_directory}{os.sep}video{os.sep}{sub_directory}")
-            and "." in sub_directory
-            and "_" in sub_directory
-            and "calibration" not in sub_directory
-        ):
-            img_store = new_for_filename(
-                f"{root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml"
-            )
-            user_meta_data = img_store.user_metadata
+    if metadata is None:
+        for sub_directory in os.listdir(f"{root_directory}{os.sep}video"):
+            if (
+                os.path.isdir(f"{root_directory}{os.sep}video{os.sep}{sub_directory}")
+                and "." in sub_directory
+                and "_" in sub_directory
+                and "calibration" not in sub_directory
+            ):
+                img_store = new_for_filename(
+                    f"{root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml"
+                )
+                user_meta_data = img_store.user_metadata
 
-            if "cage" in user_meta_data.keys() and "subject" in user_meta_data.keys():
-                for cage, subject in zip(
-                    user_meta_data["cage"].split(","),
-                    user_meta_data["subject"].split(","),
-                    strict=False,
-                ):
-                    if subject != "":
-                        track_names.append(f"{cage}_{subject}")
-                    else:
-                        track_names.append(f"{cage}")
+                if "cage" in user_meta_data.keys() and "subject" in user_meta_data.keys():
+                    for cage, subject in zip(
+                        user_meta_data["cage"].split(","),
+                        user_meta_data["subject"].split(","),
+                        strict=False,
+                    ):
+                        if subject != "":
+                            track_names.append(f"{cage}_{subject}")
+                        else:
+                            track_names.append(f"{cage}")
+                    break
+
+                metadata_key_dict = {}
+                for one_key in user_meta_data.keys():
+                    if one_key.endswith("mouse_ID_m1"):
+                        metadata_key_dict["mouse_ID_m1"] = one_key
+                    elif one_key.endswith("mouse_ID_m2"):
+                        metadata_key_dict["mouse_ID_m2"] = one_key
+                    elif one_key.endswith("cage_ID_m1"):
+                        metadata_key_dict["cage_ID_m1"] = one_key
+                    elif one_key.endswith("cage_ID_m2"):
+                        metadata_key_dict["cage_ID_m2"] = one_key
+
+                if user_meta_data[metadata_key_dict["mouse_ID_m1"]] != "":
+                    track_names.append(
+                        f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}_{user_meta_data[metadata_key_dict['mouse_ID_m1']]}"
+                    )
+                else:
+                    track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}")
+
+                if user_meta_data[metadata_key_dict["mouse_ID_m2"]] != "":
+                    if user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
+                        track_names.append(
+                            f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}_{user_meta_data[metadata_key_dict['mouse_ID_m2']]}"
+                        )
+                elif user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
+                    track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}")
                 break
 
-            metadata_key_dict = {}
-            for one_key in user_meta_data.keys():
-                if one_key.endswith("mouse_ID_m1"):
-                    metadata_key_dict["mouse_ID_m1"] = one_key
-                elif one_key.endswith("mouse_ID_m2"):
-                    metadata_key_dict["mouse_ID_m2"] = one_key
-                elif one_key.endswith("cage_ID_m1"):
-                    metadata_key_dict["cage_ID_m1"] = one_key
-                elif one_key.endswith("cage_ID_m2"):
-                    metadata_key_dict["cage_ID_m2"] = one_key
-
-            if user_meta_data[metadata_key_dict["mouse_ID_m1"]] != "":
-                track_names.append(
-                    f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}_{user_meta_data[metadata_key_dict['mouse_ID_m1']]}"
-                )
-            else:
-                track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}")
-
-            if user_meta_data[metadata_key_dict["mouse_ID_m2"]] != "":
-                if user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
-                    track_names.append(
-                        f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}_{user_meta_data[metadata_key_dict['mouse_ID_m2']]}"
-                    )
-            elif user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
-                track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}")
-            break
+    else:
+        track_names = [subject.get('subject_id') for subject in metadata.get('Subjects', [])]
 
     return track_names
-
 
 def extract_skeleton_nodes(
     skeleton_loc: str = None, skeleton_arena_bool: bool = False
@@ -397,8 +407,20 @@ class ConvertTo3D:
                     os.path.join(self.session_root_joint_date_dir, cam_directory)
                 ):
                     if one_file.endswith(".slp"):
+                        if self.app_context_bool:
+                            if platform.system() == "Darwin":
+                                sleap_convert_command = f'''{command_addition}uvx --from "sleap[nn]" sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}'''
+                            else:
+                                sleap_convert_command = f'''{command_addition}uvx --from "sleap[nn]" --index https://download.pytorch.org/whl/cpu --index https://pypi.org/simple sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"'''
+                        else:
+                            sleap_venv_path = self.input_parameter_dict["sleap_venv_path"]
+                            if os.name == "nt":
+                                sleap_convert_command = f'''{command_addition}{sleap_venv_path} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"'''
+                            else:
+                                sleap_convert_command = f'''{command_addition}source {sleap_venv_path} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"'''
+
                         conversion_subp = subprocess.Popen(
-                            args=f'''{command_addition}uvx --from sleap[nn] sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"''',
+                            args=sleap_convert_command,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT,
                             cwd=os.path.join(
@@ -917,7 +939,17 @@ class ConvertTo3D:
                     2,
                 ] = 0
 
-            mouse_track_names = find_mouse_names(root_directory=self.root_directory)
+            # load metadata
+            metadata, metadata_path = load_session_metadata(
+                root_directory=self.root_directory,
+                logger=self.message_output
+            )
+            if metadata is not None:
+                metadata['Session']['session_experiment_code'] = self.input_parameter_dict["translate_rotate_metric"]["experimental_codes"][session_idx]
+                metadata['Session']['session_tracking_3D'] = True
+                save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
+
+            mouse_track_names = find_mouse_names(root_directory=self.root_directory, metadata=metadata)
 
             with h5py.File(
                 name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d_translated_rotated_metric.h5",

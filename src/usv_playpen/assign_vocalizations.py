@@ -15,6 +15,7 @@ from tqdm import tqdm
 from .assign_vocalizations_utils import (get_arena_dimensions, load_usv_segments, load_tracks_from_h5, to_float, write_to_h5,
                                          get_conf_sets_6d, are_points_in_conf_set)
 from .time_utils import *
+from .yaml_utils import load_session_metadata, save_session_metadata
 
 class Vocalocator:
 
@@ -231,6 +232,15 @@ class Vocalocator:
 
         usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
 
+        # load metadata
+        metadata, metadata_path = load_session_metadata(
+            root_directory=self.root_directory,
+            logger=self.message_output
+        )
+        if metadata is not None:
+            metadata['Session']['session_usv_assigned'] = True
+            save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
+
     def run_vocalocator_ssl(self) -> None:
         """
         Description
@@ -304,5 +314,13 @@ class Vocalocator:
             emitter_expression.alias('emitter')
         )
 
-
         usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
+
+        # load metadata
+        metadata, metadata_path = load_session_metadata(
+            root_directory=self.root_directory,
+            logger=self.message_output
+        )
+        if metadata is not None:
+            metadata['Session']['session_usv_assigned'] = True
+            save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)

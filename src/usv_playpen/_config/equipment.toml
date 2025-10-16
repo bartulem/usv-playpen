@@ -1,0 +1,121 @@
+[video.Loopbio]
+device_model = 'Loopbio Triggerbox'
+device_sn = 'm_10009'
+device_count = 1
+device_sr = 150
+device_sr_calibration = 10
+sensor_model = 'FLIR Blackfly S BFS-U3-13Y3M'
+sensor_count = 5
+sensor_lens = ['Fujinon HF6XA-5M', 'Fujinon HF8XA-5M',]
+sensor_sn = [21241563, 21369048, 21372315, 21372316, 22085397,]
+sensor_exposure_time = [2500, 2500, 2500, 2500, 2500,]
+sensor_gain = [0, 0, 0, 0, 0]
+device_pc_name = ['PNI-22BRBG2N3', 'PNI-221M80LM3']
+device_pc_model = 'Dell Precision 3650'
+device_pc_cpu = 'i9-11900K'
+device_pc_gpu = 'NVIDIA Quadro P2200'
+device_pc_memory = '16Gb'
+device_pc_os = 'Ubuntu 18.04.6 LTS'
+acquisition_software = 'Motif'
+software_version = '5.2.0'
+output_file_extension = 'mp4'
+output_file_codec = 'nvenc-slow-yuv420'
+output_file_dtype = 'uint8'
+output_file_image_shape = [1024, 1280]
+
+[audio.Avisoft]
+device_model = 'UltraSoundGate 1216H'
+device_count = 2
+device_sn = ['1216H/33', '1216H/26',]
+device_sync = false
+device_sr = 250000
+sensor_model = 'CM16/CMPA'
+sensor_count = 24
+device_pc_name = 'PNI-DRMDK74'
+device_pc_model = 'Dell Precision 3680'
+device_pc_cpu = 'i9-14900'
+device_pc_memory = '64Gb'
+device_pc_os = 'Windows 11 Pro'
+acquisition_software = 'USGH Recorder'
+software_version = '4.4.2.26'
+output_file_extension = 'wav'
+output_file_dtype = 'int16'
+
+[audio.RPi]
+device_pc_name = 'usv-replay'
+device_pc_model = 'Raspberry Pi 4'
+device_pc_cpu = 'Broadcom BCM2711'
+device_pc_memory = '4Gb'
+device_pc_os = 'Raspberry Pi OS'
+device_sn = '100000005c5e21a6'
+device_amplifier = 'TDT SA1 Stereo Amplifier'
+device_sound_card = 'HifiBa=erry DAC2 HW1.2'
+speaker_model = 'Sony MDREX15LP/B'
+
+[ephys.NI_NPX]
+device_model = 'PXIe-1071'
+device_sn = '326047E'
+device_count = 1
+cable_bool = true
+cable_vendor = 'imec'
+hs_vendor = 'imec'
+probe_vendor = 'imec'
+device_pc_name = 'PNI-22DYL5GT3'
+device_pc_model = 'Dell Precision 3660'
+device_pc_cpu = 'i7-12700K'
+device_pc_memory = '64Gb'
+device_pc_os = 'Windows 11 Pro'
+acquisition_software = 'SpikeGLX'
+output_file_extension = 'bin'
+output_file_dtype = 'int16'
+
+[sync.NIDQ]
+device_model = 'BNC-2110'
+device_sn = '115290C'
+device_sr = 62500.72887
+device_pc_name = 'PNI-22DYL5GT3'
+device_pc_model = 'Dell Precision 3660'
+device_pc_cpu = 'i7-12700K'
+device_pc_memory = '64Gb'
+device_pc_os = 'Windows 11 Pro'
+acquisition_software = 'SpikeGLX'
+output_file_extension = 'bin'
+output_file_dtype = 'int16'
+
+[sync.LEDs]
+device_model = 'Arduino Uno R3'
+device_sn = '55736303931351408130'
+device_br = 9600
+device_port = 'COM5'
+device_sketch_name = 'generate_sync_pulses.ino'
+device_pc_name = 'PNI-DRMDK74'
+device_pc_model = 'Dell Precision 3680'
+device_pc_cpu = 'i9-14900'
+device_pc_memory = '64Gb'
+device_pc_os = 'Windows 11 Pro'
+acquisition_software = 'CoolTerm'
+software_version = '2.4.0'
+output_file_extension = 'txt'
+
+[opto.RED0]
+device_vendor = 'SLOC'
+device_model = 'RLM635TA-100FC'
+device_sn = 'RI02S10775'
+device_max_power = 500
+device_wavelenght = 634.2
+patch_cord_vendor = 'Doric'
+patch_cord_model = 'FCM-MF1.25_LAF'
+patch_cord_sn = 'P115017-01'
+patch_cord_NA = 0.57
+patch_cord_core_diameter = 400
+fiber_vendor = 'MBF Bioscience Neurophotometrics'
+fiber_length = 6
+fiber_NA = 0.39
+fiber_core_diameter = 200
+fiber_ferrule_diameter = 1.25
+device_pc_name = 'PNI-9828mc4'
+device_pc_model = 'Dell Pro Max Slim FCS1250'
+device_pc_cpu = 'Intel Core Ultra 9 Processor 285'
+device_pc_gpu = 'NVIDIA RTX 2000 ADA'
+device_pc_memory = '64Gb'
+device_pc_os = 'Windows 11 Pro'

@@ -5,7 +5,7 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-SLEAP_ROOT="Bartul"
+SLEAP_ROOT="Name"
 CPUS_PER_TASK=2
 MEMORY_PER_CPU="24G"
 TIME_RESTRICTION="05:00:00"

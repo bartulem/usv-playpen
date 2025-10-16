@@ -7,23 +7,24 @@
     "conduct_audio_to_mmap": false,
     "conduct_audio_filtering": false,
     "conduct_hpss": false,
-    "conduct_audio_video_sync": false,
+    "conduct_audio_video_sync": true,
     "conduct_ephys_video_sync": false,
     "conduct_ephys_file_chaining": false,
     "split_cluster_spikes": false,
     "prepare_sleap_cluster": false,
     "sleap_h5_conversion": false,
     "anipose_calibration": false,
-    "anipose_triangulation": true,
+    "anipose_triangulation": false,
     "anipose_trm": false,
     "das_infer": false,
     "das_summarize": false,
     "prepare_assign_vocalizations": false,
     "assign_vocalizations": false
   },
-  "credentials_directory": "/home/bmimica/.config/usv_playpen/.credentials_Bartul",
+  "credentials_directory": "",
   "anipose_operations": {
     "ConvertTo3D": {
+      "sleap_venv_path": "",
       "conduct_anipose_calibration": {
         "board_provided_bool": false,
         "board_xy": [

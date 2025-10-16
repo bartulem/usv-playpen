@@ -28,6 +28,7 @@ from tqdm import tqdm
 from .load_audio_files import DataLoader
 from .os_utils import configure_path
 from .time_utils import *
+from .yaml_utils import load_session_metadata, save_session_metadata
 
 
 class Operator:
@@ -716,6 +717,12 @@ class Operator:
                     shutil.copy(src=f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}",
                                 dst=f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}")
 
+        # load metadata
+        metadata, metadata_path = load_session_metadata(
+            root_directory=self.root_directory,
+            logger=self.message_output
+        )
+
         date_joint = ''
         total_frame_number = 1e9
         total_video_time = 1e9
@@ -750,6 +757,10 @@ class Operator:
                             total_frame_number = total_frame_num
                         if video_duration < total_video_time:
                             total_video_time = video_duration
+
+                        if metadata is not None:
+                            metadata['Session']['session_duration'] = round(video_duration, 3)
+                            save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
                     else:
                         self.message_output(f"WARNING: The last frame on camera {sub_directory.split('.')[-1]} is {last_frame_num}, which is more than {total_frame_num} in total, "
                                             f"suggesting dropped frames. The video duration is {video_duration:.4f} seconds")

@@ -1,4 +1,5 @@
-experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Ivan", "Jiayi", "Jinrun", "Mala",]
+experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Ivan", "Jiayi", "Jinrun", "Mala", "Nitty",]
+experimenter = "Bartul"
 avisoft_recorder_exe_directory = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
 avisoft_recorder_program_name = "rec_usgh.exe"
 avisoft_basedirectory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacoustics"
@@ -10,12 +11,13 @@ recording_files_destination_win = [ "F:\\Bartul\\Data",]
 recording_files_destinations_all = [ "falkner", "murthy",]
 conduct_audio_recording = true
 conduct_tracking_calibration = false
-calibration_duration = 5
+calibration_duration = 3
 video_session_duration = 20
 disable_ethernet = true
 ethernet_network = "Ethernet 5"
 
 [audio]
+usgh_devices_sync = false
 total_device_num = 2
 total_mic_number = 24
 used_mics = [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,]
@@ -140,9 +142,6 @@ monitor_specific_camera = false
 specific_camera_serial = "21372315"
 monitor_url = "http://10.241.1.205:8081/"
 delete_post_copy = true
-
-[video.metadata]
-experimenter = "Bartul"
 
 [video.cameras_config.21372316]
 color_ID = "orange"

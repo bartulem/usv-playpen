@@ -1,0 +1,79 @@
+schema_version: '1.0'
+Session:
+  institution: Princeton Neuroscience Institute
+  lab: Falkner/Murthy
+  experimenter: Bartul
+  ambient_light: true
+  session_id: null
+  session_duration: null
+  session_experiment_code: ''
+  session_usv_count: null
+  session_usv_assigned: false
+  session_tracking_3D: false
+  session_usv_playback_file: ''
+  session_description: ''
+  calibration_session: ''
+  keywords: []
+  notes: ''
+Environment:
+  playpen_version: null
+  luminance_lux: null
+  temperature_celsius: null
+  humidity_percent: null
+Equipment:
+  video_Loopbio:
+    device_model: Loopbio Triggerbox
+    device_sn: m_10009
+    device_count: 1
+    device_sr: 150
+    device_sr_calibration: 10
+    sensor_model: FLIR Blackfly S BFS-U3-13Y3M
+    sensor_count: 5
+    sensor_lens: [Fujinon HF6XA-5M, Fujinon HF8XA-5M]
+    sensor_sn: [21241563, 21369048, 21372315, 21372316, 22085397]
+    sensor_exposure_time: [2500, 2500, 2500, 2500, 2500]
+    sensor_gain: [0, 0, 0, 0, 0]
+    device_pc_name: [PNI-22BRBG2N3, PNI-221M80LM3]
+    device_pc_model: Dell Precision 3650
+    device_pc_cpu: i9-11900K
+    device_pc_gpu: NVIDIA Quadro P2200
+    device_pc_memory: 16Gb
+    device_pc_os: Ubuntu 18.04.6 LTS
+    acquisition_software: Motif
+    software_version: 5.2.0
+    output_file_extension: mp4
+    output_file_codec: nvenc-slow-yuv420
+    output_file_dtype: uint8
+    output_file_image_shape: [1024, 1280]
+  audio_Avisoft:
+    device_model: UltraSoundGate 1216H
+    device_count: 2
+    device_sn: [1216H/33, 1216H/26]
+    device_sync: false
+    device_sr: 250000
+    sensor_model: CM16/CMPA
+    sensor_count: 24
+    device_pc_name: PNI-DRMDK74
+    device_pc_model: Dell Precision 3680
+    device_pc_cpu: i9-14900
+    device_pc_memory: 64Gb
+    device_pc_os: Windows 11 Pro
+    acquisition_software: USGH Recorder
+    software_version: 4.4.2.26
+    output_file_extension: wav
+    output_file_dtype: int16
+  sync_LEDs:
+    device_model: Arduino Uno R3
+    device_sn: '55736303931351408130'
+    device_br: 9600
+    device_port: COM5
+    device_sketch_name: generate_sync_pulses.ino
+    device_pc_name: PNI-DRMDK74
+    device_pc_model: Dell Precision 3680
+    device_pc_cpu: i9-14900
+    device_pc_memory: 64Gb
+    device_pc_os: Windows 11 Pro
+    acquisition_software: CoolTerm
+    software_version: 2.4.0
+    output_file_extension: txt
+Subjects: []

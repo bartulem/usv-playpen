@@ -5,8 +5,8 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT_DIR="falkner/Bartul/Data"
-WORK_DIR="/mnt/cup/labs/falkner/Bartul/HPSS"
+CUP_ROOT_DIR="falkner/Name/Data"
+WORK_DIR="/mnt/cup/labs/falkner/Name/HPSS"
 AUDIO_CH_NUM=24
 CPUS_PER_TASK=4
 MEMORY_PER_CPU="40G"
