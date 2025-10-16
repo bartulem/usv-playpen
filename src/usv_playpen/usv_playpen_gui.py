@@ -13,6 +13,7 @@ import os
 import platform
 import sys
 from functools import partial
+from importlib import metadata
 from pathlib import Path
 import platformdirs
 import re
