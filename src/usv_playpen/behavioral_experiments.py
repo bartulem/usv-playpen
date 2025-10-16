@@ -952,8 +952,18 @@ class ExperimentController:
         if self.metadata_settings:
             self.metadata_settings['Session']['session_id'] = session_id
             self.metadata_settings['Environment']['playpen_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
-        shutil.copy(src=Path(__file__).parent / '_config/_metadata.yaml',
-                    dst=f"{total_dir_name_windows[0]}{os.sep}{session_id}_metadata.yaml")
+
+            destination_path = Path(total_dir_name_windows[0]) / f"{session_id}_metadata.yaml"
+
+            with open(destination_path, 'w') as f:
+                yaml.dump(
+                    self.metadata_settings,
+                    f,
+                    Dumper=SmartDumper,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    indent=2
+                )
 
         # copy the audio, sync and video directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
