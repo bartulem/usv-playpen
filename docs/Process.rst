@@ -382,7 +382,6 @@ The re-encoding step will also result in the creation of the *camera_frame_count
     "median_empirical_camera_sr": 150.057
     }
 
-
 These steps change videos and video directory structure from the native Loopbio format to one that is compatible with SLEAP-Anipose. Both rely on the usage of `ffmpeg <https://ffmpeg.org/download.html>`_ . After the steps are complete, the directory structure and file names should look as follows (displaying only one camera directory for brevity):
 
 .. parsed-literal::
@@ -498,8 +497,7 @@ The SLEAP inference and proofreading steps are not implemented in the *usv-playp
 
 Run SLP-H5 conversion
 """""""""""""""""""""
-After proofreading, you convert SLP to H5 files, which is the format SLEAP-Anipose operates on (*usv-playpen* runs this in parallel for all views).
-To do this, you need to list the root directories of interest, select *Run SLP-H5 conversion*, click *Next* and then *Process*:
+After proofreading, you convert SLP to H5 files, which is the format SLEAP-Anipose operates on (*usv-playpen* runs this in parallel for all views). To do this, you need to list the root directories of interest, select *Run SLP-H5 conversion*, click *Next* and then *Process* (NB: using the SLEAP uvx functionality, it is no longer necessary to install SLEAP to run this step):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_6.png
    :align: center
@@ -509,7 +507,7 @@ To do this, you need to list the root directories of interest, select *Run SLP-H
 
    <br>
 
-This shouldn’t take longer than two minutes; the directory structure and file names should look as follows (displaying only one camera directory for brevity):
+This step shouldn’t take longer than two minutes to run; the directory structure and file names should look as follows (displaying only one camera directory for brevity):
 
 .. parsed-literal::
 

@@ -232,7 +232,6 @@ In the example below, one would be doing a 20 minute audio and video recording w
 
    <br>
 
-
 Record (audio and video settings)
 ---------------------------------
 

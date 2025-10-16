@@ -11,7 +11,7 @@ DAS_WORK_DIR="/mnt/cup/labs/falkner/Name/DAS"
 
 CPUS_PER_TASK=24
 TOTAL_MEMORY="128G"
-TIME_RESTRICTION="03:00:00"
+TIME_RESTRICTION="05:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
