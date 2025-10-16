@@ -43,7 +43,7 @@ Clone the repository and set up virtual environment with _uv_:
 ```bash
 git clone https://github.com/bartulem/usv-playpen.git
 cd usv-playpen
-uv venv --python=3.13
+uv venv --python=3.11
 ```
 
 ### Linux (terminal) instructions

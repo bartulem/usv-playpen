@@ -951,7 +951,7 @@ class ExperimentController:
         # copy metadata file to the file server(s)
         if self.metadata_settings:
             self.metadata_settings['Session']['session_id'] = session_id
-            self.metadata_settings['Environment']['playpen_version'] = f'v{metadata.version('usv-playpen').split('.dev')[0]}'
+            self.metadata_settings['Environment']['playpen_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
         shutil.copy(src=Path(__file__).parent / '_config/_metadata.yaml',
                     dst=f"{total_dir_name_windows[0]}{os.sep}{session_id}_metadata.yaml")
 

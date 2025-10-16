@@ -7,7 +7,7 @@
     "conduct_audio_to_mmap": false,
     "conduct_audio_filtering": false,
     "conduct_hpss": false,
-    "conduct_audio_video_sync": true,
+    "conduct_audio_video_sync": false,
     "conduct_ephys_video_sync": false,
     "conduct_ephys_file_chaining": false,
     "split_cluster_spikes": false,
