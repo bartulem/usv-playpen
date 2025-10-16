@@ -1754,6 +1754,9 @@ class USVPlaypenWindow(QMainWindow):
         -------
         """
 
+        if not isinstance(self.centralWidget(), VideoSettings):
+            return
+
         if not hasattr(self, 'institution_edit'):
             return
 
