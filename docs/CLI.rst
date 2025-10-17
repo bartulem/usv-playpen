@@ -706,7 +706,7 @@ In order to exploit the full functionality of *usv-playpen*, one should install 
     $ git clone https://github.com/talmolab/sleap.git && cd sleap
     $ uv venv --python=3.13
     $ source .venv/bin/activate
-    $ uv sync --extra dev --extra nn-cuda118 --index https://download.pytorch.org/whl/cu118 --index https://pypi.org/simple
+    $ UV_HTTP_TIMEOUT=1000 uv sync --extra dev --extra nn-cuda118 --index https://download.pytorch.org/whl/cu118 --index https://pypi.org/simple
 
 .. code-block:: bash
 
