@@ -615,9 +615,7 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
         roll, pitch, yaw.
     """
 
-    rot_matrix_reshaped = np.reshape(
-        a=rot_matrix, newshape=(rot_matrix.shape[0], 9)
-    ).copy()
+    rot_matrix_reshaped = np.reshape(rot_matrix, newshape=(rot_matrix.shape[0], 9)).copy()
 
     temp = np.sqrt(
         (rot_matrix_reshaped[:, 8] * rot_matrix_reshaped[:, 8])
