@@ -603,7 +603,7 @@ class FindMouseVocalizations:
             )
             if metadata is not None:
                 if usv_summary.shape[0] > 1:
-                    metadata['Session']['session_usv_count'] = usv_summary.shape[0]
+                    metadata['Session']['session_usv_count'] = int(usv_summary.shape[0])
                 else:
                     metadata['Session']['session_usv_count'] = 0
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
