@@ -449,144 +449,152 @@ class FindMouseVocalizations:
             lower_bin = int(np.floor(low_freq_cutoff / frequency_resolution))
 
             condition_0_list = np.full(shape=usv_summary.shape[0], fill_value=False)
-            for index, row in tqdm(
-                usv_summary.iterrows(),
-                desc="Computing spectrogram correlations/variance in progress...",
-                total=usv_summary.shape[0],
-                position=0,
-                leave=True,
-            ):
-                start_usv = int(np.floor(row["start"] * audio_sampling_rate))
-                stop_usv = int(np.ceil(row["stop"] * audio_sampling_rate))
-                peak_amp_ch = np.unravel_index(
-                    np.argmax(audio_file_data[start_usv:stop_usv, :]),
-                    audio_file_data.shape,
-                )[1]
-                mean_amp_ch = np.argmax(
-                    np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0)
-                )
-                usv_summary.at[index, "peak_amp_ch"] = peak_amp_ch
-                usv_summary.at[index, "mean_amp_ch"] = mean_amp_ch
-                usv_detected_chs = row["chs_detected"]
-
-                # remove USV segments if they don't appear on both peak and mean amplitude channels; this is clearly noise
-                condition_0_list[index] = (
-                    peak_amp_ch not in usv_detected_chs
-                    or mean_amp_ch not in usv_detected_chs
-                )
-
-                # the following section computes channel-wise signal correlations in the frequency domain
-                if len(usv_detected_chs) > 1:
-                    spectrogram_data_selected_ch = np.abs(
-                        librosa.stft(
-                            audio_file_data[start_usv:stop_usv, usv_detected_chs]
-                            .astype("float32")
-                            .T,
-                            n_fft=len_win_signal,
-                        )
+            if usv_summary.shape[0] > 1:
+                for index, row in tqdm(
+                    usv_summary.iterrows(),
+                    desc="Computing spectrogram correlations/variance in progress...",
+                    total=usv_summary.shape[0],
+                    position=0,
+                    leave=True,
+                ):
+                    start_usv = int(np.floor(row["start"] * audio_sampling_rate))
+                    stop_usv = int(np.ceil(row["stop"] * audio_sampling_rate))
+                    peak_amp_ch = np.unravel_index(
+                        np.argmax(audio_file_data[start_usv:stop_usv, :]),
+                        audio_file_data.shape,
+                    )[1]
+                    mean_amp_ch = np.argmax(
+                        np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0)
                     )
-                    reshaped_spectrogram = spectrogram_data_selected_ch[
-                        :, lower_bin:, :
-                    ].reshape(len(usv_detected_chs), -1)
-                    correlation_matrix = np.corrcoef(reshaped_spectrogram)
-                    unique_correlations = correlation_matrix[
-                        np.triu_indices(n=len(usv_detected_chs), k=1)
-                    ]
-                    mean_signal_correlations[index] = np.mean(unique_correlations)
-                else:
-                    spectrogram_data_selected_ch = (
-                        np.abs(
+                    usv_summary.at[index, "peak_amp_ch"] = peak_amp_ch
+                    usv_summary.at[index, "mean_amp_ch"] = mean_amp_ch
+                    usv_detected_chs = row["chs_detected"]
+
+                    # remove USV segments if they don't appear on both peak and mean amplitude channels; this is clearly noise
+                    condition_0_list[index] = (
+                        peak_amp_ch not in usv_detected_chs
+                        or mean_amp_ch not in usv_detected_chs
+                    )
+
+                    # the following section computes channel-wise signal correlations in the frequency domain
+                    if len(usv_detected_chs) > 1:
+                        spectrogram_data_selected_ch = np.abs(
                             librosa.stft(
-                                audio_file_data[start_usv:stop_usv, usv_detected_chs[0]]
+                                audio_file_data[start_usv:stop_usv, usv_detected_chs]
                                 .astype("float32")
                                 .T,
                                 n_fft=len_win_signal,
                             )
                         )
-                        ** 2
-                    )
-                    signal_variance[index] = np.var(
-                        spectrogram_data_selected_ch
-                        / np.max(spectrogram_data_selected_ch)
-                    )
+                        reshaped_spectrogram = spectrogram_data_selected_ch[
+                            :, lower_bin:, :
+                        ].reshape(len(usv_detected_chs), -1)
+                        correlation_matrix = np.corrcoef(reshaped_spectrogram)
+                        unique_correlations = correlation_matrix[
+                            np.triu_indices(n=len(usv_detected_chs), k=1)
+                        ]
+                        mean_signal_correlations[index] = np.mean(unique_correlations)
+                    else:
+                        spectrogram_data_selected_ch = (
+                            np.abs(
+                                librosa.stft(
+                                    audio_file_data[start_usv:stop_usv, usv_detected_chs[0]]
+                                    .astype("float32")
+                                    .T,
+                                    n_fft=len_win_signal,
+                                )
+                            )
+                            ** 2
+                        )
+                        signal_variance[index] = np.var(
+                            spectrogram_data_selected_ch
+                            / np.max(spectrogram_data_selected_ch)
+                        )
 
-            noise_corr_cutoff = max(
-                float(np.nanpercentile(mean_signal_correlations, q=6)),
-                self.input_parameter_dict["summarize_das_findings"][
-                    "noise_corr_cutoff_min"
-                ],
-            )
-            noise_var_cutoff = min(
-                float(np.nanpercentile(signal_variance, q=94)),
-                self.input_parameter_dict["summarize_das_findings"][
-                    "noise_var_cutoff_max"
-                ],
-            )
-            self.message_output(
-                f"Spectrogram correlation cutoff (6th percentile of distribution): {noise_corr_cutoff:.2f}"
-            )
-            self.message_output(
-                f"Single channel variance cutoff (94th percentile of distribution): {noise_var_cutoff:.4f}"
-            )
-            drop_counter = 0
-            for index, row in usv_summary.iterrows():
-                # DAS precision is 94%, therefore remove 6% of USVs with the lowest signal correlations
-                condition_1 = False
-                if ~np.isnan(mean_signal_correlations[index]):
-                    if mean_signal_correlations[index] < noise_corr_cutoff:
-                        condition_1 = True
+                noise_corr_cutoff = max(
+                    float(np.nanpercentile(mean_signal_correlations, q=6)),
+                    self.input_parameter_dict["summarize_das_findings"][
+                        "noise_corr_cutoff_min"
+                    ],
+                )
+                noise_var_cutoff = min(
+                    float(np.nanpercentile(signal_variance, q=94)),
+                    self.input_parameter_dict["summarize_das_findings"][
+                        "noise_var_cutoff_max"
+                    ],
+                )
+                self.message_output(
+                    f"Spectrogram correlation cutoff (6th percentile of distribution): {noise_corr_cutoff:.2f}"
+                )
+                self.message_output(
+                    f"Single channel variance cutoff (94th percentile of distribution): {noise_var_cutoff:.4f}"
+                )
+                drop_counter = 0
+                for index, row in usv_summary.iterrows():
+                    # DAS precision is 94%, therefore remove 6% of USVs with the lowest signal correlations
+                    condition_1 = False
+                    if ~np.isnan(mean_signal_correlations[index]):
+                        if mean_signal_correlations[index] < noise_corr_cutoff:
+                            condition_1 = True
 
-                # For signals detected only on one channel, filter based on variance
-                condition_2 = False
-                if ~np.isnan(signal_variance[index]):
-                    if signal_variance[index] < noise_var_cutoff:
-                        condition_2 = True
+                    # For signals detected only on one channel, filter based on variance
+                    condition_2 = False
+                    if ~np.isnan(signal_variance[index]):
+                        if signal_variance[index] < noise_var_cutoff:
+                            condition_2 = True
 
-                if condition_0_list[index] or condition_1 or condition_2:
-                    usv_summary.drop(labels=index, inplace=True)
-                    drop_counter += 1
+                    if condition_0_list[index] or condition_1 or condition_2:
+                        usv_summary.drop(labels=index, inplace=True)
+                        drop_counter += 1
 
-            self.message_output(
-                f"Number of detections dropped due to low signal correlation/variance across channels: {drop_counter}"
-            )
+                self.message_output(
+                    f"Number of detections dropped due to low signal correlation/variance across channels: {drop_counter}"
+                )
 
-            fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(24, 4), dpi=300)
-            ax[0].hist(
-                x=mean_signal_correlations[~np.isnan(mean_signal_correlations)],
-                bins=20,
-                histtype="stepfilled",
-                color="#BBD5E8",
-                edgecolor="#000000",
-                alpha=0.5,
-            )
-            ax[0].set_xlabel("Mean signal/spectral correlation")
-            ax[0].set_ylabel("Number of putative USVs")
-            ax[0].axvline(x=noise_corr_cutoff, ls="-.", lw=1.2, c="#000000")
-            ax[1].hist(
-                x=signal_variance[~np.isnan(signal_variance)],
-                bins=20,
-                histtype="stepfilled",
-                color="#BBD5E8",
-                edgecolor="#000000",
-                alpha=0.5,
-            )
-            ax[1].set_xlabel("Signal/spectral variance")
-            ax[1].set_ylabel("Number of putative USVs")
-            ax[1].axvline(x=noise_var_cutoff, ls="-.", lw=1.2, c="#000000")
-            fig.savefig(
-                fname=f"{self.root_directory}{os.sep}audio{os.sep}{session_id}_usv_signal_correlation_histogram.svg",
-                dpi=300,
-            )
-            plt.close()
+                fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(24, 4), dpi=300)
+                ax[0].hist(
+                    x=mean_signal_correlations[~np.isnan(mean_signal_correlations)],
+                    bins=20,
+                    histtype="stepfilled",
+                    color="#BBD5E8",
+                    edgecolor="#000000",
+                    alpha=0.5,
+                )
+                ax[0].set_xlabel("Mean signal/spectral correlation")
+                ax[0].set_ylabel("Number of putative USVs")
+                ax[0].axvline(x=noise_corr_cutoff, ls="-.", lw=1.2, c="#000000")
+                ax[1].hist(
+                    x=signal_variance[~np.isnan(signal_variance)],
+                    bins=20,
+                    histtype="stepfilled",
+                    color="#BBD5E8",
+                    edgecolor="#000000",
+                    alpha=0.5,
+                )
+                ax[1].set_xlabel("Signal/spectral variance")
+                ax[1].set_ylabel("Number of putative USVs")
+                ax[1].axvline(x=noise_var_cutoff, ls="-.", lw=1.2, c="#000000")
+                fig.savefig(
+                    fname=f"{self.root_directory}{os.sep}audio{os.sep}{session_id}_usv_signal_correlation_histogram.svg",
+                    dpi=300,
+                )
+                plt.close()
 
-            # give ID number to each USV
-            usv_summary["usv_id"] = [
-                f"{_num:04d}" for _num in range(usv_summary.shape[0])
-            ]
+                # give ID number to each USV
+                usv_summary["usv_id"] = [
+                    f"{_num:04d}" for _num in range(usv_summary.shape[0])
+                ]
 
-            self.message_output(
-                f"In this session, {usv_summary.shape[0]} USVs were detected."
-            )
+                self.message_output(
+                    f"In this session, {usv_summary.shape[0]} USVs were detected."
+                )
+
+                # save the summary file
+                usv_summary.to_csv(
+                    path_or_buf=f"{self.root_directory}{os.sep}audio{os.sep}{session_id}_usv_summary.csv",
+                    sep=",",
+                    index=False,
+                )
 
             # load metadata
             metadata, metadata_path = load_session_metadata(
@@ -594,15 +602,11 @@ class FindMouseVocalizations:
                 logger=self.message_output
             )
             if metadata is not None:
-                metadata['Session']['session_usv_count'] = usv_summary.shape[0]
+                if usv_summary.shape[0] > 1:
+                    metadata['Session']['session_usv_count'] = usv_summary.shape[0]
+                else:
+                    metadata['Session']['session_usv_count'] = 0
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
-
-            # save the summary file
-            usv_summary.to_csv(
-                path_or_buf=f"{self.root_directory}{os.sep}audio{os.sep}{session_id}_usv_summary.csv",
-                sep=",",
-                index=False,
-            )
 
         except (IndexError, FileNotFoundError):
             self.message_output(
