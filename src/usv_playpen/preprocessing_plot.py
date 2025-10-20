@@ -293,9 +293,9 @@ class SummaryPlotter:
                 plot_statistics_dict[device_id]["plot_x_max"] = 10.5
 
         if metadata is not None:
-            metadata['Environment']['luminance_lux'] = med_lux
-            metadata['Environment']['temperature_celsius'] = med_temp
-            metadata['Environment']['humidity_percent'] = med_hum
+            metadata['Environment']['luminance_lux'] = float(med_lux)
+            metadata['Environment']['temperature_celsius'] = float(med_temp)
+            metadata['Environment']['humidity_percent'] = float(med_hum)
             save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
         fig, ax = plt.subplots(
