@@ -1947,7 +1947,7 @@ class Create3DVideo:
                 if (self.visualizations_parameter_dict['make_behavioral_videos']['animate_bool'] and
                         self.visualizations_parameter_dict['make_behavioral_videos']['spike_sound_bool']):
                     for unit_id in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']:
-                        audio_file_name = animation_file_name + f"_spike_sound_{unit_id}.wav"
+                        audio_file_name = f"{session_id}_3D_{frame_start}-{frame_start + frame_span}fr_spike_sound_{unit_id}.wav"
                         output_video_name = animation_file_name + f"_spike_sound_{unit_id}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
                         subprocess.Popen(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {audio_file_name} -c:v copy -c:a aac {output_video_name}",
                                          stdout=subprocess.DEVNULL,
