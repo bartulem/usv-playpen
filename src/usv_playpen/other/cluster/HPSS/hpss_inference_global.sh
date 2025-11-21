@@ -43,6 +43,7 @@ echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
 echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
 echo "conda activate $HPSS_ENV" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
+echo "export NUMBA_DISABLE_JIT=1" >> "$JOB_SCRIPT"
 echo "python $WORK_DIR/hpss.py \"\$1\" \"\$2\" \"\$3\"" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #

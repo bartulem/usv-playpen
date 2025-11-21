@@ -708,7 +708,10 @@ class Operator:
 
         self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        if not conduct_concat and len(next(os.walk(f"{self.root_directory}{os.sep}video"))[2]) == 0:
+        root, dirs, files = next(os.walk(f"{self.root_directory}{os.sep}video"))
+        non_hidden_files = [f for f in files if not f.startswith('.')]
+
+        if not conduct_concat and len(non_hidden_files) == 0:
             for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
                 if 'calibration' not in sub_directory \
                         and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']:
