@@ -15,13 +15,9 @@ import sys
 import toml
 import webbrowser
 import motifapi
-import yaml
-from importlib import metadata
-from pathlib import Path
 from .cli_utils import *
 from .send_email import Messenger
 from .time_utils import *
-from .yaml_utils import SmartDumper
 
 
 def count_last_recording_dropouts(log_file_path: str,
@@ -76,7 +72,6 @@ class ExperimentController:
 
     def __init__(self, email_receivers: list = None,
                  exp_settings_dict: dict = None,
-                 metadata_settings: dict = None,
                  message_output: callable = None) -> None:
 
         """
@@ -88,8 +83,6 @@ class ExperimentController:
             Experiment settings; defaults to None.
         email_receivers (list)
             Email receivers; defaults to None.
-        metadata_settings (dict)
-            Metadata settings; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
 
@@ -111,11 +104,6 @@ class ExperimentController:
             self.exp_settings_dict = None
         else:
             self.exp_settings_dict = exp_settings_dict
-
-        if metadata_settings is None:
-            self.metadata_settings = {}
-        else:
-            self.metadata_settings = metadata_settings
 
         if message_output is None:
             self.message_output = print
@@ -416,8 +404,8 @@ class ExperimentController:
 
         Returns
         ----------
-        start_hour_min_sec (str), total_dir_name_linux (str), total_dir_name_windows (str), sub_dir_name (str)
-            Start time of recording, directory location in Linux and Window coordinates, and name of session directory
+        total_dir_name_linux (str), total_dir_name_windows (str)
+            Directory location in Linux and Window coordinates.
         ----------
         """
 
@@ -435,7 +423,7 @@ class ExperimentController:
         for win_directory in self.exp_settings_dict['recording_files_destination_win']:
             total_dir_name_windows.append(f"{win_directory}\\{sub_dir_name}")
 
-        return start_hour_min_sec, total_dir_name_linux, total_dir_name_windows, sub_dir_name
+        return start_hour_min_sec, total_dir_name_linux, total_dir_name_windows
 
     def check_camera_vitals(self, camera_fr: int | float = None) -> None:
         """
@@ -586,9 +574,8 @@ class ExperimentController:
                 self.config_1['MaxFileSize']['minutes'] = f"{(self.exp_settings_dict['video_session_duration'] + .41)}"
                 changes += 1
         else:
-            max_file_size = (self.exp_settings_dict['video_session_duration'] + .36) / (self.exp_settings_dict['video_session_duration'] / 5)
-            if not math.isclose(float(self.config_1['MaxFileSize']['minutes']), max_file_size):
-                self.config_1['MaxFileSize']['minutes'] = str(max_file_size)
+            if not math.isclose(float(self.config_1['MaxFileSize']['minutes']), 5.09):
+                self.config_1['MaxFileSize']['minutes'] = str(5.09)
                 changes += 1
 
         if self.config_1['Configuration']['configfilename'] != f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini":
@@ -702,7 +689,7 @@ class ExperimentController:
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
-    def conduct_behavioral_recording(self) -> dict:
+    def conduct_behavioral_recording(self) -> None:
         """
         Description
         ----------
@@ -720,9 +707,6 @@ class ExperimentController:
 
         Returns
         ----------
-        updated_metadata (dict)
-            Updated metadata after recording.
-
         Directory structure w/ "audio", "sync" and "video" subdirectories.
         The "audio" subdirectory contains "original" and "original_mc" subdirectories,
         the "sync" subdirectory contains .txt files (serial monitor output),
@@ -737,7 +721,7 @@ class ExperimentController:
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
                                                                          message=f"Experiment in progress, started at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
-                                                                                 f"and run by @{self.exp_settings_dict['experimenter']}. "
+                                                                                 f"and run by @{self.exp_settings_dict['video']['metadata']['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
         # reconnect to ethernet if it is off
         self.check_ethernet_connection()
@@ -764,7 +748,7 @@ class ExperimentController:
         if self.exp_settings_dict['conduct_audio_recording']:
             self.modify_audio_file()
 
-        start_hour_min_sec, total_dir_name_linux, total_dir_name_windows, session_id = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
+        start_hour_min_sec, total_dir_name_linux, total_dir_name_windows = self.get_custom_dir_names(now=self.api.call('schedule')['now'])
 
         # start recording audio
         if self.exp_settings_dict['conduct_audio_recording']:
@@ -828,11 +812,13 @@ class ExperimentController:
             self.message_output(f"You chose to conduct the recording with one camera only (camera serial num: {self.exp_settings_dict['video']['general']['expected_cameras'][0]}).")
             self.api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/recording/start",
                           duration=self.exp_settings_dict['video_session_duration'] * 60,
-                          codec=self.exp_settings_dict['video']['general']['recording_codec'])
+                          codec=self.exp_settings_dict['video']['general']['recording_codec'],
+                          metadata=self.exp_settings_dict['video']['metadata'])
         else:
             self.api.call('recording/start',
                           duration=self.exp_settings_dict['video_session_duration'] * 60,
-                          codec=self.exp_settings_dict['video']['general']['recording_codec'])
+                          codec=self.exp_settings_dict['video']['general']['recording_codec'],
+                          metadata=self.exp_settings_dict['video']['metadata'])
 
         self.message_output(f"Video recording in progress since {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}, it will last {round(self.exp_settings_dict['video_session_duration'], 2)} minute(s). Please be patient.")
 
@@ -913,7 +899,7 @@ class ExperimentController:
 
                     audio_copy_subprocesses.append(single_audio_copy_subp)
             else:
-                relevant_file_count = max(1, int(round((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
+                relevant_file_count = max(1, int(math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
                 device_id = ['m', 's']
                 for mic_pos_idx, mic_idx in enumerate([0, 12]):
                     audio_file_list = sorted(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"), key=os.path.getctime, reverse=True)[:relevant_file_count]
@@ -947,23 +933,6 @@ class ExperimentController:
         # ensure the video is done copying before proceeding
         while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
-
-        # copy metadata file to the file server(s)
-        if self.metadata_settings:
-            self.metadata_settings['Session']['session_id'] = session_id
-            self.metadata_settings['Environment']['playpen_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
-
-            destination_path = Path(total_dir_name_windows[0]) / f"{session_id}_metadata.yaml"
-
-            with open(destination_path, 'w') as f:
-                yaml.dump(
-                    self.metadata_settings,
-                    f,
-                    Dumper=SmartDumper,
-                    default_flow_style=False,
-                    sort_keys=False,
-                    indent=2
-                )
 
         # copy the audio, sync and video directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
@@ -1006,12 +975,10 @@ class ExperimentController:
                   no_receivers_notification=False,
                   credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config.ini",
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, recording has been completed.",
-                                                                         message=f"Thank you for your patience, recording by @{self.exp_settings_dict['experimenter']} was completed at "
+                                                                         message=f"Thank you for your patience, recording by @{self.exp_settings_dict['video']['metadata']['experimenter']} was completed at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "
                                                                                  f"You will be notified about further experiments "
                                                                                  f"should they occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
-        return self.metadata_settings
-
 
 @click.command(name="conduct-calibration")
 @click.option('--set', 'overrides', multiple=True, help='Override a setting, e.g., --set calibration_duration=10')
@@ -1040,7 +1007,7 @@ def conduct_calibration_cli( overrides):
     ExperimentController(exp_settings_dict=exp_settings_dict).conduct_tracking_calibration()
 
 @click.command(name="conduct-recording")
-@click.option('--set', 'overrides', multiple=True, help='Override a setting, e.g., --set video_session_duration=20')
+@click.option('--set', 'overrides', multiple=True, help='Override a setting, e.g., --set video.metadata.notes="Test run"')
 def conduct_recording_cli(overrides):
     """
     Description
@@ -1060,27 +1027,7 @@ def conduct_recording_cli(overrides):
     with open((pathlib.Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
         exp_settings_dict = toml.load(f)
 
-    metadata_path = pathlib.Path(__file__).parent / '_config/_metadata.yaml'
-    with open(metadata_path, 'r') as f:
-        metadata_settings = yaml.safe_load(f)
-
     if len(overrides) > 0:
         exp_settings_dict = override_toml_values(overrides=overrides, exp_settings_dict=exp_settings_dict)
 
-    controller = ExperimentController(
-        exp_settings_dict=exp_settings_dict,
-        metadata_settings=metadata_settings
-    )
-
-    updated_metadata = controller.conduct_behavioral_recording()
-
-    if updated_metadata:
-        with open(metadata_path, 'w') as f:
-            yaml.dump(
-                updated_metadata,
-                f,
-                Dumper=SmartDumper,
-                default_flow_style=False,
-                sort_keys=False,
-                indent=2
-            )
+    ExperimentController(exp_settings_dict=exp_settings_dict).conduct_behavioral_recording()
