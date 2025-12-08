@@ -727,6 +727,6 @@ One should also set up an additional environment (hpss):
 
 .. code-block:: bash
 
-    $ conda create -n hpss python=3.10 librosa=0.10.1 numpy=1.26.4 scipy=1.11.4 -c conda-forge -y
+    $ conda create -n hpss python=3.10 librosa=0.10.1 llvmlite=0.43.0 numba=0.60.0 numpy=1.26.4 scipy=1.11.4 -c conda-forge -y
 
 Having set up these environments, you can set up directories with bash scripts in /src/other/DAS, /src/other/HPSS, /src/other/SLEAP and /src/other/USV_PLAYPEN and run them to expedite your data processing or analysis.
