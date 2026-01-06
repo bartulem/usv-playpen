@@ -1,4 +1,4 @@
-schema_version: '1.0'
+schema_version: "1.0"
 Session:
   institution: Princeton Neuroscience Institute
   lab: Falkner/Murthy
@@ -6,15 +6,15 @@ Session:
   ambient_light: true
   session_id: null
   session_duration: null
-  session_experiment_code: ''
+  session_experiment_code: ""
   session_usv_count: null
   session_usv_assigned: false
   session_tracking_3D: false
-  session_usv_playback_file: ''
-  session_description: ''
-  calibration_session: ''
+  session_usv_playback_file: ""
+  session_description: ""
+  calibration_session: ""
   keywords: []
-  notes: ''
+  notes: ""
 Environment:
   playpen_version: null
   luminance_lux: null
@@ -64,7 +64,7 @@ Equipment:
     output_file_dtype: int16
   sync_LEDs:
     device_model: Arduino Uno R3
-    device_sn: '55736303931351408130'
+    device_sn: "55736303931351408130"
     device_br: 9600
     device_port: COM5
     device_sketch_name: generate_sync_pulses.ino
