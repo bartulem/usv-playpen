@@ -3,6 +3,9 @@
 venv*
 .DS_Store
 
+# Visual Studio Code
+.vscode
+
 # setuptools_scm
 src/*/_version.py
 
