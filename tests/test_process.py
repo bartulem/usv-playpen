@@ -84,7 +84,8 @@ def create_verifiable_multichannel_wav(filepath: Path, sr: int, duration_s: floa
 
     for i in range(num_channels):
         if i != sync_channel_idx:
-            seed = hash((device_prefix, segment_index, i))
+            # Ensure a stable, non-negative seed for NumPy's RNG.
+            seed = hash((device_prefix, segment_index, i)) & 0xFFFFFFFF
             rng = np.random.default_rng(seed)
             channel_data = rng.integers(-10000, 10000, size=total_samples, dtype=np.int16)
             audio_data[:, i] = channel_data
@@ -144,6 +145,7 @@ def av_sync_fixture(tmp_path: Path) -> Path:
     sync_dir = session_root / "sync"
     cropped_dir.mkdir(parents=True)
     sync_dir.mkdir(parents=True)
+    video_dir.mkdir(parents=True)
     (video_dir / session_root.name.replace("_", "")).mkdir()  # Create the date_joint dir
 
     # 1. Create Ground Truth IPI Log File
