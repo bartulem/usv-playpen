@@ -185,6 +185,17 @@ def av_sync_fixture(tmp_path: Path) -> Path:
     with open(video_dir / f"{session_root.name.replace('_', '')}_camera_frame_count_dict.json", 'w') as f:
         json.dump(frame_count_dict, f)
 
+    # 6. Create the session_metadata.yaml required by the CLI loader
+    metadata = {
+        'Session': {
+            'session_duration': total_video_duration_s,
+            'camera_serials': CAMERA_SERIALS
+        }
+    }
+    import yaml
+    with open(session_root / "session_metadata.yaml", 'w') as f:
+        yaml.dump(metadata, f)
+
     yield session_root
 
 
@@ -203,7 +214,8 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
         assert ret
         expected_frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
         cv2.putText(expected_frame, str(expected_text), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 4)
-        return np.allclose(frame[50:150, 50:250], expected_frame[50:150, 50:250])
+        # Using atol=50 to account for MPEG compression artifacts
+        return np.allclose(frame[50:150, 50:250], expected_frame[50:150, 50:250], atol=50)
 
     # --- Step 1: `concatenate-video-files` ---
     print("\n--> Running: concatenate-video-files")
