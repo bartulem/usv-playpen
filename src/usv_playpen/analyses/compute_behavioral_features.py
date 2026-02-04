@@ -16,6 +16,12 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 (12) Neck elevation distance (13) Neck elevation distance der (14) Neck elevation distance 2der (15) Speed difference (16) Speed difference der (17) Speed difference 2der
 (18) Yaw-Nose (19) Yaw-Nose der (20) Yaw-Nose 2der (21) Nose-Yaw (22) Nose-Yaw der (23) Nose-Yaw 2der
 (24) Yaw-TTI (25) Yaw-TTI der (26) Yaw-TTI 2der (27) TTI-Yaw (28) TTI-Yaw angle der (29) TTI-Yaw 2der
+
+[C] SOCIAL ENGAGEMENT INDICES
+(0) mouse1-mouse2 orofacial SEI (1) mouse1-mouse2 orofacial SEI der (2) mouse1-mouse2 orofacial SEI 2der
+(3) mouse1-mouse2 anogenital SEI (4) mouse1-mouse2 anogenital SEI der (5) mouse1-mouse2 anogenital SEI 2der
+(6) mouse2-mouse1 orofacial SEI (7) mouse2-mouse1 orofacial SEI der (8) mouse2-mouse1 orofacial SEI 2der
+(9) mouse2-mouse1 anogenital SEI (10) mouse2-mouse1 anogenital SEI der (11) mouse2-mouse1 anogenital SEI 2der
 """
 
 from __future__ import annotations
@@ -180,6 +186,103 @@ def calculate_derivatives(
 
     return first_der, second_der
 
+
+def calculate_sei(
+        tracks: np.ndarray,
+        speed_arr: np.ndarray,
+        observer_idx: int,
+        observed_idx: int,
+        observed_node_idx: int,
+        idx_nose: int = 0,
+        idx_tti: int = 3,
+        idx_head: int = 5,
+        v_max: float = None
+) -> np.ndarray:
+    """
+    Computes the Social Engagement Index (SEI) using a pursuit-proximity weight transition.
+
+    The SEI quantifies a subject's engagement with a partner by integrating postural
+    orientation, movement vigor, and distance. It transitions between 'action-based
+    pursuit' at a distance and 'attention-based focus' up close.
+
+    Mathematical Logic:
+    -------------------
+    1. Orientation: Uses 3D cosine similarity between the observer's head-nose vector
+       and the vector pointing toward the partner's target node.
+    2. Sharpening: As distance (d) decreases, a dynamic exponent (gamma = 1 + L/d)
+       sharpens the social gaze, requiring higher angular precision for high scores.
+    3. Social Weight (W): An exponential gate that balances speed and proximity:
+       - At distance (d > L): Speed (V/V_max) is required to identify active pursuit.
+       - Up close (d < L): Proximity (e^-d/L) ensures engagement remains high during
+         stationary investigation (sniffing), even if locomotor speed is zero.
+
+    Parameters:
+    -----------
+    tracks : np.ndarray
+        3D tracking data of shape (n_frames, n_animals, n_bodypoints, 3).
+    speed_arr : np.ndarray
+        (n_frames,) array of instantaneous speed for the observer mouse.
+    observer_idx : int
+        Index of the animal whose engagement is being measured.
+    observed_idx : int
+        Index of the social partner animal.
+    observed_node_idx : int
+        The index of the target body point on the observed partner (e.g., Nose or TTI).
+    idx_nose : int, optional
+        Index for the observer's Nose (default 0).
+    idx_tti : int, optional
+        Index for the observer's Tail-Thorax Interface/Tail-base (default 3).
+    idx_head : int, optional
+        Index for the observer's Head/Pivot (default 5).
+    v_max : float, optional
+        Normalization factor for speed. Defaults to the 99th percentile of speed_arr.
+
+    Returns:
+    --------
+    sei : np.ndarray
+        A (n_frames,) array of SEI values bounded between -1 and 1.
+    """
+
+    obs_head = tracks[:, observer_idx, idx_head, :]
+    obs_nose = tracks[:, observer_idx, idx_nose, :]
+    obs_tti = tracks[:, observer_idx, idx_tti, :]
+    target_point = tracks[:, observed_idx, observed_node_idx, :]
+
+    # compute body length (Nose to TTI)
+    body_length = np.linalg.norm(obs_nose - obs_tti, axis=1)
+    body_length[body_length == 0] = np.nan
+
+    # compute 3D distance between observer's nose and target point
+    d_raw = np.linalg.norm(target_point - obs_nose, axis=1)
+    d_norm = d_raw / (body_length + 1e-6)
+
+    # perform vector orientation (Pivot at Head)
+    v_h = obs_nose - obs_head
+    v_t = target_point - obs_head
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # compute cosine similarity via 3D dot product
+        v_h_unit = v_h / (np.linalg.norm(v_h, axis=1, keepdims=True) + 1e-6)
+        v_t_unit = v_t / (np.linalg.norm(v_t, axis=1, keepdims=True) + 1e-6)
+
+        cos_theta = np.sum(v_h_unit * v_t_unit, axis=1)
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+
+        if v_max is None:
+            v_max = np.nanpercentile(speed_arr, 99)
+        v_norm = np.clip(speed_arr / (v_max + 1e-6), 0, 1)
+
+        # exponent increases as distance decreases (sharper focus)
+        gamma = 1 + (1 / (d_norm + 1e-6))
+
+        # W_social: interpolator between speed-based pursuit and distance-based attention
+        w_pursuit = (1 - np.exp(-d_norm)) * v_norm
+        w_proximity = np.exp(-d_norm)
+        w_social = w_pursuit + w_proximity
+
+        sei = np.sign(cos_theta) * (np.abs(cos_theta) ** gamma) * w_social
+
+    return sei
 
 def calculate_tail_curvature(input_arr: np.ndarray = None) -> np.ndarray:
     """
@@ -839,6 +942,12 @@ class FeatureZoo:
         "TTI-allo_yaw": [-180, 180],
         "TTI-allo_yaw_1st_der": [-480, 480],
         "TTI-allo_yaw_2nd_der": [-2880, 2880],
+        "orofacial-sei": [-1, 1],
+        "orofacial-sei_1st_der": [-6, 6],
+        "orofacial-sei_2nd_der": [-36, 36],
+        "anogenital-sei": [-1, 1],
+        "anogenital-sei_1st_der": [-6, 6],
+        "anogenital-sei_2nd_der": [-36, 36]
     }
 
     feature_labels = {
@@ -904,6 +1013,12 @@ class FeatureZoo:
             "TTI-allo_yaw": "ccw -- (°) -- cw",
             "TTI-allo_yaw_1st_der": "ccw -- (°/s) -- cw",
             "TTI-allo_yaw_2nd_der": "ccw -- (°/s²) -- cw",
+            "orofacial-sei": "asocial -- (a.u.) -- engaged",
+            "orofacial-sei_1st_der": "asocial -- (a.u./s) -- engaged",
+            "orofacial-sei_2nd_der": "asocial -- (a.u./s²) -- engaged",
+            "anogenital-sei": "asocial -- (a.u.) -- engaged",
+            "anogenital-sei_1st_der": "asocial -- (a.u./s) -- engaged",
+            "anogenital-sei_2nd_der": "asocial -- (a.u./s²) -- engaged"
         },
     }
 
@@ -916,7 +1031,7 @@ class FeatureZoo:
         root_directory (str)
             Root directory for data; defaults to None.
         neuronal_tuning_figures_dict (dict)
-            Analyses parameters; defaults to None.
+            Analyzes parameters; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
 
@@ -1117,9 +1232,15 @@ class FeatureZoo:
                                     alpha=0.75,
                                     lw=0.1,
                                 )
-                                ax.set_title(
-                                    label=f"{feature.split('.')[-1]}", fontsize=4, pad=1
-                                )
+                                if '-sei' not in feature.split('.')[-1]:
+                                    ax.set_title(
+                                        label=f"{feature.split('.')[-1]}", fontsize=4, pad=1
+                                    )
+                                else:
+                                    ax.set_title(
+                                        label=f"{feature}", fontsize=3, pad=1
+                                    )
+
                                 ax.set_xticks(
                                     ticks=[
                                         self.feature_boundaries[feature.split(".")[-1]][
@@ -1795,9 +1916,9 @@ class FeatureZoo:
                 )
             )
 
-        # # # [MODIFIED] Compute and save social features for all unique pairs
+        # # # compute and save social features for all unique pairs
         if mouse_data.shape[1] >= 2:
-            # Generate all unique pairs of mouse indices
+            # generate all unique pairs of mouse indices
             mouse_pairs = list(itertools.combinations(range(mouse_data.shape[1]), 2))
 
             for mouse1_idx, mouse2_idx in mouse_pairs:
@@ -1897,7 +2018,7 @@ class FeatureZoo:
                     capture_fr=empirical_camera_sr,
                 )
 
-                # Add this pair's social features to the DataFrame
+                # add this pair's social features to the DataFrame
                 pair_name = f"{track_names[mouse1_idx]}-{track_names[mouse2_idx]}"
 
                 behavioral_features_df = behavioral_features_df.with_columns(
@@ -1998,6 +2119,100 @@ class FeatureZoo:
                 )
                 behavioral_features_df = behavioral_features_df.with_columns(
                     pls.Series(f"{pair_name}.TTI-allo_yaw_2nd_der", social_angles_2nd_der[:, 3])
+                )
+
+                # # social engagement index (SEI)
+                social_engagement_indices = np.zeros((mouse_data.shape[0], 4))
+
+                # mouse1-mouse2 orofacial SEI
+                social_engagement_indices[:, 0] = calculate_sei(tracks=mouse_data,
+                                                                speed_arr=speed[mouse1_idx, :, 0],
+                                                                observer_idx=mouse1_idx,
+                                                                observed_idx=mouse2_idx,
+                                                                observed_node_idx=mouse_nodes.index("Nose"),
+                                                                idx_nose=mouse_nodes.index("Nose"),
+                                                                idx_tti=mouse_nodes.index("TTI"),
+                                                                idx_head=mouse_nodes.index("Head"))
+
+                # mouse1-mouse2 anogenital SEI
+                social_engagement_indices[:, 1] = calculate_sei(tracks=mouse_data,
+                                                                speed_arr=speed[mouse1_idx, :, 0],
+                                                                observer_idx=mouse1_idx,
+                                                                observed_idx=mouse2_idx,
+                                                                observed_node_idx=mouse_nodes.index("TTI"),
+                                                                idx_nose=mouse_nodes.index("Nose"),
+                                                                idx_tti=mouse_nodes.index("TTI"),
+                                                                idx_head=mouse_nodes.index("Head"))
+
+                # mouse2-mouse1 orofacial SEI
+                social_engagement_indices[:, 2] = calculate_sei(tracks=mouse_data,
+                                                                speed_arr=speed[mouse2_idx, :, 0],
+                                                                observer_idx=mouse2_idx,
+                                                                observed_idx=mouse1_idx,
+                                                                observed_node_idx=mouse_nodes.index("Nose"),
+                                                                idx_nose=mouse_nodes.index("Nose"),
+                                                                idx_tti=mouse_nodes.index("TTI"),
+                                                                idx_head=mouse_nodes.index("Head"))
+
+                # mouse2-mouse1 anogenital SEI
+                social_engagement_indices[:, 3] = calculate_sei(tracks=mouse_data,
+                                                                speed_arr=speed[mouse2_idx, :, 0],
+                                                                observer_idx=mouse2_idx,
+                                                                observed_idx=mouse1_idx,
+                                                                observed_node_idx=mouse_nodes.index("TTI"),
+                                                                idx_nose=mouse_nodes.index("Nose"),
+                                                                idx_tti=mouse_nodes.index("TTI"),
+                                                                idx_head=mouse_nodes.index("Head"))
+
+                # compute derivatives for SEI
+                social_engagement_indices_1st_der, social_engagement_indices_2nd_der = calculate_derivatives(
+                    input_arr=social_engagement_indices,
+                    diff_bins=self.behavioral_parameters_dict["derivative_bins"],
+                    is_angle=False,
+                    capture_fr=empirical_camera_sr,
+                )
+
+                # add this pair's SEIs to the DataFrame
+                pair_name_reverse = f"{track_names[mouse2_idx]}-{track_names[mouse1_idx]}"
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.orofacial-sei", social_engagement_indices[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.orofacial-sei_1st_der", social_engagement_indices_1st_der[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.orofacial-sei_2nd_der", social_engagement_indices_2nd_der[:, 0])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.anogenital-sei", social_engagement_indices[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.anogenital-sei_1st_der", social_engagement_indices_1st_der[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.anogenital-sei_2nd_der", social_engagement_indices_2nd_der[:, 1])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name_reverse}.orofacial-sei", social_engagement_indices[:, 2])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name_reverse}.orofacial-sei_1st_der", social_engagement_indices_1st_der[:, 2])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name_reverse}.orofacial-sei_2nd_der", social_engagement_indices_2nd_der[:, 2])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name_reverse}.anogenital-sei", social_engagement_indices[:, 3])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name_reverse}.anogenital-sei_1st_der", social_engagement_indices_1st_der[:, 3])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name_reverse}.anogenital-sei_2nd_der", social_engagement_indices_2nd_der[:, 3])
                 )
 
         # # # # compute feature distributions

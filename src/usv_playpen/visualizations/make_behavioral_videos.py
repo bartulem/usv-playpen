@@ -648,12 +648,20 @@ def plot_behavioral_features(plot_axes: plt.Axes = None,
                 feature_color = animal_colors[1]
                 x_axis_feature_color = animal_colors[1]
             else:
-                if plot_theme == 'dark':
-                    feature_color = '#FFFFFF'
-                    x_axis_feature_color = '#FFFFFF'
+                if '-sei' not in feature_name.split('.')[1]:
+                    if plot_theme == 'dark':
+                        feature_color = '#FFFFFF'
+                        x_axis_feature_color = '#FFFFFF'
+                    else:
+                        feature_color = '#000000'
+                        x_axis_feature_color = '#000000'
                 else:
-                    feature_color = '#000000'
-                    x_axis_feature_color = '#000000'
+                    if feature_name.split('.')[0].split('-')[0] == mouse_track_names[0]:
+                        feature_color = animal_colors[0]
+                        x_axis_feature_color = animal_colors[0]
+                    else:
+                        feature_color = animal_colors[1]
+                        x_axis_feature_color = animal_colors[1]
         else:
             if feature_name.split('.')[0] == mouse_track_names[0]:
                 if feature_name.split('.')[1] in special_features:
@@ -1067,7 +1075,9 @@ class Create3DVideo:
                             "allo_yaw-nose": "Yaw-N(°)", "allo_yaw-nose_1st_der": "Yaw-N'(°/s)", "allo_yaw-nose_2nd_der": "Yaw-N''(°/s²)",
                             "nose-allo_yaw": "N-Yaw(°)", "nose-allo_yaw_1st_der": "N-Yaw'(°/s)", "nose-allo_yaw_2nd_der": "N-Yaw''(°/s²)",
                             "allo_yaw-TTI": "Yaw-T(°)", "allo_yaw-TTI_1st_der": "Yaw-T'(°/s)", "allo_yaw-TTI_2nd_der": "Yaw-T''(°/s²)",
-                            "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)"}
+                            "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)",
+                            "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
+                            "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
 
     color_mode_preferences = {
         "light_mode": {
@@ -1385,13 +1395,16 @@ class Create3DVideo:
                             beh_features_to_plot.append(f"{mouse_track_names[0]}.{tentative_feature}")
                     else:
                         tentative_features = ["speed", "neck_elevation", "allo_yaw", "allo_pitch", "tail_curvature"]
-                        tentative_social_features = ["nose-nose", "neck_elevation_diff", "speed_diff",
-                                                     "allo_yaw-nose", "nose-allo_yaw"]
+                        tentative_social_features = ["nose-nose", "allo_yaw-nose", "nose-allo_yaw", "orofacial-sei"]
                         for mouse_name in mouse_track_names:
                             for tentative_feature in tentative_features:
                                 beh_features_to_plot.append(f"{mouse_name}.{tentative_feature}")
                         for tentative_social_feature in tentative_social_features:
-                            beh_features_to_plot.append(f"{mouse_track_names[0]}-{mouse_track_names[1]}.{tentative_social_feature}")
+                            if '-sei' not in tentative_social_feature:
+                                beh_features_to_plot.append(f"{mouse_track_names[0]}-{mouse_track_names[1]}.{tentative_social_feature}")
+                            else:
+                                beh_features_to_plot.append(f"{mouse_track_names[0]}-{mouse_track_names[1]}.{tentative_social_feature}")
+                                beh_features_to_plot.append(f"{mouse_track_names[1]}-{mouse_track_names[0]}.{tentative_social_feature}")
 
                 # get feature data
                 beh_feature_data = self.load_beh_features_file()

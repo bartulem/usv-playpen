@@ -1,4 +1,4 @@
-experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dexter", "Ivan", "Jiayi", "Jinrun", "Mala", "Nitty",]
+experimenter_list = [ "Annegret", "Bartul", "Charlie", "Dana", "Dexter", "Ivan", "Jiayi", "Jinrun", "Mala", "Nitty",]
 experimenter = "Bartul"
 avisoft_recorder_exe_directory = "C:\\Program Files (x86)\\Avisoft Bioacoustics\\RECORDER USGH"
 avisoft_recorder_program_name = "rec_usgh.exe"
