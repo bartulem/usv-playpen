@@ -4058,7 +4058,9 @@ class USVPlaypenWindow(QMainWindow):
                           'smooth_scale', 'static_reference_len', 'weight_rigid', 'weight_weak',
                           'reprojection_error_threshold', 'regularization_function',
                           'segment_confidence_threshold', 'segment_minlen', 'segment_fillgap',
-                          'rigid_body_constraints', 'weak_body_constraints', 'vcl_conda']
+                          'rigid_body_constraints', 'weak_body_constraints', 'vcl_conda',
+                          'das_model_dir_edit', 'vcl_model_dir_edit', 'inference_root_dir_edit',
+                          'centroid_model_edit', 'centered_instance_model_edit']
         lists_in_string = ['v_camera_serial_num', 'filter_dirs', 'concat_dirs', 'stft_window_hop', 'hpss_kernel_size',
                            'hpss_margin', 'filter_freq_bounds', 'frame_restriction', 'excluded_views']
 
@@ -4130,6 +4132,12 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_confidence_threshold'] = float(ast.literal_eval(self.segment_confidence_threshold))
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_minlen'] = float(ast.literal_eval(self.segment_minlen))
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_fillgap'] = float(ast.literal_eval(self.segment_fillgap))
+
+        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'] = self.das_model_dir_edit
+        self.processing_input_dict['vocalocator']['vcl_model_directory'] = self.vcl_model_dir_edit
+        self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = self.inference_root_dir_edit
+        self.processing_input_dict['prepare_cluster_job']['centroid_model_path'] = self.centroid_model_edit
+        self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path'] = self.centered_instance_model_edit
 
         if self.frame_restriction == ['']:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] = None
