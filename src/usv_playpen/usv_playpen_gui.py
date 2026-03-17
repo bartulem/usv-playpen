@@ -5736,6 +5736,14 @@ class USVPlaypenWindow(QMainWindow):
         -------
         """
 
+        # Windows/Linux path normalization
+        if isinstance(text, str):
+            text = os.path.normpath(text)
+
+        # If 'text' came in via *args (because partial didn't capture it)
+        if text is None and args:
+            text = args[0]
+
         # navigate to the second-to-last dictionary
         current_level = base_dict
         for key in keys_path[:-1]:
