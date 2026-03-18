@@ -204,7 +204,8 @@ class ExperimentController:
         Description
         -----------
         Checks if the specified Ethernet adapter is connected; if not,
-        reconnects and attempts to remount CUP drives (if they are not mounted).
+        reconnects and attempts to remount CUP drives (if they are not mounted
+        or if the credential session has gone stale).
         -----------
 
         Parameters
@@ -231,8 +232,28 @@ class ExperimentController:
 
             for drive_letter_with_colon, path in drives_to_mount.items():
                 drive_letter_only = drive_letter_with_colon.replace(":", "")
-                if drive_letter_only not in mounted_drives:
 
+                needs_mounting = False
+
+                if drive_letter_only not in mounted_drives:
+                    needs_mounting = True
+                else:
+                    # The drive letter exists, but we must check if the network session is actually alive
+                    try:
+                        os.scandir(f"{drive_letter_with_colon}\\")
+                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted and accessible.")
+                    except OSError:
+                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is mapped but inaccessible (stale credentials). Remounting...")
+
+                        # Force remove the stale, inaccessible drive
+                        subprocess.run(
+                            ["powershell", "-Command", f"Remove-PSDrive -Name '{drive_letter_only}' -Force -ErrorAction SilentlyContinue"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.STDOUT
+                        )
+                        needs_mounting = True
+
+                if needs_mounting:
                     mount_drive_ps_command = (
                         f"$password = ConvertTo-SecureString -String '{cup_password}' -AsPlainText -Force; "
                         f"$credential = New-Object System.Management.Automation.PSCredential('{cup_username}@princeton.edu', $password); "
@@ -246,8 +267,6 @@ class ExperimentController:
                     ).wait()
 
                     self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
-                else:
-                    self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted on this PC.")
 
 
     def check_remote_mount(self,
