@@ -28,6 +28,7 @@ dynamic = ["version"]
 dependencies = [
     "astropy",
     "click",
+    "cmasher",
     "h5py",
     "imgstore",
     "jax",
@@ -76,6 +77,8 @@ test = [
 ]
 dev = [
   { include-group = "test" },
+  "jupyterlab",
+  "ipykernel"
 ]
 docs = [
   "sphinx>=7.0",
