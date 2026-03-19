@@ -81,6 +81,12 @@ install updates:
 git pull && uv sync
 ```
 
+Or, if you have a GPU:
+
+```bash
+git pull && uv sync --extra gpu
+```
+
 ## Usage
 
 Run the GUI with:

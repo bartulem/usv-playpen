@@ -30,6 +30,7 @@ dependencies = [
     "click",
     "h5py",
     "imgstore",
+    "jax",
     "joblib",
     "librosa",
     "matplotlib",
@@ -37,12 +38,15 @@ dependencies = [
     "numpy",
     "numba",
     "opencv-contrib-python",
+    "optax",
     "pandas",
     "platformdirs",
+    "pygam",
     "PyQt6",
     "polars",
     "requests",
     "scipy",
+    "seaborn",
     "sleap-anipose",
     "soundfile",
     "scikit-learn",
@@ -51,8 +55,11 @@ dependencies = [
     "motifapi",
     "ffmpeg-binaries>=1.0.1",
     "static-sox>=1.0.2",
-    "paramiko>=4.0.0",
+    "paramiko>=4.0.0"
 ]
+
+[project.optional-dependencies]
+gpu = ["jax[cuda12]"]
 
 [project.urls]
 Homepage = "https://github.com/bartulem/usv_playpen"
@@ -92,7 +99,7 @@ crop-wav-files = "usv_playpen.preprocess_data:crop_wav_files_to_video_cli"
 av-sync-check = "usv_playpen.preprocess_data:av_sync_check_cli"
 ev-sync-check = "usv_playpen.preprocess_data:ev_sync_check_cli"
 hpss-audio = "usv_playpen.preprocess_data:hpss_audio_cli"
-bp-filter-audio =" usv_playpen.preprocess_data:bp_filter_audio_files_cli"
+bp-filter-audio = "usv_playpen.preprocess_data:bp_filter_audio_files_cli"
 concatenate-audio-files = "usv_playpen.preprocess_data:concatenate_audio_files_cli"
 sleap-to-h5 = "usv_playpen.preprocess_data:sleap_file_conversion_cli"
 anipose-calibrate = "usv_playpen.preprocess_data:conduct_anipose_calibration_cli"
@@ -107,7 +114,7 @@ split-clusters = "usv_playpen.preprocess_data:split_clusters_to_sessions_cli"
 generate-beh-features = "usv_playpen.analyze_data:generate_beh_features_cli"
 generate-usv-playback = "usv_playpen.analyze_data:generate_usv_playback_cli"
 generate-naturalistic-usv-playback = "usv_playpen.analyze_data:generate_naturalistic_usv_playback_cli"
-generate-rm =" usv_playpen.analyze_data:generate_rm_files_cli"
+generate-rm = "usv_playpen.analyze_data:generate_rm_files_cli"
 generate-rm-figs = "usv_playpen.visualize_data:generate_rm_figures_cli"
 generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
 
@@ -144,7 +151,7 @@ report.exclude_also = [
 
 [tool.mypy]
 files = ["src", "tests"]
-python_version = "3.9"
+python_version = "3.11"
 warn_unused_configs = true
 strict = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
@@ -196,9 +203,8 @@ isort.required-imports = ["from __future__ import annotations"]
 "tests/**" = ["T20"]
 "noxfile.py" = ["T20"]
 
-
 [tool.pylint]
-py-version = "3.9"
+py-version = "3.11"
 ignore-paths = [".*/_version.py"]
 reports.output-format = "colorized"
 similarities.ignore-imports = "yes"
