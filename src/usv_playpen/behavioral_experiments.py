@@ -203,18 +203,30 @@ class ExperimentController:
         """
         Description
         -----------
-        Checks if the specified Ethernet adapter is connected; if not,
-        reconnects and attempts to remount CUP drives (if they are not mounted
-        or if the credential session has gone stale).
-        -----------
+        Checks if the specified Ethernet adapter is connected. If not, it re-enables
+        the connection. It then verifies the status of required network drives (CUP).
+
+        Windows handles network drives via SMB (Server Message Block) sessions. When
+        an Ethernet connection drops, the mapped drive letter (e.g., F:) may remain
+        in the Windows registry as a "zombie" session with stale or dropped credentials.
+        PowerShell's `New-PSDrive` often fails silently here because it detects the
+        existing drive letter and assumes the connection is valid.
+
+        To prevent `[WinError 1326] The username or password is incorrect`, this function:
+        1. Identifies if the required drive letters are currently mapped.
+        2. Actively probes the drive using `os.scandir` to verify credential validity.
+        3. If access is denied (stale session), it bypasses PowerShell and uses the
+           native Windows `net use /delete` command to aggressively flush the SMB session.
+        4. Re-mounts the drive securely using `net use`, ensuring fresh authentication
+           is passed globally to the OS.
 
         Parameters
         ----------
-        ----------
+        None
 
         Returns
         -------
-        -------
+        None
         """
 
         cup_username, cup_password = self.get_cup_mount_params()
@@ -241,32 +253,44 @@ class ExperimentController:
                     # The drive letter exists, but we must check if the network session is actually alive
                     try:
                         os.scandir(f"{drive_letter_with_colon}\\")
-                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is already mounted and accessible.")
+                        self.message_output(f"[**Local mount check**] '{drive_letter_with_colon}' is already mounted and accessible.")
                     except OSError:
-                        self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' is mapped but inaccessible (stale credentials). Remounting...")
+                        self.message_output(f"[**Local mount check**] '{drive_letter_with_colon}' is mapped but inaccessible. Flushing SMB session...")
 
-                        # Force remove the stale, inaccessible drive
+                        # Aggressively force remove the stale drive mapping AND the background SMB connection
+                        # Using DEVNULL to keep the terminal/console output hidden as requested
                         subprocess.run(
-                            ["powershell", "-Command", f"Remove-PSDrive -Name '{drive_letter_only}' -Force -ErrorAction SilentlyContinue"],
+                            f"net use {drive_letter_with_colon} /delete /y",
+                            shell=True,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT
                         )
+                        subprocess.run(
+                            f"net use {path} /delete /y",
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.STDOUT
+                        )
+
                         needs_mounting = True
 
                 if needs_mounting:
-                    mount_drive_ps_command = (
-                        f"$password = ConvertTo-SecureString -String '{cup_password}' -AsPlainText -Force; "
-                        f"$credential = New-Object System.Management.Automation.PSCredential('{cup_username}@princeton.edu', $password); "
-                        f"New-PSDrive -Name '{drive_letter_only}' -PSProvider FileSystem -Root '{path}' -Credential $credential -Persist"
-                    )
+                    self.message_output(f"[**Local mount check**] Attempting to mount {drive_letter_with_colon} to {path}...")
 
-                    subprocess.Popen(
-                        args=['powershell', '-Command', mount_drive_ps_command],
+                    # Use standard Windows 'net use' to force a fresh authentication session
+                    mount_cmd = f'net use {drive_letter_with_colon} "{path}" "{cup_password}" /user:{cup_username}@princeton.edu /persistent:yes'
+
+                    mount_result = subprocess.run(
+                        mount_cmd,
+                        shell=True,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.STDOUT
-                    ).wait()
+                    )
 
-                    self.message_output(f"[**Local mount check**]'{drive_letter_with_colon}' has now been mounted on this PC.")
+                    if mount_result.returncode == 0:
+                        self.message_output(f"[**Local mount check**] '{drive_letter_with_colon}' has now been successfully mounted on this PC.")
+                    else:
+                        self.message_output(f"[**CRITICAL ERROR**] Failed to mount {drive_letter_with_colon}. The underlying 'net use' command failed.")
 
 
     def check_remote_mount(self,
