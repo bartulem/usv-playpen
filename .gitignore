@@ -2,6 +2,9 @@
 .venv*
 venv*
 .DS_Store
+.vscode*
+.insyncignore*
+*(*)*
 
 # setuptools_scm
 src/*/_version.py
