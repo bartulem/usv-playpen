@@ -4,6 +4,7 @@ venv*
 .DS_Store
 .vscode*
 .insyncignore*
+CLAUDE.md
 *(*)*
 
 # setuptools_scm
