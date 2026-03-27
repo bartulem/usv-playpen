@@ -1,0 +1,243 @@
+{
+  "modeling_settings": {
+    "session_list_file": "/mnt/falkner/Bartul/modeling/input_files/mute_female_sessions_list.txt",
+    "save_dir": "/mnt/falkner/Bartul/modeling",
+    "random_seed": 0,
+
+    "data_io": {
+      "csv_sheet_delimiter": ",",
+      "camera_sampling_rate": 150
+    },
+
+    "features": {
+      "filter_history": 4,
+      "predictor_mouse": 1,
+      "behavioral_predictors": [
+        "speed",
+        "neck_elevation",
+        "allo_roll",
+        "allo_pitch",
+        "ego_yaw",
+        "back_pitch",
+        "back_yaw",
+        "tail_curvature",
+        "nose-nose",
+        "nose-TTI",
+        "TTI-nose",
+        "allo_yaw-nose",
+        "nose-allo_yaw",
+        "allo_yaw-TTI",
+        "TTI-allo_yaw"
+      ],
+      "include_1st_der_features_bool": false,
+      "include_2nd_der_features_bool": false
+    },
+
+    "vocal_features": {
+      "vocal_output_type": "presence_all",
+      "vocal_output_partner_only": true,
+      "vocal_proportion_smoothing_sd": 1,
+      "category_column_name": "usv_supercategory",
+      "noise_vocal_categories": [0],
+      "all_complex_categories": [1, 2, 6]
+    },
+
+    "task_definition": {
+      "prediction_mode": "bout",
+      "target_variable": "mean_mask_complexity",
+      "usv_bout_time": 2,
+      "min_usv_per_bout": 2,
+      "gmm_component_index": 0,
+      "gmm_z_score": 2.58
+    },
+
+    "model_selection": {
+      "model_type": "pygam",
+      "basis_type": "raised_cosine",
+      "split_strategy": "mixed",
+      "num_splits": 100,
+      "test_proportion": 0.2,
+      "n_spatial_clusters": 20
+    },
+
+    "hyperparameters": {
+      "jax_cnn_continuous_params": {
+        "cluster_centroids": {
+          "categories_1_and_2": [8.75, -2.333],
+          "category_3": [7.55, 2.867],
+          "category_4": [10.667, 1.417],
+          "category_5_bottom_right": [13.317, -2.542],
+          "category_5_top_right": [12.25, 5.433],
+          "category_5_top_left": [7.583, 6.583],
+          "category_6": [16.35, 5.5]
+        },
+        "custom_polygons": {
+          "categories_1_and_2": [
+            [7.5, -1.0],
+            [7.5, 1.0],
+            [11.0, -3.0],
+            [11.0, -4.0],
+            [8.0, -4.0],
+            [7.5, -3.0]
+          ],
+          "category_3": [
+            [6.0, 6.2],
+            [9.0, 5.0],
+            [8.5, 2.5],
+            [8.5, 0.0],
+            [7.0, 0.0],
+            [6.3, 3.5]
+          ],
+          "category_4": [
+            [9.0, 4.5],
+            [11.0, 4.5],
+            [12.5, 1.5],
+            [12.5, -2.0],
+            [10.0, -2.0],
+            [9.0, 2.0]
+          ],
+          "category_5_bottom_right": [
+            [12.5, -1.0],
+            [14.5, -1.0],
+            [14.2, -2.0],
+            [14.0, -3.75],
+            [12.5, -4.5],
+            [12.2, -3.0]
+          ],
+          "category_5_top_right": [
+            [11.0, 6.0],
+            [12.0, 7.0],
+            [13.0, 6.1],
+            [14.0, 4.0],
+            [12.0, 4.0],
+            [11.5, 5.5]
+          ],
+          "category_5_top_left": [
+            [6.0, 8.5],
+            [9.0, 8.5],
+            [9.5, 6.5],
+            [9.0, 5.0],
+            [6.0, 5.0],
+            [6.0, 6.0]
+          ],
+          "category_6": [
+            [15.5, 6.5],
+            [17.2, 6.5],
+            [17.2, 5.5],
+            [17.2, 4.5],
+            [15.5, 4.5],
+            [15.5, 5.5]
+          ]
+        },
+        "use_kde_weights": true,
+        "loss_function": "huber",
+        "huber_delta": 1.0,
+        "learning_rate": 0.0005,
+        "weight_decay": 0.001,
+        "epochs": 301,
+        "batch_size": 32,
+        "kernel_size": 15,
+        "use_inception_kernels": false,
+        "inception_kernel_sizes": [3, 15, 31],
+        "dropout_rate": 0.3,
+        "se_reduction": 4,
+        "se_activation": "sigmoid",
+        "hidden_dim": 128,
+        "act_func": "relu",
+        "bn_momentum": 0.99,
+        "bn_eps": 1e-5,
+        "grid_size": 25,
+        "samples_per_cell": 40,
+        "use_scheduler": true,
+        "patience": 12,
+        "null_patience": 3,
+        "warp_range": 0.1,
+        "n_folds": 10,
+        "permutation_iterations": 10,
+        "use_kinematic_masking": true,
+        "masking_prob": 0.15,
+        "masking_length_frames": 60,
+        "use_hybrid_flatten": false
+      },
+      "jax_mlp_continuous_params": {
+        "bin_resizing_factor": 10,
+        "temporal_hidden_dim": 64,
+        "global_hidden_dim": 2048,
+        "learning_rate": 0.0001,
+        "weight_decay": 0.001,
+        "epochs": 301,
+        "batch_size": 512,
+        "grid_size": 25,
+        "samples_per_cell": 40,
+        "use_scheduler": true,
+        "patience": 8,
+        "null_patience": 3,
+        "warp_range": 0.1,
+        "n_folds": 10,
+        "permutation_iterations": 10
+      },
+      "jax_continuous_params": {
+        "bin_resizing_factor": 10,
+        "lambda_smooth": 1.0,
+        "l2_reg": 0.1,
+        "learning_rate": 0.01,
+        "max_iter": 10000,
+        "tol": 1e-4,
+        "random_state": 0,
+        "verbose": false
+      },
+      "jax_multinomial_params": {
+        "balance_predictions_bool": false,
+        "bin_resizing_factor": 10,
+        "lambda_smooth": 1.0,
+        "l1_reg": 0.0,
+        "l2_reg": 0.1,
+        "learning_rate": 0.001,
+        "max_iter": 10000,
+        "tol": 1e-4,
+        "random_state": 0,
+        "verbose": false
+      },
+      "pygam_params": {
+        "n_splines_time": 8,
+        "n_splines_value": 5,
+        "lam_penalty": 0.6,
+        "max_iterations": 100,
+        "tol_val": 1e-4,
+        "distribution": "gamma",
+        "link": "log"
+      },
+      "logistic_regression_params": {
+        "penalty": "l2",
+        "cs": [0.0001, 0.001, 0.01, 0.1],
+        "cv": 10,
+        "solver": "liblinear",
+        "max_iter": 10000
+      },
+      "ridge_regression_params": {
+        "alphas": [0.1, 1.0, 10.0, 100.0],
+        "cv": 10,
+        "fit_intercept": true
+      },
+      "raised_cosine_params": {
+        "neye": 0,
+        "ncos": 6,
+        "kpeaks_proportion": 0.95,
+        "b": 96,
+        "plot_bool": true
+      },
+      "bspline_params": {
+        "n_splines": 32,
+        "degree": 3,
+        "spacing": "log",
+        "plot_bool": true
+      },
+      "laplacian_pyramid_params": {
+        "levels": 9.5,
+        "step": 0.5,
+        "fwhm": 10,
+        "plot_bool": true
+      }
+    }
+  }
+}
