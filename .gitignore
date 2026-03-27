@@ -1,4 +1,5 @@
 .idea
+.claude
 .venv*
 venv*
 .DS_Store
