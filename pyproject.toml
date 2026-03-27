@@ -78,7 +78,8 @@ test = [
 dev = [
   { include-group = "test" },
   "jupyterlab",
-  "ipykernel"
+  "ipykernel",
+  "pre-commit>=4.5.1",
 ]
 docs = [
   "sphinx>=7.0",
