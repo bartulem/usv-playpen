@@ -4,6 +4,7 @@ Makes dataset to run and runs vocalocator inference.
 """
 
 from datetime import datetime
+from glob import glob
 import h5py
 import json
 import numpy as np
@@ -174,10 +175,9 @@ class Vocalocator:
             shell_usage_bool = True
 
         subprocess.run(args=f'''{command_addition}conda activate {vcl_conda_name} && python -m vocalocator.assess --config {model_config_path} --data {data_file_path} --inference -o {output_file_path}''',
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.STDOUT,
                        cwd=model_directory,
-                       shell=shell_usage_bool)
+                       shell=shell_usage_bool,
+                       check=True)
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -272,13 +272,20 @@ class Vocalocator:
         else:
             command_addition = 'eval "$(conda shell.bash hook)" && '
             shell_usage_bool = True
+        try:
+            # Locate the calibration file or raise an error if not found
+            cal_file = next(f.name for f in pathlib.Path(model_directory).glob("*cal*.npz"))
 
-
-        subprocess.run(args=f'''{command_addition}conda activate {vcl_conda_name} && python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}calibration_results.npz''',
-                       cwd=model_directory,
-                       stdout=subprocess.DEVNULL,
-                       stderr=subprocess.STDOUT,
-                       shell=shell_usage_bool)
+            subprocess.run(
+                args=f"{command_addition}conda activate {vcl_conda_name} && python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}{cal_file}",
+                cwd=model_directory,
+                shell=shell_usage_bool,
+                check=True
+            )
+        except (StopIteration, subprocess.CalledProcessError):
+            # This catches both the missing file (StopIteration) and shell command failures
+            self.message_output("No calibration NPZ file found in model directory or the subprocess failed.")
+            return
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -295,10 +302,16 @@ class Vocalocator:
 
         # get assignment statistics
         unique_values, counts = np.unique(assignments, return_counts=True)
-        self.message_output(f"Out of {counts.sum()} vocalizations, {counts[1]+counts[2]} have been assigned, or {round((counts[1]+counts[2])*100/counts.sum(), 2)}%.")
-        self.message_output(f"{counts[0]} vocalizations have not been assigned, or {round(counts[0]*100/counts.sum(), 2)}%.")
-        for track_id, value, count in zip(track_names, unique_values[1:], counts[1:]):
-            self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/counts.sum(), 2)}%.")
+        value_to_count = dict(zip(unique_values, counts))
+        total = len(assignments)
+        unassigned = value_to_count.get(-1, 0)
+        assigned = total - unassigned
+
+        self.message_output(f"Out of {total} vocalizations, {assigned} have been assigned, or {round(assigned*100/total, 2)}%.")
+        self.message_output(f"{unassigned} vocalizations have not been assigned, or {round(unassigned*100/total, 2)}%.")
+        for track_id, animal_id in zip(track_names, range(len(track_names))):
+            count = value_to_count.get(animal_id, 0)
+            self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/total, 2)}%.")
 
         # assign None to all unassigned vocalizations
         emitter_expression = pls.lit(value=None, dtype=pls.String)
