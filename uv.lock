@@ -1535,10 +1535,11 @@ wheels = [
 
 [[package]]
 name = "motifapi"
-version = "0.1.10"
-source = { git = "https://github.com/loopbio/python-motifapi.git?branch=master#0bb37cd817f59cd42a6bcee229226bc274f6d9c6" }
-dependencies = [
-    { name = "six" },
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/5e/c386927e2387b69cbab41ae2e0f96de7b42d9974740da928e2036ae8d7d7/motifapi-0.2.0.tar.gz", hash = "sha256:f53c2455d890e5b92b572d1b8f577f2d1d62c238e6c4a757441b3a1e02f8889b", size = 13635, upload-time = "2026-02-20T16:01:35.944Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/67/b06c15bacd599e929f32faadcd357edac8c09ccd48213f05a8286014bcf0/motifapi-0.2.0-py3-none-any.whl", hash = "sha256:61487c9c93b313c36ca66542d463cbfaef9106c778264e866aed5ceffd9aadd4", size = 7299, upload-time = "2026-02-20T16:01:34.579Z" },
 ]
 
 [[package]]
@@ -3228,7 +3229,7 @@ requires-dist = [
     { name = "joblib" },
     { name = "librosa" },
     { name = "matplotlib" },
-    { name = "motifapi", git = "https://github.com/loopbio/python-motifapi.git?branch=master" },
+    { name = "motifapi" },
     { name = "noisereduce" },
     { name = "numba" },
     { name = "numpy" },

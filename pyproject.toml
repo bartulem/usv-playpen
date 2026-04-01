@@ -22,6 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering",
 ]
 dynamic = ["version"]
@@ -222,5 +223,4 @@ messages_control.disable = [
 ]
 
 [tool.uv.sources]
-motifapi = { git = "https://github.com/loopbio/python-motifapi.git", branch = "master" }
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }
