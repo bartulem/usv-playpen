@@ -258,7 +258,7 @@ class ExperimentController:
             if drive_accessible:
                 continue
 
-            # 1. Remove the drive letter mapping
+            # Remove the drive letter mapping
             subprocess.run(
                 f"net use {drive_letter} /delete /y",
                 shell=True,
@@ -266,8 +266,7 @@ class ExperimentController:
                 stderr=subprocess.DEVNULL
             )
 
-            # 2. Remove the underlying UNC session (this is critical —
-            #    without it, Windows may reuse stale credentials)
+            # Remove the underlying UNC session (this is critical — w/o it, Windows may reuse stale credentials)
             subprocess.run(
                 f"net use {unc_path} /delete /y",
                 shell=True,
@@ -275,7 +274,7 @@ class ExperimentController:
                 stderr=subprocess.DEVNULL
             )
 
-            # 3. Clear any cached Kerberos tickets that may hold stale auth
+            # Clear any cached Kerberos tickets that may hold stale auth
             subprocess.run(
                 "klist purge",
                 shell=True,
