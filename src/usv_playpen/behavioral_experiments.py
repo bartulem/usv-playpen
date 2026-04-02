@@ -229,7 +229,9 @@ class ExperimentController:
 
         cup_username, cup_password = self.get_cup_mount_params()
 
-        drives_to_mount = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
+        all_possible_drives = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
+        needed_letters = {path.split("\\")[0] for path in self.exp_settings_dict['recording_files_destination_win']}
+        drives_to_mount = {letter: unc for letter, unc in all_possible_drives.items() if letter in needed_letters}
 
         self.check_ethernet_connection()
 
