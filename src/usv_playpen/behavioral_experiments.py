@@ -3,6 +3,7 @@
 Runs experiments with Avisoft/CoolTerm/Loopbio software.
 """
 
+import concurrent.futures
 import configparser
 import datetime
 import glob
@@ -204,21 +205,18 @@ class ExperimentController:
         Description
         -----------
         Checks if the specified Ethernet adapter is connected. If not, it re-enables
-        the connection. It then verifies the status of required network drives (CUP).
+        the connection. It then verifies the status of required network drives (CUP)
+        and remounts them with fresh credentials if they are stale or missing.
 
-        Windows handles network drives via SMB (Server Message Block) sessions. When
-        an Ethernet connection drops, the mapped drive letter (e.g., F:) may remain
-        in the Windows registry as a "zombie" session with stale or dropped credentials.
-        PowerShell's `New-PSDrive` often fails silently here because it detects the
-        existing drive letter and assumes the connection is valid.
-
-        To prevent `[WinError 1326] The username or password is incorrect`, this function:
-        1. Identifies if the required drive letters are currently mapped.
-        2. Actively probes the drive using `os.scandir` to verify credential validity.
-        3. If access is denied (stale session), it bypasses PowerShell and uses the
-           native Windows `net use /delete` command to aggressively flush the SMB session.
-        4. Re-mounts the drive securely using `net use`, ensuring fresh authentication
-           is passed globally to the OS.
+        After Ethernet disconnect/reconnect cycles, Windows SMB sessions become stale.
+        The mapped drive letter (e.g., F:) may remain in the registry as a zombie with
+        expired credentials. This method:
+        1. Verifies Ethernet connectivity.
+        2. Waits for the SMB/network subsystem to stabilize.
+        3. Probes each drive with a short timeout to detect stale sessions.
+        4. Force-removes stale mappings (both drive letter and UNC path).
+        5. Remounts with fresh credentials.
+        6. Verifies the new mount is accessible, with retries.
 
         Parameters
         ----------
@@ -235,62 +233,108 @@ class ExperimentController:
 
         self.check_ethernet_connection()
 
-        # check if all CUP drives are mounted and remount CUP drives if they are not
-        mounted_drives_command_list = ["powershell", "-Command", '''& { gdr -PSProvider "FileSystem" | Select-Object -ExpandProperty Name }''']
-        mounted_drives_status = subprocess.run(args=mounted_drives_command_list, capture_output=True, text=True, check=True, encoding='utf-8')
+        # Wait for SMB/network services to stabilize after Ethernet reconnection.
+        # The adapter being "Up" doesn't mean SMB sessions can be established yet.
+        self.message_output("[**Local mount check**] Waiting for network services to stabilize...")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=5)
 
-        if mounted_drives_status.returncode == 0:
-            mounted_drives = sorted(list(set(mounted_drives_status.stdout.strip().split())))
+        for drive_letter, unc_path in drives_to_mount.items():
+            drive_accessible = False
 
-            for drive_letter_with_colon, path in drives_to_mount.items():
-                drive_letter_only = drive_letter_with_colon.replace(":", "")
+            # Probe the drive with a timeout to avoid hanging on stale mounts.
+            # os.scandir on a dead network path can block for 30+ seconds,
+            # so we use a thread with a short timeout.
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(lambda dl: list(os.scandir(f"{dl}\\")), drive_letter)
+                    future.result(timeout=5)
+                    drive_accessible = True
+                    self.message_output(f"[**Local mount check**] '{drive_letter}' is already mounted and accessible.")
+            except concurrent.futures.TimeoutError:
+                self.message_output(f"[**Local mount check**] '{drive_letter}' probe timed out (stale SMB session). Will remount.")
+            except OSError as e:
+                self.message_output(f"[**Local mount check**] '{drive_letter}' is mapped but inaccessible ({e}). Will remount.")
 
-                needs_mounting = False
+            if drive_accessible:
+                continue
 
-                if drive_letter_only not in mounted_drives:
-                    needs_mounting = True
-                else:
-                    # The drive letter exists, but we must check if the network session is actually alive
-                    try:
-                        os.scandir(f"{drive_letter_with_colon}\\")
-                        self.message_output(f"[**Local mount check**] '{drive_letter_with_colon}' is already mounted and accessible.")
-                    except OSError:
-                        self.message_output(f"[**Local mount check**] '{drive_letter_with_colon}' is mapped but inaccessible. Flushing SMB session...")
+            # 1. Remove the drive letter mapping
+            subprocess.run(
+                f"net use {drive_letter} /delete /y",
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
 
-                        # Aggressively force remove the stale drive mapping AND the background SMB connection
-                        # Using DEVNULL to keep the terminal/console output hidden as requested
-                        subprocess.run(
-                            f"net use {drive_letter_with_colon} /delete /y",
-                            shell=True,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.STDOUT
-                        )
-                        subprocess.run(
-                            f"net use {path} /delete /y",
-                            shell=True,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.STDOUT
-                        )
+            # 2. Remove the underlying UNC session (this is critical —
+            #    without it, Windows may reuse stale credentials)
+            subprocess.run(
+                f"net use {unc_path} /delete /y",
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
 
-                        needs_mounting = True
+            # 3. Clear any cached Kerberos tickets that may hold stale auth
+            subprocess.run(
+                "klist purge",
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
 
-                if needs_mounting:
-                    self.message_output(f"[**Local mount check**] Attempting to mount {drive_letter_with_colon} to {path}...")
+            # Brief pause so Windows fully tears down the SMB session
+            smart_wait(app_context_bool=self.app_context_bool, seconds=3)
 
-                    # Use standard Windows 'net use' to force a fresh authentication session
-                    mount_cmd = f'net use {drive_letter_with_colon} "{path}" "{cup_password}" /user:{cup_username}@princeton.edu /persistent:yes'
+            # Remount with retries
+            max_retries = 3
+            mounted_successfully = False
 
-                    mount_result = subprocess.run(
-                        mount_cmd,
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.STDOUT
-                    )
+            for attempt in range(1, max_retries + 1):
+                self.message_output(f"[**Local mount check**] Mounting {drive_letter} -> {unc_path} (attempt {attempt}/{max_retries})...")
 
-                    if mount_result.returncode == 0:
-                        self.message_output(f"[**Local mount check**] '{drive_letter_with_colon}' has now been successfully mounted on this PC.")
+                mount_result = subprocess.run(
+                    f'net use {drive_letter} "{unc_path}" "{cup_password}" /user:{cup_username}@princeton.edu /persistent:yes',
+                    shell=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if mount_result.returncode != 0:
+                    self.message_output(f"[**Local mount check**] 'net use' returned error: {mount_result.stderr.strip()}")
+
+                    # If "already in use" or "multiple connections", try removing again
+                    if "already" in mount_result.stderr.lower() or "multiple" in mount_result.stderr.lower():
+                        subprocess.run(f"net use {drive_letter} /delete /y", shell=True,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(f"net use {unc_path} /delete /y", shell=True,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        smart_wait(app_context_bool=self.app_context_bool, seconds=3)
+                        continue
+
+                # Verify the mount is actually accessible (not just mapped)
+                smart_wait(app_context_bool=self.app_context_bool, seconds=2)
+
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(lambda dl: os.path.isdir(f"{dl}\\"), drive_letter)
+                        is_accessible = future.result(timeout=10)
+
+                    if is_accessible:
+                        self.message_output(f"[**Local mount check**] '{drive_letter}' has been successfully mounted and verified.")
+                        mounted_successfully = True
+                        break
                     else:
-                        self.message_output(f"[**CRITICAL ERROR**] Failed to mount {drive_letter_with_colon}. The underlying 'net use' command failed.")
+                        self.message_output(f"[**Local mount check**] '{drive_letter}' was mapped but path verification failed.")
+                except concurrent.futures.TimeoutError:
+                    self.message_output(f"[**Local mount check**] '{drive_letter}' verification timed out.")
+
+                if attempt < max_retries:
+                    smart_wait(app_context_bool=self.app_context_bool, seconds=5)
+
+            if not mounted_successfully:
+                self.message_output(f"[**CRITICAL ERROR**] Failed to mount {drive_letter} after {max_retries} attempts. "
+                                    f"Recording files may not be saved to the network drive.")
 
 
     def check_remote_mount(self,
@@ -357,7 +401,7 @@ class ExperimentController:
             self.message_output(f"[**Remote mount check**] On {hostname}, SSH connection error: {e}")
             return False
         except Exception as e:
-            self.message_output(f"[**Remote mount check**] On {hostname}, n unexpected error occurred: {e}")
+            self.message_output(f"[**Remote mount check**] On {hostname}, an unexpected error occurred: {e}")
             return False
         finally:
             client.close()
