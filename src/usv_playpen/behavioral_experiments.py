@@ -213,8 +213,9 @@ class ExperimentController:
         expired credentials. This method:
         1. Verifies Ethernet connectivity.
         2. Waits for the SMB/network subsystem to stabilize.
-        3. Probes each drive with a short timeout to detect stale sessions.
-        4. Force-removes stale mappings (both drive letter and UNC path).
+        3. Purges ALL existing connections to \\cup to prevent System error 1219
+           when switching between users with different credentials.
+        4. Probes each needed drive with a short timeout to detect stale sessions.
         5. Remounts with fresh credentials.
         6. Verifies the new mount is accessible, with retries.
 
@@ -231,7 +232,8 @@ class ExperimentController:
 
         all_possible_drives = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
         needed_letters = {path.split("\\")[0] for path in self.exp_settings_dict['recording_files_destination_win']}
-        drives_to_mount = {letter: unc for letter, unc in all_possible_drives.items() if letter in needed_letters}
+        drives_to_mount = {letter: unc for letter, unc in all_possible_drives.items()
+                           if letter in needed_letters}
 
         self.check_ethernet_connection()
 
@@ -240,54 +242,29 @@ class ExperimentController:
         self.message_output("[**Local mount check**] Waiting for network services to stabilize...")
         smart_wait(app_context_bool=self.app_context_bool, seconds=5)
 
+        # Always purge ALL connections to \\cup before mounting, regardless of which
+        # drives this user needs. This prevents System error 1219 when switching
+        # between users with different credentials on the same machine.
+        for letter, unc in all_possible_drives.items():
+            subprocess.run(f"net use {letter} /delete /y", shell=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"net use {unc} /delete /y", shell=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Kill the server-level session itself, not just individual share mappings
+        subprocess.run(r"net use \\cup /delete /y", shell=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Clear any cached Kerberos tickets that may hold stale auth
+        subprocess.run("klist purge", shell=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Brief pause so Windows fully tears down the SMB sessions
+        smart_wait(app_context_bool=self.app_context_bool, seconds=3)
+
+        # Mount only the drives the current user needs
         for drive_letter, unc_path in drives_to_mount.items():
-            drive_accessible = False
 
-            # Probe the drive with a timeout to avoid hanging on stale mounts.
-            # os.scandir on a dead network path can block for 30+ seconds,
-            # so we use a thread with a short timeout.
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(lambda dl: list(os.scandir(f"{dl}\\")), drive_letter)
-                    future.result(timeout=5)
-                    drive_accessible = True
-                    self.message_output(f"[**Local mount check**] '{drive_letter}' is already mounted and accessible.")
-            except concurrent.futures.TimeoutError:
-                self.message_output(f"[**Local mount check**] '{drive_letter}' probe timed out (stale SMB session). Will remount.")
-            except OSError as e:
-                self.message_output(f"[**Local mount check**] '{drive_letter}' is mapped but inaccessible ({e}). Will remount.")
-
-            if drive_accessible:
-                continue
-
-            # Remove the drive letter mapping
-            subprocess.run(
-                f"net use {drive_letter} /delete /y",
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-
-            # Remove the underlying UNC session (this is critical — w/o it, Windows may reuse stale credentials)
-            subprocess.run(
-                f"net use {unc_path} /delete /y",
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-
-            # Clear any cached Kerberos tickets that may hold stale auth
-            subprocess.run(
-                "klist purge",
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-
-            # Brief pause so Windows fully tears down the SMB session
-            smart_wait(app_context_bool=self.app_context_bool, seconds=3)
-
-            # Remount with retries
             max_retries = 3
             mounted_successfully = False
 
@@ -310,7 +287,13 @@ class ExperimentController:
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.run(f"net use {unc_path} /delete /y", shell=True,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(r"net use \\cup /delete /y", shell=True,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         smart_wait(app_context_bool=self.app_context_bool, seconds=3)
+                        continue
+
+                    if attempt < max_retries:
+                        smart_wait(app_context_bool=self.app_context_bool, seconds=5)
                         continue
 
                 # Verify the mount is actually accessible (not just mapped)
@@ -336,7 +319,6 @@ class ExperimentController:
             if not mounted_successfully:
                 self.message_output(f"[**CRITICAL ERROR**] Failed to mount {drive_letter} after {max_retries} attempts. "
                                     f"Recording files may not be saved to the network drive.")
-
 
     def check_remote_mount(self,
                            hostname: str = None,
