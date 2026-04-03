@@ -2553,7 +2553,7 @@ class USVPlaypenWindow(QMainWindow):
         update_credentials = partial(self._update_nested_dict_value, self.processing_input_dict, ('credentials_directory',))
         self.processing_credentials_dir_edit.textChanged.connect(update_credentials)
         self.processing_credentials_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.processing_credentials_dir_edit.setStyleSheet('QLineEdit { width: 290px; }')
+        self.processing_credentials_dir_edit.setStyleSheet('QLineEdit { width: 295px; }')
         self.processing_credentials_dir_edit.move(10, 335)
         processing_credentials_dir_btn = QPushButton('Browse', self.ProcessSettings)
         processing_credentials_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
