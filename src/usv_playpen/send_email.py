@@ -6,7 +6,7 @@ Send e-mail notifying users the PC is busy.
 from __future__ import annotations
 
 import configparser
-import os
+from pathlib import Path
 import smtplib
 import sys
 from email.message import EmailMessage
@@ -84,7 +84,7 @@ class Messenger:
 
         config = configparser.ConfigParser()
 
-        if not os.path.isfile(self.credentials_file):
+        if not Path(self.credentials_file).is_file():
             print(self.credentials_file)
             print("E-mail config file not found. Try again!")
             sys.exit(1)
@@ -142,3 +142,5 @@ class Messenger:
             self.message_output(
                 "You chose not to notify anyone via e-mail about PC usage."
             )
+
+        return None

@@ -167,17 +167,12 @@ class Vocalocator:
         track_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
         usv_summary_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
 
-        if os.name == 'nt':
-            command_addition = 'cmd /c '
-            shell_usage_bool = False
-        else:
-            command_addition = 'eval "$(conda shell.bash hook)" && '
-            shell_usage_bool = True
-
-        subprocess.run(args=f'''{command_addition}conda activate {vcl_conda_name} && python -m vocalocator.assess --config {model_config_path} --data {data_file_path} --inference -o {output_file_path}''',
-                       cwd=model_directory,
-                       shell=shell_usage_bool,
-                       check=True)
+        subprocess.run(
+            args=f'conda run -n {vcl_conda_name} python -m vocalocator.assess --config {model_config_path} --data {data_file_path} --inference -o {output_file_path}',
+            cwd=model_directory,
+            shell=True,
+            check=True
+        )
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -239,6 +234,11 @@ class Vocalocator:
         )
         if metadata is not None:
             metadata['Session']['session_usv_assigned'] = True
+            for subject in metadata['Subjects']:
+                for mouse_idx, track_name in enumerate(track_names):
+                    if subject['subject_id'] == track_name:
+                        subject['num_assigned_vocalizations'] = int((assignments == mouse_idx).sum())
+                        break
             save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
     def run_vocalocator_ssl(self) -> None:
@@ -266,20 +266,14 @@ class Vocalocator:
         track_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
         usv_summary_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
 
-        if os.name == 'nt':
-            command_addition = 'cmd /c '
-            shell_usage_bool = False
-        else:
-            command_addition = 'eval "$(conda shell.bash hook)" && '
-            shell_usage_bool = True
         try:
             # Locate the calibration file or raise an error if not found
             cal_file = next(f.name for f in pathlib.Path(model_directory).glob("*cal*.npz"))
 
             subprocess.run(
-                args=f"{command_addition}conda activate {vcl_conda_name} && python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}{cal_file}",
+                args=f"conda run -n {vcl_conda_name} python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && conda run -n {vcl_conda_name} python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}{cal_file}",
                 cwd=model_directory,
-                shell=shell_usage_bool,
+                shell=True,
                 check=True
             )
         except (StopIteration, subprocess.CalledProcessError):
@@ -336,4 +330,9 @@ class Vocalocator:
         )
         if metadata is not None:
             metadata['Session']['session_usv_assigned'] = True
+            for subject in metadata['Subjects']:
+                for mouse_idx, track_name in enumerate(track_names):
+                    if subject['subject_id'] == track_name:
+                        subject['num_assigned_vocalizations'] = int((assignments == mouse_idx).sum())
+                        break
             save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
