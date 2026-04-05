@@ -171,7 +171,7 @@ class Vocalocator:
         clean_env = os.environ.copy()
         clean_env.pop('PYTHONHOME', None)
         subprocess.run(
-            args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocator.assess',
+            args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocator.assess',
                   '--config', model_config_path, '--data', data_file_path, '--inference', '-o', output_file_path],
             cwd=model_directory,
             env=clean_env,
@@ -241,7 +241,7 @@ class Vocalocator:
             metadata['Session']['session_usv_assigned'] = True
             for subject in metadata['Subjects']:
                 for mouse_idx, track_name in enumerate(track_names):
-                    if subject['subject_id'] == track_name:
+                    if str(subject['subject_id']) == track_name:
                         subject['num_assigned_vocalizations'] = int((assignments == mouse_idx).sum())
                         break
             save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
@@ -279,7 +279,7 @@ class Vocalocator:
             clean_env = os.environ.copy()
             clean_env.pop('PYTHONHOME', None)
             subprocess.run(
-                args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl',
+                args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl',
                       '--data', data_file_path, '--save-path', model_directory, '--predict',
                       '-o', f'{data_file_path}{os.sep}model_predictions.npz'],
                 cwd=model_directory,
@@ -288,7 +288,7 @@ class Vocalocator:
                 check=True
             )
             subprocess.run(
-                args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl.assign',
+                args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl.assign',
                       f'{data_file_path}{os.sep}model_predictions.npz',
                       '--calibration-results', f'{model_directory}{os.sep}{cal_file}'],
                 cwd=model_directory,
@@ -352,7 +352,7 @@ class Vocalocator:
             metadata['Session']['session_usv_assigned'] = True
             for subject in metadata['Subjects']:
                 for mouse_idx, track_name in enumerate(track_names):
-                    if subject['subject_id'] == track_name:
+                    if str(subject['subject_id']) == track_name:
                         subject['num_assigned_vocalizations'] = int((assignments == mouse_idx).sum())
                         break
             save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)

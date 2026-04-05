@@ -158,7 +158,7 @@ class FindMouseVocalizations:
             clean_env = os.environ.copy()
             clean_env.pop('PYTHONHOME', None)
             inference_subp = subprocess.Popen(
-                args=[conda_exe, 'run', '-n', das_conda_name, 'das', 'predict', one_file, model_base,
+                args=[conda_exe, 'run', '--no-capture-output', '-n', das_conda_name, 'das', 'predict', one_file, model_base,
                       '--segment-thres', str(thresh), '--segment-minlen', str(min_len),
                       '--segment-fillgap', str(fill_gap), '--save-format', str(save_format)],
                 cwd=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered",
