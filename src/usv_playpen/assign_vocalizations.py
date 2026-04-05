@@ -167,8 +167,9 @@ class Vocalocator:
         track_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
         usv_summary_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
 
+        conda_exe = os.environ.get('CONDA_EXE', 'conda')
         subprocess.run(
-            args=f'conda run -n {vcl_conda_name} python -m vocalocator.assess --config {model_config_path} --data {data_file_path} --inference -o {output_file_path}',
+            args=f'"{conda_exe}" run -n {vcl_conda_name} python -m vocalocator.assess --config {model_config_path} --data {data_file_path} --inference -o {output_file_path}',
             cwd=model_directory,
             shell=True,
             check=True
@@ -270,8 +271,9 @@ class Vocalocator:
             # Locate the calibration file or raise an error if not found
             cal_file = next(f.name for f in pathlib.Path(model_directory).glob("*cal*.npz"))
 
+            conda_exe = os.environ.get('CONDA_EXE', 'conda')
             subprocess.run(
-                args=f"conda run -n {vcl_conda_name} python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && conda run -n {vcl_conda_name} python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}{cal_file}",
+                args=f'"{conda_exe}" run -n {vcl_conda_name} python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && "{conda_exe}" run -n {vcl_conda_name} python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}{cal_file}',
                 cwd=model_directory,
                 shell=True,
                 check=True
