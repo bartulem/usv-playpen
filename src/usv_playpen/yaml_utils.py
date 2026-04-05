@@ -4,8 +4,14 @@ Utility functions for modifying the metadata YAML file.
 """
 
 import numbers
+import re
 import yaml
 from pathlib import Path
+
+# Matches strings that YAML 1.1 would silently parse as integers
+# (digits with optional underscore separators, optional leading sign).
+_YAML11_INT_PATTERN = re.compile(r'^[+-]?[0-9][0-9_]*$')
+
 
 # Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
 # while keeping dictionaries in block style for overall readability.
@@ -18,7 +24,13 @@ class SmartDumper(yaml.Dumper):
         else:
             return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
 
+    def represent_str(self, data):
+        if _YAML11_INT_PATTERN.match(data):
+            return self.represent_scalar('tag:yaml.org,2002:str', data, style="'")
+        return self.represent_scalar('tag:yaml.org,2002:str', data)
+
 SmartDumper.add_representer(list, SmartDumper.represent_list)
+SmartDumper.add_representer(str, SmartDumper.represent_str)
 
 
 def load_session_metadata(root_directory: str, logger: callable = print) -> tuple[dict | None, Path | None]:
