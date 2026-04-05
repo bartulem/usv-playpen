@@ -168,10 +168,13 @@ class Vocalocator:
         usv_summary_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
 
         conda_exe = os.environ.get('CONDA_EXE', 'conda')
+        clean_env = os.environ.copy()
+        clean_env.pop('PYTHONHOME', None)
         subprocess.run(
             args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocator.assess',
                   '--config', model_config_path, '--data', data_file_path, '--inference', '-o', output_file_path],
             cwd=model_directory,
+            env=clean_env,
             shell=False,
             check=True
         )
@@ -273,11 +276,14 @@ class Vocalocator:
             cal_file = next(f.name for f in pathlib.Path(model_directory).glob("*cal*.npz"))
 
             conda_exe = os.environ.get('CONDA_EXE', 'conda')
+            clean_env = os.environ.copy()
+            clean_env.pop('PYTHONHOME', None)
             subprocess.run(
                 args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl',
                       '--data', data_file_path, '--save-path', model_directory, '--predict',
                       '-o', f'{data_file_path}{os.sep}model_predictions.npz'],
                 cwd=model_directory,
+                env=clean_env,
                 shell=False,
                 check=True
             )
@@ -286,6 +292,7 @@ class Vocalocator:
                       f'{data_file_path}{os.sep}model_predictions.npz',
                       '--calibration-results', f'{model_directory}{os.sep}{cal_file}'],
                 cwd=model_directory,
+                env=clean_env,
                 shell=False,
                 check=True
             )

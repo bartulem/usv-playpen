@@ -155,11 +155,14 @@ class FindMouseVocalizations:
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
             conda_exe = os.environ.get('CONDA_EXE', 'conda')
+            clean_env = os.environ.copy()
+            clean_env.pop('PYTHONHOME', None)
             inference_subp = subprocess.Popen(
                 args=[conda_exe, 'run', '-n', das_conda_name, 'das', 'predict', one_file, model_base,
                       '--segment-thres', str(thresh), '--segment-minlen', str(min_len),
                       '--segment-fillgap', str(fill_gap), '--save-format', str(save_format)],
                 cwd=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered",
+                env=clean_env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
                 shell=False,
