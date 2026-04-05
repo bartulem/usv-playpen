@@ -169,9 +169,10 @@ class Vocalocator:
 
         conda_exe = os.environ.get('CONDA_EXE', 'conda')
         subprocess.run(
-            args=f'"{conda_exe}" run -n {vcl_conda_name} python -m vocalocator.assess --config {model_config_path} --data {data_file_path} --inference -o {output_file_path}',
+            args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocator.assess',
+                  '--config', model_config_path, '--data', data_file_path, '--inference', '-o', output_file_path],
             cwd=model_directory,
-            shell=True,
+            shell=False,
             check=True
         )
 
@@ -273,9 +274,19 @@ class Vocalocator:
 
             conda_exe = os.environ.get('CONDA_EXE', 'conda')
             subprocess.run(
-                args=f'"{conda_exe}" run -n {vcl_conda_name} python -m vocalocatorssl --data {data_file_path} --save-path {model_directory} --predict -o {data_file_path}{os.sep}model_predictions.npz && "{conda_exe}" run -n {vcl_conda_name} python -m vocalocatorssl.assign {data_file_path}{os.sep}model_predictions.npz --calibration-results {model_directory}{os.sep}{cal_file}',
+                args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl',
+                      '--data', data_file_path, '--save-path', model_directory, '--predict',
+                      '-o', f'{data_file_path}{os.sep}model_predictions.npz'],
                 cwd=model_directory,
-                shell=True,
+                shell=False,
+                check=True
+            )
+            subprocess.run(
+                args=[conda_exe, 'run', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl.assign',
+                      f'{data_file_path}{os.sep}model_predictions.npz',
+                      '--calibration-results', f'{model_directory}{os.sep}{cal_file}'],
+                cwd=model_directory,
+                shell=False,
                 check=True
             )
         except (StopIteration, subprocess.CalledProcessError):
