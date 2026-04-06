@@ -72,7 +72,7 @@ Process
       --kilosort-version    Version of Kilosort used for spike sorting.
 
 ``concatenate-video-files``
--------------------------
+---------------------------
 ``concatenate-video-files`` is the command-line interface for concatenating video files.
 
 .. code-block:: text
