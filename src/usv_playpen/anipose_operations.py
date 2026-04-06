@@ -522,7 +522,7 @@ class ConvertTo3D:
 
                 sleap_anipose.triangulate(
                     p2d=str(self.session_root_joint_date_dir),
-                    calib=calibration_toml_file,
+                    calib=str(calibration_toml_file),
                     frames=tuple(
                         self.input_parameter_dict["conduct_anipose_triangulation"][
                             "frame_restriction"
@@ -586,7 +586,7 @@ class ConvertTo3D:
 
                 sleap_anipose.triangulate(
                     p2d=str(self.session_root_joint_date_dir),
-                    calib=calibration_toml_file,
+                    calib=str(calibration_toml_file),
                     frames=tuple(
                         self.input_parameter_dict["conduct_anipose_triangulation"][
                             "frame_restriction"
