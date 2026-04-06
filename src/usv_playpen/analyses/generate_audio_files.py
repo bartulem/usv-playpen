@@ -192,6 +192,9 @@ class AudioGenerator:
                 if pbar.n < pbar.total:
                     pbar.update(pbar.total - pbar.n)
 
+            target_samples = int(total_acceptable_playback_time * wav_sampling_rate * 1e3)
+            replay_wav_arr = replay_wav_arr[:target_samples]
+
             actual_total_time_sec = int(np.ceil(replay_wav_arr.shape[0] / (wav_sampling_rate * 1e3)))
             self.message_output(f"The total duration of the generated naturalistic playback file is {round(actual_total_time_sec / 60, 2)} min.")
 
