@@ -5,16 +5,16 @@ Generates a summary figure for data preprocessing.
 
 from __future__ import annotations
 
-import glob
 import json
-import os
 import pathlib
 import wave
+from collections.abc import Callable
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 from imgstore import new_for_filename
+
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts/Helvetica.ttf")
@@ -23,7 +23,7 @@ plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
 
 class SummaryPlotter:
     def __init__(
-        self, input_parameter_dict: dict = None, root_directory: str = None, message_output: callable = None
+        self, input_parameter_dict: dict = None, root_directory: str = None, message_output: Callable | None = None
     ) -> None:
         """
         Initializes the SummaryPlotter class.
@@ -40,36 +40,15 @@ class SummaryPlotter:
         -------
         """
 
-        if root_directory is None:
+        if input_parameter_dict is None or root_directory is None:
             with open(
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "_parameter_settings/processing_settings.json",
-                )
+                pathlib.Path(__file__).parent / "_parameter_settings/processing_settings.json"
             ) as json_file:
-                self.root_directory = json.load(json_file)["preprocessing_plot"][
-                    "root_directory"
-                ]
-        else:
-            self.root_directory = root_directory
+                _settings = json.load(json_file)["preprocessing_plot"]
 
-        if input_parameter_dict is None:
-            with open(
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "_parameter_settings/processing_settings.json",
-                )
-            ) as json_file:
-                self.input_parameter_dict = json.load(json_file)["preprocessing_plot"][
-                    "SummaryPlotter"
-                ]
-        else:
-            self.input_parameter_dict = input_parameter_dict
-
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
+        self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
+        self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else _settings["SummaryPlotter"]
+        self.message_output = message_output if message_output is not None else print
 
     def preprocessing_summary(
         self, ipi_discrepancy_dict: dict = None, phidget_data_dictionary: dict = None
@@ -100,11 +79,7 @@ class SummaryPlotter:
         """
 
         # get the total number of frames in the video
-        json_loc = sorted(
-            glob.glob(
-                f"{self.root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json"
-            )
-        )[0]
+        json_loc = sorted(pathlib.Path(self.root_directory).glob('video/*_camera_frame_count_dict.json'))[0]
         with open(json_loc) as camera_count_json_file:
             duration_min = json.load(camera_count_json_file)["total_video_time_least"]
 
@@ -151,11 +126,7 @@ class SummaryPlotter:
         )
 
         # get audio information
-        wav_audio_files = sorted(
-            glob.glob(
-                f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav"
-            )
-        )
+        wav_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('*.wav'))
         with wave.open(wav_audio_files[0], mode="rb") as example_audio_file:
             audio_sampling_rate = example_audio_file.getframerate()
             audio_sample_number = example_audio_file.getnframes()
@@ -194,19 +165,15 @@ class SummaryPlotter:
         weight_2 = "Ø"
 
         counter = 0
-        for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
+        for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
             if (
-                os.path.isdir(
-                    f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
-                )
-                and "." in sub_directory
-                and "_" in sub_directory
-                and "calibration" not in sub_directory
+                sub_directory.is_dir()
+                and "." in sub_directory.name
+                and "_" in sub_directory.name
+                and "calibration" not in sub_directory.name
             ):
-                used_cameras.append(sub_directory.split(".")[-1])
-                img_store = new_for_filename(
-                    f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml"
-                )
+                used_cameras.append(sub_directory.name.split(".")[-1])
+                img_store = new_for_filename(str(sub_directory / 'metadata.yaml'))
                 total_frames.append(img_store.frame_count)
                 frame_times = img_store.get_frame_metadata()["frame_time"]
                 video_duration = frame_times[-1] - frame_times[0]
@@ -390,7 +357,7 @@ class SummaryPlotter:
             )
             if (
                 device_num == 0
-                and "nidq_ipi_discrepancy_ms" in ipi_discrepancy_dict[device_id].keys()
+                and "nidq_ipi_discrepancy_ms" in ipi_discrepancy_dict[device_id]
             ):
                 axin_nidq_ = ax[1, device_num].inset_axes(
                     [0.6, 0.7, 0.39, 0.29], transform=ax[1, device_num].transAxes
@@ -411,7 +378,7 @@ class SummaryPlotter:
                     x=0.005,
                     y=1.04,
                     s=r"$\bf{experiment|}$"
-                    + f" {self.root_directory.split(os.sep)[-1]}        "
+                    + f" {pathlib.Path(self.root_directory).name}        "
                     + r"$\bf{by|}$"
                     + f" {experimenter}",
                     verticalalignment="top",
@@ -818,7 +785,7 @@ class SummaryPlotter:
                 axin6.set_xlabel("time (s)")
 
         fig.savefig(
-            fname=f"{self.root_directory}{os.sep}sync{os.sep}{self.root_directory.split(os.sep)[-1]}_summary.svg",
+            fname=pathlib.Path(self.root_directory) / 'sync' / f'{pathlib.Path(self.root_directory).name}_summary.svg',
             dpi=300,
         )
         plt.close()

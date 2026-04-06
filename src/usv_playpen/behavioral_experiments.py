@@ -3,25 +3,32 @@
 Runs experiments with Avisoft/CoolTerm/Loopbio software.
 """
 
+from __future__ import annotations
+
 import concurrent.futures
 import configparser
 import datetime
-import glob
+import json
 import math
 import os
-import paramiko
+import pathlib
 import shutil
 import subprocess
 import sys
-import toml
 import webbrowser
-import motifapi
-import yaml
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
-from .cli_utils import *
+
+import click
+import motifapi
+import paramiko
+import toml
+import yaml
+
+from .cli_utils import override_toml_values
 from .send_email import Messenger
-from .time_utils import *
+from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import SmartDumper
 
 
@@ -51,12 +58,12 @@ def count_last_recording_dropouts(log_file_path: str,
     """
 
     try:
-        with open(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}{log_file_ch}.log", 'r') as log_txt_file:
+        with open(pathlib.Path(log_file_path) / log_file_ch / f"{log_file_ch}.log", 'r') as log_txt_file:
             content = log_txt_file.read()
     except FileNotFoundError:
         return None
 
-    recordings = content.split(f"{log_file_path}{os.sep}{log_file_ch}{os.sep}")
+    recordings = content.split(str(pathlib.Path(log_file_path) / log_file_ch) + os.sep)
 
     # filter out any empty strings that may result from the split
     recordings = [rec for rec in recordings if rec.strip()]
@@ -78,7 +85,7 @@ class ExperimentController:
     def __init__(self, email_receivers: list = None,
                  exp_settings_dict: dict = None,
                  metadata_settings: dict = None,
-                 message_output: callable = None) -> None:
+                 message_output: Callable | None = None) -> None:
 
         """
         Initializes the ExperimentController class.
@@ -103,25 +110,10 @@ class ExperimentController:
         self.camera_serial_num = None
         self.config_1 = None
 
-        if email_receivers is None:
-            self.email_receivers = None
-        else:
-            self.email_receivers = email_receivers
-
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
-
-        if metadata_settings is None:
-            self.metadata_settings = {}
-        else:
-            self.metadata_settings = metadata_settings
-
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
+        self.email_receivers = email_receivers
+        self.exp_settings_dict = exp_settings_dict
+        self.metadata_settings = metadata_settings if metadata_settings is not None else {}
+        self.message_output = message_output if message_output is not None else print
 
         self.app_context_bool = is_gui_context()
 
@@ -301,7 +293,7 @@ class ExperimentController:
 
                 try:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(lambda dl: os.path.isdir(f"{dl}\\"), drive_letter)
+                        future = executor.submit(lambda dl: pathlib.Path(f"{dl}\\").is_dir(), drive_letter)
                         is_accessible = future.result(timeout=10)
 
                     if is_accessible:
@@ -321,11 +313,11 @@ class ExperimentController:
                                     f"Recording files may not be saved to the network drive.")
 
     def check_remote_mount(self,
-                           hostname: str = None,
-                           port: int = None,
-                           username: str = None,
-                           password: str = None,
-                           mount_path: str = None) -> bool:
+                           hostname: str,
+                           port: int,
+                           username: str,
+                           password: str,
+                           mount_path: str) -> bool:
         """
         Description
         ----------
@@ -431,11 +423,11 @@ class ExperimentController:
 
         config = configparser.ConfigParser()
 
-        if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini"):
+        if not (pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'cup_config.ini').exists():
             print("Cup config file not found. Try again!")
             sys.exit(1)
         else:
-            config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}cup_config.ini")
+            config.read(pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'cup_config.ini')
             return config['cup']['username'], config['cup']['password']
 
     def get_connection_params(self) -> tuple:
@@ -460,18 +452,16 @@ class ExperimentController:
 
         config = configparser.ConfigParser()
 
-
-
-        if not os.path.exists(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini"):
+        if not (pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'motif_config.ini').exists():
             print("Motif config file not found. Try again!")
             sys.exit(1)
         else:
-            config.read(f"{self.exp_settings_dict['credentials_directory']}{os.sep}motif_config.ini")
+            config.read(pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'motif_config.ini')
             return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
                     config['motif']['ssh_port'], config['motif']['ssh_username'],
                     config['motif']['ssh_password'], config['motif']['api'])
 
-    def get_custom_dir_names(self, now: float = None) -> tuple:
+    def get_custom_dir_names(self, now: float) -> tuple:
         """
         Description
         ----------
@@ -507,7 +497,7 @@ class ExperimentController:
 
         return start_hour_min_sec, total_dir_name_linux, total_dir_name_windows, sub_dir_name
 
-    def check_camera_vitals(self, camera_fr: int | float = None) -> None:
+    def check_camera_vitals(self, camera_fr: int | float) -> None:
         """
         Description
         ----------
@@ -635,7 +625,7 @@ class ExperimentController:
         changes = 0
 
         self.config_1 = configparser.ConfigParser()
-        self.config_1.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'))
+        self.config_1.read(pathlib.Path(__file__).parent / '_config/avisoft_config.ini')
 
         if f"{str(self.exp_settings_dict['avisoft_basedirectory'])}{os.sep}" != self.config_1['Configuration']['basedirectory']:
             self.config_1['Configuration']['basedirectory'] = f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}"
@@ -660,11 +650,11 @@ class ExperimentController:
                 self.config_1['MaxFileSize']['minutes'] = str(5.09)
                 changes += 1
 
-        if self.config_1['Configuration']['configfilename'] != f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini":
-            self.config_1['Configuration']['configfilename'] = f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"
+        if self.config_1['Configuration']['configfilename'] != str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini'):
+            self.config_1['Configuration']['configfilename'] = str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini')
 
-        if self.config_1['Info']['configfilename'] != f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini":
-            self.config_1['Info']['configfilename'] = f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"
+        if self.config_1['Info']['configfilename'] != str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini'):
+            self.config_1['Info']['configfilename'] = str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini')
 
         for general_key in self.exp_settings_dict['audio']['general'].keys():
             if str(self.exp_settings_dict['audio']['general'][general_key]) != self.config_1['Configuration'][general_key]:
@@ -713,13 +703,13 @@ class ExperimentController:
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
             for mic_spec_key in self.exp_settings_dict['audio']['mics_config'].keys():
                 if mic_spec_key in ['name', 'deviceid', 'id', 'channel', 'ditctime']:
-                    if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration'].keys()) or \
+                    if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration']) or \
                             (mic_num in self.exp_settings_dict['audio']['used_mics'] and str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]) != self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]):
                         if mic_spec_key == 'name':
                             if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != f"ch{mic_num + 1}":
                                 self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"ch{mic_num + 1}"
                                 changes += 1
-                        elif mic_spec_key == 'deviceid' or mic_spec_key == 'id':
+                        elif mic_spec_key in ('deviceid', 'id'):
                             if mic_num < 12:
                                 if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != '0':
                                     self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '0'
@@ -742,32 +732,32 @@ class ExperimentController:
                                 self.config_1['Configuration'][f"{mic_spec_key}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
                                 changes += 1
                 else:
-                    if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration'].keys()) or \
+                    if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration']) or \
                             (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['mics_config'][mic_spec_key], float(self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]))):
                         self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
                         changes += 1
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
             for monitor_key in self.exp_settings_dict['audio']['monitor'].keys():
-                if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{monitor_key}{mic_num}" not in self.config_1['Monitor'].keys()) or \
+                if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{monitor_key}{mic_num}" not in self.config_1['Monitor']) or \
                         (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['monitor'][monitor_key], float(self.config_1['Monitor'][f"{monitor_key}{mic_num}"]))):
                     self.config_1['Monitor'][f"{monitor_key}{mic_num}"] = str(self.exp_settings_dict['audio']['monitor'][monitor_key])
                     changes += 1
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
             for call_key in self.exp_settings_dict['audio']['call'].keys():
-                if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{call_key}{mic_num}" not in self.config_1['Call'].keys()) or \
+                if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{call_key}{mic_num}" not in self.config_1['Call']) or \
                         (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['call'][call_key], float(self.config_1['Call'][f"{call_key}{mic_num}"]))):
                     self.config_1['Call'][f"{call_key}{mic_num}"] = str(self.exp_settings_dict['audio']['call'][call_key])
                     changes += 1
 
         if changes > 0:
             self.message_output(f"{changes} lines changed in the avisoft_config_file!")
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'), 'w') as configfile:
+            with open(pathlib.Path(__file__).parent / '_config/avisoft_config.ini', 'w') as configfile:
                 self.config_1.write(configfile, space_around_delimiters=False)
 
-        shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/avisoft_config.ini'),
-                    dst=f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini")
+        shutil.copy(src=pathlib.Path(__file__).parent / '_config/avisoft_config.ini',
+                    dst=pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini')
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
@@ -802,7 +792,7 @@ class ExperimentController:
 
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
-                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config.ini",
+                  credentials_file=pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
                                                                          message=f"Experiment in progress, started at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
@@ -812,15 +802,11 @@ class ExperimentController:
         self.check_ethernet_connection()
 
         # start capturing sync LEDS
-        if not os.path.isfile(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc"):
-            shutil.copy(src=os.path.join(os.path.dirname(os.path.abspath(__file__)), f"_config{os.sep}coolterm_config.stc"),
-                        dst=f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Connection_settings{os.sep}coolterm_config.stc")
+        if not (pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc').is_file():
+            shutil.copy(src=pathlib.Path(__file__).parent / '_config' / 'coolterm_config.stc',
+                        dst=pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc')
 
-        coolterm_config_path = os.path.join(
-            self.exp_settings_dict['coolterm_basedirectory'],
-            'Connection_settings',
-            'coolterm_config.stc'
-        )
+        coolterm_config_path = str(pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc')
 
         subprocess.Popen(
             args=['powershell', '-Command', f"Start-Process -FilePath '{coolterm_config_path}' -WindowStyle Minimized"],
@@ -849,7 +835,7 @@ class ExperimentController:
                 affinity_arg = f" /affinity {cpu_affinity_mask}"
 
             # run command to start Avisoft Recorder and keep executing the rest of the script
-            if os.path.exists(f"{self.exp_settings_dict['avisoft_config_directory']}{os.sep}avisoft_config.ini"):
+            if (pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini').exists():
 
                 # run Avisoft as Administrator
                 run_avisoft_command = f"Start-Process -FilePath '{avisoft_recorder_program_name}' -ArgumentList '/CFG=avisoft_config.ini', '/AUT' -Verb RunAs"
@@ -939,14 +925,14 @@ class ExperimentController:
         # remount CUP drives if necessary
         self.remount_cup_drives_on_windows()
 
-        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}video").mkdir(parents=True, exist_ok=True)
-        pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}sync").mkdir(parents=True, exist_ok=True)
+        (pathlib.Path(total_dir_name_windows[0]) / 'video').mkdir(parents=True, exist_ok=True)
+        (pathlib.Path(total_dir_name_windows[0]) / 'sync').mkdir(parents=True, exist_ok=True)
         if self.exp_settings_dict['conduct_audio_recording']:
             if self.exp_settings_dict['audio']['general']['total'] == 0:
-                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
+                (pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original').mkdir(parents=True, exist_ok=True)
             else:
-                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original").mkdir(parents=True, exist_ok=True)
-                pathlib.Path(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}original_mc").mkdir(parents=True, exist_ok=True)
+                (pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original').mkdir(parents=True, exist_ok=True)
+                (pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original_mc').mkdir(parents=True, exist_ok=True)
 
         self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
@@ -966,15 +952,15 @@ class ExperimentController:
             audio_copy_subprocesses = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
                 for mic_idx in self.exp_settings_dict['audio']['used_mics']:
-                    last_modified_audio_file = max(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"),
-                                                   key=os.path.getctime)
+                    ch_dir = pathlib.Path(self.exp_settings_dict['avisoft_basedirectory']) / f"ch{mic_idx + 1}"
+                    last_modified_audio_file = max(ch_dir.glob('*.wav'), key=lambda p: p.stat().st_ctime)
 
-                    full_destination_path = os.path.join(os.path.join(total_dir_name_windows[0], 'audio', 'original'), f"ch{mic_idx + 1}_{os.path.basename(last_modified_audio_file)}")
-                    move_file_ps_command = f"Move-Item -Path '{os.path.basename(last_modified_audio_file)}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
+                    full_destination_path = str(pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original' / f"ch{mic_idx + 1}_{last_modified_audio_file.name}")
+                    move_file_ps_command = f"Move-Item -Path '{last_modified_audio_file.name}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
 
                     single_audio_copy_subp = subprocess.Popen(
                         args=['powershell', '-Command', move_file_ps_command],
-                        cwd=os.path.join(self.exp_settings_dict['avisoft_basedirectory'], f"ch{mic_idx + 1}"),
+                        cwd=ch_dir,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.STDOUT,
                         shell=False
@@ -985,15 +971,16 @@ class ExperimentController:
                 relevant_file_count = max(1, int(math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
                 device_id = ['m', 's']
                 for mic_pos_idx, mic_idx in enumerate([0, 12]):
-                    audio_file_list = sorted(glob.glob(f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}ch{mic_idx + 1}{os.sep}*.wav"), key=os.path.getctime, reverse=True)[:relevant_file_count]
+                    ch_dir = pathlib.Path(self.exp_settings_dict['avisoft_basedirectory']) / f"ch{mic_idx + 1}"
+                    audio_file_list = sorted(ch_dir.glob('*.wav'), key=lambda p: p.stat().st_ctime, reverse=True)[:relevant_file_count]
                     for aud_file in audio_file_list:
 
-                        full_destination_path = os.path.join(os.path.join(total_dir_name_windows[0], 'audio', 'original_mc'), f"{device_id[mic_pos_idx]}_{os.path.basename(aud_file)}")
-                        move_file_ps_command = f"Move-Item -Path '{os.path.basename(aud_file)}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
+                        full_destination_path = str(pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original_mc' / f"{device_id[mic_pos_idx]}_{aud_file.name}")
+                        move_file_ps_command = f"Move-Item -Path '{aud_file.name}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
 
                         multi_audio_copy_subp = subprocess.Popen(
                             args=['powershell', '-Command', move_file_ps_command],
-                            cwd=os.path.join(self.exp_settings_dict['avisoft_basedirectory'], f"ch{mic_idx + 1}"),
+                            cwd=ch_dir,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT,
                             shell=False
@@ -1009,9 +996,9 @@ class ExperimentController:
                     break
 
         # move last modified sync file to primary file server
-        last_modified_sync_file = max(glob.glob(f"{self.exp_settings_dict['coolterm_basedirectory']}{os.sep}Data{os.sep}*.txt"), key=os.path.getctime)
+        last_modified_sync_file = max((pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Data').glob('*.txt'), key=lambda p: p.stat().st_ctime)
         shutil.move(src=last_modified_sync_file,
-                    dst=f"{total_dir_name_windows[0]}{os.sep}sync{os.sep}{last_modified_sync_file.split(os.sep)[-1]}")
+                    dst=pathlib.Path(total_dir_name_windows[0]) / 'sync' / last_modified_sync_file.name)
 
         # ensure the video is done copying before proceeding
         while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
@@ -1065,7 +1052,7 @@ class ExperimentController:
                     else:
                         self.message_output(f"Number of dropouts registered on {log_device} device: {dropout_count}.")
 
-            with open(f"{total_dir_name_windows[0]}{os.sep}audio{os.sep}audio_triggerbox_sync_info.json", 'w') as audio_dict_outfile:
+            with open(pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'audio_triggerbox_sync_info.json', 'w') as audio_dict_outfile:
                 json.dump(audio_triggerbox_sync_info_dict, audio_dict_outfile, indent=4)
 
         self.message_output(f"Transferring audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
@@ -1073,7 +1060,7 @@ class ExperimentController:
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
                   no_receivers_notification=False,
-                  credentials_file=f"{self.exp_settings_dict['credentials_directory']}{os.sep}email_config.ini",
+                  credentials_file=pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, recording has been completed.",
                                                                          message=f"Thank you for your patience, recording by @{self.exp_settings_dict['experimenter']} was completed at "
                                                                                  f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "

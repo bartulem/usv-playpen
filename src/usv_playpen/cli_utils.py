@@ -48,7 +48,7 @@ class StringTuple(click.ParamType):
             )
 
 
-def set_nested_key(d: dict = None, target_key: str = None, value: Any = None) -> bool:
+def set_nested_key(d: dict, target_key: str, value: Any = None) -> bool:
     """
     Description
     -----------
@@ -86,9 +86,9 @@ def set_nested_key(d: dict = None, target_key: str = None, value: Any = None) ->
 
 
 def modify_settings_json_for_cli(
-    ctx: click.Context = None,
-    provided_params: list = None,
-    parameters_lists: list = None,
+    ctx: click.Context,
+    provided_params: list,
+    parameters_lists: list | None = None,
     settings_dict: str = None,
 ) -> dict:
     """

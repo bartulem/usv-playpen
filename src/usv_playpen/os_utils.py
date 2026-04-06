@@ -8,7 +8,7 @@ from __future__ import annotations
 import platform
 
 
-def find_base_path() -> str:
+def find_base_path() -> str | None:
     """
     Description
     ----------
@@ -37,7 +37,7 @@ def find_base_path() -> str:
     return base_path
 
 
-def configure_path(pa: str = None) -> str:
+def configure_path(pa: str) -> str:
     """
     Description
     ----------

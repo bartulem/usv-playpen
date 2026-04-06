@@ -5,9 +5,8 @@ Code to extract data measured by phidgets.
 
 from __future__ import annotations
 
-import glob
 import json
-import os
+import pathlib
 from operator import itemgetter
 
 import numpy as np
@@ -32,33 +31,18 @@ class Gatherer:
         -------
         """
 
-        if root_directory is None:
+        if root_directory is None or input_parameter_dict is None:
             with open(
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "_parameter_settings/processing_settings.json",
-                )
+                pathlib.Path(__file__).parent / "_parameter_settings/processing_settings.json"
             ) as json_file:
-                self.root_directory = json.load(json_file)["extract_phidget_data"][
-                    "root_directory"
-                ]
-        else:
-            self.root_directory = root_directory
+                _settings = json.load(json_file)["extract_phidget_data"]
 
-        if input_parameter_dict is None:
-            with open(
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "_parameter_settings/processing_settings.json",
-                )
-            ) as json_file:
-                self.input_parameter_dict = json.load(json_file)[
-                    "extract_phidget_data"
-                ]["Gatherer"]
-        else:
-            self.input_parameter_dict = input_parameter_dict["extract_phidget_data"][
-                "Gatherer"
-            ]
+        self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
+        self.input_parameter_dict = (
+            input_parameter_dict["extract_phidget_data"]["Gatherer"]
+            if input_parameter_dict is not None
+            else _settings["Gatherer"]
+        )
 
     def prepare_data_for_analyses(self) -> dict:
         """
@@ -84,22 +68,18 @@ class Gatherer:
         """
 
         # find subdirectory with phidget data
-        sub_directory = ""
-        for one_dir in os.listdir(f"{self.root_directory}{os.sep}video"):
+        sub_directory = None
+        for one_dir in (pathlib.Path(self.root_directory) / "video").iterdir():
             if (
                 self.input_parameter_dict["prepare_data_for_analyses"][
                     "extra_data_camera"
                 ]
-                in one_dir
+                in one_dir.name
             ):
                 sub_directory = one_dir
                 break
 
-        phidget_file_list = sorted(
-            glob.glob(
-                f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}*.json"
-            )
-        )
+        phidget_file_list = sorted(sub_directory.glob("*.json"))
 
         # load raw phidget data
         phidget_data = []
@@ -114,7 +94,7 @@ class Gatherer:
 
         # sort phidget_data by particular dictionary key
         phidget_data_sorted = sorted(
-            phidget_data, key=itemgetter("sensor_time"), reverse=False
+            phidget_data, key=itemgetter("sensor_time")
         )
 
         # extract data for export
@@ -125,11 +105,11 @@ class Gatherer:
         }
 
         for one_dict_idx, one_dict in enumerate(phidget_data_sorted):
-            if "hum_h" in one_dict.keys():
+            if "hum_h" in one_dict:
                 phidget_data_dictionary["humidity"][one_dict_idx] = one_dict["hum_h"]
-            if "lux" in one_dict.keys():
+            if "lux" in one_dict:
                 phidget_data_dictionary["lux"][one_dict_idx] = one_dict["lux"]
-            if "hum_t" in one_dict.keys():
+            if "hum_t" in one_dict:
                 phidget_data_dictionary["temperature"][one_dict_idx] = one_dict["hum_t"]
 
         return phidget_data_dictionary

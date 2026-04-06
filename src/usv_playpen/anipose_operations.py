@@ -5,13 +5,13 @@ Gets 3D tracked points in metric units, rotated and translated to match arena co
 
 from __future__ import annotations
 
-import glob
 import json
 import math
 import os
 import pathlib
 import platform
 import subprocess
+from collections.abc import Callable
 from datetime import datetime
 
 import h5py
@@ -19,7 +19,7 @@ import numpy as np
 import sleap_anipose
 from imgstore import new_for_filename
 
-from .time_utils import *
+from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 
@@ -53,19 +53,17 @@ def find_mouse_names(root_directory: str = None,
 
     track_names = []
     if metadata is None:
-        for sub_directory in os.listdir(f"{root_directory}{os.sep}video"):
+        for sub_directory in (pathlib.Path(root_directory) / 'video').iterdir():
             if (
-                os.path.isdir(f"{root_directory}{os.sep}video{os.sep}{sub_directory}")
-                and "." in sub_directory
-                and "_" in sub_directory
-                and "calibration" not in sub_directory
+                sub_directory.is_dir()
+                and "." in sub_directory.name
+                and "_" in sub_directory.name
+                and "calibration" not in sub_directory.name
             ):
-                img_store = new_for_filename(
-                    f"{root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml"
-                )
+                img_store = new_for_filename(str(sub_directory / 'metadata.yaml'))
                 user_meta_data = img_store.user_metadata
 
-                if "cage" in user_meta_data.keys() and "subject" in user_meta_data.keys():
+                if "cage" in user_meta_data and "subject" in user_meta_data:
                     for cage, subject in zip(
                         user_meta_data["cage"].split(","),
                         user_meta_data["subject"].split(","),
@@ -110,7 +108,7 @@ def find_mouse_names(root_directory: str = None,
     return track_names
 
 def extract_skeleton_nodes(
-    skeleton_loc: str = None, skeleton_arena_bool: bool = False
+    skeleton_loc: str, skeleton_arena_bool: bool = False
 ) -> list:
     """
     Description
@@ -145,13 +143,13 @@ def extract_skeleton_nodes(
         if dict_idx == 0:
             unsorted_node_list.append(dict_id["source"]["py/state"]["py/tuple"][0])
             unsorted_node_list.append(dict_id["target"]["py/state"]["py/tuple"][0])
-        elif "py/state" in dict_id["target"].keys():
+        elif "py/state" in dict_id["target"]:
             unsorted_node_list.append(dict_id["target"]["py/state"]["py/tuple"][0])
 
     sorting_key_list = []
     for node_dict in skeleton["nodes"]:
         raw_position_value = node_dict["id"]["py/id"]
-        if raw_position_value == 1 or raw_position_value == 2:
+        if raw_position_value in (1, 2):
             sorting_key_list.append(raw_position_value - 1)
         else:
             sorting_key_list.append(raw_position_value - 2)
@@ -166,7 +164,7 @@ def extract_skeleton_nodes(
 
 
 def redefine_cage_reference_nodes(
-    arena_input_data: np.ndarray = None, node_list_indices: list = None
+    arena_input_data: np.ndarray, node_list_indices: list
 ) -> np.ndarray:
     """
     Description
@@ -205,7 +203,7 @@ def redefine_cage_reference_nodes(
     )
 
 
-def rotate_x(data: np.ndarray = None, theta: float = None) -> np.ndarray:
+def rotate_x(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
     ----------
@@ -237,7 +235,7 @@ def rotate_x(data: np.ndarray = None, theta: float = None) -> np.ndarray:
     return np.matmul(data, rotation_matrix)
 
 
-def rotate_y(data: np.ndarray = None, theta: float = None) -> np.ndarray:
+def rotate_y(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
     ----------
@@ -269,7 +267,7 @@ def rotate_y(data: np.ndarray = None, theta: float = None) -> np.ndarray:
     return np.matmul(data, rotation_matrix)
 
 
-def rotate_z(data: np.ndarray = None, theta: float = None) -> np.ndarray:
+def rotate_z(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
     ----------
@@ -306,7 +304,7 @@ class ConvertTo3D:
         self,
         root_directory: str = None,
         input_parameter_dict: dict = None,
-        message_output: callable = None,
+        message_output: Callable | None = None,
     ) -> None:
         """
         Initializes the ConvertTo3D class.
@@ -325,46 +323,23 @@ class ConvertTo3D:
         -------
         """
 
-        if input_parameter_dict is None:
+        if input_parameter_dict is None or root_directory is None:
             with open(
                 pathlib.Path(__file__).parent
                 / "_parameter_settings/processing_settings.json"
             ) as json_file:
-                self.input_parameter_dict = json.load(json_file)["anipose_operations"][
-                    "ConvertTo3D"
-                ]
-        else:
-            self.input_parameter_dict = input_parameter_dict["anipose_operations"][
-                "ConvertTo3D"
-            ]
+                _settings = json.load(json_file)["anipose_operations"]
 
-        if root_directory is None:
-            with open(
-                pathlib.Path(__file__).parent
-                / "_parameter_settings/processing_settings.json"
-            ) as json_file:
-                self.root_directory = json.load(json_file)["anipose_operations"][
-                    "root_directory"
-                ]
-        else:
-            self.root_directory = root_directory
+        self.input_parameter_dict = input_parameter_dict["anipose_operations"]["ConvertTo3D"] if input_parameter_dict is not None else _settings["ConvertTo3D"]
+        self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
+        self.message_output = message_output if message_output is not None else print
 
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
-
-        self.session_root_joint_date_dir = ""
+        self.session_root_joint_date_dir = pathlib.Path()
         self.session_root_name = ""
-        for one_object in os.listdir(f"{self.root_directory}{os.sep}video"):
-            if (
-                os.path.isdir(os.path.join(self.root_directory, "video", one_object))
-                and "_" not in one_object
-            ):
-                self.session_root_joint_date_dir = os.path.join(
-                    self.root_directory, "video", one_object
-                )
-                self.session_root_name = one_object
+        for one_object in (pathlib.Path(self.root_directory) / 'video').iterdir():
+            if one_object.is_dir() and "_" not in one_object.name:
+                self.session_root_joint_date_dir = one_object
+                self.session_root_name = one_object.name
 
         self.app_context_bool = is_gui_context()
 
@@ -391,42 +366,29 @@ class ConvertTo3D:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        if os.name == "nt":
-            command_addition = "cmd /c "
-            shell_usage_bool = False
-        else:
-            command_addition = ''
-            shell_usage_bool = True
-
         conversion_subprocesses = []
-        for cam_directory in os.listdir(self.session_root_joint_date_dir):
-            if os.path.isdir(
-                os.path.join(self.session_root_joint_date_dir, cam_directory)
-            ):
-                for one_file in os.listdir(
-                    os.path.join(self.session_root_joint_date_dir, cam_directory)
-                ):
-                    if one_file.endswith(".slp"):
+        for cam_directory in self.session_root_joint_date_dir.iterdir():
+            if cam_directory.is_dir():
+                for one_file in cam_directory.iterdir():
+                    if one_file.name.endswith(".slp"):
                         if self.app_context_bool:
                             if platform.system() == "Darwin":
-                                sleap_convert_command = f'''{command_addition}uvx --from "sleap[nn]" sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}'''
+                                sleap_convert_command = f'''uvx --from "sleap[nn]" sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}'''
                             else:
-                                sleap_convert_command = f'''{command_addition}uvx --from "sleap[nn]" --index https://download.pytorch.org/whl/cpu --index https://pypi.org/simple sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"'''
+                                sleap_convert_command = f'''uvx --from "sleap[nn]" --index https://download.pytorch.org/whl/cpu --index https://pypi.org/simple sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
                         else:
                             sleap_venv_path = self.input_parameter_dict["sleap_venv_path"]
                             if os.name == "nt":
-                                sleap_convert_command = f'''{command_addition}{sleap_venv_path} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"'''
+                                sleap_convert_command = f'''{sleap_venv_path} && sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
                             else:
-                                sleap_convert_command = f'''{command_addition}source {sleap_venv_path} && sleap-convert --format analysis -o "{one_file[:-3]}analysis.h5" "{one_file}"'''
+                                sleap_convert_command = f'''source {sleap_venv_path} && sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
 
                         conversion_subp = subprocess.Popen(
                             args=sleap_convert_command,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT,
-                            cwd=os.path.join(
-                                self.session_root_joint_date_dir, cam_directory
-                            ),
-                            shell=shell_usage_bool,
+                            cwd=cam_directory,
+                            shell=True,
                         )
                         conversion_subprocesses.append(conversion_subp)
 
@@ -467,7 +429,7 @@ class ConvertTo3D:
             "board_provided_bool"
         ]:
             sleap_anipose.draw_board(
-                board_name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_charuco_8x11.png",
+                board_name=str(self.session_root_joint_date_dir / f"{self.session_root_name}_charuco_8x11.png"),
                 board_x=self.input_parameter_dict["conduct_anipose_calibration"][
                     "board_xy"
                 ][0],
@@ -492,15 +454,15 @@ class ConvertTo3D:
                 img_height=self.input_parameter_dict["conduct_anipose_calibration"][
                     "img_width_height"
                 ][1],
-                save=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_cboard.toml",
+                save=str(self.session_root_joint_date_dir / f"{self.session_root_name}_cboard.toml"),
             )
 
         sleap_anipose.calibrate(
-            session=self.session_root_joint_date_dir,
-            board=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_cboard.toml",
-            calib_fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_calibration.toml",
-            metadata_fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_calibration.metadata.h5",
-            histogram_path=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_reprojection_histogram.png",
+            session=str(self.session_root_joint_date_dir),
+            board=str(self.session_root_joint_date_dir / f"{self.session_root_name}_cboard.toml"),
+            calib_fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_calibration.toml"),
+            metadata_fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_calibration.metadata.h5"),
+            histogram_path=str(self.session_root_joint_date_dir / f"{self.session_root_name}_reprojection_histogram.png"),
             reproj_path=self.session_root_joint_date_dir,
         )
 
@@ -528,13 +490,7 @@ class ConvertTo3D:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        calibration_dir_search = glob.glob(
-            pathname=os.path.join(
-                f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}{os.sep}**",
-                "*_calibration.toml*",
-            ),
-            recursive=True,
-        )
+        calibration_dir_search = list(pathlib.Path(self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']).rglob('*_calibration.toml*'))
         if len(calibration_dir_search) == 0:
             self.message_output(
                 "Calibration directory not found. Please run calibration first and provide a correct path."
@@ -553,12 +509,7 @@ class ConvertTo3D:
                     is None
                 ):
                     with open(
-                        glob.glob(
-                            pathname=os.path.join(
-                                f"{self.root_directory}{os.sep}video",
-                                "*_camera_frame_count_dict.json*",
-                            )
-                        )[0]
+                        sorted((pathlib.Path(self.root_directory) / 'video').glob('*_camera_frame_count_dict.json*'))[0]
                     ) as frame_count_infile:
                         camera_frame_count_dict = json.load(frame_count_infile)
                         self.input_parameter_dict["conduct_anipose_triangulation"][
@@ -570,7 +521,7 @@ class ConvertTo3D:
                         none_hyperparam_bool = True
 
                 sleap_anipose.triangulate(
-                    p2d=self.session_root_joint_date_dir,
+                    p2d=str(self.session_root_joint_date_dir),
                     calib=calibration_toml_file,
                     frames=tuple(
                         self.input_parameter_dict["conduct_anipose_triangulation"][
@@ -585,7 +536,7 @@ class ConvertTo3D:
                     ransac=self.input_parameter_dict["conduct_anipose_triangulation"][
                         "ransac_bool"
                     ],
-                    fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
+                    fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5"),
                     disp_progress=self.input_parameter_dict[
                         "conduct_anipose_triangulation"
                     ]["display_progress_bool"],
@@ -634,7 +585,7 @@ class ConvertTo3D:
                     none_hyperparam_bool = True
 
                 sleap_anipose.triangulate(
-                    p2d=self.session_root_joint_date_dir,
+                    p2d=str(self.session_root_joint_date_dir),
                     calib=calibration_toml_file,
                     frames=tuple(
                         self.input_parameter_dict["conduct_anipose_triangulation"][
@@ -646,7 +597,7 @@ class ConvertTo3D:
                             "excluded_views"
                         ]
                     ),
-                    fname=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
+                    fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5"),
                     disp_progress=self.input_parameter_dict[
                         "conduct_anipose_triangulation"
                     ]["display_progress_bool"],
@@ -692,24 +643,14 @@ class ConvertTo3D:
 
         # get recording frame rate
         with open(
-            glob.glob(
-                pathname=os.path.join(
-                    f"{self.root_directory}{os.sep}video",
-                    "*_camera_frame_count_dict.json*",
-                )
-            )[0]
+            sorted((pathlib.Path(self.root_directory) / 'video').glob('*_camera_frame_count_dict.json*'))[0]
         ) as frame_count_infile:
             recording_frame_rate = json.load(frame_count_infile)[
                 "median_empirical_camera_sr"
             ]
 
         # load original arena data
-        arena_data_original_h5 = glob.glob(
-            pathname=f"{self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc']}{os.sep}**{os.sep}*_points3d.h5*",
-            recursive=True,
-        )[0]
-        arena_data_original_h5_dir = os.path.dirname(arena_data_original_h5)
-        arena_data_original_h5_file = os.path.basename(arena_data_original_h5)
+        arena_data_original_h5 = list(pathlib.Path(self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc']).rglob('*_points3d.h5*'))[0]
         with h5py.File(arena_data_original_h5, mode="r") as h5_file_arena:
             arena_data = np.array(h5_file_arena["tracks"], dtype="float64")
 
@@ -885,7 +826,7 @@ class ConvertTo3D:
             == "arena"
         ):
             with h5py.File(
-                name=f"{arena_data_original_h5_dir}{os.sep}{arena_data_original_h5_file[:-3]}_translated_rotated_metric.h5",
+                name=arena_data_original_h5.parent / f"{arena_data_original_h5.name[:-3]}_translated_rotated_metric.h5",
                 mode="w",
             ) as h5_file_write:
                 h5_file_write.create_dataset(name="tracks", data=arena_data)
@@ -903,7 +844,7 @@ class ConvertTo3D:
             == "animal"
         ):
             with h5py.File(
-                name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5",
+                name=self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5",
                 mode="r",
             ) as h5_file_mouse:
                 mouse_data = np.array(h5_file_mouse["tracks"], dtype="float64")
@@ -952,7 +893,7 @@ class ConvertTo3D:
             mouse_track_names = find_mouse_names(root_directory=self.root_directory, metadata=metadata)
 
             with h5py.File(
-                name=f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d_translated_rotated_metric.h5",
+                name=self.session_root_joint_date_dir / f"{self.session_root_name}_points3d_translated_rotated_metric.h5",
                 mode="w",
             ) as h5_file_write:
                 h5_file_write.create_dataset(name="tracks", data=mouse_data)
@@ -976,6 +917,4 @@ class ConvertTo3D:
             if self.input_parameter_dict["translate_rotate_metric"][
                 "delete_original_h5"
             ]:
-                os.remove(
-                    f"{self.session_root_joint_date_dir}{os.sep}{self.session_root_name}_points3d.h5"
-                )
+                (self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5").unlink()

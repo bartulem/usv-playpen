@@ -298,7 +298,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 Create naturalistic playback .WAV file
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 This function creates a .WAV file containing naturalistic sequences of USV snippets. The snippets are randomly selected from the female or male USV snippet repository in
-the specified directory and concatenated with inter-sequence (ISIs) and inter-USV intervals (IUIs) of a specified duration. The resulting .WAV file can be used for playback experiments.
+the specified directory and assembled into sequences with empirically derived inter-event intervals. The resulting .WAV file can be used for playback experiments.
 To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no need to list root directories!), select total number of files to be created, number of vocalizations in each one, click *Next* and then *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_5.png
@@ -308,6 +308,13 @@ To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no 
 .. raw:: html
 
    <br>
+
+Inter-USV intervals (IUIs) and inter-sequence intervals (ISIs) are sampled from a sex-specific 3-component Gaussian mixture model (GMM) fit to log-transformed empirical interval data.
+Sex is inferred automatically from the ``naturalistic_playback_snippets_dir_prefix`` setting (e.g. ``"female"`` or ``"male"``). Specifically:
+
+* **IUI** is drawn from the *first* GMM component (shortest intervals, ~60 ms peak): ``exp(N(mean[0], sd[0]))``
+* **ISI** is drawn from the *third* GMM component (longest intervals, seconds-scale): ``exp(N(mean[2], sd[2]))``
+* **Sequence length** is drawn from N(13, 5) clipped to [3, 23] USVs
 
 The analysis results in the creation of three files: [1] WAV file containing playback vocalizations, [2] a *spacing* text file informing you of the duration of each vocalization in order, and [3] a *usvids* text file containing the identity of each vocalization snippet if you need to go back and look at what it was:
 
@@ -323,11 +330,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 * **num_naturalistic_usv_files** : number of naturalistic playback files to be created
 * **naturalistic_wav_sampling_rate** : sampling rate of the playback .WAV file in kHz
-* **naturalistic_playback_snippets_dir_prefix** : prefix of the subdirectory where the USV snippets are stored (the rest of the subdirectory name should be "_usv_playback_snippets"
-* **inter_seq_interval_distribution** : sequence inter-pulse interval durations in seconds with their probabilities (should sum to 1)
-* **usv_seq_length_distribution** : number of USVs in a sequence with their probabilities (should sum to 1)
-* **inter_usv_interval_distribution** : USV inter-pulse interval durations in seconds with their probabilities (should sum to 1)
-* **total_acceptable_naturalistic_playback_time** : total acceptable time of the playback time (in s)
+* **naturalistic_playback_snippets_dir_prefix** : prefix of the subdirectory where the USV snippets are stored (the rest of the subdirectory name should be ``"_usv_playback_snippets"``); also determines which sex-specific GMM is used (``"female"`` or ``"male"``)
+* **total_acceptable_naturalistic_playback_time** : total acceptable duration of the playback file (in s)
 
 .. code-block:: json
 
@@ -335,28 +339,5 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "num_naturalistic_usv_files": 1,
         "naturalistic_wav_sampling_rate": 250,
         "naturalistic_playback_snippets_dir_prefix": "female",
-        "inter_seq_interval_distribution": {
-          "2.5": 0.125,
-          "5": 0.5,
-          "7.5": 0.25,
-          "10": 0.125
-        },
-        "usv_seq_length_distribution": {
-          "5": 0.5,
-          "10": 0.25,
-          "20": 0.125,
-          "40": 0.0625,
-          "80": 0.0625
-        },
-        "inter_usv_interval_distribution": {
-          "0.02": 0.02,
-          "0.04": 0.33,
-          "0.06": 0.45,
-          "0.08": 0.1,
-          "0.1": 0.025,
-          "0.15": 0.045,
-          "0.2": 0.025,
-          "0.25": 0.005
-        },
         "total_acceptable_naturalistic_playback_time": 1080
     }

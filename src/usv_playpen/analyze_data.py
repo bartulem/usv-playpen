@@ -3,16 +3,23 @@
 Conduct analyses of choice on the data of choice (on the PC of choice).
 """
 
-from datetime import datetime
-import os
+from __future__ import annotations
+
+import json
+import pathlib
 import traceback
 import warnings
+from collections.abc import Callable
+from datetime import datetime
+
+import click
 from click.core import ParameterSource
-from .cli_utils import *
-from .send_email import Messenger
+
 from .analyses.compute_behavioral_features import FeatureZoo
 from .analyses.compute_behavioral_tuning_curves import NeuronalTuning
 from .analyses.generate_audio_files import AudioGenerator
+from .cli_utils import modify_settings_json_for_cli
+from .send_email import Messenger
 
 warnings.simplefilter('ignore')
 
@@ -21,7 +28,7 @@ class Analyst:
 
     def __init__(self, input_parameter_dict: dict = None,
                  root_directories: list = None,
-                 message_output: callable = None) -> None:
+                 message_output: Callable | None = None) -> None:
 
         """
         Initializes the Analyst class.
@@ -40,22 +47,13 @@ class Analyst:
         -------
         """
 
-        if root_directories is None:
-            with open((pathlib.Path(__file__).parent / '_parameter_settings/analyses_settings.json'), 'r') as json_file:
-                self.root_directories = json.load(json_file)['analyze_data']['root_directories']
-        else:
-            self.root_directories = root_directories
+        if input_parameter_dict is None or root_directories is None:
+            with open(pathlib.Path(__file__).parent / '_parameter_settings/analyses_settings.json') as json_file:
+                _settings = json.load(json_file)
 
-        if input_parameter_dict is None:
-            with open((pathlib.Path(__file__).parent / '_parameter_settings/analyses_settings.json'), 'r') as json_file:
-                self.input_parameter_dict = json.load(json_file)
-        else:
-            self.input_parameter_dict = input_parameter_dict
-
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
+        self.root_directories = root_directories if root_directories is not None else _settings['analyze_data']['root_directories']
+        self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else _settings
+        self.message_output = message_output if message_output is not None else print
 
     def analyze_data(self) -> None:
         """
@@ -79,7 +77,7 @@ class Analyst:
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
-                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config.ini",
+                  credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                        message=f"Data analyses in progress, started at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -129,7 +127,7 @@ class Analyst:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
-                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config.ini",
+                  credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, analyses have been completed",
                                                        message=f"Data analyses have been completed at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "

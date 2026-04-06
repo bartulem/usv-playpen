@@ -15,10 +15,11 @@ from joblib import Parallel, delayed
 from scipy.stats import vonmises as sp_vonmises
 from tqdm import tqdm
 
-softplus = lambda x: np.log1p(np.exp(x))
+def softplus(x):
+    return np.log1p(np.exp(x))
 
 
-def get_arena_dimensions(arena_dims_path: pathlib.Path = None) -> np.ndarray:
+def get_arena_dimensions(arena_dims_path: pathlib.Path) -> np.ndarray:
     """
     Description
     ----------
@@ -53,7 +54,7 @@ def get_arena_dimensions(arena_dims_path: pathlib.Path = None) -> np.ndarray:
     return np.array([x_dim, y_dim])
 
 
-def load_usv_segments(segment_file: pathlib.Path = None) -> np.ndarray:
+def load_usv_segments(segment_file: pathlib.Path) -> np.ndarray:
     """
     Description
     ----------
@@ -83,7 +84,7 @@ def load_usv_segments(segment_file: pathlib.Path = None) -> np.ndarray:
 
 
 def load_tracks_from_h5(
-    h5_file_path: pathlib.Path = None,
+    h5_file_path: pathlib.Path,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
@@ -110,7 +111,7 @@ def load_tracks_from_h5(
         return tracks, names
 
 
-def to_float(input_array: np.ndarray = None) -> np.ndarray:
+def to_float(input_array: np.ndarray) -> np.ndarray:
     """
     Description
     ----------
@@ -136,11 +137,11 @@ def to_float(input_array: np.ndarray = None) -> np.ndarray:
 
 
 def write_to_h5(
-    output_path: pathlib.Path = None,
-    audio: list[tuple[np.ndarray, Any]] = None,
-    node_names: np.ndarray = None,
-    locations: np.ndarray = None,
-    length_idx: np.ndarray = None,
+    output_path: pathlib.Path,
+    audio: list[tuple[np.ndarray, Any]],
+    node_names: np.ndarray,
+    locations: np.ndarray,
+    length_idx: np.ndarray,
     extra_metadata: dict | None = None,
 ) -> None:
     """
@@ -183,10 +184,10 @@ def write_to_h5(
 
 
 def eval_pdf_with_angle(
-    points_spatial: np.ndarray = None,
-    points_angular: np.ndarray = None,
-    mean_2d: np.ndarray = None,
-    cov_2d: np.ndarray = None,
+    points_spatial: np.ndarray,
+    points_angular: np.ndarray,
+    mean_2d: np.ndarray,
+    cov_2d: np.ndarray,
     center_rad: float | None = None,
     concentration: float | None = None,
     histogram: np.ndarray | None = None,
@@ -245,7 +246,7 @@ def eval_pdf_with_angle(
 
     except np.linalg.LinAlgError:
         closest_point_idx = np.argmin(np.linalg.norm(points_spatial - mean_2d, axis=-1))
-        probs = np.zeros(points_spatial.shape[0], len(points_angular))
+        probs = np.zeros((points_spatial.shape[0], len(points_angular)))
         probs[closest_point_idx, :] = 1
 
         return probs.reshape(*points_orig_shape, len(points_angular))
@@ -273,7 +274,6 @@ def compute_covs_6d(raw_outputs: np.ndarray, arena_dims: np.ndarray) -> np.ndarr
     ----------
     """
 
-    raw_outputs = raw_outputs
     n_dims = 6
     L = np.zeros((raw_outputs.shape[0], n_dims, n_dims))
     idxs = np.tril_indices(n_dims)
@@ -334,7 +334,7 @@ def estimate_angle_pdf(
 
 
 def get_confidence_set(
-    pdf: np.ndarray = None, confidence_level: float = None
+    pdf: np.ndarray, confidence_level: float
 ) -> np.ndarray:
     """
     Description
@@ -370,8 +370,8 @@ def get_confidence_set(
 
 
 def make_xy_grid(
-    arena_dims: np.ndarray = None,
-    render_dims: np.ndarray = None,
+    arena_dims: np.ndarray,
+    render_dims: np.ndarray,
 ) -> np.ndarray:
     """
     Description
@@ -407,7 +407,7 @@ def make_xy_grid(
 
 
 def convert_from_arb(
-    output: np.ndarray = None, arena_dims: np.ndarray = None
+    output: np.ndarray, arena_dims: np.ndarray
 ) -> np.ndarray:
     """
     Description
@@ -437,8 +437,8 @@ def convert_from_arb(
 
 
 def get_conf_sets_6d(
-    raw_output: np.ndarray = None,
-    arena_dims_mm: np.ndarray = None,
+    raw_output: np.ndarray,
+    arena_dims_mm: np.ndarray,
     temperature: float = 1.0,
     return_pdf: bool = False,
 ) -> tuple:
@@ -506,9 +506,9 @@ def get_conf_sets_6d(
 
 
 def are_points_in_conf_set(
-    confidence_sets: np.ndarray = None,
-    points: np.ndarray = None,
-    arena_dims: np.ndarray = None,
+    confidence_sets: np.ndarray,
+    points: np.ndarray,
+    arena_dims: np.ndarray,
 ) -> np.ndarray:
     """
     Description

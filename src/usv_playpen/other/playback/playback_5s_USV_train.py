@@ -1,5 +1,5 @@
-import glob
 import numpy as np
+import pathlib
 import RPi.GPIO as io
 import subprocess
 import time
@@ -23,7 +23,7 @@ def run_playback_files(num_seq,
     io.setup(io_pin_id, io.OUT)
 
     # find .wav files
-    wav_file_lst = glob.glob(f"{audio_d}/*.wav")
+    wav_file_lst = sorted(pathlib.Path(audio_d).glob('*.wav'))
 
     # get a pseudo-random sequence of audio files
     random_int_lst = np.random.randint(low=0, high=100, size=num_seq, dtype=int)

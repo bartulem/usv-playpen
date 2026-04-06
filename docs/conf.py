@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from urllib.request import urlretrieve
+from urllib.error import URLError
 from importlib import metadata
 
-urlretrieve(
-    url="https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/README.md",
-    filename="README.md",
-)
+try:
+    urlretrieve(
+        url="https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/README.md",
+        filename="README.md",
+    )
+except (URLError, OSError):
+    pass
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -16,7 +20,10 @@ urlretrieve(
 project = "usv-playpen"
 copyright = "2025, github/bartulem"
 author = "Bartul Mimica (documentation)"
-release = f"{metadata.version('usv-playpen').split('.dev')[0]}"
+try:
+    release = metadata.version('usv-playpen').split('.dev')[0]
+except metadata.PackageNotFoundError:
+    release = "0.0.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

@@ -3,13 +3,20 @@
 Preprocess data after running experiments.
 """
 
-import os
+from __future__ import annotations
+
+import json
+import pathlib
 import traceback
-from click.core import ParameterSource
+from collections.abc import Callable
 from datetime import datetime
+
+import click
+from click.core import ParameterSource
+
 from .anipose_operations import ConvertTo3D
 from .assign_vocalizations import Vocalocator
-from .cli_utils import *
+from .cli_utils import StringTuple, modify_settings_json_for_cli
 from .das_inference import FindMouseVocalizations
 from .extract_phidget_data import Gatherer
 from .modify_files import Operator
@@ -25,7 +32,7 @@ class Stylist:
                  exp_settings_dict: dict = None,
                  input_parameter_dict: dict = None,
                  root_directories: list = None,
-                 message_output: callable = None) -> None:
+                 message_output: Callable | None = None) -> None:
 
         """
         Initializes the Stylist class.
@@ -46,27 +53,14 @@ class Stylist:
         -------
         """
 
-        if root_directories is None:
-            with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
-                self.root_directories = json.load(json_file)['preprocess_data']['root_directories']
-        else:
-            self.root_directories = root_directories
+        if input_parameter_dict is None or root_directories is None:
+            with open(pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json') as json_file:
+                _settings = json.load(json_file)
 
-        if input_parameter_dict is None:
-            with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
-                self.input_parameter_dict = json.load(json_file)
-        else:
-            self.input_parameter_dict = input_parameter_dict
-
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
-
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
+        self.root_directories = root_directories if root_directories is not None else _settings['preprocess_data']['root_directories']
+        self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else _settings
+        self.exp_settings_dict = exp_settings_dict
+        self.message_output = message_output if message_output is not None else print
 
     def prepare_data_for_analyses(self) -> None:
         """
@@ -110,7 +104,7 @@ class Stylist:
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
-                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config.ini",
+                  credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                                          message=f"Data preprocessing in progress, started at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -167,7 +161,7 @@ class Stylist:
 
                     # # # convert multichannel to single channel files
                     if self.input_parameter_dict['processing_booleans']['conduct_audio_multichannel_to_single_ch']:
-                        if len(os.listdir(f"{one_directory}{os.sep}audio{os.sep}original")) == 0:
+                        if len(list((pathlib.Path(one_directory) / 'audio' / 'original').iterdir())) == 0:
                             Operator(root_directory=one_directory,
                                      input_parameter_dict=self.input_parameter_dict,
                                      message_output=self.message_output).multichannel_to_channel_audio()
@@ -282,7 +276,7 @@ class Stylist:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
-                  credentials_file=f"{self.input_parameter_dict['credentials_directory']}{os.sep}email_config.ini",
+                  credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, processing has been completed",
                                                                          message=f"Data preprocessing has been completed at "
                                                                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
@@ -485,7 +479,7 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
         phidget_data_dictionary=phidget_data_dictionary
     )
 
-click.command(name="ev-sync-check")
+@click.command(name="ev-sync-check")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--file-type', 'npx_file_type', type=click.Choice(['ap', 'lf'], case_sensitive=False), default=None, required=False, help='Neuropixels file type (ap or lf).')
 @click.option('--tolerance', 'npx_ms_divergence_tolerance', type=float, default=None, required=False, help='Divergence tolerance (in ms).')
@@ -996,7 +990,7 @@ def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
-    vcl_version = processing_settings_dict.get('vocalocator', {}).get('vcl_version', 'vcl-ssl')
+    vcl_version = processing_settings_dict['vocalocator']['vcl_version']
 
     if vcl_version == 'vcl':
         Vocalocator(

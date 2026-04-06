@@ -6,18 +6,19 @@ Send e-mail notifying users the PC is busy.
 from __future__ import annotations
 
 import configparser
-from pathlib import Path
 import smtplib
 import sys
+from collections.abc import Callable
 from email.message import EmailMessage
+from pathlib import Path
 
 
 class Messenger:
     def __init__(
         self,
-        receivers: list = None,
-        exp_settings_dict: dict = None,
-        message_output: callable = None,
+        receivers: list | None = None,
+        exp_settings_dict: dict | None = None,
+        message_output: Callable | None = None,
         no_receivers_notification: bool = True,
         credentials_file: str = ''
     ) -> None:
@@ -42,26 +43,10 @@ class Messenger:
         -------
         """
 
-        if credentials_file is None or credentials_file == '':
-            self.credentials_file = ''
-        else:
-            self.credentials_file = credentials_file
-
-        if receivers is None:
-            self.receivers = []
-        else:
-            self.receivers = receivers
-
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
-
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
-
+        self.credentials_file = credentials_file or ''
+        self.receivers = receivers if receivers is not None else []
+        self.exp_settings_dict = exp_settings_dict
+        self.message_output = message_output or print
         self.no_receivers_notification = no_receivers_notification
 
     def get_email_params(self) -> tuple:
@@ -85,14 +70,14 @@ class Messenger:
         config = configparser.ConfigParser()
 
         if not Path(self.credentials_file).is_file():
-            print(self.credentials_file)
-            print("E-mail config file not found. Try again!")
+            print(self.credentials_file)  # noqa: T201
+            print("E-mail config file not found. Try again!")  # noqa: T201
             sys.exit(1)
         else:
             config.read(self.credentials_file)
-            return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'],config['email']['email_password']
+            return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'], config['email']['email_password']
 
-    def send_message(self, subject: str = None, message: str = None) -> bool | None:
+    def send_message(self, subject: str | None = None, message: str | None = None) -> bool | None:
         """
         Description
         ----------

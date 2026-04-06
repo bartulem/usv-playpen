@@ -5,8 +5,6 @@ Runs HPSS on the cluster.
 
 from __future__ import annotations
 
-import glob
-import os
 import pathlib
 import sys
 
@@ -16,9 +14,9 @@ from scipy.io import wavfile
 
 
 def hpss_func(
-    recording_identifier: str = None,
-    cup_recording_directory: str = None,
-    wav_file_idx: int = None,
+    recording_identifier: str,
+    cup_recording_directory: str,
+    wav_file_idx: int,
 ) -> None:
     """
     Description
@@ -44,9 +42,7 @@ def hpss_func(
     """
 
     wav_file = sorted(
-        glob.glob(
-            f"/mnt/cup/labs/{cup_recording_directory}/{recording_identifier}/audio/cropped_to_video/*.wav"
-        )
+        (pathlib.Path('/mnt/cup/labs') / cup_recording_directory / recording_identifier / 'audio' / 'cropped_to_video').glob('*.wav')
     )[wav_file_idx]
 
     # read the audio file (use Scipy, not Librosa because Librosa performs scaling)
@@ -77,13 +73,11 @@ def hpss_func(
     ).astype(np.int16)
 
     # save the harmonic component as a new WAV file
-    pathlib.Path(
-        f"/mnt/cup/labs/{cup_recording_directory}/{recording_identifier}/audio/hpss"
-    ).mkdir(parents=True, exist_ok=True)
+    hpss_dir = pathlib.Path('/mnt/cup/labs') / cup_recording_directory / recording_identifier / 'audio' / 'hpss'
+    hpss_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_file_name = os.path.basename(wav_file)
     wavfile.write(
-        filename=f"/mnt/cup/labs/{cup_recording_directory}/{recording_identifier}/audio/hpss/{raw_file_name[:-4]}_hpss.wav",
+        filename=hpss_dir / f"{wav_file.stem}_hpss.wav",
         rate=sampling_rate_audio,
         data=harmonic_data_clipped,
     )

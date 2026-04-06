@@ -26,10 +26,8 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 
 from __future__ import annotations
 
-import glob
 import itertools
 import json
-import os
 import pathlib
 import warnings
 from datetime import datetime
@@ -44,7 +42,7 @@ from matplotlib import gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import minimize
 
-from ..time_utils import *
+from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.auxiliary_plot_functions import (
     choose_animal_colors,
     create_colormap,
@@ -56,11 +54,11 @@ plt.style.use(pathlib.Path(__file__).parent.parent / "_config/usv_playpen.mplsty
 
 
 def generate_feature_distributions(
-    feature_arr: np.ndarray = None,
-    min_val: int | float = None,
-    max_val: int | float = None,
-    num_bins: int | float = None,
-    camera_fr: int | float = None,
+    feature_arr: np.ndarray,
+    min_val: int | float,
+    max_val: int | float,
+    num_bins: int | float,
+    camera_fr: int | float,
     space_bool: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -132,10 +130,10 @@ def generate_feature_distributions(
 
 
 def calculate_derivatives(
-    input_arr: np.ndarray = None,
-    diff_bins: int = None,
+    input_arr: np.ndarray,
+    diff_bins: int,
+    capture_fr: int | float,
     is_angle: bool = False,
-    capture_fr: int | float = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Returns arrays w/ first and second derivatives.
@@ -284,7 +282,7 @@ def calculate_sei(
 
     return sei
 
-def calculate_tail_curvature(input_arr: np.ndarray = None) -> np.ndarray:
+def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     """
     Returns arrays w/ the tail curvature metric.
 
@@ -333,9 +331,9 @@ def calculate_tail_curvature(input_arr: np.ndarray = None) -> np.ndarray:
 
 
 def calculate_planar_social_angle(
-    point1_arr: np.ndarray = None,
-    point2_arr: np.ndarray = None,
-    point3_arr: np.ndarray = None,
+    point1_arr: np.ndarray,
+    point2_arr: np.ndarray,
+    point3_arr: np.ndarray,
 ) -> np.ndarray:
     """
     Return arrays w/ planar social angle
@@ -381,9 +379,9 @@ def calculate_planar_social_angle(
 
 
 def calculate_speed(
-    tracked_points_array: np.ndarray = None,
-    capture_framerate: int | float = None,
-    smoothing_time_window: int | float = None,
+    tracked_points_array: np.ndarray,
+    capture_framerate: int | float,
+    smoothing_time_window: int | float,
 ) -> np.ndarray:
     """
     Returns arrays w/ centroid (body minus tail) speed data.
@@ -1302,18 +1300,16 @@ class FeatureZoo:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        tracked_file_loc = glob.glob(
-            f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"
-        )[0]
+        tracked_file_loc = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'))
 
         # load tracking data
         with h5py.File(tracked_file_loc, mode="r") as tracking_data_3d:
             mouse_data = np.array(tracking_data_3d["tracks"]).astype(np.float64)
             mouse_nodes = [
-                elem.decode("utf-8") for elem in list(tracking_data_3d["node_names"])
+                elem.decode("utf-8") for elem in tracking_data_3d["node_names"]
             ]
             track_names = [
-                elem.decode("utf-8") for elem in list(tracking_data_3d["track_names"])
+                elem.decode("utf-8") for elem in tracking_data_3d["track_names"]
             ]
             experimental_code = tracking_data_3d["experimental_code"][()].decode(
                 "utf-8"

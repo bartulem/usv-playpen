@@ -5,8 +5,6 @@ Makes neuronal tuning curves for 3D behavioral features.
 
 from __future__ import annotations
 
-import glob
-import os
 import pathlib
 import pickle
 from datetime import datetime
@@ -16,18 +14,18 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
-from ..time_utils import *
+from ..time_utils import is_gui_context, smart_wait
 from .compute_behavioral_features import FeatureZoo
 
 
 def generate_ratemaps(
-    feature_arr: np.ndarray = None,
-    spike_arr: np.ndarray = None,
-    shuffled_spike_arr: np.ndarray = None,
-    min_val: int = None,
-    max_val: int = None,
-    num_bins: int = None,
-    camera_fr: int | float = None,
+    feature_arr: np.ndarray,
+    spike_arr: np.ndarray,
+    shuffled_spike_arr: np.ndarray,
+    min_val: int,
+    max_val: int,
+    num_bins: int,
+    camera_fr: int | float,
     space_bool: bool = False,
 ) -> (
     tuple[np.ndarray, np.ndarray, np.ndarray]
@@ -137,11 +135,11 @@ def generate_ratemaps(
 
 
 def shuffle_spikes(
-    spike_array: np.ndarray = None,
-    total_fr_num: int = None,
-    shuffle_min_fr: int = None,
-    shuffle_max_fr: int = None,
-    n_shuffles: int = None,
+    spike_array: np.ndarray,
+    total_fr_num: int,
+    shuffle_min_fr: int,
+    shuffle_max_fr: int,
+    n_shuffles: int,
 ) -> np.ndarray:
     """
     Description
@@ -238,36 +236,27 @@ class NeuronalTuning(FeatureZoo):
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # load behavioral feature data
-        behavioral_data_file = glob.glob(
-            pathname=f"{self.root_directory}{os.sep}**{os.sep}*_behavioral_features.csv*",
-            recursive=True,
-        )[0]
+        behavioral_data_file = next(pathlib.Path(self.root_directory).rglob('*_behavioral_features.csv*'))
         behavioral_data = pls.read_csv(behavioral_data_file)
 
         # load mouse and camera frame rate info
-        mouse_data_h5 = glob.glob(
-            pathname=f"{self.root_directory}{os.sep}**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5*",
-            recursive=True,
-        )[0]
+        mouse_data_h5 = next(pathlib.Path(self.root_directory).rglob('[!speaker]*_points3d_translated_rotated_metric.h5*'))
         with h5py.File(mouse_data_h5, mode="r") as tracking_data_3d:
             animal_ids = [
-                elem.decode("utf-8") for elem in list(tracking_data_3d["track_names"])
+                elem.decode("utf-8") for elem in tracking_data_3d["track_names"]
             ]
             empirical_camera_sr = float(tracking_data_3d["recording_frame_rate"][()])
 
         # load spike data
-        cluster_file_lst = glob.glob(
-            pathname=f"{self.root_directory}{os.sep}ephys{os.sep}**{os.sep}cluster_data{os.sep}*.npy",
-            recursive=True,
-        )
+        cluster_file_lst = list((pathlib.Path(self.root_directory) / 'ephys').rglob('cluster_data/*.npy'))
 
         for cluster_file in tqdm(cluster_file_lst):
-            cluster_data_frames = np.load(file=cluster_file)[1, :]
-            cluster_id = os.path.basename(cluster_file)[:-4]
+            cluster_data_frames_original = np.load(file=cluster_file)[1, :]
+            cluster_id = cluster_file.stem
 
             neuronal_tuning_curves_data = {}
             for one_offset in self.tuning_parameters_dict["temporal_offsets"]:
-                cluster_data_frames = cluster_data_frames.astype(np.int32) + int(
+                cluster_data_frames = cluster_data_frames_original.astype(np.int32) + int(
                     np.floor(one_offset * empirical_camera_sr)
                 )
                 cluster_data_frames = cluster_data_frames[
@@ -359,11 +348,9 @@ class NeuronalTuning(FeatureZoo):
                         space_computed_rm[f"{column.split('.')[0]}"] = True
 
             # save tuning curves to file
-            pathlib.Path(
-                f"{self.root_directory}{os.sep}ephys{os.sep}tuning_curves"
-            ).mkdir(parents=True, exist_ok=True)
+            (pathlib.Path(self.root_directory) / 'ephys' / 'tuning_curves').mkdir(parents=True, exist_ok=True)
             with open(
-                f"{self.root_directory}{os.sep}ephys{os.sep}tuning_curves{os.sep}{cluster_id}_tuning_curves_data.pkl",
+                pathlib.Path(self.root_directory) / 'ephys' / 'tuning_curves' / f"{cluster_id}_tuning_curves_data.pkl",
                 "wb",
             ) as neuronal_tuning_curves_pkl:
                 pickle.dump(neuronal_tuning_curves_data, neuronal_tuning_curves_pkl)

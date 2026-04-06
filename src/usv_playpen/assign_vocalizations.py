@@ -3,19 +3,23 @@
 Makes dataset to run and runs vocalocator inference.
 """
 
-from datetime import datetime
-from glob import glob
-import h5py
+from __future__ import annotations
+
 import json
-import numpy as np
 import os
 import pathlib
-import polars as pls
 import subprocess
+from datetime import datetime
+
+import h5py
+import numpy as np
+import polars as pls
 from tqdm import tqdm
-from .assign_vocalizations_utils import (get_arena_dimensions, load_usv_segments, load_tracks_from_h5, to_float, write_to_h5,
-                                         get_conf_sets_6d, are_points_in_conf_set)
-from .time_utils import *
+
+from .assign_vocalizations_utils import (are_points_in_conf_set, get_arena_dimensions,
+                                         get_conf_sets_6d, load_tracks_from_h5,
+                                         load_usv_segments, to_float, write_to_h5)
+from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 class Vocalocator:
@@ -67,16 +71,16 @@ class Vocalocator:
         self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        audio_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_concatenated_audio_*.mmap"), None)
-        usv_segments_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob("*_usv_summary.csv"), None)
-        track_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
-        arena_info_path = next(pathlib.Path(f"{self.input_parameter_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc']}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
+        audio_file_path = next((pathlib.Path(self.root_directory) / 'audio').rglob('*_concatenated_audio_*.mmap'), None)
+        usv_segments_path = next((pathlib.Path(self.root_directory) / 'audio').glob('*_usv_summary.csv'), None)
+        track_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
+        arena_info_path = next((pathlib.Path(self.input_parameter_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc']) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
 
-        video_frame_count_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}*_camera_frame_count_dict.json"), None)
+        video_frame_count_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('*_camera_frame_count_dict.json'), None)
         with open(video_frame_count_file_path, 'r') as frame_count_infile:
             video_frame_rate = json.load(frame_count_infile)['median_empirical_camera_sr']
 
-        output_path = pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}sound_localization")
+        output_path = pathlib.Path(self.root_directory) / 'audio' / 'sound_localization'
         output_path.mkdir(exist_ok=True, parents=True)
         output_path_file = output_path / 'dset.h5'
 
@@ -161,11 +165,11 @@ class Vocalocator:
 
         vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']
         model_directory = self.input_parameter_dict['vocalocator']['vcl_model_directory']
-        model_config_path = f"{model_directory}{os.sep}config.json"
-        data_file_path = f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}dset.h5"
-        output_file_path = f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}assessment.h5"
-        track_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
-        usv_summary_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
+        model_config_path = str(pathlib.Path(model_directory) / 'config.json')
+        data_file_path = str(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'dset.h5')
+        output_file_path = str(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment.h5')
+        track_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
+        usv_summary_file_path = next((pathlib.Path(self.root_directory) / 'audio').rglob('*_usv_summary.csv'), None)
 
         conda_exe = os.environ.get('CONDA_EXE', 'conda')
         clean_env = os.environ.copy()
@@ -188,7 +192,7 @@ class Vocalocator:
             arena_dims = np.array(model_config['DATA']['ARENA_DIMS'])
             true_locs = ctx['scaled_locations'][:]
 
-        conf_sets, conf_sets_noangle, pdfs = get_conf_sets_6d(raw_output, arena_dims, 1.0, True)
+        conf_sets, _, pdfs = get_conf_sets_6d(raw_output, arena_dims, 1.0, True)
 
         pts_in_set = np.stack([are_points_in_conf_set(conf_sets, true_locs[:, mouse_idx, ...], arena_dims,) for mouse_idx in range(2)],axis=1,)
 
@@ -210,7 +214,7 @@ class Vocalocator:
         self.message_output(f"Vocalization percentage attributed to mouse #2: {mouse_two_vocalizations.sum()}")
         self.message_output(f"Vocalization percentage attributed to BOTH mice: {two_in_set.sum()}")
 
-        np.save(f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}assessment_assn.npy", assignments)
+        np.save(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy', assignments)
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -220,7 +224,7 @@ class Vocalocator:
 
         usv_summary_df = pls.read_csv(usv_summary_file_path)
 
-        sound_loc_assignment_arr = np.load(f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}assessment_assn.npy")
+        sound_loc_assignment_arr = np.load(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy')
 
         for mouse_idx, mouse in enumerate(track_names):
             usv_summary_df = usv_summary_df.with_columns(
@@ -267,9 +271,9 @@ class Vocalocator:
 
         vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']
         model_directory = self.input_parameter_dict['vocalocator']['vcl_model_directory']
-        data_file_path = f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}"
-        track_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
-        usv_summary_file_path = next(pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
+        data_file_path = pathlib.Path(self.root_directory) / 'audio' / 'sound_localization'
+        track_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
+        usv_summary_file_path = next((pathlib.Path(self.root_directory) / 'audio').rglob('*_usv_summary.csv'), None)
 
         try:
             # Locate the calibration file or raise an error if not found
@@ -280,8 +284,8 @@ class Vocalocator:
             clean_env.pop('PYTHONHOME', None)
             subprocess.run(
                 args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl',
-                      '--data', data_file_path, '--save-path', model_directory, '--predict',
-                      '-o', f'{data_file_path}{os.sep}model_predictions.npz'],
+                      '--data', str(data_file_path), '--save-path', model_directory, '--predict',
+                      '-o', str(data_file_path / 'model_predictions.npz')],
                 cwd=model_directory,
                 env=clean_env,
                 shell=False,
@@ -289,8 +293,8 @@ class Vocalocator:
             )
             subprocess.run(
                 args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl.assign',
-                      f'{data_file_path}{os.sep}model_predictions.npz',
-                      '--calibration-results', f'{model_directory}{os.sep}{cal_file}'],
+                      str(data_file_path / 'model_predictions.npz'),
+                      '--calibration-results', str(pathlib.Path(model_directory) / cal_file)],
                 cwd=model_directory,
                 env=clean_env,
                 shell=False,
@@ -310,8 +314,8 @@ class Vocalocator:
         usv_summary_df = pls.read_csv(usv_summary_file_path)
 
         # get assignments
-        model_predictions_archive = np.load(file=f"{self.root_directory}{os.sep}audio{os.sep}sound_localization{os.sep}model_predictions.npz", allow_pickle=True)
-        assignment_array_id = list(filter(lambda k: k.endswith('assignments'), model_predictions_archive.files))[0]
+        model_predictions_archive = np.load(file=pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'model_predictions.npz', allow_pickle=True)
+        assignment_array_id = next(k for k in model_predictions_archive.files if k.endswith('assignments'))
         assignments = model_predictions_archive[assignment_array_id]
 
         # get assignment statistics
@@ -323,7 +327,7 @@ class Vocalocator:
 
         self.message_output(f"Out of {total} vocalizations, {assigned} have been assigned, or {round(assigned*100/total, 2)}%.")
         self.message_output(f"{unassigned} vocalizations have not been assigned, or {round(unassigned*100/total, 2)}%.")
-        for track_id, animal_id in zip(track_names, range(len(track_names))):
+        for animal_id, track_id in enumerate(track_names):
             count = value_to_count.get(animal_id, 0)
             self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/total, 2)}%.")
 

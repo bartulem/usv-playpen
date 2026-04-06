@@ -5,22 +5,22 @@ Run USV inference on WAV files and create annotations.
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 import pathlib
 import shutil
 import subprocess
+from collections.abc import Callable
 from datetime import datetime
 
 import librosa
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
+import polars as pls
 from tqdm import tqdm
 
-from .time_utils import *
+from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts/Helvetica.ttf")
@@ -30,10 +30,10 @@ plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
 class FindMouseVocalizations:
     def __init__(
         self,
-        root_directory: str = None,
-        input_parameter_dict: dict = None,
-        exp_settings_dict: dict = None,
-        message_output: callable = None,
+        root_directory: str | None = None,
+        input_parameter_dict: dict | None = None,
+        exp_settings_dict: dict | None = None,
+        message_output: Callable | None = None,
     ) -> None:
         """
         Initializes the FindMouseVocalizations class.
@@ -54,48 +54,27 @@ class FindMouseVocalizations:
         -------
         """
 
-        if input_parameter_dict is None:
+        if input_parameter_dict is None or root_directory is None:
             with open(
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "_parameter_settings/processing_settings.json",
-                )
+                pathlib.Path(__file__).parent / "_parameter_settings/processing_settings.json"
             ) as json_file:
-                self.input_parameter_dict = json.load(json_file)["usv_inference"][
-                    "FindMouseVocalizations"
-                ]
-        else:
-            self.input_parameter_dict = input_parameter_dict["usv_inference"][
-                "FindMouseVocalizations"
-            ]
+                _defaults = json.load(json_file)
 
-        if root_directory is None:
-            with open(
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "_parameter_settings/processing_settings.json",
-                )
-            ) as json_file:
-                self.root_directory = json.load(json_file)["usv_inference"][
-                    "root_directory"
-                ]
+            if input_parameter_dict is None:
+                self.input_parameter_dict = _defaults["usv_inference"]["FindMouseVocalizations"]
+            else:
+                self.input_parameter_dict = input_parameter_dict["usv_inference"]["FindMouseVocalizations"]
+
+            if root_directory is None:
+                self.root_directory = _defaults["usv_inference"]["root_directory"]
+            else:
+                self.root_directory = root_directory
         else:
+            self.input_parameter_dict = input_parameter_dict["usv_inference"]["FindMouseVocalizations"]
             self.root_directory = root_directory
 
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
-
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
-
-        if exp_settings_dict is None:
-            self.exp_settings_dict = None
-        else:
-            self.exp_settings_dict = exp_settings_dict
+        self.exp_settings_dict = exp_settings_dict
+        self.message_output = message_output or print
 
         self.app_context_bool = is_gui_context()
 
@@ -127,7 +106,7 @@ class FindMouseVocalizations:
         das_conda_name = self.input_parameter_dict["das_command_line_inference"][
             "das_conda_env_name"
         ]
-        model_base = f"{self.input_parameter_dict['das_command_line_inference']['das_model_directory']}{os.sep}{self.input_parameter_dict['das_command_line_inference']['model_name_base']}"
+        model_base = str(pathlib.Path(self.input_parameter_dict['das_command_line_inference']['das_model_directory']) / self.input_parameter_dict['das_command_line_inference']['model_name_base'])
         thresh = self.input_parameter_dict["das_command_line_inference"][
             "segment_confidence_threshold"
         ]
@@ -141,16 +120,12 @@ class FindMouseVocalizations:
             "output_file_type"
         ]
 
+        hpss_dir = pathlib.Path(self.root_directory) / "audio" / "hpss_filtered"
+
         # run inference
-        for one_file in sorted(
-            glob.glob(
-                pathname=os.path.join(
-                    f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered", "*.wav*"
-                )
-            )
-        ):
+        for one_file in sorted(hpss_dir.glob("*.wav*")):
             self.message_output(
-                f"Running DAS inference on: {os.path.basename(one_file)}"
+                f"Running DAS inference on: {one_file.name}"
             )
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -161,7 +136,7 @@ class FindMouseVocalizations:
                 args=[conda_exe, 'run', '--no-capture-output', '-n', das_conda_name, 'das', 'predict', one_file, model_base,
                       '--segment-thres', str(thresh), '--segment-minlen', str(min_len),
                       '--segment-fillgap', str(fill_gap), '--save-format', str(save_format)],
-                cwd=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered",
+                cwd=hpss_dir,
                 env=clean_env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
@@ -176,19 +151,13 @@ class FindMouseVocalizations:
                     break
 
         # create save directory if it doesn't exist
-        pathlib.Path(
-            f"{self.root_directory}{os.sep}audio{os.sep}das_annotations"
-        ).mkdir(parents=True, exist_ok=True)
+        das_dir = pathlib.Path(self.root_directory) / "audio" / "das_annotations"
+        das_dir.mkdir(parents=True, exist_ok=True)
 
-        # move CSV files to save directory and remove them from WAV directory
-        for one_file in os.listdir(
-            f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered"
-        ):
-            if f".{save_format}" in one_file:
-                shutil.move(
-                    src=f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered{os.sep}{one_file}",
-                    dst=f"{self.root_directory}{os.sep}audio{os.sep}das_annotations{os.sep}{one_file}",
-                )
+        # move annotation files to save directory
+        for one_file in hpss_dir.iterdir():
+            if f".{save_format}" in one_file.name:
+                shutil.move(src=one_file, dst=das_dir / one_file.name)
 
     def summarize_das_findings(self) -> None:
         """
@@ -245,219 +214,106 @@ class FindMouseVocalizations:
             "s_ch12": 23,
         }
 
-        session_id = self.root_directory.split(os.sep)[-1]
+        session_id = pathlib.Path(self.root_directory).name
 
         try:
             das_annotation_files = sorted(
-                glob.glob(
-                    f"{self.root_directory}{os.sep}audio{os.sep}das_annotations{os.sep}*.csv"
-                )
+                (pathlib.Path(self.root_directory) / "audio" / "das_annotations").glob("*.csv")
             )
 
-            # extract data from all CSV files
-            usv_data = {}
+            # Phase 1: load all channel CSVs, filter noise, collect flat segment list
+            # Each entry is (start_seconds, stop_seconds, channel_numeric_index).
+            all_segments = []
             for one_file in das_annotation_files:
                 file_id = (
-                    one_file.split(os.sep)[-1].split("_")[0]
+                    one_file.name.split("_")[0]
                     + "_"
-                    + one_file.split(os.sep)[-1].split("_")[2]
+                    + one_file.name.split("_")[2]
                 )
-                usv_data[file_id] = pd.read_csv(
-                    filepath_or_buffer=one_file, sep=",", index_col=0
+                channel_df = pls.read_csv(source=one_file)
+                channel_df = channel_df.filter(pls.col("name") != "noise")
+                ch_num = ch_conversion_dict[file_id]
+                for seg_row in channel_df.iter_rows(named=True):
+                    all_segments.append(
+                        (seg_row["start_seconds"], seg_row["stop_seconds"], ch_num)
+                    )
+
+            # Phase 2: sort all segments by start time
+            all_segments.sort(key=lambda seg: seg[0])
+
+            # Phase 3: greedy interval merge across all channels
+            # Two intervals (a_start, a_stop) and (b_start, b_stop) overlap (open-ended) when:
+            #   a_start < b_stop  and  b_start < a_stop
+            # Since segments are sorted by start, only the running stop needs comparing.
+            # Each merged entry is a dict with start, stop, chs_detected (set), and placeholder fields.
+            merged = []
+            for start, stop, ch_idx in all_segments:
+                if merged and start < merged[-1]['stop']:
+                    # overlaps with current merged interval: extend and record channel
+                    merged[-1]['stop'] = max(merged[-1]['stop'], stop)
+                    merged[-1]['chs_detected'].add(ch_idx)
+                else:
+                    # no overlap: start a new merged interval
+                    merged.append({
+                        'start': start,
+                        'stop': stop,
+                        'chs_detected': {ch_idx},
+                        'peak_amp_ch': 0.0,
+                        'mean_amp_ch': 0.0,
+                    })
+
+            # Convert channel sets to sorted lists and compute counts
+            for usv in merged:
+                usv['chs_detected'] = sorted(usv['chs_detected'])
+                usv['chs_count'] = len(usv['chs_detected'])
+
+            n_usv = len(merged)
+            self.message_output(
+                f"Merged {n_usv} USV intervals from {len(all_segments)} raw detections across {len(das_annotation_files)} channels."
+            )
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+            # Phase 4: amplitude + spectrogram quality checks
+            if n_usv > 1:
+                audio_file_loc = sorted(
+                    (pathlib.Path(self.root_directory) / "audio" / "hpss_filtered").glob("*.mmap")
+                )[0]
+                audio_file_name = audio_file_loc.name
+                data_type, channel_num, sample_num, audio_sampling_rate = (
+                    audio_file_name.split("_")[-1][:-5],
+                    int(audio_file_name.split("_")[-2]),
+                    int(audio_file_name.split("_")[-3]),
+                    int(audio_file_name.split("_")[-4]),
+                )
+                audio_file_data = np.memmap(
+                    filename=audio_file_loc,
+                    mode="r",
+                    dtype=data_type,
+                    shape=(sample_num, channel_num),
                 )
 
-            # filter noise (usually the last row of every DAS file)
-            for channel_id, channel_data in usv_data.items():
-                usv_data[channel_id] = channel_data.loc[channel_data["name"] != "noise"]
+                len_win_signal = self.input_parameter_dict["summarize_das_findings"][
+                    "len_win_signal"
+                ]
+                low_freq_cutoff = self.input_parameter_dict["summarize_das_findings"][
+                    "low_freq_cutoff"
+                ]
+                frequency_resolution = audio_sampling_rate / len_win_signal
+                lower_bin = int(np.floor(low_freq_cutoff / frequency_resolution))
 
-            usv_summary = pd.DataFrame.from_dict(
-                data={
-                    "usv_id": [0.0],
-                    "start": [0.0],
-                    "stop": [0.0],
-                    "duration": [0.0],
-                    "peak_amp_ch": [0.0],
-                    "mean_amp_ch": [0.0],
-                    "chs_count": [0.0],
-                    "chs_detected": [[0.0]],
-                    "emitter": [np.nan],
-                },
-                orient="columns",
-            )
+                condition_0_list = np.full(shape=n_usv, fill_value=False)
+                mean_signal_correlations = np.full(n_usv, np.nan)
+                signal_variance = np.full(n_usv, np.nan)
 
-            usv_summary_null = usv_summary.copy()
-
-            # extract USV onsets and offsets, and channels they are detected on
-            progress_bar = tqdm(
-                list(usv_data.keys()),
-                desc="USV match search on {:s}".format(""),
-                position=0,
-                leave=True,
-            )
-            usv_num = 0
-            for channel_id in progress_bar:
-                progress_bar.set_description(
-                    f"USV match search on {channel_id:s}", refresh=True
-                )
-                channel_data = usv_data[channel_id]
-                if not channel_data.empty:
-                    for index, row in channel_data.iterrows():
-                        try:
-                            next_idx_overlap_with_previous = pd.Interval(
-                                left=usv_summary.iloc[-1, 1],
-                                right=usv_summary.iloc[-1, 2],
-                                closed="neither",
-                            ).overlaps(
-                                pd.Interval(
-                                    left=channel_data.loc[index, "start_seconds"],
-                                    right=channel_data.loc[index, "stop_seconds"],
-                                    closed="neither",
-                                )
-                            )
-                        except (IndexError, KeyError):
-                            next_idx_overlap_with_previous = False
-
-                        if not next_idx_overlap_with_previous:
-                            if usv_num > 0:
-                                usv_summary = usv_summary._append(
-                                    usv_summary_null, ignore_index=True
-                                )
-                            chs_count_temp = 1
-                            chs_detected_temp = [ch_conversion_dict[channel_id]]
-                            usv_summary.iloc[-1, 1] = row["start_seconds"]
-                            usv_summary.iloc[-1, 2] = row["stop_seconds"]
-                            usv_num += 1
-                            for (
-                                channel_id_other,
-                                channel_data_other,
-                            ) in usv_data.items():
-                                if (
-                                    channel_id != channel_id_other
-                                    and not channel_data_other.empty
-                                ):
-                                    for (
-                                        index_other,
-                                        row_other,
-                                    ) in channel_data_other.iterrows():
-                                        if pd.Interval(
-                                            left=row["start_seconds"],
-                                            right=row["stop_seconds"],
-                                            closed="neither",
-                                        ).overlaps(
-                                            pd.Interval(
-                                                left=row_other["start_seconds"],
-                                                right=row_other["stop_seconds"],
-                                                closed="neither",
-                                            )
-                                        ):
-                                            usv_summary.iloc[-1, 1] = min(
-                                                usv_summary.iloc[-1, 1],
-                                                row_other["start_seconds"],
-                                            )
-                                            usv_summary.iloc[-1, 2] = max(
-                                                usv_summary.iloc[-1, 2],
-                                                row_other["stop_seconds"],
-                                            )
-                                            chs_count_temp += 1
-                                            chs_detected_temp.append(
-                                                ch_conversion_dict[channel_id_other]
-                                            )
-                                            # the following segment checks for USV segments that are complete in some channels but broken in pieces in others
-                                            try:
-                                                if (
-                                                    index_other + 1
-                                                    <= channel_data_other.shape[0]
-                                                    and pd.Interval(
-                                                        left=row["start_seconds"],
-                                                        right=row["stop_seconds"],
-                                                        closed="neither",
-                                                    ).overlaps(
-                                                        pd.Interval(
-                                                            left=channel_data_other.loc[
-                                                                index_other + 1,
-                                                                "start_seconds",
-                                                            ],
-                                                            right=channel_data_other.loc[
-                                                                index_other + 1,
-                                                                "stop_seconds",
-                                                            ],
-                                                            closed="neither",
-                                                        )
-                                                    )
-                                                ):
-                                                    channel_data_other.drop(
-                                                        labels=[
-                                                            index_other,
-                                                            index_other + 1,
-                                                        ],
-                                                        inplace=True,
-                                                    )
-                                                else:
-                                                    channel_data_other.drop(
-                                                        labels=index_other, inplace=True
-                                                    )
-                                            except (IndexError, KeyError):
-                                                channel_data_other.drop(
-                                                    labels=index_other, inplace=True
-                                                )
-
-                                            break
-
-                            channel_data.drop(labels=index, inplace=True)
-
-                            usv_summary.iloc[-1, 6] = chs_count_temp
-                            usv_summary.iat[-1, 7] = chs_detected_temp
-
-            # compute USV durations and order them by start time
-            usv_summary["duration"] = usv_summary["stop"] - usv_summary["start"]
-            usv_summary.sort_values(by="start", ascending=True, inplace=True)
-
-            # find peak and mean amplitude channels and filter out noise
-            mean_signal_correlations = np.zeros(usv_summary.shape[0])
-            mean_signal_correlations[:] = np.nan
-
-            signal_variance = np.zeros(usv_summary.shape[0])
-            signal_variance[:] = np.nan
-
-            audio_file_loc = sorted(
-                glob.glob(
-                    f"{self.root_directory}{os.sep}audio{os.sep}hpss_filtered{os.sep}*.mmap"
-                )
-            )[0]
-            audio_file_name = os.path.basename(audio_file_loc)
-            data_type, channel_num, sample_num, audio_sampling_rate = (
-                audio_file_name.split("_")[-1][:-5],
-                int(audio_file_name.split("_")[-2]),
-                int(audio_file_name.split("_")[-3]),
-                int(audio_file_name.split("_")[-4]),
-            )
-            audio_file_data = np.memmap(
-                filename=audio_file_loc,
-                mode="r",
-                dtype=data_type,
-                shape=(sample_num, channel_num),
-            )
-
-            len_win_signal = self.input_parameter_dict["summarize_das_findings"][
-                "len_win_signal"
-            ]
-            low_freq_cutoff = self.input_parameter_dict["summarize_das_findings"][
-                "low_freq_cutoff"
-            ]
-            frequency_resolution = audio_sampling_rate / len_win_signal
-            lower_bin = int(np.floor(low_freq_cutoff / frequency_resolution))
-
-            condition_0_list = np.full(shape=usv_summary.shape[0], fill_value=False)
-            if usv_summary.shape[0] > 1:
-                for index, row in tqdm(
-                    usv_summary.iterrows(),
+                for i, usv in tqdm(
+                    enumerate(merged),
                     desc="Computing spectrogram correlations/variance in progress...",
-                    total=usv_summary.shape[0],
+                    total=n_usv,
                     position=0,
                     leave=True,
                 ):
-                    start_usv = int(np.floor(row["start"] * audio_sampling_rate))
-                    stop_usv = int(np.ceil(row["stop"] * audio_sampling_rate))
+                    start_usv = int(np.floor(usv['start'] * audio_sampling_rate))
+                    stop_usv = int(np.ceil(usv['stop'] * audio_sampling_rate))
                     peak_amp_ch = np.unravel_index(
                         np.argmax(audio_file_data[start_usv:stop_usv, :]),
                         audio_file_data.shape,
@@ -465,12 +321,12 @@ class FindMouseVocalizations:
                     mean_amp_ch = np.argmax(
                         np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0)
                     )
-                    usv_summary.at[index, "peak_amp_ch"] = peak_amp_ch
-                    usv_summary.at[index, "mean_amp_ch"] = mean_amp_ch
-                    usv_detected_chs = row["chs_detected"]
+                    usv['peak_amp_ch'] = int(peak_amp_ch)
+                    usv['mean_amp_ch'] = int(mean_amp_ch)
+                    usv_detected_chs = usv['chs_detected']
 
                     # remove USV segments if they don't appear on both peak and mean amplitude channels; this is clearly noise
-                    condition_0_list[index] = (
+                    condition_0_list[i] = (
                         peak_amp_ch not in usv_detected_chs
                         or mean_amp_ch not in usv_detected_chs
                     )
@@ -492,7 +348,7 @@ class FindMouseVocalizations:
                         unique_correlations = correlation_matrix[
                             np.triu_indices(n=len(usv_detected_chs), k=1)
                         ]
-                        mean_signal_correlations[index] = np.mean(unique_correlations)
+                        mean_signal_correlations[i] = np.mean(unique_correlations)
                     else:
                         spectrogram_data_selected_ch = (
                             np.abs(
@@ -505,7 +361,7 @@ class FindMouseVocalizations:
                             )
                             ** 2
                         )
-                        signal_variance[index] = np.var(
+                        signal_variance[i] = np.var(
                             spectrogram_data_selected_ch
                             / np.max(spectrogram_data_selected_ch)
                         )
@@ -528,23 +384,26 @@ class FindMouseVocalizations:
                 self.message_output(
                     f"Single channel variance cutoff (94th percentile of distribution): {noise_var_cutoff:.4f}"
                 )
+
+                # filter noise: drop USVs failing amplitude-channel, correlation, or variance checks
                 drop_counter = 0
-                for index, row in usv_summary.iterrows():
+                kept_merged = []
+                for i, usv in enumerate(merged):
                     # DAS precision is 94%, therefore remove 6% of USVs with the lowest signal correlations
-                    condition_1 = False
-                    if ~np.isnan(mean_signal_correlations[index]):
-                        if mean_signal_correlations[index] < noise_corr_cutoff:
-                            condition_1 = True
-
-                    # For signals detected only on one channel, filter based on variance
-                    condition_2 = False
-                    if ~np.isnan(signal_variance[index]):
-                        if signal_variance[index] < noise_var_cutoff:
-                            condition_2 = True
-
-                    if condition_0_list[index] or condition_1 or condition_2:
-                        usv_summary.drop(labels=index, inplace=True)
+                    condition_1 = (
+                        not np.isnan(mean_signal_correlations[i])
+                        and mean_signal_correlations[i] < noise_corr_cutoff
+                    )
+                    # for signals detected only on one channel, filter based on variance
+                    condition_2 = (
+                        not np.isnan(signal_variance[i])
+                        and signal_variance[i] < noise_var_cutoff
+                    )
+                    if condition_0_list[i] or condition_1 or condition_2:
                         drop_counter += 1
+                    else:
+                        kept_merged.append(usv)
+                merged = kept_merged
 
                 self.message_output(
                     f"Number of detections dropped due to low signal correlation/variance across channels: {drop_counter}"
@@ -574,25 +433,28 @@ class FindMouseVocalizations:
                 ax[1].set_ylabel("Number of putative USVs")
                 ax[1].axvline(x=noise_var_cutoff, ls="-.", lw=1.2, c="#000000")
                 fig.savefig(
-                    fname=f"{self.root_directory}{os.sep}audio{os.sep}{session_id}_usv_signal_correlation_histogram.svg",
+                    fname=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_signal_correlation_histogram.svg",
                     dpi=300,
                 )
                 plt.close()
 
-                # give ID number to each USV
-                usv_summary["usv_id"] = [
-                    f"{_num:04d}" for _num in range(usv_summary.shape[0])
-                ]
-
                 self.message_output(
-                    f"In this session, {usv_summary.shape[0]} USVs were detected."
+                    f"In this session, {len(merged)} USVs were detected."
                 )
 
                 # save the summary file
-                usv_summary.to_csv(
-                    path_or_buf=f"{self.root_directory}{os.sep}audio{os.sep}{session_id}_usv_summary.csv",
-                    sep=",",
-                    index=False,
+                pls.DataFrame({
+                    "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
+                    "start": [u['start'] for u in merged],
+                    "stop": [u['stop'] for u in merged],
+                    "duration": [u['stop'] - u['start'] for u in merged],
+                    "peak_amp_ch": [float(u['peak_amp_ch']) for u in merged],
+                    "mean_amp_ch": [float(u['mean_amp_ch']) for u in merged],
+                    "chs_count": [float(u['chs_count']) for u in merged],
+                    "chs_detected": [str(u['chs_detected']) for u in merged],
+                    "emitter": [None] * len(merged),
+                }).write_csv(
+                    file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
                 )
 
             # load metadata
@@ -601,10 +463,7 @@ class FindMouseVocalizations:
                 logger=self.message_output
             )
             if metadata is not None:
-                if usv_summary.shape[0] > 1:
-                    metadata['Session']['session_usv_count'] = int(usv_summary.shape[0])
-                else:
-                    metadata['Session']['session_usv_count'] = 0
+                metadata['Session']['session_usv_count'] = len(merged) if len(merged) > 1 else 0
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
         except (IndexError, FileNotFoundError):

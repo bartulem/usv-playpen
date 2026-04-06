@@ -5,8 +5,6 @@ Makes tuning curve figures for 3D behavioral features.
 
 from __future__ import annotations
 
-import glob
-import os
 import pathlib
 import pickle
 import warnings
@@ -23,7 +21,7 @@ from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..analyses.decode_experiment_label import extract_information
-from ..time_utils import *
+from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 
 fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / "fonts/Helvetica.ttf")
@@ -93,12 +91,10 @@ class RatemapFigureMaker(FeatureZoo):
         )
 
         # load experimental code and get mouse colors
-        tracked_file_loc = glob.glob(
-            f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"
-        )[0]
+        tracked_file_loc = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'))
         with h5py.File(tracked_file_loc, mode="r") as tracking_data_3d:
             mouse_id_list = [
-                elem.decode("utf-8") for elem in list(tracking_data_3d["track_names"])
+                elem.decode("utf-8") for elem in tracking_data_3d["track_names"]
             ]
             session_exp_code = tracking_data_3d["experimental_code"][()].decode("utf-8")
         experiment_info_dict = extract_information(experiment_code=session_exp_code)
@@ -109,9 +105,8 @@ class RatemapFigureMaker(FeatureZoo):
 
         # load tuning curve data
         cluster_tuning_curve_files = sorted(
-            glob.glob(
-                f"{self.root_directory}{os.sep}ephys{os.sep}tuning_curves{os.sep}*_tuning_curves_data.pkl"
-            )
+            (pathlib.Path(self.root_directory) / 'ephys' / 'tuning_curves').glob('*_tuning_curves_data.pkl'),
+            key=lambda p: p.name
         )
 
         for one_cluster_file in tqdm(cluster_tuning_curve_files):

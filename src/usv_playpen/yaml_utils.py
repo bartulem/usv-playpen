@@ -3,10 +3,14 @@
 Utility functions for modifying the metadata YAML file.
 """
 
+from __future__ import annotations
+
 import numbers
 import re
-import yaml
+from collections.abc import Callable
 from pathlib import Path
+
+import yaml
 
 # Matches strings that YAML 1.1 would silently parse as integers
 # (digits with optional underscore separators, optional leading sign).
@@ -17,7 +21,7 @@ _YAML11_INT_PATTERN = re.compile(r'^[+-]?[0-9][0-9_]*$')
 # while keeping dictionaries in block style for overall readability.
 class SmartDumper(yaml.Dumper):
     def represent_list(self, data):
-        is_simple_list = all(isinstance(item, (str, numbers.Number, bool)) or item is None for item in data)
+        is_simple_list = all(isinstance(item, (str, numbers.Number)) or item is None for item in data)
 
         if is_simple_list:
             return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
@@ -33,7 +37,7 @@ SmartDumper.add_representer(list, SmartDumper.represent_list)
 SmartDumper.add_representer(str, SmartDumper.represent_str)
 
 
-def load_session_metadata(root_directory: str, logger: callable = print) -> tuple[dict | None, Path | None]:
+def load_session_metadata(root_directory: str, logger: Callable = print) -> tuple[dict | None, Path | None]:
     """
     Finds and loads the session-specific metadata.yaml file from a given directory.
 
@@ -49,21 +53,21 @@ def load_session_metadata(root_directory: str, logger: callable = print) -> tupl
     -------
     """
 
-    try:
-        path = Path(root_directory)
-        metadata_path_list = list(path.glob('*_metadata.yaml'))
-        if not metadata_path_list:
-            return None, None
+    path = Path(root_directory)
+    metadata_path_list = list(path.glob('*_metadata.yaml'))
+    if not metadata_path_list:
+        return None, None
 
-        metadata_path = metadata_path_list[0]
+    metadata_path = metadata_path_list[0]
+    try:
         with open(metadata_path, 'r') as f:
             return yaml.safe_load(f), metadata_path
-    except Exception as e:
+    except yaml.YAMLError as e:
         logger(f"Error loading metadata file: {e}")
         return None, None
 
 
-def save_session_metadata(data: dict, filepath: Path, logger: callable = print) -> None:
+def save_session_metadata(data: dict, filepath: Path, logger: Callable = print) -> None:
     """
     Saves the given data back to the specified metadata file path.
 
@@ -83,5 +87,5 @@ def save_session_metadata(data: dict, filepath: Path, logger: callable = print) 
     try:
         with open(filepath, 'w') as f:
             yaml.dump(data, f, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
-    except Exception as e:
+    except yaml.YAMLError as e:
         logger(f"Error saving metadata file: {e}")

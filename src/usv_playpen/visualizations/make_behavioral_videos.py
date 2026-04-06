@@ -3,37 +3,38 @@
 Makes behavioral videos from 3D tracked points.
 """
 
-from datetime import datetime
-import glob
 import json
-import h5py
-import librosa
-import librosa.display
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, FFMpegWriter
-import matplotlib.font_manager as fm
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import numpy as np
-from numba import njit
 import os
-import polars as pls
 import pathlib
 import platform
 import re
-from scipy.io import wavfile
 import subprocess
 import warnings
+from datetime import datetime
 from typing import Any
-from .auxiliary_plot_functions import create_colormap, choose_animal_colors
+
+import h5py
+import librosa
+import librosa.display
+import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
+import numpy as np
+import polars as pls
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from numba import njit
+from scipy.io import wavfile
+
 from ..analyses.decode_experiment_label import extract_information
-from ..time_utils import *
+from ..time_utils import is_gui_context, smart_wait
+from .auxiliary_plot_functions import create_colormap, choose_animal_colors
 
 fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / 'fonts/Helvetica.ttf')
 plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')
 
 
 @njit(parallel=True)
-def read_ttl_events(input_array: np.ndarray = None) -> tuple:
+def read_ttl_events(input_array: np.ndarray) -> tuple:
     """
     Return TTL ON and OFF in the least significant bit array.
 
@@ -55,10 +56,10 @@ def read_ttl_events(input_array: np.ndarray = None) -> tuple:
 
 
 @njit(parallel=True)
-def filter_spikes_for_raster(input_arr: np.ndarray = None,
-                             ra_st_fr: int = None,
-                             ra_end_fr: int = None,
-                             fr_start: int = None) -> np.ndarray:
+def filter_spikes_for_raster(input_arr: np.ndarray,
+                             ra_st_fr: int,
+                             ra_end_fr: int,
+                             fr_start: int) -> np.ndarray:
     """
     Return spike times relative to current frame.
 
@@ -82,9 +83,9 @@ def filter_spikes_for_raster(input_arr: np.ndarray = None,
     return input_arr[(input_arr >= ra_st_fr) & (input_arr < ra_end_fr)] - fr_start
 
 
-def find_region_by_channel(cluster_id: str = None,
-                           brain_area_dict: dict = None,
-                           brain_color_scheme: dict = None,
+def find_region_by_channel(cluster_id: str,
+                           brain_area_dict: dict,
+                           brain_color_scheme: dict,
                            return_only_color: bool = True,
                            return_only_area: bool = False) -> tuple[Any, Any] | None | Any:
     """
@@ -110,20 +111,20 @@ def find_region_by_channel(cluster_id: str = None,
     """
 
     cluster_ch = int(cluster_id[cluster_id.index('_ch') + 3:cluster_id.index('_ch') + 6])
-    for probe_id in brain_area_dict.keys():
-        for brain_region in brain_area_dict[probe_id].keys():
-            for channel_group in brain_area_dict[probe_id][brain_region]:
+    for probe_id, probe_regions in brain_area_dict.items():
+        for brain_region, channel_groups in probe_regions.items():
+            for channel_group in channel_groups:
                 if channel_group[0] <= cluster_ch < channel_group[1]:
                     if return_only_color:
                         return brain_color_scheme[brain_region]
-                    else:
-                        if return_only_area:
-                            return brain_region
-                        else:
-                            return brain_region, brain_color_scheme[brain_region]
+                    if return_only_area:
+                        return brain_region
+                    return brain_region, brain_color_scheme[brain_region]
+
+    return None
 
 
-def load_audio_data(root_directory: str = None) -> tuple[np.ndarray, int]:
+def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
     """
     Returns audio data w/ sampling rate.
     NB: Audio is loaded from mmap file!
@@ -139,11 +140,10 @@ def load_audio_data(root_directory: str = None) -> tuple[np.ndarray, int]:
        Audio data and audio sampling rate.
     """
 
-    audio_loc = glob.glob(pathname=f"{root_directory}{os.sep}**{os.sep}*_int16.mmap*", recursive=True)[0]
-    audio_file_basename = os.path.basename(audio_loc)
-    channel_num = int(audio_file_basename.split('_')[-2])
-    sample_num = int(audio_file_basename.split('_')[-3])
-    sampling_rate = int(audio_file_basename.split('_')[-4])
+    audio_loc = next(pathlib.Path(root_directory).rglob('*_int16.mmap*'))
+    channel_num = int(audio_loc.name.split('_')[-2])
+    sample_num = int(audio_loc.name.split('_')[-3])
+    sampling_rate = int(audio_loc.name.split('_')[-4])
 
     audio_data = np.memmap(filename=audio_loc,
                            dtype=np.int16,
@@ -154,31 +154,31 @@ def load_audio_data(root_directory: str = None) -> tuple[np.ndarray, int]:
     return audio_data, sampling_rate
 
 
-def plot_mouse_data(data: np.ndarray = None,
-                    plot_axes: plt.Axes = None,
-                    frame_number: int = None,
-                    animal_node_names: list[str] = None,
-                    animal_color: list[str] = None,
-                    animal_cm: list[plt.cm] = None,
-                    animal_line_width: int = None,
+def plot_mouse_data(data: np.ndarray,
+                    plot_axes: plt.Axes,
+                    frame_number: int,
+                    animal_node_names: list[str],
+                    animal_color: list[str],
+                    animal_cm: list[plt.cm],
+                    animal_line_width: int,
+                    node_connections: list[str],
+                    node_polygons: list[str],
+                    node_lw: int|float,
+                    node_size: int|float,
+                    node_opacity: int|float,
+                    node_edge_color: str,
+                    polygon_color: list[str],
+                    polygon_opacity: int|float,
+                    body_edge_color: str,
+                    history_frame_span: int,
+                    history_point: str,
+                    history_ls: str,
+                    history_lw: int|float,
+                    xlim_: int|float,
+                    ylim_: int|float,
+                    zlim_: int|float,
                     node_bool: bool = False,
-                    node_connections: list[str] = None,
-                    node_polygons: list[str] = None,
-                    node_lw: int|float = None,
-                    node_size: int|float = None,
-                    node_opacity: int|float = None,
-                    node_edge_color: str = None,
-                    polygon_color: list[str] = None,
-                    polygon_opacity: int|float = None,
-                    body_edge_color: str = None,
-                    history_bool: bool = False,
-                    history_frame_span: int = None,
-                    history_point: str = None,
-                    history_ls: str = None,
-                    history_lw: int|float = None,
-                    xlim_: int|float = None,
-                    ylim_: int|float = None,
-                    zlim_: int|float = None) -> None:
+                    history_bool: bool = False) -> None:
 
     """
     Description
@@ -257,10 +257,7 @@ def plot_mouse_data(data: np.ndarray = None,
 
         # plot node connection lines
         for nc_idx, nc in enumerate(node_connections):
-            if nc_idx <= 7:
-                line_color = body_edge_color
-            else:
-                line_color = animal_color[mouse_idx]
+            line_color = body_edge_color if nc_idx <= 7 else animal_color[mouse_idx]
             nc = nc.split('-')
             plot_axes.plot([data[frame_number, mouse_idx, animal_node_names.index(nc[0]), 0], data[frame_number, mouse_idx, animal_node_names.index(nc[1]), 0]],
                            [data[frame_number, mouse_idx, animal_node_names.index(nc[0]), 1], data[frame_number, mouse_idx, animal_node_names.index(nc[1]), 1]],
@@ -276,7 +273,7 @@ def plot_mouse_data(data: np.ndarray = None,
                 ys[i] = data[frame_number, mouse_idx, animal_node_names.index(npol[i]), 1]
                 zs[i] = data[frame_number, mouse_idx, animal_node_names.index(npol[i]), 2]
 
-            vertices = [list(zip(xs, ys, zs))]
+            vertices = [list(zip(xs, ys, zs, strict=True))]
             plot_axes.add_collection3d(Poly3DCollection(verts=vertices, facecolors=[polygon_color[mouse_idx]], alpha=polygon_opacity))
 
         if node_bool:
@@ -290,11 +287,11 @@ def plot_mouse_data(data: np.ndarray = None,
     plot_axes.set_zlim3d(0, zlim_)
 
 
-def plot_speaker_data(speaker_data: np.ndarray = None,
-                      plot_axes: plt.Axes = None,
-                      frame_number: int = None,
-                      speaker_color: str = None,
-                      speaker_alpha: int|float = None) -> None:
+def plot_speaker_data(speaker_data: np.ndarray,
+                      plot_axes: plt.Axes,
+                      frame_number: int,
+                      speaker_color: str,
+                      speaker_alpha: int|float) -> None:
     """
     Description
     ----------
@@ -327,24 +324,24 @@ def plot_speaker_data(speaker_data: np.ndarray = None,
                       c=speaker_color, s=10, alpha=speaker_alpha)
 
 
-def plot_spectrogram(plot_axes: plt.Axes = None,
-                     figure_object: plt.Figure = None,
-                     spec_start: int = None,
-                     spec_end: int = None,
-                     audio_sr: int = None,
-                     stft_hop: int = None,
-                     half_window_size_sec: int|float = None,
+def plot_spectrogram(plot_axes: plt.Axes,
+                     figure_object: plt.Figure,
+                     spec_start: int,
+                     spec_end: int,
+                     audio_sr: int,
+                     stft_hop: int,
+                     half_window_size_sec: int|float,
+                     color_mode_preferences: dict,
+                     spectrogram_amplitude: np.ndarray,
+                     power_limit: list[int|float],
+                     freq_limit: list[int|float],
+                     freq_yticks: list[int|float],
+                     usv_segments_list: list[tuple],
+                     usv_segment_lw: int|float,
+                     usv_segment_colors_list: list[str],
+                     usv_segments_ypos: int|float,
                      cbar_bool: bool = False,
-                     color_mode_preferences: dict = None,
-                     spectrogram_amplitude: np.ndarray = None,
-                     power_limit: list[int|float] = None,
-                     freq_limit: list[int|float] = None,
-                     freq_yticks: list[int|float] = None,
-                     plot_usv_segments_bool: bool = False,
-                     usv_segments_list: list[tuple] = None,
-                     usv_segment_lw: int|float = None,
-                     usv_segment_colors_list: list[str] = None,
-                     usv_segments_ypos: int|float = None) -> None:
+                     plot_usv_segments_bool: bool = False) -> None:
     """
     Description
     ----------
@@ -449,19 +446,19 @@ def plot_spectrogram(plot_axes: plt.Axes = None,
         cbar.outline.set_edgecolor(color_mode_preferences['tick_color'])
 
 
-def plot_raster(plot_axes: plt.Axes = None,
-                figure_object: plt.Figure = None,
-                unit_num: int = None,
-                raster_data: list[np.ndarray] = None,
-                raster_half_window: int = None,
-                raster_half_window_sec: int|float = None,
-                raster_brain_area: dict = None,
-                raster_line_lengths: list[int|float] = None,
-                raster_line_widths: list[int|float] = None,
-                filtered_brain_areas: list[str] = None,
-                color_mode_preferences: dict = None,
-                event_plot_colors: list[str] = None,
-                brain_area_color_scheme: dict = None) -> None:
+def plot_raster(plot_axes: plt.Axes,
+                figure_object: plt.Figure,
+                unit_num: int,
+                raster_data: list[np.ndarray],
+                raster_half_window: int,
+                raster_half_window_sec: int|float,
+                raster_brain_area: dict,
+                raster_line_lengths: list[int|float],
+                raster_line_widths: list[int|float],
+                filtered_brain_areas: list[str],
+                color_mode_preferences: dict,
+                event_plot_colors: list[str],
+                brain_area_color_scheme: dict) -> None:
     """
     Description
     ----------
@@ -539,8 +536,8 @@ def plot_raster(plot_axes: plt.Axes = None,
     fig_renderer = figure_object.canvas.get_renderer()
     txt_x_start = 0
     brain_area_already_plotted = []
-    for probe_id in raster_brain_area.keys():
-        for brain_region in raster_brain_area[probe_id].keys():
+    for probe_id in raster_brain_area:
+        for brain_region in raster_brain_area[probe_id]:
             if (len(filtered_brain_areas) == 0 or brain_region in filtered_brain_areas) and brain_region not in brain_area_already_plotted:
                 txt = plot_axes.text(x=txt_x_start,
                                      y=1.01,
@@ -553,27 +550,27 @@ def plot_raster(plot_axes: plt.Axes = None,
                 brain_area_already_plotted.append(brain_region)
 
 
-def plot_behavioral_features(plot_axes: plt.Axes = None,
-                             figure_object: plt.Figure = None,
-                             mouse_track_names: list[str] = None,
-                             special_features: list[str] = None,
-                             beh_features_to_plot: list = None,
-                             beh_feature_data: pls.DataFrame = None,
-                             beh_features_fig_position: list[float] = None,
-                             beh_window_size_sec: int|float = None,
-                             beh_window_size_frames: int = None,
-                             beh_half_window_size_frames: int = None,
-                             beh_features_ylabels: dict = None,
-                             feature_ts_fr_start: int = None,
-                             feature_ts_fr_end: int = None,
-                             feature_ts_fr_middle: int = None,
-                             x_axis_start: int = None,
-                             x_axis_middle: int = None,
-                             x_axis_end: int = None,
-                             ylim_dict: dict = None,
-                             plot_theme: str = None,
-                             color_mode_preferences: dict = None,
-                             animal_colors: list[str] = None,
+def plot_behavioral_features(plot_axes: plt.Axes,
+                             figure_object: plt.Figure,
+                             mouse_track_names: list[str],
+                             special_features: list[str],
+                             beh_features_to_plot: list,
+                             beh_feature_data: pls.DataFrame,
+                             beh_features_fig_position: list[float],
+                             beh_window_size_sec: int|float,
+                             beh_window_size_frames: int,
+                             beh_half_window_size_frames: int,
+                             beh_features_ylabels: dict,
+                             feature_ts_fr_start: int,
+                             feature_ts_fr_end: int,
+                             feature_ts_fr_middle: int,
+                             x_axis_start: int,
+                             x_axis_middle: int,
+                             x_axis_end: int,
+                             ylim_dict: dict,
+                             plot_theme: str,
+                             color_mode_preferences: dict,
+                             animal_colors: list[str],
                              remove_axes_bool: bool = False) -> None:
     """
     Description
@@ -760,35 +757,35 @@ def plot_behavioral_features(plot_axes: plt.Axes = None,
         plot_axes[ax_num].yaxis.set_label_coords(-.175, .25)
 
 
-def plot_arena_corners_mics(data: np.ndarray = None,
-                            plot_axes: plt.Axes = None,
-                            frame_number: int = None,
-                            session_id: str = None,
-                            esr: int|float = None,
-                            animal_id: dict = None,
-                            animal_colors: list[str] = None,
-                            color_mode_preferences: dict = None,
+def plot_arena_corners_mics(data: np.ndarray,
+                            plot_axes: plt.Axes,
+                            frame_number: int,
+                            session_id: str,
+                            esr: int|float,
+                            animal_id: dict,
+                            animal_colors: list[str],
+                            color_mode_preferences: dict,
+                            arena_node_connections: list[str],
+                            arena_node_names: list[str],
+                            arena_axes_lw: int|float,
+                            arena_mics_lw: int|float,
+                            arena_mics_opacity: int|float,
+                            corner_size: int|float,
+                            corner_opacity: int|float,
+                            mesh_color: str,
+                            mesh_opacity: int|float,
+                            active_mic_position: int,
+                            active_mic_color: str,
+                            inactive_mic_color: str,
+                            text_start_coords: list[int|float],
+                            main_text_offset: int|float,
+                            mouse_id_text_offset: int|float,
+                            text_fontsize: int,
                             arena_node_connections_bool: bool = False,
-                            arena_node_connections: list[str] = None,
-                            arena_node_names: list[str] = None,
-                            arena_axes_lw: int|float = None,
-                            arena_mics_lw: int|float = None,
-                            arena_mics_opacity: int|float = None,
                             plot_corners_bool: bool = False,
-                            corner_size: int|float = None,
-                            corner_opacity: int|float = None,
                             plot_mesh_walls_bool: bool = False,
-                            mesh_color: str = None,
-                            mesh_opacity: int|float = None,
                             active_mic_bool: bool = False,
-                            active_mic_position: int = None,
-                            active_mic_color: str = None,
-                            inactive_mic_bool: bool = False,
-                            inactive_mic_color: str = None,
-                            text_start_coords: list[int|float] = None,
-                            main_text_offset: int|float = None,
-                            mouse_id_text_offset: int|float = None,
-                            text_fontsize: int = None) -> None:
+                            inactive_mic_bool: bool = False) -> None:
     """
     Description
     ----------
@@ -966,14 +963,14 @@ def plot_arena_corners_mics(data: np.ndarray = None,
                          transform=plot_axes.transAxes)
 
 
-def create_spike_sound_file(audio_duration: int|float = None,
-                            spike_array: np.ndarray = None,
-                            sound_save_directory: str = None,
-                            sound_session_id: str = None,
-                            sound_frame_start: int = None,
-                            sound_frame_span: int = None,
-                            tracking_esr: int|float = None,
-                            unit_id: str = None) -> None:
+def create_spike_sound_file(audio_duration: int|float,
+                            spike_array: np.ndarray,
+                            sound_save_directory: str,
+                            sound_session_id: str,
+                            sound_frame_start: int,
+                            sound_frame_span: int,
+                            tracking_esr: int|float,
+                            unit_id: str) -> None:
     """
     Description
     ----------
@@ -1016,7 +1013,7 @@ def create_spike_sound_file(audio_duration: int|float = None,
         new_spike_sound_array[sound_start:sound_start + spike_sound.shape[0]] = spike_sound
     new_spike_sound_array = np.asarray(new_spike_sound_array, dtype=np.int16)
 
-    sound_filename = f"{sound_save_directory}{os.sep}{sound_session_id}_3D_{sound_frame_start}-{sound_frame_start + sound_frame_span}fr_spike_sound_{unit_id}.wav"
+    sound_filename = pathlib.Path(sound_save_directory) / f"{sound_session_id}_3D_{sound_frame_start}-{sound_frame_start + sound_frame_span}fr_spike_sound_{unit_id}.wav"
     wavfile.write(filename=sound_filename,
                   rate=spike_sound_sr,
                   data=new_spike_sound_array)
@@ -1030,81 +1027,6 @@ class Create3DVideo:
     else:
         command_addition = ''
         shell_usage_bool = True
-
-    brain_area_color_scheme = {'SC': '#2071F5',
-                               'PAG': '#F266EE',
-                               'MRN': '#EB3654',
-                               'scp': '#B8B2AD',
-                               'PPN': '#D44B22',
-                               'PRNr': '#EB8F34'}
-
-    node_connections = ['TTI-Haunch_left', 'TTI-Haunch_right', 'Shoulder_left-Haunch_left',
-                        'Shoulder_right-Haunch_right', 'Nose-Ear_L', 'Nose-Ear_R',
-                        'Head-Shoulder_left', 'Head-Shoulder_right',
-                        'TailTip-Tail_2', 'Tail_2-Tail_1', 'Tail_1-Tail_0', 'Tail_0-TTI',
-                        'TTI-Trunk', 'Trunk-Haunch_left', 'Trunk-Haunch_right',
-                        'Trunk-Neck', 'Shoulder_left-Neck', 'Shoulder_right-Neck',
-                        'Nose-Head', 'Ear_L-Head', 'Ear_R-Head', 'Head-Neck']
-
-    node_polygons = ['Nose-Ear_L-Head', 'Nose-Ear_R-Head', 'TTI-Haunch_left-Trunk', 'TTI-Haunch_right-Trunk',
-                     'Shoulder_left-Neck-Head', 'Shoulder_right-Neck-Head',
-                     'Haunch_left-Trunk-Neck-Shoulder_left', 'Haunch_right-Trunk-Neck-Shoulder_right']
-
-    arena_node_connections = ['North-ch_9', 'North-ch_10', 'North-ch_11', 'North-ch_12', 'North-ch_13', 'North-ch_14',
-                              'East-ch_3', 'East-ch_4', 'East-ch_5', 'East-ch_6', 'East-ch_7', 'East-ch_8',
-                              'South-ch_0', 'South-ch_1', 'South-ch_2', 'South-ch_21', 'South-ch_22', 'South-ch_23',
-                              'West-ch_15', 'West-ch_16', 'West-ch_17', 'West-ch_18', 'West-ch_19', 'West-ch_20']
-
-    beh_features_ylabels = {"spaceX": "Disp(cm)", "spaceY": "Disp(cm)", "spaceZ": "Disp(cm)", "speed": "Speed(cm/s)", "acceleration": "Acc(cm/s²)",
-                            "neck_elevation": "Elev(cm)", "neck_elevation_1st_der": "Elev'(cm/s)", "neck_elevation_2nd_der": "Elev''(cm/s)",
-                            "body_dir": "BodyDir(°)", "body_dir_1st_der": "BodyDir'(°/s)", "body_dir_2nd_der": "BodyDir''(°/s²)",
-                            "ego_yaw": "EgoYaw(°)", "ego_yaw_1st_der": "EgoYaw'(°/s)", "ego_yaw_2nd_der": "EgoYaw''(°/s²)",
-                            "allo_roll": "Roll(°)", "allo_roll_1st_der": "Roll'(°/s)", "allo_roll_2nd_der": "Roll''(°/s²)",
-                            "allo_pitch": "Pitch(°)", "allo_pitch_1st_der": "Pitch'(°/s)", "allo_pitch_2nd_der": "Pitch''(°/s²)",
-                            "allo_yaw": "Yaw(°)", "allo_yaw_1st_der": "Yaw'(°/s)", "allo_yaw_2nd_der": "Yaw''(°/s²)",
-                            "back_pitch": "BPitch(°)", "back_pitch_1st_der": "BPitch'(°/s)", "back_pitch_2nd_der": "BPitch''(°/s²)",
-                            "back_yaw": "BYaw(°)", "back_yaw_1st_der": "BYaw'(°/s)", "back_yaw_2nd_der": "BYaw''(°/s²)",
-                            "tail_curvature": "Tail(a.u.)", "tail_curvature_1st_der": "Tail'(a.u.)", "tail_curvature_2nd_der": "Tail''(a.u.)",
-
-                            "nose-nose": "ΔN(cm)", "nose-nose_1st_der": "ΔN'(cm/s)", "nose-nose_2nd_der": "ΔN''(cm/s²)",
-                            "TTI-TTI": "ΔT(cm)", "TTI-TTI_1st_der": "ΔT'(cm/s)", "TTI-TTI_2nd_der": "ΔT''(cm/s²)",
-                            "nose-TTI": "ΔNT(cm)", "nose-TTI_1st_der": "ΔNT'(cm/s)", "nose-TTI_2nd_der": "ΔNT''(cm/s²)",
-                            "TTI-nose": "ΔTN(cm)", "TTI-nose_1st_der": "ΔTN'(cm/s)", "TTI-nose_2nd_der": "ΔTN''(cm/s²)",
-                            "neck_elevation_diff": "ΔElev(cm)", "neck_elevation_diff_1st_der": "ΔElev'(cm/s)", "neck_elevation_diff_2nd_der": "ΔElev''(cm/s²)",
-                            "speed_diff": "ΔSpeed(cm/s)", "speed_diff_1st_der": "ΔSpeed'(cm/s²)", "speed_diff_2nd_der": "ΔSpeed''(cm/s³)",
-                            "allo_yaw-nose": "Yaw-N(°)", "allo_yaw-nose_1st_der": "Yaw-N'(°/s)", "allo_yaw-nose_2nd_der": "Yaw-N''(°/s²)",
-                            "nose-allo_yaw": "N-Yaw(°)", "nose-allo_yaw_1st_der": "N-Yaw'(°/s)", "nose-allo_yaw_2nd_der": "N-Yaw''(°/s²)",
-                            "allo_yaw-TTI": "Yaw-T(°)", "allo_yaw-TTI_1st_der": "Yaw-T'(°/s)", "allo_yaw-TTI_2nd_der": "Yaw-T''(°/s²)",
-                            "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)",
-                            "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
-                            "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
-
-    color_mode_preferences = {
-        "light_mode": {
-            "background_color": "#FFFFFF",
-            "node_edge_color": "#8B8B8B",
-            "body_edge_color": "#8B8B8B",
-            "text_color": "#000000",
-            "tick_color": "#000000",
-            "arena_line_color": "#000000",
-            "arena_mic_color": "#000000",
-            "arena_mesh_color": "#000000",
-            "spectrogram_text_color": "#000000",
-            "speaker_color": "#000000"
-        },
-        "dark_mode": {
-            "background_color": "#000000",
-            "node_edge_color": "#8B8B8B",
-            "body_edge_color": "#8B8B8B",
-            "text_color": "#FFFFFF",
-            "tick_color": "#FFFFFF",
-            "arena_line_color": "#FFFFFF",
-            "arena_mic_color": "#FFFFFF",
-            "arena_mesh_color": "#FFFFFF",
-            "spectrogram_text_color": "#FFFFFF",
-            "speaker_color": "#FFFFFF"
-        }
-    }
 
     def __init__(self, **kwargs):
 
@@ -1140,6 +1062,81 @@ class Create3DVideo:
 
         self.app_context_bool = is_gui_context()
 
+        self.brain_area_color_scheme = {'SC': '#2071F5',
+                                        'PAG': '#F266EE',
+                                        'MRN': '#EB3654',
+                                        'scp': '#B8B2AD',
+                                        'PPN': '#D44B22',
+                                        'PRNr': '#EB8F34'}
+
+        self.node_connections = ['TTI-Haunch_left', 'TTI-Haunch_right', 'Shoulder_left-Haunch_left',
+                                 'Shoulder_right-Haunch_right', 'Nose-Ear_L', 'Nose-Ear_R',
+                                 'Head-Shoulder_left', 'Head-Shoulder_right',
+                                 'TailTip-Tail_2', 'Tail_2-Tail_1', 'Tail_1-Tail_0', 'Tail_0-TTI',
+                                 'TTI-Trunk', 'Trunk-Haunch_left', 'Trunk-Haunch_right',
+                                 'Trunk-Neck', 'Shoulder_left-Neck', 'Shoulder_right-Neck',
+                                 'Nose-Head', 'Ear_L-Head', 'Ear_R-Head', 'Head-Neck']
+
+        self.node_polygons = ['Nose-Ear_L-Head', 'Nose-Ear_R-Head', 'TTI-Haunch_left-Trunk', 'TTI-Haunch_right-Trunk',
+                              'Shoulder_left-Neck-Head', 'Shoulder_right-Neck-Head',
+                              'Haunch_left-Trunk-Neck-Shoulder_left', 'Haunch_right-Trunk-Neck-Shoulder_right']
+
+        self.arena_node_connections = ['North-ch_9', 'North-ch_10', 'North-ch_11', 'North-ch_12', 'North-ch_13', 'North-ch_14',
+                                       'East-ch_3', 'East-ch_4', 'East-ch_5', 'East-ch_6', 'East-ch_7', 'East-ch_8',
+                                       'South-ch_0', 'South-ch_1', 'South-ch_2', 'South-ch_21', 'South-ch_22', 'South-ch_23',
+                                       'West-ch_15', 'West-ch_16', 'West-ch_17', 'West-ch_18', 'West-ch_19', 'West-ch_20']
+
+        self.beh_features_ylabels = {"spaceX": "Disp(cm)", "spaceY": "Disp(cm)", "spaceZ": "Disp(cm)", "speed": "Speed(cm/s)", "acceleration": "Acc(cm/s²)",
+                                     "neck_elevation": "Elev(cm)", "neck_elevation_1st_der": "Elev'(cm/s)", "neck_elevation_2nd_der": "Elev''(cm/s)",
+                                     "body_dir": "BodyDir(°)", "body_dir_1st_der": "BodyDir'(°/s)", "body_dir_2nd_der": "BodyDir''(°/s²)",
+                                     "ego_yaw": "EgoYaw(°)", "ego_yaw_1st_der": "EgoYaw'(°/s)", "ego_yaw_2nd_der": "EgoYaw''(°/s²)",
+                                     "allo_roll": "Roll(°)", "allo_roll_1st_der": "Roll'(°/s)", "allo_roll_2nd_der": "Roll''(°/s²)",
+                                     "allo_pitch": "Pitch(°)", "allo_pitch_1st_der": "Pitch'(°/s)", "allo_pitch_2nd_der": "Pitch''(°/s²)",
+                                     "allo_yaw": "Yaw(°)", "allo_yaw_1st_der": "Yaw'(°/s)", "allo_yaw_2nd_der": "Yaw''(°/s²)",
+                                     "back_pitch": "BPitch(°)", "back_pitch_1st_der": "BPitch'(°/s)", "back_pitch_2nd_der": "BPitch''(°/s²)",
+                                     "back_yaw": "BYaw(°)", "back_yaw_1st_der": "BYaw'(°/s)", "back_yaw_2nd_der": "BYaw''(°/s²)",
+                                     "tail_curvature": "Tail(a.u.)", "tail_curvature_1st_der": "Tail'(a.u.)", "tail_curvature_2nd_der": "Tail''(a.u.)",
+
+                                     "nose-nose": "ΔN(cm)", "nose-nose_1st_der": "ΔN'(cm/s)", "nose-nose_2nd_der": "ΔN''(cm/s²)",
+                                     "TTI-TTI": "ΔT(cm)", "TTI-TTI_1st_der": "ΔT'(cm/s)", "TTI-TTI_2nd_der": "ΔT''(cm/s²)",
+                                     "nose-TTI": "ΔNT(cm)", "nose-TTI_1st_der": "ΔNT'(cm/s)", "nose-TTI_2nd_der": "ΔNT''(cm/s²)",
+                                     "TTI-nose": "ΔTN(cm)", "TTI-nose_1st_der": "ΔTN'(cm/s)", "TTI-nose_2nd_der": "ΔTN''(cm/s²)",
+                                     "neck_elevation_diff": "ΔElev(cm)", "neck_elevation_diff_1st_der": "ΔElev'(cm/s)", "neck_elevation_diff_2nd_der": "ΔElev''(cm/s²)",
+                                     "speed_diff": "ΔSpeed(cm/s)", "speed_diff_1st_der": "ΔSpeed'(cm/s²)", "speed_diff_2nd_der": "ΔSpeed''(cm/s³)",
+                                     "allo_yaw-nose": "Yaw-N(°)", "allo_yaw-nose_1st_der": "Yaw-N'(°/s)", "allo_yaw-nose_2nd_der": "Yaw-N''(°/s²)",
+                                     "nose-allo_yaw": "N-Yaw(°)", "nose-allo_yaw_1st_der": "N-Yaw'(°/s)", "nose-allo_yaw_2nd_der": "N-Yaw''(°/s²)",
+                                     "allo_yaw-TTI": "Yaw-T(°)", "allo_yaw-TTI_1st_der": "Yaw-T'(°/s)", "allo_yaw-TTI_2nd_der": "Yaw-T''(°/s²)",
+                                     "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)",
+                                     "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
+                                     "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
+
+        self.color_mode_preferences = {
+            "light_mode": {
+                "background_color": "#FFFFFF",
+                "node_edge_color": "#8B8B8B",
+                "body_edge_color": "#8B8B8B",
+                "text_color": "#000000",
+                "tick_color": "#000000",
+                "arena_line_color": "#000000",
+                "arena_mic_color": "#000000",
+                "arena_mesh_color": "#000000",
+                "spectrogram_text_color": "#000000",
+                "speaker_color": "#000000"
+            },
+            "dark_mode": {
+                "background_color": "#000000",
+                "node_edge_color": "#8B8B8B",
+                "body_edge_color": "#8B8B8B",
+                "text_color": "#FFFFFF",
+                "tick_color": "#FFFFFF",
+                "arena_line_color": "#FFFFFF",
+                "arena_mic_color": "#FFFFFF",
+                "arena_mesh_color": "#FFFFFF",
+                "spectrogram_text_color": "#FFFFFF",
+                "speaker_color": "#FFFFFF"
+            }
+        }
+
 
     def load_beh_features_file(self) -> pls.DataFrame:
         """
@@ -1160,8 +1157,7 @@ class Create3DVideo:
         """
 
         # load behavioral feature data
-        behavioral_data_file = glob.glob(pathname=f"{self.root_directory}{os.sep}**{os.sep}*_behavioral_features.csv*",
-                                         recursive=True)[0]
+        behavioral_data_file = next(pathlib.Path(self.root_directory).rglob('*_behavioral_features.csv*'))
         beh_feature_data = pls.read_csv(behavioral_data_file)
 
         return beh_feature_data
@@ -1184,35 +1180,35 @@ class Create3DVideo:
         ----------
         """
 
-        h5_file_arena = glob.glob(f"{self.arena_directory}{os.sep}video{os.sep}**{os.sep}*_points3d_translated_rotated_metric.h5")[0]
-        h5_file_mouse = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5")[0]
+        h5_file_arena = next((pathlib.Path(self.arena_directory) / 'video').rglob('*_points3d_translated_rotated_metric.h5'))
+        h5_file_mouse = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'))
 
         # load HDF5 file
         with h5py.File(name=h5_file_arena, mode='r') as h5_file_arena_obj:
             arena_tracks = np.array(h5_file_arena_obj['tracks'])
-            arena_node_names = [item.decode('utf-8') for item in list(h5_file_arena_obj['node_names'])]
+            arena_node_names = [item.decode('utf-8') for item in h5_file_arena_obj['node_names']]
         with h5py.File(name=h5_file_mouse, mode='r') as h5_file_mouse_obj:
             mouse_tracks = np.array(h5_file_mouse_obj['tracks'])
-            mouse_track_names = [item.decode('utf-8') for item in list(h5_file_mouse_obj['track_names'])]
-            mouse_node_names = [item.decode('utf-8') for item in list(h5_file_mouse_obj['node_names'])]
+            mouse_track_names = [item.decode('utf-8') for item in h5_file_mouse_obj['track_names']]
+            mouse_node_names = [item.decode('utf-8') for item in h5_file_mouse_obj['node_names']]
             mouse_experimental_code = h5_file_mouse_obj['experimental_code'][()].decode('utf-8')
             empirical_camera_sr = float(h5_file_mouse_obj['recording_frame_rate'][()])
 
         if self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
-            h5_file_speaker = glob.glob(f"{self.root_directory}{os.sep}video{os.sep}**{os.sep}speaker*_points3d_translated_rotated_metric.h5")[0]
+            h5_file_speaker = next((pathlib.Path(self.root_directory) / 'video').rglob('speaker*_points3d_translated_rotated_metric.h5'))
             with h5py.File(name=h5_file_speaker, mode='r') as h5_file_speaker_obj:
                 speaker_tracks = np.array(h5_file_speaker_obj['tracks'])
-                speaker_track_name = list(h5_file_speaker_obj['track_names'])[0].decode('utf-8')
-                speaker_node_name = list(h5_file_speaker_obj['node_names'])[0].decode('utf-8')
+                speaker_track_name = h5_file_speaker_obj['track_names'][0].decode('utf-8')
+                speaker_node_name = h5_file_speaker_obj['node_names'][0].decode('utf-8')
 
-            return (os.path.dirname(h5_file_arena), arena_tracks, arena_node_names,
-                    os.path.dirname(h5_file_mouse), mouse_tracks, mouse_track_names, mouse_node_names,
+            return (h5_file_arena.parent, arena_tracks, arena_node_names,
+                    h5_file_mouse.parent, mouse_tracks, mouse_track_names, mouse_node_names,
                     mouse_experimental_code, empirical_camera_sr,
                     speaker_tracks, speaker_track_name, speaker_node_name)
 
         else:
-            return (os.path.dirname(h5_file_arena), arena_tracks, arena_node_names,
-                    os.path.dirname(h5_file_mouse), mouse_tracks, mouse_track_names, mouse_node_names,
+            return (h5_file_arena.parent, arena_tracks, arena_node_names,
+                    h5_file_mouse.parent, mouse_tracks, mouse_track_names, mouse_node_names,
                     mouse_experimental_code, empirical_camera_sr)
 
     def visualize_in_video(self) -> None:
@@ -1237,8 +1233,8 @@ class Create3DVideo:
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # create save directory (if one doesn't exist already)
-        putative_save_directory = f"{self.root_directory}{os.sep}data_animation_examples"
-        pathlib.Path(putative_save_directory).mkdir(exist_ok=True, parents=True)
+        putative_save_directory = pathlib.Path(self.root_directory) / 'data_animation_examples'
+        putative_save_directory.mkdir(exist_ok=True, parents=True)
 
         if self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
             (arena_dir_name,
@@ -1265,7 +1261,7 @@ class Create3DVideo:
              empirical_camera_sr) = self.load_h5_file()
 
         experiment_info_dict = extract_information(experiment_code=mouse_experimental_code)
-        animal_id_sex_dict = {mouse_name: "$\u2642$" if mouse_sex == 'male' else "$\u2640$" for mouse_name, mouse_sex in zip(mouse_track_names, experiment_info_dict['mouse_sex'])}
+        animal_id_sex_dict = {mouse_name: "$\u2642$" if mouse_sex == 'male' else "$\u2640$" for mouse_name, mouse_sex in zip(mouse_track_names, experiment_info_dict['mouse_sex'], strict=True)}
 
         animal_colors = choose_animal_colors(exp_info_dict=experiment_info_dict, visualizations_parameter_dict=self.visualizations_parameter_dict)
         animal_colors_dict = {mouse_name: animal_colors[mouse_idx] for mouse_idx, mouse_name in enumerate(mouse_track_names)}
@@ -1288,7 +1284,7 @@ class Create3DVideo:
                                                                           'change_saturation': .5,
                                                                           'cm_opacity': 1}))
 
-        session_id = os.path.dirname(mouse_dir_name).split(os.sep)[-2]
+        session_id = mouse_dir_name.parent.parent.name
 
         frame_start = int(np.floor(self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] * empirical_camera_sr))
         frame_span = int(np.floor(self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] * empirical_camera_sr))
@@ -1339,21 +1335,21 @@ class Create3DVideo:
 
             if self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']:
 
-                data_start_index = re.search(f"Data{os.sep}{self.root_directory.split(os.sep)[-1]}", self.root_directory, re.IGNORECASE).start()
+                data_start_index = re.search(f"Data{os.sep}{pathlib.Path(self.root_directory).name}", self.root_directory, re.IGNORECASE).start()
                 ephys_directory = self.root_directory[:data_start_index] + 'EPHYS'
 
-                with open(glob.glob(pathname=f'{ephys_directory}{os.sep}neuropixels_sites_to_anatomy_converter.json')[0], 'r') as anatomy_converter_json:
+                with open(next(pathlib.Path(ephys_directory).glob('neuropixels_sites_to_anatomy_converter.json')), 'r') as anatomy_converter_json:
                     neuropixels_sites_to_anatomy_converter = json.load(anatomy_converter_json)
 
                 # find cluster data files and sort them in ascending order (0 channel first)
-                cluster_files = sorted(glob.glob(pathname=f"{self.root_directory}{os.sep}ephys{os.sep}**{os.sep}cluster_data{os.sep}*.npy", recursive=True))
+                cluster_files = sorted((pathlib.Path(self.root_directory) / 'ephys').rglob('cluster_data/*.npy'), key=lambda p: p.name)
 
                 # filter cluster data files
                 if (len(self.visualizations_parameter_dict['make_behavioral_videos']['raster_selection_criteria']['other']) > 0 or
                         len(self.visualizations_parameter_dict['make_behavioral_videos']['raster_selection_criteria']["brain_areas"]) > 0):
                     cluster_files_filtered = []
                     for one_file in cluster_files:
-                        one_cluster_file_name = os.path.basename(one_file)[:-4]
+                        one_cluster_file_name = one_file.stem
                         select_other_bool = True
                         select_area_bool = True
                         if len(self.visualizations_parameter_dict['make_behavioral_videos']['raster_selection_criteria']["other"]) > 0:
@@ -1372,7 +1368,7 @@ class Create3DVideo:
                 # load cluster data files
                 cluster_data_dict = {}
                 for cluster_file in cluster_files:
-                    cluster_data_dict[os.path.basename(cluster_file)[:-4]] = np.load(file=cluster_file)[1, :]
+                    cluster_data_dict[cluster_file.stem] = np.load(file=cluster_file)[1, :]
 
             if self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool']:
 
@@ -1438,9 +1434,9 @@ class Create3DVideo:
                 spectrogram_step = int(camera_frame_in_samples // stft_hop)
                 first_fr_spectrogram_center = int((audio_sr * half_window_size_sec) // stft_hop)
 
-                if self.speaker_audio_file != '' and os.path.isfile(self.speaker_audio_file):
+                if self.speaker_audio_file != '' and pathlib.Path(self.speaker_audio_file).is_file():
                     speaker_audio_sr, speaker_audio_data = wavfile.read(self.speaker_audio_file)
-                    raspi_input_loc = glob.glob(pathname=f"{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}m_*ch03_*.wav", recursive=True)[0]
+                    raspi_input_loc = next((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('m_*ch03_*.wav'))
                     raspi_input_mic_sr, raspi_input_mic_data = wavfile.read(raspi_input_loc)
                     ttl_start, ttl_end = read_ttl_events(raspi_input_mic_data)
                     time_correction_coefficient = 20000  # 80 ms
@@ -1456,7 +1452,7 @@ class Create3DVideo:
 
                 # find USV onset and offset times for epoch of interest
                 if self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
-                    usv_summary_file = glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}*_usv_summary.csv")[0]
+                    usv_summary_file = next((pathlib.Path(self.root_directory) / 'audio').glob('*_usv_summary.csv'))
                     usv_summary_df = pls.read_csv(usv_summary_file)
                     usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
                                                            (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
@@ -1563,9 +1559,9 @@ class Create3DVideo:
 
                     usv_segments_list = [(usv_start - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'],
                                           usv_stop - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'])
-                                         for usv_start, usv_stop in zip(frame_usv_summary_df['start'], frame_usv_summary_df['stop'])]
+                                         for usv_start, usv_stop in zip(frame_usv_summary_df['start'], frame_usv_summary_df['stop'], strict=True)]
 
-                    usv_segments_colors = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#FFFFFF' for emitter_id in frame_usv_summary_df['emitter']]
+                    usv_segments_colors = [animal_colors_dict.get(emitter_id, '#FFFFFF') for emitter_id in frame_usv_summary_df['emitter']]
                 else:
                     usv_segments_list = []
                     usv_segments_colors = []
@@ -1638,17 +1634,16 @@ class Create3DVideo:
                         event_plot_colors.append(find_region_by_channel(cluster_id=cluster_key,
                                                                         brain_area_dict=neuropixels_sites_to_anatomy_converter[mouse_track_names[0]][session_id],
                                                                         brain_color_scheme=self.brain_area_color_scheme))
+                    elif cluster_key in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']:
+                        special_brain_region, special_color = find_region_by_channel(cluster_id=cluster_key,
+                                                                                     brain_area_dict=neuropixels_sites_to_anatomy_converter[mouse_track_names[0]][session_id],
+                                                                                     brain_color_scheme=self.brain_area_color_scheme,
+                                                                                     return_only_color=False)
+                        event_plot_colors.append(special_color)
+                        if special_brain_region not in change_brain_area_colors:
+                            change_brain_area_colors.append(special_brain_region)
                     else:
-                        if cluster_key in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']:
-                            special_brain_region, special_color = find_region_by_channel(cluster_id=cluster_key,
-                                                                                         brain_area_dict=neuropixels_sites_to_anatomy_converter[mouse_track_names[0]][session_id],
-                                                                                         brain_color_scheme=self.brain_area_color_scheme,
-                                                                                         return_only_color=False)
-                            event_plot_colors.append(special_color)
-                            if special_brain_region not in change_brain_area_colors:
-                                change_brain_area_colors.append(special_brain_region)
-                        else:
-                            event_plot_colors.append('#B8B2AD')
+                        event_plot_colors.append('#B8B2AD')
 
                 if len(self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']) > 0:
                     self.brain_area_color_scheme = {one_key: ('#B8B2AD' if one_key not in change_brain_area_colors else one_value) for one_key, one_value in self.brain_area_color_scheme.items()}
@@ -1677,13 +1672,11 @@ class Create3DVideo:
                     feature_name_alone = feature_name.split('.')[1]
                     new_min = beh_feature_data[feature_name].min()
                     new_max = beh_feature_data[feature_name].max()
-                    if feature_name_alone not in ylim_dict.keys():
+                    if feature_name_alone not in ylim_dict:
                         ylim_dict[feature_name_alone] = [new_min, new_max]
                     else:
-                        if new_min < ylim_dict[feature_name_alone][0]:
-                            ylim_dict[feature_name_alone][0] = new_min
-                        if new_max > ylim_dict[feature_name_alone][1]:
-                            ylim_dict[feature_name_alone][1] = new_max
+                        ylim_dict[feature_name_alone][0] = min(ylim_dict[feature_name_alone][0], new_min)
+                        ylim_dict[feature_name_alone][1] = max(ylim_dict[feature_name_alone][1], new_max)
 
                 beginning_feature_ts_fr_start = 0
                 beginning_feature_ts_fr_end = beh_window_size_frames
@@ -1717,7 +1710,7 @@ class Create3DVideo:
                 ax[0].clear()
 
                 # rotates plot
-                if (not (self.visualizations_parameter_dict['make_behavioral_videos']['view_angle'] == 'top')
+                if (self.visualizations_parameter_dict['make_behavioral_videos']['view_angle'] != 'top'
                         and self.visualizations_parameter_dict['make_behavioral_videos']['rotate_side_view_bool']):
                     azim = (self.visualizations_parameter_dict['make_behavioral_videos']['rotation_speed']* ((frame_num + frame_start) / empirical_camera_sr)
                             + self.visualizations_parameter_dict['make_behavioral_videos']['side_azimuth_start']) % 360
@@ -1800,9 +1793,9 @@ class Create3DVideo:
 
                         usv_segments_list_temp = [(usv_start - current_video_time,
                                                    usv_stop - current_video_time)
-                                                  for usv_start, usv_stop in zip(frame_usv_summary_df_temp['start'], frame_usv_summary_df_temp['stop'])]
+                                                  for usv_start, usv_stop in zip(frame_usv_summary_df_temp['start'], frame_usv_summary_df_temp['stop'], strict=True)]
 
-                        usv_segments_colors_temp = [animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict.keys() else '#C0C0C0' for emitter_id in frame_usv_summary_df_temp['emitter']]
+                        usv_segments_colors_temp = [animal_colors_dict.get(emitter_id, '#C0C0C0') for emitter_id in frame_usv_summary_df_temp['emitter']]
                     else:
                         usv_segments_list_temp = []
                         usv_segments_colors_temp = []
@@ -1906,7 +1899,7 @@ class Create3DVideo:
                                       interval=round(1 / empirical_camera_sr * 1000, 3))
 
                 animation_file_name = f"{session_id}_3D_{frame_start}-{frame_start + frame_span}fr_{name_addition}"
-                animation_file_path = f"{putative_save_directory}{os.sep}{animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
+                animation_file_path = str(putative_save_directory / f"{animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}")
 
                 if self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec'] is not None:
                     # create a custom writer for NVIDIA GPU acceleration
@@ -1967,7 +1960,7 @@ class Create3DVideo:
                                          stderr=subprocess.STDOUT,
                                          cwd=putative_save_directory,
                                          shell=self.shell_usage_bool).wait()
-                        os.remove(f"{putative_save_directory}{os.sep}{audio_file_name}")
+                        (putative_save_directory / audio_file_name).unlink()
 
                 if self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file'] != '' and pathlib.Path(self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file']).is_file():
                     output_video_name = animation_file_name + f"_with_USV_sound.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
@@ -1979,8 +1972,7 @@ class Create3DVideo:
 
             else:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:
-                    fig_loc = f"{putative_save_directory}{os.sep}{session_id}_3D_{frame_start}fr_{name_addition}." \
-                              f"{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_format']}"
+                    fig_loc = putative_save_directory / f"{session_id}_3D_{frame_start}fr_{name_addition}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_format']}"
                     fig.savefig(fig_loc,
                                 dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
 
@@ -1988,13 +1980,13 @@ class Create3DVideo:
                     os_type = platform.system()
                     if os_type == 'Windows':
                         if 'WT_SESSION' in os.environ or 'USERNAME' in os.environ:
-                            os.startfile(os.path.abspath(fig_loc))
+                            os.startfile(str(fig_loc.resolve()))
                     elif os_type == 'Darwin':
                         if 'DISPLAY' in os.environ:
-                            subprocess.run(args=['open', os.path.abspath(fig_loc)], check=True)
+                            subprocess.run(args=['open', str(fig_loc.resolve())], check=True)
                     elif os_type == 'Linux':
                         if 'DISPLAY' in os.environ:
-                            subprocess.run(args=['xdg-open', os.path.abspath(fig_loc)], check=True)
+                            subprocess.run(args=['xdg-open', str(fig_loc.resolve())], check=True)
                     else:
                         self.message_output("Unsupported operating system for opening image.")
 

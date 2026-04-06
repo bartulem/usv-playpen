@@ -33,7 +33,7 @@ def is_gui_context() -> bool:
     return isinstance(QCoreApplication.instance(), QApplication)
 
 
-def smart_wait(app_context_bool: bool = None, seconds: float = None) -> None:
+def smart_wait(app_context_bool: bool = False, seconds: float = 0) -> None:
     """
     Description
     -----------

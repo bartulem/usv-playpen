@@ -3,6 +3,8 @@
 GUI to run behavioral experiments, data processing and analyses.
 """
 
+from __future__ import annotations
+
 import ast
 import configparser
 import copy
@@ -11,14 +13,15 @@ import json
 import numbers
 import os
 import platform
+import re
 import sys
+import toml
+import yaml
 from functools import partial
 from importlib import metadata
 from pathlib import Path
+
 import platformdirs
-import re
-import toml
-import yaml
 from PyQt6.QtCore import (
     Qt, QEvent, QRegularExpression
 )
@@ -74,25 +77,25 @@ if os.name == 'nt':
 
 app_name = f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0]}"
 
-basedir = os.path.dirname(__file__)
-background_img = f'{basedir}{os.sep}img{os.sep}background_img.png'
-gui_icon = f'{basedir}{os.sep}img{os.sep}gui_icon.png'
-password_icon = f'{basedir}{os.sep}img{os.sep}password.png'
-save_icon = f'{basedir}{os.sep}img{os.sep}save.png'
-splash_icon = f'{basedir}{os.sep}img{os.sep}uncle_stefan.png'
-process_icon = f'{basedir}{os.sep}img{os.sep}process.png'
-record_icon = f'{basedir}{os.sep}img{os.sep}record.png'
-analyze_icon = f'{basedir}{os.sep}img{os.sep}analyze.png'
-visualize_icon = f'{basedir}{os.sep}img{os.sep}plot.png'
-previous_icon = f'{basedir}{os.sep}img{os.sep}previous.png'
-next_icon = f'{basedir}{os.sep}img{os.sep}next.png'
-main_icon = f'{basedir}{os.sep}img{os.sep}main.png'
-calibrate_icon = f'{basedir}{os.sep}img{os.sep}calibrate.png'
-add_icon = f'{basedir}{os.sep}img{os.sep}add.png'
-remove_icon = f'{basedir}{os.sep}img{os.sep}remove.png'
-accept_icon = f'{basedir}{os.sep}img{os.sep}accept.png'
-cancel_icon = f'{basedir}{os.sep}img{os.sep}cancel.png'
-clear_icon = f'{basedir}{os.sep}img{os.sep}clear.png'
+_img_dir = Path(__file__).parent / 'img'
+background_img = str(_img_dir / 'background_img.png')
+gui_icon = str(_img_dir / 'gui_icon.png')
+password_icon = str(_img_dir / 'password.png')
+save_icon = str(_img_dir / 'save.png')
+splash_icon = str(_img_dir / 'uncle_stefan.png')
+process_icon = str(_img_dir / 'process.png')
+record_icon = str(_img_dir / 'record.png')
+analyze_icon = str(_img_dir / 'analyze.png')
+visualize_icon = str(_img_dir / 'plot.png')
+previous_icon = str(_img_dir / 'previous.png')
+next_icon = str(_img_dir / 'next.png')
+main_icon = str(_img_dir / 'main.png')
+calibrate_icon = str(_img_dir / 'calibrate.png')
+add_icon = str(_img_dir / 'add.png')
+remove_icon = str(_img_dir / 'remove.png')
+accept_icon = str(_img_dir / 'accept.png')
+cancel_icon = str(_img_dir / 'cancel.png')
+clear_icon = str(_img_dir / 'clear.png')
 
 # Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
 # while keeping dictionaries in block style for overall readability.
@@ -742,7 +745,7 @@ def replace_name_in_path(experimenter_list: list = None,
         Path with correct exp_id name inserted.
     """
 
-    if any([name in loc for name in experimenter_list for loc in recording_files_destinations]):
+    if any(name in loc for name in experimenter_list for loc in recording_files_destinations):
         revised_recording_files_destination_win = []
         for path, name_in_path in zip(recording_files_destinations,
                                       [name for name in experimenter_list for loc in recording_files_destinations if name in loc]):
@@ -986,7 +989,7 @@ class USVPlaypenWindow(QMainWindow):
         """
         super().__init__()
 
-        font_file_loc = QFontDatabase.addApplicationFont(f'{basedir}{os.sep}fonts{os.sep}segoeui.ttf')
+        font_file_loc = QFontDatabase.addApplicationFont(str(Path(__file__).parent / 'fonts' / 'segoeui.ttf'))
         self.font_id = QFontDatabase.applicationFontFamilies(font_file_loc)[0]
 
         if platform.system() == 'Darwin':
@@ -1710,11 +1713,13 @@ class USVPlaypenWindow(QMainWindow):
         if not all(hasattr(self, f"{key}_edit") for key in required_fields):
             return
 
-        is_valid = all([
-            self.subject_id_edit.text().strip(),
-            self.species_edit.text().strip(),
-            self.genotype_strain_edit.text().strip()
-        ])
+        is_valid = all(
+            x for x in [
+                self.subject_id_edit.text().strip(),
+                self.species_edit.text().strip(),
+                self.genotype_strain_edit.text().strip()
+            ]
+        )
 
         self.add_subject_btn.setEnabled(is_valid)
 
@@ -2294,7 +2299,7 @@ class USVPlaypenWindow(QMainWindow):
 
         equipment_items = []
         for category, devices in self.equipment_settings_dict.items():
-            for device_name in devices.keys():
+            for device_name in devices:
                 equipment_items.append(f"{category}.{device_name}")
 
         items_per_row = 3
@@ -4377,7 +4382,7 @@ class USVPlaypenWindow(QMainWindow):
         self.avisoft_base_dir_global = self.exp_settings_dict['avisoft_basedirectory']
         self.avisoft_config_dir_global = self.exp_settings_dict['avisoft_config_directory']
         self.coolterm_base_dir_global = self.exp_settings_dict['coolterm_basedirectory']
-        self.recording_credentials_dir_global = f"{platformdirs.user_config_dir(appname='usv_playpen', appauthor='lab')}{os.sep}.credentials_{self.exp_id}"
+        self.recording_credentials_dir_global = str(Path(platformdirs.user_config_dir(appname='usv_playpen', appauthor='lab')) / f'.credentials_{self.exp_id}')
         self.exp_settings_dict['credentials_directory'] = self.recording_credentials_dir_global
 
         self.destination_linux_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
@@ -5457,7 +5462,7 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         # hide credentials directory
-        credentials_dir = Path(f"{self.credentials_save_dir_edit.text()}{os.sep}.credentials_{self.exp_id}")
+        credentials_dir = Path(self.credentials_save_dir_edit.text()) / f'.credentials_{self.exp_id}'
         credentials_dir.mkdir(parents=True, exist_ok=True)
 
         if platform.system() == 'Windows':
@@ -5472,14 +5477,14 @@ class USVPlaypenWindow(QMainWindow):
             'ssh_username': f"{self.motif_username.text()}",
             'ssh_password': f"{self.motif_password.text()}",
             'api': f"{self.motif_api.text()}"}
-        with open(f"{credentials_dir}{os.sep}motif_config.ini", mode='w') as motif_configfile:
+        with open(credentials_dir / 'motif_config.ini', mode='w') as motif_configfile:
             motif_config.write(motif_configfile, space_around_delimiters=False)
 
         university_config = configparser.ConfigParser()
         university_config['cup'] = {
             'username': f"{self.university_username.text()}",
             'password': f"{self.university_password.text()}"}
-        with open(f"{credentials_dir}{os.sep}cup_config.ini", mode='w') as university_configfile:
+        with open(credentials_dir / 'cup_config.ini', mode='w') as university_configfile:
             university_config.write(university_configfile, space_around_delimiters=False)
 
         emai_config = configparser.ConfigParser()
@@ -5488,7 +5493,7 @@ class USVPlaypenWindow(QMainWindow):
             'email_port': f"{self.email_port.text()}",
             'email_address': f"{self.email_address.text()}",
             'email_password': f"{self.email_password.text()}"}
-        with open(f"{credentials_dir}{os.sep}email_config.ini", mode='w') as email_configfile:
+        with open(credentials_dir / 'email_config.ini', mode='w') as email_configfile:
             emai_config.write(email_configfile, space_around_delimiters=False)
 
     def _start_visualizations(self) -> None:
@@ -5746,7 +5751,7 @@ class USVPlaypenWindow(QMainWindow):
 
         # Windows/Linux path normalization
         if isinstance(text, str):
-            text = os.path.normpath(text)
+            text = str(Path(text))
 
         # If 'text' came in via *args (because partial didn't capture it)
         if text is None and args:
@@ -5787,8 +5792,8 @@ class USVPlaypenWindow(QMainWindow):
 
         initial_path = start_dir or target_line_edit.text()
 
-        if not os.path.isdir(initial_path):
-            initial_path = os.path.expanduser('~')
+        if not Path(initial_path).is_dir():
+            initial_path = str(Path.home())
 
         directory_name = QFileDialog.getExistingDirectory(
             self,
@@ -5829,10 +5834,10 @@ class USVPlaypenWindow(QMainWindow):
             initial_path = start_dir
         else:
             current_file = target_line_edit.text()
-            initial_path = os.path.dirname(current_file)
+            initial_path = str(Path(current_file).parent)
 
-        if not os.path.isdir(initial_path):
-            initial_path = os.path.expanduser('~')
+        if not Path(initial_path).is_dir():
+            initial_path = str(Path.home())
 
         file_name, _ = QFileDialog.getOpenFileName(
             self,

@@ -11,37 +11,35 @@ Different functions for modifying files:
 (3b) split manually curated clusters into sessions
 """
 
+from __future__ import annotations
+
 import configparser
-import glob
 import json
-import librosa
 import os
-import pandas as pd
 import pathlib
 import shutil
-import numpy as np
 import subprocess
+from collections.abc import Callable
 from datetime import datetime
+
+import librosa
+import numpy as np
+import polars as pls
 from imgstore import new_for_filename
 from scipy.io import wavfile
 from tqdm import tqdm
+
 from .load_audio_files import DataLoader
 from .os_utils import configure_path
-from .time_utils import *
+from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 
 class Operator:
-    if os.name == 'nt':
-        command_addition = 'cmd /c '
-        shell_usage_bool = False
-    else:
-        command_addition = ''
-        shell_usage_bool = True
 
-    def __init__(self, root_directory: str|list[str] = None,
+    def __init__(self, root_directory: str | list[str] = None,
                  input_parameter_dict: dict = None,
-                 message_output: callable = None):
+                 message_output: Callable | None = None):
         """
         Initializes the Operator class.
 
@@ -59,25 +57,19 @@ class Operator:
         -------
         """
 
-        if input_parameter_dict is None:
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
-                input_parameter_dict_loaded = json.load(json_file)
-                self.input_parameter_dict = input_parameter_dict_loaded['modify_files']['Operator']
-                self.input_parameter_dict_2 = input_parameter_dict_loaded['synchronize_files']['Synchronizer']
-        else:
+        if input_parameter_dict is None or root_directory is None:
+            with open(pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json') as json_file:
+                _settings = json.load(json_file)
+
+        if input_parameter_dict is not None:
             self.input_parameter_dict = input_parameter_dict['modify_files']['Operator']
             self.input_parameter_dict_2 = input_parameter_dict['synchronize_files']['Synchronizer']
-
-        if root_directory is None:
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_parameter_settings/processing_settings.json'), 'r') as json_file:
-                self.root_directory = json.load(json_file)['modify_files']['root_directory']
         else:
-            self.root_directory = root_directory
+            self.input_parameter_dict = _settings['modify_files']['Operator']
+            self.input_parameter_dict_2 = _settings['synchronize_files']['Synchronizer']
 
-        if message_output is None:
-            self.message_output = print
-        else:
-            self.message_output = message_output
+        self.root_directory = root_directory if root_directory is not None else _settings['modify_files']['root_directory']
+        self.message_output = message_output if message_output is not None else print
 
         self.app_context_bool = is_gui_context()
 
@@ -112,17 +104,17 @@ class Operator:
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
-        calibrated_sr_config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/calibrated_sample_rates_imec.ini'))
+        calibrated_sr_config.read(pathlib.Path(__file__).parent / '_config/calibrated_sample_rates_imec.ini')
 
         for one_root_dir in self.root_directory:
-            for ephys_dir in sorted(glob.glob(pathname=f"{one_root_dir.replace('Data', 'EPHYS')[:-7]}_imec*", recursive=True)):
+            for ephys_dir in sorted(pathlib.Path(one_root_dir.replace('Data', 'EPHYS')[:-7]).parent.glob(f"{pathlib.Path(one_root_dir.replace('Data', 'EPHYS')[:-7]).name}_imec*")):
 
-                probe_id = ephys_dir.split('_')[-1]
+                probe_id = ephys_dir.name.split('_')[-1]
 
                 self.message_output(f"Working on getting spike times from clusters in: {ephys_dir}, started at {datetime.now()}.")
 
                 # load the changepoint .json file
-                with open(sorted(glob.glob(pathname=f'{ephys_dir}{os.sep}changepoints_info_*.json', recursive=True))[0], 'r') as binary_info_input_file:
+                with open(sorted(ephys_dir.glob('changepoints_info_*.json'))[0], 'r') as binary_info_input_file:
                     binary_files_info = json.load(binary_info_input_file)
 
                     for session_key in binary_files_info.keys():
@@ -139,27 +131,28 @@ class Operator:
                     unit_count_dict[session_key] = {'good': 0, 'mua': 0}
 
                     # load info from camera_frame_count_dict
-                    with open(sorted(glob.glob(f"{binary_files_info[session_key]['root_directory']}{os.sep}video{os.sep}*_camera_frame_count_dict.json"))[0], 'r') as frame_count_infile:
+                    with open(sorted(pathlib.Path(binary_files_info[session_key]['root_directory']).glob('video/*_camera_frame_count_dict.json'))[0], 'r') as frame_count_infile:
                         camera_frame_info = json.load(frame_count_infile)
                         esr_dict[session_key] = camera_frame_info['median_empirical_camera_sr']
                         frame_least_dict[session_key] = camera_frame_info['total_frame_number_least']
                         root_dict[session_key] = binary_files_info[session_key]['root_directory']
 
-                    if any([np.isnan(value) for value in binary_files_info[session_key]['tracking_start_end']]):
+                    if any(np.isnan(value) for value in binary_files_info[session_key]['tracking_start_end']):
                         se_dict[session_key] = binary_files_info[session_key]['session_start_end']
                     else:
                         se_dict[session_key] = binary_files_info[session_key]['tracking_start_end']
 
-                    pathlib.Path(f'{root_dict[session_key]}{os.sep}ephys{os.sep}{probe_id}{os.sep}cluster_data').mkdir(parents=True, exist_ok=True)
+                    (pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data').mkdir(parents=True, exist_ok=True)
 
                 # load the Kilosort output files
-                phy_curation_bool = os.path.isfile(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}cluster_info.tsv")
-                spike_clusters = np.load(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}spike_clusters.npy")
-                spike_times = np.load(f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}spike_times.npy")
+                ks_dir = ephys_dir / f"kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}"
+                phy_curation_bool = (ks_dir / 'cluster_info.tsv').is_file()
+                spike_clusters = np.load(ks_dir / 'spike_clusters.npy')
+                spike_times = np.load(ks_dir / 'spike_times.npy')
 
                 if phy_curation_bool:
-                    cluster_info = pd.read_csv(filepath_or_buffer=f"{ephys_dir}{os.sep}kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}{os.sep}cluster_info.tsv",
-                                               sep='\t')
+                    cluster_info = pls.read_csv(source=ks_dir / 'cluster_info.tsv',
+                                                separator='\t')
                 else:
                     self.message_output("Phy2 curation has not been done for this session, no cluster_info.tsv file exists.")
                     continue
@@ -167,10 +160,10 @@ class Operator:
                 smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
                 for idx in tqdm(range(cluster_info.shape[0])):
-                    if cluster_info.loc[idx, 'group'] == 'good' or cluster_info.loc[idx, 'group'] == 'mua':
+                    if cluster_info[idx, 'group'] in ('good', 'mua'):
 
                         # collect all spikes for any given cluster
-                        cluster_indices = np.sort(np.where(spike_clusters == cluster_info.loc[idx, 'cluster_id'])[0])
+                        cluster_indices = np.sort(np.where(spike_clusters == cluster_info[idx, 'cluster_id'])[0])
                         spike_events = np.take(spike_times, cluster_indices)
 
                         # filter spikes for each session
@@ -185,12 +178,12 @@ class Operator:
 
                             # save spiking data
                             if session_spikes_sec.shape[0] > self.input_parameter_dict['get_spike_times']['min_spike_num']:
-                                cluster_id = f"{probe_id}_cl{cluster_info.loc[idx, 'cluster_id']:04d}_ch{cluster_info.loc[idx, 'ch']:03d}_{cluster_info.loc[idx, 'group']}"
-                                np.save(file=f'{root_dict[session_key]}{os.sep}ephys{os.sep}{probe_id}{os.sep}cluster_data{os.sep}{cluster_id}', arr=session_spikes)
+                                cluster_id = f"{probe_id}_cl{cluster_info[idx, 'cluster_id']:04d}_ch{cluster_info[idx, 'ch']:03d}_{cluster_info[idx, 'group']}"
+                                np.save(file=pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data' / cluster_id, arr=session_spikes)
 
-                                unit_count_dict[session_key][cluster_info.loc[idx, 'group']] += 1
+                                unit_count_dict[session_key][cluster_info[idx, 'group']] += 1
 
-                    elif cluster_info.loc[idx, 'group'] == 'noise':
+                    elif cluster_info[idx, 'group'] == 'noise':
                         unit_count_dict['noise'] += 1
 
                     else:
@@ -234,18 +227,18 @@ class Operator:
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
-        calibrated_sr_config.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_config/calibrated_sample_rates_imec.ini'))
+        calibrated_sr_config.read(pathlib.Path(__file__).parent / '_config/calibrated_sample_rates_imec.ini')
 
         # create list of directories to save concatenated files in
         concat_save_dir = []
         available_probes = []
         for ord_idx, one_root_dir in enumerate(self.root_directory):
             ephys_save_dir_base = one_root_dir.replace('Data', 'EPHYS')[:-7]
-            for one_probe_dir in os.listdir(f'{one_root_dir}{os.sep}ephys'):
-                if one_probe_dir not in available_probes:
-                    available_probes.append(one_probe_dir)
-                if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{one_probe_dir}') and 'imec' in one_probe_dir:
-                    if not any([True if one_probe_dir in one_concat_dir else False for one_concat_dir in concat_save_dir]):
+            for one_probe_dir in (pathlib.Path(one_root_dir) / 'ephys').iterdir():
+                if one_probe_dir.name not in available_probes:
+                    available_probes.append(one_probe_dir.name)
+                if one_probe_dir.is_dir() and 'imec' in one_probe_dir.name:
+                    if not any(one_probe_dir.name in one_concat_dir for one_concat_dir in concat_save_dir):
                         concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir}')
 
         npx_file_type = self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']
@@ -257,9 +250,10 @@ class Operator:
             total_size_bytes = 0
             total_time_secs = 0.0
             for ord_idx, one_root_dir in enumerate(self.root_directory):
-                if os.path.isdir(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}'):
-                    for one_file, one_meta in zip(sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.bin*"))),
-                                                  sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.meta*")))):
+                ephys_probe_dir = pathlib.Path(one_root_dir) / 'ephys' / probe_id
+                if ephys_probe_dir.is_dir():
+                    for one_file, one_meta in zip(sorted(ephys_probe_dir.glob(f"*{npx_file_type}.bin*")),
+                                                  sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))):
                         if one_file.is_file() and one_meta.is_file():
 
                             # parse metadata file for channel and headstage information
@@ -278,7 +272,7 @@ class Operator:
                                     elif key == 'fileTimeSecs':
                                         total_time_secs += float(value)
 
-                            binary_file_info_id = pathlib.Path(one_file).name.split(os.sep)[-1][:-7]
+                            binary_file_info_id = one_file.name[:-7]
                             binary_files_info[binary_file_info_id] = {'session_start_end': [np.nan, np.nan],
                                                                       'tracking_start_end': [np.nan, np.nan],
                                                                       'largest_camera_break_duration': np.nan,
@@ -310,9 +304,10 @@ class Operator:
                                     concatenation_command += '{} '.format(one_file)
 
             # save concatenated META file
-            concatenated_meta_file = f"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.meta"
-            if not os.path.isfile(concatenated_meta_file):
-                with open(sorted(list(pathlib.Path(f'{one_root_dir}{os.sep}ephys{os.sep}{probe_id}').glob(f"*{npx_file_type}.meta*")))[0], 'r', encoding='utf-8') as f_in, \
+            concat_save_path = pathlib.Path(concat_save_dir[probe_idx])
+            concatenated_meta_file = concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.meta"
+            if not concatenated_meta_file.is_file():
+                with open(sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))[0], 'r', encoding='utf-8') as f_in, \
                         open(concatenated_meta_file, 'w', encoding='utf-8') as f_out:
                     for line in f_in:
                         if line.strip().startswith('fileSizeBytes='):
@@ -323,23 +318,24 @@ class Operator:
                             f_out.write(line)
 
             if os.name == 'nt':
-                concatenation_command += f'"{concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.bin"'
+                concatenation_command += f'"{concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.bin"}"'
             else:
-                concatenation_command += f'> {concat_save_dir[probe_idx]}{os.sep}concatenated_{concat_save_dir[probe_idx].split(os.sep)[-1]}.{npx_file_type}.bin'
+                concatenation_command += f'> {concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.bin"}'
 
             # create save directory if one doesn't exist already
             pathlib.Path(concat_save_dir[probe_idx]).mkdir(parents=True, exist_ok=True)
 
             # save changepoint information in JSON file
-            if not os.path.exists(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json'):
-                with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'w') as binary_info_output_file:
+            changepoints_json = concat_save_path / f'changepoints_info_{concat_save_path.name}.json'
+            if not changepoints_json.exists():
+                with open(changepoints_json, 'w') as binary_info_output_file:
                     json.dump(binary_files_info, binary_info_output_file, indent=4)
             else:
-                with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'r') as existing_json_file:
+                with open(changepoints_json, 'r') as existing_json_file:
                     changepoint_info_data = json.load(existing_json_file)
 
                 for file_key in binary_files_info.keys():
-                    if file_key not in changepoint_info_data.keys():
+                    if file_key not in changepoint_info_data:
                         changepoint_info_data[file_key] = binary_files_info[file_key]
                     else:
                         for component_key in changepoint_info_data[file_key].keys():
@@ -349,13 +345,13 @@ class Operator:
                                 changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] + binary_files_info[file_key]['session_start_end'][0]
                                 changepoint_info_data[file_key][component_key][1] = changepoint_info_data[file_key][component_key][1] + binary_files_info[file_key]['session_start_end'][0]
 
-                with open(f'{concat_save_dir[probe_idx]}{os.sep}changepoints_info_{concat_save_dir[probe_idx].split(os.sep)[-1]}.json', 'w') as binary_info_output_file:
+                with open(changepoints_json, 'w') as binary_info_output_file:
                     json.dump(changepoint_info_data, binary_info_output_file, indent=4)
 
             smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
             # run command in shell
-            subprocess.Popen(args=f"{self.command_addition}{concatenation_command}",
+            subprocess.Popen(args=concatenation_command,
                              shell=True,
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.STDOUT,
@@ -384,20 +380,19 @@ class Operator:
         self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}temp").mkdir(parents=True, exist_ok=True)
+        (pathlib.Path(self.root_directory) / 'audio' / 'temp').mkdir(parents=True, exist_ok=True)
 
         # separate each channel of every multichannel audio file
-        mc_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}original_mc{os.sep}*.wav"))
+        mc_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / 'original_mc').glob('*.wav'))
         for mc_audio_file in mc_audio_files:
-            mc_audio_file_basename = os.path.basename(mc_audio_file)
             separate_ch_subprocesses = []
             for ch in range(1, 13):
-                output_file = f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{mc_audio_file_basename[:-4]}_ch{ch:02d}.wav"
-                sep_ch_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox {mc_audio_file_basename} {output_file} remix {ch}''',
-                                               cwd=f"{self.root_directory}{os.sep}audio{os.sep}original_mc",
+                output_file = str(pathlib.Path(self.root_directory) / 'audio' / 'temp' / f'{mc_audio_file.stem}_ch{ch:02d}.wav')
+                sep_ch_subp = subprocess.Popen(args=["static_sox", mc_audio_file.name, output_file, "remix", str(ch)],
+                                               cwd=pathlib.Path(self.root_directory) / 'audio' / 'original_mc',
                                                stdout=subprocess.DEVNULL,
                                                stderr=subprocess.STDOUT,
-                                               shell=self.shell_usage_bool)
+                                               shell=False)
 
                 separate_ch_subprocesses.append(sep_ch_subp)
 
@@ -411,17 +406,17 @@ class Operator:
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
         # find name origin for file naming purposes
-        name_origin = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}m_*_ch*.wav"))[0].split('_')[2]
+        name_origin = sorted((pathlib.Path(self.root_directory) / 'audio' / 'temp').glob('m_*_ch*.wav'))[0].name.split('_')[2]
 
         # concatenate single channel files for master/slave
         separation_subprocesses = []
         for device_id in ['m', 's']:
             for ch in range(1, 13):
-                partial_input_files = [os.path.basename(p) for p in sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}temp{os.sep}{device_id}_*_ch{ch:02d}.wav"))]
-                output_file = f"{self.root_directory}{os.sep}audio{os.sep}original{os.sep}{device_id}_{name_origin}_ch{ch:02d}.wav"
+                partial_input_files = [p.name for p in sorted((pathlib.Path(self.root_directory) / 'audio' / 'temp').glob(f'{device_id}_*_ch{ch:02d}.wav'))]
+                output_file = str(pathlib.Path(self.root_directory) / 'audio' / 'original' / f'{device_id}_{name_origin}_ch{ch:02d}.wav')
                 command_args = ['static_sox', *partial_input_files, '-q', output_file]
                 mc_to_sc_subp = subprocess.Popen(args=command_args,
-                                                 cwd=f"{self.root_directory}{os.sep}audio{os.sep}temp",
+                                                 cwd=pathlib.Path(self.root_directory) / 'audio' / 'temp',
                                                  stdout=subprocess.DEVNULL,
                                                  stderr=subprocess.STDOUT,
                                                  shell=False)
@@ -436,7 +431,7 @@ class Operator:
                 break
 
         # delete temp directory (w/ all files in it)
-        shutil.rmtree(f"{self.root_directory}{os.sep}audio{os.sep}temp")
+        shutil.rmtree(pathlib.Path(self.root_directory) / 'audio' / 'temp')
 
     def hpss_audio(self) -> None:
         """
@@ -460,7 +455,7 @@ class Operator:
         self.message_output(f"Harmonic-percussive source separation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        wav_file_lst = sorted(glob.glob(f'{self.root_directory}{os.sep}audio{os.sep}cropped_to_video{os.sep}*.wav'))
+        wav_file_lst = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('*.wav'))
 
         for one_wav_file in wav_file_lst:
             self.message_output(f"Working on file: {one_wav_file}")
@@ -497,11 +492,10 @@ class Operator:
                                             a_max=32767).astype('int16')
 
             # save the harmonic component as a new WAV file
-            new_dir = f"{self.root_directory}{os.sep}audio{os.sep}hpss"
-            pathlib.Path(new_dir).mkdir(parents=True, exist_ok=True)
+            hpss_dir = pathlib.Path(self.root_directory) / 'audio' / 'hpss'
+            hpss_dir.mkdir(parents=True, exist_ok=True)
 
-            raw_file_name = os.path.basename(one_wav_file)
-            wavfile.write(filename=f'{new_dir}{os.sep}{raw_file_name[:-4]}_hpss.wav',
+            wavfile.write(filename=hpss_dir / f'{one_wav_file.stem}_hpss.wav',
                           rate=sampling_rate_audio,
                           data=harmonic_data_clipped)
 
@@ -543,19 +537,19 @@ class Operator:
 
         for one_dir in self.input_parameter_dict['filter_audio_files']['filter_dirs']:
 
-            pathlib.Path(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered").mkdir(parents=True, exist_ok=True)
+            filter_output_dir = pathlib.Path(self.root_directory) / 'audio' / f'{one_dir}_filtered'
+            filter_output_dir.mkdir(parents=True, exist_ok=True)
 
             filter_subprocesses = []
-            all_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}{os.sep}"
-                                               f"*.{self.input_parameter_dict['filter_audio_files']['filter_audio_format']}"))
+            all_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / one_dir).glob(f"*.{self.input_parameter_dict['filter_audio_files']['filter_audio_format']}"))
 
             if len(all_audio_files) > 0:
                 for one_file in all_audio_files:
-                    filter_subp = subprocess.Popen(args=f'''{self.command_addition}static_sox --ignore-length {one_file.split(os.sep)[-1]} {self.root_directory}{os.sep}audio{os.sep}{one_dir}_filtered{os.sep}{one_file.split(os.sep)[-1][:-4]}_filtered.wav sinc {freq_hp}-{freq_lp}''',
-                                                   cwd=f"{self.root_directory}{os.sep}audio{os.sep}{one_dir}",
+                    filter_subp = subprocess.Popen(args=["static_sox", "--ignore-length", one_file.name, str(filter_output_dir / f'{one_file.stem}_filtered.wav'), "sinc", f"{freq_hp}-{freq_lp}"],
+                                                   cwd=pathlib.Path(self.root_directory) / 'audio' / one_dir,
                                                    stdout=subprocess.DEVNULL,
                                                    stderr=subprocess.STDOUT,
-                                                   shell=self.shell_usage_bool)
+                                                   shell=False)
 
                     filter_subprocesses.append(filter_subp)
 
@@ -589,20 +583,19 @@ class Operator:
 
         for audio_file_type in self.input_parameter_dict['concatenate_audio_files']['concat_dirs']:
 
-            all_audio_files = sorted(glob.glob(f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}"
-                                               f"*.{self.input_parameter_dict['concatenate_audio_files']['concatenate_audio_format']}"))
+            audio_type_dir = pathlib.Path(self.root_directory) / 'audio' / audio_file_type
+            all_audio_files = sorted(audio_type_dir.glob(f"*.{self.input_parameter_dict['concatenate_audio_files']['concatenate_audio_format']}"))
 
             if len(all_audio_files) > 1:
 
-                data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}"],
+                data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [str(audio_type_dir)],
                                                              'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
 
                 name_origin = list(data_dict.keys())[0].split('_')[1]
                 dim_1 = data_dict[list(data_dict.keys())[0]]['wav_data'].shape[0]
                 dim_2 = len(data_dict.keys())
                 sr = data_dict[list(data_dict.keys())[0]]['sampling_rate']
-                complete_mm_file_name = (f"{self.root_directory}{os.sep}audio{os.sep}{audio_file_type}{os.sep}{name_origin}"
-                                         f"_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_int16.mmap")
+                complete_mm_file_name = str(audio_type_dir / f"{name_origin}_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_int16.mmap")
 
                 audio_mm_arr = np.memmap(filename=complete_mm_file_name,
                                          dtype='int16',
@@ -615,7 +608,7 @@ class Operator:
                 audio_mm_arr.flush()
 
             else:
-                self.message_output(f"There are <2 audio files per provided directory: '{self.root_directory}{os.sep}audio{os.sep}cropped_to_video', "
+                self.message_output(f"There are <2 audio files per provided directory: '{pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video'}', "
                                     f"so concatenation impossible.")
 
     def concatenate_video_files(self) -> None:
@@ -640,29 +633,29 @@ class Operator:
 
         subprocesses = []
 
-        for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
-            if 'calibration' not in sub_directory \
-                    and sub_directory.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['concatenate_camera_serial_num']:
+        for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
+            if 'calibration' not in sub_directory.name \
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['concatenate_camera_serial_num']:
 
-                current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
+                current_working_dir = sub_directory
 
-                vid_name = f"{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}"
+                vid_name = f"{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.name.split('.')[-1]}"
                 vid_extension = self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']
-                all_video_files = sorted(glob.glob(f"{current_working_dir}{os.sep}*.{vid_extension}"))
+                all_video_files = sorted(current_working_dir.glob(f'*.{vid_extension}'))
 
                 if len(all_video_files) > 1:
 
                     # create .txt file with video files to concatenate
-                    with open(f"{current_working_dir}{os.sep}file_concatenation_list_{sub_directory.split('.')[-1]}.txt", 'w', encoding="utf-8") as concat_txt_file:
+                    with open(current_working_dir / f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt", 'w', encoding="utf-8") as concat_txt_file:
                         for file_path in all_video_files:
-                            concat_txt_file.write(f"file '{file_path.split(os.sep)[-1]}'\n")
+                            concat_txt_file.write(f"file '{file_path.name}'\n")
 
                     # concatenate videos
-                    one_subprocess = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -f concat -i file_concatenation_list_{sub_directory.split('.')[-1]}.txt -c copy {vid_name}.{vid_extension}''',
+                    one_subprocess = subprocess.Popen(args=["ffmpeg", "-loglevel", "warning", "-f", "concat", "-i", f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt", "-c", "copy", f"{vid_name}.{vid_extension}"],
                                                       stdout=subprocess.DEVNULL,
                                                       stderr=subprocess.STDOUT,
                                                       cwd=current_working_dir,
-                                                      shell=self.shell_usage_bool)
+                                                      shell=False)
 
                     subprocesses.append(one_subprocess)
 
@@ -674,14 +667,17 @@ class Operator:
                 break
 
         #  copy files over to video directory
-        for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
-            if 'calibration' not in sub_directory \
-                    and sub_directory.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['concatenate_camera_serial_num']:
-                current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
+        for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
+            if 'calibration' not in sub_directory.name \
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['concatenate_camera_serial_num']:
+                current_working_dir = sub_directory
+                cam_serial = sub_directory.name.split('.')[-1]
+                concat_name = self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']
+                vid_ext = self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']
 
-                os.remove(f"{current_working_dir}{os.sep}file_concatenation_list_{sub_directory.split('.')[-1]}.txt")
-                shutil.move(src=f"{current_working_dir}{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']}",
-                            dst=f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']}")
+                (current_working_dir / f"file_concatenation_list_{cam_serial}.txt").unlink()
+                shutil.move(src=current_working_dir / f"{concat_name}_{cam_serial}.{vid_ext}",
+                            dst=pathlib.Path(self.root_directory) / 'video' / f"{concat_name}_{cam_serial}.{vid_ext}")
 
     def rectify_video_fps(self, conduct_concat: bool = True) -> None:
         """
@@ -708,17 +704,19 @@ class Operator:
 
         self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
-        root, dirs, files = next(os.walk(f"{self.root_directory}{os.sep}video"))
-        non_hidden_files = [f for f in files if not f.startswith('.')]
+        video_dir = pathlib.Path(self.root_directory) / 'video'
+        non_hidden_files = [p.name for p in video_dir.iterdir() if p.is_file() and not p.name.startswith('.')]
 
         if not conduct_concat and len(non_hidden_files) == 0:
-            for sub_directory in os.listdir(f"{self.root_directory}{os.sep}video"):
-                if 'calibration' not in sub_directory \
-                        and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']:
-                    current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
+            for sub_directory in video_dir.iterdir():
+                if 'calibration' not in sub_directory.name \
+                        and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']:
+                    cam_serial = sub_directory.name.split('.')[-1]
+                    target_file = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
+                    vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
 
-                    shutil.copy(src=f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}",
-                                dst=f"{self.root_directory}{os.sep}video{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}")
+                    shutil.copy(src=sub_directory / f"{target_file}.{vid_ext}",
+                                dst=video_dir / f"{target_file}_{cam_serial}.{vid_ext}")
 
         # load metadata
         metadata, metadata_path = load_session_metadata(
@@ -735,26 +733,27 @@ class Operator:
         camera_idx = 0
 
         fsp_subprocesses = []
-        for sd_idx, sub_directory in enumerate(sorted(os.listdir(f"{self.root_directory}{os.sep}video"))):
-            if (os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}")
-                    and '.' in sub_directory
-                    and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
+        for sd_idx, sub_directory in enumerate(sorted(video_dir.iterdir())):
+            if (sub_directory.is_dir()
+                    and '.' in sub_directory.name
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
 
+                cam_serial = sub_directory.name.split('.')[-1]
                 if camera_idx == 0:
-                    date_joint = sub_directory.split('.')[0].split('_')[-2] + sub_directory.split('.')[0].split('_')[-1]
+                    date_joint = sub_directory.name.split('.')[0].split('_')[-2] + sub_directory.name.split('.')[0].split('_')[-1]
 
                 # get frame count and empirical sampling rate
-                img_store = new_for_filename(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}{os.sep}metadata.yaml")
+                img_store = new_for_filename(str(sub_directory / 'metadata.yaml'))
                 total_frame_num = img_store.frame_count
                 last_frame_num = img_store.frame_max
                 frame_times = img_store.get_frame_metadata()['frame_time']
                 video_duration = frame_times[-1] - frame_times[0]
                 esr = round(number=total_frame_num / video_duration, ndigits=4)
-                if 'calibration' not in sub_directory:
+                if 'calibration' not in sub_directory.name:
                     empirical_camera_sr[camera_idx] = esr
-                    camera_frame_count_dict[sub_directory.split('.')[-1]] = (total_frame_num, esr)
+                    camera_frame_count_dict[cam_serial] = (total_frame_num, esr)
                     if total_frame_num == last_frame_num:
-                        self.message_output(f"Camera {sub_directory.split('.')[-1]} has {total_frame_num} total frames, no dropped frames, "
+                        self.message_output(f"Camera {cam_serial} has {total_frame_num} total frames, no dropped frames, "
                                             f"video duration of {video_duration:.4f} seconds, and sampling rate of {esr} fps.")
                         if total_frame_num < total_frame_number:
                             total_frame_number = total_frame_num
@@ -765,28 +764,30 @@ class Operator:
                             metadata['Session']['session_duration'] = round(video_duration, 3)
                             save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
                     else:
-                        self.message_output(f"WARNING: The last frame on camera {sub_directory.split('.')[-1]} is {last_frame_num}, which is more than {total_frame_num} in total, "
+                        self.message_output(f"WARNING: The last frame on camera {cam_serial} is {last_frame_num}, which is more than {total_frame_num} in total, "
                                             f"suggesting dropped frames. The video duration is {video_duration:.4f} seconds")
                     camera_idx += 1
 
                 crf = self.input_parameter_dict['rectify_video_fps']['constant_rate_factor']
                 enc_preset = self.input_parameter_dict['rectify_video_fps']['encoding_preset']
+                vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
+                conv_target = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
 
-                current_working_dir = f"{self.root_directory}{os.sep}video"
-                if 'calibration' not in sub_directory:
-                    target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
-                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
+                current_working_dir = video_dir
+                if 'calibration' not in sub_directory.name:
+                    target_file = f"{conv_target}_{cam_serial}.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}.{vid_ext}"
                 else:
-                    current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
-                    target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
-                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
+                    current_working_dir = sub_directory
+                    target_file = f"000000.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}-calibration.{vid_ext}"
 
                 # change video sampling rate
-                fps_subp = subprocess.Popen(args=f'''{self.command_addition}ffmpeg -loglevel warning -y -r {esr} -i {target_file} -fps_mode passthrough -crf {crf} -preset {enc_preset} {new_file}''',
+                fps_subp = subprocess.Popen(args=["ffmpeg", "-loglevel", "warning", "-y", "-r", str(esr), "-i", target_file, "-fps_mode", "passthrough", "-crf", str(crf), "-preset", enc_preset, new_file],
                                             stdout=subprocess.DEVNULL,
                                             stderr=subprocess.STDOUT,
                                             cwd=current_working_dir,
-                                            shell=self.shell_usage_bool)
+                                            shell=False)
 
                 fsp_subprocesses.append(fps_subp)
 
@@ -798,36 +799,40 @@ class Operator:
                 break
 
         # move files to special directory
-        for sd_idx, sub_directory in enumerate(sorted(os.listdir(f"{self.root_directory}{os.sep}video"))):
-            if (os.path.isdir(f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}")
-                    and '.' in sub_directory
-                    and sub_directory.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
+        for sd_idx, sub_directory in enumerate(sorted(video_dir.iterdir())):
+            if (sub_directory.is_dir()
+                    and '.' in sub_directory.name
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
 
-                pathlib.Path(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images").mkdir(parents=True, exist_ok=True)
+                cam_serial = sub_directory.name.split('.')[-1]
+                vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
+                conv_target = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
+                dest_base = video_dir / date_joint / cam_serial
+                (dest_base / 'calibration_images').mkdir(parents=True, exist_ok=True)
 
-                current_working_dir = f"{self.root_directory}{os.sep}video"
-                if 'calibration' not in sub_directory:
-                    target_file = f"{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
-                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
+                current_working_dir = video_dir
+                if 'calibration' not in sub_directory.name:
+                    target_file = f"{conv_target}_{cam_serial}.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}.{vid_ext}"
 
-                    shutil.move(src=f"{current_working_dir}{os.sep}{new_file}",
-                                dst=f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}{new_file}")
+                    shutil.move(src=current_working_dir / new_file,
+                                dst=dest_base / new_file)
                 else:
-                    current_working_dir = f"{self.root_directory}{os.sep}video{os.sep}{sub_directory}"
-                    target_file = f"000000.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
-                    new_file = f"{sub_directory.split('.')[-1]}-{date_joint}-calibration.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"
+                    current_working_dir = sub_directory
+                    target_file = f"000000.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}-calibration.{vid_ext}"
 
-                    shutil.move(src=f"{current_working_dir}{os.sep}{new_file}",
-                                dst=f"{self.root_directory}{os.sep}video{os.sep}{date_joint}{os.sep}{sub_directory.split('.')[-1]}{os.sep}calibration_images{os.sep}{new_file}")
+                    shutil.move(src=current_working_dir / new_file,
+                                dst=dest_base / 'calibration_images' / new_file)
 
                 # clean video directory of all unnecessary files
                 if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
-                    if os.path.isfile(f"{current_working_dir}{os.sep}{self.input_parameter_dict['rectify_video_fps']['conversion_target_file']}_{sub_directory.split('.')[-1]}.{self.input_parameter_dict['rectify_video_fps']['encode_video_extension']}"):
-                        os.remove(f"{current_working_dir}{os.sep}{target_file}")
+                    if (current_working_dir / f"{conv_target}_{cam_serial}.{vid_ext}").is_file():
+                        (current_working_dir / target_file).unlink()
 
         # save camera_frame_count_dict to a file
         camera_frame_count_dict['total_frame_number_least'] = total_frame_number
         camera_frame_count_dict['total_video_time_least'] = total_video_time
         camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.median(empirical_camera_sr), ndigits=4)
-        with open(f"{self.root_directory}{os.sep}video{os.sep}{date_joint}_camera_frame_count_dict.json", 'w') as frame_count_outfile:
+        with open(video_dir / f'{date_joint}_camera_frame_count_dict.json', 'w') as frame_count_outfile:
             json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)
