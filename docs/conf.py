@@ -2,17 +2,18 @@
 # https://stackoverflow.com/questions/66495200/is-it-possible-to-include-external-rst-files-in-my-documentation
 from __future__ import annotations
 
-from urllib.request import urlretrieve
-from urllib.error import URLError
+from contextlib import suppress
 from importlib import metadata
+from importlib.util import find_spec
+from urllib.error import URLError
+from urllib.request import urlretrieve
 
-try:
+
+with suppress(URLError, OSError):
     urlretrieve(
         url="https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/README.md",
         filename="README.md",
     )
-except (URLError, OSError):
-    pass
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -31,7 +32,6 @@ except metadata.PackageNotFoundError:
 extensions = [
     "sphinx.ext.doctest",
     "myst_parser",
-    "nbsphinx",
     "sphinx_rtd_theme",
     "sphinx_copybutton",
     "sphinx.ext.autodoc",
@@ -40,10 +40,13 @@ extensions = [
     "sphinx_rtd_dark_mode",
 ]
 
-# Notebooks will be displayed even if they include errors
-nbsphinx_allow_errors = True
-# Don't auto-execute notebooks.
-nbsphinx_execute = "never"
+if find_spec("nbsphinx") is not None:
+    extensions.append("nbsphinx")
+    # Notebooks will be displayed even if they include errors
+    nbsphinx_allow_errors = True
+    # Don't auto-execute notebooks.
+    nbsphinx_execute = "never"
+
 # Set to True if you want dark mode to be the default for first-time visitors.
 default_dark_mode = True
 
