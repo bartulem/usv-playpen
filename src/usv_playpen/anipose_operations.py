@@ -463,7 +463,7 @@ class ConvertTo3D:
             calib_fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_calibration.toml"),
             metadata_fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_calibration.metadata.h5"),
             histogram_path=str(self.session_root_joint_date_dir / f"{self.session_root_name}_reprojection_histogram.png"),
-            reproj_path=self.session_root_joint_date_dir,
+            reproj_path=str(self.session_root_joint_date_dir),
         )
 
     def conduct_anipose_triangulation(self) -> None:
