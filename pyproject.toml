@@ -41,7 +41,6 @@ dependencies = [
     "numba",
     "opencv-contrib-python",
     "optax",
-    "pandas",
     "platformdirs",
     "pygam",
     "PyQt6",
