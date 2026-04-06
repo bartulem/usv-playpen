@@ -11,7 +11,7 @@ Record
 -----------------------
 ``conduct-calibration`` is the command-line interface for performing a tracking camera calibration.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: conduct-calibration [-h] [--set KEY.PATH=VALUE]...
 
@@ -26,7 +26,7 @@ Record
 ---------------------
 ``conduct-recording`` is the command-line interface for conducting a recording session.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: conduct-recording [-h] [--set KEY.PATH=VALUE]...
 
@@ -44,7 +44,7 @@ Process
 ---------------------------
 ``concatenate-ephys-files`` is the command-line interface for concatenating ephys binary files across multiple sessions.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: concatenate-ephys-files [-h] --root-directories TEXT,TEXT,...
 
@@ -58,7 +58,7 @@ Process
 ------------------
 ``split-clusters`` is the command-line interface for splitting curated ephys clusters into individual session files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: split-clusters [-h] --root-directories TEXT,TEXT,...
                           [--min-spikes INTEGER] [--kilosort-version TEXT]
@@ -75,7 +75,7 @@ Process
 -------------------------
 ``concatenate-video-files`` is the command-line interface for concatenating video files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: concatenate-video-files  [-h] --root-directory PATH
                                     [--camera-serial TEXT]
@@ -95,7 +95,7 @@ Process
 -------------------------
 ``rectify-video-fps`` iis the command-line interface for re-encoding videos to a correct frame rate.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: rectify-video-fps [-h] --root-directory PATH [--camera-serial TEXT...]
                              [--target-file TEXT] [--extension TEXT]
@@ -122,7 +122,7 @@ Process
 -----------------------------
 ``multichannel-to-single-ch`` is the command-line interface for splitting multichannel audio files into single-channel files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: multichannel-to-single-ch [-h] --root-directory PATH
 
@@ -136,7 +136,7 @@ Process
 ------------------
 ``crop-wav-files`` is the command-line interface for cropping audio WAV files to match video length.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: crop-wav-files [-h] --root-directory PATH [--trigger-device TEXT]
                           [--trigger-channel INTEGER]
@@ -153,7 +153,7 @@ Process
 -----------------
 ``av-sync-check`` is the command-line interface for checking audio-video synchronization and generating a summary figure.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: av-sync-check [-h] --root-directory PATH [--extra-camera TEXT]
                          [--audio-sync-ch INTEGER]
@@ -188,7 +188,7 @@ Process
 -----------------
 ``ev-sync-check`` is the command-line interface for validating ephys-video synchronization.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: ev-sync-check [-h] --root-directory PATH [--file-type TEXT]
                          [--tolerance FLOAT]
@@ -205,7 +205,7 @@ Process
 --------------
 ``hpss-audio`` is the command-line interface for performing Harmonic-Percussive Source Separation (HPSS) on audio files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: hpss-audio [-h] --root-directory PATH [--stft-params INTEGER INTEGER]
                       [--kernel-size INTEGER INTEGER] [--power FLOAT]
@@ -225,7 +225,7 @@ Process
 -------------------
 ``bp-filter-audio`` is the command-line interface for band-pass filtering audio files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: bp-filter-audio [-h] --root-directory PATH [--format TEXT]
                            [--dirs TEXT...] [--freq-bounds INTEGER INTEGER]
@@ -243,7 +243,7 @@ Process
 ---------------------------
 ``concatenate-audio-files`` is the command-line interface for vertically stacking audio files into a single memmap file.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: concatenate-audio-files [-h] --root-directory PATH
                                    [--format TEXT] [--dirs TEXT...]
@@ -260,7 +260,7 @@ Process
 ---------------
 ``sleap-to-h5`` is the command-line interface for converting SLEAP (.slp) files to HDF5 (.h5) files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: sleap-to-h5 [-h] --root-directory PATH [--venv-path TEXT]
 
@@ -275,7 +275,7 @@ Process
 ---------------------
 ``anipose-calibrate`` is the command-line interface for conducting Anipose camera calibration.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: anipose-calibrate [-h] --root-directory PATH
                              [--board-provided | --no-board-provided]
@@ -300,7 +300,7 @@ Process
 -----------------------
 ``anipose-triangulate`` is the command-line interface for conducting Anipose 3D triangulation.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: anipose-triangulate [-h] --root-directory PATH --calibration-file PATH
                                [--arena-points | --no-arena-points]
@@ -341,7 +341,7 @@ Process
 ---------------
 ``anipose-trm`` is the command-line interface for translating, rotating, and scaling 3D point data.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: anipose-trm [-h] --root-directory PATH --exp-code TEXT --arena-file PATH
                        [--save-data-for TEXT]
@@ -364,7 +364,7 @@ Process
 -------------
 ``das-infer`` is the command-line interface for running Deep Audio Segmenter (DAS) inference on audio files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: das-infer [-h] --root-directory PATH [--env-name TEXT] [--model-dir PATH]
                      [--model-name TEXT] [--output-type TEXT]
@@ -387,7 +387,7 @@ Process
 -----------------
 ``das-summarize`` is the command-line interface for summarizing DAS inference findings.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: das-summarize [-h] --root-directory PATH [--win-len INTEGER]
                          [--freq-cutoff INTEGER] [--corr-cutoff FLOAT]
@@ -407,7 +407,7 @@ Process
 ----------------------
 ``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using Vocalocator.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: prepare-vcl-assign [-h] --root-directory PATH --arena-directory PATH
 
@@ -423,7 +423,7 @@ Process
 --------------
 ``vcl-assign`` is the command-line interface for assigning vocalizations to specific animals using Vocalocator.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: vcl-assign        [-h] --root-directory PATH [--vcl-version TEXT]
                              [--env-name TEXT] [--model-dir PATH]
@@ -444,7 +444,7 @@ Analyze
 -------------------------
 ``generate-beh-features`` is the command-line interface for calculating 3D behavioral features.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: generate-beh-features  [-h] --root-directory PATH
                                   [--head-points TEXT TEXT TEXT TEXT]
@@ -467,7 +467,7 @@ Analyze
 -------------------------
 ``generate-usv-playback`` is the command-line interface for generating artificial USV playback files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: generate-usv-playback [-h] --exp-id TEXT [--num-usv-files INTEGER]
                                  [--total-usv-number INTEGER] [--ipi-duration FLOAT]
@@ -489,7 +489,7 @@ Analyze
 --------------------------------------
 ``generate-naturalistic-usv-playback`` is the command-line interface for generating naturalistic USV playback files.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: generate-usv-playback [-h] --exp-id TEXT [--num-naturalistic-usv-files INTEGER]
                                  [--naturalistic-wav-sampling-rate INTEGER]
@@ -516,7 +516,7 @@ Analyze
 ---------------
 ``generate-rm`` is the command-line interface for calculating neural-behavioral tuning curves.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: generate-rm [-h] --root-directory PATH [--temporal-offsets INTEGER...]
                        [--n-shuffles INTEGER] [--total-bin-num INTEGER]
@@ -540,7 +540,7 @@ Visualize
 --------------------
 ``generate-rm-figs`` is the command-line interface for making neural-behavioral tuning curve figures.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: generate-rm-figs [-h] --root-directory PATH [--smoothing-sd FLOAT]
                             [--occ-threshold FLOAT]
@@ -557,7 +557,7 @@ Visualize
 ----------------
 ``generate-viz`` is the command-line interface for making plots/animations of 3D tracked mice.
 
-.. code-block:: plaintext
+.. code-block:: text
 
     usage: generate-viz [-h] --root-directory PATH --arena-directory PATH --exp-id TEXT
                         [--speaker-audio-file PATH] [--sequence-audio-file PATH]

@@ -174,7 +174,7 @@ Neural recording data is aligned to the start of video recording, which is ident
     ├── 20250430_imec0
     │   ├── **changepoints_info_20250430_imec0.json**
     ├── 20250430_imec1
-    │   ├── **changepoints_info_20250430_imec1.jsonv
+    │   ├── **changepoints_info_20250430_imec1.json**
 
 
 In the *changepoints* JSON file, the E/V sync check process will save the *tracking_start_end* and *largest_camera_break_duration* values, and the latter, when divided with the Neuropixels sampling rate (should be ~30 kHz), should not be smaller than ~2.3 s.

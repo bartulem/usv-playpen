@@ -12,9 +12,17 @@ from pathlib import Path
 
 import yaml
 
-# Matches strings that YAML 1.1 would silently parse as integers
-# (digits with optional underscore separators, optional leading sign).
+# Matches strings that YAML 1.1 would silently coerce to a non-string type.
+# Covers: integers (with optional sign/underscores), ISO dates (YYYY-MM-DD),
+# ISO datetimes (YYYY-MM-DDTHH:MM:SS…), and YAML 1.1 boolean literals.
 _YAML11_INT_PATTERN = re.compile(r'^[+-]?[0-9][0-9_]*$')
+_YAML11_DATE_PATTERN = re.compile(
+    r'^\d{4}-\d{1,2}-\d{1,2}'       # date part: YYYY-M-D or YYYY-MM-DD
+    r'([T ]\d{2}:\d{2}(:\d{2})?.*)?$'  # optional time part
+)
+_YAML11_BOOL_PATTERN = re.compile(
+    r'^(y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$'
+)
 
 
 # Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
@@ -29,7 +37,11 @@ class SmartDumper(yaml.Dumper):
             return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
 
     def represent_str(self, data):
-        if _YAML11_INT_PATTERN.match(data):
+        if (
+            _YAML11_INT_PATTERN.match(data)
+            or _YAML11_DATE_PATTERN.match(data)
+            or _YAML11_BOOL_PATTERN.match(data)
+        ):
             return self.represent_scalar('tag:yaml.org,2002:str', data, style="'")
         return self.represent_scalar('tag:yaml.org,2002:str', data)
 
