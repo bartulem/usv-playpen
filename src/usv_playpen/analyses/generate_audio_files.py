@@ -147,8 +147,20 @@ class AudioGenerator:
                   tqdm(total=total_acceptable_playback_time, desc="Generating Playback", unit="s") as pbar):
 
                 while total_playback_time_created < total_acceptable_playback_time:
-                    # inter-sequence interval: sample from third GMM component in log space
-                    isi = np.exp(rng.normal(gmm['means'][2], gmm['sds'][2]))
+                    # inter-sequence interval: sample from third GMM component in log space,
+                    # clipped to mean ± 1 SD to prevent extreme silence at the tail
+                    isi_log = np.clip(
+                        rng.normal(gmm['means'][2], gmm['sds'][2]),
+                        gmm['means'][2] - gmm['sds'][2],
+                        gmm['means'][2] + gmm['sds'][2],
+                    )
+                    isi = np.exp(isi_log)
+
+                    # if this ISI alone would consume all remaining time, stop rather
+                    # than filling the tail of the file with silence
+                    if total_playback_time_created + isi >= total_acceptable_playback_time:
+                        break
+
                     isi_samples = int(np.ceil(isi * wav_sampling_rate * 1e3))
 
                     if total_playback_time_created == 0:
