@@ -127,7 +127,7 @@ class SummaryPlotter:
 
         # get audio information
         wav_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('*.wav'))
-        with wave.open(wav_audio_files[0], mode="rb") as example_audio_file:
+        with wave.open(str(wav_audio_files[0]), mode="rb") as example_audio_file:
             audio_sampling_rate = example_audio_file.getframerate()
             audio_sample_number = example_audio_file.getnframes()
         audio_ch_number = len(wav_audio_files)

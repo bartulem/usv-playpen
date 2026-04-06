@@ -1003,7 +1003,9 @@ class Synchronizer:
 
                             # if the SYNC is acceptable, delete the original audio files
                             if np.max(np.abs(audio_video_ipi_discrepancy_ms)) < self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']:
-                                shutil.rmtree(pathlib.Path(self.root_directory) / 'audio' / 'original')
+                                original_audio_dir = pathlib.Path(self.root_directory) / 'audio' / 'original'
+                                if original_audio_dir.exists():
+                                    shutil.rmtree(original_audio_dir)
 
                             ipi_discrepancy_dict[audio_file[:-4]]['ipi_discrepancy_ms'] = audio_video_ipi_discrepancy_ms
                             ipi_discrepancy_dict[audio_file[:-4]]['video_ipi_start_frames'] = _video_frames
