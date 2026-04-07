@@ -154,7 +154,7 @@ class RatemapFigureMaker(FeatureZoo):
                     plot_features["social"].append(feature_key)
 
             for offset in cluster_data.keys():
-                with PdfPages(f"{one_cluster_file[:-8]}plots_{offset}.pdf") as pdf_fig:
+                with PdfPages(f"{str(one_cluster_file)[:-8]}plots_{offset}.pdf") as pdf_fig:
                     for plot_feature_key in plot_features:
                         if "social" in plot_feature_key:
                             rm_color = mouse_color_dict["social"]

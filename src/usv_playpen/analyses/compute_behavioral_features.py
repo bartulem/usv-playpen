@@ -2264,12 +2264,12 @@ class FeatureZoo:
             feature_dict=feature_distribution_dict,
             mouse_id_list=track_names,
             session_exp_code=experimental_code,
-            plot_file_name=f"{tracked_file_loc[:-3]}_behavioral_features_histograms.pdf",
+            plot_file_name=f"{tracked_file_loc.with_suffix('')}_behavioral_features_histograms.pdf",
         )
 
         # # # # save data to .csv file
         behavioral_features_df.write_csv(
-            file=f"{tracked_file_loc[:-3]}_behavioral_features.csv",
+            file=f"{tracked_file_loc.with_suffix('')}_behavioral_features.csv",
             separator=",",
             include_header=True,
         )
