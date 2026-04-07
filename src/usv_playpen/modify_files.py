@@ -107,7 +107,8 @@ class Operator:
         calibrated_sr_config.read(pathlib.Path(__file__).parent / '_config/calibrated_sample_rates_imec.ini')
 
         for one_root_dir in self.root_directory:
-            for ephys_dir in sorted(pathlib.Path(one_root_dir.replace('Data', 'EPHYS')[:-7]).parent.glob(f"{pathlib.Path(one_root_dir.replace('Data', 'EPHYS')[:-7]).name}_imec*")):
+            _ephys_base = pathlib.Path(str(pathlib.Path(one_root_dir).parent).replace('Data', 'EPHYS')) / pathlib.Path(one_root_dir).name.split('_')[0]
+            for ephys_dir in sorted(_ephys_base.parent.glob(f"{_ephys_base.name}_imec*")):
 
                 probe_id = ephys_dir.name.split('_')[-1]
 
@@ -233,13 +234,13 @@ class Operator:
         concat_save_dir = []
         available_probes = []
         for ord_idx, one_root_dir in enumerate(self.root_directory):
-            ephys_save_dir_base = one_root_dir.replace('Data', 'EPHYS')[:-7]
+            ephys_save_dir_base = str(pathlib.Path(str(pathlib.Path(one_root_dir).parent).replace('Data', 'EPHYS')) / pathlib.Path(one_root_dir).name.split('_')[0])
             for one_probe_dir in (pathlib.Path(one_root_dir) / 'ephys').iterdir():
                 if one_probe_dir.name not in available_probes:
                     available_probes.append(one_probe_dir.name)
                 if one_probe_dir.is_dir() and 'imec' in one_probe_dir.name:
                     if not any(one_probe_dir.name in one_concat_dir for one_concat_dir in concat_save_dir):
-                        concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir}')
+                        concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir.name}')
 
         npx_file_type = self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']
         # create dictionary to store information about binary files and generate stitching command

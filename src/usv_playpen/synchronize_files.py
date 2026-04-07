@@ -351,7 +351,7 @@ class Synchronizer:
                 if abs(duration_difference) < self.input_parameter_dict['validate_ephys_video_sync']['npx_ms_divergence_tolerance']:
 
                     # save tracking start and end in changepoint information JSON file
-                    root_ephys = self.root_directory.replace('Data', 'EPHYS').replace(pathlib.Path(self.root_directory).name, recording_date) + f'_{imec_probe_id}'
+                    root_ephys = str(pathlib.Path(str(pathlib.Path(self.root_directory).parent).replace('Data', 'EPHYS')) / f'{recording_date}_{imec_probe_id}')
                     pathlib.Path(root_ephys).mkdir(parents=True, exist_ok=True)
                     if len(sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))) > 0:
                         with open(sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))[0], 'r') as binary_info_input_file:
