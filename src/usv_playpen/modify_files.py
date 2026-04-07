@@ -151,7 +151,7 @@ class Operator:
                 spike_times = np.load(ks_dir / 'spike_times.npy')
 
                 if phy_curation_bool:
-                    cluster_info = pls.read_csv(source=ks_dir / 'cluster_info.tsv',
+                    cluster_info = pls.read_csv(source=str(ks_dir / 'cluster_info.tsv'),
                                                 separator='\t')
                 else:
                     self.message_output("Phy2 curation has not been done for this session, no cluster_info.tsv file exists.")

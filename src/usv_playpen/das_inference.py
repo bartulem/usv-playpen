@@ -230,7 +230,7 @@ class FindMouseVocalizations:
                     + "_"
                     + one_file.name.split("_")[2]
                 )
-                channel_df = pls.read_csv(source=one_file)
+                channel_df = pls.read_csv(source=str(one_file))
                 channel_df = channel_df.filter(pls.col("name") != "noise")
                 ch_num = ch_conversion_dict[file_id]
                 for seg_row in channel_df.iter_rows(named=True):

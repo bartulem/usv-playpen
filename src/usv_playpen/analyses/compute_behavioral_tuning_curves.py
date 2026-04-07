@@ -237,7 +237,7 @@ class NeuronalTuning(FeatureZoo):
 
         # load behavioral feature data
         behavioral_data_file = next(pathlib.Path(self.root_directory).rglob('*_behavioral_features.csv*'))
-        behavioral_data = pls.read_csv(behavioral_data_file)
+        behavioral_data = pls.read_csv(str(behavioral_data_file))
 
         # load mouse and camera frame rate info
         mouse_data_h5 = next(pathlib.Path(self.root_directory).rglob('[!speaker]*_points3d_translated_rotated_metric.h5*'))

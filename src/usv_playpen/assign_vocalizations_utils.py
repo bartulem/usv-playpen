@@ -75,7 +75,7 @@ def load_usv_segments(segment_file: pathlib.Path) -> np.ndarray:
     ----------
     """
 
-    usv_summary_df = pls.read_csv(segment_file)
+    usv_summary_df = pls.read_csv(str(segment_file))
 
     return np.stack(
         arrays=[usv_summary_df["start"].to_numpy(), usv_summary_df["stop"].to_numpy()],

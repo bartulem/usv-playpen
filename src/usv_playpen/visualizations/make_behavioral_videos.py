@@ -1158,7 +1158,7 @@ class Create3DVideo:
 
         # load behavioral feature data
         behavioral_data_file = next(pathlib.Path(self.root_directory).rglob('*_behavioral_features.csv*'))
-        beh_feature_data = pls.read_csv(behavioral_data_file)
+        beh_feature_data = pls.read_csv(str(behavioral_data_file))
 
         return beh_feature_data
 
@@ -1453,7 +1453,7 @@ class Create3DVideo:
                 # find USV onset and offset times for epoch of interest
                 if self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
                     usv_summary_file = next((pathlib.Path(self.root_directory) / 'audio').glob('*_usv_summary.csv'))
-                    usv_summary_df = pls.read_csv(usv_summary_file)
+                    usv_summary_df = pls.read_csv(str(usv_summary_file))
                     usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
                                                            (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
 
