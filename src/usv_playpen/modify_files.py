@@ -277,7 +277,7 @@ class Operator:
                                                                       'tracking_start_end': [np.nan, np.nan],
                                                                       'largest_camera_break_duration': np.nan,
                                                                       'file_duration_samples': np.nan,
-                                                                      'root_directory': one_root_dir,
+                                                                      'root_directory': str(pathlib.Path(one_root_dir)),
                                                                       'total_num_channels': total_num_channels,
                                                                       'headstage_sn': headstage_sn,
                                                                       'imec_probe_sn': imec_probe_sn}

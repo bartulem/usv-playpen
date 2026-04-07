@@ -361,7 +361,7 @@ class Synchronizer:
                                                                        'tracking_start_end': [np.nan, np.nan],
                                                                        'largest_camera_break_duration': np.nan,
                                                                        'file_duration_samples': np.nan,
-                                                                       'root_directory': self.root_directory,
+                                                                       'root_directory': str(pathlib.Path(self.root_directory)),
                                                                        'total_num_channels': total_probe_ch,
                                                                        'headstage_sn': headstage_sn,
                                                                        'imec_probe_sn': imec_probe_sn}
@@ -370,7 +370,7 @@ class Synchronizer:
                                                                         'tracking_start_end': [np.nan, np.nan],
                                                                         'largest_camera_break_duration': np.nan,
                                                                         'file_duration_samples': np.nan,
-                                                                        'root_directory': self.root_directory,
+                                                                        'root_directory': str(pathlib.Path(self.root_directory)),
                                                                         'total_num_channels': total_probe_ch,
                                                                         'headstage_sn': headstage_sn,
                                                                         'imec_probe_sn': imec_probe_sn}}
