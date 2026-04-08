@@ -16,6 +16,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import re
 import pathlib
 import shutil
 import subprocess
@@ -110,7 +111,7 @@ class Operator:
             _ephys_base = pathlib.Path(str(pathlib.Path(one_root_dir).parent).replace('Data', 'EPHYS')) / pathlib.Path(one_root_dir).name.split('_')[0]
             for ephys_dir in sorted(_ephys_base.parent.glob(f"{_ephys_base.name}_imec*")):
 
-                probe_id = ephys_dir.name.split('_')[-1]
+                probe_id = re.search(r'imec\d', ephys_dir.name).group()
 
                 self.message_output(f"Working on getting spike times from clusters in: {ephys_dir}, started at {datetime.now()}.")
 

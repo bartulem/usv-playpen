@@ -11,6 +11,7 @@ from __future__ import annotations
 import configparser
 import json
 import operator
+import re
 import pathlib
 import shutil
 import subprocess
@@ -316,7 +317,7 @@ class Synchronizer:
 
             recording_date = pathlib.Path(self.root_directory).name.split('_')[0]
             recording_file_name = npx_recording.name
-            imec_probe_id = npx_recording.name.split('.')[-3]
+            imec_probe_id = re.search(r'imec\d', str(npx_recording)).group()
 
             self.message_output(f"N/V sync for {recording_file_name} with {total_probe_ch} channels, recorded w/ probe #{imec_probe_sn} & headstage #{headstage_sn}.")
 
