@@ -358,14 +358,15 @@ class Synchronizer:
                         with open(sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))[0], 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
 
-                        binary_files_info[recording_file_name[:-7]] = {'session_start_end': [np.nan, np.nan],
-                                                                       'tracking_start_end': [np.nan, np.nan],
-                                                                       'largest_camera_break_duration': np.nan,
-                                                                       'file_duration_samples': np.nan,
-                                                                       'root_directory': str(pathlib.Path(self.root_directory)),
-                                                                       'total_num_channels': total_probe_ch,
-                                                                       'headstage_sn': headstage_sn,
-                                                                       'imec_probe_sn': imec_probe_sn}
+                        if recording_file_name[:-7] not in binary_files_info:
+                            binary_files_info[recording_file_name[:-7]] = {'session_start_end': [np.nan, np.nan],
+                                                                           'tracking_start_end': [np.nan, np.nan],
+                                                                           'largest_camera_break_duration': np.nan,
+                                                                           'file_duration_samples': np.nan,
+                                                                           'root_directory': str(pathlib.Path(self.root_directory)),
+                                                                           'total_num_channels': total_probe_ch,
+                                                                           'headstage_sn': headstage_sn,
+                                                                           'imec_probe_sn': imec_probe_sn}
                     else:
                         binary_files_info = {recording_file_name[:-7]: {'session_start_end': [np.nan, np.nan],
                                                                         'tracking_start_end': [np.nan, np.nan],
@@ -376,7 +377,11 @@ class Synchronizer:
                                                                         'headstage_sn': headstage_sn,
                                                                         'imec_probe_sn': imec_probe_sn}}
 
-                    binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
+                    session_start = binary_files_info[recording_file_name[:-7]]['session_start_end'][0]
+                    if not np.isnan(session_start):
+                        binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start) + int(session_start), int(tracking_end) + int(session_start)]
+                    else:
+                        binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
                     binary_files_info[recording_file_name[:-7]]['largest_camera_break_duration'] = int(largest_break_duration)
 
                     with open(pathlib.Path(root_ephys) / f'changepoints_info_{recording_date}_{imec_probe_id}.json', 'w') as binary_info_output_file:
