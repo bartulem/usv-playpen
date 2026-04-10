@@ -128,7 +128,7 @@ generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
 
 [tool.hatch]
 version.source = "vcs"
-version.raw-options = { local_scheme = "no-local-version" }
+version.raw-options = { local_scheme = "no-local-version", version_scheme = "no-guess-dev" }
 build.hooks.vcs.version-file = "src/usv_playpen/_version.py"
 
 [tool.hatch.envs.default]
