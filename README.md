@@ -74,18 +74,39 @@ activate-pni
 uv sync
 ```
 
-Navigate to the cloned repository and use the following command to check for and
-install updates:
+### Updating to a specific version
 
-```bash
-git pull && uv sync
+Navigate to the cloned repository. To see which version you currently have:
+
+```
+git describe --tags
+```
+
+To see all available versions:
+
+```
+git fetch --tags
+git tag --sort=-version:refname
+```
+
+To update to a specific version (works identically on Linux, macOS, and
+Windows):
+
+```
+git fetch --tags
+git checkout v0.9.2
+uv sync
 ```
 
 Or, if you have a GPU:
 
-```bash
-git pull && uv sync --extra gpu
 ```
+git fetch --tags
+git checkout v0.9.2
+uv sync --extra gpu
+```
+
+Replace `v0.9.2` with whichever version you want.
 
 ## Usage
 

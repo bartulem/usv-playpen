@@ -2499,9 +2499,9 @@ class USVPlaypenWindow(QMainWindow):
         self.setFixedSize(record_four_x, record_four_y)
 
         self.txt_edit = QPlainTextEdit(self.ConductRecording)
-        self.txt_edit.move(5, 5)
         self.txt_edit.setFixedSize(465, 500)
         self.txt_edit.setReadOnly(True)
+        self.txt_edit.move((record_four_x - self.txt_edit.width()) // 2, 5)
 
         with open((Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'w') as updated_toml_file:
             toml.dump(self.exp_settings_dict, updated_toml_file)
