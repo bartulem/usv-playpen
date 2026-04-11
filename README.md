@@ -94,19 +94,23 @@ Windows):
 
 ```
 git fetch --tags
-git checkout v0.9.2
-uv sync
+git checkout v0.9.5
+uv sync --reinstall-package usv-playpen
 ```
 
 Or, if you have a GPU:
 
 ```
 git fetch --tags
-git checkout v0.9.2
-uv sync --extra gpu
+git checkout v0.9.5
+uv sync --reinstall-package usv-playpen --extra gpu
 ```
 
-Replace `v0.9.2` with whichever version you want.
+Replace `v0.9.5` with whichever version you want. The
+`--reinstall-package usv-playpen` flag is required to force uv to recompute the
+package version from the new git tag; without it the GUI may display a stale
+version number. All machines should be set to the same tag to guarantee
+identical behaviour.
 
 ## Usage
 
