@@ -10,8 +10,10 @@ import pathlib
 import traceback
 from collections.abc import Callable
 from datetime import datetime
+from importlib import metadata
 
 import click
+import yaml
 from click.core import ParameterSource
 
 from .anipose_operations import ConvertTo3D
@@ -24,6 +26,46 @@ from .prepare_cluster_job import PrepareClusterJob
 from .preprocessing_plot import SummaryPlotter
 from .send_email import Messenger
 from .synchronize_files import Synchronizer
+
+
+def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
+    """
+    Description
+    ----------
+    Locates the session metadata YAML file in root_directory and, if the
+    'usv_playpen_processing_version' key is present inside the 'Session'
+    section, updates it to the currently installed usv-playpen package
+    version. If no metadata file is found, or if the key is absent (i.e.
+    the session was recorded with an older version of the template), the
+    function returns silently without raising any errors.
+    ----------
+
+    Parameters
+    ----------
+    root_directory (str | pathlib.Path)
+        Path to the session root directory that may contain a
+        '{session_id}_metadata.yaml' file.
+    ----------
+
+    Returns
+    ----------
+    ----------
+    """
+
+    root = pathlib.Path(root_directory)
+    matches = list(root.glob('*_metadata.yaml'))
+    if not matches:
+        return
+    metadata_path = matches[0]
+    with open(metadata_path, 'r') as yaml_in:
+        session_metadata = yaml.safe_load(yaml_in)
+    if not isinstance(session_metadata, dict):
+        return
+    if 'usv_playpen_processing_version' not in session_metadata.get('Session', {}):
+        return
+    session_metadata['Session']['usv_playpen_processing_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
+    with open(metadata_path, 'w') as yaml_out:
+        yaml.dump(session_metadata, yaml_out, default_flow_style=False, sort_keys=False, indent=2)
 
 
 class Stylist:
@@ -117,6 +159,9 @@ class Stylist:
                 self.message_output(f"Preprocessing data started at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
 
+                for _dir in (self.root_directories if isinstance(self.root_directories, list) else [self.root_directories]):
+                    _stamp_processing_version(_dir)
+
                 # # # concatenate e-phys files
                 if self.input_parameter_dict['processing_booleans']['conduct_ephys_file_chaining']:
                     Operator(root_directory=self.root_directories,
@@ -147,6 +192,8 @@ class Stylist:
                 try:
                     self.message_output(f"Preprocessing data in {one_directory} started at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
+
+                    _stamp_processing_version(one_directory)
 
                     # # # configure video properties via ffmpeg
                     if self.input_parameter_dict['processing_booleans']['conduct_video_concatenation']:
@@ -317,6 +364,8 @@ def concatenate_video_files_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     Operator(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -359,6 +408,8 @@ def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     Operator(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -381,6 +432,8 @@ def multichannel_to_channel_audio_cli(root_directory) -> None:
     ----------
     ----------
     """
+
+    _stamp_processing_version(root_directory)
 
     Operator(root_directory=root_directory).multichannel_to_channel_audio()
 
@@ -412,6 +465,8 @@ def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
         provided_params=provided_params,
         settings_dict='processing_settings'
     )
+
+    _stamp_processing_version(root_directory)
 
     Synchronizer(
         root_directory=root_directory,
@@ -461,6 +516,8 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     phidget_data_dictionary = Gatherer(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -508,6 +565,8 @@ def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     Synchronizer(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -547,6 +606,8 @@ def hpss_audio_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     Operator(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -585,6 +646,8 @@ def bp_filter_audio_files_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     Operator(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -622,6 +685,8 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     Operator(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -654,6 +719,8 @@ def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
         provided_params=provided_params,
         settings_dict='processing_settings'
     )
+
+    _stamp_processing_version(root_directory)
 
     ConvertTo3D(
         root_directory=root_directory,
@@ -695,6 +762,8 @@ def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
         provided_params=provided_params,
         settings_dict='processing_settings'
     )
+
+    _stamp_processing_version(root_directory)
 
     ConvertTo3D(
         root_directory=root_directory,
@@ -745,6 +814,8 @@ def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     ConvertTo3D(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -785,6 +856,8 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     ConvertTo3D(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -824,6 +897,8 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     FindMouseVocalizations(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -860,6 +935,8 @@ def summarize_das_findings_cli(ctx, root_directory, **kwargs):
         settings_dict='processing_settings'
     )
 
+    _stamp_processing_version(root_directory)
+
     FindMouseVocalizations(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
@@ -887,6 +964,9 @@ def concatenate_binary_files_cli(root_directories):
     valid_dirs = [path for path in all_paths if pathlib.Path(path).is_dir()]
 
     if len(valid_dirs) > 0:
+        for _dir in valid_dirs:
+            _stamp_processing_version(_dir)
+
         Operator(
             root_directory=valid_dirs
         ).concatenate_binary_files()
@@ -925,6 +1005,9 @@ def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
     )
 
     if len(valid_dirs) > 0:
+        for _dir in valid_dirs:
+            _stamp_processing_version(_dir)
+
         Operator(
             root_directory=valid_dirs,
             input_parameter_dict=processing_settings_dict
@@ -953,6 +1036,8 @@ def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
         processing_settings_dict = json.load(json_file)
 
     processing_settings_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = arena_directory
+
+    _stamp_processing_version(root_directory)
 
     Vocalocator(
         root_directory=root_directory,
@@ -991,6 +1076,8 @@ def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
     )
 
     vcl_version = processing_settings_dict['vocalocator']['vcl_version']
+
+    _stamp_processing_version(root_directory)
 
     if vcl_version == 'vcl':
         Vocalocator(
