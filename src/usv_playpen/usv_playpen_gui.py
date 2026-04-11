@@ -75,7 +75,7 @@ if os.name == 'nt':
     my_app_id = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
-app_name = f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0]}"
+app_name = f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0].split('.post')[0]}"
 
 _img_dir = Path(__file__).parent / 'img'
 background_img = str(_img_dir / 'background_img.png')
