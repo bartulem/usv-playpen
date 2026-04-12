@@ -995,7 +995,7 @@ class USVPlaypenWindow(QMainWindow):
         if platform.system() == 'Darwin':
             self.font_size_increase = 4
         elif platform.system() == 'Windows':
-            self.font_size_increase = -2
+            self.font_size_increase = -1
         else:
             self.font_size_increase = 0
 
