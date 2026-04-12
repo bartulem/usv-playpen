@@ -989,13 +989,15 @@ class USVPlaypenWindow(QMainWindow):
         """
         super().__init__()
 
-        font_file_loc = QFontDatabase.addApplicationFont(str(Path(__file__).parent / 'fonts' / 'segoeui.ttf'))
+        font_file_loc = QFontDatabase.addApplicationFont(str(Path(__file__).parent / 'fonts' / 'Helvetica.ttf'))
         self.font_id = QFontDatabase.applicationFontFamilies(font_file_loc)[0]
 
         if platform.system() == 'Darwin':
             self.font_size_increase = 4
         else:
             self.font_size_increase = 0
+
+        QApplication.instance().setFont(QFont(self.font_id, 10 + self.font_size_increase))
 
         for attr, value in kwargs.items():
             setattr(self, attr, value)
@@ -1271,7 +1273,7 @@ class USVPlaypenWindow(QMainWindow):
 
         exp_id_label = QLabel('Experimenter:', self.Main)
         exp_id_label.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        exp_id_label.setStyleSheet('QLabel { font-weight: bold;}')
+        exp_id_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         exp_id_label.move(120, 329)
         self.exp_id_list = sorted(self.exp_settings_dict['experimenter_list'], key=lambda x: x == self.exp_id, reverse=True)
         self.exp_id_cb = QComboBox(self.Main)
@@ -1302,7 +1304,7 @@ class USVPlaypenWindow(QMainWindow):
 
         credentials_label = QLabel('Please insert information to be saved to the credential files', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        credentials_label.setStyleSheet('QLabel { font-weight: bold;}')
+        credentials_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         credentials_label.move(5, 10)
 
         credentials_save_dir_label = QLabel('Save directory:', self.Credentials)
@@ -1322,12 +1324,12 @@ class USVPlaypenWindow(QMainWindow):
 
         credentials_label = QLabel('E-MAIL credentials', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        credentials_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        credentials_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         credentials_label.move(5, 70)
 
         email_host_label = QLabel('[provider]:', self.Credentials)
         email_host_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        email_host_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_host_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         email_host_label.move(5, 95)
         self.email_host = QLineEdit("smtp.gmail.com", self.Credentials)
         self.email_host.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1336,7 +1338,7 @@ class USVPlaypenWindow(QMainWindow):
 
         email_port_label = QLabel('[port num]:', self.Credentials)
         email_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        email_port_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_port_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         email_port_label.move(5, 120)
         self.email_port = QLineEdit("465", self.Credentials)
         self.email_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1345,7 +1347,7 @@ class USVPlaypenWindow(QMainWindow):
 
         email_address_label = QLabel('[address]:', self.Credentials)
         email_address_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        email_address_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_address_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         email_address_label.move(5, 145)
         self.email_address = QLineEdit("165b.pni@gmail.com", self.Credentials)
         self.email_address.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1354,7 +1356,7 @@ class USVPlaypenWindow(QMainWindow):
 
         email_password_label = QLabel('[password]:', self.Credentials)
         email_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        email_password_label.setStyleSheet('QLabel { font-weight: bold;}')
+        email_password_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         email_password_label.move(5, 170)
         self.email_password = QLineEdit("XXX", self.Credentials)
         self.email_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1363,12 +1365,12 @@ class USVPlaypenWindow(QMainWindow):
 
         credentials_label = QLabel('UNIVERSITY credentials', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        credentials_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        credentials_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         credentials_label.move(5, 200)
 
         university_username_label = QLabel('[username]:', self.Credentials)
         university_username_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        university_username_label.setStyleSheet('QLabel { font-weight: bold;}')
+        university_username_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         university_username_label.move(5, 225)
         self.university_username = QLineEdit("nsurname", self.Credentials)
         self.university_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1377,7 +1379,7 @@ class USVPlaypenWindow(QMainWindow):
 
         university_password_label = QLabel('[password]:', self.Credentials)
         university_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        university_password_label.setStyleSheet('QLabel { font-weight: bold;}')
+        university_password_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         university_password_label.move(5, 250)
         self.university_password = QLineEdit("XXX", self.Credentials)
         self.university_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1386,12 +1388,12 @@ class USVPlaypenWindow(QMainWindow):
 
         credentials_label = QLabel('MOTIF credentials', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        credentials_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        credentials_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         credentials_label.move(5, 280)
 
         motif_master_ip_label = QLabel('[primary ip]:', self.Credentials)
         motif_master_ip_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        motif_master_ip_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_master_ip_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         motif_master_ip_label.move(5, 305)
         self.motif_master_ip = QLineEdit("10.241.1.205", self.Credentials)
         self.motif_master_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1400,7 +1402,7 @@ class USVPlaypenWindow(QMainWindow):
 
         motif_second_ip_label = QLabel('[second ip]:', self.Credentials)
         motif_second_ip_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        motif_second_ip_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_second_ip_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         motif_second_ip_label.move(5, 330)
         self.motif_second_ip = QLineEdit("10.241.1.183", self.Credentials)
         self.motif_second_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1409,7 +1411,7 @@ class USVPlaypenWindow(QMainWindow):
 
         motif_ssh_port_label = QLabel('[ssh port]:', self.Credentials)
         motif_ssh_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        motif_ssh_port_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_ssh_port_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         motif_ssh_port_label.move(5, 355)
         self.motif_ssh_port = QLineEdit("22", self.Credentials)
         self.motif_ssh_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1418,7 +1420,7 @@ class USVPlaypenWindow(QMainWindow):
 
         motif_username_label = QLabel('[username]:', self.Credentials)
         motif_username_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        motif_username_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_username_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         motif_username_label.move(5, 380)
         self.motif_username = QLineEdit("labadmin", self.Credentials)
         self.motif_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1427,7 +1429,7 @@ class USVPlaypenWindow(QMainWindow):
 
         motif_password_label = QLabel('[password]:', self.Credentials)
         motif_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        motif_password_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_password_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         motif_password_label.move(5, 405)
         self.motif_password = QLineEdit("XXX", self.Credentials)
         self.motif_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1436,7 +1438,7 @@ class USVPlaypenWindow(QMainWindow):
 
         motif_api_label = QLabel('[api key]:', self.Credentials)
         motif_api_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        motif_api_label.setStyleSheet('QLabel { font-weight: bold;}')
+        motif_api_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         motif_api_label.move(5, 430)
         self.motif_api = QLineEdit("XXX", self.Credentials)
         self.motif_api.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1815,7 +1817,7 @@ class USVPlaypenWindow(QMainWindow):
 
         title_label = QLabel('Please select appropriate directories (with config files or executables in them)', self.Record)
         title_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        title_label.setStyleSheet('QLabel { font-weight: bold;}')
+        title_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         title_label.move(5, 10)
 
         avisoft_exe_dir_label = QLabel('Avisoft Recorder directory:', self.Record)
@@ -1914,12 +1916,12 @@ class USVPlaypenWindow(QMainWindow):
         # set main recording parameters
         parameters_label = QLabel('Please set main recording parameters', self.Record)
         parameters_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        parameters_label.setStyleSheet('QLabel { font-weight: bold;}')
+        parameters_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         parameters_label.move(5, 270)
 
         conduct_audio_label = QLabel('Conduct AUDIO recording:', self.Record)
         conduct_audio_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        conduct_audio_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_audio_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_audio_label.move(5, 300)
         self.conduct_audio_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['conduct_audio_recording'], not self.exp_settings_dict['conduct_audio_recording']], self.boolean_list), reverse=True)]
         self.conduct_audio_cb = QComboBox(self.Record)
@@ -1930,7 +1932,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_tracking_cal_label = QLabel('Conduct VIDEO calibration:', self.Record)
         conduct_tracking_cal_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        conduct_tracking_cal_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_tracking_cal_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_tracking_cal_label.move(5, 330)
         self.conduct_tracking_calibration_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['conduct_tracking_calibration'], not self.exp_settings_dict['conduct_tracking_calibration']], self.boolean_list), reverse=True)]
         self.conduct_tracking_calibration_cb = QComboBox(self.Record)
@@ -1941,7 +1943,7 @@ class USVPlaypenWindow(QMainWindow):
 
         disable_ethernet_label = QLabel('Disable ethernet connection:', self.Record)
         disable_ethernet_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        disable_ethernet_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        disable_ethernet_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         disable_ethernet_label.move(5, 360)
         self.disable_ethernet_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['disable_ethernet'], not self.exp_settings_dict['disable_ethernet']], self.boolean_list), reverse=True)]
         self.disable_ethernet_cb = QComboBox(self.Record)
@@ -2005,7 +2007,7 @@ class USVPlaypenWindow(QMainWindow):
 
         gas_label = QLabel('Audio settings', self.VideoSettings)
         gas_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        gas_label.setStyleSheet('QLabel { font-weight: bold;}')
+        gas_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         gas_label.move(5, 10)
 
         usgh_sync_label = QLabel('USGH devices synchronized:', self.VideoSettings)
@@ -2048,7 +2050,7 @@ class USVPlaypenWindow(QMainWindow):
 
         gvs_label = QLabel('Video settings', self.VideoSettings)
         gvs_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
+        gvs_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         gvs_label.move(5, 170)
 
         use_cam_label = QLabel('Select camera(s) you wish to use for behavioral recording:', self.VideoSettings)
@@ -2077,7 +2079,7 @@ class USVPlaypenWindow(QMainWindow):
 
         monitor_rec_label = QLabel('Monitor recording:', self.VideoSettings)
         monitor_rec_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        monitor_rec_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        monitor_rec_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         monitor_rec_label.move(5, 290)
         self.monitor_recording_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_recording'], not self.exp_settings_dict['video']['general']['monitor_recording']], self.boolean_list), reverse=True)]
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
@@ -2088,7 +2090,7 @@ class USVPlaypenWindow(QMainWindow):
 
         monitor_cam_label = QLabel('Monitor ONE camera:', self.VideoSettings)
         monitor_cam_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        monitor_cam_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        monitor_cam_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         monitor_cam_label.move(5, 320)
         self.monitor_specific_camera_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_specific_camera'], not self.exp_settings_dict['video']['general']['monitor_specific_camera']], self.boolean_list), reverse=True)]
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
@@ -2109,7 +2111,7 @@ class USVPlaypenWindow(QMainWindow):
 
         delete_post_copy_label = QLabel('Delete post copy:', self.VideoSettings)
         delete_post_copy_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        delete_post_copy_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        delete_post_copy_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         delete_post_copy_label.move(5, 380)
         self.delete_post_copy_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['delete_post_copy'], not self.exp_settings_dict['video']['general']['delete_post_copy']], self.boolean_list), reverse=True)]
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
@@ -2172,7 +2174,7 @@ class USVPlaypenWindow(QMainWindow):
 
         title_label = QLabel('Session Metadata', self.VideoSettings)
         title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        title_label.setStyleSheet('QLabel { font-weight: bold;}')
+        title_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         title_label.move(x_label, y_pos)
         y_pos += 30
 
@@ -2293,7 +2295,7 @@ class USVPlaypenWindow(QMainWindow):
         y_pos += 10
         equipment_title_label = QLabel('Equipment', self.VideoSettings)
         equipment_title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        equipment_title_label.setStyleSheet('QLabel { font-weight: bold;}')
+        equipment_title_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         equipment_title_label.move(x_label, y_pos)
         y_pos += 40
 
@@ -2339,7 +2341,7 @@ class USVPlaypenWindow(QMainWindow):
         y_pos += 20
         subjects_title_label = QLabel('Add Subjects', self.VideoSettings)
         subjects_title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        subjects_title_label.setStyleSheet('QLabel { font-weight: bold;}')
+        subjects_title_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         subjects_title_label.move(x_label, y_pos)
         subjects_y_pos = y_pos
         y_pos += 30
@@ -2453,7 +2455,7 @@ class USVPlaypenWindow(QMainWindow):
 
         edit_interv_title = QLabel("Edit Subject Interventions", self.VideoSettings)
         edit_interv_title.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        edit_interv_title.setStyleSheet('QLabel { font-weight: bold;}')
+        edit_interv_title.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         edit_interv_title.move(edit_interv_title_x, edit_interv_title_y - 30)
 
         # metadata preview
@@ -2463,7 +2465,7 @@ class USVPlaypenWindow(QMainWindow):
 
         preview_label = QLabel('Live Preview (_metadata.yaml)', self.VideoSettings)
         preview_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        preview_label.setStyleSheet('QLabel { font-weight: bold;}')
+        preview_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         preview_label.move(preview_x, 10)
 
         self.metadata_preview_edit = QPlainTextEdit(self.VideoSettings)
@@ -2537,7 +2539,7 @@ class USVPlaypenWindow(QMainWindow):
 
         processing_dir_label = QLabel('(*) Root directories', self.ProcessSettings)
         processing_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        processing_dir_label.setStyleSheet('QLabel { font-weight: bold;}')
+        processing_dir_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         processing_dir_label.move(85, 10)
         self.processing_dir_edit = QTextEdit('', self.ProcessSettings)
         self.processing_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
@@ -2546,7 +2548,7 @@ class USVPlaypenWindow(QMainWindow):
 
         exp_codes_dir_label = QLabel('ExCode', self.ProcessSettings)
         exp_codes_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        exp_codes_dir_label.setStyleSheet('QLabel { font-weight: bold;}')
+        exp_codes_dir_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         exp_codes_dir_label.move(330, 10)
         self.exp_codes_edit = QTextEdit('', self.ProcessSettings)
         self.exp_codes_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
@@ -2697,12 +2699,12 @@ class USVPlaypenWindow(QMainWindow):
 
         ev_sync_label = QLabel('E-PHYS processing settings', self.ProcessSettings)
         ev_sync_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        ev_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
+        ev_sync_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         ev_sync_label.move(10, 705)
 
         conduct_nv_sync_cb_label = QLabel('Run E/V sync check:', self.ProcessSettings)
         conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        conduct_nv_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_nv_sync_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_nv_sync_cb_label.move(10, 735)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
@@ -2712,7 +2714,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_ephys_file_chaining_label = QLabel('Concatenate e-phys files:', self.ProcessSettings)
         conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_ephys_file_chaining_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_ephys_file_chaining_label.move(10, 765)
         self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
         self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
@@ -2722,7 +2724,7 @@ class USVPlaypenWindow(QMainWindow):
 
         split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
         split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        split_cluster_spikes_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        split_cluster_spikes_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         split_cluster_spikes_cb_label.move(10, 795)
         self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
         self.split_cluster_spikes_cb.addItems(['No', 'Yes'])
@@ -2744,12 +2746,12 @@ class USVPlaypenWindow(QMainWindow):
 
         gvs_label = QLabel('VIDEO processing settings', self.ProcessSettings)
         gvs_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        gvs_label.setStyleSheet('QLabel { font-weight: bold;}')
+        gvs_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         gvs_label.move(column_two_x1, 10)
 
         conduct_video_concatenation_label = QLabel('Run video concatenation:', self.ProcessSettings)
         conduct_video_concatenation_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        conduct_video_concatenation_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_video_concatenation_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_video_concatenation_label.move(column_two_x1, 40)
         self.conduct_video_concatenation_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_concatenation_cb.addItems(['No', 'Yes'])
@@ -2759,7 +2761,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_video_fps_change_cb_label = QLabel('Run video re-encoding:', self.ProcessSettings)
         conduct_video_fps_change_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        conduct_video_fps_change_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_video_fps_change_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_video_fps_change_cb_label.move(column_two_x1, 70)
         self.conduct_video_fps_change_cb = QComboBox(self.ProcessSettings)
         self.conduct_video_fps_change_cb.addItems(['No', 'Yes'])
@@ -2804,7 +2806,7 @@ class USVPlaypenWindow(QMainWindow):
 
         sleap_cluster_cb_label = QLabel('Prepare SLEAP cluster job:', self.ProcessSettings)
         sleap_cluster_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        sleap_cluster_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        sleap_cluster_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         sleap_cluster_cb_label.move(column_two_x1, 220)
         self.sleap_cluster_cb = QComboBox(self.ProcessSettings)
         self.sleap_cluster_cb.addItems(['No', 'Yes'])
@@ -2814,7 +2816,7 @@ class USVPlaypenWindow(QMainWindow):
 
         sleap_file_conversion_cb_label = QLabel('Run SLP-H5 conversion:', self.ProcessSettings)
         sleap_file_conversion_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        sleap_file_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        sleap_file_conversion_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         sleap_file_conversion_cb_label.move(column_two_x1, 250)
         self.sleap_file_conversion_cb = QComboBox(self.ProcessSettings)
         self.sleap_file_conversion_cb.addItems(['No', 'Yes'])
@@ -2824,7 +2826,7 @@ class USVPlaypenWindow(QMainWindow):
 
         anipose_calibration_cb_label = QLabel('Run AP calibration:', self.ProcessSettings)
         anipose_calibration_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        anipose_calibration_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        anipose_calibration_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         anipose_calibration_cb_label.move(column_two_x1, 280)
         self.anipose_calibration_cb = QComboBox(self.ProcessSettings)
         self.anipose_calibration_cb.addItems(['No', 'Yes'])
@@ -2843,7 +2845,7 @@ class USVPlaypenWindow(QMainWindow):
 
         anipose_triangulation_cb_label = QLabel('Run AP triangulation:', self.ProcessSettings)
         anipose_triangulation_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        anipose_triangulation_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        anipose_triangulation_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         anipose_triangulation_cb_label.move(column_two_x1, 340)
         self.anipose_triangulation_cb = QComboBox(self.ProcessSettings)
         self.anipose_triangulation_cb.addItems(['No', 'Yes'])
@@ -2961,7 +2963,7 @@ class USVPlaypenWindow(QMainWindow):
 
         translate_rotate_metric_label = QLabel('Re-coordinate (ExCode!):', self.ProcessSettings)
         translate_rotate_metric_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        translate_rotate_metric_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        translate_rotate_metric_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         translate_rotate_metric_label.move(column_two_x1, 760)
         self.translate_rotate_metric_cb = QComboBox(self.ProcessSettings)
         self.translate_rotate_metric_cb.addItems(['No', 'Yes'])
@@ -3001,12 +3003,12 @@ class USVPlaypenWindow(QMainWindow):
 
         gas_label = QLabel('AUDIO processing settings', self.ProcessSettings)
         gas_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        gas_label.setStyleSheet('QLabel { font-weight: bold;}')
+        gas_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         gas_label.move(column_three_x1, 10)
 
         conduct_multichannel_conversion_cb_label = QLabel('Convert to single-ch files:', self.ProcessSettings)
         conduct_multichannel_conversion_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_multichannel_conversion_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_multichannel_conversion_cb_label.move(column_three_x1, 40)
         self.conduct_multichannel_conversion_cb = QComboBox(self.ProcessSettings)
         self.conduct_multichannel_conversion_cb.addItems(['No', 'Yes'])
@@ -3016,7 +3018,7 @@ class USVPlaypenWindow(QMainWindow):
 
         crop_wav_cam_cb_label = QLabel('Crop AUDIO (to VIDEO):', self.ProcessSettings)
         crop_wav_cam_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        crop_wav_cam_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        crop_wav_cam_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         crop_wav_cam_cb_label.move(column_three_x1, 70)
         self.crop_wav_cam_cb = QComboBox(self.ProcessSettings)
         self.crop_wav_cam_cb.addItems(['No', 'Yes'])
@@ -3044,7 +3046,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conduct_hpss_cb_label = QLabel('Run HPSS (slow!):', self.ProcessSettings)
         conduct_hpss_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        conduct_hpss_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_hpss_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_hpss_cb_label.move(column_three_x1, 160)
         self.conduct_hpss_cb = QComboBox(self.ProcessSettings)
         self.conduct_hpss_cb.addItems(['No', 'Yes'])
@@ -3086,7 +3088,7 @@ class USVPlaypenWindow(QMainWindow):
 
         filter_audio_cb_label = QLabel('Filter audio files:', self.ProcessSettings)
         filter_audio_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        filter_audio_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        filter_audio_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         filter_audio_cb_label.move(column_three_x1, 310)
         self.filter_audio_cb = QComboBox(self.ProcessSettings)
         self.filter_audio_cb.addItems(['No', 'Yes'])
@@ -3112,7 +3114,7 @@ class USVPlaypenWindow(QMainWindow):
 
         conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
         conc_audio_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        conc_audio_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conc_audio_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conc_audio_cb_label.move(column_three_x1, 400)
         self.conc_audio_cb = QComboBox(self.ProcessSettings)
         self.conc_audio_cb.addItems(['No', 'Yes'])
@@ -3130,7 +3132,7 @@ class USVPlaypenWindow(QMainWindow):
 
         das_inference_cb_label = QLabel('Run DAS inference:', self.ProcessSettings)
         das_inference_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        das_inference_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        das_inference_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         das_inference_cb_label.move(column_three_x1, 460)
         self.das_inference_cb = QComboBox(self.ProcessSettings)
         self.das_inference_cb.addItems(['No', 'Yes'])
@@ -3172,7 +3174,7 @@ class USVPlaypenWindow(QMainWindow):
 
         das_summary_cb_label = QLabel('Curate DAS outputs:', self.ProcessSettings)
         das_summary_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        das_summary_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        das_summary_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         das_summary_cb_label.move(column_three_x1, 610)
         self.das_summary_cb = QComboBox(self.ProcessSettings)
         self.das_summary_cb.addItems(['No', 'Yes'])
@@ -3182,7 +3184,7 @@ class USVPlaypenWindow(QMainWindow):
 
         prepare_assign_usv_cb_label = QLabel('Prepare USV assignment:', self.ProcessSettings)
         prepare_assign_usv_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        prepare_assign_usv_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        prepare_assign_usv_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         prepare_assign_usv_cb_label.move(column_three_x1, 640)
         self.prepare_assign_usv_cb = QComboBox(self.ProcessSettings)
         self.prepare_assign_usv_cb.addItems(['No', 'Yes'])
@@ -3192,7 +3194,7 @@ class USVPlaypenWindow(QMainWindow):
 
         assign_usv_cb_label = QLabel('Run USV assignment:', self.ProcessSettings)
         assign_usv_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        assign_usv_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        assign_usv_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         assign_usv_cb_label.move(column_three_x1, 670)
         self.assign_usv_cb = QComboBox(self.ProcessSettings)
         self.assign_usv_cb.addItems(['No', 'Yes'])
@@ -3212,12 +3214,12 @@ class USVPlaypenWindow(QMainWindow):
 
         av_sync_label = QLabel('Synchronization between A/V files', self.ProcessSettings)
         av_sync_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
-        av_sync_label.setStyleSheet('QLabel { font-weight: bold;}')
+        av_sync_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         av_sync_label.move(column_three_x1, 740)
 
         conduct_sync_cb_label = QLabel('Run A/V sync check:', self.ProcessSettings)
         conduct_sync_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        conduct_sync_cb_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        conduct_sync_cb_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         conduct_sync_cb_label.move(column_three_x1, 770)
         self.conduct_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_sync_cb.addItems(['No', 'Yes'])
@@ -3310,7 +3312,7 @@ class USVPlaypenWindow(QMainWindow):
 
         analyses_dir_label = QLabel('(*) Root directories for analyses', self.AnalysesSettings)
         analyses_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        analyses_dir_label.setStyleSheet('QLabel { font-weight: bold;}')
+        analyses_dir_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         analyses_dir_label.move(50, 10)
         self.analyses_dir_edit = QTextEdit('', self.AnalysesSettings)
         self.analyses_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
@@ -3351,12 +3353,12 @@ class USVPlaypenWindow(QMainWindow):
 
         da_label = QLabel('Select data analysis', self.AnalysesSettings)
         da_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        da_label.setStyleSheet('QLabel { font-weight: bold;}')
+        da_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         da_label.move(10, 465)
 
         compute_behavioral_features_label = QLabel('Compute 3D behavioral features:', self.AnalysesSettings)
         compute_behavioral_features_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
-        compute_behavioral_features_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        compute_behavioral_features_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         compute_behavioral_features_label.move(10, 495)
         self.compute_behavioral_features_cb = QComboBox(self.AnalysesSettings)
         self.compute_behavioral_features_cb.addItems(['No', 'Yes'])
@@ -3366,7 +3368,7 @@ class USVPlaypenWindow(QMainWindow):
 
         calculate_neuronal_tuning_curves_label = QLabel('Compute 3D feature tuning curves:', self.AnalysesSettings)
         calculate_neuronal_tuning_curves_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        calculate_neuronal_tuning_curves_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        calculate_neuronal_tuning_curves_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         calculate_neuronal_tuning_curves_label.move(10, 525)
         self.calculate_neuronal_tuning_curves_cb = QComboBox(self.AnalysesSettings)
         self.calculate_neuronal_tuning_curves_cb.addItems(['No', 'Yes'])
@@ -3378,7 +3380,7 @@ class USVPlaypenWindow(QMainWindow):
 
         frequency_shift_audio_segment_label = QLabel('Frequency-shift audio segment:', self.AnalysesSettings)
         frequency_shift_audio_segment_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        frequency_shift_audio_segment_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        frequency_shift_audio_segment_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         frequency_shift_audio_segment_label.move(analyses_col_two_x1, 40)
         self.frequency_shift_audio_segment_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_audio_segment_cb.addItems(['No', 'Yes'])
@@ -3451,7 +3453,7 @@ class USVPlaypenWindow(QMainWindow):
 
         create_usv_playback_wav_label = QLabel('Create artificial playback .WAV file:', self.AnalysesSettings)
         create_usv_playback_wav_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        create_usv_playback_wav_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        create_usv_playback_wav_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         create_usv_playback_wav_label.move(analyses_col_two_x1, 280)
         self.create_usv_playback_wav_cb = QComboBox(self.AnalysesSettings)
         self.create_usv_playback_wav_cb.addItems(['No', 'Yes'])
@@ -3485,7 +3487,7 @@ class USVPlaypenWindow(QMainWindow):
 
         create_naturalistic_usv_playback_wav_label = QLabel('Create naturalistic playback .WAV file:', self.AnalysesSettings)
         create_naturalistic_usv_playback_wav_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        create_naturalistic_usv_playback_wav_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        create_naturalistic_usv_playback_wav_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         create_naturalistic_usv_playback_wav_label.move(analyses_col_two_x1, 400)
         self.create_naturalistic_usv_playback_wav_cb = QComboBox(self.AnalysesSettings)
         self.create_naturalistic_usv_playback_wav_cb.addItems(['No', 'Yes'])
@@ -3646,7 +3648,7 @@ class USVPlaypenWindow(QMainWindow):
 
         visualizations_dir_label = QLabel('(*) Root directories for visualizations', self.VisualizationsSettings)
         visualizations_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        visualizations_dir_label.setStyleSheet('QLabel { font-weight: bold;}')
+        visualizations_dir_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         visualizations_dir_label.move(50, 10)
         self.visualizations_dir_edit = QTextEdit('', self.VisualizationsSettings)
         self.visualizations_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
@@ -3687,12 +3689,12 @@ class USVPlaypenWindow(QMainWindow):
 
         dv_label = QLabel('Select data visualization', self.VisualizationsSettings)
         dv_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
-        dv_label.setStyleSheet('QLabel { font-weight: bold;}')
+        dv_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         dv_label.move(10, 465)
 
         plot_behavioral_features_label = QLabel('Plot 3D behavioral tuning curves:', self.VisualizationsSettings)
         plot_behavioral_features_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        plot_behavioral_features_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        plot_behavioral_features_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         plot_behavioral_features_label.move(10, 495)
         self.plot_behavioral_features_cb = QComboBox(self.VisualizationsSettings)
         self.plot_behavioral_features_cb.addItems(['No', 'Yes'])
@@ -3720,7 +3722,7 @@ class USVPlaypenWindow(QMainWindow):
 
         make_behavioral_video_label = QLabel('Visualize 3D behavior (figure/video):', self.VisualizationsSettings)
         make_behavioral_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        make_behavioral_video_label.setStyleSheet('QLabel { color: #F58025; font-weight: bold;}')
+        make_behavioral_video_label.setStyleSheet('QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}')
         make_behavioral_video_label.move(vis_col_two_x1, 40)
         self.make_behavioral_video_cb = QComboBox(self.VisualizationsSettings)
         self.make_behavioral_video_cb.addItems(['No', 'Yes'])
@@ -5096,7 +5098,7 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         specific_camera_label = QLabel(f'Camera {camera_id} ({camera_color})', self.VideoSettings)
-        specific_camera_label.setStyleSheet('QLabel { font-weight: bold;}')
+        specific_camera_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         specific_camera_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         specific_camera_label.move(5, y_start)
 

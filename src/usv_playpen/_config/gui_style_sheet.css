@@ -2,6 +2,9 @@ QWidget {
   background-color: white;
   color: #000000;
 }
+QLabel {
+  padding-top: 3px;
+}
 QProgressBar {
   padding: 0px;
   border: 0px;
