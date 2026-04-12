@@ -1,0 +1,868 @@
+"""
+@author: bartulem
+Module for modeling ofcContinuous USV bout parameters.
+
+This module provides a specialized pipeline for predicting continuous vocal
+features — specifically "bout duration" and "bout complexity" — using behavioral and
+vocal predictors. By inheriting from the GeneralizedLinearModelPipeline, it
+leverages standardized preprocessing and cross-session normalization while
+implementing specialized logic for regression on strictly positive, skewed data.
+
+Key Scientific and Computational Components:
+1.  Focuses exclusively on valid USV bouts
+    identified via GMM-based inter-vocal interval (IVI) clustering. Unlike
+    onset modeling, this pipeline performs regression on the properties of
+    the vocalization events themselves.
+2.  Tailored for modeling non-negative, heavy-tailed
+    distributions. Implements Gamma-distributed GAMs (via PyGAM) with Log-links
+    and Ridge regression on log-transformed targets (via Sklearn) to ensure
+    mathematical alignment with the biology of USV timing.
+3.  Ingests continuous vocal traces from both mice.
+    Maintains a "scientific guardrail" that allows prior vocal categories to
+    act as predictors while excluding self-density signals (proportion/count)
+    to prevent trivial autocorrelation.
+4.  Employs a Repeated Monte Carlo splitting
+    strategy (Stratified Group K-Fold) that uses quantile binning of the
+    continuous target variable. This ensures that the training and testing
+    sets represent the full range of bout durations and complexities.
+5.  Evaluates models using distribution-appropriate
+    metrics, including Explained Deviance (D^2), Gamma Deviance, and
+    Mean Absolute Error (MAE), providing a more robust assessment than
+    standard R^2 for skewed biological data.
+"""
+
+from datetime import datetime
+import numpy as np
+import os
+import pickle
+import polars as pls
+import gc
+from pygam import GAM, te
+from scipy.stats import spearmanr
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
+from sklearn.linear_model import RidgeCV
+from sklearn.metrics import mean_gamma_deviance, mean_squared_log_error
+from tqdm import tqdm
+
+from .modeling_vocal_onsets import GeneralizedLinearModelPipeline
+from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
+from .modeling_cross_session_normalization import zscore_different_sessions_together
+from ..os_utils import configure_path
+
+
+class BoutParameterPipeline(GeneralizedLinearModelPipeline):
+    """
+    Pipeline for predicting continuous vocal bout parameters (Duration, Complexity).
+
+    This class inherits from GeneralizedLinearModelPipeline to reuse initialization,
+    settings management, and parallelization structures. It overrides specific methods
+    to handle the Regression task (Continuous Y) instead of Classification (Binary Y).
+
+    Key differences from the base class:
+    1.  **Data Extraction**: Extracts continuous targets (e.g., 'bout_durations') for
+        valid bouts only. No "No-USV" epochs are created. It also dynamically
+        injects smoothed vocal density signals (Proportion / Categories) into the
+        predictor set.
+    2.  **Splitting Strategy**: Implements 'Stratified Group K-Fold' (for 'session' strategy)
+        and 'Stratified K-Fold' (for 'mixed' strategy) using quantile binning of the
+        continuous target variable.
+    3.  **Modeling**: Uses GammaGAM (pyGAM) and RidgeCV on Log(y) (sklearn) to model
+        strictly positive, skewed distributions typical of duration/complexity data.
+    """
+
+    def __init__(self, modeling_settings_dict=None):
+        """
+        Initialize the pipeline.
+
+        Passes the settings dictionary to the parent GeneralizedLinearModelPipeline,
+        which handles loading defaults (if None), flattening the dictionary structure,
+        and initializing the FeatureZoo attributes (like feature_boundaries).
+
+        Parameters
+        ----------
+        settings_dict : dict, optional
+            The dictionary containing configuration settings. If None, the parent
+            class loads '_parameter_settings/modeling_settings.json'.
+        """
+
+        super().__init__(modeling_settings_dict=modeling_settings_dict)
+
+    def extract_and_save_modeling_input_data_(self) -> None:
+        """
+        Extracts, processes, and saves (X, y, group) triples for regression analysis of bout parameters.
+
+        This method orchestrates the preparation of behavioral and vocal predictors to model
+        continuous bout features (e.g., duration, complexity).
+
+        Key Logical & Scientific Configurations:
+        1. Vocal feature configuration (vocal_output_type & vocal_output_partner_only):
+           - If 'vocal_output_partner_only' is True: Only the partner's USV signals are ingested.
+           - If 'vocal_output_partner_only' is False (Full syntax mode): Both mice's USV signals
+             are ingested. This allows the model to determine if the subject's own prior vocal
+             patterns (syntax) influence the parameters of the current bout.
+        2. Scientific guardrail (self-predictor filtering):
+           - When 'partner_only' is False, the script allows USV category/syntax traces from the
+             subject (self) to be used as predictors.
+           - However, it strictly excludes density-based signals (e.g., 'proportion',
+             'count') for the subject mouse. This prevents the model from trivially predicting
+             bout duration based on the fact that the mouse is currently vocalizing.
+        3. Generic renaming (self vs other):
+           - Harmonizes egocentric (subject) and allocentric (partner) signals into a
+             standardized 'self.*' and 'other.*' naming convention, regardless of the
+             actual mouse IDs in the session.
+        4. Target variable selection (target_variable):
+           - Determines the continuous biological metric used as the regression target (y).
+           - Supported values include:
+             * 'bout_durations': The total time elapsed (seconds) from the first to the
+               last syllable in a clustered sequence.
+             * 'bout_syllable_counts': The discrete number of individual USVs contained
+               within the bout (a proxy for vocal intensity).
+             * 'mean_mask_complexity': The average number of distinct spectrotemporal
+               components (masks) per syllable within the bout.
+             * 'total_mask_complexity': The cumulative sum of all syllable masks across
+               the bout (representing total information content).
+        """
+
+        if self.modeling_settings_dict['random_seed'] is not None:
+            np.random.seed(self.modeling_settings_dict['random_seed'])
+        else:
+            np.random.seed(None)
+
+        target_variable = self.modeling_settings_dict['task_definition']['target_variable']
+        print(f"--- Extracting Data for Regression Target: {target_variable} ---")
+
+        txt_glm_sessions = []
+        try:
+            with open(configure_path(self.modeling_settings_dict['session_list_file'])) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        txt_glm_sessions.append(configure_path(line))
+        except Exception as e:
+            raise RuntimeError(f"Error reading session paths: {e}")
+
+        target_variable = self.modeling_settings_dict['task_definition']['target_variable']
+        gmm_idx = self.modeling_settings_dict['task_definition']['gmm_component_index']
+        gmm_z = self.modeling_settings_dict['task_definition']['gmm_z_score']
+        min_usv = self.modeling_settings_dict['task_definition']['min_usv_per_bout']
+
+        voc_type = self.modeling_settings_dict['vocal_features']['vocal_output_type']
+        partner_only = self.modeling_settings_dict['vocal_features']['vocal_output_partner_only']
+        smooth_sd = self.modeling_settings_dict['vocal_features']['vocal_proportion_smoothing_sd']
+        noise_cats = self.modeling_settings_dict['vocal_features']['noise_vocal_categories']
+
+        print("Loading behavioral feature data...")
+        beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
+            behavior_file_paths=txt_glm_sessions,
+            csv_sep=self.modeling_settings_dict['data_io']['csv_sheet_delimiter']
+        )
+
+        print(f"Identifying Bouts & Generating Vocal Signals (Type: {voc_type}, Partner Only: {partner_only})...")
+        bout_data_dict = find_variable_length_bouts(
+            root_directories=txt_glm_sessions,
+            mouse_ids_dict=mouse_track_names_dict,
+            camera_fps_dict=camera_fr_dict,
+            features_dict=beh_feature_data_dict,
+            csv_sep=self.modeling_settings_dict['data_io']['csv_sheet_delimiter'],
+            gmm_component_index=gmm_idx,
+            gmm_z_score=gmm_z,
+            min_vocalizations=min_usv,
+            filter_history=self.modeling_settings_dict['features']['filter_history'],
+            proportion_smoothing_sd=smooth_sd,
+            vocal_output_type=voc_type,
+            noise_vocal_categories=noise_cats
+        )
+
+        processed_beh_feature_data_dict = {}
+        predictor_mouse_idx = self.modeling_settings_dict['features']['predictor_mouse']
+        target_mouse_idx = abs(predictor_mouse_idx - 1)
+
+        for sess_id, session_df in beh_feature_data_dict.items():
+            if sess_id not in mouse_track_names_dict: continue
+
+            p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
+            t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
+            session_df_cols = session_df.columns
+            columns_to_keep_session = []
+
+            for base_feature in self.modeling_settings_dict['features']['behavioral_predictors']:
+                session_cols = [col for col in session_df_cols if col.split('.')[-1] == base_feature]
+                for feature in session_cols:
+                    is_self_ego = feature.startswith(f"{t_name}.")
+                    is_other_ego = feature.startswith(f"{p_name}.")
+                    is_dyadic = '-' in feature.split('.')[0]
+                    is_diff = 'diff' in base_feature
+
+                    is_excluded = False
+                    if is_dyadic and not is_diff:
+                        try:
+                            feature_parts = feature.split('.')[-1].split('-')
+                            if len(feature_parts) == 2:
+                                if predictor_mouse_idx == 0:
+                                    if feature_parts[0] == 'allo_yaw' or feature_parts[1] == 'TTI': is_excluded = True
+                                else:
+                                    if feature_parts[1] == 'allo_yaw' or feature_parts[0] == 'TTI': is_excluded = True
+                        except:
+                            pass
+
+                    if is_self_ego or is_other_ego or is_diff or (is_dyadic and not is_excluded):
+                        columns_to_keep_session.append(feature)
+
+                        if base_feature not in ('speed', 'acceleration'):
+                            der_1st, der_2nd = f'{feature}_1st_der', f'{feature}_2nd_der'
+                            if self.modeling_settings_dict['features']['include_1st_der_features_bool'] and der_1st in session_df_cols:
+                                columns_to_keep_session.append(der_1st)
+                            if self.modeling_settings_dict['features']['include_2nd_der_features_bool'] and der_2nd in session_df_cols:
+                                columns_to_keep_session.append(der_2nd)
+
+            new_voc_cols = []
+            mice_to_process = [p_name] if partner_only else [t_name, p_name]
+
+            for m_name in mice_to_process:
+                is_target = (m_name == t_name)
+                if m_name in bout_data_dict[sess_id]:
+                    # Strict lookup, no .get()
+                    vocal_signals = bout_data_dict[sess_id][m_name]['continuous_vocal_signals']
+                    for sig_key, sig_arr in vocal_signals.items():
+                        if is_target and any(k in sig_key for k in ['proportion', 'event']):
+                            continue
+                        col_name = f"{m_name}.{sig_key}"
+                        new_voc_cols.append(pls.Series(col_name, sig_arr))
+                        columns_to_keep_session.append(col_name)
+
+            columns_to_keep_session = sorted(list(set(columns_to_keep_session)))
+            existing_cols = [c for c in columns_to_keep_session if c in session_df_cols]
+            current_df = session_df.select(existing_cols)
+            if new_voc_cols:
+                current_df = current_df.with_columns(new_voc_cols)
+
+            processed_beh_feature_data_dict[sess_id] = current_df
+
+        final_suffixes = set()
+        for sess_df in processed_beh_feature_data_dict.values():
+            for col in sess_df.columns:
+                suffix = col.split('.')[-1]
+                if not suffix.isdigit():
+                    final_suffixes.add(suffix)
+
+        revised_behavioral_predictors = sorted(list(final_suffixes))
+
+        print("Standardizing columns ...")
+        for sess_id in processed_beh_feature_data_dict:
+            df = processed_beh_feature_data_dict[sess_id]
+            existing_cols = set(df.columns)
+            new_zeros = []
+            t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
+            p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
+
+            for pred_suffix in revised_behavioral_predictors:
+                if '-' in pred_suffix:
+                    continue
+
+                for prefix, m_name in [('self', t_name), ('other', p_name)]:
+                    expected_col = f"{m_name}.{pred_suffix}"
+
+                    if expected_col not in existing_cols:
+
+                        is_vocal = 'usv_' in pred_suffix
+                        if m_name == t_name:
+                            if is_vocal and any(k in pred_suffix for k in ['proportion', 'event']):
+                                continue
+                        else:
+                            if 'mute' in self.modeling_settings_dict['session_list_file'].split('/')[-1]:
+                                if is_vocal:
+                                    continue
+
+                        new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
+
+            if new_zeros:
+                processed_beh_feature_data_dict[sess_id] = df.with_columns(new_zeros)
+
+        # Strict lookup instead of getattr with default
+        feature_bounds = self.feature_boundaries if hasattr(self, 'feature_boundaries') else {}
+
+        processed_beh_feature_data_dict = zscore_different_sessions_together(
+            data_dict=processed_beh_feature_data_dict,
+            feature_lst=revised_behavioral_predictors,
+            feature_bounds=feature_bounds
+        )
+
+        final_data_dict = {}
+        for sess_id, df in tqdm(processed_beh_feature_data_dict.items(), desc="Extracting Epochs"):
+            t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
+            p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
+
+            if t_name not in bout_data_dict[sess_id]: continue
+            onsets = bout_data_dict[sess_id][t_name]['bout_onsets']
+            targets = bout_data_dict[sess_id][t_name][target_variable]
+            onset_frames = np.round(onsets * camera_fr_dict[sess_id]).astype(int)
+
+            for col in df.columns:
+                base_feature = col.split('.')[-1]
+                if base_feature.isdigit(): continue
+
+                if '-' in base_feature:
+                    generic_key = base_feature
+
+                elif col.startswith(f"{t_name}."):
+                    generic_key = f"self.{base_feature}"
+                elif col.startswith(f"{p_name}."):
+                    generic_key = f"other.{base_feature}"
+                else:
+                    generic_key = base_feature
+
+                if generic_key not in final_data_dict:
+                    final_data_dict[generic_key] = {'X': [], 'y': [], 'groups': []}
+
+                col_data = df[col].to_numpy()
+                for i, frame_idx in enumerate(onset_frames):
+                    start = frame_idx - self.history_frames
+                    if start >= 0 and frame_idx <= len(col_data):
+                        chunk = col_data[start:frame_idx].copy()
+                        chunk[np.isnan(chunk)] = 0.0
+                        final_data_dict[generic_key]['X'].append(chunk)
+                        final_data_dict[generic_key]['y'].append(targets[i])
+                        final_data_dict[generic_key]['groups'].append(sess_id)
+
+        for feat in final_data_dict:
+            for k in ['X', 'y', 'groups']:
+                final_data_dict[feat][k] = np.array(final_data_dict[feat][k])
+
+        final_features = sorted(list(final_data_dict.keys()))
+        total_covariates = len(final_features)
+
+        alignment_passed = True
+        mismatched_features = []
+
+        if total_covariates > 0:
+            first_feat = final_features[0]
+            ref_y = final_data_dict[first_feat]['y']
+            ref_groups = final_data_dict[first_feat]['groups']
+
+            for feat in final_features[1:]:
+                # Check if total number of bouts matches
+                if len(final_data_dict[feat]['y']) != len(ref_y):
+                    alignment_passed = False
+                    mismatched_features.append(feat)
+                    continue
+
+                # Check if the session groups are identical and in the same order
+                if not np.array_equal(final_data_dict[feat]['groups'], ref_groups):
+                    alignment_passed = False
+                    mismatched_features.append(feat)
+
+        if total_covariates > 0:
+            total_n = len(final_data_dict[first_feat]['y'])
+            unique_sess_count = len(np.unique(final_data_dict[first_feat]['groups']))
+            hist_len = final_data_dict[first_feat]['X'].shape[1]
+        else:
+            total_n = unique_sess_count = hist_len = 0
+
+        print("\n" + "=" * 105)
+        print(f"REGRESSION DATA SUMMARY: {target_variable.upper()}")
+        print("=" * 105)
+        print(f"{'#':<4} {'Generic Feature Name':<45} | {'Bouts (N)':<10} | {'Sess Count':<10} | {'Status'}")
+        print("-" * 105)
+
+        for i, feat in enumerate(final_features, 1):
+            feat_n = len(final_data_dict[feat]['y'])
+            feat_sess = len(np.unique(final_data_dict[feat]['groups']))
+
+            is_zero = np.all(final_data_dict[feat]['X'] == 0)
+            status = "ZERO-FILLED" if is_zero else "DATA-PRESENT"
+
+            guard = " [PROTECTED]" if "self" in feat and any(k in feat for k in ['proportion', 'event']) else ""
+
+            print(f"{i:3}. {feat:<45} | {feat_n:<10} | {feat_sess:<10} | {status}{guard}")
+
+        print("-" * 105)
+        print(f"PROJECT-WIDE REGRESSION TALLY:")
+        print(f"  > Total Unique Covariates:      {total_covariates}")
+        print(f"  > Total Sessions Included:      {unique_sess_count}")
+        print(f"  > Total Bouts Across Project:   {total_n}")
+        print(f"  > History Window Length:        {hist_len} frames")
+        print(f"  > INTRA-SESSION ALIGNMENT:      {'PASSED (True)' if alignment_passed else 'FAILED (False)'}")
+
+        if not alignment_passed:
+            print(f"  [!] ALERT: Dimensional or Grouping mismatch in: {mismatched_features}")
+            print(f"      (This will cause the GLM to misalign behavioral predictors with USV targets!)")
+        print("=" * 105 + "\n")
+
+        t_sex = 'male' if target_mouse_idx == 0 else 'female'
+        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings_dict['features']['filter_history']}.pkl"
+        save_path = os.path.join(self.modeling_settings_dict['save_dir'], fname)
+        os.makedirs(self.modeling_settings_dict['save_dir'], exist_ok=True)
+        with open(save_path, 'wb') as f:
+            pickle.dump(final_data_dict, f)
+        print(f"[+] Saved: {save_path}")
+
+    def create_data_splits(self, feature_data: dict, strategy_override: str = None):
+        """
+        Generates stratified splits for continuous regression targets using a
+        Repeated Monte Carlo approach.
+
+        Strategies:
+        1. 'mixed' (StratifiedShuffleSplit):
+           - Ideal for pooling data.
+           - Guarantees that the Test set has the same distribution of 'y' as the Train set.
+           - Uses standard Monte Carlo resampling.
+
+        2. 'session' (Repeated StratifiedGroupKFold):
+           - Preserves session boundaries (Groups).
+           - Balances 'y' distribution across Train/Test (Stratification).
+           - Since 'StratifiedGroupShuffleSplit' does not exist in sklearn, we approximate
+             it by re-initializing a StratifiedGroupKFold with a new random seed
+             for every iteration and taking a single fold.
+
+        Parameters
+        ----------
+        feature_data : dict
+            Contains 'X', 'y', 'groups'.
+        strategy_override : str, optional
+            Force 'session' or 'mixed' strategy.
+
+        Yields
+        ------
+        tuple
+            (X_train, y_train, X_test, y_test)
+        """
+
+        X = feature_data['X']
+        y = feature_data['y']
+        groups = feature_data['groups']
+        n_samples = len(y)
+
+        # 1. Configuration
+        model_selection = self.modeling_settings_dict['model_selection']
+        split_strategy = strategy_override or model_selection['split_strategy']
+
+        num_iterations = model_selection['num_splits']
+        test_prop = model_selection['test_proportion']
+        base_seed = self.modeling_settings_dict['random_seed']
+        if base_seed is None:
+            base_seed = 42
+
+        # 2. Safety checks
+        if test_prop <= 0 or test_prop >= 1:
+            raise ValueError(f"test_proportion must be (0, 1). Got {test_prop}")
+
+        # 3. Stratification binning (discretize continuous Y)
+        try:
+            n_bins = max(2, min(10, n_samples // 20))
+            bins = np.percentile(y, np.linspace(0, 100, n_bins + 1))
+            y_binned = np.digitize(y, bins[1:-1])
+        except Exception:
+            y_binned = np.zeros(len(y))
+
+        # 4. Splitting Execution
+        if split_strategy == 'mixed':
+
+            sss = StratifiedShuffleSplit(
+                n_splits=num_iterations,
+                test_size=test_prop,
+                random_state=base_seed
+            )
+
+            for train_idx, test_idx in sss.split(X, y_binned):
+                yield X[train_idx], y[train_idx], X[test_idx], y[test_idx]
+
+        elif split_strategy == 'session':
+
+            n_folds = int(np.floor(1.0 / test_prop))
+            n_folds = max(2, n_folds)
+
+            for i in range(num_iterations):
+                current_seed = base_seed + i
+
+                # We re-initialize the splitter every iteration with a new seed.
+                sgkf = StratifiedGroupKFold(
+                    n_splits=n_folds,
+                    shuffle=True,
+                    random_state=current_seed
+                )
+
+                # Take the first valid split for this seed
+                try:
+                    train_idx, test_idx = next(sgkf.split(X, y_binned, groups=groups))
+                    yield X[train_idx], y[train_idx], X[test_idx], y[test_idx]
+                except StopIteration:
+                    continue
+        else:
+            raise ValueError(f"Unknown split strategy: {split_strategy}")
+
+    def _run_glm_for_feature_pygam(self, feature_name, feature_data, basis_matrix):
+        """
+        Runs a univariate GammaGAM regression and permutation test for a single feature.
+
+        This method evaluates the predictive relationship between a behavioral/vocal feature
+        and a continuous bout parameter (duration or complexity). It utilizes a Generalized
+        Additive Model (GAM) tailored for biological timing data, which is typically
+        strictly positive and right-skewed.
+
+        Statistical Framework:
+        1. Gamma distribution & log link: Fits the model assuming y ~ Gamma. The log-link
+           function (ln(mu) = X/beta) ensures that predicted bout parameters remain
+           strictly positive ($exp(X/beta)) and accounts for the heteroscedasticity
+           where variance increases with the mean.
+        2. Permutation test (shuffled control): To establish a baseline for null
+           predictability, the method executes a parallel "shuffled" analysis. In this
+           branch, the target labels (y) are randomly permuted while preserving the
+           temporal structure of the features (X).
+           - Actual model: Captures the true relationship between behavior and bout metrics.
+           - Shuffled model: Captures "chance" performance and overfitting tendencies
+             given the specific distribution and sample size of the dataset.
+
+        Computational Optimization:
+        - Matrix reuse: The high-dimensional "unrolled" feature matrices (X_tr and X_te)
+          are calculated once per fold. Both the actual and shuffled models are fit using
+          these shared matrices to minimize CPU tiling overhead and memory fragmentation.
+        - Memory management: Employs float32 precision for unrolled tensors and explicit
+          garbage collection after each model fit to maintain stability on HPC nodes.
+
+        Metrics Calculated:
+        - D^2 (Explained Deviance): 1 - (Residual Deviance / Null Deviance). Measures
+          the proportion of deviance explained by the model; the Gamma-equivalent of R^2.
+        - Spearman's $\rho$ (Rank Correlation): Measures the monotonic relationship between
+          predicted and actual values based on their rank order rather than raw magnitude.
+          A positive value indicates that when the model predicts a higher complexity,
+          the actual complexity is consistently higher, making it robust to outliers and
+          the non-linear scaling of the Gamma distribution.
+        - MSLE (Mean Squared Logarithmic Error): Measures the mean squared difference
+          between the log-transformed predicted and actual values. This metric penalizes
+          relative errors (e.g., off by a factor of 2) equally across all scales, aligning
+          perfectly with the multiplicative "Log Link" assumption of the model.
+
+        Parameters
+        ----------
+        feature_name : str
+            Name of the feature being analyzed (e.g., 'self.speed').
+        feature_data : dict
+            Dictionary containing 'X' (history windows), 'y' (bout targets), and
+            'groups' (session IDs).
+        basis_matrix : np.ndarray | None
+            Required for API parity with the Sklearn engine; however, PyGAM
+            generates its own internal tensor product splines (te).
+
+        Returns
+        -------
+        tuple[str, dict]
+            A tuple of (feature_name, results_dict) where results contains 'actual'
+            and 'shuffled' metrics across all cross-validation splits.
+        """
+
+        print(f"--- Running [GammaGAM] for: {feature_name} ---")
+
+        hist_frames = self.history_frames
+
+        results = {
+            'actual': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []},
+            'shuffled': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []}
+        }
+
+        # Strict dictionary lookups (No .get())
+        pygam_params = self.modeling_settings_dict['hyperparameters']['pygam_params']
+        n_val = pygam_params['n_splines_value']
+        n_time = pygam_params['n_splines_time']
+        lam = pygam_params['lam_penalty']
+        tol_val = pygam_params['tol_val']
+        max_iterations = pygam_params['max_iterations']
+
+        time_indices = np.arange(hist_frames)
+
+        def unroll(X_in):
+            n, f = X_in.shape
+            X_out = np.zeros((n * f, 2), dtype=np.float32)
+            X_out[:, 0] = X_in.ravel()
+            X_out[:, 1] = np.tile(time_indices, n)
+            return X_out
+
+        splitter = self.create_data_splits(feature_data)
+
+        for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
+            print(f"  > Processing Split {split_idx + 1}...")
+
+            X_tr_gam = unroll(X_tr).astype(np.float32)
+            X_te_gam = unroll(X_te).astype(np.float32)
+
+            try:
+                y_tr_tiled = np.repeat(y_tr + 1e-6, hist_frames).astype(np.float32)
+
+                gam = GAM(
+                    te(0, 1, n_splines=[n_val, n_time]),
+                    distribution='gamma',
+                    link='log',
+                    max_iter=max_iterations,
+                    tol=tol_val,
+                    lam=lam
+                )
+                gam.fit(X_tr_gam, y_tr_tiled)
+
+                # Prediction
+                y_pred_tiled = gam.predict(X_te_gam)
+                y_pred = np.mean(y_pred_tiled.reshape(len(y_te), hist_frames), axis=1)
+
+                try:
+                    # Sanitize inputs (Gamma crashes on 0.0)
+                    y_te_safe = np.maximum(y_te, 1e-6)
+                    y_pred_safe = np.maximum(y_pred, 1e-6)
+                    y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+
+                    # Calculate deviances
+                    res_dev = mean_gamma_deviance(y_te_safe, y_pred_safe)
+                    null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+
+                    # Calculate D2
+                    if null_dev == 0:
+                        d2 = 0.0
+                    else:
+                        d2 = 1 - (res_dev / null_dev)
+
+                except Exception as e:
+                    print(f"      [!] Actual Metric Failed: {e}")
+                    d2 = np.nan
+                    res_dev = np.nan
+
+                # Store results
+                results['actual']['explained_deviance'].append(d2)
+                results['actual']['residual_deviance'].append(res_dev)
+                results['actual']['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                results['actual']['msle'].append(mean_squared_log_error(y_te, y_pred))
+
+                # ExtractsShapes
+                grid_0 = np.stack([np.zeros(hist_frames), time_indices], axis=1)
+                grid_1 = np.stack([np.ones(hist_frames), time_indices], axis=1)
+                shape = (gam.predict(grid_1) - gam.predict(grid_0)).flatten()
+                results['actual']['filter_shapes'].append(shape)
+
+                del gam, y_tr_tiled
+                gc.collect()
+
+            except Exception as e:
+                print(f"Fit failed for Actual Split {split_idx + 1}: {e}")
+                results['actual']['explained_deviance'].append(np.nan)
+                results['actual']['residual_deviance'].append(np.nan)
+
+            try:
+                y_tr_shuff_tiled = np.repeat(np.random.permutation(y_tr) + 1e-6, hist_frames).astype(np.float32)
+
+                gam_null = GAM(
+                    te(0, 1, n_splines=[n_val, n_time]),
+                    distribution='gamma',
+                    link='log',
+                    max_iter=max_iterations,
+                    tol=tol_val,
+                    lam=lam
+                )
+
+                gam_null.fit(X_tr_gam, y_tr_shuff_tiled)
+
+                y_pred_shuff_tiled = gam_null.predict(X_te_gam)
+                y_pred_shuff = np.mean(y_pred_shuff_tiled.reshape(len(y_te), hist_frames), axis=1)
+
+                # NOTE: We compare the shuffled prediction against the *REAL* y_te
+                try:
+                    # Sanitize inputs
+                    y_te_safe = np.maximum(y_te, 1e-6)
+                    y_pred_shuff_safe = np.maximum(y_pred_shuff, 1e-6)
+                    y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+
+                    # Calculate deviances
+                    res_dev_null = mean_gamma_deviance(y_te_safe, y_pred_shuff_safe)
+                    null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+
+                    # Calculate D2
+                    if null_dev == 0:
+                        d2_null = 0.0
+                    else:
+                        d2_null = 1 - (res_dev_null / null_dev)
+
+                except Exception as e:
+                    print(f"      [!] Shuffled Metric Failed: {e}")
+                    d2_null = np.nan
+                    res_dev_null = np.nan
+
+                results['shuffled']['explained_deviance'].append(d2_null)
+                results['shuffled']['residual_deviance'].append(res_dev_null)
+                results['shuffled']['spearman_r'].append(spearmanr(y_te, y_pred_shuff)[0])
+                results['shuffled']['msle'].append(mean_squared_log_error(y_te, y_pred_shuff))
+
+                del gam_null, y_tr_shuff_tiled
+                gc.collect()
+
+            except Exception as e:
+                print(f"Fit failed for Shuffled Split {split_idx + 1}: {e}")
+                results['shuffled']['explained_deviance'].append(np.nan)
+                results['shuffled']['residual_deviance'].append(np.nan)
+
+            del X_tr_gam, X_te_gam
+            gc.collect()
+
+        # Safely convert lists to arrays
+        for k in results:
+            for m in results[k]:
+                results[k][m] = np.array(results[k][m])
+
+        return feature_name, results
+
+    def _run_glm_for_feature_sklearn(self, feature_name, feature_data, basis_matrix):
+        """
+        Runs a univariate RidgeCV regression on log-transformed bout parameters.
+
+        This method provides a linear alternative to the GAM approach. It models the relationship
+        between behavioral history and bout parameters by transforming the strictly positive,
+        skewed target variable into a Gaussian-like distribution in log-space.
+
+        Statistical and mathematical framework:
+        1. Log-transformation: The target variable (y) is transformed via ln(y + epsilon).
+           Since bout duration and complexity are strictly positive and typically log-normally
+           distributed, this mapping satisfies the homoscedasticity and normality assumptions
+           of linear regression.
+        2. Basis projection: The high-dimensional feature history (X) is projected onto
+           the provided `basis_matrix` (e.g., raised cosine or B-splines). This reduces the
+           parameter space from N_lags to N_bases, preventing overfitting and
+           ensuring the resulting temporal filters (kernels) are smooth and interpretable.
+        3. L2 regularization (RidgeCV): Fits the model ln(y) = Phi\beta + \alpha||\beta||_2,
+           where Phi is the basis-projected feature matrix. The optimal regularization
+           strength (alpha) is determined via internal leave-one-out cross-validation (LOOCV).
+
+        Evaluation and permutation control:
+        - Original scale metrics: Predictions are back-transformed via exp(\hat{y}_{log}).
+          Performance is evaluated using Spearman's Rank Correlation (to assess monotonic
+          ranking accuracy independent of scale) and Mean Squared Logarithmic Error
+          (MSLE, to assess magnitude accuracy in the log-space relevant to the distribution),
+          alongside R-squared (R^2).
+        - Permutation test: Parallel to the actual model, a "shuffled" control is executed
+          by permuting the target labels. This provides a null distribution for these
+          metrics to verify that the behavioral history contains more predictive information
+          than random chance.
+
+        Parameters
+        ----------
+        feature_name : str
+            Name of the feature being analyzed (e.g., 'other.distance').
+        feature_data : dict
+            Dictionary containing 'X' (predictor epochs), 'y' (bout targets), and
+            'groups' (session IDs for validation).
+        basis_matrix : np.ndarray
+            The [lags x bases] matrix used to transform the raw history into the
+            reduced feature space.
+
+        Returns
+        -------
+        tuple[str, dict]
+            A tuple of (feature_name, results_dict) containing cross-validated performance
+            metrics, optimized hyperparameters, and reconstructed filter shapes for both
+            the actual and shuffled models.
+        """
+
+        print(f"--- Running [RidgeCV] for: {feature_name} ---")
+
+        results = {
+            'actual': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []},
+            'shuffled': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []}
+        }
+
+        splitter = self.create_data_splits(feature_data)
+
+        # Strict dictionary lookups
+        ridge_params = self.modeling_settings_dict['hyperparameters']['ridge_regression_params']
+        alphas = ridge_params['alphas']
+        cv = ridge_params['cv']
+
+        for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
+            print(f"  > Processing Split {split_idx + 1}...")
+
+            X_tr_proj = np.dot(X_tr, basis_matrix)
+            X_te_proj = np.dot(X_te, basis_matrix)
+
+            try:
+                # Log-transform target for ridge (homoscedasticity assumption)
+                y_tr_log = np.log(y_tr + 1e-6)
+
+                model = RidgeCV(alphas=alphas, cv=cv).fit(X_tr_proj, y_tr_log)
+
+                # Predict and back-transform
+                y_pred_log = model.predict(X_te_proj)
+                y_pred = np.exp(y_pred_log)
+
+                try:
+                    # Sanitize inputs (Gamma metrics crash on 0.0)
+                    y_te_safe = np.maximum(y_te, 1e-6)
+                    y_pred_safe = np.maximum(y_pred, 1e-6)
+                    y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+
+                    # Calculate deviances
+                    res_dev = mean_gamma_deviance(y_te_safe, y_pred_safe)
+                    null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+
+                    # Calculate Explained Deviance (D2)
+                    if null_dev == 0:
+                        d2 = 0.0
+                    else:
+                        d2 = 1 - (res_dev / null_dev)
+
+                except Exception as e:
+                    print(f"      [!] Actual Metric Failed: {e}")
+                    d2 = np.nan
+                    res_dev = np.nan
+
+                # Store results
+                results['actual']['explained_deviance'].append(d2)
+                results['actual']['residual_deviance'].append(res_dev)
+                results['actual']['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                results['actual']['msle'].append(mean_squared_log_error(y_te, y_pred))
+
+                # Store filter shape (in log domain)
+                shape_log = np.dot(model.coef_, basis_matrix.T)
+                results['actual']['filter_shapes'].append(shape_log)
+
+            except Exception as e:
+                print(f"Ridge Fit failed for Actual Split {split_idx + 1}: {e}")
+                results['actual']['explained_deviance'].append(np.nan)
+                results['actual']['residual_deviance'].append(np.nan)
+
+            try:
+                y_tr_shuff_log = np.log(np.random.permutation(y_tr) + 1e-6)
+
+                model_null = RidgeCV(alphas=alphas, cv=cv).fit(X_tr_proj, y_tr_shuff_log)
+
+                y_pred_null_log = model_null.predict(X_te_proj)
+                y_pred_null = np.exp(y_pred_null_log)
+
+                try:
+                    # Sanitize inputs
+                    y_te_safe = np.maximum(y_te, 1e-6)
+                    y_pred_shuff_safe = np.maximum(y_pred_null, 1e-6)
+                    y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+
+                    # Calculate deviances
+                    res_dev_null = mean_gamma_deviance(y_te_safe, y_pred_shuff_safe)
+                    null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+
+                    # Calculate explained deviance (D2)
+                    if null_dev == 0:
+                        d2_null = 0.0
+                    else:
+                        d2_null = 1 - (res_dev_null / null_dev)
+
+                except Exception as e:
+                    print(f"      [!] Shuffled Metric Failed: {e}")
+                    d2_null = np.nan
+                    res_dev_null = np.nan
+
+                results['shuffled']['explained_deviance'].append(d2_null)
+                results['shuffled']['residual_deviance'].append(res_dev_null)
+                results['shuffled']['spearman_r'].append(spearmanr(y_te, y_pred_null)[0])
+                results['shuffled']['msle'].append(mean_squared_log_error(y_te, y_pred_null))
+
+            except (ValueError, ZeroDivisionError, Exception) as e:
+                print(f"Fit failed for Shuffled Split {split_idx + 1}: {e}")
+                results['shuffled']['explained_deviance'].append(np.nan)
+                results['shuffled']['residual_deviance'].append(np.nan)
+
+        # Safely convert lists to arrays
+        for k in results:
+            for m in results[k]:
+                results[k][m] = np.array(results[k][m])
+
+        return feature_name, results
