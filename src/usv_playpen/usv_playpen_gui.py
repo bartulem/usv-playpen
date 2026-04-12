@@ -1004,7 +1004,7 @@ class USVPlaypenWindow(QMainWindow):
         if platform.system() == 'Windows':
             self.orange_label_style = 'QLabel { padding-top: 3px; color: #F58025; font-weight: normal;}'
         else:
-            self.orange_label_style = self.orange_label_style
+            self.orange_label_style = 'QLabel { padding-top: 3px; color: #F58025; font-weight: bold;}'
 
         for attr, value in kwargs.items():
             setattr(self, attr, value)
