@@ -33,9 +33,9 @@ def cap_series_values_to_nan(series: pls.Series,
     return capped_df[series.name]
 
 
-def zscore_different_sessions_together(data_dict: dict = None,
-                                       feature_lst: list = None,
-                                       feature_bounds: dict = None) -> dict:
+def zscore_different_sessions_together(data_dict: dict,
+                                       feature_lst: list,
+                                       feature_bounds: dict) -> dict:
     """
     Computes z-scored behavioral data when different sessions need to
     be pooled together (z-scores are computed on the pooled data,
@@ -58,9 +58,9 @@ def zscore_different_sessions_together(data_dict: dict = None,
     """
 
     # Clean the data *in place* in the DataFrames
-    for one_beh_session in data_dict.keys():
+    for one_beh_session, df in data_dict.items():
         cols_to_update = []
-        for column in data_dict[one_beh_session].columns:
+        for column in df.columns:
             base_feature = column.split('.')[-1]
             if base_feature not in feature_lst:
                 continue
@@ -69,27 +69,26 @@ def zscore_different_sessions_together(data_dict: dict = None,
                                 'allo_yaw-nose', 'nose-allo_yaw',
                                 'allo_yaw-TTI', 'TTI-allo_yaw']:
                 cols_to_update.append(pls.col(column).abs().alias(column))
-            else:
-                if 'usv_' not in base_feature:
-                    theoretical_min, theoretical_max = feature_bounds[base_feature]
-                    cols_to_update.append(
-                        pls.when((pls.col(column) >= theoretical_min) & (pls.col(column) <= theoretical_max))
-                        .then(pls.col(column))
-                        .otherwise(pls.lit(None))
-                        .alias(column)
-                    )
+            elif 'usv_' not in base_feature:
+                theoretical_min, theoretical_max = feature_bounds[base_feature]
+                cols_to_update.append(
+                    pls.when((pls.col(column) >= theoretical_min) & (pls.col(column) <= theoretical_max))
+                    .then(pls.col(column))
+                    .otherwise(pls.lit(None))
+                    .alias(column)
+                )
 
         if cols_to_update:
             data_dict[one_beh_session] = data_dict[one_beh_session].with_columns(cols_to_update)
 
     # Build pooled series for each feature and get global stats
-    for feature_idx, one_feature in enumerate(feature_lst):
+    for one_feature in feature_lst:
         pooled_series_list = []
 
-        for one_beh_session in data_dict.keys():
-            for column in data_dict[one_beh_session].columns:
+        for dd_df in data_dict.values():
+            for column in dd_df.columns:
                 if column.split('.')[-1] == one_feature:
-                    pooled_series_list.append(data_dict[one_beh_session][column].cast(pls.Float32))
+                    pooled_series_list.append(dd_df[column].cast(pls.Float32))
                     break
 
         if not pooled_series_list:
@@ -108,9 +107,9 @@ def zscore_different_sessions_together(data_dict: dict = None,
                 global_mean = 0.0  # Avoid (null - 0) / 1
 
         # Apply z-score expression using global stats
-        for one_beh_session in data_dict.keys():
+        for one_beh_session, df in data_dict.items():
             cols_to_zscore = []
-            for column in data_dict[one_beh_session].columns:
+            for column in df.columns:
                 if column.split('.')[-1] == one_feature:
                     # Apply z-score as a Polars expression
                     # This operates in-place and preserves height
@@ -119,6 +118,6 @@ def zscore_different_sessions_together(data_dict: dict = None,
                     )
 
             if cols_to_zscore:
-                data_dict[one_beh_session] = data_dict[one_beh_session].with_columns(cols_to_zscore)
+                data_dict[one_beh_session] = df.with_columns(cols_to_zscore)
 
     return data_dict

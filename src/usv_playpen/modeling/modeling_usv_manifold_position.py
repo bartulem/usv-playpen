@@ -113,7 +113,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as f:
-                    self.modeling_settings = json.load(f)['modeling_settings']
+                    self.modeling_settings = json.load(f)
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {settings_path}")
         else:
@@ -123,8 +123,8 @@ class ContinuousModelingPipeline(FeatureZoo):
             self.feature_boundaries = self.modeling_settings['feature_boundaries']
 
         try:
-            cam_rate = self.modeling_settings['data_io']['camera_sampling_rate']
-            hist_sec = self.modeling_settings['features']['filter_history']
+            cam_rate = self.modeling_settings['io']['camera_sampling_rate']
+            hist_sec = self.modeling_settings['model_params']['filter_history']
             self.history_frames = int(np.floor(cam_rate * hist_sec))
             print(f"Continuous Pipeline Init: History frames calculated: {self.history_frames} (for {hist_sec}s at {cam_rate}fps)")
         except KeyError as e:
@@ -167,16 +167,16 @@ class ContinuousModelingPipeline(FeatureZoo):
             - 'w': Inverse-density sample weights of shape (n_samples,).
         """
 
-        if 'random_seed' in self.modeling_settings and self.modeling_settings['random_seed'] is not None:
-            np.random.seed(self.modeling_settings['random_seed'])
-            print(f"Random seed set to: {self.modeling_settings['random_seed']}")
+        if self.modeling_settings['model_params']['random_seed'] is not None:
+            np.random.seed(self.modeling_settings['model_params']['random_seed'])
+            print(f"Random seed set to: {self.modeling_settings['model_params']['random_seed']}")
         else:
             np.random.seed(None)
             print("Random seed not set (None). Results will not be reproducible.")
 
         txt_sessions = []
         try:
-            sessions_file = self.modeling_settings['session_list_file']
+            sessions_file = self.modeling_settings['io']['session_list_file']
             with open(configure_path(sessions_file)) as f:
                 for line in f:
                     line = line.strip()
@@ -192,20 +192,20 @@ class ContinuousModelingPipeline(FeatureZoo):
         print("Loading behavioral feature data...")
         beh_data_dict, cam_fps_dict, mouse_names_dict = load_behavioral_feature_data(
             behavior_file_paths=txt_sessions,
-            csv_sep=self.modeling_settings['data_io']['csv_sheet_delimiter']
+            csv_sep=self.modeling_settings['io']['csv_separator']
         )
 
         voc_settings = self.modeling_settings['vocal_features']
-        feat_settings = self.modeling_settings['features']
+        feat_settings = self.modeling_settings['kinematic_features']
 
-        voc_mode = voc_settings['vocal_output_type']
-        partner_only = voc_settings['vocal_output_partner_only']
-        smooth_sd = voc_settings['vocal_proportion_smoothing_sd']
-        column_name_cats = voc_settings['category_column_name']
-        noise_cats = voc_settings['noise_vocal_categories']
+        voc_mode = voc_settings['usv_predictor_type']
+        partner_only = voc_settings['usv_predictor_partner_only']
+        smooth_sd = voc_settings['usv_predictor_smoothing_sd']
+        column_name_cats = voc_settings['usv_category_column_name']
+        noise_cats = voc_settings['usv_noise_categories']
 
-        filter_hist = feat_settings['filter_history']
-        pred_idx = feat_settings['predictor_mouse']
+        filter_hist = self.modeling_settings['model_params']['filter_history']
+        pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         targ_idx = abs(pred_idx - 1)
 
         usv_data_dict = find_usv_categories(
@@ -213,7 +213,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             mouse_ids_dict=mouse_names_dict,
             camera_fps_dict=cam_fps_dict,
             features_dict=beh_data_dict,
-            csv_sep=self.modeling_settings['data_io']['csv_sheet_delimiter'],
+            csv_sep=self.modeling_settings['io']['csv_separator'],
             target_category=None,
             category_column=column_name_cats,
             filter_history=filter_hist,
@@ -292,7 +292,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             cols_to_keep = []
             sess_cols = current_df.columns
 
-            for base_feat in self.modeling_settings['features']['behavioral_predictors']:
+            for base_feat in self.modeling_settings['kinematic_features']['model_predictors']:
                 matching_cols = [c for c in sess_cols if c.split('.')[-1] == base_feat]
 
                 for feat in matching_cols:
@@ -320,9 +320,9 @@ class ContinuousModelingPipeline(FeatureZoo):
                         if base_feat not in ('speed', 'acceleration'):
                             der1 = f'{feat}_1st_der'
                             der2 = f'{feat}_2nd_der'
-                            if feat_settings['include_1st_der_features_bool'] and der1 in sess_cols:
+                            if feat_settings['include_1st_derivatives'] and der1 in sess_cols:
                                 cols_to_keep.append(der1)
-                            if feat_settings['include_2nd_der_features_bool'] and der2 in sess_cols:
+                            if feat_settings['include_2nd_derivatives'] and der2 in sess_cols:
                                 cols_to_keep.append(der2)
 
             new_voc_cols = []
@@ -484,7 +484,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
         target_mouse_sex = 'male' if targ_idx == 0 else 'female'
         fname = f"modeling_UMAP_manifold_position_{target_mouse_sex}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
-        save_dir = self.modeling_settings['save_dir']
+        save_dir = self.modeling_settings['io']['save_directory']
         save_path = os.path.join(save_dir, fname)
 
         os.makedirs(save_dir, exist_ok=True)
@@ -653,7 +653,7 @@ class ContinuousModelRunner:
         groups = feat_data['groups']
         n_time_bins = feat_data['n_time_bins']
 
-        hp = self.modeling_settings['hyperparameters']['jax_continuous_params']
+        hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate_gaussian']
         lam_smooth = hp['lambda_smooth']
         lam_l2 = hp['l2_reg']
         lr = hp['learning_rate']
@@ -662,8 +662,8 @@ class ContinuousModelRunner:
         random_seed = hp['random_state']
         verbose = hp['verbose']
 
-        cv_settings = self.modeling_settings['model_selection']
-        n_clusters = cv_settings['n_spatial_clusters']
+        cv_settings = self.modeling_settings['model_params']
+        n_clusters = cv_settings['spatial_cluster_num']
         test_prop = cv_settings['test_proportion']
         n_splits = cv_settings['num_splits']
         split_strategy = cv_settings['split_strategy']
@@ -835,7 +835,7 @@ class DeepContinuousModelRunner:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as f:
-                    self.modeling_settings = json.load(f)['modeling_settings']
+                    self.modeling_settings = json.load(f)
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {settings_path}")
         else:

@@ -1,7 +1,7 @@
 """
 @author: bartulem
 Defines basis functions for temporal filtering in GLM analyses.
-Code adapted from Jan Clemens lab:
+Code adapted from Jan Clemens' lab:
 https://github.com/janclemenslab/glm_utils/blob/master/src/glm_utils/bases.py
 """
 

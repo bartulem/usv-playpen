@@ -657,18 +657,18 @@ class NeuralContinuousCNNRunner:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as settings_json_file:
-                    self.modeling_settings = json.load(settings_json_file)['modeling_settings']
+                    self.modeling_settings = json.load(settings_json_file)
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {settings_path}")
         else:
             self.modeling_settings = modeling_settings
 
-        self.history_frames = int(np.floor(self.modeling_settings['features']['filter_history'] * self.modeling_settings['data_io']['camera_sampling_rate']))
-        self.split_strategy = self.modeling_settings['model_selection']['split_strategy']
-        self.random_seed = self.modeling_settings['random_seed']
+        self.history_frames = int(np.floor(self.modeling_settings['model_params']['filter_history'] * self.modeling_settings['io']['camera_sampling_rate']))
+        self.split_strategy = self.modeling_settings['model_params']['split_strategy']
+        self.random_seed = self.modeling_settings['model_params']['random_seed']
 
         # Hyperparameter block read directly as a dict
-        self.hp = HashableDict(self.modeling_settings['hyperparameters']['jax_cnn_continuous_params'])
+        self.hp = HashableDict(self.modeling_settings['hyperparameters']['deep_learning']['cnn_continuous'])
 
     @staticmethod
     def get_stratified_spatial_splits_stable(groups: np.ndarray,
@@ -1023,10 +1023,10 @@ class NeuralContinuousCNNRunner:
         warp_range = self.hp['warp_range']
         perm_iters = self.hp['permutation_iterations']
 
-        cv_settings = self.modeling_settings['model_selection']
+        cv_settings = self.modeling_settings['model_params']
 
         folds = self.get_stratified_spatial_splits_stable(
-            groups=groups, Y=Y, n_clusters=cv_settings['n_spatial_clusters'],
+            groups=groups, Y=Y, n_clusters=cv_settings['spatial_cluster_num'],
             test_prop=cv_settings['test_proportion'], split_strategy=self.split_strategy,
             n_splits=n_folds, random_seed=self.random_seed
         )
@@ -1351,7 +1351,7 @@ class NeuralContinuousCNNRunner:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"cnn_manifold_integrated_predictions_{sex_mod}_{timestamp}.pkl"
 
-        save_dir = self.modeling_settings['save_dir']
+        save_dir = self.modeling_settings['io']['save_directory']
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, filename)
 

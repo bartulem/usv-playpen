@@ -221,6 +221,7 @@ def find_bout_epochs(root_directories: list = None,
                      min_usv_per_bout: int = None,
                      gmm_component_index: int = 0,
                      gmm_z_score: float = 2.58,
+                     gmm_params: dict = None,
                      vocal_output_type: str = None,
                      noise_vocal_categories: list = None) -> dict:
     """
@@ -258,6 +259,10 @@ def find_bout_epochs(root_directories: list = None,
         GMM component index for IBI threshold calculation (default 0).
     gmm_z_score : float
         Z-score for IBI threshold calculation (default 2.58).
+    gmm_params : dict, optional
+        A dict with 'male' and 'female' keys, each containing 'means' and 'sds' lists
+        for the sex-specific IBI GMM components. If None, falls back to hard-coded defaults.
+        Typically loaded from modeling_settings['gmm_params'].
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
         - 'binary_joined': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
@@ -275,14 +280,18 @@ def find_bout_epochs(root_directories: list = None,
     """
 
     # GMM parameters (modeling inter-USV interval distributions)
-    male_gmm_params = {
-        'means': [-2.78176965, -1.61892112, -0.62569187],
-        'sds': [0.26162863, 0.77768956, 2.2298624]
-    }
-    female_gmm_params = {
-        'means': [-2.76859759, -1.64223541, 1.88505038],
-        'sds': [0.26499761, 1.07984569, 1.36805932]
-    }
+    if gmm_params is not None:
+        male_gmm_params = gmm_params['male']
+        female_gmm_params = gmm_params['female']
+    else:
+        male_gmm_params = {
+            'means': [-2.78176965, -1.61892112, -0.62569187],
+            'sds': [0.26162863, 0.77768956, 2.2298624]
+        }
+        female_gmm_params = {
+            'means': [-2.76859759, -1.64223541, 1.88505038],
+            'sds': [0.26499761, 1.07984569, 1.36805932]
+        }
 
     usv_data_dict = {}
     for one_root_directory in root_directories:
@@ -696,6 +705,7 @@ def find_variable_length_bouts(root_directories: list = None,
                                csv_sep: str = ',',
                                gmm_component_index: int = 0,
                                gmm_z_score: float = 2.58,
+                               gmm_params: dict = None,
                                min_vocalizations: int = 2,
                                filter_history: float = 4.0,
                                proportion_smoothing_sd: float = 1.0,
@@ -713,9 +723,9 @@ def find_variable_length_bouts(root_directories: list = None,
     1.  Noise Filtering: Immediately removes rows where `usv_category` matches
         any integer in `noise_vocal_categories`. This prevents noise from acting as a "bridge"
         that merges distinct bouts and ensures continuous signals represent only biological audio.
-    2.  GMM Thresholding: Selects sex-specific hardcoded Gaussian Mixture Model (GMM) parameters.
-        Calculates a dynamic inter-bout interval (IBI) threshold using the log-mean and log-sd
-        of the specified component (usually respiratory rhythm) plus a Z-score buffer.
+    2.  GMM Thresholding: Selects sex-specific GMM parameters (from `gmm_params` or hard-coded
+        defaults). Calculates a dynamic inter-bout interval (IBI) threshold using the log-mean
+        and log-sd of the specified component (usually respiratory rhythm) plus a Z-score buffer.
     3.  Continuous Signal Generation:
         - Based on `vocal_output_type`, generates aggregate or category-specific signals.
         - Supports binary traces (0/1) or smoothed density traces via Gaussian convolution.
@@ -743,6 +753,10 @@ def find_variable_length_bouts(root_directories: list = None,
         GMM component index to use for IBI threshold calculation.
     gmm_z_score : float, default 2.58
         Z-score to apply to the GMM component statistics.
+    gmm_params : dict, optional
+        A dict with 'male' and 'female' keys, each containing 'means' and 'sds' lists
+        for the sex-specific IBI GMM components. If None, falls back to hard-coded defaults.
+        Typically loaded from modeling_settings['gmm_params'].
     min_vocalizations : int, default 2
         Minimum number of syllables required to form a valid bout.
     filter_history : float, default 4.0
@@ -769,14 +783,18 @@ def find_variable_length_bouts(root_directories: list = None,
     """
 
     # GMM parameters (for modeling inter-USV interval distributions)
-    male_gmm_params = {
-        'means': [-2.78176965, -1.61892112, -0.62569187],
-        'sds': [0.26162863, 0.77768956, 2.2298624]
-    }
-    female_gmm_params = {
-        'means': [-2.76859759, -1.64223541, 1.88505038],
-        'sds': [0.26499761, 1.07984569, 1.36805932]
-    }
+    if gmm_params is not None:
+        male_gmm_params = gmm_params['male']
+        female_gmm_params = gmm_params['female']
+    else:
+        male_gmm_params = {
+            'means': [-2.78176965, -1.61892112, -0.62569187],
+            'sds': [0.26162863, 0.77768956, 2.2298624]
+        }
+        female_gmm_params = {
+            'means': [-2.76859759, -1.64223541, 1.88505038],
+            'sds': [0.26499761, 1.07984569, 1.36805932]
+        }
 
     usv_data_dict = {}
 

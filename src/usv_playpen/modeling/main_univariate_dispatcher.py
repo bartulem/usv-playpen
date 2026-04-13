@@ -86,18 +86,18 @@ def get_basis_matrix_standardized(
         A matrix of shape (history_frames, n_basis_functions). Returns None
         if the current model_type is 'pygam' (which uses internal splines).
     """
-    model_cfg = settings['model_selection']
+    model_cfg = settings['model_params']
 
-    if model_cfg['model_type'] != 'sklearn':
+    if model_cfg['model_engine'] != 'sklearn':
         return None
 
-    basis_type = model_cfg['basis_type']
+    basis_type = model_cfg['model_basis_function']
     w = history_frames
     basis_matrix = None
 
     if basis_type == 'raised_cosine':
-        p = settings['hyperparameters']['raised_cosine_params']
-        kp = int(np.floor(w * p.get('kpeaks_proportion', 1.0)))
+        p = settings['hyperparameters']['basis_functions']['raised_cosine']
+        kp = int(np.floor(w * p['kpeaks_proportion']))
         basis_matrix = raised_cosine(
             neye=p['neye'],
             ncos=p['ncos'],
@@ -107,19 +107,19 @@ def get_basis_matrix_standardized(
         )
 
     elif basis_type == 'bspline':
-        p = settings['hyperparameters']['bspline_params']
-        max_k = max(0, w - p.get('degree', 3))
-        knots = np.linspace(0, max_k, p['n_splines'] - p.get('degree', 3) + 1).astype(int)
+        p = settings['hyperparameters']['basis_functions']['bspline']
+        max_k = max(0, w - p['degree'])
+        knots = np.linspace(0, max_k, p['n_splines'] - p['degree'] + 1).astype(int)
         basis_matrix = _normalizecols(
             bsplines(
                 width=w,
                 positions=knots,
-                degree=p.get('degree', 3)
+                degree=p['degree']
             )
         )
 
     elif basis_type == 'laplacian_pyramid':
-        p = settings['hyperparameters']['laplacian_pyramid_params']
+        p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
         basis_matrix = _normalizecols(
             laplacian_pyramid(
                 width=w,
@@ -185,7 +185,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
     # 1. Load Experimental Configuration
     try:
         with open(args.settings_file, 'r') as f:
-            settings = json.load(f)['modeling_settings']
+            settings = json.load(f)
     except Exception as e:
         print(f"FATAL: Settings load failed: {e}")
         return
@@ -227,7 +227,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
                 pipeline = GeneralizedLinearModelPipeline(modeling_settings_dict=settings)
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 
-                if settings['model_selection']['model_type'] == 'sklearn':
+                if settings['model_params']['model_engine'] == 'sklearn':
                     fn, res = pipeline._run_glm_for_feature_sklearn(feature_name, feat_data, basis)
                 else:
                     fn, res = pipeline._run_glm_for_feature_pygam(feature_name, feat_data, None)
@@ -243,7 +243,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
                 pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 
-                if settings['model_selection']['model_type'] == 'sklearn':
+                if settings['model_params']['model_engine'] == 'sklearn':
                     fn, res = pipeline._run_glm_for_feature_sklearn(feature_name, feat_data, basis)
                 else:
                     fn, res = pipeline._run_glm_for_feature_pygam(feature_name, feat_data, None)
@@ -284,7 +284,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
             runner = ContinuousModelRunner(pipeline_instance=pipeline)
 
-            hp = settings['hyperparameters']['jax_continuous_params']
+            hp = settings['hyperparameters']['jax_linear']['bivariate_gaussian']
 
             data_blocks = runner.load_univariate_data_blocks(
                 pkl_path=args.input_data,

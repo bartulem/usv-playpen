@@ -2833,7 +2833,7 @@ class DeepResultsVisualizer:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as settings_json_file:
-                    self.modeling_settings = json.load(settings_json_file)['modeling_settings']
+                    self.modeling_settings = json.load(settings_json_file)
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {settings_path}")
         else:
@@ -3533,6 +3533,8 @@ class DeepResultsVisualizer:
     def plot_regional_saliency_inset(self,
                                      source_data_path: str,
                                      region_key: str,
+                                     polygon_vertices: list,
+                                     polygon_centroid: list,
                                      category_name: Optional[str] = None,
                                      prediction_plot_type: str = 'contour',
                                      highlight_color: Optional[str] = None,
@@ -3543,8 +3545,8 @@ class DeepResultsVisualizer:
                                      output_dir: Optional[str] = None,
                                      file_format: str = 'svg') -> None:
         """
-        Visualizes regional manifold dynamics by extracting polygons and centroids
-        directly from the configuration and mapping them to kinematic saliency.
+        Visualizes regional manifold dynamics by mapping spatial polygon annotations
+        to kinematic saliency on the UMAP manifold.
 
         This method identifies the specific behavioral motifs that causally drive
         the network's predictions into localized acoustic clusters. It leverages
@@ -3566,8 +3568,18 @@ class DeepResultsVisualizer:
             Full path to the source .pkl file containing the raw temporal
             kinematics. Required only if saliency needs to be re-computed.
         region_key : str
-            The internal identifier used to look up 'custom_polygons' and
-            'cluster_centroids' in the modeling_settings dictionary.
+            The internal identifier used to look up pre-computed saliency maps
+            stored in self.data['saliency_maps']. Also used as the display title
+            if category_name is None.
+        polygon_vertices : list
+            A list of (x, y) coordinate pairs defining the boundary polygon
+            for the target UMAP region. Previously stored in modeling_settings
+            under spatial_annotations; now passed directly by the caller.
+        polygon_centroid : list
+            A two-element [x, y] list specifying the centroid of the target
+            region. Used as the point-attractor for on-the-fly saliency
+            computation. Previously stored in modeling_settings under
+            spatial_annotations; now passed directly by the caller.
         category_name : str, optional
             The human-readable title for the plot (e.g., 'Category 3: Complex').
             If None, the 'region_key' is used for the display title.
@@ -3596,11 +3608,6 @@ class DeepResultsVisualizer:
         -------
         None
             Generates a two-panel matplotlib figure and optionally saves to disk.
-
-        Raises
-        ------
-        KeyError
-            If 'region_key' is not found in the custom_polygons configuration.
         """
 
         # --- 0. COLOR MANAGEMENT ---
@@ -3608,14 +3615,7 @@ class DeepResultsVisualizer:
         if highlight_color is None:
             highlight_color = getattr(self, 'default_color', '#9AC0CD')
 
-        # --- 1. CONFIGURATION LOOKUP ---
-        hps = self.modeling_settings['hyperparameters']['jax_cnn_continuous_params']
-
-        if region_key not in hps['custom_polygons']:
-            raise KeyError(f"Region key '{region_key}' is missing from modeling_settings.")
-
-        polygon_vertices = hps['custom_polygons'][region_key]
-        polygon_centroid = hps['cluster_centroids'][region_key]
+        # --- 1. DISPLAY TITLE ---
         display_title = category_name if category_name is not None else region_key
 
         # --- 2. DATA AGGREGATION ---

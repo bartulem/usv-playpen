@@ -49,7 +49,8 @@ def get_stratified_group_splits_stable(
         test_prop: float = 0.2,
         n_splits: int = 100,
         tolerance: float = 0.05,
-        random_seed: int = 0
+        random_seed: int = 0,
+        n_categories: int = 6
 ) -> list:
     """
     Generates 100 independent 80/20 session-based splits that are
@@ -104,11 +105,11 @@ def get_stratified_group_splits_stable(
         tr_idx = np.where(np.isin(groups, tr_sess))[0]
         te_idx = np.where(np.isin(groups, te_sess))[0]
 
-        # all 6 classes must be in both sets
+        # all classes must be in both sets
         tr_classes = np.unique(y[tr_idx])
         te_classes = np.unique(y[te_idx])
 
-        if len(tr_classes) == 6 and len(te_classes) == 6:
+        if len(tr_classes) == n_categories and len(te_classes) == n_categories:
             # check distribution deviation
             _, te_counts = np.unique(y[te_idx], return_counts=True)
             te_dist = te_counts / len(te_idx)
@@ -155,7 +156,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as f:
-                    self.modeling_settings = json.load(f)['modeling_settings']
+                    self.modeling_settings = json.load(f)
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {settings_path}")
         else:
@@ -166,8 +167,8 @@ class MultinomialModelingPipeline(FeatureZoo):
             self.feature_boundaries = json_bounds
 
         try:
-            cam_rate = self.modeling_settings['data_io']['camera_sampling_rate']
-            hist_sec = self.modeling_settings['features']['filter_history']
+            cam_rate = self.modeling_settings['io']['camera_sampling_rate']
+            hist_sec = self.modeling_settings['model_params']['filter_history']
             self.history_frames = int(np.floor(cam_rate * hist_sec))
             print(f"Multinomial Pipeline Init: History frames calculated: {self.history_frames} (for {hist_sec}s at {cam_rate}fps)")
         except KeyError as e:
@@ -202,16 +203,16 @@ class MultinomialModelingPipeline(FeatureZoo):
         - 'y': Target vector of shape (n_samples,) containing integer class labels.
         """
 
-        if self.modeling_settings['random_seed'] is not None:
-            np.random.seed(self.modeling_settings['random_seed'])
-            print(f"Random seed set to: {self.modeling_settings['random_seed']}")
+        if self.modeling_settings['model_params']['random_seed'] is not None:
+            np.random.seed(self.modeling_settings['model_params']['random_seed'])
+            print(f"Random seed set to: {self.modeling_settings['model_params']['random_seed']}")
         else:
             np.random.seed(None)
             print("Random seed not set (None). Results will not be reproducible.")
 
         txt_sessions = []
         try:
-            sessions_file = self.modeling_settings['session_list_file']
+            sessions_file = self.modeling_settings['io']['session_list_file']
             with open(configure_path(sessions_file)) as f:
                 for line in f:
                     line = line.strip()
@@ -227,20 +228,20 @@ class MultinomialModelingPipeline(FeatureZoo):
         print("Loading behavioral feature data...")
         beh_data_dict, cam_fps_dict, mouse_names_dict = load_behavioral_feature_data(
             behavior_file_paths=txt_sessions,
-            csv_sep=self.modeling_settings['data_io']['csv_sheet_delimiter']
+            csv_sep=self.modeling_settings['io']['csv_separator']
         )
 
         voc_settings = self.modeling_settings['vocal_features']
-        feat_settings = self.modeling_settings['features']
+        feat_settings = self.modeling_settings['kinematic_features']
 
-        voc_mode = voc_settings['vocal_output_type']
-        partner_only = voc_settings['vocal_output_partner_only']
-        smooth_sd = voc_settings['vocal_proportion_smoothing_sd']
-        column_name_cats = voc_settings['category_column_name']
-        noise_cats = voc_settings['noise_vocal_categories']
+        voc_mode = voc_settings['usv_predictor_type']
+        partner_only = voc_settings['usv_predictor_partner_only']
+        smooth_sd = voc_settings['usv_predictor_smoothing_sd']
+        column_name_cats = voc_settings['usv_category_column_name']
+        noise_cats = voc_settings['usv_noise_categories']
 
-        filter_hist = feat_settings['filter_history']
-        pred_idx = feat_settings['predictor_mouse']
+        filter_hist = self.modeling_settings['model_params']['filter_history']
+        pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         targ_idx = abs(pred_idx - 1)
 
         # detect all USV categories project-wide
@@ -249,7 +250,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             mouse_ids_dict=mouse_names_dict,
             camera_fps_dict=cam_fps_dict,
             features_dict=beh_data_dict,
-            csv_sep=self.modeling_settings['data_io']['csv_sheet_delimiter'],
+            csv_sep=self.modeling_settings['io']['csv_separator'],
             target_category=None,
             category_column=column_name_cats,
             filter_history=filter_hist,
@@ -308,7 +309,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             cols_to_keep = []
             sess_cols = current_df.columns
 
-            for base_feat in self.modeling_settings['features']['behavioral_predictors']:
+            for base_feat in self.modeling_settings['kinematic_features']['model_predictors']:
                 matching_cols = [c for c in sess_cols if c.split('.')[-1] == base_feat]
 
                 for feat in matching_cols:
@@ -336,9 +337,9 @@ class MultinomialModelingPipeline(FeatureZoo):
                         if base_feat not in ('speed', 'acceleration'):
                             der1 = f'{feat}_1st_der'
                             der2 = f'{feat}_2nd_der'
-                            if feat_settings['include_1st_der_features_bool'] and der1 in sess_cols:
+                            if feat_settings['include_1st_derivatives'] and der1 in sess_cols:
                                 cols_to_keep.append(der1)
-                            if feat_settings['include_2nd_der_features_bool'] and der2 in sess_cols:
+                            if feat_settings['include_2nd_derivatives'] and der2 in sess_cols:
                                 cols_to_keep.append(der2)
 
             new_voc_cols = []
@@ -503,7 +504,7 @@ class MultinomialModelingPipeline(FeatureZoo):
 
         target_mouse_sex = 'male' if targ_idx == 0 else 'female'
         fname = f"modeling_multinomial_category_{target_mouse_sex}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
-        save_dir = self.modeling_settings['save_dir']
+        save_dir = self.modeling_settings['io']['save_directory']
         save_path = os.path.join(save_dir, fname)
 
         os.makedirs(save_dir, exist_ok=True)
@@ -695,10 +696,10 @@ class MultinomialModelRunner:
         """
 
         # Strict dictionary lookups (No .get() allowed)
-        hp = self.modeling_settings['hyperparameters']['jax_multinomial_params']
-        n_splits = self.modeling_settings['model_selection']['num_splits']
-        split_strategy = self.modeling_settings['model_selection']['split_strategy']
-        test_prop = self.modeling_settings['model_selection']['test_proportion']
+        hp = self.modeling_settings['hyperparameters']['jax_linear']['multinomial_logistic']
+        n_splits = self.modeling_settings['model_params']['split_num']
+        split_strategy = self.modeling_settings['model_params']['split_strategy']
+        test_prop = self.modeling_settings['model_params']['test_proportion']
         bin_size = hp['bin_resizing_factor']
 
         all_blocks = self.load_univariate_data_blocks(pkl_path, bin_size=bin_size)
@@ -716,7 +717,8 @@ class MultinomialModelRunner:
             split_strategy=split_strategy,
             test_prop=test_prop,
             n_splits=n_splits,
-            random_seed=self.modeling_settings['random_seed']
+            random_seed=self.modeling_settings['model_params']['random_seed'],
+            n_categories=self.modeling_settings['vocal_features']['usv_category_number']
         )
 
         strategies = ['actual', 'null', 'null_model_free']
@@ -869,17 +871,17 @@ class MultinomialModelRunner:
         """
 
         # 1. Setup and Hyperparameters
-        hp = self.modeling_settings['hyperparameters']['jax_multinomial_params']
-        model_ops = self.modeling_settings['model_selection']
+        hp = self.modeling_settings['hyperparameters']['jax_linear']['multinomial_logistic']
+        model_ops = self.modeling_settings['model_params']
         voc_settings = self.modeling_settings['vocal_features']
 
-        n_splits = model_ops['num_splits']
+        n_splits = model_ops['split_num']
         split_strategy = model_ops['split_strategy']
         test_prop = model_ops['test_proportion']
         bin_size = hp['bin_resizing_factor']
 
         # Strictly read hierarchical mapping from JSON
-        complex_cats = voc_settings['all_complex_categories']
+        complex_cats = voc_settings['usv_complex_categories']
 
         # 2. Data Loading
         all_blocks = self.load_univariate_data_blocks(pkl_path, bin_size=bin_size)
@@ -905,7 +907,7 @@ class MultinomialModelRunner:
             split_strategy=split_strategy,
             test_prop=test_prop,
             n_splits=n_splits,
-            random_seed=self.modeling_settings['random_seed']
+            random_seed=self.modeling_settings['model_params']['random_seed']
         )
 
         # 5. Dual-Strategy Optimization Loop (Actual vs. Null)

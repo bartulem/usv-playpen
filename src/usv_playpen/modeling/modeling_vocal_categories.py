@@ -70,7 +70,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as f:
-                    self.modeling_settings = json.load(f)['modeling_settings']
+                    self.modeling_settings = json.load(f)
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {settings_path}")
         else:
@@ -80,8 +80,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             self.feature_boundaries = self.modeling_settings['feature_boundaries']
 
         try:
-            cam_rate = self.modeling_settings['data_io']['camera_sampling_rate']
-            hist_sec = self.modeling_settings['features']['filter_history']
+            cam_rate = self.modeling_settings['io']['camera_sampling_rate']
+            hist_sec = self.modeling_settings['model_params']['filter_history']
             self.history_frames = int(np.floor(cam_rate * hist_sec))
             print(f"History frames calculated: {self.history_frames} (for {hist_sec}s at {cam_rate}fps)")
         except KeyError as e:
@@ -130,14 +130,14 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             Saves a pickle file containing 'target_feature_arr' and 'other_feature_arr' for each feature.
         """
 
-        if self.modeling_settings['random_seed'] is not None:
-            np.random.seed(self.modeling_settings['random_seed'])
+        if self.modeling_settings['model_params']['random_seed'] is not None:
+            np.random.seed(self.modeling_settings['model_params']['random_seed'])
         else:
             np.random.seed(None)
 
         txt_sessions = []
         try:
-            sessions_file = self.modeling_settings['session_list_file']
+            sessions_file = self.modeling_settings['io']['session_list_file']
             with open(configure_path(sessions_file)) as f:
                 for line in f:
                     line = line.strip()
@@ -151,18 +151,18 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         print("Loading behavioral feature data...")
         beh_data_dict, cam_fps_dict, mouse_names_dict = load_behavioral_feature_data(
             behavior_file_paths=txt_sessions,
-            csv_sep=self.modeling_settings['data_io']['csv_sheet_delimiter']
+            csv_sep=self.modeling_settings['io']['csv_separator']
         )
 
         voc_settings = self.modeling_settings['vocal_features']
-        feat_settings = self.modeling_settings['features']
+        feat_settings = self.modeling_settings['kinematic_features']
 
-        voc_mode = voc_settings['vocal_output_type']
-        partner_only = voc_settings['vocal_output_partner_only']
-        smooth_sd = voc_settings['vocal_proportion_smoothing_sd']
-        column_name_cats = voc_settings['category_column_name']
-        noise_cats = voc_settings['noise_vocal_categories']
-        filter_hist = feat_settings['filter_history']
+        voc_mode = voc_settings['usv_predictor_type']
+        partner_only = voc_settings['usv_predictor_partner_only']
+        smooth_sd = voc_settings['usv_predictor_smoothing_sd']
+        column_name_cats = voc_settings['usv_category_column_name']
+        noise_cats = voc_settings['usv_noise_categories']
+        filter_hist = self.modeling_settings['model_params']['filter_history']
 
         print(f"Loading USV data and generating predictors for Category {target_category}...")
         usv_data_dict = find_usv_categories(
@@ -170,7 +170,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             mouse_ids_dict=mouse_names_dict,
             camera_fps_dict=cam_fps_dict,
             features_dict=beh_data_dict,
-            csv_sep=self.modeling_settings['data_io']['csv_sheet_delimiter'],
+            csv_sep=self.modeling_settings['io']['csv_separator'],
             target_category=target_category,
             category_column=column_name_cats,
             filter_history=filter_hist,
@@ -180,7 +180,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         )
 
         processed_beh_data = {}
-        pred_idx = self.modeling_settings['features']['predictor_mouse']
+        pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         targ_idx = abs(pred_idx - 1)
 
         for sess_id in list(beh_data_dict.keys()):
@@ -194,7 +194,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             cols_to_keep = []
             sess_cols = current_df.columns
 
-            for base_feat in self.modeling_settings['features']['behavioral_predictors']:
+            for base_feat in self.modeling_settings['kinematic_features']['model_predictors']:
                 matching_cols = [c for c in sess_cols if c.split('.')[-1] == base_feat]
                 for feat in matching_cols:
                     is_self = feat.startswith(f"{targ_name}.")
@@ -217,9 +217,9 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         cols_to_keep.append(feat)
                         if base_feat not in ('speed', 'acceleration'):
                             der1, der2 = f'{feat}_1st_der', f'{feat}_2nd_der'
-                            if self.modeling_settings['features']['include_1st_der_features_bool'] and der1 in sess_cols:
+                            if self.modeling_settings['kinematic_features']['include_1st_derivatives'] and der1 in sess_cols:
                                 cols_to_keep.append(der1)
-                            if self.modeling_settings['features']['include_2nd_der_features_bool'] and der2 in sess_cols:
+                            if self.modeling_settings['kinematic_features']['include_2nd_derivatives'] and der2 in sess_cols:
                                 cols_to_keep.append(der2)
 
             new_voc_cols = []
@@ -382,8 +382,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
         target_mouse_sex = 'male' if targ_idx == 0 else 'female'
         fname = f"modeling_category_{target_category}_{target_mouse_sex}_{voc_mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
-        save_path = os.path.join(self.modeling_settings['save_dir'], fname)
-        os.makedirs(self.modeling_settings['save_dir'], exist_ok=True)
+        save_path = os.path.join(self.modeling_settings['io']['save_directory'], fname)
+        os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
         with open(save_path, 'wb') as f:
             pickle.dump(final_data, f)
         print(f"\n[+] Successfully saved category input data to:\n    {save_path}")
@@ -495,11 +495,11 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             return
 
         # Strict lookup, no .get()
-        model_ops = self.modeling_settings['model_selection']
-        n_splits = model_ops['num_splits']
+        model_ops = self.modeling_settings['model_params']
+        n_splits = model_ops['split_num']
         test_prop = model_ops['test_proportion']
         split_strategy = model_ops['split_strategy']
-        rand_seed = self.modeling_settings['random_seed']
+        rand_seed = self.modeling_settings['model_params']['random_seed']
 
         splits_data = []
 
@@ -632,8 +632,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         """
 
         # Strict lookup, no .get()
-        model_type = self.modeling_settings['model_selection']['model_type']
-        n_splits = self.modeling_settings['model_selection']['num_splits']
+        model_type = self.modeling_settings['model_params']['model_engine']
+        n_splits = self.modeling_settings['model_params']['split_num']
 
         metrics = ['auc', 'score', 'precision', 'recall', 'f1', 'll']
         results = {
@@ -668,7 +668,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         X_tr_p = np.dot(X_tr, basis_matrix)
                         X_te_p = np.dot(X_te, basis_matrix)
 
-                        lr_params = self.modeling_settings['hyperparameters']['logistic_regression_params']
+                        lr_params = self.modeling_settings['hyperparameters']['classical']['logistic_regression']
 
                         lr_actual = LogisticRegressionCV(
                             penalty=lr_params['penalty'],
@@ -677,7 +677,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             class_weight='balanced',
                             solver=lr_params['solver'],
                             max_iter=lr_params['max_iter'],
-                            random_state=self.modeling_settings['random_seed']
+                            random_state=self.modeling_settings['model_params']['random_seed']
                         )
 
                         lr_actual.fit(X_tr_p, y_tr)
@@ -703,7 +703,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         X_te_gam = unroll(X_te)
                         y_tr_gam = np.repeat(y_tr, self.history_frames).astype(int)
 
-                        pg_params = self.modeling_settings['hyperparameters']['pygam_params']
+                        pg_params = self.modeling_settings['hyperparameters']['classical']['pygam']
                         n_splines_val = pg_params['n_splines_value']
                         n_splines_time = pg_params['n_splines_time']
                         gam_args = {

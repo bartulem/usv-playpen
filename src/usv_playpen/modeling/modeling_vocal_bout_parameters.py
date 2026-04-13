@@ -123,17 +123,17 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
                the bout (representing total information content).
         """
 
-        if self.modeling_settings_dict['random_seed'] is not None:
-            np.random.seed(self.modeling_settings_dict['random_seed'])
+        if self.modeling_settings_dict['model_params']['random_seed'] is not None:
+            np.random.seed(self.modeling_settings_dict['model_params']['random_seed'])
         else:
             np.random.seed(None)
 
-        target_variable = self.modeling_settings_dict['task_definition']['target_variable']
+        target_variable = self.modeling_settings_dict['model_params']['model_target_variable']
         print(f"--- Extracting Data for Regression Target: {target_variable} ---")
 
         txt_glm_sessions = []
         try:
-            with open(configure_path(self.modeling_settings_dict['session_list_file'])) as f:
+            with open(configure_path(self.modeling_settings_dict['io']['session_list_file'])) as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -141,20 +141,20 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         except Exception as e:
             raise RuntimeError(f"Error reading session paths: {e}")
 
-        target_variable = self.modeling_settings_dict['task_definition']['target_variable']
-        gmm_idx = self.modeling_settings_dict['task_definition']['gmm_component_index']
-        gmm_z = self.modeling_settings_dict['task_definition']['gmm_z_score']
-        min_usv = self.modeling_settings_dict['task_definition']['min_usv_per_bout']
+        target_variable = self.modeling_settings_dict['model_params']['model_target_variable']
+        gmm_idx = self.modeling_settings_dict['model_params']['gmm_component_index']
+        gmm_z = self.modeling_settings_dict['model_params']['gmm_z_score']
+        min_usv = self.modeling_settings_dict['model_params']['usv_per_bout_floor']
 
-        voc_type = self.modeling_settings_dict['vocal_features']['vocal_output_type']
-        partner_only = self.modeling_settings_dict['vocal_features']['vocal_output_partner_only']
-        smooth_sd = self.modeling_settings_dict['vocal_features']['vocal_proportion_smoothing_sd']
-        noise_cats = self.modeling_settings_dict['vocal_features']['noise_vocal_categories']
+        voc_type = self.modeling_settings_dict['vocal_features']['usv_predictor_type']
+        partner_only = self.modeling_settings_dict['vocal_features']['usv_predictor_partner_only']
+        smooth_sd = self.modeling_settings_dict['vocal_features']['usv_predictor_smoothing_sd']
+        noise_cats = self.modeling_settings_dict['vocal_features']['usv_noise_categories']
 
         print("Loading behavioral feature data...")
         beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
             behavior_file_paths=txt_glm_sessions,
-            csv_sep=self.modeling_settings_dict['data_io']['csv_sheet_delimiter']
+            csv_sep=self.modeling_settings_dict['io']['csv_separator']
         )
 
         print(f"Identifying Bouts & Generating Vocal Signals (Type: {voc_type}, Partner Only: {partner_only})...")
@@ -163,18 +163,19 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
             mouse_ids_dict=mouse_track_names_dict,
             camera_fps_dict=camera_fr_dict,
             features_dict=beh_feature_data_dict,
-            csv_sep=self.modeling_settings_dict['data_io']['csv_sheet_delimiter'],
+            csv_sep=self.modeling_settings_dict['io']['csv_separator'],
             gmm_component_index=gmm_idx,
             gmm_z_score=gmm_z,
+            gmm_params=self.modeling_settings_dict['gmm_params'],
             min_vocalizations=min_usv,
-            filter_history=self.modeling_settings_dict['features']['filter_history'],
+            filter_history=self.modeling_settings_dict['model_params']['filter_history'],
             proportion_smoothing_sd=smooth_sd,
             vocal_output_type=voc_type,
             noise_vocal_categories=noise_cats
         )
 
         processed_beh_feature_data_dict = {}
-        predictor_mouse_idx = self.modeling_settings_dict['features']['predictor_mouse']
+        predictor_mouse_idx = self.modeling_settings_dict['model_params']['model_predictor_mouse_index']
         target_mouse_idx = abs(predictor_mouse_idx - 1)
 
         for sess_id, session_df in beh_feature_data_dict.items():
@@ -185,7 +186,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
             session_df_cols = session_df.columns
             columns_to_keep_session = []
 
-            for base_feature in self.modeling_settings_dict['features']['behavioral_predictors']:
+            for base_feature in self.modeling_settings_dict['kinematic_features']['model_predictors']:
                 session_cols = [col for col in session_df_cols if col.split('.')[-1] == base_feature]
                 for feature in session_cols:
                     is_self_ego = feature.startswith(f"{t_name}.")
@@ -210,9 +211,9 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
 
                         if base_feature not in ('speed', 'acceleration'):
                             der_1st, der_2nd = f'{feature}_1st_der', f'{feature}_2nd_der'
-                            if self.modeling_settings_dict['features']['include_1st_der_features_bool'] and der_1st in session_df_cols:
+                            if self.modeling_settings_dict['kinematic_features']['include_1st_derivatives'] and der_1st in session_df_cols:
                                 columns_to_keep_session.append(der_1st)
-                            if self.modeling_settings_dict['features']['include_2nd_der_features_bool'] and der_2nd in session_df_cols:
+                            if self.modeling_settings_dict['kinematic_features']['include_2nd_derivatives'] and der_2nd in session_df_cols:
                                 columns_to_keep_session.append(der_2nd)
 
             new_voc_cols = []
@@ -269,7 +270,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
                             if is_vocal and any(k in pred_suffix for k in ['proportion', 'event']):
                                 continue
                         else:
-                            if 'mute' in self.modeling_settings_dict['session_list_file'].split('/')[-1]:
+                            if 'mute' in self.modeling_settings_dict['io']['session_list_file'].split('/')[-1]:
                                 if is_vocal:
                                     continue
 
@@ -389,9 +390,9 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         print("=" * 105 + "\n")
 
         t_sex = 'male' if target_mouse_idx == 0 else 'female'
-        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings_dict['features']['filter_history']}.pkl"
-        save_path = os.path.join(self.modeling_settings_dict['save_dir'], fname)
-        os.makedirs(self.modeling_settings_dict['save_dir'], exist_ok=True)
+        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings_dict['model_params']['filter_history']}.pkl"
+        save_path = os.path.join(self.modeling_settings_dict['io']['save_directory'], fname)
+        os.makedirs(self.modeling_settings_dict['io']['save_directory'], exist_ok=True)
         with open(save_path, 'wb') as f:
             pickle.dump(final_data_dict, f)
         print(f"[+] Saved: {save_path}")
@@ -433,12 +434,12 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         n_samples = len(y)
 
         # 1. Configuration
-        model_selection = self.modeling_settings_dict['model_selection']
+        model_selection = self.modeling_settings_dict['model_params']
         split_strategy = strategy_override or model_selection['split_strategy']
 
-        num_iterations = model_selection['num_splits']
+        num_iterations = model_selection['split_num']
         test_prop = model_selection['test_proportion']
-        base_seed = self.modeling_settings_dict['random_seed']
+        base_seed = self.modeling_settings_dict['model_params']['random_seed']
         if base_seed is None:
             base_seed = 42
 
@@ -560,7 +561,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         }
 
         # Strict dictionary lookups (No .get())
-        pygam_params = self.modeling_settings_dict['hyperparameters']['pygam_params']
+        pygam_params = self.modeling_settings_dict['hyperparameters']['classical']['pygam']
         n_val = pygam_params['n_splines_value']
         n_time = pygam_params['n_splines_time']
         lam = pygam_params['lam_penalty']
@@ -765,7 +766,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         splitter = self.create_data_splits(feature_data)
 
         # Strict dictionary lookups
-        ridge_params = self.modeling_settings_dict['hyperparameters']['ridge_regression_params']
+        ridge_params = self.modeling_settings_dict['hyperparameters']['classical']['ridge_regression']
         alphas = ridge_params['alphas']
         cv = ridge_params['cv']
 

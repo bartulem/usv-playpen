@@ -23,7 +23,6 @@ from .modeling_vocal_onsets import GeneralizedLinearModelPipeline
 from .modeling_vocal_categories_multinomial import get_stratified_group_splits_stable, MultinomialModelingPipeline, MultinomialModelRunner
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .jax_bivariate_gaussian_regression import SmoothBivariateGaussianRegression
-from .jax_neural_network_usv_manifold_prediction import NeuralContinuousModelRunner
 
 
 def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
@@ -136,7 +135,7 @@ def bout_onset_model_selection(univariate_results_path: str,
 
     try:
         with open(settings_path, 'r') as f:
-            settings = json.load(f)['modeling_settings']
+            settings = json.load(f)
         print(f"Loaded settings from: {settings_path}")
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
@@ -173,7 +172,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     all_feature_data = load_pickle_modeling_data(input_data_path)
     pipeline = GeneralizedLinearModelPipeline(modeling_settings_dict=settings)
     if not hasattr(pipeline, 'history_frames'):
-        pipeline.history_frames = int(np.floor(settings['data_io']['camera_sampling_rate'] * settings['features']['filter_history']))
+        pipeline.history_frames = int(np.floor(settings['io']['camera_sampling_rate'] * settings['model_params']['filter_history']))
     history_frames = pipeline.history_frames
 
     common_sessions = set(all_feature_data[ranked_features[0]].keys())
@@ -181,7 +180,7 @@ def bout_onset_model_selection(univariate_results_path: str,
         common_sessions = common_sessions.intersection(set(all_feature_data[feat].keys()))
     all_sessions = sorted(list(common_sessions))
 
-    pygam_params = settings['hyperparameters']['pygam_params']
+    pygam_params = settings['hyperparameters']['classical']['pygam']
     n_splines_time = pygam_params['n_splines_time']
     n_splines_value = pygam_params['n_splines_value']
     lam_penalty = pygam_params['lam_penalty']
@@ -192,12 +191,12 @@ def bout_onset_model_selection(univariate_results_path: str,
         'lam': lam_penalty
     }
 
-    model_ops = settings['model_selection']
+    model_ops = settings['model_params']
     split_strategy = model_ops['split_strategy']
-    n_splits_selection = model_ops['num_splits']
+    n_splits_selection = model_ops['split_num']
     test_prop = model_ops['test_proportion']
 
-    random_seed = settings['random_seed']
+    random_seed = settings['model_params']['random_seed']
     print(f"Random Seed: {random_seed} | Split Strategy: {split_strategy} | Num Splits: {n_splits_selection}")
     anchor_feature = ranked_features[0]
 
@@ -226,7 +225,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     fname = os.path.basename(univariate_results_path)
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
-    prediction_mode = settings['task_definition']['prediction_mode']
+    prediction_mode = settings['model_params']['model_target_vocal_type']
 
     prefix = f"model_selection_{target_condition}_{prediction_mode}_{split_strategy}_step_"
 
@@ -334,7 +333,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                 }
             }
             target_sex = 'female' if 'female' in univariate_results_path else 'male'
-            s0_name = f"model_selection_{target_sex}_{settings.get('prediction_mode', 'bout')}_{split_strategy}_step_0.pkl"
+            s0_name = f"model_selection_{target_sex}_{settings['model_params']['model_target_vocal_type']}_{split_strategy}_step_0.pkl"
             with open(os.path.join(model_selection_dir, s0_name), 'wb') as f:
                 pickle.dump(step_0_metadata, f)
             step_counter = 1
@@ -457,7 +456,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     try:
         X_p, X_n = pipeline._pool_data_from_sessions(all_feature_data[anchor_feature], all_sessions)
 
-        np.random.seed(0)
+        np.random.seed(random_seed)
         n_k = min(X_p.shape[0], X_n.shape[0])
         idx_p = np.random.choice(X_p.shape[0], n_k, replace=False)
         idx_n = np.random.choice(X_n.shape[0], n_k, replace=False)
@@ -696,7 +695,7 @@ def vocal_category_model_selection(
 
     try:
         with open(settings_path, 'r') as f:
-            settings = json.load(f)['modeling_settings']
+            settings = json.load(f)
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
@@ -775,16 +774,16 @@ def vocal_category_model_selection(
         raise ValueError("Not enough common sessions for cross-validation.")
 
     # Strict Dictionary Access Only (No .get())
-    camera_rate = settings['data_io']['camera_sampling_rate']
-    filter_history_sec = settings['features']['filter_history']
+    camera_rate = settings['io']['camera_sampling_rate']
+    filter_history_sec = settings['model_params']['filter_history']
     history_frames = int(np.floor(camera_rate * filter_history_sec))
 
-    model_ops = settings['model_selection']
+    model_ops = settings['model_params']
     model_type = model_ops['model_type']
-    n_splits = model_ops['num_splits']
+    n_splits = model_ops['split_num']
     test_prop = model_ops['test_proportion']
     split_strategy = model_ops['split_strategy']
-    random_seed = settings['random_seed']
+    random_seed = settings['model_params']['random_seed']
 
     basis_matrix = None
     gam_kwargs = {}
@@ -794,28 +793,28 @@ def vocal_category_model_selection(
 
     # Initialize Engine Logic
     if model_type == 'sklearn':
-        basis_type = model_ops['basis_type']
+        basis_type = model_ops['model_basis_function']
         if basis_type == 'raised_cosine':
-            p = settings['hyperparameters']['raised_cosine_params']
+            p = settings['hyperparameters']['basis_functions']['raised_cosine']
             kp = int(np.floor(history_frames * p['kpeaks_proportion']))
             basis_matrix = raised_cosine(neye=p['neye'], ncos=p['ncos'], kpeaks=[0, kp], b=p['b'], w=history_frames)
         elif basis_type == 'bspline':
-            p = settings['hyperparameters']['bspline_params']
+            p = settings['hyperparameters']['basis_functions']['bspline']
             deg = p['degree']
             max_k = max(0, history_frames - deg)
             knots = np.linspace(0, max_k, p['n_splines'] - deg + 1).astype(int)
             basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
         elif basis_type == 'laplacian_pyramid':
-            p = settings['hyperparameters']['laplacian_pyramid_params']
+            p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
             basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], fwhm=p['fwhm']))
         elif basis_type == 'identity':
             basis_matrix = identity(width=history_frames)
 
-        lr_params = settings['hyperparameters']['logistic_regression_params']
+        lr_params = settings['hyperparameters']['classical']['logistic_regression']
         print(f"Engine: Sklearn LogisticRegressionCV with '{basis_type}' projection.")
 
     elif model_type == 'pygam':
-        pygam_params = settings['hyperparameters']['pygam_params']
+        pygam_params = settings['hyperparameters']['classical']['pygam']
         n_splines_time = pygam_params['n_splines_time']
         n_splines_value = pygam_params['n_splines_value']
         gam_kwargs = {
@@ -1282,7 +1281,7 @@ def bout_parameter_model_selection(
 
     try:
         with open(settings_path, 'r') as f:
-            settings = json.load(f)['modeling_settings']
+            settings = json.load(f)
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
@@ -1346,17 +1345,17 @@ def bout_parameter_model_selection(
     y_global = all_feature_data[ranked_features[0]]['y']
     groups_global = all_feature_data[ranked_features[0]]['groups']
 
-    camera_rate = settings['data_io']['camera_sampling_rate']
-    filter_history_sec = settings['features']['filter_history']
+    camera_rate = settings['io']['camera_sampling_rate']
+    filter_history_sec = settings['model_params']['filter_history']
     history_frames = int(np.floor(camera_rate * filter_history_sec))
 
     # Strict Dictionary Lookup
-    model_ops = settings['model_selection']
+    model_ops = settings['model_params']
     model_type = model_ops['model_type']
     split_strategy = model_ops['split_strategy']
-    n_splits = model_ops['num_splits']
+    n_splits = model_ops['split_num']
     test_prop = model_ops['test_proportion']
-    random_seed = settings['random_seed']
+    random_seed = settings['model_params']['random_seed']
 
     print(f"Engine: {model_type.upper()} | Random Seed: {random_seed} | Strategy: {split_strategy} | Num Splits: {n_splits}")
 
@@ -1368,27 +1367,27 @@ def bout_parameter_model_selection(
     lr_params = {}
 
     if model_type == 'sklearn':
-        basis_type = model_ops['basis_type']
+        basis_type = model_ops['model_basis_function']
         if basis_type == 'raised_cosine':
-            p = settings['hyperparameters']['raised_cosine_params']
+            p = settings['hyperparameters']['basis_functions']['raised_cosine']
             kp = int(np.floor(history_frames * p['kpeaks_proportion']))
             basis_matrix = raised_cosine(neye=p['neye'], ncos=p['ncos'], kpeaks=[0, kp], b=p['b'], w=history_frames)
         elif basis_type == 'bspline':
-            p = settings['hyperparameters']['bspline_params']
+            p = settings['hyperparameters']['basis_functions']['bspline']
             deg = p['degree']
             max_k = max(0, history_frames - deg)
             knots = np.linspace(0, max_k, p['n_splines'] - deg + 1).astype(int)
             basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
         elif basis_type == 'laplacian_pyramid':
-            p = settings['hyperparameters']['laplacian_pyramid_params']
+            p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
             basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], fwhm=p['fwhm']))
         elif basis_type == 'identity':
             basis_matrix = identity(width=history_frames)
 
-        lr_params = settings['hyperparameters']['ridge_regression_params']
+        lr_params = settings['hyperparameters']['classical']['ridge_regression']
 
     elif model_type == 'pygam':
-        pygam_params = settings['hyperparameters']['pygam_params']
+        pygam_params = settings['hyperparameters']['classical']['pygam']
         n_splines_time = pygam_params['n_splines_time']
         n_splines_value = pygam_params['n_splines_value']
         gam_kwargs = {
@@ -1840,7 +1839,7 @@ def multinomial_vocal_category_model_selection(
 
     try:
         with open(settings_path, 'r') as f:
-            settings = json.load(f)['modeling_settings']
+            settings = json.load(f)
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
@@ -1891,7 +1890,7 @@ def multinomial_vocal_category_model_selection(
     with open(input_data_path, 'rb') as f:
         raw_data = pickle.load(f)
 
-    hp = settings['hyperparameters']['jax_multinomial_params']
+    hp = settings['hyperparameters']['jax_linear']['multinomial_logistic']
     bin_size = hp['bin_resizing_factor']
 
     binned_data = {}
@@ -1923,11 +1922,11 @@ def multinomial_vocal_category_model_selection(
     del raw_data
     gc.collect()
 
-    model_ops = settings['model_selection']
+    model_ops = settings['model_params']
     split_strategy = model_ops['split_strategy']
-    n_splits = model_ops['num_splits']
+    n_splits = model_ops['split_num']
     test_prop = model_ops['test_proportion']
-    random_seed = settings['random_seed']
+    random_seed = settings['model_params']['random_seed']
 
     if split_strategy == 'session':
         cv_folds = get_stratified_group_splits_stable(
@@ -2347,7 +2346,7 @@ def continuous_vocal_manifold_model_selection(
 
     try:
         with open(settings_path, 'r') as f:
-            settings = json.load(f)['modeling_settings']
+            settings = json.load(f)
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
@@ -2407,7 +2406,7 @@ def continuous_vocal_manifold_model_selection(
     with open(input_data_path, 'rb') as f:
         raw_data = pickle.load(f)
 
-    hp = settings['hyperparameters']['jax_continuous_params']
+    hp = settings['hyperparameters']['jax_linear']['bivariate_gaussian']
     bin_size = hp['bin_resizing_factor']
 
     binned_data = {}
@@ -2442,12 +2441,12 @@ def continuous_vocal_manifold_model_selection(
     del raw_data
     gc.collect()
 
-    model_ops = settings['model_selection']
-    n_splits = model_ops['num_splits']
+    model_ops = settings['model_params']
+    n_splits = model_ops['split_num']
     test_prop = model_ops['test_proportion']
-    n_clusters = model_ops['n_spatial_clusters']
+    n_clusters = model_ops['spatial_cluster_num']
     split_strategy = model_ops['split_strategy']
-    random_seed = settings['random_seed']
+    random_seed = settings['model_params']['random_seed']
 
     print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Split Strategy: Spatial Proxy ({split_strategy.upper()})")
 
@@ -2872,7 +2871,7 @@ def coarse_binary_model_selection(
 
     try:
         with open(settings_path, 'r') as f:
-            settings = json.load(f)['modeling_settings']
+            settings = json.load(f)
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
@@ -2919,9 +2918,9 @@ def coarse_binary_model_selection(
     print(f"Significant candidates: {len(ranked_features)}. Top: {ranked_features[0]}")
 
     # 3. Data Preparation and Binary Mapping
-    hp = settings['hyperparameters']['jax_multinomial_params']
+    hp = settings['hyperparameters']['jax_linear']['multinomial_logistic']
     voc_settings = settings['vocal_features']
-    complex_cats = voc_settings['all_complex_categories']
+    complex_cats = voc_settings['usv_complex_categories']
     bin_size = hp['bin_resizing_factor']
 
     print("\n--- Initializing Pipeline to load identically scaled data ---")
@@ -2962,11 +2961,11 @@ def coarse_binary_model_selection(
     gc.collect()
 
     # 4. Cross-Validation Split Strategy (Restored session/mixed logic)
-    model_ops = settings['model_selection']
+    model_ops = settings['model_params']
     split_strategy = model_ops['split_strategy']
-    n_splits = model_ops['num_splits']
-    test_prop = model_ops.get('test_proportion', 0.2)
-    random_seed = settings['random_seed']
+    n_splits = model_ops['split_num']
+    test_prop = model_ops['test_proportion']
+    random_seed = settings['model_params']['random_seed']
 
     if split_strategy == 'session':
         cv_folds = get_stratified_group_splits_stable(
