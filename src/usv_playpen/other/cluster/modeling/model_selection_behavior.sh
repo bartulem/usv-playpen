@@ -15,6 +15,9 @@
 # For Continuous (JAX) selection:  --mem=256G --gres=gpu:1
 # For Binary Coarse (JAX) selection: --mem=64G --gres=gpu:1
 
+# NOTE: Replace 'nsurname' below with your cluster username before submitting.
+USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
+
 ANALYSIS_TYPE=$1  # Target: onset, params, category, multinomial, continuous, or binary_coarse
 
 # Define core variables
@@ -50,9 +53,8 @@ esac
 mkdir -p "$OUTPUT_DIR"
 
 # Environment
-module load anacondapy/2024.02
-module load cudatoolkit/12.9
-conda activate modeling_env
+source ${USV_PLAYPEN_PATH}.venv/bin/activate
+(cd ${USV_PLAYPEN_PATH} && uv sync)
 
 # JAX optimization
 export PYTHONUNBUFFERED=1

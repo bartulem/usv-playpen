@@ -16,6 +16,9 @@
 # For univariate multinomial (JAX), use: --time=02:00:00 --mem=32G --cpus-per-task=1 --gpus:1
 # For univariate continuous (JAX), recommended: --time=04:00:00 --mem=32G --gpus:1
 
+# NOTE: Replace 'nsurname' below with your cluster username before submitting.
+USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
+
 ANALYSIS_TYPE=$1  # onset, params, category, multinomial, continuous, or binary_coarse
 
 # Define your core variables
@@ -41,9 +44,8 @@ esac
 mkdir -p "$OUTPUT_DIR"
 
 # Environment
-module load anacondapy/2024.02
-module load cudatoolkit/12.9
-conda activate modeling_env
+source ${USV_PLAYPEN_PATH}.venv/bin/activate
+(cd ${USV_PLAYPEN_PATH} && uv sync)
 
 export PYTHONUNBUFFERED=1
 
