@@ -74,18 +74,43 @@ activate-pni
 uv sync
 ```
 
-Navigate to the cloned repository and use the following command to check for and
-install updates:
+### Updating to a specific version
 
-```bash
-git pull && uv sync
+Navigate to the cloned repository. To see which version you currently have:
+
+```
+git describe --tags
+```
+
+To see all available versions:
+
+```
+git fetch --tags
+git tag --sort=-version:refname
+```
+
+To update to a specific version (works identically on Linux, macOS, and
+Windows):
+
+```
+git fetch --tags
+git checkout v0.9.5
+uv sync --reinstall-package usv-playpen
 ```
 
 Or, if you have a GPU:
 
-```bash
-git pull && uv sync --extra gpu
 ```
+git fetch --tags
+git checkout v0.9.5
+uv sync --reinstall-package usv-playpen --extra gpu
+```
+
+Replace `v0.9.5` with whichever version you want. The
+`--reinstall-package usv-playpen` flag is required to force uv to recompute the
+package version from the new git tag; without it the GUI may display a stale
+version number. All machines should be set to the same tag to guarantee
+identical behaviour.
 
 ## Usage
 

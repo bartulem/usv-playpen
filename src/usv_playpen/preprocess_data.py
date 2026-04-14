@@ -694,7 +694,6 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 
 @click.command(name="sleap-to-h5")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--venv-path', 'sleap_venv_path', type=str, default=None, required=False, help='SLEAP UV VENV path.')
 @click.pass_context
 def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
     """

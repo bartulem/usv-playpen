@@ -142,6 +142,7 @@ def write_to_h5(
     node_names: np.ndarray,
     locations: np.ndarray,
     length_idx: np.ndarray,
+    animal_ids: np.ndarray | None = None,
     extra_metadata: dict | None = None,
 ) -> None:
     """
@@ -162,6 +163,10 @@ def write_to_h5(
         Track locations at USV onsets.
     length_idx (np.ndarray)
         Array of USV durations.
+    animal_ids (np.ndarray)
+        1-D array of integer animal IDs (e.g. [0, 1]). When provided, a
+        dataset of shape (num_calls, num_animals) is written under the key
+        'animal_id', tiling the IDs across all calls.
     extra_metadata (dict)
         Additional metadata to be stored in the HDF5 file.
     ----------
@@ -181,6 +186,9 @@ def write_to_h5(
         f.create_dataset(name="node_names", data=node_names)
         f.create_dataset(name="locations", data=locations)
         f.create_dataset(name="length_idx", data=length_idx)
+        if animal_ids is not None:
+            num_calls = locations.shape[0]
+            f.create_dataset(name="animal_id", data=np.tile(animal_ids, (num_calls, 1)))
 
 
 def eval_pdf_with_angle(

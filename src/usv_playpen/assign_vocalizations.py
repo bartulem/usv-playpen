@@ -125,11 +125,15 @@ class Vocalocator:
                 "video_fps": video_frame_rate,
                 "arena_dims": arena_dimensions}
 
+            num_animals = tracks.shape[1]
+            animal_ids = np.arange(num_animals, dtype=np.int32)
+
             write_to_h5(output_path=output_path_file,
                         audio=audio,
                         node_names=node_names,
                         locations=track_locations_at_usv_onsets,
                         length_idx=length_idx,
+                        animal_ids=animal_ids,
                         extra_metadata=extra_metadata)
 
     def run_vocalocator(self) -> None:

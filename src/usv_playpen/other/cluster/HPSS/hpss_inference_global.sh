@@ -13,11 +13,7 @@ MEMORY_PER_CPU="40G"
 TIME_RESTRICTION="02:02:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="NONE"
-CONDA_NAME="anacondapy"
-CONDA_DATE="2024.02"
-CONDA_NAME_UPPERCASE="${CONDA_NAME^^}"
-CONDA_VERSION="$CONDA_NAME/$CONDA_DATE"
-HPSS_ENV="hpss"
+USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
@@ -39,12 +35,14 @@ echo "#SBATCH --mail-user=$EMAIL_ADDRESS" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "echo \"Working on harmonic=percussive source separation in \$1, channel \$3.\"" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "module load $CONDA_VERSION" >> "$JOB_SCRIPT"
-echo "source /mnt/cup/PNI-facilities/Computing/sw/pkg/Rhel9/$CONDA_NAME_UPPERCASE/$CONDA_DATE/etc/profile.d/conda.sh" >> "$JOB_SCRIPT"
-echo "conda activate $HPSS_ENV" >> "$JOB_SCRIPT"
+echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
+echo "(cd $USV_PLAYPEN_PATH && uv sync)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "export NUMBA_DISABLE_JIT=1" >> "$JOB_SCRIPT"
+echo "mkdir -p \"/mnt/cup/labs/\$2/\$1/audio/hpss\"" >> "$JOB_SCRIPT"
+echo "" >> "$JOB_SCRIPT"
+echo "export NUMBA_CACHE_DIR=/tmp/numba_cache_\$SLURM_JOB_ID" >> "$JOB_SCRIPT"
 echo "python $WORK_DIR/hpss.py \"\$1\" \"\$2\" \"\$3\"" >> "$JOB_SCRIPT"
+echo "rm -rf /tmp/numba_cache_\$SLURM_JOB_ID" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB ARRAY ---------------- #

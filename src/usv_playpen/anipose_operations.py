@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import pathlib
 import platform
 import subprocess
@@ -371,24 +370,25 @@ class ConvertTo3D:
             if cam_directory.is_dir():
                 for one_file in cam_directory.iterdir():
                     if one_file.name.endswith(".slp"):
-                        if self.app_context_bool:
-                            if platform.system() == "Darwin":
-                                sleap_convert_command = f'''uvx --from "sleap[nn]" sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}'''
-                            else:
-                                sleap_convert_command = f'''uvx --from "sleap[nn]" --index https://download.pytorch.org/whl/cpu --index https://pypi.org/simple sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
+                        if platform.system() == "Darwin":
+                            sleap_convert_command = ['uvx', '--from', 'sleap[nn]', 'sleap-convert',
+                                                     '--format', 'analysis',
+                                                     '-o', f'{one_file.stem}analysis.h5',
+                                                     one_file.name]
                         else:
-                            sleap_venv_path = self.input_parameter_dict["sleap_venv_path"]
-                            if os.name == "nt":
-                                sleap_convert_command = f'''{sleap_venv_path} && sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
-                            else:
-                                sleap_convert_command = f'''source {sleap_venv_path} && sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
+                            sleap_convert_command = ['uvx', '--from', 'sleap[nn]',
+                                                     '--index', 'https://download.pytorch.org/whl/cpu',
+                                                     '--index', 'https://pypi.org/simple',
+                                                     'sleap-convert', '--format', 'analysis',
+                                                     '-o', f'{one_file.stem}analysis.h5',
+                                                     one_file.name]
 
                         conversion_subp = subprocess.Popen(
                             args=sleap_convert_command,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT,
                             cwd=cam_directory,
-                            shell=True,
+                            shell=False,
                         )
                         conversion_subprocesses.append(conversion_subp)
 
