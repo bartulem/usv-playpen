@@ -59,7 +59,8 @@ dependencies = [
     "motifapi",
     "ffmpeg-binaries>=1.0.1",
     "static-sox>=1.0.2",
-    "paramiko>=4.0.0"
+    "paramiko>=4.0.0",
+    "pillow>=12.2.0"
 ]
 
 [project.optional-dependencies]
@@ -73,7 +74,7 @@ Changelog = "https://github.com/bartulem/usv_playpen/releases"
 
 [dependency-groups]
 test = [
-  "pytest >=6",
+  "pytest >=9.0.3",
   "pytest-cov >=3",
   "pytest-mock",
   "pytest-qt",
