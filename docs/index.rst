@@ -24,7 +24,6 @@ the tool correctly. Should you have any questions, please do not hesitate to ope
    :maxdepth: 1
    :caption: User Guide
 
-   README <README.md>
    Requirements
    Record
    Process
