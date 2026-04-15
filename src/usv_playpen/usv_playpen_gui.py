@@ -1320,12 +1320,12 @@ class USVPlaypenWindow(QMainWindow):
         self.credentials_save_dir_edit = QLineEdit(f"{platformdirs.user_config_dir(appname='usv_playpen', appauthor='lab')}", self.Credentials)
         self.credentials_save_dir_edit.setPlaceholderText('Save credentials directory')
         self.credentials_save_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.credentials_save_dir_edit.setStyleSheet('QLineEdit { width: 235px; }')
-        self.credentials_save_dir_edit.move(115, 40)
+        self.credentials_save_dir_edit.setStyleSheet('QLineEdit { width: 225px; }')
+        self.credentials_save_dir_edit.move(120, 42)
         credentials_save_dir_btn = QPushButton('Browse', self.Credentials)
         credentials_save_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        credentials_save_dir_btn.move(355, 40)
-        credentials_save_dir_btn.setStyleSheet('QPushButton { min-width: 36px; min-height: 12px; max-width: 36px; max-height: 13px; }')
+        credentials_save_dir_btn.move(350, 40)
+        credentials_save_dir_btn.setStyleSheet('QPushButton { min-width: 40px; min-height: 13px; max-width: 40px; max-height: 13px; }')
         credentials_save_dir_dialog = partial(self._open_directory_dialog, self.credentials_save_dir_edit, 'Select credentials directory')
         credentials_save_dir_btn.clicked.connect(credentials_save_dir_dialog)
 
@@ -1340,8 +1340,8 @@ class USVPlaypenWindow(QMainWindow):
         email_host_label.move(5, 95)
         self.email_host = QLineEdit("smtp.gmail.com", self.Credentials)
         self.email_host.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_host.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_host.move(80, 95)
+        self.email_host.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_host.move(95, 95)
 
         email_port_label = QLabel('[port num]:', self.Credentials)
         email_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1349,8 +1349,8 @@ class USVPlaypenWindow(QMainWindow):
         email_port_label.move(5, 120)
         self.email_port = QLineEdit("465", self.Credentials)
         self.email_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_port.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_port.move(80, 120)
+        self.email_port.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_port.move(95, 120)
 
         email_address_label = QLabel('[address]:', self.Credentials)
         email_address_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1358,8 +1358,8 @@ class USVPlaypenWindow(QMainWindow):
         email_address_label.move(5, 145)
         self.email_address = QLineEdit("165b.pni@gmail.com", self.Credentials)
         self.email_address.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_address.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_address.move(80, 145)
+        self.email_address.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_address.move(95, 145)
 
         email_password_label = QLabel('[password]:', self.Credentials)
         email_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1367,8 +1367,8 @@ class USVPlaypenWindow(QMainWindow):
         email_password_label.move(5, 170)
         self.email_password = QLineEdit("XXX", self.Credentials)
         self.email_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_password.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_password.move(80, 170)
+        self.email_password.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_password.move(95, 170)
 
         credentials_label = QLabel('UNIVERSITY credentials', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1381,8 +1381,8 @@ class USVPlaypenWindow(QMainWindow):
         university_username_label.move(5, 225)
         self.university_username = QLineEdit("nsurname", self.Credentials)
         self.university_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.university_username.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.university_username.move(80, 225)
+        self.university_username.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.university_username.move(95, 225)
 
         university_password_label = QLabel('[password]:', self.Credentials)
         university_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1390,8 +1390,8 @@ class USVPlaypenWindow(QMainWindow):
         university_password_label.move(5, 250)
         self.university_password = QLineEdit("XXX", self.Credentials)
         self.university_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.university_password.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.university_password.move(80, 250)
+        self.university_password.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.university_password.move(95, 250)
 
         credentials_label = QLabel('MOTIF credentials', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1404,8 +1404,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_master_ip_label.move(5, 305)
         self.motif_master_ip = QLineEdit("10.241.1.205", self.Credentials)
         self.motif_master_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_master_ip.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_master_ip.move(80, 305)
+        self.motif_master_ip.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_master_ip.move(95, 305)
 
         motif_second_ip_label = QLabel('[second ip]:', self.Credentials)
         motif_second_ip_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1413,8 +1413,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_second_ip_label.move(5, 330)
         self.motif_second_ip = QLineEdit("10.241.1.183", self.Credentials)
         self.motif_second_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_second_ip.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_second_ip.move(80, 330)
+        self.motif_second_ip.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_second_ip.move(95, 330)
 
         motif_ssh_port_label = QLabel('[ssh port]:', self.Credentials)
         motif_ssh_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1422,8 +1422,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_ssh_port_label.move(5, 355)
         self.motif_ssh_port = QLineEdit("22", self.Credentials)
         self.motif_ssh_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_ssh_port.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_ssh_port.move(80, 355)
+        self.motif_ssh_port.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_ssh_port.move(95, 355)
 
         motif_username_label = QLabel('[username]:', self.Credentials)
         motif_username_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1431,8 +1431,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_username_label.move(5, 380)
         self.motif_username = QLineEdit("labadmin", self.Credentials)
         self.motif_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_username.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_username.move(80, 380)
+        self.motif_username.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_username.move(95, 380)
 
         motif_password_label = QLabel('[password]:', self.Credentials)
         motif_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1440,8 +1440,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_password_label.move(5, 405)
         self.motif_password = QLineEdit("XXX", self.Credentials)
         self.motif_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_password.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_password.move(80, 405)
+        self.motif_password.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_password.move(95, 405)
 
         motif_api_label = QLabel('[api key]:', self.Credentials)
         motif_api_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1449,8 +1449,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_api_label.move(5, 430)
         self.motif_api = QLineEdit("XXX", self.Credentials)
         self.motif_api.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_api.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_api.move(80, 430)
+        self.motif_api.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_api.move(95, 430)
 
         self._create_buttons_credentials(class_option=self.Credentials,
                                          button_pos_y=465,
@@ -2811,7 +2811,7 @@ class USVPlaypenWindow(QMainWindow):
         self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
         self.delete_con_file_cb.move(column_two_x2, 190)
 
-        sleap_cluster_cb_label = QLabel('Prepare SLEAP cluster job:', self.ProcessSettings)
+        sleap_cluster_cb_label = QLabel('Make SLEAP job list:', self.ProcessSettings)
         sleap_cluster_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         sleap_cluster_cb_label.setStyleSheet(self.orange_label_style)
         sleap_cluster_cb_label.move(column_two_x1, 220)
@@ -5761,10 +5761,6 @@ class USVPlaypenWindow(QMainWindow):
         # Windows/Linux path normalization
         if isinstance(text, str):
             text = str(Path(text))
-
-        # If 'text' came in via *args (because partial didn't capture it)
-        if text is None and args:
-            text = args[0]
 
         # navigate to the second-to-last dictionary
         current_level = base_dict

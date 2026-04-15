@@ -373,14 +373,14 @@ class ConvertTo3D:
                         if platform.system() == "Darwin":
                             sleap_convert_command = ['uvx', '--from', 'sleap[nn]', 'sleap-convert',
                                                      '--format', 'analysis',
-                                                     '-o', f'{one_file.stem}analysis.h5',
+                                                     '-o', f'{one_file.stem}.analysis.h5',
                                                      one_file.name]
                         else:
                             sleap_convert_command = ['uvx', '--from', 'sleap[nn]',
                                                      '--index', 'https://download.pytorch.org/whl/cpu',
                                                      '--index', 'https://pypi.org/simple',
                                                      'sleap-convert', '--format', 'analysis',
-                                                     '-o', f'{one_file.stem}analysis.h5',
+                                                     '-o', f'{one_file.stem}.analysis.h5',
                                                      one_file.name]
 
                         conversion_subp = subprocess.Popen(
