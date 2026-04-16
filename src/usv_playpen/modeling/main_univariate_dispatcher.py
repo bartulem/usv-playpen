@@ -45,7 +45,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from datetime import datetime
 
-from .modeling_vocal_onsets import GeneralizedLinearModelPipeline
+from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories import VocalCategoryModelingPipeline
 from .modeling_vocal_bout_parameters import BoutParameterPipeline
 from .modeling_vocal_categories_multinomial import MultinomialModelingPipeline, MultinomialModelRunner
@@ -65,7 +65,7 @@ def get_basis_matrix_standardized(
     This function centralizes the dimensionality reduction logic for sklearn-based
     linear models. It projects the raw behavioral history into a lower-dimensional
     basis set (e.g., Raised Cosines or B-Splines) to ensure temporal smoothness
-    and reduce the parameter count of the GLM.
+    and reduce the parameter count of the model.
 
     The function includes a file-locking mechanism to ensure that in a SLURM
     array of 200+ jobs, only the first job generates the visual verification
@@ -157,7 +157,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
     This function acts as the execution router. It maps the SLURM_ARRAY_TASK_ID
     to a specific behavioral feature and then selects the appropriate
-    modeling pipeline (GLM, Multinomial JAX, or Continuous JAX) based on
+    modeling pipeline (Onset, Multinomial JAX, or Continuous JAX) based on
     the provided analysis_type.
 
     It enforces strict memory cleanup between the indexing phase and the
@@ -224,13 +224,13 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
             if args.analysis_type == 'onset':
 
-                pipeline = GeneralizedLinearModelPipeline(modeling_settings_dict=settings)
+                pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 
                 if settings['model_params']['model_engine'] == 'sklearn':
-                    fn, res = pipeline._run_glm_for_feature_sklearn(feature_name, feat_data, basis)
+                    fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis)
                 else:
-                    fn, res = pipeline._run_glm_for_feature_pygam(feature_name, feat_data, None)
+                    fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None)
 
             elif args.analysis_type == 'category':
 
@@ -244,9 +244,9 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 
                 if settings['model_params']['model_engine'] == 'sklearn':
-                    fn, res = pipeline._run_glm_for_feature_sklearn(feature_name, feat_data, basis)
+                    fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis)
                 else:
-                    fn, res = pipeline._run_glm_for_feature_pygam(feature_name, feat_data, None)
+                    fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None)
 
             results = {fn: res}
 

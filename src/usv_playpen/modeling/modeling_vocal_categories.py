@@ -234,7 +234,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         if is_subject:
                             if sig_key == f"usv_cat_{target_category}":
                                 continue
-                            if any(k in sig_key for k in ['proportion', 'event']):
+                            if sig_key in ('usv_rate', 'usv_event'):
                                 continue
 
                         col_name = f"{m_name}.{sig_key}"
@@ -309,8 +309,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             t_name = mouse_names_dict[sess_id][targ_idx]
             p_name = mouse_names_dict[sess_id][pred_idx]
             try:
-                target_times = usv_data_dict[sess_id][t_name]['glm_target']
-                other_times = usv_data_dict[sess_id][t_name]['glm_other']
+                target_times = usv_data_dict[sess_id][t_name]['target_events']
+                other_times = usv_data_dict[sess_id][t_name]['other_events']
             except KeyError:
                 continue
 

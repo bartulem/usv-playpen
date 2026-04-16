@@ -272,13 +272,13 @@ class MultinomialModelingPipeline(FeatureZoo):
             if sess_id not in usv_data_dict or targ_name not in usv_data_dict[sess_id]:
                 continue
 
-            glm_events_dict = usv_data_dict[sess_id][targ_name]['glm_events']
+            events_by_category_dict = usv_data_dict[sess_id][targ_name]['events_by_category']
 
             fps = cam_fps_dict[sess_id]
             max_frame_idx = beh_data_dict[sess_id].height - 1
 
             temp_events = []
-            for cat_id, start_times in glm_events_dict.items():
+            for cat_id, start_times in events_by_category_dict.items():
                 frame_indices = np.round(start_times * fps).astype(int)
 
                 for f_idx in frame_indices:
@@ -354,7 +354,7 @@ class MultinomialModelingPipeline(FeatureZoo):
 
                 for sig_key, sig_arr in vocal_signals.items():
                     if is_subject:
-                        if any(k in sig_key for k in ['proportion', 'event']):
+                        if sig_key in ('usv_rate', 'usv_event'):
                             continue
 
                     col_name = f"{m_name}.{sig_key}"

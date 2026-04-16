@@ -27,19 +27,19 @@ from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import configure_path
 
 
-class GeneralizedLinearModelPipeline(FeatureZoo):
+class VocalOnsetModelingPipeline(FeatureZoo):
 
     def __init__(self, modeling_settings_dict, **kwargs):
         """
-        Initializes the GeneralizedLinearModelPipeline class.
+        Initializes the VocalOnsetModelingPipeline class.
 
-        Loads GLM settings from a dictionary or JSON file and initializes
+        Loads modeling settings from a dictionary or JSON file and initializes
         the parent FeatureZoo class. Calculates and stores `history_frames`.
 
         Parameters
         ----------
         modeling_settings_dict : dict or None
-            Dictionary containing GLM settings. If None, settings are loaded
+            Dictionary containing modeling settings. If None, settings are loaded
             from '_parameter_settings/modeling_settings.json'.
         **kwargs : dict
             Additional keyword arguments to set as attributes.
@@ -49,21 +49,21 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as settings_json_file:
-                    self.modeling_settings_dict = json.load(settings_json_file)
+                    self.modeling_settings = json.load(settings_json_file)
 
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {settings_path}")
         else:
-            self.modeling_settings_dict = modeling_settings_dict
+            self.modeling_settings = modeling_settings_dict
 
-        json_bounds = self.modeling_settings_dict.get('feature_boundaries')
+        json_bounds = self.modeling_settings.get('feature_boundaries')
 
         if json_bounds:
             self.feature_boundaries = json_bounds
 
         try:
-            camera_rate = self.modeling_settings_dict['io']['camera_sampling_rate']
-            filter_history_sec = self.modeling_settings_dict['model_params']['filter_history']
+            camera_rate = self.modeling_settings['io']['camera_sampling_rate']
+            filter_history_sec = self.modeling_settings['model_params']['filter_history']
             self.history_frames = int(np.floor(camera_rate * filter_history_sec))
             print(f"History frames calculated: {self.history_frames} (for {filter_history_sec}s at {camera_rate}fps)")
         except KeyError as e:
@@ -76,7 +76,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
 
     def extract_and_save_modeling_input_data_(self) -> None:
         """
-        Extracts, processes, and saves behavioral and vocalization data PER SESSION for GLM analysis.
+        Extracts, processes, and saves behavioral and vocalization data PER SESSION for modeling analysis.
 
         This method orchestrates the data preparation pipeline for each session, specifically designed
         for classification tasks (USV vs. No-USV epochs). It incorporates advanced bout detection
@@ -87,7 +87,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
             - Uses `gmm_component_index` and `gmm_z_score` to calculate a dynamic IBI threshold per mouse.
             - Filters out specific noise categories (e.g., [0, 19]) via `noise_vocal_categories`.
             - Enforces `min_usv_per_bout` constraints.
-            - Returns positive (`glm_usv`) and negative (`glm_none`) event times.
+            - Returns positive (`positive_events`) and negative (`negative_events`) event times.
         2. Removes sessions where the target mouse has 0 valid bouts.
         3. Selects relevant behavioral features per session:
             - Keeps 'self' (target) and 'other' (predictor) egocentric features.
@@ -107,7 +107,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
             and organizes data into a nested dictionary: `Feature -> Session -> {usv_arr, no_usv_arr}`.
         8.  Serializes the final dictionary to a .pkl file for downstream modeling.
 
-        Settings are controlled via the `self.modeling_settings_dict` attribute.
+        Settings are controlled via the `self.modeling_settings` attribute.
 
         Outputs
         -------
@@ -118,24 +118,24 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
              'another_feature': {...}, ...}`
         """
 
-        if self.modeling_settings_dict['model_params']['random_seed'] is not None:
-            np.random.seed(self.modeling_settings_dict['model_params']['random_seed'])
-            print(f"Random seed set to: {self.modeling_settings_dict['model_params']['random_seed']}")
+        if self.modeling_settings['model_params']['random_seed'] is not None:
+            np.random.seed(self.modeling_settings['model_params']['random_seed'])
+            print(f"Random seed set to: {self.modeling_settings['model_params']['random_seed']}")
         else:
             np.random.seed(None)
             print("Random seed not set.")
 
-        txt_glm_sessions = []
+        txt_modeling_sessions = []
         try:
-            sessions_file = self.modeling_settings_dict['io']['session_list_file']
+            sessions_file = self.modeling_settings['io']['session_list_file']
             with open(configure_path(sessions_file)) as f:
                 for line in f:
                     line = line.strip()
                     if line:
-                        txt_glm_sessions.append(configure_path(line))
-            if not txt_glm_sessions:
+                        txt_modeling_sessions.append(configure_path(line))
+            if not txt_modeling_sessions:
                 raise ValueError("No valid session paths found.")
-            print(f"Loaded {len(txt_glm_sessions)} session paths.")
+            print(f"Loaded {len(txt_modeling_sessions)} session paths.")
         except FileNotFoundError:
             raise FileNotFoundError(f"Sessions list file not found: {sessions_file}")
         except Exception as e:
@@ -143,30 +143,30 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
 
         print("Loading behavioral feature data...")
         beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
-            behavior_file_paths=txt_glm_sessions,
-            csv_sep=self.modeling_settings_dict['io']['csv_separator']
+            behavior_file_paths=txt_modeling_sessions,
+            csv_sep=self.modeling_settings['io']['csv_separator']
         )
         print("Loading USV data and selecting epochs...")
 
         usv_data_dict = find_bout_epochs(
-            root_directories=txt_glm_sessions,
+            root_directories=txt_modeling_sessions,
             mouse_ids_dict=mouse_track_names_dict,
             camera_fps_dict=camera_fr_dict,
             features_dict=beh_feature_data_dict,
-            csv_sep=self.modeling_settings_dict['io']['csv_separator'],
-            gmm_component_index=self.modeling_settings_dict['model_params']['gmm_component_index'],
-            gmm_z_score=self.modeling_settings_dict['model_params']['gmm_z_score'],
-            gmm_params=self.modeling_settings_dict['gmm_params'],
-            noise_vocal_categories=self.modeling_settings_dict['vocal_features']['usv_noise_categories'],
-            proportion_smoothing_sd=self.modeling_settings_dict['vocal_features']['usv_predictor_smoothing_sd'],
-            vocal_output_type=self.modeling_settings_dict['vocal_features']['usv_predictor_type'],
-            filter_history=self.modeling_settings_dict['model_params']['filter_history'],
-            prediction_mode=self.modeling_settings_dict['model_params']['model_target_vocal_type'],
-            usv_bout_time=self.modeling_settings_dict['model_params']['usv_bout_time'],
-            min_usv_per_bout=self.modeling_settings_dict['model_params']['usv_per_bout_floor']
+            csv_sep=self.modeling_settings['io']['csv_separator'],
+            gmm_component_index=self.modeling_settings['model_params']['gmm_component_index'],
+            gmm_z_score=self.modeling_settings['model_params']['gmm_z_score'],
+            gmm_params=self.modeling_settings['gmm_params'],
+            noise_vocal_categories=self.modeling_settings['vocal_features']['usv_noise_categories'],
+            proportion_smoothing_sd=self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd'],
+            vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
+            filter_history=self.modeling_settings['model_params']['filter_history'],
+            prediction_mode=self.modeling_settings['model_params']['model_target_vocal_type'],
+            usv_bout_time=self.modeling_settings['model_params']['usv_bout_time'],
+            min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor']
         )
 
-        predictor_mouse_idx = self.modeling_settings_dict['model_params']['model_predictor_mouse_index']
+        predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         target_mouse_idx = abs(predictor_mouse_idx - 1)
 
         sessions_to_remove = []
@@ -179,7 +179,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
 
             # Check for valid bouts using
             if targ_name in usv_data_dict.get(session_id, {}):
-                bouts = usv_data_dict[session_id][targ_name].get('glm_usv', [])
+                bouts = usv_data_dict[session_id][targ_name].get('positive_events', [])
                 if len(bouts) == 0:
                     print(f"Skipping session {session_id}: 0 valid bouts found for {targ_name}.")
                     sessions_to_remove.append(session_id)
@@ -195,7 +195,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         processed_beh_feature_data_dict = {}
 
         for behavioral_session in list(beh_feature_data_dict.keys()):
-            predictor_mouse_idx = self.modeling_settings_dict['model_params']['model_predictor_mouse_index']
+            predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
             target_mouse_idx = abs(predictor_mouse_idx - 1)
             predictor_mouse_name = mouse_track_names_dict[behavioral_session][predictor_mouse_idx]  # 'other'
             target_mouse_name = mouse_track_names_dict[behavioral_session][target_mouse_idx]  # 'self'
@@ -203,7 +203,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
             columns_to_keep_session = []
             session_df_columns = beh_feature_data_dict[behavioral_session].columns
 
-            for base_feature in self.modeling_settings_dict['kinematic_features']['model_predictors']:
+            for base_feature in self.modeling_settings['kinematic_features']['model_predictors']:
                 session_cols = [col for col in session_df_columns if col.split('.')[-1] == base_feature]
                 for feature in session_cols:
                     is_self_ego = feature.startswith(f"{target_mouse_name}.")
@@ -227,13 +227,13 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                         columns_to_keep_session.append(feature)
                         if base_feature not in ('speed', 'acceleration'):
                             der_1st, der_2nd = f'{feature}_1st_der', f'{feature}_2nd_der'
-                            if self.modeling_settings_dict['kinematic_features']['include_1st_derivatives'] and der_1st in session_df_columns:
+                            if self.modeling_settings['kinematic_features']['include_1st_derivatives'] and der_1st in session_df_columns:
                                 columns_to_keep_session.append(der_1st)
-                            if self.modeling_settings_dict['kinematic_features']['include_2nd_derivatives'] and der_2nd in session_df_columns:
+                            if self.modeling_settings['kinematic_features']['include_2nd_derivatives'] and der_2nd in session_df_columns:
                                 columns_to_keep_session.append(der_2nd)
 
-            voc_out_type = self.modeling_settings_dict['vocal_features']['usv_predictor_type']
-            partner_only = self.modeling_settings_dict['vocal_features']['usv_predictor_partner_only']
+            voc_out_type = self.modeling_settings['vocal_features']['usv_predictor_type']
+            partner_only = self.modeling_settings['vocal_features']['usv_predictor_partner_only']
             new_voc_cols = []
 
             if voc_out_type:
@@ -249,9 +249,9 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                         vocal_signals = usv_data_dict[behavioral_session][m_name].get('continuous_vocal_signals', {})
 
                         for sig_key, sig_arr in vocal_signals.items():
-                            # SCIENTIFIC CONSTRAINT: Never include 'proportion' or 'event' for the self mouse
+                            # SCIENTIFIC CONSTRAINT: Never include 'usv_rate' or 'usv_event' for the self mouse
                             # as it creates trivial autocorrelation that masks behavioral effects.
-                            if is_target and any(k in sig_key for k in ['proportion', 'event', 'count']):
+                            if is_target and sig_key in ('usv_rate', 'usv_event'):
                                 continue
 
                             col_name = f"{m_name}.{sig_key}"
@@ -302,7 +302,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                     if expected_col not in existing_cols:
                         is_vocal = 'usv_' in pred_suffix
                         if is_vocal:
-                            if m_name == t_name and (partner_only or any(k in pred_suffix for k in ['proportion', 'event', 'count'])):
+                            if m_name == t_name and (partner_only or pred_suffix in ('usv_rate', 'usv_event')):
                                 continue
 
                         new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
@@ -319,7 +319,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         print("Z-scoring complete.")
 
         print("Extracting epochs per session and renaming features...")
-        glm_final_data_dict = {}
+        modeling_final_data_dict = {}
 
         for session_idx, beh_session_id in enumerate(tqdm(processed_beh_feature_data_dict.keys(), desc='Extracting Epochs')):
             session_df = processed_beh_feature_data_dict[beh_session_id]
@@ -327,8 +327,8 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
             target_mouse_name = mouse_track_names_dict[beh_session_id][target_mouse_idx]
 
             try:
-                usv_event_times = usv_data_dict[beh_session_id][target_mouse_name]['glm_usv']
-                no_usv_event_times = usv_data_dict[beh_session_id][target_mouse_name]['glm_none']
+                usv_event_times = usv_data_dict[beh_session_id][target_mouse_name]['positive_events']
+                no_usv_event_times = usv_data_dict[beh_session_id][target_mouse_name]['negative_events']
             except KeyError:
                 continue
 
@@ -348,9 +348,9 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                 else:
                     generic_key = base_feature
 
-                if generic_key not in glm_final_data_dict: glm_final_data_dict[generic_key] = {}
-                if beh_session_id not in glm_final_data_dict[generic_key]:
-                    glm_final_data_dict[generic_key][beh_session_id] = {}
+                if generic_key not in modeling_final_data_dict: modeling_final_data_dict[generic_key] = {}
+                if beh_session_id not in modeling_final_data_dict[generic_key]:
+                    modeling_final_data_dict[generic_key][beh_session_id] = {}
 
                 # Extract Epochs
                 usv_feature_arr = np.full((usv_event_times.size, history_frames), np.nan)
@@ -371,30 +371,30 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                 fill_arr(usv_event_times, usv_feature_arr)
                 fill_arr(no_usv_event_times, no_usv_feature_arr)
 
-                glm_final_data_dict[generic_key][beh_session_id]['usv_feature_arr'] = usv_feature_arr
-                glm_final_data_dict[generic_key][beh_session_id]['no_usv_feature_arr'] = no_usv_feature_arr
+                modeling_final_data_dict[generic_key][beh_session_id]['usv_feature_arr'] = usv_feature_arr
+                modeling_final_data_dict[generic_key][beh_session_id]['no_usv_feature_arr'] = no_usv_feature_arr
         print("Epoch extraction and renaming complete.")
 
-        if not glm_final_data_dict:
+        if not modeling_final_data_dict:
             print("Warning: Final data dictionary is empty.")
             return
 
-        final_covariate_names = sorted(list(glm_final_data_dict.keys()))
+        final_covariate_names = sorted(list(modeling_final_data_dict.keys()))
         total_covariates = len(final_covariate_names)
         first_feat = final_covariate_names[0]
-        all_sessions = sorted(list(glm_final_data_dict[first_feat].keys()))
+        all_sessions = sorted(list(modeling_final_data_dict[first_feat].keys()))
 
         alignment_passed = True
         mismatched_sessions = []
 
         for sess_id in all_sessions:
             # Reference counts for this specific session
-            ref_usv_n = glm_final_data_dict[first_feat][sess_id]['usv_feature_arr'].shape[0]
-            ref_none_n = glm_final_data_dict[first_feat][sess_id]['no_usv_feature_arr'].shape[0]
+            ref_usv_n = modeling_final_data_dict[first_feat][sess_id]['usv_feature_arr'].shape[0]
+            ref_none_n = modeling_final_data_dict[first_feat][sess_id]['no_usv_feature_arr'].shape[0]
 
             for feat in final_covariate_names[1:]:
-                feat_usv_n = glm_final_data_dict[feat][sess_id]['usv_feature_arr'].shape[0]
-                feat_none_n = glm_final_data_dict[feat][sess_id]['no_usv_feature_arr'].shape[0]
+                feat_usv_n = modeling_final_data_dict[feat][sess_id]['usv_feature_arr'].shape[0]
+                feat_none_n = modeling_final_data_dict[feat][sess_id]['no_usv_feature_arr'].shape[0]
 
                 if feat_usv_n != ref_usv_n or feat_none_n != ref_none_n:
                     alignment_passed = False
@@ -402,20 +402,20 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                     break
 
         grand_total_sessions = len(all_sessions)
-        grand_total_usv = sum(glm_final_data_dict[first_feat][s]['usv_feature_arr'].shape[0] for s in all_sessions)
-        grand_total_none = sum(glm_final_data_dict[first_feat][s]['no_usv_feature_arr'].shape[0] for s in all_sessions)
+        grand_total_usv = sum(modeling_final_data_dict[first_feat][s]['usv_feature_arr'].shape[0] for s in all_sessions)
+        grand_total_none = sum(modeling_final_data_dict[first_feat][s]['no_usv_feature_arr'].shape[0] for s in all_sessions)
 
         print("\n" + "=" * 105)
-        print(f"GLM MODELING INPUT: GLOBAL AGGREGATE SUMMARY")
+        print(f"MODELING INPUT: GLOBAL AGGREGATE SUMMARY")
         print("=" * 105)
         print(f"{'#':<4} {'Feature Name':<40} | {'Sess':<6} | {'USV Bouts':<12} | {'No-USV Bouts':<12} | {'Total N'}")
         print("-" * 105)
 
         for i, feat in enumerate(final_covariate_names, 1):
-            feat_usv_bouts = sum(glm_final_data_dict[feat][s]['usv_feature_arr'].shape[0] for s in glm_final_data_dict[feat])
-            feat_none_bouts = sum(glm_final_data_dict[feat][s]['no_usv_feature_arr'].shape[0] for s in glm_final_data_dict[feat])
+            feat_usv_bouts = sum(modeling_final_data_dict[feat][s]['usv_feature_arr'].shape[0] for s in modeling_final_data_dict[feat])
+            feat_none_bouts = sum(modeling_final_data_dict[feat][s]['no_usv_feature_arr'].shape[0] for s in modeling_final_data_dict[feat])
 
-            print(f"{i:3}. {feat:<40} | {len(glm_final_data_dict[feat]):<6} | {feat_usv_bouts:<12} | {feat_none_bouts:<12} | {feat_usv_bouts + feat_none_bouts:<8}")
+            print(f"{i:3}. {feat:<40} | {len(modeling_final_data_dict[feat]):<6} | {feat_usv_bouts:<12} | {feat_none_bouts:<12} | {feat_usv_bouts + feat_none_bouts:<8}")
 
         print("-" * 105)
         print(f"PROJECT-WIDE TOTAL TALLY:")
@@ -431,15 +431,15 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         print("=" * 105 + "\n")
 
         target_mouse_sex = 'male' if target_mouse_idx == 0 else 'female'
-        max_hist_sec = self.modeling_settings_dict['model_params']['filter_history']
-        file_name_ = f"modeling_{self.modeling_settings_dict['model_params']['model_target_vocal_type']}_gmm{self.modeling_settings_dict['model_params']['gmm_component_index']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(txt_glm_sessions)}sess_hist{max_hist_sec}s.pkl"
-        save_path = os.path.join(self.modeling_settings_dict['io']['save_directory'], file_name_)
+        max_hist_sec = self.modeling_settings['model_params']['filter_history']
+        file_name_ = f"modeling_{self.modeling_settings['model_params']['model_target_vocal_type']}_gmm{self.modeling_settings['model_params']['gmm_component_index']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(txt_modeling_sessions)}sess_hist{max_hist_sec}s.pkl"
+        save_path = os.path.join(self.modeling_settings['io']['save_directory'], file_name_)
 
         try:
-            os.makedirs(self.modeling_settings_dict['io']['save_directory'], exist_ok=True)
+            os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
             with open(save_path, 'wb') as f:
-                pickle.dump(glm_final_data_dict, f)
-            print(f"\n[+] Successfully saved PER-SESSION renamed GLM input data to:\n    {save_path}")
+                pickle.dump(modeling_final_data_dict, f)
+            print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}")
         except Exception as e:
             print(f"\n[!] Error saving final pickle file: {e}")
 
@@ -457,7 +457,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         ----------
         feature_data : dict
             The data dictionary for a *single feature* (e.g.,
-            `glm_feature_arr_dict['speed']`), where keys are session IDs.
+            `modeling_feature_arr_dict['speed']`), where keys are session IDs.
         session_list : list
             A list of session_id strings (e.g., ['20230119_172410', ...])
             to pool data from.
@@ -534,7 +534,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         """
         A generator that yields train/test splits based on the 'split_strategy'.
 
-        This function reads 'self.modeling_settings_dict' for 'split_strategy',
+        This function reads 'self.modeling_settings' for 'split_strategy',
         'num_splits', and 'test_proportion'. It then yields balanced and
         shuffled train/test sets according to the chosen strategy.
 
@@ -556,7 +556,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         ----------
         feature_data : dict
             The data dictionary for a *single feature* (e.g.,
-            `glm_feature_arr_dict['self.speed']`), where keys are session IDs and
+            `modeling_feature_arr_dict['self.speed']`), where keys are session IDs and
             values contain 'usv_feature_arr' and 'no_usv_feature_arr'.
         strategy_override : str, optional
             If provided, this strategy will be used instead of the one in settings.
@@ -567,13 +567,13 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
             A tuple of (X_train, y_train, X_test, y_test) for each split.
         """
 
-        split_strategy = self.modeling_settings_dict['model_params']['split_strategy']
+        split_strategy = self.modeling_settings['model_params']['split_strategy']
         if strategy_override:
             split_strategy = strategy_override
 
-        n_splits = self.modeling_settings_dict['model_params']['split_num']
-        test_proportion = self.modeling_settings_dict['model_params']['test_proportion']
-        random_state = self.modeling_settings_dict['model_params']['random_seed']
+        n_splits = self.modeling_settings['model_params']['split_num']
+        test_proportion = self.modeling_settings['model_params']['test_proportion']
+        random_state = self.modeling_settings['model_params']['random_seed']
 
         all_sessions = list(feature_data.keys())
         X_pos_all, X_neg_all = self._pool_data_from_sessions(feature_data, all_sessions)
@@ -759,7 +759,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         else:
             raise ValueError(f"Unknown split_strategy: {split_strategy}. Must be 'mixed', 'session', 'null_control', or 'session_null_control'.")
 
-    def _run_glm_for_feature_sklearn(self,
+    def _run_model_for_feature_sklearn(self,
                                      feature_name: str,
                                      feature_data: dict,
                                      basis_matrix: np.ndarray
@@ -767,7 +767,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         """
         Executes a univariate Logistic Regression analysis for a single behavioral or vocal feature.
 
-        This method serves as the core computational engine for the GLM pipeline. It processes
+        This method serves as the core computational engine for the modeling pipeline. It processes
         high-dimensional temporal history data by projecting it onto a reduced basis set to
         extract smooth kernels (filters). It supports parallel execution and implements
         rigorous statistical validation through balanced training and shuffled-label
@@ -812,7 +812,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
         """
 
         # Initialize results structure with 'actual' and 'shuffled' keys
-        n_splits = self.modeling_settings_dict['model_params']['split_num']
+        n_splits = self.modeling_settings['model_params']['split_num']
         n_bases = basis_matrix.shape[1]
         history_frames = basis_matrix.shape[0]
 
@@ -854,13 +854,13 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
 
             try:
                 lr_actual = LogisticRegressionCV(
-                    penalty=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['penalty'],
-                    Cs=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['cs'],
-                    cv=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['cv'],
+                    penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
+                    Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
+                    cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
                     class_weight='balanced',
-                    solver=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['solver'],
-                    max_iter=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['max_iter'],
-                    random_state=self.modeling_settings_dict['model_params']['random_seed']
+                    solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
+                    max_iter=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['max_iter'],
+                    random_state=self.modeling_settings['model_params']['random_seed']
                 ).fit(X_train_proj, y_train)
 
                 y_pred_actual = lr_actual.predict(X_test_proj)
@@ -882,21 +882,21 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                     results['actual']['ll'][split_idx] = log_loss(y_test, y_proba_actual_clipped)
 
             except Exception as e:
-                print(f"  ERROR during ACTUAL GLM fit/predict for {feature_name}, split {split_idx}: {e}")
+                print(f"  ERROR during ACTUAL model fit/predict for {feature_name}, split {split_idx}: {e}")
 
             try:
-                shuffle_seed = self.modeling_settings_dict['model_params']['random_seed']
+                shuffle_seed = self.modeling_settings['model_params']['random_seed']
                 if shuffle_seed is not None: np.random.seed(shuffle_seed + split_idx + 1)  # Offset seed
                 y_train_shuffled = np.random.permutation(y_train)
 
                 lr_shuffled = LogisticRegressionCV(
-                    penalty=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['penalty'],
-                    Cs=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['cs'],
-                    cv=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['cv'],
+                    penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
+                    Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
+                    cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
                     class_weight='balanced',
-                    solver=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['solver'],
-                    max_iter=self.modeling_settings_dict['hyperparameters']['classical']['logistic_regression']['max_iter'],
-                    random_state=self.modeling_settings_dict['model_params']['random_seed']
+                    solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
+                    max_iter=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['max_iter'],
+                    random_state=self.modeling_settings['model_params']['random_seed']
                 ).fit(X_train_proj, y_train_shuffled)
 
                 y_pred_shuffled = lr_shuffled.predict(X_test_proj)
@@ -918,7 +918,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
                     results['shuffled']['ll'][split_idx] = log_loss(y_test, y_proba_shuffled_clipped)
 
             except Exception as e:
-                print(f"  ERROR during SHUFFLED GLM fit/predict for {feature_name}, split {split_idx}: {e}")
+                print(f"  ERROR during SHUFFLED model fit/predict for {feature_name}, split {split_idx}: {e}")
 
         results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
         results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
@@ -934,7 +934,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
 
         return feature_name, results
 
-    def _run_glm_for_feature_pygam(self,
+    def _run_model_for_feature_pygam(self,
                                    feature_name: str,
                                    feature_data: dict,
                                    basis_matrix: np.ndarray  # NOT USED
@@ -978,7 +978,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
             keys, which in turn contain 'usv_feature_arr' and 'no_usv_feature_arr'.
         basis_matrix : np.ndarray
             This argument is **ignored** by the `pygam` method but is included
-            for API compatibility with the `run_glm_analysis_parallel` caller.
+            for API compatibility with the `run_model_analysis_parallel` caller.
 
         Returns
         -------
@@ -993,11 +993,11 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
 
         print(f"--- Running [pygam] analysis for feature: {feature_name} ---")
 
-        n_splits = self.modeling_settings_dict['model_params']['split_num']
-        history_frames = int(np.floor(self.modeling_settings_dict['io']['camera_sampling_rate'] * self.modeling_settings_dict['model_params']['filter_history']))
+        n_splits = self.modeling_settings['model_params']['split_num']
+        history_frames = int(np.floor(self.modeling_settings['io']['camera_sampling_rate'] * self.modeling_settings['model_params']['filter_history']))
 
         try:
-            pygam_params = self.modeling_settings_dict['hyperparameters']['classical']['pygam']
+            pygam_params = self.modeling_settings['hyperparameters']['classical']['pygam']
             n_splines_time = pygam_params['n_splines_time']
             n_splines_value = pygam_params['n_splines_value']
             lam_penalty = pygam_params['lam_penalty']
@@ -1053,7 +1053,7 @@ class GeneralizedLinearModelPipeline(FeatureZoo):
 
         actual_data_splitter = self.create_data_splits(feature_data, strategy_override=None)
 
-        current_strategy = self.modeling_settings_dict['model_params']['split_strategy']
+        current_strategy = self.modeling_settings['model_params']['split_strategy']
         null_strategy = 'session_null_control' if current_strategy == 'session' else 'null_control'
         shuffled_data_splitter = self.create_data_splits(feature_data, strategy_override=null_strategy)
 

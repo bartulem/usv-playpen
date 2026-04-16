@@ -443,7 +443,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
                 for sig_key, sig_arr in vocal_signals.items():
                     if is_subject:
-                        if any(k in sig_key for k in ['proportion', 'event']):
+                        if sig_key in ('usv_rate', 'usv_event'):
                             continue
 
                     col_name = f"{m_name}.{sig_key}"

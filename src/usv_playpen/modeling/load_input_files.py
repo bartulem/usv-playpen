@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Module for loading raw data and orchestrating the data preparation pipeline for GLM
+Module for loading raw data and orchestrating the data preparation pipeline for modeling
 and regression analysis.
 
 Key Capabilities:
@@ -266,9 +266,9 @@ def find_bout_epochs(root_directories: list = None,
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
         - 'binary_joined': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_proportion').
+        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_rate').
         - 'presence_categories': Individual smoothed density per category ('usv_cat_X').
-        - 'presence_all': Both 'usv_proportion' and individual 'usv_cat_X' signals.
+        - 'presence_all': Both 'usv_rate' and individual 'usv_cat_X' signals.
     noise_vocal_categories : list, optional
         List of USV categories to ignore (e.g., [0, 19] for noise/background).
 
@@ -276,7 +276,7 @@ def find_bout_epochs(root_directories: list = None,
     -------
     usv_data_dict : dict
         Nested dictionary: session - mouseID - data.
-        Includes unbalanced 'glm_usv' and 'glm_none' event time arrays.
+        Includes unbalanced 'positive_events' and 'negative_events' event time arrays.
     """
 
     # GMM parameters (modeling inter-USV interval distributions)
@@ -344,12 +344,12 @@ def find_bout_epochs(root_directories: list = None,
                                                      usv_data_dict[session_id][mouse_name]['stop'],
                                                      session_duration_frames, session_fps, smooth_sd=None)
 
-            usv_frame_proportion = _generate_vocal_trace(usv_data_dict[session_id][mouse_name]['start'],
+            usv_frame_rate = _generate_vocal_trace(usv_data_dict[session_id][mouse_name]['start'],
                                                          usv_data_dict[session_id][mouse_name]['stop'],
                                                          session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd)
 
             usv_data_dict[session_id][mouse_name]['usv_count'] = usv_frame_events
-            usv_data_dict[session_id][mouse_name]['usv_proportion'] = usv_frame_proportion
+            usv_data_dict[session_id][mouse_name]['usv_rate'] = usv_frame_rate
 
             # Generates continuous vocal signals based on specified output type
             if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_categories', 'presence_all']:
@@ -359,7 +359,7 @@ def find_bout_epochs(root_directories: list = None,
                     if vocal_output_type == 'binary_joined':
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_event'] = usv_frame_events
                     else:
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_proportion'] = usv_frame_proportion
+                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = usv_frame_rate
 
                 # B. Per-category logic
                 if vocal_output_type in ['presence_categories', 'presence_all'] and has_category and mouse_usvs_df.height > 0:
@@ -479,8 +479,8 @@ def find_bout_epochs(root_directories: list = None,
             else:
                 raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout', 'individual', or 'state'.")
 
-            usv_data_dict[session_id][mouse_name]['glm_usv'] = np.sort(usv_events_positive)
-            usv_data_dict[session_id][mouse_name]['glm_none'] = np.sort(usv_events_negative)
+            usv_data_dict[session_id][mouse_name]['positive_events'] = np.sort(usv_events_positive)
+            usv_data_dict[session_id][mouse_name]['negative_events'] = np.sort(usv_events_negative)
 
     return usv_data_dict
 
@@ -522,7 +522,7 @@ def find_usv_categories(root_directories: list = None,
         Separator used in the .csv file.
     target_category : int, optional
         The integer ID of the USV category to predict (Positive Class).
-        If None, the function runs in Multinomial mode and populates 'glm_events' with all categories.
+        If None, the function runs in Multinomial mode and populates 'events_by_category' with all categories.
     category_column : str, default 'usv_category'
         The name of the column in the CSV containing the category labels.
     filter_history : float, optional
@@ -530,9 +530,9 @@ def find_usv_categories(root_directories: list = None,
     vocal_output_type : str, optional, default=None
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
         - 'binary_joined': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_proportion').
+        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_rate').
         - 'presence_categories': Individual smoothed density per category ('usv_cat_X').
-        - 'presence_all': Both 'usv_proportion' and individual 'usv_cat_X' signals.
+        - 'presence_all': Both 'usv_rate' and individual 'usv_cat_X' signals.
     proportion_smoothing_sd : float, default 1.0
         Standard deviation for Gaussian smoothing (in frames).
     noise_vocal_categories : list, optional
@@ -543,9 +543,9 @@ def find_usv_categories(root_directories: list = None,
     dict
         Nested dictionary: session -> mouseID -> data.
         Keys:
-            'glm_events': Dict {cat_id: start_times_array} (Primary for Multinomial mode).
-            'glm_target': Start times of target category (Only if target_category is set).
-            'glm_other': Start times of all other USVs (Only if target_category is set).
+            'events_by_category': Dict {cat_id: start_times_array} (Primary for Multinomial mode).
+            'target_events': Start times of target category (Only if target_category is set).
+            'other_events': Start times of all other USVs (Only if target_category is set).
             'continuous_vocal_signals': Continuous arrays for X variables (smoothed/binary).
             'category_streams': Dict {cat_id: {'start': np.array, 'stop': np.array}} (Filtered).
             'continuous_onsets': np.array of start times for valid USVs (used for continuous models).
@@ -582,9 +582,9 @@ def find_usv_categories(root_directories: list = None,
             usv_data_dict[session_id][mouse_name] = {
                 'continuous_vocal_signals': {},
                 'category_streams': {},
-                'glm_events': {},
-                'glm_target': None,
-                'glm_other': None,
+                'events_by_category': {},
+                'target_events': None,
+                'other_events': None,
                 'continuous_onsets': None,
                 'continuous_targets': None
             }
@@ -607,8 +607,8 @@ def find_usv_categories(root_directories: list = None,
                 target_usvs = mouse_usvs.filter(pls.col(category_column) == target_category)
                 other_usvs = mouse_usvs.filter(pls.col(category_column) != target_category)
 
-                usv_data_dict[session_id][mouse_name]['glm_target'] = np.sort(target_usvs['start'].to_numpy())
-                usv_data_dict[session_id][mouse_name]['glm_other'] = np.sort(other_usvs['start'].to_numpy())
+                usv_data_dict[session_id][mouse_name]['target_events'] = np.sort(target_usvs['start'].to_numpy())
+                usv_data_dict[session_id][mouse_name]['other_events'] = np.sort(other_usvs['start'].to_numpy())
 
             # Get data for all categories separately
             unique_cats = mouse_usvs[category_column].unique().to_list()
@@ -620,7 +620,7 @@ def find_usv_categories(root_directories: list = None,
                     continue
 
                 cat_df = mouse_usvs.filter(pls.col(category_column) == cat_id)
-                usv_data_dict[session_id][mouse_name]['glm_events'][cat_int] = np.sort(cat_df['start'].to_numpy())
+                usv_data_dict[session_id][mouse_name]['events_by_category'][cat_int] = np.sort(cat_df['start'].to_numpy())
 
             # Extract continuous vocal signals based on specified output type
             if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_categories', 'presence_all']:
@@ -635,7 +635,7 @@ def find_usv_categories(root_directories: list = None,
                             starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=None
                         )
                     else:
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_proportion'] = _generate_vocal_trace(
+                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = _generate_vocal_trace(
                             starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
                         )
 
@@ -766,9 +766,9 @@ def find_variable_length_bouts(root_directories: list = None,
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated:
         - 'binary_joined': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_proportion').
+        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_rate').
         - 'presence_categories': Individual smoothed density per category ('usv_cat_X').
-        - 'presence_all': Both 'usv_proportion' and individual 'usv_cat_X' signals.
+        - 'presence_all': Both 'usv_rate' and individual 'usv_cat_X' signals.
     noise_vocal_categories : list, optional
         List of USV category integers to exclude (e.g., [0, 19]). Defaults to [0, 19] if None.
 
@@ -779,7 +779,7 @@ def find_variable_length_bouts(root_directories: list = None,
         Keys include:
             'bout_onsets': np.array of start times (seconds).
             'bout_durations': np.array of bout durations (seconds).
-            'continuous_vocal_signals': dict containing generated arrays (e.g., 'usv_proportion').
+            'continuous_vocal_signals': dict containing generated arrays (e.g., 'usv_rate').
     """
 
     # GMM parameters (for modeling inter-USV interval distributions)
@@ -864,7 +864,7 @@ def find_variable_length_bouts(root_directories: list = None,
                             starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=None
                         )
                     else:
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_proportion'] = _generate_vocal_trace(
+                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = _generate_vocal_trace(
                             starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
                         )
 

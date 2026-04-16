@@ -4,7 +4,7 @@ Module for modeling ofcContinuous USV bout parameters.
 
 This module provides a specialized pipeline for predicting continuous vocal
 features — specifically "bout duration" and "bout complexity" — using behavioral and
-vocal predictors. By inheriting from the GeneralizedLinearModelPipeline, it
+vocal predictors. By inheriting from the VocalOnsetModelingPipeline, it
 leverages standardized preprocessing and cross-session normalization while
 implementing specialized logic for regression on strictly positive, skewed data.
 
@@ -44,17 +44,17 @@ from sklearn.linear_model import RidgeCV
 from sklearn.metrics import mean_gamma_deviance, mean_squared_log_error
 from tqdm import tqdm
 
-from .modeling_vocal_onsets import GeneralizedLinearModelPipeline
+from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
 from .modeling_cross_session_normalization import zscore_different_sessions_together
 from ..os_utils import configure_path
 
 
-class BoutParameterPipeline(GeneralizedLinearModelPipeline):
+class BoutParameterPipeline(VocalOnsetModelingPipeline):
     """
     Pipeline for predicting continuous vocal bout parameters (Duration, Complexity).
 
-    This class inherits from GeneralizedLinearModelPipeline to reuse initialization,
+    This class inherits from VocalOnsetModelingPipeline to reuse initialization,
     settings management, and parallelization structures. It overrides specific methods
     to handle the Regression task (Continuous Y) instead of Classification (Binary Y).
 
@@ -74,7 +74,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         """
         Initialize the pipeline.
 
-        Passes the settings dictionary to the parent GeneralizedLinearModelPipeline,
+        Passes the settings dictionary to the parent VocalOnsetModelingPipeline,
         which handles loading defaults (if None), flattening the dictionary structure,
         and initializing the FeatureZoo attributes (like feature_boundaries).
 
@@ -103,8 +103,8 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         2. Scientific guardrail (self-predictor filtering):
            - When 'partner_only' is False, the script allows USV category/syntax traces from the
              subject (self) to be used as predictors.
-           - However, it strictly excludes density-based signals (e.g., 'proportion',
-             'count') for the subject mouse. This prevents the model from trivially predicting
+           - However, it strictly excludes density-based signals (e.g., 'usv_rate',
+             'usv_event') for the subject mouse. This prevents the model from trivially predicting
              bout duration based on the fact that the mouse is currently vocalizing.
         3. Generic renaming (self vs other):
            - Harmonizes egocentric (subject) and allocentric (partner) signals into a
@@ -123,59 +123,59 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
                the bout (representing total information content).
         """
 
-        if self.modeling_settings_dict['model_params']['random_seed'] is not None:
-            np.random.seed(self.modeling_settings_dict['model_params']['random_seed'])
+        if self.modeling_settings['model_params']['random_seed'] is not None:
+            np.random.seed(self.modeling_settings['model_params']['random_seed'])
         else:
             np.random.seed(None)
 
-        target_variable = self.modeling_settings_dict['model_params']['model_target_variable']
+        target_variable = self.modeling_settings['model_params']['model_target_variable']
         print(f"--- Extracting Data for Regression Target: {target_variable} ---")
 
-        txt_glm_sessions = []
+        txt_modeling_sessions = []
         try:
-            with open(configure_path(self.modeling_settings_dict['io']['session_list_file'])) as f:
+            with open(configure_path(self.modeling_settings['io']['session_list_file'])) as f:
                 for line in f:
                     line = line.strip()
                     if line:
-                        txt_glm_sessions.append(configure_path(line))
+                        txt_modeling_sessions.append(configure_path(line))
         except Exception as e:
             raise RuntimeError(f"Error reading session paths: {e}")
 
-        target_variable = self.modeling_settings_dict['model_params']['model_target_variable']
-        gmm_idx = self.modeling_settings_dict['model_params']['gmm_component_index']
-        gmm_z = self.modeling_settings_dict['model_params']['gmm_z_score']
-        min_usv = self.modeling_settings_dict['model_params']['usv_per_bout_floor']
+        target_variable = self.modeling_settings['model_params']['model_target_variable']
+        gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
+        gmm_z = self.modeling_settings['model_params']['gmm_z_score']
+        min_usv = self.modeling_settings['model_params']['usv_per_bout_floor']
 
-        voc_type = self.modeling_settings_dict['vocal_features']['usv_predictor_type']
-        partner_only = self.modeling_settings_dict['vocal_features']['usv_predictor_partner_only']
-        smooth_sd = self.modeling_settings_dict['vocal_features']['usv_predictor_smoothing_sd']
-        noise_cats = self.modeling_settings_dict['vocal_features']['usv_noise_categories']
+        voc_type = self.modeling_settings['vocal_features']['usv_predictor_type']
+        partner_only = self.modeling_settings['vocal_features']['usv_predictor_partner_only']
+        smooth_sd = self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd']
+        noise_cats = self.modeling_settings['vocal_features']['usv_noise_categories']
 
         print("Loading behavioral feature data...")
         beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
-            behavior_file_paths=txt_glm_sessions,
-            csv_sep=self.modeling_settings_dict['io']['csv_separator']
+            behavior_file_paths=txt_modeling_sessions,
+            csv_sep=self.modeling_settings['io']['csv_separator']
         )
 
         print(f"Identifying Bouts & Generating Vocal Signals (Type: {voc_type}, Partner Only: {partner_only})...")
         bout_data_dict = find_variable_length_bouts(
-            root_directories=txt_glm_sessions,
+            root_directories=txt_modeling_sessions,
             mouse_ids_dict=mouse_track_names_dict,
             camera_fps_dict=camera_fr_dict,
             features_dict=beh_feature_data_dict,
-            csv_sep=self.modeling_settings_dict['io']['csv_separator'],
+            csv_sep=self.modeling_settings['io']['csv_separator'],
             gmm_component_index=gmm_idx,
             gmm_z_score=gmm_z,
-            gmm_params=self.modeling_settings_dict['gmm_params'],
+            gmm_params=self.modeling_settings['gmm_params'],
             min_vocalizations=min_usv,
-            filter_history=self.modeling_settings_dict['model_params']['filter_history'],
+            filter_history=self.modeling_settings['model_params']['filter_history'],
             proportion_smoothing_sd=smooth_sd,
             vocal_output_type=voc_type,
             noise_vocal_categories=noise_cats
         )
 
         processed_beh_feature_data_dict = {}
-        predictor_mouse_idx = self.modeling_settings_dict['model_params']['model_predictor_mouse_index']
+        predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         target_mouse_idx = abs(predictor_mouse_idx - 1)
 
         for sess_id, session_df in beh_feature_data_dict.items():
@@ -186,7 +186,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
             session_df_cols = session_df.columns
             columns_to_keep_session = []
 
-            for base_feature in self.modeling_settings_dict['kinematic_features']['model_predictors']:
+            for base_feature in self.modeling_settings['kinematic_features']['model_predictors']:
                 session_cols = [col for col in session_df_cols if col.split('.')[-1] == base_feature]
                 for feature in session_cols:
                     is_self_ego = feature.startswith(f"{t_name}.")
@@ -211,9 +211,9 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
 
                         if base_feature not in ('speed', 'acceleration'):
                             der_1st, der_2nd = f'{feature}_1st_der', f'{feature}_2nd_der'
-                            if self.modeling_settings_dict['kinematic_features']['include_1st_derivatives'] and der_1st in session_df_cols:
+                            if self.modeling_settings['kinematic_features']['include_1st_derivatives'] and der_1st in session_df_cols:
                                 columns_to_keep_session.append(der_1st)
-                            if self.modeling_settings_dict['kinematic_features']['include_2nd_derivatives'] and der_2nd in session_df_cols:
+                            if self.modeling_settings['kinematic_features']['include_2nd_derivatives'] and der_2nd in session_df_cols:
                                 columns_to_keep_session.append(der_2nd)
 
             new_voc_cols = []
@@ -225,7 +225,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
                     # Strict lookup, no .get()
                     vocal_signals = bout_data_dict[sess_id][m_name]['continuous_vocal_signals']
                     for sig_key, sig_arr in vocal_signals.items():
-                        if is_target and any(k in sig_key for k in ['proportion', 'event']):
+                        if is_target and sig_key in ('usv_rate', 'usv_event'):
                             continue
                         col_name = f"{m_name}.{sig_key}"
                         new_voc_cols.append(pls.Series(col_name, sig_arr))
@@ -267,10 +267,10 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
 
                         is_vocal = 'usv_' in pred_suffix
                         if m_name == t_name:
-                            if is_vocal and any(k in pred_suffix for k in ['proportion', 'event']):
+                            if is_vocal and pred_suffix in ('usv_rate', 'usv_event'):
                                 continue
                         else:
-                            if 'mute' in self.modeling_settings_dict['io']['session_list_file'].split('/')[-1]:
+                            if 'mute' in self.modeling_settings['io']['session_list_file'].split('/')[-1]:
                                 if is_vocal:
                                     continue
 
@@ -372,7 +372,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
             is_zero = np.all(final_data_dict[feat]['X'] == 0)
             status = "ZERO-FILLED" if is_zero else "DATA-PRESENT"
 
-            guard = " [PROTECTED]" if "self" in feat and any(k in feat for k in ['proportion', 'event']) else ""
+            guard = " [PROTECTED]" if "self" in feat and any(k in feat for k in ('usv_rate', 'usv_event')) else ""
 
             print(f"{i:3}. {feat:<45} | {feat_n:<10} | {feat_sess:<10} | {status}{guard}")
 
@@ -386,13 +386,13 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
 
         if not alignment_passed:
             print(f"  [!] ALERT: Dimensional or Grouping mismatch in: {mismatched_features}")
-            print(f"      (This will cause the GLM to misalign behavioral predictors with USV targets!)")
+            print(f"      (This will cause the model to misalign behavioral predictors with USV targets!)")
         print("=" * 105 + "\n")
 
         t_sex = 'male' if target_mouse_idx == 0 else 'female'
-        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings_dict['model_params']['filter_history']}.pkl"
-        save_path = os.path.join(self.modeling_settings_dict['io']['save_directory'], fname)
-        os.makedirs(self.modeling_settings_dict['io']['save_directory'], exist_ok=True)
+        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings['model_params']['filter_history']}.pkl"
+        save_path = os.path.join(self.modeling_settings['io']['save_directory'], fname)
+        os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
         with open(save_path, 'wb') as f:
             pickle.dump(final_data_dict, f)
         print(f"[+] Saved: {save_path}")
@@ -434,12 +434,12 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         n_samples = len(y)
 
         # 1. Configuration
-        model_selection = self.modeling_settings_dict['model_params']
+        model_selection = self.modeling_settings['model_params']
         split_strategy = strategy_override or model_selection['split_strategy']
 
         num_iterations = model_selection['split_num']
         test_prop = model_selection['test_proportion']
-        base_seed = self.modeling_settings_dict['model_params']['random_seed']
+        base_seed = self.modeling_settings['model_params']['random_seed']
         if base_seed is None:
             base_seed = 42
 
@@ -491,7 +491,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         else:
             raise ValueError(f"Unknown split strategy: {split_strategy}")
 
-    def _run_glm_for_feature_pygam(self, feature_name, feature_data, basis_matrix):
+    def _run_model_for_feature_pygam(self, feature_name, feature_data, basis_matrix):
         """
         Runs a univariate GammaGAM regression and permutation test for a single feature.
 
@@ -561,7 +561,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         }
 
         # Strict dictionary lookups (No .get())
-        pygam_params = self.modeling_settings_dict['hyperparameters']['classical']['pygam']
+        pygam_params = self.modeling_settings['hyperparameters']['classical']['pygam']
         n_val = pygam_params['n_splines_value']
         n_time = pygam_params['n_splines_time']
         lam = pygam_params['lam_penalty']
@@ -705,7 +705,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
 
         return feature_name, results
 
-    def _run_glm_for_feature_sklearn(self, feature_name, feature_data, basis_matrix):
+    def _run_model_for_feature_sklearn(self, feature_name, feature_data, basis_matrix):
         """
         Runs a univariate RidgeCV regression on log-transformed bout parameters.
 
@@ -766,7 +766,7 @@ class BoutParameterPipeline(GeneralizedLinearModelPipeline):
         splitter = self.create_data_splits(feature_data)
 
         # Strict dictionary lookups
-        ridge_params = self.modeling_settings_dict['hyperparameters']['classical']['ridge_regression']
+        ridge_params = self.modeling_settings['hyperparameters']['classical']['ridge_regression']
         alphas = ridge_params['alphas']
         cv = ridge_params['cv']
 

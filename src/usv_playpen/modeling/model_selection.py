@@ -19,7 +19,7 @@ from sklearn.metrics import (log_loss, roc_auc_score, f1_score, precision_score,
                              mean_gamma_deviance, precision_recall_curve, auc)
 from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
-from .modeling_vocal_onsets import GeneralizedLinearModelPipeline
+from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import get_stratified_group_splits_stable, MultinomialModelingPipeline, MultinomialModelRunner
 from .modeling_usv_manifold_position import get_stratified_spatial_splits_stable
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
@@ -171,7 +171,7 @@ def bout_onset_model_selection(univariate_results_path: str,
         return
 
     all_feature_data = load_pickle_modeling_data(input_data_path)
-    pipeline = GeneralizedLinearModelPipeline(modeling_settings_dict=settings)
+    pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
     if not hasattr(pipeline, 'history_frames'):
         pipeline.history_frames = int(np.floor(settings['io']['camera_sampling_rate'] * settings['model_params']['filter_history']))
     history_frames = pipeline.history_frames

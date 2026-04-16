@@ -15,7 +15,7 @@ ANALYSIS_TYPE=$1
 # Define core variables
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 UNIVARIATE_PATH="/mnt/cup/labs/falkner/Name/modeling/univariate_results/univariate_multinomial_results.pkl"
-INPUT_DATA="/mnt/cup/labs/falkner/Name/modeling/data/glm_male_hist4s.pkl"
+INPUT_DATA="/mnt/cup/labs/falkner/Name/modeling/data/modeling_male_hist4s.pkl"
 SETTINGS_FILE="/mnt/cup/labs/falkner/Name/modeling/cluster/settings/modeling_settings.json"
 OUTPUT_DIR="/mnt/cup/labs/falkner/Name/modeling/model_selection_results"
 
