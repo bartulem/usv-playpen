@@ -10,21 +10,14 @@
 #SBATCH --mail-user=nsurname@domain.edu
 #SBATCH --mail-type=FAIL
 
-# For univariate onset modeling, use: --time=48:00:00 --mem-per-cpu=16G --cpus-per-task=1
-# For univariate params modeling, use: --time=96:00:00 --mem=32G --cpus-per-task=1
-# For univariate category (Binomial), use: --time=96:00:00 --mem=64G --cpus-per-task=1
-# For univariate multinomial (JAX), use: --time=02:00:00 --mem=32G --cpus-per-task=1 --gpus:1
-# For univariate continuous (JAX), recommended: --time=04:00:00 --mem=32G --gpus:1
-
-# NOTE: Replace 'nsurname' below with your cluster username before submitting.
-USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
-
-ANALYSIS_TYPE=$1  # onset, params, category, multinomial, continuous, or binary_coarse
+# Usage: sbatch univariate_modeling_behavior.sh (onset|params|category|multinomial|continuous|binary_coarse)
+ANALYSIS_TYPE=$1
 
 # Define your core variables
-INPUT_DATA="/mnt/cup/labs/falkner/Bartul/modeling/data/modeling_UMAP_manifold_position_female_20260226_150803_hist4s.pkl"
-SETTINGS_FILE="/mnt/cup/labs/falkner/Bartul/modeling/cluster/settings/modeling_settings.json"
-OUTPUT_DIR="/mnt/cup/labs/falkner/Bartul/modeling/univariate_results"
+USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
+INPUT_DATA="/mnt/cup/labs/falkner/Name/modeling/data/modeling_UMAP_manifold_position_female_20260226_150803_hist4s.pkl"
+SETTINGS_FILE="/mnt/cup/labs/falkner/Name/modeling/cluster/settings/modeling_settings.json"
+OUTPUT_DIR="/mnt/cup/labs/falkner/Name/modeling/univariate_results"
 
 mkdir -p logs
 
@@ -43,19 +36,19 @@ esac
 # Ensure output directory exists
 mkdir -p "$OUTPUT_DIR"
 
+set -e
+
 # Environment
 source ${USV_PLAYPEN_PATH}.venv/bin/activate
-(cd ${USV_PLAYPEN_PATH} && uv sync)
+(cd ${USV_PLAYPEN_PATH} && uv sync --extra gpu)
 
 export PYTHONUNBUFFERED=1
 
 # JAX specific optimization: prevent JAX from pre-allocating all GPU memory
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-set -e
-
 # Run the consolidated dispatcher
-python main_univariate_dispatcher.py \
+python -m usv_playpen.modeling.main_univariate_dispatcher \
     --analysis_type "$ANALYSIS_TYPE" \
     --feature_idx "$SLURM_ARRAY_TASK_ID" \
     --input_data "$INPUT_DATA" \

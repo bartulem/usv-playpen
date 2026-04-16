@@ -21,6 +21,7 @@ from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
 from .modeling_vocal_onsets import GeneralizedLinearModelPipeline
 from .modeling_vocal_categories_multinomial import get_stratified_group_splits_stable, MultinomialModelingPipeline, MultinomialModelRunner
+from .modeling_usv_manifold_position import get_stratified_spatial_splits_stable
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .jax_bivariate_gaussian_regression import SmoothBivariateGaussianRegression
 
@@ -2450,7 +2451,7 @@ def continuous_vocal_manifold_model_selection(
 
     print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Split Strategy: Spatial Proxy ({split_strategy.upper()})")
 
-    cv_folds = NeuralContinuousModelRunner.get_stratified_spatial_splits_stable(
+    cv_folds = get_stratified_spatial_splits_stable(
         groups=groups_global,
         Y=y_global,
         n_clusters=n_clusters,

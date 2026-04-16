@@ -59,7 +59,6 @@ from tqdm import tqdm
 from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
 
-from .jax_neural_network_usv_manifold_prediction import mlp_forward
 from ..visualizations.auxiliary_plot_functions import create_colormap
 
 

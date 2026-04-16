@@ -34,12 +34,13 @@ import pickle
 import re
 from datetime import datetime
 from scipy.stats import gaussian_kde, wilcoxon
-from typing import Any
+from sklearn.cluster import KMeans
+from sklearn.model_selection import StratifiedShuffleSplit
+from typing import Any, List, Tuple
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
 from .modeling_cross_session_normalization import zscore_different_sessions_together
-from .jax_neural_network_usv_manifold_prediction import NeuralContinuousModelRunner
 from .jax_bivariate_gaussian_regression import SmoothBivariateGaussianRegression
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import configure_path
@@ -83,6 +84,108 @@ def compute_inverse_density_weights(Y: np.ndarray,
     normalized_weights = clipped_weights / np.mean(clipped_weights)
 
     return normalized_weights
+
+
+def get_stratified_spatial_splits_stable(groups: np.ndarray,
+                                         Y: np.ndarray,
+                                         split_strategy: str = 'session',
+                                         n_clusters: int = 15,
+                                         test_prop: float = 0.2,
+                                         n_splits: int = 100,
+                                         tolerance: float = 0.05,
+                                         random_seed: int = 0) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Generates deterministic folds ensuring spatial geographic fairness across the UMAP manifold.
+
+    Uses K-Means to temporarily partition the continuous UMAP space into micro-neighborhoods
+    (proxy labels). Depending on the `split_strategy`, it then splits the dataset to ensure
+    the dense core and rare satellite clusters are proportionally represented in both train
+    and test sets.
+
+    Parameters
+    ----------
+    groups : np.ndarray
+        Array of session IDs. Used strictly when split_strategy='session'.
+    Y : np.ndarray
+        Array of shape (N, 2) containing continuous UMAP coordinates.
+    split_strategy : str, default 'session'
+        Determines the data leakage constraint:
+        - 'session': Strict cross-session prediction. Samples from the same session
+          are never split between train and test. (Uses tolerance-based search).
+        - 'mixed': Completely randomized frame-level splitting. Ignores session IDs
+          and perfectly stratifies based solely on geographic density.
+    n_clusters : int, default 15
+        Number of geographic micro-neighborhoods to define via K-Means.
+    test_prop : float, default 0.2
+        Proportion of the dataset (or sessions) to assign to the test set.
+    n_splits : int, default 100
+        Number of independent fold iterations to generate.
+    tolerance : float, default 0.05
+        (For 'session' strategy only). Initial allowable difference in spatial
+        distribution between the global data and the generated test splits.
+    random_seed : int, default 0
+        Fixed seed for absolute reproducibility.
+
+    Returns
+    -------
+    cv_folds : list of tuples
+        A list of length `n_splits`, where each tuple contains (train_indices, test_indices).
+    """
+    if split_strategy not in ['session', 'mixed']:
+        raise ValueError(f"Invalid split_strategy: '{split_strategy}'. Must be 'session' or 'mixed'.")
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_seed, n_init='auto')
+    proxy_labels = kmeans.fit_predict(Y)
+
+    if split_strategy == 'mixed':
+        sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
+        cv_folds = list(sss.split(np.zeros(len(Y)), proxy_labels))
+        return cv_folds
+
+    elif split_strategy == 'session':
+        unique_sessions = np.unique(groups)
+        n_test_sessions = int(len(unique_sessions) * test_prop)
+
+        _, global_counts = np.unique(proxy_labels, return_counts=True)
+        global_dist = global_counts / len(proxy_labels)
+
+        cv_folds = []
+        rng = np.random.RandomState(random_seed)
+
+        attempts = 0
+        current_tolerance = tolerance
+        max_total_attempts = 50000
+
+        while len(cv_folds) < n_splits:
+            attempts += 1
+            shuffled = rng.permutation(unique_sessions)
+            te_sess = shuffled[:n_test_sessions]
+            tr_sess = shuffled[n_test_sessions:]
+
+            tr_idx = np.where(np.isin(groups, tr_sess))[0]
+            te_idx = np.where(np.isin(groups, te_sess))[0]
+
+            tr_clusters = np.unique(proxy_labels[tr_idx])
+            te_clusters = np.unique(proxy_labels[te_idx])
+
+            if len(tr_clusters) == n_clusters and len(te_clusters) == n_clusters:
+                _, te_counts = np.unique(proxy_labels[te_idx], return_counts=True)
+                te_dist = te_counts / len(te_idx)
+                dist_error = np.max(np.abs(te_dist - global_dist))
+
+                if dist_error < current_tolerance:
+                    cv_folds.append((tr_idx, te_idx))
+
+            if attempts % 1000 == 0:
+                current_tolerance += 0.02
+
+            if attempts > max_total_attempts:
+                raise RuntimeError(
+                    f"Failed to find {n_splits} valid spatial splits after {attempts} attempts. "
+                    "Rare geographic clusters may be highly isolated in too few sessions."
+                )
+
+        return cv_folds
 
 
 class ContinuousModelingPipeline(FeatureZoo):
@@ -665,11 +768,11 @@ class ContinuousModelRunner:
         cv_settings = self.modeling_settings['model_params']
         n_clusters = cv_settings['spatial_cluster_num']
         test_prop = cv_settings['test_proportion']
-        n_splits = cv_settings['num_splits']
+        n_splits = cv_settings['split_num']
         split_strategy = cv_settings['split_strategy']
 
         print("Generating deterministic, spatially-stratified folds...")
-        folds = NeuralContinuousModelRunner.get_stratified_spatial_splits_stable(
+        folds = get_stratified_spatial_splits_stable(
             groups=groups,
             Y=Y,
             n_clusters=n_clusters,
@@ -823,39 +926,3 @@ class ContinuousModelRunner:
         print("=" * 90 + "\n")
 
         return results
-
-class DeepContinuousModelRunner:
-    """
-    Dedicated execution engine for the Dual-Stream MLP neural network.
-    Automatically handles reading modeling settings and initializing the pipeline.
-    """
-
-    def __init__(self, modeling_settings_dict: dict = None) -> None:
-        if modeling_settings_dict is None:
-            settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
-            try:
-                with open(settings_path, 'r') as f:
-                    self.modeling_settings = json.load(f)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
-        else:
-            self.modeling_settings = modeling_settings_dict
-
-    def run_neural_continuous_model(self, pkl_path: str) -> None:
-        """
-        Executes the deep learning pipeline for continuous USV manifold prediction.
-
-        This wrapper function initializes the configuration environment, loads the
-        extracted multivariate behavioral data, and triggers the Dual-Stream MLP
-        training, permutation feature importance, and spatial saliency extraction.
-
-        Parameters
-        ----------
-        pkl_path : str
-            Full absolute path to the .pkl file containing the extracted (X, Y, w)
-            dictionaries produced by ContinuousModelingPipeline.
-        """
-
-        runner = NeuralContinuousModelRunner(modeling_settings=self.modeling_settings)
-        data_blocks = runner.load_multivariate_data_blocks(pkl_path=pkl_path)
-        runner.run_mlp_training(data_blocks=data_blocks)

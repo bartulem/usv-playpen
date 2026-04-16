@@ -5,26 +5,19 @@
 #SBATCH --time=96:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=1
-#SBATCH --gres=gpu:1
+#SBATCH --gpus=1
 #SBATCH --mail-user=nsurname@domain.edu
 #SBATCH --mail-type=FAIL
 
-# Resource Guidelines:
-# For Binomial category selection: --mem=512G --cpus-per-task=8
-# For Multinomial (JAX) selection: --mem=64G --gres=gpu:1
-# For Continuous (JAX) selection:  --mem=256G --gres=gpu:1
-# For Binary Coarse (JAX) selection: --mem=64G --gres=gpu:1
-
-# NOTE: Replace 'nsurname' below with your cluster username before submitting.
-USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
-
-ANALYSIS_TYPE=$1  # Target: onset, params, category, multinomial, continuous, or binary_coarse
+# Usage: sbatch model_selection_behavior.sh (onset|params|category|multinomial|continuous|binary_coarse)
+ANALYSIS_TYPE=$1
 
 # Define core variables
-UNIVARIATE_PATH="/mnt/cup/labs/falkner/Bartul/modeling/univariate_results/univariate_multinomial_results.pkl"
-INPUT_DATA="/mnt/cup/labs/falkner/Bartul/modeling/data/glm_male_hist4s.pkl"
-SETTINGS_FILE="/mnt/cup/labs/falkner/Bartul/modeling/cluster/settings/modeling_settings.json"
-OUTPUT_DIR="/mnt/cup/labs/falkner/Bartul/modeling/model_selection_results"
+USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
+UNIVARIATE_PATH="/mnt/cup/labs/falkner/Name/modeling/univariate_results/univariate_multinomial_results.pkl"
+INPUT_DATA="/mnt/cup/labs/falkner/Name/modeling/data/glm_male_hist4s.pkl"
+SETTINGS_FILE="/mnt/cup/labs/falkner/Name/modeling/cluster/settings/modeling_settings.json"
+OUTPUT_DIR="/mnt/cup/labs/falkner/Name/modeling/model_selection_results"
 
 mkdir -p logs
 
@@ -52,18 +45,18 @@ esac
 
 mkdir -p "$OUTPUT_DIR"
 
+set -e
+
 # Environment
 source ${USV_PLAYPEN_PATH}.venv/bin/activate
-(cd ${USV_PLAYPEN_PATH} && uv sync)
+(cd ${USV_PLAYPEN_PATH} && uv sync --extra gpu)
 
 # JAX optimization
 export PYTHONUNBUFFERED=1
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-set -e
-
 # Execute the consolidated dispatcher
-python main_model_selection_dispatcher.py \
+python -m usv_playpen.modeling.main_model_selection_dispatcher \
     --analysis_type "$ANALYSIS_TYPE" \
     --univariate_path "$UNIVARIATE_PATH" \
     --input_path "$INPUT_DATA" \
