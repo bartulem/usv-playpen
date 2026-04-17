@@ -1,6 +1,6 @@
 {
   "io": {
-    "session_list_file": "/mnt/falkner/Bartul/modeling/input_files/courtship_behavioral_intact_partners_sessions_list.txt",
+    "session_list_file": "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt",
     "save_directory": "/mnt/falkner/Bartul/modeling",
     "csv_separator": ",",
     "camera_sampling_rate": 150
