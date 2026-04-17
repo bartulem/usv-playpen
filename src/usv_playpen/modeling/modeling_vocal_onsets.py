@@ -21,10 +21,18 @@ from sklearn.metrics import log_loss, f1_score, precision_score, recall_score, r
 from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
-from .modeling_cross_session_normalization import zscore_different_sessions_together
 from .load_input_files import load_behavioral_feature_data, find_bout_epochs
+from .modeling_utils import (
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    select_kinematic_columns,
+    build_vocal_signal_columns,
+    identify_empty_event_sessions,
+    collect_predictor_suffixes,
+    zero_fill_missing_feature_columns,
+    zscore_features_across_sessions,
+)
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import configure_path
 
 
 class VocalOnsetModelingPipeline(FeatureZoo):
@@ -89,9 +97,15 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             - Enforces `min_usv_per_bout` constraints.
             - Returns positive (`positive_events`) and negative (`negative_events`) event times.
         2. Removes sessions where the target mouse has 0 valid bouts.
-        3. Selects relevant behavioral features per session:
-            - Keeps 'self' (target) and 'other' (predictor) egocentric features.
-            - Selectively filters dyadic features based on the predictor mouse identity.
+        3. Selects relevant behavioral features per session via the three-bucket
+            kinematic schema in `modeling_settings['kinematic_features']`:
+            - `egocentric`: per-mouse scalar features kept for both target
+              (self) and predictor (other) mice.
+            - `dyadic_pose`: directional two-mouse pose features; when
+              `dyadic_pose_symmetric` is False, a directional allo_yaw/TTI rule
+              drops one symmetric half based on the predictor-mouse convention.
+            - `dyadic_engagement`: interaction features such as Social
+              Engagement Index (SEI); the directional rule is never applied here.
             - Adds 1st/2nd derivatives if configured.
         4.  Ingests pre-generated vocal signals (proportion/categories)
             from `find_bout_epochs`.
@@ -118,28 +132,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
              'another_feature': {...}, ...}`
         """
 
-        if self.modeling_settings['model_params']['random_seed'] is not None:
-            np.random.seed(self.modeling_settings['model_params']['random_seed'])
-            print(f"Random seed set to: {self.modeling_settings['model_params']['random_seed']}")
-        else:
-            np.random.seed(None)
-            print("Random seed not set.")
-
-        txt_modeling_sessions = []
-        try:
-            sessions_file = self.modeling_settings['io']['session_list_file']
-            with open(configure_path(sessions_file)) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        txt_modeling_sessions.append(configure_path(line))
-            if not txt_modeling_sessions:
-                raise ValueError("No valid session paths found.")
-            print(f"Loaded {len(txt_modeling_sessions)} session paths.")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Sessions list file not found: {sessions_file}")
-        except Exception as e:
-            raise RuntimeError(f"Error reading session paths: {e}")
+        txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         print("Loading behavioral feature data...")
         beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
@@ -169,23 +162,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         target_mouse_idx = abs(predictor_mouse_idx - 1)
 
-        sessions_to_remove = []
-        for session_id in list(beh_feature_data_dict.keys()):
-            if session_id not in mouse_track_names_dict:
-                sessions_to_remove.append(session_id)
-                continue
-
-            targ_name = mouse_track_names_dict[session_id][target_mouse_idx]
-
-            # Check for valid bouts using
-            if targ_name in usv_data_dict.get(session_id, {}):
-                bouts = usv_data_dict[session_id][targ_name].get('positive_events', [])
-                if len(bouts) == 0:
-                    print(f"Skipping session {session_id}: 0 valid bouts found for {targ_name}.")
-                    sessions_to_remove.append(session_id)
-            else:
-                sessions_to_remove.append(session_id)
-
+        sessions_to_remove = identify_empty_event_sessions(
+            usv_data_dict=usv_data_dict,
+            mouse_names_dict=mouse_track_names_dict,
+            target_idx=target_mouse_idx,
+            event_key='positive_events',
+            warn_label='session'
+        )
         for sess in sessions_to_remove:
             if sess in beh_feature_data_dict:
                 del beh_feature_data_dict[sess]
@@ -193,73 +176,38 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         print(f"Proceeding with {len(beh_feature_data_dict)} sessions after filtering empty ones.")
 
         processed_beh_feature_data_dict = {}
+        kin_settings = self.modeling_settings['kinematic_features']
+        voc_settings = self.modeling_settings['vocal_features']
 
         for behavioral_session in list(beh_feature_data_dict.keys()):
-            predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
-            target_mouse_idx = abs(predictor_mouse_idx - 1)
-            predictor_mouse_name = mouse_track_names_dict[behavioral_session][predictor_mouse_idx]  # 'other'
-            target_mouse_name = mouse_track_names_dict[behavioral_session][target_mouse_idx]  # 'self'
+            (predictor_mouse_idx,
+             target_mouse_idx,
+             predictor_mouse_name,
+             target_mouse_name) = resolve_mouse_roles(
+                modeling_settings=self.modeling_settings,
+                mouse_names_dict=mouse_track_names_dict,
+                session_id=behavioral_session
+            )
 
-            columns_to_keep_session = []
             session_df_columns = beh_feature_data_dict[behavioral_session].columns
 
-            for base_feature in self.modeling_settings['kinematic_features']['model_predictors']:
-                session_cols = [col for col in session_df_columns if col.split('.')[-1] == base_feature]
-                for feature in session_cols:
-                    is_self_ego = feature.startswith(f"{target_mouse_name}.")
-                    is_other_ego = feature.startswith(f"{predictor_mouse_name}.")
-                    is_dyadic = '-' in feature.split('.')[0]
-                    is_diff = 'diff' in base_feature
+            columns_to_keep_session = select_kinematic_columns(
+                session_df_columns=session_df_columns,
+                target_name=target_mouse_name,
+                predictor_name=predictor_mouse_name,
+                kin_settings=kin_settings,
+                predictor_idx=predictor_mouse_idx
+            )
 
-                    is_excluded = False
-                    if is_dyadic and not is_diff:
-                        try:
-                            feature_parts = feature.split('.')[-1].split('-')
-                            if len(feature_parts) == 2:
-                                if predictor_mouse_idx == 0:
-                                    if feature_parts[0] == 'allo_yaw' or feature_parts[1] == 'TTI': is_excluded = True
-                                else:
-                                    if feature_parts[1] == 'allo_yaw' or feature_parts[0] == 'TTI': is_excluded = True
-                        except (IndexError, AttributeError):
-                            pass
+            new_voc_cols, new_voc_col_names = build_vocal_signal_columns(
+                usv_data_dict=usv_data_dict,
+                session_id=behavioral_session,
+                target_name=target_mouse_name,
+                predictor_name=predictor_mouse_name,
+                voc_settings=voc_settings
+            )
 
-                    if is_self_ego or is_other_ego or is_diff or (is_dyadic and not is_excluded):
-                        columns_to_keep_session.append(feature)
-                        if base_feature not in ('speed', 'acceleration'):
-                            der_1st, der_2nd = f'{feature}_1st_der', f'{feature}_2nd_der'
-                            if self.modeling_settings['kinematic_features']['include_1st_derivatives'] and der_1st in session_df_columns:
-                                columns_to_keep_session.append(der_1st)
-                            if self.modeling_settings['kinematic_features']['include_2nd_derivatives'] and der_2nd in session_df_columns:
-                                columns_to_keep_session.append(der_2nd)
-
-            voc_out_type = self.modeling_settings['vocal_features']['usv_predictor_type']
-            partner_only = self.modeling_settings['vocal_features']['usv_predictor_partner_only']
-            new_voc_cols = []
-
-            if voc_out_type:
-                # Loop through both mice to find signals
-                for m_name in [target_mouse_name, predictor_mouse_name]:
-                    is_target = (m_name == target_mouse_name)
-
-                    # If partner_only is True, skip target mouse vocalizations entirely
-                    if partner_only and is_target:
-                        continue
-
-                    if m_name in usv_data_dict[behavioral_session]:
-                        vocal_signals = usv_data_dict[behavioral_session][m_name].get('continuous_vocal_signals', {})
-
-                        for sig_key, sig_arr in vocal_signals.items():
-                            # SCIENTIFIC CONSTRAINT: Never include 'usv_rate' or 'usv_event' for the self mouse
-                            # as it creates trivial autocorrelation that masks behavioral effects.
-                            if is_target and sig_key in ('usv_rate', 'usv_event'):
-                                continue
-
-                            col_name = f"{m_name}.{sig_key}"
-                            new_voc_cols.append(pls.Series(col_name, sig_arr))
-                            columns_to_keep_session.append(col_name)
-
-            # Filter DataFrame and Add Vocalization Data
-            columns_to_keep_session = sorted(list(set(columns_to_keep_session)))
+            columns_to_keep_session = sorted(set(columns_to_keep_session) | set(new_voc_col_names))
             existing_cols_to_select = [c for c in columns_to_keep_session if c in session_df_columns]
             current_df = beh_feature_data_dict[behavioral_session].select(existing_cols_to_select)
 
@@ -271,49 +219,31 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         del beh_feature_data_dict
         print("Feature filtering complete.")
 
-        final_suffixes = set()
         if not processed_beh_feature_data_dict:
             print("Error: No sessions remaining after filtering.")
             return
 
-        for sess_id, sess_df in processed_beh_feature_data_dict.items():
-            for col in sess_df.columns:
-                suffix = col.split('.')[-1]
-                if suffix.isdigit(): continue
-                final_suffixes.add(suffix)
-
-        revised_behavioral_predictors = sorted(list(final_suffixes))
-        if not revised_behavioral_predictors: raise ValueError("No features selected.")
+        revised_behavioral_predictors = collect_predictor_suffixes(processed_beh_feature_data_dict)
+        if not revised_behavioral_predictors:
+            raise ValueError("No features selected.")
         print(f"Final feature suffixes selected: {revised_behavioral_predictors}")
 
         print("Standardizing columns across sessions...")
-        for sess_id in processed_beh_feature_data_dict:
-            df = processed_beh_feature_data_dict[sess_id]
-            existing_cols = set(df.columns)
-            new_zeros = []
-
-            t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
-            p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
-
-            for pred_suffix in revised_behavioral_predictors:
-                for prefix, m_name in [('self', t_name), ('other', p_name)]:
-                    expected_col = f"{m_name}.{pred_suffix}"
-
-                    if expected_col not in existing_cols:
-                        is_vocal = 'usv_' in pred_suffix
-                        if is_vocal:
-                            if m_name == t_name and (partner_only or pred_suffix in ('usv_rate', 'usv_event')):
-                                continue
-
-                        new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
-
-            if new_zeros:
-                processed_beh_feature_data_dict[sess_id] = df.with_columns(new_zeros)
+        processed_beh_feature_data_dict = zero_fill_missing_feature_columns(
+            processed_beh_dict=processed_beh_feature_data_dict,
+            mouse_names_dict=mouse_track_names_dict,
+            target_idx=target_mouse_idx,
+            predictor_idx=predictor_mouse_idx,
+            suffixes=revised_behavioral_predictors,
+            voc_settings=voc_settings,
+            session_list_file=self.modeling_settings['io']['session_list_file'],
+            skip_dyadic_suffixes=True
+        )
 
         print("Z-scoring features across sessions...")
-        processed_beh_feature_data_dict = zscore_different_sessions_together(
-            data_dict=processed_beh_feature_data_dict,
-            feature_lst=revised_behavioral_predictors,
+        processed_beh_feature_data_dict = zscore_features_across_sessions(
+            processed_beh_dict=processed_beh_feature_data_dict,
+            suffixes=revised_behavioral_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {})
         )
         print("Z-scoring complete.")

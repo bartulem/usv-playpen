@@ -25,7 +25,7 @@
   },
 
   "kinematic_features": {
-    "model_predictors": [
+    "egocentric": [
       "speed",
       "neck_elevation",
       "allo_roll",
@@ -33,7 +33,9 @@
       "ego_yaw",
       "back_pitch",
       "back_yaw",
-      "tail_curvature",
+      "tail_curvature"
+    ],
+    "dyadic_pose": [
       "nose-nose",
       "nose-TTI",
       "TTI-nose",
@@ -42,6 +44,8 @@
       "allo_yaw-TTI",
       "TTI-allo_yaw"
     ],
+    "dyadic_engagement": ["orofacial-sei", "anogenital-sei"],
+    "dyadic_pose_symmetric": false,
     "include_1st_derivatives": false,
     "include_2nd_derivatives": false
   },
@@ -58,12 +62,12 @@
 
   "gmm_params": {
     "male": {
-      "means": [-2.78176965, -1.61892112, -0.62569187],
-      "sds": [0.26162863, 0.77768956, 2.2298624]
+      "means": [-2.77722, -1.60209, -0.52512],
+      "sds": [0.26468, 0.75324, 2.224]
     },
     "female": {
-      "means": [-2.76859759, -1.64223541, 1.88505038],
-      "sds": [0.26499761, 1.07984569, 1.36805932]
+      "means": [-1.50576, 1.62977],
+      "sds": [1.23229, 1.3938]
     }
   },
 

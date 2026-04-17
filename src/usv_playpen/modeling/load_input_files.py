@@ -280,18 +280,8 @@ def find_bout_epochs(root_directories: list = None,
     """
 
     # GMM parameters (modeling inter-USV interval distributions)
-    if gmm_params is not None:
-        male_gmm_params = gmm_params['male']
-        female_gmm_params = gmm_params['female']
-    else:
-        male_gmm_params = {
-            'means': [-2.78176965, -1.61892112, -0.62569187],
-            'sds': [0.26162863, 0.77768956, 2.2298624]
-        }
-        female_gmm_params = {
-            'means': [-2.76859759, -1.64223541, 1.88505038],
-            'sds': [0.26499761, 1.07984569, 1.36805932]
-        }
+    male_gmm_params = gmm_params['male']
+    female_gmm_params = gmm_params['female']
 
     usv_data_dict = {}
     for one_root_directory in root_directories:
@@ -783,18 +773,8 @@ def find_variable_length_bouts(root_directories: list = None,
     """
 
     # GMM parameters (for modeling inter-USV interval distributions)
-    if gmm_params is not None:
-        male_gmm_params = gmm_params['male']
-        female_gmm_params = gmm_params['female']
-    else:
-        male_gmm_params = {
-            'means': [-2.78176965, -1.61892112, -0.62569187],
-            'sds': [0.26162863, 0.77768956, 2.2298624]
-        }
-        female_gmm_params = {
-            'means': [-2.76859759, -1.64223541, 1.88505038],
-            'sds': [0.26499761, 1.07984569, 1.36805932]
-        }
+    male_gmm_params = gmm_params['male']
+    female_gmm_params = gmm_params['female']
 
     usv_data_dict = {}
 
