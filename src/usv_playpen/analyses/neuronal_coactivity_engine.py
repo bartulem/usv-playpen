@@ -9,6 +9,7 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import Any
 
+
 def extract_snippet_matrix(
     onsets: np.ndarray,
     neural_data: dict[str, np.ndarray],
@@ -48,8 +49,10 @@ def extract_snippet_matrix(
 
 def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
     """
-    Calculates pairwise spike count correlations (r_sc) and population
-    vector cosine similarity.
+    Calculates three metrics of ensemble coordination:
+    1. r_sc: Mean pairwise correlation (neurons across trials).
+    2. similarity: Mean cosine similarity (population vectors across trials).
+    3. pop_corr: Mean Pearson correlation (population vectors across trials).
 
     Parameters
     ----------
@@ -59,33 +62,42 @@ def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
     Returns
     -------
     Dict[str, Any]
-        Dictionary containing 'r_sc' (mean of unique pairs) and 'similarity'
-        (mean trial-to-trial cosine similarity).
+        Dictionary containing 'r_sc', 'similarity', and 'pop_corr'.
     """
 
     num_neurons, num_trials = count_matrix.shape
     if num_neurons < 2:
-        return {"r_sc": np.nan, "similarity": np.nan}
+        return {"r_sc": np.nan, "similarity": np.nan, "pop_corr": np.nan}
 
     # Pairwise spike count correlation (r_sc)
+    # Correlation between neurons (rows) across trials
     with np.errstate(divide='ignore', invalid='ignore'):
-        corr_mat = np.corrcoef(count_matrix)
+        neuron_corr_mat = np.corrcoef(count_matrix)
 
-    # Extract unique pairs (upper triangle)
-    r_sc_values = corr_mat[np.triu_indices(num_neurons, k=1)]
+    r_sc_values = neuron_corr_mat[np.triu_indices(num_neurons, k=1)]
     mean_r_sc = np.nanmean(r_sc_values)
 
     # Population vector similarity (cosine similarity)
-    # Transpose to (trials, neurons) for sklearn
+    # Angle between raw population vectors (columns)
+    # Transpose to (trials, neurons) for cosine_similarity
     sim_matrix = cosine_similarity(count_matrix.T)
-
-    # Mean similarity across unique trial pairs
     pop_sim_values = sim_matrix[np.triu_indices(num_trials, k=1)]
     mean_pop_sim = np.nanmean(pop_sim_values)
 
+    # Correlation of population vectors (Pearson correlation)
+    # This is the "mean-centered" version of cosine similarity.
+    # It removes the average firing rate (magnitude) of each trial.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # rowvar=False correlates the columns (trials)
+        trial_corr_mat = np.corrcoef(count_matrix, rowvar=False)
+
+    pop_corr_values = trial_corr_mat[np.triu_indices(num_trials, k=1)]
+    mean_pop_corr = np.nanmean(pop_corr_values)
+
     return {
         "r_sc": mean_r_sc,
-        "similarity": mean_pop_sim
+        "similarity": mean_pop_sim,
+        "pop_corr": mean_pop_corr
     }
 
 def get_bootstrapped_simple_calls(
@@ -95,36 +107,98 @@ def get_bootstrapped_simple_calls(
 ) -> dict[str, np.ndarray]:
     """
     Performs bootstrapping on simple vocalization trials to equalize sample size
-    with the complex vocalization group.
+    with the complex vocalization group, ensuring statistical symmetry.
+
+    This function resamples the simple vocalization count matrix with replacement
+    to match the trial count of the complex group. It calculates three distinct
+    coactivity metrics—r_sc, population similarity (cosine), and population
+    correlation—to build an empirical distribution of the mean for the
+    subsampled group.
 
     Parameters
     ----------
     simple_counts : np.ndarray
-        Count matrix for simple USVs (Neurons x N_simple).
+        The neural count matrix for simple USVs, shape (Neurons x N_simple).
     n_target : int
-        The number of trials in the complex group (target size).
-    n_iterations : int
-        Number of bootstrap iterations.
+        The target sample size to match (typically the N of the complex group).
+    n_iterations : int, optional
+        The number of bootstrap iterations to perform, by default 1000.
 
     Returns
     -------
-    Dict[str, np.ndarray]
-        Arrays of bootstrapped r_sc and similarity values.
+    dict[str, np.ndarray]
+        A dictionary containing the bootstrap distributions for:
+        - 'r_sc': Mean pairwise spike count correlations.
+        - 'similarity': Mean population vector cosine similarities.
+        - 'pop_corr': Mean population vector Pearson correlations.
     """
 
     boot_rsc = np.zeros(n_iterations)
     boot_sim = np.zeros(n_iterations)
+    boot_pop = np.zeros(n_iterations)
+
     num_trials = simple_counts.shape[1]
     rng = np.random.default_rng()
 
     for i in range(n_iterations):
+        # Sample trial indices with replacement to match n_target
         idx = rng.choice(num_trials, n_target, replace=True)
         resampled_matrix = simple_counts[:, idx]
+
+        # Calculate coactivity metrics for the resampled matrix
         metrics = compute_coactivity_metrics(resampled_matrix)
+
+        # Store results for all three metrics
         boot_rsc[i] = metrics["r_sc"]
         boot_sim[i] = metrics["similarity"]
+        boot_pop[i] = metrics["pop_corr"]
 
-    return {"r_sc": boot_rsc, "similarity": boot_sim}
+    return {
+        "r_sc": boot_rsc,
+        "similarity": boot_sim,
+        "pop_corr": boot_pop
+    }
+
+def apply_circular_shift(
+    neural_data: dict[str, np.ndarray],
+    shift_s: float,
+    total_duration_s: float
+) -> dict[str, np.ndarray]:
+    """
+    Applies a uniform circular temporal shift to a population of neurons.
+
+    This function shifts every spike time in the population by a constant
+    offset and wraps any spikes that exceed the session duration back to
+    the beginning. This 'joint' shift preserves the relative timing (and
+    thus the correlations) between neurons while decoupling the neural
+    activity from the external behavioral timestamps.
+
+    Parameters
+    ----------
+    neural_data : dict[str, np.ndarray]
+        Dictionary where keys are unique neuron identifiers and values
+        are 1D NumPy arrays containing spike times in seconds.
+    shift_s : float
+        The temporal offset in seconds to be added to every spike time.
+    total_duration_s : float
+        The total recording session length in seconds, used as the
+        modulus for the circular wrap-around.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        A new dictionary containing the shifted and wrapped spike times.
+        Each spike array is re-sorted to maintain chronological order,
+        ensuring compatibility with window-extraction algorithms.
+    """
+
+    shifted_data = {}
+    for n_id, spikes in neural_data.items():
+        # Apply shift and wrap using modulo
+        shifted_spikes = (spikes + shift_s) % total_duration_s
+        # Sort is required for subsequent snippet extraction
+        shifted_data[n_id] = np.sort(shifted_spikes)
+    return shifted_data
 
 def perform_circular_shuffle(
     onsets: np.ndarray,
@@ -136,53 +210,76 @@ def perform_circular_shuffle(
     n_shuffles: int = 1000
 ) -> dict[str, np.ndarray]:
     """
-    Performs a circular temporal shuffle by shifting each neuron's spike
-    train by a random offset and wrapping around the recording duration.
+    Orchestrates a joint circular temporal shuffle to generate null
+    distributions for coactivity metrics.
+
+    By shifting the entire neural population as a single unit, this
+    method maintains the intrinsic 'idling' correlation structure of
+    the network. It tests whether the observed alignment during
+    behavioral onsets is significantly greater than what would be
+    observed if the same neural patterns occurred at random times
+    within the session.
 
     Parameters
     ----------
     onsets : np.ndarray
-        Array of vocalization start times.
+        1D array of behavioral event start times (e.g., USV onsets)
+        in seconds.
     neural_data : dict[str, np.ndarray]
-        Dictionary of original spike times.
+        Dictionary of neuron IDs and their corresponding spike time arrays.
     total_duration : float
-        Total recording duration in seconds (used for wrapping).
+        The total duration of the recording session in seconds.
     window_s : float
-        Analysis window length.
+        The duration of the analysis window in seconds (e.g., 0.030 for 30ms).
     min_shift_s : float, optional
-        Minimum time shift in seconds. Default is 20.0.
+        The minimum allowable random time shift, by default 20.0.
     max_shift_s : float, optional
-        Maximum time shift in seconds. Default is 60.0.
+        The maximum allowable random time shift, by default 60.0.
     n_shuffles : int, optional
-        Number of global shuffles to perform. Default is 1000.
+        The number of shuffle iterations to perform, by default 1000.
 
     Returns
     -------
     dict[str, np.ndarray]
-        Distribution of metrics under the null hypothesis.
+        A dictionary where each key corresponds to a metric returned
+        by compute_coactivity_metrics (e.g., 'r_sc', 'similarity',
+        'pop_corr'). Values are NumPy arrays of length n_shuffles,
+        representing the empirical null distribution for that metric.
     """
 
-    shuff_rsc = np.zeros(n_shuffles)
-    shuff_sim = np.zeros(n_shuffles)
-    neuron_keys = list(neural_data.keys())
+    # Initialize storage based on keys from a test calculation
+    # We run a dummy calculation to dynamically identify available metrics
+    sample_matrix = extract_snippet_matrix(onsets, neural_data, window_s)
+    metric_keys = compute_coactivity_metrics(sample_matrix).keys()
+
+    results = {key: np.zeros(n_shuffles) for key in metric_keys}
 
     rng = np.random.default_rng()
+
     for i in range(n_shuffles):
-        # Create a shifted version of the entire neural dictionary
-        shifted_neural_data = {}
-        for n_key in neuron_keys:
-            # Shift by a random value between min_shift_s and max_shift_s seconds
-            shift = rng.uniform(min_shift_s, max_shift_s)
-            shifted_spikes = (neural_data[n_key] + shift) % total_duration
-            shifted_neural_data[n_key] = np.sort(shifted_spikes)
+        # 1. Generate a single random shift for the entire population
+        shift = rng.uniform(min_shift_s, max_shift_s)
 
-        # Extract matrix and compute metrics for this shuffled iteration
-        shuffled_matrix = extract_snippet_matrix(onsets, shifted_neural_data, window_s)
+        # 2. Shift the spikes
+        shifted_neural_data = apply_circular_shift(
+            neural_data,
+            shift,
+            total_duration
+        )
+
+        # 3. Extract matrix and compute all metrics for this shuffle
+        shuffled_matrix = extract_snippet_matrix(
+            onsets,
+            shifted_neural_data,
+            window_s
+        )
         metrics = compute_coactivity_metrics(shuffled_matrix)
-        shuff_rsc[i] = metrics["r_sc"]
-        shuff_sim[i] = metrics["similarity"]
 
-    return {"r_sc": shuff_rsc, "similarity": shuff_sim}
+        # 4. Record the results
+        for key in results.keys():
+            results[key][i] = metrics[key]
+
+    return results
 
 def compute_sliding_coactivity(
     onsets: np.ndarray,
