@@ -281,6 +281,73 @@ def perform_circular_shuffle(
 
     return results
 
+def perform_chained_circular_shuffle(
+    session_onsets: list[np.ndarray],
+    session_neural_data: list[dict[str, np.ndarray]],
+    session_durations: list[float],
+    window_s: float,
+    min_shift_s: float = 20.0,
+    max_shift_s: float = 60.0,
+    n_shuffles: int = 1000
+) -> dict[str, np.ndarray]:
+    """
+    Performs a circular shuffle across multiple independent sessions.
+
+    In each iteration, every session is shifted by its own random offset
+    to preserve internal timing. The resulting shuffled matrices from all
+    sessions are concatenated before coactivity metrics are calculated,
+    providing a global null distribution for the chained dataset.
+
+    Parameters
+    ----------
+    session_onsets : list[np.ndarray]
+        List of onset arrays, one per session.
+    session_neural_data : list[dict]
+        List of neural data dictionaries, one per session.
+    session_durations : list[float]
+        List of total durations (seconds) for each session.
+    window_s : float
+        Analysis window size in seconds.
+    n_shuffles : int
+        Number of global shuffle iterations.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Empirical null distributions for the concatenated sessions.
+    """
+    # 1. Initialize results by checking metric keys from a dummy run
+    dummy_matrices = []
+    for onsets, neural, duration in zip(session_onsets, session_neural_data, session_durations):
+        # We only need a small slice to get the keys
+        dummy_matrices.append(extract_snippet_matrix(onsets[:2], neural, window_s))
+
+    combined_dummy = np.hstack(dummy_matrices)
+    metric_keys = compute_coactivity_metrics(combined_dummy).keys()
+    results = {key: np.zeros(n_shuffles) for key in metric_keys}
+
+    rng = np.random.default_rng()
+
+    for i in range(n_shuffles):
+        shuffled_mats_to_combine = []
+
+        for onsets, neural, duration in zip(session_onsets, session_neural_data, session_durations):
+            # 2. Shift and extract for THIS session
+            shift = rng.uniform(min_shift_s, max_shift_s)
+            shifted_neural = apply_circular_shift(neural, shift, duration)
+            shuff_mat = extract_snippet_matrix(onsets, shifted_neural, window_s)
+            shuffled_mats_to_combine.append(shuff_mat)
+
+        # 3. Concatenate all session shuffles into one global matrix
+        global_shuffled_matrix = np.hstack(shuffled_mats_to_combine)
+
+        # 4. Compute metrics on the aggregate
+        metrics = compute_coactivity_metrics(global_shuffled_matrix)
+        for key in results.keys():
+            results[key][i] = metrics[key]
+
+    return results
+
 def compute_sliding_coactivity(
     onsets: np.ndarray,
     neural_data: dict[str, np.ndarray],
@@ -331,3 +398,59 @@ def compute_sliding_coactivity(
         "r_sc": sliding_rsc,
         "similarity": sliding_sim
     }
+
+def sample_onsets_across_sessions(
+    sessions_list: list[dict[str, Any]],
+    category_key: str,
+    n_total: int
+) -> list[np.ndarray]:
+    """
+    Samples a total of N onsets across multiple sessions, maintaining
+    session identity for subsequent circular shifting.
+
+    This function pools all available onsets from a specific category
+    (e.g., 'complex_df') across all provided sessions, draws a random
+    subset of size n_total, and returns them as a list of arrays
+    corresponding to the original session order.
+
+    Parameters
+    ----------
+    sessions_list : list[dict]
+        The list of session data dictionaries created during loading.
+    category_key : str
+        The key in the session dictionary to pull onsets from
+        (e.g., 'complex_df' or 'simple_df').
+    n_total : int
+        The total number of onsets to sample across the entire dataset.
+
+    Returns
+    -------
+    list[np.ndarray]
+        A list of onset arrays, one per session. If a session contributed
+        no onsets to the sample, its entry will be an empty array.
+    """
+    all_indices = []
+
+    # 1. Create a global pool of (session_index, onset_time)
+    for s_idx, sess in enumerate(sessions_list):
+        onsets = sess[category_key]['start'].to_numpy()
+        for t in onsets:
+            all_indices.append((s_idx, t))
+
+    if len(all_indices) < n_total:
+        msg = (f"Total available {category_key} onsets ({len(all_indices)}) "
+               f"is less than target N ({n_total}).")
+        raise ValueError(msg)
+
+    # 2. Sample N unique onsets from the global pool
+    rng = np.random.default_rng()
+    selected_indices = rng.choice(len(all_indices), size=n_total, replace=False)
+    sampled_points = [all_indices[i] for i in selected_indices]
+
+    # 3. Redistribute sampled onsets back into session buckets
+    session_buckets = [[] for _ in range(len(sessions_list))]
+    for s_idx, t in sampled_points:
+        session_buckets[s_idx].append(t)
+
+    # 4. Convert to sorted numpy arrays
+    return [np.sort(np.array(bucket)) for bucket in session_buckets]
