@@ -39,6 +39,13 @@ I. `harmonize_session_columns`    — dyad-rename + project-wide existence-map
 J. `zscore_features_across_sessions`   — thin wrapper around
                                      `zscore_different_sessions_together`
                                      for API symmetry with the other helpers.
+K. `pool_session_arrays`          — concatenate two-class per-session arrays
+                                     (positive/negative) across a list of
+                                     sessions, parameterized by the pair of
+                                     dict keys (used by Onset and Category).
+L. `balance_two_class_arrays`     — down-sample the majority class of a
+                                     two-class dataset to match the minority
+                                     class size (used by Onset and Category).
 
 Block B (`load_behavioral_feature_data`) is intentionally NOT wrapped here —
 callers should import it directly from `load_input_files`.
@@ -705,3 +712,114 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         feature_lst=suffixes,
         feature_bounds=feature_bounds
     )
+
+
+def pool_session_arrays(feature_data: dict,
+                        session_list,
+                        pos_key: str,
+                        neg_key: str,
+                        n_frames: int) -> tuple:
+    """
+    Pools per-session two-class arrays for a single feature across a list of sessions.
+
+    This helper generalizes the two-class pooling pattern used by the binary
+    classification pipelines (Onset: `usv_feature_arr` / `no_usv_feature_arr`,
+    Category: `target_feature_arr` / `other_feature_arr`). For every session in
+    `session_list` that is present in `feature_data`, the arrays stored under
+    `pos_key` and `neg_key` are collected and concatenated along axis 0. Entries
+    that are `None` or empty (size 0) are silently skipped, so sessions with a
+    missing class still contribute their populated class.
+
+    Parameters
+    ----------
+    feature_data : dict
+        The per-session data dictionary for a single feature. Each value is a
+        dict that must contain `pos_key` and `neg_key` as NumPy arrays (either
+        of which may be `None` or size 0).
+    session_list : iterable of str
+        Session identifiers to pool from. Sessions absent from `feature_data`
+        are skipped without error. Any iterable is accepted (including NumPy
+        arrays of session ids).
+    pos_key : str
+        Key under each session entry holding the positive-class array
+        (e.g. `'usv_feature_arr'` for the Onset pipeline, `'target_feature_arr'`
+        for the Category pipeline).
+    neg_key : str
+        Key under each session entry holding the negative-class array
+        (e.g. `'no_usv_feature_arr'` for the Onset pipeline,
+        `'other_feature_arr'` for the Category pipeline).
+    n_frames : int
+        The history-window length (number of frames per epoch). Used to shape
+        the empty `(0, n_frames)` placeholder returned for a class that has no
+        usable data across the requested sessions.
+
+    Returns
+    -------
+    tuple of (np.ndarray, np.ndarray)
+        `(X_pos, X_neg)`, each of shape `(n_epochs, n_frames)`. Either array
+        may have `n_epochs == 0` when no non-empty contribution was found for
+        that class.
+    """
+
+    pos_list = []
+    neg_list = []
+    for sess_id in session_list:
+        if sess_id not in feature_data:
+            continue
+        p_arr = feature_data[sess_id][pos_key]
+        n_arr = feature_data[sess_id][neg_key]
+        if p_arr is not None and p_arr.size > 0:
+            pos_list.append(p_arr)
+        if n_arr is not None and n_arr.size > 0:
+            neg_list.append(n_arr)
+
+    X_pos = np.concatenate(pos_list, axis=0) if pos_list else np.empty((0, n_frames))
+    X_neg = np.concatenate(neg_list, axis=0) if neg_list else np.empty((0, n_frames))
+    return X_pos, X_neg
+
+
+def balance_two_class_arrays(X_pos: np.ndarray,
+                             X_neg: np.ndarray) -> tuple:
+    """
+    Down-samples the majority class so both classes have equal sample counts.
+
+    Finds the minority class size `n = min(|X_pos|, |X_neg|)` and randomly
+    subsamples the majority class (without replacement) down to `n` rows. The
+    random draw uses NumPy's global RNG state, so reproducibility is governed
+    by the seed set at the start of the pipeline (see
+    `prepare_modeling_sessions`). When either input is empty, both outputs are
+    returned as empty arrays preserving their original column count.
+
+    Parameters
+    ----------
+    X_pos : np.ndarray
+        Positive-class samples of shape `(n_pos, n_features)`.
+    X_neg : np.ndarray
+        Negative-class samples of shape `(n_neg, n_features)`.
+
+    Returns
+    -------
+    tuple of (np.ndarray, np.ndarray)
+        `(X_pos_balanced, X_neg_balanced)`. Both arrays have the same number
+        of rows equal to `min(n_pos, n_neg)`. If either input was empty the
+        outputs are `(0, X_pos.shape[1])` and `(0, X_neg.shape[1])`
+        respectively.
+    """
+
+    n_pos = X_pos.shape[0]
+    n_neg = X_neg.shape[0]
+
+    if n_pos == 0 or n_neg == 0:
+        return np.empty((0, X_pos.shape[1])), np.empty((0, X_neg.shape[1]))
+
+    n_samples = min(n_pos, n_neg)
+
+    if n_pos > n_samples:
+        pos_indices = np.random.choice(n_pos, n_samples, replace=False)
+        X_pos = X_pos[pos_indices]
+
+    if n_neg > n_samples:
+        neg_indices = np.random.choice(n_neg, n_samples, replace=False)
+        X_neg = X_neg[neg_indices]
+
+    return X_pos, X_neg

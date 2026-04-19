@@ -46,7 +46,7 @@ import numpy as np
 from datetime import datetime
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
-from .modeling_vocal_categories import VocalCategoryModelingPipeline
+from .modeling_vocal_categories_binomial import VocalCategoryModelingPipeline
 from .modeling_vocal_bout_parameters import BoutParameterPipeline
 from .modeling_vocal_categories_multinomial import MultinomialModelingPipeline, MultinomialModelRunner
 from .modeling_usv_manifold_position import ContinuousModelingPipeline, ContinuousModelRunner

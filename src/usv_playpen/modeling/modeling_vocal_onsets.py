@@ -31,6 +31,8 @@ from .modeling_utils import (
     collect_predictor_suffixes,
     zero_fill_missing_feature_columns,
     zscore_features_across_sessions,
+    pool_session_arrays,
+    balance_two_class_arrays,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -373,93 +375,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         except Exception as e:
             print(f"\n[!] Error saving final pickle file: {e}")
 
-    def _pool_data_from_sessions(self,
-                                 feature_data: dict,
-                                 session_list: list) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Pools all USV and no-USV data from a specific list of sessions.
-
-        This helper method iterates through a given list of session IDs,
-        accesses the corresponding data in the feature dictionary, and
-        concatenates all 'usv_feature_arr' and 'no_usv_feature_arr' arrays.
-
-        Parameters
-        ----------
-        feature_data : dict
-            The data dictionary for a *single feature* (e.g.,
-            `modeling_feature_arr_dict['speed']`), where keys are session IDs.
-        session_list : list
-            A list of session_id strings (e.g., ['20230119_172410', ...])
-            to pool data from.
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray]
-            A tuple containing two arrays:
-            1. X_pos: A single NumPy array of all 'usv_feature_arr' data
-               concatenated (n_events, n_frames).
-            2. X_neg: A single NumPy array of all 'no_usv_feature_arr' data
-               concatenated (n_events, n_frames).
-        """
-
-        usv_data_list = []
-        no_usv_data_list = []
-
-        for session_id in session_list:
-            if session_id in feature_data:
-                usv_data_list.append(feature_data[session_id]['usv_feature_arr'])
-                no_usv_data_list.append(feature_data[session_id]['no_usv_feature_arr'])
-
-        X_pos = np.concatenate(usv_data_list, axis=0) if usv_data_list else np.empty((0, self.history_frames))
-        X_neg = np.concatenate(no_usv_data_list, axis=0) if no_usv_data_list else np.empty((0, self.history_frames))
-
-        return X_pos, X_neg
-
-    def _balance_data(self,
-                      X_pos: np.ndarray,
-                      X_neg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Balances positive and negative samples by down-sampling the majority class.
-
-        This function takes the two arrays of positive (Y=1) and negative (Y=0)
-        samples, finds the minimum count, and randomly subsamples the
-        larger array to match the smaller one.
-
-        Parameters
-        ----------
-        X_pos : np.ndarray
-            Array of positive samples (n_samples, n_features).
-        X_neg : np.ndarray
-            Array of negative samples (n_samples, n_features).
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray]
-            A tuple containing the balanced arrays:
-            1. X_pos_balanced: The (potentially) down-sampled positive data.
-            2. X_neg_balanced: The (potentially) down-sampled negative data.
-            Both arrays will have the same n_samples.
-        """
-
-        n_pos = X_pos.shape[0]
-        n_neg = X_neg.shape[0]
-
-        if n_pos == 0 or n_neg == 0:
-            # return empty arrays if one class has no data
-            return np.empty((0, X_pos.shape[1])), np.empty((0, X_neg.shape[1]))
-
-        n_samples = min(n_pos, n_neg)
-
-        if n_pos > n_samples:
-            pos_indices = np.random.choice(n_pos, n_samples, replace=False)
-            X_pos = X_pos[pos_indices]
-
-        if n_neg > n_samples:
-            neg_indices = np.random.choice(n_neg, n_samples, replace=False)
-            X_neg = X_neg[neg_indices]
-
-        return X_pos, X_neg
-
     def create_data_splits(self, feature_data: dict, strategy_override: str = None):
         """
         A generator that yields train/test splits based on the 'split_strategy'.
@@ -506,13 +421,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         random_state = self.modeling_settings['model_params']['random_seed']
 
         all_sessions = list(feature_data.keys())
-        X_pos_all, X_neg_all = self._pool_data_from_sessions(feature_data, all_sessions)
+        X_pos_all, X_neg_all = pool_session_arrays(feature_data, all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
         n_pos_total = X_pos_all.shape[0]
         n_neg_total = X_neg_all.shape[0]
 
         ### Strategy 1: 'mixed' (all sessions together)
         if split_strategy == 'mixed':
-            X_pos, X_neg = self._balance_data(X_pos_all, X_neg_all)
+            X_pos, X_neg = balance_two_class_arrays(X_pos_all, X_neg_all)
 
             if X_pos.shape[0] == 0:
                 print(f"Warning: No balanced data for feature. Skipping splits.")
@@ -549,11 +464,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 train_session_list = all_sessions_array[train_session_idx]
                 test_session_list = all_sessions_array[test_session_idx]
 
-                X_pos_train, X_neg_train = self._pool_data_from_sessions(feature_data, train_session_list)
-                X_pos_test, X_neg_test = self._pool_data_from_sessions(feature_data, test_session_list)
+                X_pos_train, X_neg_train = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+                X_pos_test, X_neg_test = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
 
                 # Balance the *training set ONLY
-                X_pos_train_bal, X_neg_train_bal = self._balance_data(X_pos_train, X_neg_train)
+                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train, X_neg_train)
 
                 if X_pos_train_bal.shape[0] == 0:
                     print(f"Warning: No balanced training data for split {split_num}. Skipping.")
@@ -625,11 +540,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 test_session_list = all_sessions_array[test_session_idx]
 
                 # Get actual data counts for this split to match them
-                X_pos_train_actual, X_neg_train_actual = self._pool_data_from_sessions(feature_data, train_session_list)
-                X_pos_test_actual, X_neg_test_actual = self._pool_data_from_sessions(feature_data, test_session_list)
+                X_pos_train_actual, X_neg_train_actual = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+                X_pos_test_actual, X_neg_test_actual = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
 
                 # Find the target sizes from the actual data
-                X_pos_train_bal, X_neg_train_bal = self._balance_data(X_pos_train_actual, X_neg_train_actual)
+                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train_actual, X_neg_train_actual)
 
                 n_balanced_train_half = X_pos_train_bal.shape[0]
                 n_total_train_needed = n_balanced_train_half * 2
@@ -642,8 +557,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     continue
 
                 # Pool ONLY No-Bout data from selected sessions
-                _, X_neg_train_all = self._pool_data_from_sessions(feature_data, train_session_list)
-                _, X_neg_test_all = self._pool_data_from_sessions(feature_data, test_session_list)
+                _, X_neg_train_all = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+                _, X_neg_test_all = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
 
                 # Create fake balanced training set, matching 'session' size
                 n_train_neg_available = X_neg_train_all.shape[0]

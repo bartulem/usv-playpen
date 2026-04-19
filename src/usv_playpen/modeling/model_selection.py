@@ -19,6 +19,7 @@ from sklearn.metrics import (log_loss, roc_auc_score, f1_score, precision_score,
                              mean_gamma_deviance, precision_recall_curve, auc)
 from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
+from .modeling_utils import pool_session_arrays
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import get_stratified_group_splits_stable, MultinomialModelingPipeline, MultinomialModelRunner
 from .modeling_usv_manifold_position import get_stratified_spatial_splits_stable
@@ -208,7 +209,7 @@ def bout_onset_model_selection(univariate_results_path: str,
         for train_idx, test_idx in ss.split(all_sessions_arr):
             cv_folds.append({'train_sessions': all_sessions_arr[train_idx], 'test_sessions': all_sessions_arr[test_idx], 'type': 'session'})
     elif split_strategy == 'mixed':
-        X_p_all, X_n_all = pipeline._pool_data_from_sessions(all_feature_data[anchor_feature], all_sessions)
+        X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
         n_keep = min(X_p_all.shape[0], X_n_all.shape[0])
         pos_indices = np.random.choice(X_p_all.shape[0], n_keep, replace=False)
         neg_indices = np.random.choice(X_n_all.shape[0], n_keep, replace=False)
@@ -276,12 +277,12 @@ def bout_onset_model_selection(univariate_results_path: str,
                 if fold_info['type'] == 'session':
                     train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
                     anc_data = all_feature_data[anchor_feature]
-                    X_p_tr, X_n_tr = pipeline._pool_data_from_sessions(anc_data, train_sess)
+                    X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                     n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
                     idx_p = np.random.choice(X_p_tr.shape[0], n_k, replace=False)
                     idx_n = np.random.choice(X_n_tr.shape[0], n_k, replace=False)
                     y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
-                    X_p_te, X_n_te = pipeline._pool_data_from_sessions(anc_data, test_sess)
+                    X_p_te, X_n_te = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                     y_te_fold = np.concatenate((np.ones(X_p_te.shape[0]), np.zeros(X_n_te.shape[0])))
                     X_train_list.append(np.concatenate((X_p_tr[idx_p], X_n_tr[idx_n])))
                     X_test_list.append(np.concatenate((X_p_te, X_n_te)))
@@ -290,7 +291,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                     pos_ix, neg_ix = fold_info['pos_indices'], fold_info['neg_indices']
                     y_bal = np.concatenate((np.ones(len(pos_ix)), np.zeros(len(neg_ix))))
                     y_tr_fold, y_te_fold = y_bal[train_ix], y_bal[test_ix]
-                    X_p, X_n = pipeline._pool_data_from_sessions(all_feature_data[anchor_to_force], all_sessions)
+                    X_p, X_n = pool_session_arrays(all_feature_data[anchor_to_force], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                     X_bal = np.concatenate((X_p[pos_ix], X_n[neg_ix]))
                     X_train_list.append(X_bal[train_ix])
                     X_test_list.append(X_bal[test_ix])
@@ -366,19 +367,19 @@ def bout_onset_model_selection(univariate_results_path: str,
                     if fold_info['type'] == 'session':
                         train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
                         anc_data = all_feature_data[anchor_feature]
-                        X_p_tr, X_n_tr = pipeline._pool_data_from_sessions(anc_data, train_sess)
+                        X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                         np.random.seed(random_seed + fold_i)
                         n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
                         idx_p = np.random.choice(X_p_tr.shape[0], n_k, replace=False)
                         idx_n = np.random.choice(X_n_tr.shape[0], n_k, replace=False)
                         y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
 
-                        X_p_te_anc, X_n_te_anc = pipeline._pool_data_from_sessions(anc_data, test_sess)
+                        X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                         y_te_fold = np.concatenate((np.ones(X_p_te_anc.shape[0]), np.zeros(X_n_te_anc.shape[0])))
 
                         for f_name in trial_features:
-                            f_p_tr, f_n_tr = pipeline._pool_data_from_sessions(all_feature_data[f_name], train_sess)
-                            f_p_te, f_n_te = pipeline._pool_data_from_sessions(all_feature_data[f_name], test_sess)
+                            f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[f_name], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                            f_p_te, f_n_te = pool_session_arrays(all_feature_data[f_name], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                             X_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
                             X_test_list.append(np.concatenate((f_p_te, f_n_te)))
                     elif fold_info['type'] == 'mixed':
@@ -387,7 +388,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                         y_tr_fold = np.concatenate((np.ones(len(pos_ix)), np.zeros(len(neg_ix))))[train_ix]
                         y_te_fold = np.concatenate((np.ones(len(pos_ix)), np.zeros(len(neg_ix))))[test_ix]
                         for f_name in trial_features:
-                            X_p, X_n = pipeline._pool_data_from_sessions(all_feature_data[f_name], all_sessions)
+                            X_p, X_n = pool_session_arrays(all_feature_data[f_name], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                             X_bal = np.concatenate((X_p[pos_ix], X_n[neg_ix]))
                             X_train_list.append(X_bal[train_ix])
                             X_test_list.append(X_bal[test_ix])
@@ -455,7 +456,7 @@ def bout_onset_model_selection(univariate_results_path: str,
 
     print("\n--- Final Model Fit for Visualization (CV-based) ---")
     try:
-        X_p, X_n = pipeline._pool_data_from_sessions(all_feature_data[anchor_feature], all_sessions)
+        X_p, X_n = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
 
         np.random.seed(random_seed)
         n_k = min(X_p.shape[0], X_n.shape[0])
@@ -466,7 +467,7 @@ def bout_onset_model_selection(univariate_results_path: str,
 
         X_list_final = []
         for f in current_model_features:
-            f_p, f_n = pipeline._pool_data_from_sessions(all_feature_data[f], all_sessions)
+            f_p, f_n = pool_session_arrays(all_feature_data[f], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
             X_list_final.append(np.concatenate((f_p[idx_p], f_n[idx_n])))
 
         last_file = os.path.join(model_selection_dir, fname)

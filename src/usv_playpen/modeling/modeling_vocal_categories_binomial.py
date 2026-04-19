@@ -44,6 +44,8 @@ from .modeling_utils import (
     build_vocal_signal_columns,
     harmonize_session_columns,
     zscore_features_across_sessions,
+    pool_session_arrays,
+    balance_two_class_arrays,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -313,45 +315,6 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             pickle.dump(final_data, f)
         print(f"\n[+] Successfully saved category input data to:\n    {save_path}")
 
-    def _pool_category_data(self, feature_data: dict, session_list: list) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Pools 'target' (positive) and 'other' (negative) data arrays from a list of sessions.
-
-        This function helps implement session-based splitting by aggregating data from
-        multiple training (or testing) sessions into single matrices.
-
-        Parameters
-        ----------
-        feature_data : dict
-            Dictionary for a single feature containing session data.
-            Expects keys: 'target_feature_arr' and 'other_feature_arr'.
-        session_list : list
-            List of session IDs (strings) to pool data from.
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray]
-            A tuple containing two concatenated NumPy arrays:
-            1. X_target: All pooled positive class samples (Target Category).
-            2. X_other: All pooled negative class samples (Other Categories).
-        """
-
-        target_list, other_list = [], []
-        for sess in session_list:
-            if sess in feature_data:
-                # Strict lookup, no .get()
-                t_arr = feature_data[sess]['target_feature_arr']
-                o_arr = feature_data[sess]['other_feature_arr']
-
-                if t_arr is not None and t_arr.size > 0:
-                    target_list.append(t_arr)
-                if o_arr is not None and o_arr.size > 0:
-                    other_list.append(o_arr)
-
-        X_target = np.concatenate(target_list, axis=0) if target_list else np.empty((0, self.history_frames))
-        X_other = np.concatenate(other_list, axis=0) if other_list else np.empty((0, self.history_frames))
-        return X_target, X_other
-
     def create_category_splits(self, feature_data: dict, strategy: str = 'actual'):
         """
         Generator yielding train/test splits for K-Fold validation.
@@ -434,12 +397,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 train_sessions = valid_sessions[train_idx]
                 test_sessions = valid_sessions[test_idx]
 
-                X_tr_targ, X_tr_other = self._pool_category_data(feature_data, train_sessions)
-                X_te_targ, X_te_other = self._pool_category_data(feature_data, test_sessions)
+                X_tr_targ, X_tr_other = pool_session_arrays(feature_data, train_sessions, pos_key="target_feature_arr", neg_key="other_feature_arr", n_frames=self.history_frames)
+                X_te_targ, X_te_other = pool_session_arrays(feature_data, test_sessions, pos_key="target_feature_arr", neg_key="other_feature_arr", n_frames=self.history_frames)
                 splits_data.append((X_tr_targ, X_tr_other, X_te_targ, X_te_other))
 
         elif split_strategy == 'mixed':
-            X_all_targ, X_all_other = self._pool_category_data(feature_data, valid_sessions)
+            X_all_targ, X_all_other = pool_session_arrays(feature_data, valid_sessions, pos_key="target_feature_arr", neg_key="other_feature_arr", n_frames=self.history_frames)
 
             if len(X_all_targ) > 0 and len(X_all_other) > 0:
                 # Combine entirely to run a true stratified split
@@ -474,13 +437,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 continue
 
             if strategy == 'actual':
-                def balance(A, B, limit):
-                    A_sub = A[np.random.choice(len(A), limit, replace=False)]
-                    B_sub = B[np.random.choice(len(B), limit, replace=False)]
-                    return A_sub, B_sub
-
-                X_tr_A, X_tr_B = balance(X_tr_targ, X_tr_other, n_tr_limit)
-                X_te_A, X_te_B = balance(X_te_targ, X_te_other, n_te_limit)
+                X_tr_A, X_tr_B = balance_two_class_arrays(X_tr_targ, X_tr_other)
+                X_te_A, X_te_B = balance_two_class_arrays(X_te_targ, X_te_other)
 
             elif strategy == 'null_other':
                 def balance_pseudo(X, limit):
