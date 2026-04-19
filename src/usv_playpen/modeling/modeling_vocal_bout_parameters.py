@@ -54,6 +54,7 @@ from .modeling_utils import (
     identify_empty_event_sessions,
     zero_fill_missing_feature_columns,
     zscore_features_across_sessions,
+    unroll_history_matrix,
 )
 
 
@@ -530,20 +531,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         time_indices = np.arange(hist_frames)
 
-        def unroll(X_in):
-            n, f = X_in.shape
-            X_out = np.zeros((n * f, 2), dtype=np.float32)
-            X_out[:, 0] = X_in.ravel()
-            X_out[:, 1] = np.tile(time_indices, n)
-            return X_out
-
         splitter = self.create_data_splits(feature_data)
 
         for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
             print(f"  > Processing Split {split_idx + 1}...")
 
-            X_tr_gam = unroll(X_tr).astype(np.float32)
-            X_te_gam = unroll(X_te).astype(np.float32)
+            X_tr_gam = unroll_history_matrix(X_tr, time_indices=time_indices).astype(np.float32)
+            X_te_gam = unroll_history_matrix(X_te, time_indices=time_indices).astype(np.float32)
 
             try:
                 y_tr_tiled = np.repeat(y_tr + 1e-6, hist_frames).astype(np.float32)

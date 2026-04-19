@@ -33,6 +33,7 @@ from .modeling_utils import (
     zscore_features_across_sessions,
     pool_session_arrays,
     balance_two_class_arrays,
+    unroll_history_matrix,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -890,11 +891,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         time_indices = np.arange(history_frames, dtype=np.float32)
 
         def unroll_data_for_gam(X):
-            n_samples, n_frames = X.shape
-            X_unrolled = np.zeros((n_samples * n_frames, 2), dtype=np.float32)
-            X_unrolled[:, 0] = X.ravel()
-            X_unrolled[:, 1] = np.tile(time_indices, n_samples)
-            return X_unrolled
+            return unroll_history_matrix(X, time_indices=time_indices)
 
         actual_data_splitter = self.create_data_splits(feature_data, strategy_override=None)
 

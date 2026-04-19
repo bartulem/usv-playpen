@@ -46,6 +46,7 @@ from .modeling_utils import (
     zscore_features_across_sessions,
     pool_session_arrays,
     balance_two_class_arrays,
+    unroll_history_matrix,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -577,13 +578,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             results['actual']['filter_shapes'][split_idx, :] = filter_shape_actual
 
                     elif model_type == 'pygam':
-                        def unroll(X):
-                            n_samples, n_frames = X.shape
-                            time_idx = np.tile(np.arange(n_frames), n_samples)
-                            return np.column_stack([X.ravel(), time_idx])
-
-                        X_tr_gam = unroll(X_tr)
-                        X_te_gam = unroll(X_te)
+                        X_tr_gam = unroll_history_matrix(X_tr)
+                        X_te_gam = unroll_history_matrix(X_te)
                         y_tr_gam = np.repeat(y_tr, self.history_frames).astype(int)
 
                         pg_params = self.modeling_settings['hyperparameters']['classical']['pygam']

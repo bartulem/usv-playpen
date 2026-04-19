@@ -46,6 +46,12 @@ K. `pool_session_arrays`          — concatenate two-class per-session arrays
 L. `balance_two_class_arrays`     — down-sample the majority class of a
                                      two-class dataset to match the minority
                                      class size (used by Onset and Category).
+M. `unroll_history_matrix`        — reshape a `(n_samples, n_frames)` feature-
+                                     history matrix into the two-column
+                                     `(n_samples * n_frames, 2)` layout
+                                     consumed by the pygam tensor-product
+                                     spline fits (used by Onset, Bout, and
+                                     Category).
 
 Block B (`load_behavioral_feature_data`) is intentionally NOT wrapped here —
 callers should import it directly from `load_input_files`.
@@ -823,3 +829,54 @@ def balance_two_class_arrays(X_pos: np.ndarray,
         X_neg = X_neg[neg_indices]
 
     return X_pos, X_neg
+
+
+def unroll_history_matrix(X: np.ndarray,
+                          time_indices: np.ndarray = None) -> np.ndarray:
+    """
+    Reshapes a feature-history matrix into the two-column layout consumed by
+    pygam tensor-product splines.
+
+    Every pygam-based runner in the modeling pipelines (the Onset, Bout, and
+    Category pipelines) fits a 2-D tensor-product spline over
+    `(feature_value, time_lag)`. That fit expects samples as rows, with the
+    first column holding the per-lag feature value and the second column
+    holding the integer (or float) time-lag index. This helper takes an input
+    of shape `(n_samples, n_frames)` — where each row is the feature history
+    for one epoch — and expands it into a `(n_samples * n_frames, 2)` array
+    with `X[:, 0] = X_in.ravel()` (row-major, so each epoch's lags appear
+    contiguously) and `X[:, 1] = tile(time_indices, n_samples)`. The output
+    is `float32` to match the downstream pygam fit dtype.
+
+    Three identical inline copies of this function previously lived in the
+    pipeline modules (see the Onset, Bout, and Category `_run_model_for_*`
+    methods); they have been replaced with a call to this helper.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Feature-history matrix of shape `(n_samples, n_frames)`. `n_frames`
+        corresponds to the number of history lags used by the pipeline.
+    time_indices : np.ndarray or None, optional
+        Optional array of length `n_frames` providing the explicit lag index
+        values placed in the second output column. When `None` (the default),
+        a contiguous range `np.arange(n_frames)` is used. Callers that want
+        to preserve a particular dtype (e.g. `float32` in the Onset pipeline)
+        can pass the pre-built index array.
+
+    Returns
+    -------
+    np.ndarray
+        `float32` array of shape `(n_samples * n_frames, 2)`. Column 0 holds
+        the row-major-flattened feature values; column 1 holds the tiled
+        time-lag indices, repeated `n_samples` times.
+    """
+
+    n_samples, n_frames = X.shape
+    if time_indices is None:
+        time_indices = np.arange(n_frames)
+
+    X_out = np.zeros((n_samples * n_frames, 2), dtype=np.float32)
+    X_out[:, 0] = X.ravel()
+    X_out[:, 1] = np.tile(time_indices, n_samples)
+    return X_out
