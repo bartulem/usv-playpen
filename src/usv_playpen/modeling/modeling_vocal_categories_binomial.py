@@ -47,6 +47,8 @@ from .modeling_utils import (
     pool_session_arrays,
     balance_two_class_arrays,
     unroll_history_matrix,
+    concat_two_class_with_labels,
+    shuffle_train_test_arrays,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -407,8 +409,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
             if len(X_all_targ) > 0 and len(X_all_other) > 0:
                 # Combine entirely to run a true stratified split
-                X_pooled = np.vstack([X_all_targ, X_all_other])
-                y_pooled = np.hstack([np.ones(len(X_all_targ)), np.zeros(len(X_all_other))])
+                X_pooled, y_pooled = concat_two_class_with_labels(X_all_targ, X_all_other)
 
                 sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=rand_seed)
 
@@ -455,16 +456,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 if X_tr_A is None or X_te_A is None:
                     continue
 
-            X_train = np.vstack([X_tr_A, X_tr_B])
-            y_train = np.hstack([np.ones(len(X_tr_A)), np.zeros(len(X_tr_B))])
+            X_train, y_train = concat_two_class_with_labels(X_tr_A, X_tr_B)
+            X_test, y_test = concat_two_class_with_labels(X_te_A, X_te_B)
 
-            X_test = np.vstack([X_te_A, X_te_B])
-            y_test = np.hstack([np.ones(len(X_te_A)), np.zeros(len(X_te_B))])
-
-            p_train = np.random.permutation(len(y_train))
-            p_test = np.random.permutation(len(y_test))
-
-            yield X_train[p_train], y_train[p_train], X_test[p_test], y_test[p_test]
+            yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
 
     def _run_modeling_category(self, feature_name: str, feature_data: dict, basis_matrix: np.ndarray | None) -> tuple[str, dict]:
         """

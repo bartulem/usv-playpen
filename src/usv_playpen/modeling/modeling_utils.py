@@ -52,6 +52,20 @@ M. `unroll_history_matrix`        — reshape a `(n_samples, n_frames)` feature-
                                      consumed by the pygam tensor-product
                                      spline fits (used by Onset, Bout, and
                                      Category).
+N. `concat_two_class_with_labels` — vertically stack positive/negative feature
+                                     arrays and emit the matching label vector
+                                     (1.0 for positives, 0.0 for negatives).
+                                     Shared by the Onset and Category
+                                     splitters.
+O. `shuffle_train_test_arrays`    — apply independent NumPy permutations to
+                                     the train and test blocks at the final
+                                     yield step of a split generator. Shared
+                                     by the Onset and Category splitters.
+P. `bounded_test_proportion`      — clamp `test_proportion` up to the minimum
+                                     fraction required to keep
+                                     `min_test_sessions` sessions in the test
+                                     fold, used when the session count is
+                                     small. Used by the Onset splitter.
 
 Block B (`load_behavioral_feature_data`) is intentionally NOT wrapped here —
 callers should import it directly from `load_input_files`.
@@ -880,3 +894,125 @@ def unroll_history_matrix(X: np.ndarray,
     X_out[:, 0] = X.ravel()
     X_out[:, 1] = np.tile(time_indices, n_samples)
     return X_out
+
+
+def concat_two_class_with_labels(X_pos: np.ndarray,
+                                 X_neg: np.ndarray) -> tuple:
+    """
+    Vertically stacks two-class feature arrays and emits the matching label
+    vector.
+
+    This is a tiny but ubiquitous helper in the binary-classification
+    splitters (Onset + Category). Given `X_pos` (shape `(n_pos, n_features)`)
+    and `X_neg` (shape `(n_neg, n_features)`), it returns `X` of shape
+    `(n_pos + n_neg, n_features)` together with `y` of shape
+    `(n_pos + n_neg,)`, where `y = 1.0` on the first `n_pos` rows and
+    `y = 0.0` on the remaining `n_neg` rows. The ordering matches the input
+    vertical stack so downstream shuffle steps can be applied as a single
+    permutation. No copying of `X_pos` / `X_neg` data beyond what
+    `np.concatenate` performs is done by this helper.
+
+    Parameters
+    ----------
+    X_pos : np.ndarray
+        Positive-class samples of shape `(n_pos, n_features)`.
+    X_neg : np.ndarray
+        Negative-class samples of shape `(n_neg, n_features)`. The column
+        count must match `X_pos`.
+
+    Returns
+    -------
+    tuple of (np.ndarray, np.ndarray)
+        `(X, y)` — `X` is the vertical concatenation of `(X_pos, X_neg)`, and
+        `y` is a 1-D `float64` array with ones for the positive block
+        followed by zeros for the negative block.
+    """
+
+    y = np.concatenate((np.ones(X_pos.shape[0]), np.zeros(X_neg.shape[0])))
+    X = np.concatenate((X_pos, X_neg), axis=0)
+    return X, y
+
+
+def shuffle_train_test_arrays(X_train: np.ndarray,
+                              y_train: np.ndarray,
+                              X_test: np.ndarray,
+                              y_test: np.ndarray) -> tuple:
+    """
+    Randomly permutes the train and test blocks of a split independently.
+
+    After a binary-classification split generator has assembled the balanced
+    train and unbalanced-or-balanced test arrays, the rows of both blocks
+    are still ordered as `[positives, negatives]`. Downstream models that do
+    not perform their own mini-batch shuffling (or that take the data order
+    as the optimization order) benefit from a final permutation step. This
+    helper generates one permutation index per block (sampled via NumPy's
+    global RNG, so reproducibility is governed by the pipeline-level seed
+    set in `prepare_modeling_sessions`) and applies it to `X` and `y`
+    jointly so the label alignment is preserved.
+
+    Parameters
+    ----------
+    X_train : np.ndarray
+        Training feature matrix of shape `(n_train, n_features)`.
+    y_train : np.ndarray
+        Training label vector of shape `(n_train,)`.
+    X_test : np.ndarray
+        Test feature matrix of shape `(n_test, n_features)`.
+    y_test : np.ndarray
+        Test label vector of shape `(n_test,)`.
+
+    Returns
+    -------
+    tuple of (np.ndarray, np.ndarray, np.ndarray, np.ndarray)
+        The permuted `(X_train, y_train, X_test, y_test)` quadruple. Shapes
+        are unchanged relative to the inputs.
+    """
+
+    train_shuffle_idx = np.random.permutation(X_train.shape[0])
+    test_shuffle_idx = np.random.permutation(X_test.shape[0])
+    return (X_train[train_shuffle_idx],
+            y_train[train_shuffle_idx],
+            X_test[test_shuffle_idx],
+            y_test[test_shuffle_idx])
+
+
+def bounded_test_proportion(test_proportion: float,
+                            n_sessions: int,
+                            min_test_sessions: int = 1) -> float:
+    """
+    Clamps `test_proportion` up to the minimum fraction required to retain
+    at least `min_test_sessions` sessions in the test fold.
+
+    In session-held-out splitting (used by the Onset `session` and
+    `session_null_control` strategies), the raw `test_proportion` read from
+    the modeling settings can correspond to a test fold size below one
+    session when the total session count is small — e.g. `test_proportion
+    = 0.2` across 3 sessions rounds down to 0 test sessions under
+    `ShuffleSplit`. This helper raises the effective test proportion to
+    `min_test_sessions / n_sessions` when necessary. When `n_sessions == 0`
+    the helper returns the raw `test_proportion` unchanged (the caller is
+    expected to short-circuit in that case).
+
+    Parameters
+    ----------
+    test_proportion : float
+        The nominal test proportion read from the modeling settings
+        (must be in `(0, 1)`).
+    n_sessions : int
+        The total number of sessions available for splitting.
+    min_test_sessions : int, optional
+        The minimum number of sessions that must end up in the test fold.
+        Defaults to `1`.
+
+    Returns
+    -------
+    float
+        The effective test proportion to pass to `ShuffleSplit`. This is
+        `max(test_proportion, min_test_sessions / n_sessions)` when
+        `n_sessions > 0`, or `test_proportion` itself when
+        `n_sessions == 0`.
+    """
+
+    if n_sessions <= 0:
+        return test_proportion
+    return max(test_proportion, min_test_sessions / n_sessions)

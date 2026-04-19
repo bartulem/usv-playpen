@@ -34,6 +34,9 @@ from .modeling_utils import (
     pool_session_arrays,
     balance_two_class_arrays,
     unroll_history_matrix,
+    concat_two_class_with_labels,
+    shuffle_train_test_arrays,
+    bounded_test_proportion,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -434,10 +437,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 print(f"Warning: No balanced data for feature. Skipping splits.")
                 return
 
-            y_pos = np.ones(X_pos.shape[0])
-            y_neg = np.zeros(X_neg.shape[0])
-            X = np.concatenate((X_pos, X_neg), axis=0)
-            y = np.concatenate((y_pos, y_neg), axis=0)
+            X, y = concat_two_class_with_labels(X_pos, X_neg)
 
             print(f"--- 'mixed' strategy: Created balanced dataset of {X.shape[0]} samples.")
 
@@ -451,8 +451,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             all_sessions_array = np.array(all_sessions)
             n_sessions = len(all_sessions_array)
 
-            min_test_sessions = 1
-            actual_test_proportion = max(test_proportion, min_test_sessions / n_sessions if n_sessions > 0 else 0)
+            actual_test_proportion = bounded_test_proportion(test_proportion, n_sessions)
             if n_sessions * (1 - actual_test_proportion) < 1:
                 print(f"Warning: test_proportion ({test_proportion}) too high for {n_sessions} sessions. Skipping.")
                 return
@@ -476,21 +475,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     continue
 
                 # Create final train arrays (balanced)
-                y_pos_train = np.ones(X_pos_train_bal.shape[0])
-                y_neg_train = np.zeros(X_neg_train_bal.shape[0])
-                X_train = np.concatenate((X_pos_train_bal, X_neg_train_bal), axis=0)
-                y_train = np.concatenate((y_pos_train, y_neg_train), axis=0)
+                X_train, y_train = concat_two_class_with_labels(X_pos_train_bal, X_neg_train_bal)
 
                 # Create final test arrays (NB: unbalanced!)
-                y_pos_test = np.ones(X_pos_test.shape[0])
-                y_neg_test = np.zeros(X_neg_test.shape[0])
-                X_test = np.concatenate((X_pos_test, X_neg_test), axis=0)
-                y_test = np.concatenate((y_pos_test, y_neg_test), axis=0)
+                X_test, y_test = concat_two_class_with_labels(X_pos_test, X_neg_test)
 
-                train_shuffle_idx = np.random.permutation(X_train.shape[0])
-                test_shuffle_idx = np.random.permutation(X_test.shape[0])
-
-                yield X_train[train_shuffle_idx], y_train[train_shuffle_idx], X_test[test_shuffle_idx], y_test[test_shuffle_idx]
+                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
 
         ### Strategy 3: 'null_control' (pooled no-bout, matching 'mixed' size)
         elif split_strategy == 'null_control':
@@ -508,10 +498,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             X_fake_pos = X_neg_all[shuffled_indices[:n_balanced_samples]]
             X_fake_neg = X_neg_all[shuffled_indices[n_balanced_samples: n_balanced_samples * 2]]
 
-            y_fake_pos = np.ones(X_fake_pos.shape[0])
-            y_fake_neg = np.zeros(X_fake_neg.shape[0])
-            X = np.concatenate((X_fake_pos, X_fake_neg), axis=0)
-            y = np.concatenate((y_fake_pos, y_fake_neg), axis=0)
+            X, y = concat_two_class_with_labels(X_fake_pos, X_fake_neg)
 
             print(f"  Created null dataset of {X.shape[0]} samples ({X_fake_pos.shape[0]} fake_pos, {X_fake_neg.shape[0]} fake_neg) ---")
 
@@ -526,8 +513,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             all_sessions_array = np.array(all_sessions)
             n_sessions = len(all_sessions_array)
 
-            min_test_sessions = 1
-            actual_test_proportion = max(test_proportion, min_test_sessions / n_sessions if n_sessions > 0 else 0)
+            actual_test_proportion = bounded_test_proportion(test_proportion, n_sessions)
             if n_sessions * (1 - actual_test_proportion) < 1:
                 print(f"Warning: test_proportion ({test_proportion}) too high for {n_sessions} sessions. Skipping.")
                 return
@@ -573,10 +559,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 X_fake_pos_train = X_neg_train_all[train_neg_indices[:n_balanced_train_half]]
                 X_fake_neg_train = X_neg_train_all[train_neg_indices[n_balanced_train_half: n_total_train_needed]]
 
-                y_pos_train = np.ones(X_fake_pos_train.shape[0])
-                y_neg_train = np.zeros(X_fake_neg_train.shape[0])
-                X_train = np.concatenate((X_fake_pos_train, X_fake_neg_train), axis=0)
-                y_train = np.concatenate((y_pos_train, y_neg_train), axis=0)
+                X_train, y_train = concat_two_class_with_labels(X_fake_pos_train, X_fake_neg_train)
 
                 # Create fake UNBALANCED test set, matching 'session' size AND ratio
                 n_test_neg_available = X_neg_test_all.shape[0]
@@ -591,16 +574,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 X_fake_pos_test = X_neg_test_all[fake_pos_indices]
                 X_fake_neg_test = X_neg_test_all[fake_neg_indices]
 
-                y_pos_test = np.ones(X_fake_pos_test.shape[0])
-                y_neg_test = np.zeros(X_fake_neg_test.shape[0])
-                X_test = np.concatenate((X_fake_pos_test, X_fake_neg_test), axis=0)
-                y_test = np.concatenate((y_pos_test, y_neg_test), axis=0)
+                X_test, y_test = concat_two_class_with_labels(X_fake_pos_test, X_fake_neg_test)
 
                 # Shuffle the final arrays before yielding
-                train_shuffle_idx = np.random.permutation(X_train.shape[0])
-                test_shuffle_idx = np.random.permutation(X_test.shape[0])
-
-                yield X_train[train_shuffle_idx], y_train[train_shuffle_idx], X_test[test_shuffle_idx], y_test[test_shuffle_idx]
+                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
 
         else:
             raise ValueError(f"Unknown split_strategy: {split_strategy}. Must be 'mixed', 'session', 'null_control', or 'session_null_control'.")
