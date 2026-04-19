@@ -29,7 +29,6 @@ import json
 import numpy as np
 import os
 import pathlib
-import polars as pls
 import pickle
 from pygam import LogisticGAM, te
 from sklearn.linear_model import LogisticRegressionCV
@@ -37,10 +36,16 @@ from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
 from sklearn.metrics import roc_auc_score, log_loss, f1_score, precision_score, recall_score, accuracy_score
 from tqdm import tqdm
 
-from .modeling_cross_session_normalization import zscore_different_sessions_together
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .modeling_utils import (
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    select_kinematic_columns,
+    build_vocal_signal_columns,
+    harmonize_session_columns,
+    zscore_features_across_sessions,
+)
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import configure_path
 
 
 class VocalCategoryModelingPipeline(FeatureZoo):
@@ -130,23 +135,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             Saves a pickle file containing 'target_feature_arr' and 'other_feature_arr' for each feature.
         """
 
-        if self.modeling_settings['model_params']['random_seed'] is not None:
-            np.random.seed(self.modeling_settings['model_params']['random_seed'])
-        else:
-            np.random.seed(None)
-
-        txt_sessions = []
-        try:
-            sessions_file = self.modeling_settings['io']['session_list_file']
-            with open(configure_path(sessions_file)) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        txt_sessions.append(configure_path(line))
-            if not txt_sessions:
-                raise ValueError("No valid session paths found.")
-        except Exception as e:
-            raise RuntimeError(f"Error reading session paths: {e}")
+        txt_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         print("Loading behavioral feature data...")
         beh_data_dict, cam_fps_dict, mouse_names_dict = load_behavioral_feature_data(
@@ -155,10 +144,9 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         )
 
         voc_settings = self.modeling_settings['vocal_features']
-        feat_settings = self.modeling_settings['kinematic_features']
+        kin_settings = self.modeling_settings['kinematic_features']
 
         voc_mode = voc_settings['usv_predictor_type']
-        partner_only = voc_settings['usv_predictor_partner_only']
         smooth_sd = voc_settings['usv_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
         noise_cats = voc_settings['usv_noise_categories']
@@ -182,123 +170,60 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         processed_beh_data = {}
         pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         targ_idx = abs(pred_idx - 1)
+        category_self_exclude = ('usv_rate', 'usv_event', f"usv_cat_{target_category}")
 
         for sess_id in list(beh_data_dict.keys()):
             if sess_id not in mouse_names_dict or len(mouse_names_dict[sess_id]) < 2:
                 continue
 
             current_df = beh_data_dict[sess_id]
-            pred_name = mouse_names_dict[sess_id][pred_idx]
-            targ_name = mouse_names_dict[sess_id][targ_idx]
 
-            cols_to_keep = []
+            (pred_idx,
+             targ_idx,
+             pred_name,
+             targ_name) = resolve_mouse_roles(
+                modeling_settings=self.modeling_settings,
+                mouse_names_dict=mouse_names_dict,
+                session_id=sess_id
+            )
+
             sess_cols = current_df.columns
 
-            for base_feat in self.modeling_settings['kinematic_features']['model_predictors']:
-                matching_cols = [c for c in sess_cols if c.split('.')[-1] == base_feat]
-                for feat in matching_cols:
-                    is_self = feat.startswith(f"{targ_name}.")
-                    is_other = feat.startswith(f"{pred_name}.")
-                    is_dyad = '-' in feat.split('.')[0]
-                    is_diff = 'diff' in base_feat
+            cols_to_keep = select_kinematic_columns(
+                session_df_columns=sess_cols,
+                target_name=targ_name,
+                predictor_name=pred_name,
+                kin_settings=kin_settings,
+                predictor_idx=pred_idx
+            )
 
-                    is_excluded = False
-                    if is_dyad and not is_diff:
-                        try:
-                            parts = feat.split('.')[-1].split('-')
-                            if pred_idx == 0:
-                                if parts[0] == 'allo_yaw' or parts[1] == 'TTI': is_excluded = True
-                            else:
-                                if parts[1] == 'allo_yaw' or parts[0] == 'TTI': is_excluded = True
-                        except:
-                            is_excluded = True
+            new_voc_cols, new_voc_col_names = build_vocal_signal_columns(
+                usv_data_dict=usv_data_dict,
+                session_id=sess_id,
+                target_name=targ_name,
+                predictor_name=pred_name,
+                voc_settings=voc_settings,
+                usv_self_exclude=category_self_exclude
+            )
 
-                    if is_self or is_other or is_diff or (is_dyad and not is_excluded):
-                        cols_to_keep.append(feat)
-                        if base_feat not in ('speed', 'acceleration'):
-                            der1, der2 = f'{feat}_1st_der', f'{feat}_2nd_der'
-                            if self.modeling_settings['kinematic_features']['include_1st_derivatives'] and der1 in sess_cols:
-                                cols_to_keep.append(der1)
-                            if self.modeling_settings['kinematic_features']['include_2nd_derivatives'] and der2 in sess_cols:
-                                cols_to_keep.append(der2)
-
-            new_voc_cols = []
-            mice_to_process = [pred_name] if partner_only else [targ_name, pred_name]
-
-            for m_name in mice_to_process:
-                is_subject = (m_name == targ_name)
-                if m_name in usv_data_dict[sess_id]:
-                    # Strict lookup, no .get()
-                    vocal_signals = usv_data_dict[sess_id][m_name]['continuous_vocal_signals']
-                    for sig_key, sig_arr in vocal_signals.items():
-                        if is_subject:
-                            if sig_key == f"usv_cat_{target_category}":
-                                continue
-                            if sig_key in ('usv_rate', 'usv_event'):
-                                continue
-
-                        col_name = f"{m_name}.{sig_key}"
-                        new_voc_cols.append(pls.Series(col_name, sig_arr))
-                        cols_to_keep.append(col_name)
+            cols_to_keep = sorted(set(cols_to_keep) | set(new_voc_col_names))
 
             if new_voc_cols:
                 current_df = current_df.with_columns(new_voc_cols)
-            processed_beh_data[sess_id] = current_df.select(sorted(list(set(cols_to_keep))))
-
-        final_suffixes = set()
-        generic_existence_map = set()
-
-        for sess_id, df in processed_beh_data.items():
-            t_name = mouse_names_dict[sess_id][targ_idx]
-            p_name = mouse_names_dict[sess_id][pred_idx]
-
-            dyad_renames = {c: c.split('.')[-1] for c in df.columns if '-' in c.split('.')[0]}
-            if dyad_renames:
-                df = df.rename(dyad_renames)
-                processed_beh_data[sess_id] = df
-
-            for col in df.columns:
-                suffix = col.split('.')[-1]
-                if not suffix.isdigit():
-                    final_suffixes.add(suffix)
-
-                if col.startswith(f"{t_name}."):
-                    generic_existence_map.add(f"self.{suffix}")
-                elif col.startswith(f"{p_name}."):
-                    generic_existence_map.add(f"other.{suffix}")
+            processed_beh_data[sess_id] = current_df.select([c for c in cols_to_keep if c in current_df.columns])
 
         print("Standardizing columns (Project-Wide Consistency)...")
-        for sess_id, df in processed_beh_data.items():
-            existing_cols = set(df.columns)
-            new_zeros = []
-            t_name = mouse_names_dict[sess_id][targ_idx]
-            p_name = mouse_names_dict[sess_id][pred_idx]
-
-            for suffix in final_suffixes:
-                if '-' in suffix:
-                    if suffix not in existing_cols:
-                        new_zeros.append(pls.Series(suffix, np.zeros(df.height, dtype=np.float32)))
-                else:
-                    for prefix, m_name in [('self', t_name), ('other', p_name)]:
-                        expected_col = f"{m_name}.{suffix}"
-                        generic_key = f"{prefix}.{suffix}"
-
-                        if expected_col not in existing_cols:
-                            if 'usv' in suffix:
-                                # Objective: Only create if ROLE had vocalizations project-wide
-                                if generic_key in generic_existence_map:
-                                    new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
-                            else:
-                                new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
-
-            if new_zeros:
-                processed_beh_data[sess_id] = df.with_columns(new_zeros)
+        processed_beh_data, revised_predictors = harmonize_session_columns(
+            processed_beh_dict=processed_beh_data,
+            mouse_names_dict=mouse_names_dict,
+            target_idx=targ_idx,
+            predictor_idx=pred_idx
+        )
 
         print("Z-scoring features across sessions...")
-        revised_predictors = sorted(list(final_suffixes))
-        processed_beh_data = zscore_different_sessions_together(
-            data_dict=processed_beh_data,
-            feature_lst=revised_predictors,
+        processed_beh_data = zscore_features_across_sessions(
+            processed_beh_dict=processed_beh_data,
+            suffixes=revised_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {})
         )
 

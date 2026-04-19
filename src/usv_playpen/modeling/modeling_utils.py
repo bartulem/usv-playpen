@@ -31,7 +31,12 @@ H. `zero_fill_missing_feature_columns` — fill in missing columns across
                                      sessions with zeros so every session has
                                      the same feature set, respecting vocal
                                      exclusion rules for target/partner mice.
-I. `zscore_features_across_sessions`   — thin wrapper around
+I. `harmonize_session_columns`    — dyad-rename + project-wide existence-map
+                                     USV gating + zero-fill, used by the
+                                     Category/Multinomial/Continuous pipelines
+                                     (returns the harmonized dict and its
+                                     unified suffix list).
+J. `zscore_features_across_sessions`   — thin wrapper around
                                      `zscore_different_sessions_together`
                                      for API symmetry with the other helpers.
 
@@ -180,9 +185,15 @@ def select_kinematic_columns(session_df_columns: list,
     - `dyadic_engagement`:
         Two-mouse interaction features of the form
         `{tracker_id}-{tracked_id}.{feature}` (e.g. Social Engagement Index
-        suffixes such as `orofacial-sei`). The directional allo_yaw / TTI rule
-        is never applied to this bucket; both orientations are kept when
-        present, leaving heading-based selection to a downstream helper.
+        suffixes such as `orofacial-sei`). Because the first mouse in the
+        dyad prefix is the observer (actor), this bucket keeps only the
+        orientation where the observer is the *predictor* mouse — i.e.
+        `{predictor_name}-{target_name}.{feature}`. The reverse
+        `{target_name}-{predictor_name}.{feature}` orientation is dropped.
+        This preserves the "partner's engagement toward subject" reading,
+        which is consistent with the partner-only vocal predictor scheme,
+        and avoids the column-name collision that would otherwise occur
+        when the downstream dyad-rename step strips the `{m1-m2}.` prefix.
 
     Derivatives
     -----------
@@ -256,9 +267,13 @@ def select_kinematic_columns(session_df_columns: list,
             columns_to_keep.append(feature)
             _maybe_add_derivatives(feature, base_feature)
 
+    engagement_dyad_prefix = f"{predictor_name}-{target_name}"
     for base_feature in dyadic_engagement:
         matching = [c for c in session_df_columns if c.split('.')[-1] == base_feature]
         for feature in matching:
+            dyad_prefix = feature.split('.')[0]
+            if dyad_prefix != engagement_dyad_prefix:
+                continue
             columns_to_keep.append(feature)
             _maybe_add_derivatives(feature, base_feature)
 
@@ -540,6 +555,122 @@ def zero_fill_missing_feature_columns(processed_beh_dict: dict,
             processed_beh_dict[sess_id] = df.with_columns(new_zeros)
 
     return processed_beh_dict
+
+
+def harmonize_session_columns(processed_beh_dict: dict,
+                              mouse_names_dict: dict,
+                              target_idx: int,
+                              predictor_idx: int) -> tuple:
+    """
+    Renames dyadic columns, zero-fills missing columns with project-wide
+    existence gating for USV features, and returns the unified suffix list.
+
+    This helper consolidates the column-harmonization logic shared by the
+    Category, Multinomial, and Continuous pipelines. It performs three
+    sequential operations across the per-session DataFrames, mutating
+    `processed_beh_dict` in place:
+
+    1. Dyad-rename: Any column whose prefix contains a dash (e.g.
+       `{male_id}-{female_id}.nose-nose`) is renamed to its suffix-only
+       form (`nose-nose`). After this step dyadic features appear as
+       standalone columns, which is the convention these pipelines'
+       downstream epoch-slicing code assumes.
+
+    2. Existence-map construction: In the same pass, builds a
+       project-wide set of `"self.{suffix}"` / `"other.{suffix}"` keys
+       recording which (role, suffix) combinations were actually
+       populated in at least one session. This gate is used for USV
+       zero-filling so missing roles that never had any vocalizations
+       do not receive spurious zero channels.
+
+    3. Zero-fill missing columns per session:
+       - Dyadic suffix (contains a dash) missing: fill as a standalone
+         zero column. Ensures every session has the full dyadic
+         feature set, even sessions where some dyadic pairs were empty.
+       - Ego suffix + USV: fill `{mouse_id}.{suffix}` for both self and
+         other roles only when the corresponding generic
+         `"{role}.{suffix}"` key is present in the existence map. The
+         gate prevents zero-filling USV columns for a role that never
+         vocalized anywhere in the project.
+       - Ego suffix + non-USV: always fill `{mouse_id}.{suffix}` for
+         both self and other roles when missing. Non-USV kinematic
+         absence is treated as missing-data, filled with zero so every
+         session has a consistent column set for downstream z-scoring
+         and epoch slicing.
+
+    Parameters
+    ----------
+    processed_beh_dict : dict
+        Mapping from `session_id` to a polars DataFrame of kept features.
+        Modified in place.
+    mouse_names_dict : dict
+        Mapping from `session_id` to an ordered list of mouse track names
+        (index 0 = male, index 1 = female by convention).
+    target_idx : int
+        The target mouse slot. Used to build `"self.{suffix}"` existence
+        keys and to resolve the per-session target mouse name.
+    predictor_idx : int
+        The predictor mouse slot. Used to build `"other.{suffix}"`
+        existence keys and to resolve the per-session predictor mouse
+        name.
+
+    Returns
+    -------
+    tuple of (dict, list of str)
+        `(processed_beh_dict, revised_predictor_suffixes)`. The suffixes
+        are the sorted union of all non-numeric column suffixes observed
+        across the harmonized sessions, suitable for immediate passage
+        to `zscore_features_across_sessions`.
+    """
+
+    final_suffixes = set()
+    generic_existence_map = set()
+
+    for sess_id, df in processed_beh_dict.items():
+        t_name = mouse_names_dict[sess_id][target_idx]
+        p_name = mouse_names_dict[sess_id][predictor_idx]
+
+        dyad_renames = {c: c.split('.')[-1] for c in df.columns if '-' in c.split('.')[0]}
+        if dyad_renames:
+            df = df.rename(dyad_renames)
+            processed_beh_dict[sess_id] = df
+
+        for col in df.columns:
+            suffix = col.split('.')[-1]
+            if not suffix.isdigit():
+                final_suffixes.add(suffix)
+
+            if col.startswith(f"{t_name}."):
+                generic_existence_map.add(f"self.{suffix}")
+            elif col.startswith(f"{p_name}."):
+                generic_existence_map.add(f"other.{suffix}")
+
+    for sess_id, df in processed_beh_dict.items():
+        existing_cols = set(df.columns)
+        new_zeros = []
+        t_name = mouse_names_dict[sess_id][target_idx]
+        p_name = mouse_names_dict[sess_id][predictor_idx]
+
+        for suffix in final_suffixes:
+            if '-' in suffix:
+                if suffix not in existing_cols:
+                    new_zeros.append(pls.Series(suffix, np.zeros(df.height, dtype=np.float32)))
+            else:
+                for prefix, m_name in [('self', t_name), ('other', p_name)]:
+                    expected_col = f"{m_name}.{suffix}"
+                    generic_key = f"{prefix}.{suffix}"
+
+                    if expected_col not in existing_cols:
+                        if 'usv' in suffix:
+                            if generic_key in generic_existence_map:
+                                new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
+                        else:
+                            new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
+
+        if new_zeros:
+            processed_beh_dict[sess_id] = df.with_columns(new_zeros)
+
+    return processed_beh_dict, sorted(list(final_suffixes))
 
 
 def zscore_features_across_sessions(processed_beh_dict: dict,

@@ -35,7 +35,6 @@ from datetime import datetime
 import numpy as np
 import os
 import pickle
-import polars as pls
 import gc
 from pygam import GAM, te
 from scipy.stats import spearmanr
@@ -46,8 +45,16 @@ from tqdm import tqdm
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
-from .modeling_cross_session_normalization import zscore_different_sessions_together
-from ..os_utils import configure_path
+from .modeling_utils import (
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    select_kinematic_columns,
+    build_vocal_signal_columns,
+    collect_predictor_suffixes,
+    identify_empty_event_sessions,
+    zero_fill_missing_feature_columns,
+    zscore_features_across_sessions,
+)
 
 
 class BoutParameterPipeline(VocalOnsetModelingPipeline):
@@ -123,25 +130,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                the bout (representing total information content).
         """
 
-        if self.modeling_settings['model_params']['random_seed'] is not None:
-            np.random.seed(self.modeling_settings['model_params']['random_seed'])
-        else:
-            np.random.seed(None)
-
         target_variable = self.modeling_settings['model_params']['model_target_variable']
         print(f"--- Extracting Data for Regression Target: {target_variable} ---")
 
-        txt_modeling_sessions = []
-        try:
-            with open(configure_path(self.modeling_settings['io']['session_list_file'])) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        txt_modeling_sessions.append(configure_path(line))
-        except Exception as e:
-            raise RuntimeError(f"Error reading session paths: {e}")
+        txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 
-        target_variable = self.modeling_settings['model_params']['model_target_variable']
         gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
         gmm_z = self.modeling_settings['model_params']['gmm_z_score']
         min_usv = self.modeling_settings['model_params']['usv_per_bout_floor']
@@ -175,63 +168,56 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         )
 
         processed_beh_feature_data_dict = {}
+        kin_settings = self.modeling_settings['kinematic_features']
+        voc_settings = self.modeling_settings['vocal_features']
         predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
         target_mouse_idx = abs(predictor_mouse_idx - 1)
 
+        sessions_to_remove = identify_empty_event_sessions(
+            usv_data_dict=bout_data_dict,
+            mouse_names_dict=mouse_track_names_dict,
+            target_idx=target_mouse_idx,
+            event_key='bout_onsets',
+            warn_label='session'
+        )
+        for sess in sessions_to_remove:
+            if sess in beh_feature_data_dict:
+                del beh_feature_data_dict[sess]
+
+        print(f"Proceeding with {len(beh_feature_data_dict)} sessions after filtering empty ones.")
+
         for sess_id, session_df in beh_feature_data_dict.items():
-            if sess_id not in mouse_track_names_dict: continue
+            if sess_id not in mouse_track_names_dict:
+                continue
 
-            p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
-            t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
+            (predictor_mouse_idx,
+             target_mouse_idx,
+             p_name,
+             t_name) = resolve_mouse_roles(
+                modeling_settings=self.modeling_settings,
+                mouse_names_dict=mouse_track_names_dict,
+                session_id=sess_id
+            )
+
             session_df_cols = session_df.columns
-            columns_to_keep_session = []
 
-            for base_feature in self.modeling_settings['kinematic_features']['model_predictors']:
-                session_cols = [col for col in session_df_cols if col.split('.')[-1] == base_feature]
-                for feature in session_cols:
-                    is_self_ego = feature.startswith(f"{t_name}.")
-                    is_other_ego = feature.startswith(f"{p_name}.")
-                    is_dyadic = '-' in feature.split('.')[0]
-                    is_diff = 'diff' in base_feature
+            columns_to_keep_session = select_kinematic_columns(
+                session_df_columns=session_df_cols,
+                target_name=t_name,
+                predictor_name=p_name,
+                kin_settings=kin_settings,
+                predictor_idx=predictor_mouse_idx
+            )
 
-                    is_excluded = False
-                    if is_dyadic and not is_diff:
-                        try:
-                            feature_parts = feature.split('.')[-1].split('-')
-                            if len(feature_parts) == 2:
-                                if predictor_mouse_idx == 0:
-                                    if feature_parts[0] == 'allo_yaw' or feature_parts[1] == 'TTI': is_excluded = True
-                                else:
-                                    if feature_parts[1] == 'allo_yaw' or feature_parts[0] == 'TTI': is_excluded = True
-                        except:
-                            pass
+            new_voc_cols, new_voc_col_names = build_vocal_signal_columns(
+                usv_data_dict=bout_data_dict,
+                session_id=sess_id,
+                target_name=t_name,
+                predictor_name=p_name,
+                voc_settings=voc_settings
+            )
 
-                    if is_self_ego or is_other_ego or is_diff or (is_dyadic and not is_excluded):
-                        columns_to_keep_session.append(feature)
-
-                        if base_feature not in ('speed', 'acceleration'):
-                            der_1st, der_2nd = f'{feature}_1st_der', f'{feature}_2nd_der'
-                            if self.modeling_settings['kinematic_features']['include_1st_derivatives'] and der_1st in session_df_cols:
-                                columns_to_keep_session.append(der_1st)
-                            if self.modeling_settings['kinematic_features']['include_2nd_derivatives'] and der_2nd in session_df_cols:
-                                columns_to_keep_session.append(der_2nd)
-
-            new_voc_cols = []
-            mice_to_process = [p_name] if partner_only else [t_name, p_name]
-
-            for m_name in mice_to_process:
-                is_target = (m_name == t_name)
-                if m_name in bout_data_dict[sess_id]:
-                    # Strict lookup, no .get()
-                    vocal_signals = bout_data_dict[sess_id][m_name]['continuous_vocal_signals']
-                    for sig_key, sig_arr in vocal_signals.items():
-                        if is_target and sig_key in ('usv_rate', 'usv_event'):
-                            continue
-                        col_name = f"{m_name}.{sig_key}"
-                        new_voc_cols.append(pls.Series(col_name, sig_arr))
-                        columns_to_keep_session.append(col_name)
-
-            columns_to_keep_session = sorted(list(set(columns_to_keep_session)))
+            columns_to_keep_session = sorted(set(columns_to_keep_session) | set(new_voc_col_names))
             existing_cols = [c for c in columns_to_keep_session if c in session_df_cols]
             current_df = session_df.select(existing_cols)
             if new_voc_cols:
@@ -239,52 +225,26 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             processed_beh_feature_data_dict[sess_id] = current_df
 
-        final_suffixes = set()
-        for sess_df in processed_beh_feature_data_dict.values():
-            for col in sess_df.columns:
-                suffix = col.split('.')[-1]
-                if not suffix.isdigit():
-                    final_suffixes.add(suffix)
-
-        revised_behavioral_predictors = sorted(list(final_suffixes))
+        revised_behavioral_predictors = collect_predictor_suffixes(processed_beh_feature_data_dict)
 
         print("Standardizing columns ...")
-        for sess_id in processed_beh_feature_data_dict:
-            df = processed_beh_feature_data_dict[sess_id]
-            existing_cols = set(df.columns)
-            new_zeros = []
-            t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
-            p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
-
-            for pred_suffix in revised_behavioral_predictors:
-                if '-' in pred_suffix:
-                    continue
-
-                for prefix, m_name in [('self', t_name), ('other', p_name)]:
-                    expected_col = f"{m_name}.{pred_suffix}"
-
-                    if expected_col not in existing_cols:
-
-                        is_vocal = 'usv_' in pred_suffix
-                        if m_name == t_name:
-                            if is_vocal and pred_suffix in ('usv_rate', 'usv_event'):
-                                continue
-                        else:
-                            if 'mute' in self.modeling_settings['io']['session_list_file'].split('/')[-1]:
-                                if is_vocal:
-                                    continue
-
-                        new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
-
-            if new_zeros:
-                processed_beh_feature_data_dict[sess_id] = df.with_columns(new_zeros)
+        processed_beh_feature_data_dict = zero_fill_missing_feature_columns(
+            processed_beh_dict=processed_beh_feature_data_dict,
+            mouse_names_dict=mouse_track_names_dict,
+            target_idx=target_mouse_idx,
+            predictor_idx=predictor_mouse_idx,
+            suffixes=revised_behavioral_predictors,
+            voc_settings=voc_settings,
+            session_list_file=self.modeling_settings['io']['session_list_file'],
+            skip_dyadic_suffixes=True
+        )
 
         # Strict lookup instead of getattr with default
         feature_bounds = self.feature_boundaries if hasattr(self, 'feature_boundaries') else {}
 
-        processed_beh_feature_data_dict = zscore_different_sessions_together(
-            data_dict=processed_beh_feature_data_dict,
-            feature_lst=revised_behavioral_predictors,
+        processed_beh_feature_data_dict = zscore_features_across_sessions(
+            processed_beh_dict=processed_beh_feature_data_dict,
+            suffixes=revised_behavioral_predictors,
             feature_bounds=feature_bounds
         )
 
@@ -492,7 +452,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             raise ValueError(f"Unknown split strategy: {split_strategy}")
 
     def _run_model_for_feature_pygam(self, feature_name, feature_data, basis_matrix):
-        """
+        r"""
         Runs a univariate GammaGAM regression and permutation test for a single feature.
 
         This method evaluates the predictive relationship between a behavioral/vocal feature
@@ -706,7 +666,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         return feature_name, results
 
     def _run_model_for_feature_sklearn(self, feature_name, feature_data, basis_matrix):
-        """
+        r"""
         Runs a univariate RidgeCV regression on log-transformed bout parameters.
 
         This method provides a linear alternative to the GAM approach. It models the relationship
