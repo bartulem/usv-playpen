@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Module for modeling ofcContinuous USV bout parameters.
+Module for modeling continuous USV bout parameters.
 
 This module provides a specialized pipeline for predicting continuous vocal
 features — specifically "bout duration" and "bout complexity" — using behavioral and
@@ -246,7 +246,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
-            feature_bounds=feature_bounds
+            feature_bounds=feature_bounds,
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
         final_data_dict = {}
@@ -333,7 +334,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             is_zero = np.all(final_data_dict[feat]['X'] == 0)
             status = "ZERO-FILLED" if is_zero else "DATA-PRESENT"
 
-            guard = " [PROTECTED]" if "self" in feat and any(k in feat for k in ('usv_rate', 'usv_event')) else ""
+            guard = " [PROTECTED]" if feat.startswith("self.") and any(k in feat for k in ('usv_rate', 'usv_event')) else ""
 
             print(f"{i:3}. {feat:<45} | {feat_n:<10} | {feat_sess:<10} | {status}{guard}")
 

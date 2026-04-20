@@ -56,7 +56,6 @@
     "usv_predictor_smoothing_sd": 1,
     "usv_category_column_name": "usv_supercategory",
     "usv_noise_categories": [0],
-    "usv_complex_categories": [1, 2, 6],
     "usv_category_number": 6
   },
 

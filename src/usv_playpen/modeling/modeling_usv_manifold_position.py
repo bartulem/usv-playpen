@@ -415,7 +415,8 @@ class ContinuousModelingPipeline(FeatureZoo):
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
-            feature_bounds=feature_bounds
+            feature_bounds=feature_bounds,
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
         print("Extracting epochs and saving to disk...")
@@ -764,8 +765,10 @@ class ContinuousModelRunner:
                         'r2_spatial': float(1.0 - (sse / sst)) if sst > 0 else 0.0
                     }
 
-                    # Construct the static (N, 5) prediction array for downstream plotting
-                    static_params = np.array([mu[0], mu[1], sig_x ** 2, sig_y ** 2, rho], dtype=np.float32)
+                    # Construct the static (N, 5) prediction array for downstream plotting.
+                    # Columns are [mu_x, mu_y, sigma_x, sigma_y, rho] — stddevs, matching
+                    # SmoothBivariateGaussianRegression.predict_density output semantics.
+                    static_params = np.array([mu[0], mu[1], sig_x, sig_y, rho], dtype=np.float32)
                     y_pred_params = np.tile(static_params, (len(Y_test), 1))
 
                     # Model-free has no trainable weights

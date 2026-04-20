@@ -17,7 +17,7 @@ import polars as pls
 from pygam import LogisticGAM, te
 import pickle
 from sklearn.linear_model import LogisticRegressionCV
-from sklearn.metrics import log_loss, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import accuracy_score, log_loss, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
@@ -250,7 +250,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
-            feature_bounds=getattr(self, 'feature_boundaries', {})
+            feature_bounds=getattr(self, 'feature_boundaries', {}),
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
         print("Z-scoring complete.")
 
@@ -696,7 +697,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 results['actual']['score'][split_idx] = lr_actual.score(X_test_proj, y_test)
                 results['actual']['precision'][split_idx] = precision_score(y_test, y_pred_actual, zero_division=0.0)
                 results['actual']['recall'][split_idx] = recall_score(y_test, y_pred_actual, zero_division=0.0)
-                results['actual']['f1'][split_idx] = f1_score(y_test, y_pred_actual, average='micro', zero_division=0.0)
+                results['actual']['f1'][split_idx] = f1_score(y_test, y_pred_actual, average='binary', zero_division=0.0)
 
                 if len(np.unique(y_test)) > 1:
                     results['actual']['auc'][split_idx] = roc_auc_score(y_test, y_proba_actual)
@@ -732,7 +733,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 results['shuffled']['score'][split_idx] = lr_shuffled.score(X_test_proj, y_test)
                 results['shuffled']['precision'][split_idx] = precision_score(y_test, y_pred_shuffled, zero_division=0.0)
                 results['shuffled']['recall'][split_idx] = recall_score(y_test, y_pred_shuffled, zero_division=0.0)
-                results['shuffled']['f1'][split_idx] = f1_score(y_test, y_pred_shuffled, average='micro', zero_division=0.0)
+                results['shuffled']['f1'][split_idx] = f1_score(y_test, y_pred_shuffled, average='binary', zero_division=0.0)
 
                 if len(np.unique(y_test)) > 1:
                     results['shuffled']['auc'][split_idx] = roc_auc_score(y_test, y_proba_shuffled)
@@ -912,14 +913,15 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                     grid_X_0 = np.stack([np.zeros(history_frames, dtype=np.float32), time_indices], axis=1)
                     grid_X_1 = np.stack([np.ones(history_frames, dtype=np.float32), time_indices], axis=1)
-                    log_odds_0 = gam_actual.predict_mu(grid_X_0).astype(np.float32)
-                    log_odds_1 = gam_actual.predict_mu(grid_X_1).astype(np.float32)
+                    # predict_mu returns the Bernoulli mean (probability), not log-odds.
+                    prob_0 = gam_actual.predict_mu(grid_X_0).astype(np.float32)
+                    prob_1 = gam_actual.predict_mu(grid_X_1).astype(np.float32)
 
-                    results['actual']['filter_shapes'][split_idx, :] = (log_odds_1 - log_odds_0).flatten()
-                    results['actual']['score'][split_idx] = f1_score(y_test_int, y_pred_mean_epoch, average='micro', zero_division=0.0)
+                    results['actual']['filter_shapes'][split_idx, :] = (prob_1 - prob_0).flatten()
+                    results['actual']['score'][split_idx] = accuracy_score(y_test_int, y_pred_mean_epoch)
                     results['actual']['precision'][split_idx] = precision_score(y_test_int, y_pred_mean_epoch, zero_division=0.0)
                     results['actual']['recall'][split_idx] = recall_score(y_test_int, y_pred_mean_epoch, zero_division=0.0)
-                    results['actual']['f1'][split_idx] = f1_score(y_test_int, y_pred_mean_epoch, average='micro', zero_division=0.0)
+                    results['actual']['f1'][split_idx] = f1_score(y_test_int, y_pred_mean_epoch, average='binary', zero_division=0.0)
                     if len(np.unique(y_test_int)) > 1:
                         results['actual']['auc'][split_idx] = roc_auc_score(y_test_int, y_proba_mean_epoch)
                         results['actual']['ll'][split_idx] = log_loss(y_test_int, np.clip(y_proba_mean_epoch, 1e-15, 1 - 1e-15))
@@ -952,15 +954,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                     grid_X_0_null = np.stack([np.zeros(history_frames, dtype=np.float32), time_indices], axis=1)
                     grid_X_1_null = np.stack([np.ones(history_frames, dtype=np.float32), time_indices], axis=1)
-                    log_odds_0_null = gam_shuffled.predict_mu(grid_X_0_null).astype(np.float32)
-                    log_odds_1_null = gam_shuffled.predict_mu(grid_X_1_null).astype(np.float32)
-                    filter_shape_null = (log_odds_1_null - log_odds_0_null).flatten()
+                    # predict_mu returns the Bernoulli mean (probability), not log-odds.
+                    prob_0_null = gam_shuffled.predict_mu(grid_X_0_null).astype(np.float32)
+                    prob_1_null = gam_shuffled.predict_mu(grid_X_1_null).astype(np.float32)
+                    filter_shape_null = (prob_1_null - prob_0_null).flatten()
                     results['shuffled']['filter_shapes'][split_idx, :] = filter_shape_null
 
-                    results['shuffled']['score'][split_idx] = f1_score(y_test_int_null, y_pred_shuffled_mean, average='micro', zero_division=0.0)
+                    results['shuffled']['score'][split_idx] = accuracy_score(y_test_int_null, y_pred_shuffled_mean)
                     results['shuffled']['precision'][split_idx] = precision_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
                     results['shuffled']['recall'][split_idx] = recall_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
-                    results['shuffled']['f1'][split_idx] = f1_score(y_test_int_null, y_pred_shuffled_mean, average='micro', zero_division=0.0)
+                    results['shuffled']['f1'][split_idx] = f1_score(y_test_int_null, y_pred_shuffled_mean, average='binary', zero_division=0.0)
                     if len(np.unique(y_test_int_null)) > 1:
                         results['shuffled']['auc'][split_idx] = roc_auc_score(y_test_int_null, y_proba_shuffled_mean)
                         results['shuffled']['ll'][split_idx] = log_loss(y_test_int_null, np.clip(y_proba_shuffled_mean, 1e-15, 1 - 1e-15))

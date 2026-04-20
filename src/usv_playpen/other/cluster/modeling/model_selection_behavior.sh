@@ -9,7 +9,7 @@
 #SBATCH --mail-user=nsurname@domain.edu
 #SBATCH --mail-type=FAIL
 
-# Usage: sbatch model_selection_behavior.sh (onset|params|category|multinomial|continuous|binary_coarse)
+# Usage: sbatch model_selection_behavior.sh (onset|params|category|multinomial|continuous)
 ANALYSIS_TYPE=$1
 
 # Define core variables
@@ -26,7 +26,7 @@ TARGET_VAR="bout_durations" # Only used for 'params'
 PVAL=0.01
 
 case $ANALYSIS_TYPE in
-  onset|category|multinomial|continuous|binary_coarse)
+  onset|category|multinomial|continuous)
     echo "Configuring $ANALYSIS_TYPE stepwise selection using consolidated dispatcher..."
     ;;
 
@@ -38,7 +38,7 @@ case $ANALYSIS_TYPE in
 
   *)
     echo "Error: Invalid analysis type '$ANALYSIS_TYPE'"
-    echo "Usage: sbatch model_selection.sh [onset|params|category|multinomial|continuous|binary_coarse]"
+    echo "Usage: sbatch model_selection.sh [onset|params|category|multinomial|continuous]"
     exit 1
     ;;
 esac

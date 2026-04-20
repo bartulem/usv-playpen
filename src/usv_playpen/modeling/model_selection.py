@@ -129,7 +129,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     """
 
     print("--- Starting Model Selection ---")
-    chance_ll = 0.693147
+    chance_ll = np.log(2)
 
     if settings_path is None:
         settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
@@ -211,8 +211,9 @@ def bout_onset_model_selection(univariate_results_path: str,
     elif split_strategy == 'mixed':
         X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
         n_keep = min(X_p_all.shape[0], X_n_all.shape[0])
-        pos_indices = np.random.choice(X_p_all.shape[0], n_keep, replace=False)
-        neg_indices = np.random.choice(X_n_all.shape[0], n_keep, replace=False)
+        rng = np.random.default_rng(random_seed)
+        pos_indices = rng.choice(X_p_all.shape[0], n_keep, replace=False)
+        neg_indices = rng.choice(X_n_all.shape[0], n_keep, replace=False)
         y_balanced = np.concatenate((np.ones(n_keep), np.zeros(n_keep)))
         sss = StratifiedShuffleSplit(n_splits=n_splits_selection, test_size=test_prop, random_state=random_seed)
         for train_ix, test_ix in sss.split(np.zeros(len(y_balanced)), y_balanced):
@@ -248,12 +249,12 @@ def bout_onset_model_selection(univariate_results_path: str,
                 last_results = pickle.load(f)
             current_model_features = last_results['current_features']
             best_current_score = last_results['baseline_score']
-            cand_dict = last_results.get('candidates_summary', {})
+            cand_dict = last_results['candidates_summary']
             if cand_dict:
                 cand_stats = []
                 for feat, res in cand_dict.items():
-                    m = res.get('mean_ll', 0.7031)
-                    s = res.get('se_ll', 0.0)
+                    m = res['mean_ll']
+                    s = res['se_ll']
                     cand_stats.append((feat, m, s))
                 if cand_stats:
                     cand_stats.sort(key=lambda x: x[1])
@@ -279,8 +280,9 @@ def bout_onset_model_selection(univariate_results_path: str,
                     anc_data = all_feature_data[anchor_feature]
                     X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                     n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
-                    idx_p = np.random.choice(X_p_tr.shape[0], n_k, replace=False)
-                    idx_n = np.random.choice(X_n_tr.shape[0], n_k, replace=False)
+                    anc_rng = np.random.default_rng(random_seed + fold_i)
+                    idx_p = anc_rng.choice(X_p_tr.shape[0], n_k, replace=False)
+                    idx_n = anc_rng.choice(X_n_tr.shape[0], n_k, replace=False)
                     y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
                     X_p_te, X_n_te = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
                     y_te_fold = np.concatenate((np.ones(X_p_te.shape[0]), np.zeros(X_n_te.shape[0])))
@@ -314,10 +316,11 @@ def bout_onset_model_selection(univariate_results_path: str,
                 del gam, X_tr_gam, X_te_gam
                 gc.collect()
             except Exception as e:
-                print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
-                metrics['ll'].append(chance_ll)
+                print(f"    [!] Error fitting {anchor_to_force} (Fold {fold_i}): {e}")
+                for _k in metrics:
+                    metrics[_k].append(np.nan)
 
-        valid_ll = [x for x in metrics['ll'] if x < chance_ll + 0.05]
+        valid_ll = [x for x in metrics['ll'] if np.isfinite(x)]
         if valid_ll:
             best_current_score = np.mean(valid_ll)
             best_current_se = np.std(valid_ll, ddof=1) / np.sqrt(len(valid_ll))
@@ -368,10 +371,10 @@ def bout_onset_model_selection(univariate_results_path: str,
                         train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
                         anc_data = all_feature_data[anchor_feature]
                         X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                        np.random.seed(random_seed + fold_i)
+                        trial_rng = np.random.default_rng(random_seed + fold_i)
                         n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
-                        idx_p = np.random.choice(X_p_tr.shape[0], n_k, replace=False)
-                        idx_n = np.random.choice(X_n_tr.shape[0], n_k, replace=False)
+                        idx_p = trial_rng.choice(X_p_tr.shape[0], n_k, replace=False)
+                        idx_n = trial_rng.choice(X_n_tr.shape[0], n_k, replace=False)
                         y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
 
                         X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
@@ -412,7 +415,8 @@ def bout_onset_model_selection(univariate_results_path: str,
                     gc.collect()
                 except Exception as e:
                     print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
-                    metrics['ll'].append(chance_ll)
+                    for _k in metrics:
+                        metrics[_k].append(np.nan)
 
             valid = [x for x in metrics['ll'] if np.isfinite(x)]
 
@@ -458,10 +462,10 @@ def bout_onset_model_selection(univariate_results_path: str,
     try:
         X_p, X_n = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
 
-        np.random.seed(random_seed)
+        final_rng = np.random.default_rng(random_seed)
         n_k = min(X_p.shape[0], X_n.shape[0])
-        idx_p = np.random.choice(X_p.shape[0], n_k, replace=False)
-        idx_n = np.random.choice(X_n.shape[0], n_k, replace=False)
+        idx_p = final_rng.choice(X_p.shape[0], n_k, replace=False)
+        idx_n = final_rng.choice(X_n.shape[0], n_k, replace=False)
 
         y_final = np.concatenate((np.ones(n_k), np.zeros(n_k)))
 
@@ -481,7 +485,7 @@ def bout_onset_model_selection(univariate_results_path: str,
             y_tr = y_final[tr_idx]
 
             X_gam_tr = get_unrolled_X_for_multivariate(X_list_tr, history_frames)
-            y_gam_tr = np.repeat(y_tr.astype(float) + 1e-6, history_frames)
+            y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
 
             gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
             for i in range(1, len(current_model_features)):
@@ -689,7 +693,7 @@ def vocal_category_model_selection(
     """
 
     print("--- Starting Vocal Category Model Selection ---")
-    chance_ll = 0.693147
+    chance_ll = np.log(2)
 
     if settings_path is None:
         settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
@@ -710,8 +714,6 @@ def vocal_category_model_selection(
     # Extract target metadata safely
     fname = os.path.basename(univariate_results_path)
 
-    # Safely extracting using assumed re logic without inline imports
-    import re
     cat_match = re.search(r'category_(\d+)', fname)
     target_category = f"category_{cat_match.group(1)}" if cat_match else "category_unknown"
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
@@ -920,7 +922,7 @@ def vocal_category_model_selection(
 
                 X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
                 y_tr = np.concatenate([y_tr_t, y_tr_o])
-                perm = np.random.permutation(len(y_tr))
+                perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
 
                 X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t, X_te_o)]
                 y_te = np.concatenate([y_te_t, y_te_o]).astype(int)
@@ -960,9 +962,10 @@ def vocal_category_model_selection(
                 gc.collect()
             except Exception as e:
                 print(f"    [!] Error fitting {anchor} (Fold {fold_i}): {e}")
-                metrics['ll'].append(chance_ll)
+                for _k in metrics:
+                    metrics[_k].append(np.nan)
 
-        valid = [s for s in metrics['ll'] if s < chance_ll + 0.05]
+        valid = [s for s in metrics['ll'] if np.isfinite(s)]
         if valid:
             best_current_score = np.mean(valid)
             best_current_se = np.std(valid, ddof=1) / np.sqrt(len(valid))
@@ -1030,7 +1033,7 @@ def vocal_category_model_selection(
 
                     X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
                     y_tr = np.concatenate([y_tr_t, y_tr_o])
-                    perm = np.random.permutation(len(y_tr))
+                    perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
 
                     X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t, X_te_o)]
                     y_te = np.concatenate([y_te_t, y_te_o]).astype(int)
@@ -1070,11 +1073,16 @@ def vocal_category_model_selection(
                     gc.collect()
                 except Exception as e:
                     print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
-                    metrics['ll'].append(chance_ll)
+                    for _k in metrics:
+                        metrics[_k].append(np.nan)
 
-            valid = [x for x in metrics['ll'] if x < chance_ll + 0.05]
-            mean_ll = np.mean(valid) if valid else chance_ll
-            se_ll = (np.std(valid, ddof=1) / np.sqrt(len(valid))) if valid else 0.0
+            valid = [x for x in metrics['ll'] if np.isfinite(x)]
+            if not valid:
+                print(" Failed (no finite folds).")
+                continue
+
+            mean_ll = np.mean(valid)
+            se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid))
             print(f" LL: {mean_ll:.4f} | AUC: {np.nanmean(metrics['auc']):.3f}")
 
             step_results_metadata['candidates_summary'][feat] = {
@@ -1089,10 +1097,10 @@ def vocal_category_model_selection(
         if best_cand_name and (best_current_score - best_cand_score) > best_cand_se:
             print(f"  ACCEPT {best_cand_name}")
             current_model_features.append(best_cand_name)
-            best_current_score, step_counter = best_cand_score, step_counter + 1
             step_results_metadata['selected_feature'] = best_cand_name
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter - 1}.pkl"), 'wb') as f:
+            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
                 pickle.dump(step_results_metadata, f)
+            best_current_score, step_counter = best_cand_score, step_counter + 1
             if len(current_model_features) == len(ranked_features): break
         else:
             print("  REJECT. Stopping.")
@@ -1229,8 +1237,30 @@ def bout_parameter_model_selection(
     - 'sklearn': Utilizes `RidgeCV` combined with linear basis projection. To satisfy
                  normality and homoscedasticity assumptions, the target variable (y)
                  is log-transformed prior to fitting, and predictions are back-transformed.
+                 Back-transformation applies a Jensen-inequality bias correction
+                 (`y_pred = exp(X_te @ beta + sigma^2 / 2)`, with `sigma^2` estimated from the
+                 training residuals of `log(y_tr + 1e-6)`): without the `+ sigma^2 / 2` shift,
+                 naive exponentiation of the linear-predictor targets the conditional median
+                 rather than the conditional mean under a lognormal model, which systematically
+                 biases Gamma deviance and MSLE against the sklearn branch.
     - 'pygam': Utilizes `GAM` with a Gamma distribution and Log-link function. High-dimensional
                features are unrolled into tensor product splines (te) to capture non-linear surfaces.
+               For each test trial the `H` per-frame predictions produced by the tensor-product
+               unroll are aggregated on the linear-predictor (eta = log mu) scale before applying
+               the inverse link (i.e. `y_pred = exp(mean(eta))`, not `mean(exp(eta))`), which
+               avoids the Jensen-inequality bias that natural-scale averaging would introduce
+               whenever the per-frame eta have any spread.
+
+    Known caveat (tile-and-repeat unroll):
+    --------------------------------------
+    The tensor-product unroll duplicates each trial's scalar target `y_tr` across `H` history
+    frames via `np.repeat(y_tr, H)` and fits as if those `N * H` rows were independent
+    observations. This inflates the effective sample size seen by pyGAM's penalty selection
+    (GCV/REML), nudging it toward under-smoothing relative to a truly i.i.d. fit on `N`
+    observations. Test-time aggregation is performed per-trial so held-out metrics remain on
+    the correct `N` scale, and cross-validation is the practical safeguard against the
+    resulting optimism; the bias is shared by both engines' multivariate paths and so does
+    not confound the sklearn-vs-pyGAM comparison.
 
     Splitting Strategies:
     ---------------------
@@ -1410,8 +1440,7 @@ def bout_parameter_model_selection(
 
     # 4. Generate Splits
     cv_folds = []
-    n_folds_mc = int(np.floor(1.0 / test_prop))
-    n_folds_mc = max(2, n_folds_mc)
+    n_folds_mc = max(2, int(round(1.0 / test_prop)))
 
     if split_strategy == 'session':
         print(f"  > Generating {n_splits} Monte Carlo Session Splits (Test Prop: {test_prop})...")
@@ -1500,7 +1529,13 @@ def bout_parameter_model_selection(
                     y_tr_log = np.log(y_tr + 1e-6)
                     model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_proj, y_tr_log)
 
-                    y_pred = np.exp(model.predict(X_te_proj))
+                    # Jensen bias correction: fitting log(y) with OLS/Ridge targets the median on the
+                    # natural scale; for a (conditionally) lognormal model, E[y|X] = exp(Xb + sigma^2/2).
+                    # Without the +sigma^2/2 shift, exp(predict(...)) systematically under-estimates the
+                    # mean, biasing gamma-deviance / MSLE against the sklearn branch.
+                    resid = y_tr_log - model.predict(X_tr_proj)
+                    sigma2 = float(np.var(resid, ddof=1))
+                    y_pred = np.exp(model.predict(X_te_proj) + 0.5 * sigma2)
                 else:
                     X_tr_unrolled = np.empty((len(X_tr) * history_frames, 2))
                     X_tr_unrolled[:, 0] = X_tr.ravel()
@@ -1513,7 +1548,12 @@ def bout_parameter_model_selection(
                     X_te_unrolled[:, 0] = X_te.ravel()
                     X_te_unrolled[:, 1] = np.tile(np.arange(history_frames), len(X_te))
 
-                    y_pred = np.mean(gam.predict(X_te_unrolled).reshape(len(y_te), history_frames), axis=1)
+                    # Aggregate the H per-frame predictions on the linear-predictor (eta = log mu) scale
+                    # before applying the inverse link: exp(mean(eta)) rather than mean(exp(eta)). This
+                    # avoids the Jensen-inequality bias introduced by averaging on the natural (mu) scale,
+                    # which would otherwise over-estimate E[y|X] whenever the per-frame eta have any spread.
+                    eta_te = np.log(gam.predict_mu(X_te_unrolled)).reshape(len(y_te), history_frames)
+                    y_pred = np.exp(np.mean(eta_te, axis=1))
 
                 # Robust Metric Calculation
                 y_te_safe = np.maximum(y_te, 1e-6)
@@ -1539,8 +1579,10 @@ def bout_parameter_model_selection(
                 metrics['residual_deviance'].append(np.nan)
                 metrics['spearman_r'].append(np.nan)
                 metrics['msle'].append(np.nan)
+                metrics['y_true'].append(np.nan)
+                metrics['y_pred'].append(np.nan)
 
-        valid_dev = [m for m in metrics['explained_deviance'] if not np.isnan(m)]
+        valid_dev = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
         if valid_dev:
             mean_anchor_score = np.mean(valid_dev)
             if mean_anchor_score > 0:
@@ -1614,13 +1656,20 @@ def bout_parameter_model_selection(
 
                         y_tr_log = np.log(y_tr + 1e-6)
                         model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_stacked, y_tr_log)
-                        y_pred = np.exp(model.predict(X_te_stacked))
+
+                        # Jensen bias correction on the natural scale (see anchor fit for rationale).
+                        resid = y_tr_log - model.predict(X_tr_stacked)
+                        sigma2 = float(np.var(resid, ddof=1))
+                        y_pred = np.exp(model.predict(X_te_stacked) + 0.5 * sigma2)
                     else:
                         X_tr_gam = get_unrolled_X_for_multivariate(trial_tr, history_frames)
                         X_te_gam = get_unrolled_X_for_multivariate(trial_te, history_frames)
 
                         gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr + 1e-6, history_frames))
-                        y_pred = np.mean(gam.predict(X_te_gam).reshape(len(y_te), history_frames), axis=1)
+
+                        # Aggregate the H per-frame predictions on the linear-predictor scale (see anchor fit).
+                        eta_te = np.log(gam.predict_mu(X_te_gam)).reshape(len(y_te), history_frames)
+                        y_pred = np.exp(np.mean(eta_te, axis=1))
 
                     y_te_safe = np.maximum(y_te, 1e-6)
                     y_pred_safe = np.maximum(y_pred, 1e-6)
@@ -1645,27 +1694,30 @@ def bout_parameter_model_selection(
                     metrics['residual_deviance'].append(np.nan)
                     metrics['spearman_r'].append(np.nan)
                     metrics['msle'].append(np.nan)
+                    metrics['y_true'].append(np.nan)
+                    metrics['y_pred'].append(np.nan)
 
-            valid = [m for m in metrics['explained_deviance'] if not np.isnan(m)]
-            if valid:
-                m_dev, s_dev = np.mean(valid), np.std(valid, ddof=1) / np.sqrt(len(valid))
-                print(f" D^2: {m_dev:.4f}")
+            valid = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
+            if not valid:
+                print(" Failed (no finite folds).")
+                continue
 
-                step_results['candidates_summary'][feat] = {
-                    'explained_deviance': metrics['explained_deviance'],
-                    'residual_deviance': metrics['residual_deviance'],
-                    'spearman_r': metrics['spearman_r'],
-                    'msle': metrics['msle'],
-                    'y_true': metrics['y_true'],
-                    'y_pred': metrics['y_pred'],
-                    'mean_explained_deviance': m_dev,
-                    'se_explained_deviance': s_dev
-                }
+            m_dev, s_dev = np.mean(valid), np.std(valid, ddof=1) / np.sqrt(len(valid))
+            print(f" D^2: {m_dev:.4f}")
 
-                if m_dev > best_cand_score:
-                    best_cand_score, best_cand_se, best_cand = m_dev, s_dev, feat
-            else:
-                print(" Failed.")
+            step_results['candidates_summary'][feat] = {
+                'explained_deviance': metrics['explained_deviance'],
+                'residual_deviance': metrics['residual_deviance'],
+                'spearman_r': metrics['spearman_r'],
+                'msle': metrics['msle'],
+                'y_true': metrics['y_true'],
+                'y_pred': metrics['y_pred'],
+                'mean_explained_deviance': m_dev,
+                'se_explained_deviance': s_dev
+            }
+
+            if m_dev > best_cand_score:
+                best_cand_score, best_cand_se, best_cand = m_dev, s_dev, feat
 
         if (best_cand_score - best_cand_se) > best_current_score:
             print(f"  ACCEPT {best_cand}")
@@ -2117,9 +2169,10 @@ def multinomial_vocal_category_model_selection(
                     cand_data['classes'] = model.classes_
             except Exception as e:
                 print(f"    [!] Error fitting anchor: {e}")
-                cand_data['folds']['metrics']['auc'].append(np.nan)
+                for _k in cand_data['folds']['metrics']:
+                    cand_data['folds']['metrics'][_k].append(np.nan)
 
-        valid_auc = [m for m in cand_data['folds']['metrics']['auc'] if not np.isnan(m)]
+        valid_auc = [m for m in cand_data['folds']['metrics']['auc'] if np.isfinite(m)]
         if valid_auc:
             mean_anc_auc = np.mean(valid_auc)
             se_anc_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
@@ -2215,19 +2268,21 @@ def multinomial_vocal_category_model_selection(
                     if cand_data['classes'] is None:
                         cand_data['classes'] = model.classes_
                 except Exception:
-                    cand_data['folds']['metrics']['auc'].append(np.nan)
+                    for _k in cand_data['folds']['metrics']:
+                        cand_data['folds']['metrics'][_k].append(np.nan)
 
-            valid_auc = [x for x in cand_data['folds']['metrics']['auc'] if not np.isnan(x)]
-            if valid_auc:
-                mean_auc = np.mean(valid_auc)
-                se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
-                print(f" AUC: {mean_auc:.4f}")
-                cand_data['mean_auc'], cand_data['se_auc'] = mean_auc, se_auc
-                step_results['candidates_summary'][feat] = cand_data
-                if mean_auc > best_cand_score:
-                    best_cand_score, best_cand_se, best_cand = mean_auc, se_auc, feat
-            else:
-                print(" Failed.")
+            valid_auc = [x for x in cand_data['folds']['metrics']['auc'] if np.isfinite(x)]
+            if not valid_auc:
+                print(" Failed (no finite folds).")
+                continue
+
+            mean_auc = np.mean(valid_auc)
+            se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
+            print(f" AUC: {mean_auc:.4f}")
+            cand_data['mean_auc'], cand_data['se_auc'] = mean_auc, se_auc
+            step_results['candidates_summary'][feat] = cand_data
+            if mean_auc > best_cand_score:
+                best_cand_score, best_cand_se, best_cand = mean_auc, se_auc, feat
 
         if (best_cand and (best_cand_score - best_current_score) > best_cand_se):
             print(f"  ACCEPT {best_cand}")
@@ -2556,7 +2611,7 @@ def continuous_vocal_manifold_model_selection(
             f_met['mahalanobis_dist'].append(float(np.mean(np.sqrt(z / (1 - rho ** 2)))))
             f_met['r2_spatial'].append(float(1.0 - (sse / sst)) if sst > 0 else 0.0)
 
-            static_params = np.array([mu[0], mu[1], sig_x ** 2, sig_y ** 2, rho], dtype=np.float32)
+            static_params = np.array([mu[0], mu[1], sig_x, sig_y, rho], dtype=np.float32)
             y_pred_params = np.tile(static_params, (len(Y_te), 1))
 
             baseline_data['folds']['test_indices'].append(te_idx)
@@ -2635,9 +2690,10 @@ def continuous_vocal_manifold_model_selection(
                 gc.collect()
             except Exception as e:
                 print(f"    [!] Error fitting anchor (Fold {fold_idx}): {e}")
-                cand_data['folds']['metrics']['nll_weighted'].append(np.nan)
+                for _k in cand_data['folds']['metrics']:
+                    cand_data['folds']['metrics'][_k].append(np.nan)
 
-        valid_nll = [m for m in cand_data['folds']['metrics']['nll_weighted'] if not np.isnan(m)]
+        valid_nll = [m for m in cand_data['folds']['metrics']['nll_weighted'] if np.isfinite(m)]
         if valid_nll:
             mean_anc_nll = np.mean(valid_nll)
             se_anc_nll = np.std(valid_nll, ddof=1) / np.sqrt(len(valid_nll))
@@ -2730,22 +2786,24 @@ def continuous_vocal_manifold_model_selection(
                     gc.collect()
                 except Exception as e:
                     print(f"    [!] Error fitting {feat} (Fold {fold_idx}): {e}")
-                    cand_data['folds']['metrics']['nll_weighted'].append(np.nan)
+                    for _k in cand_data['folds']['metrics']:
+                        cand_data['folds']['metrics'][_k].append(np.nan)
 
-            valid_nll = [x for x in cand_data['folds']['metrics']['nll_weighted'] if not np.isnan(x)]
-            if valid_nll:
-                mean_nll, se_nll = np.mean(valid_nll), np.std(valid_nll, ddof=1) / np.sqrt(len(valid_nll))
-                mean_r2 = np.nanmean(cand_data['folds']['metrics']['r2_spatial'])
-                print(f" NLL: {mean_nll:.4f} | R2: {mean_r2:.4f}")
+            valid_nll = [x for x in cand_data['folds']['metrics']['nll_weighted'] if np.isfinite(x)]
+            if not valid_nll:
+                print(" Failed (no finite folds).")
+                continue
 
-                cand_data['mean_nll'] = mean_nll
-                cand_data['se_nll'] = se_nll
-                step_results['candidates_summary'][feat] = cand_data
+            mean_nll, se_nll = np.mean(valid_nll), np.std(valid_nll, ddof=1) / np.sqrt(len(valid_nll))
+            mean_r2 = np.nanmean(cand_data['folds']['metrics']['r2_spatial'])
+            print(f" NLL: {mean_nll:.4f} | R2: {mean_r2:.4f}")
 
-                if mean_nll < best_cand_score:
-                    best_cand_score, best_cand_se, best_cand = mean_nll, se_nll, feat
-            else:
-                print(" Failed.")
+            cand_data['mean_nll'] = mean_nll
+            cand_data['se_nll'] = se_nll
+            step_results['candidates_summary'][feat] = cand_data
+
+            if mean_nll < best_cand_score:
+                best_cand_score, best_cand_se, best_cand = mean_nll, se_nll, feat
 
         if best_cand and (best_current_score - best_cand_score) > best_cand_se:
             print(f"  ACCEPT {best_cand}")
@@ -2789,383 +2847,5 @@ def continuous_vocal_manifold_model_selection(
 
         print(f"Success. Final model configuration saved to {os.path.basename(last_file_path)}")
 
-    except Exception as e:
-        print(f"Final promotion failed: {e}")
-
-def coarse_binary_model_selection(
-        univariate_results_path: str,
-        input_data_path: str,
-        output_directory: str,
-        settings_path: str = None,
-        use_top_rank_as_anchor: bool = False,
-        p_val: float = 0.01
-) -> None:
-    """
-    Performs forward stepwise selection for the Hierarchical Stage 1 "Gatekeeper" model.
-
-    Scientific and Computational Purpose:
-    ------------------------------------
-    This function identifies the optimal combination of behavioral features that
-    discriminates between 'Simple' (categories 3, 4, 5) and 'Complex' (categories 1, 2, 6)
-    USV families. By isolating family-level kinematic signatures, it reduces the
-    label entropy for subsequent within-family classification stages.
-
-    The selection process utilizes a JAX-accelerated smooth logistic regression
-    framework. Unlike the flat multinomial model, this stage optimizes for family
-    separation, using ROC-AUC as the primary decision metric to handle the frequency
-    imbalance between simple chirps and complex trills.
-
-    Algorithmic Logic:
-    ------------------
-    1.  Binary Screening: Filters univariate features based on an 'Actual vs. Null'
-        distribution test. A feature is accepted as a candidate only if its mean
-        Actual ROC-AUC exceeds the 1-p_val percentile of its session-shuffled
-        null distribution.
-    2.  Forward Stepwise Selection: Implements a greedy search algorithm. At each
-        iteration, every remaining candidate is added to the current model
-        features. The feature providing the highest improvement is accepted
-        only if it satisfies the One-Standard-Error (1SE) rule.
-    3.  Full Metric Integration: For every fold of every candidate tested, the
-        function calculates and persists:
-        - AUC (ROC): Global separability of Simple vs. Complex.
-        - AUC (PR): Precision-Recall balance, critical for rare complex categories.
-        - Score: Balanced Accuracy, neutralizing the bias toward majority classes.
-        - Log-Loss (LL): The probabilistic cross-entropy used by the optimizer.
-
-    Data Persistence & Hierarchical Routing (Update):
-    -------------------------------------------------
-    Each step generates a '.pkl' file containing the complete experimental state,
-    including fold-level weights, intercepts, true labels, and softmax probabilities.
-    Crucially, it now explicitly retains the 'y_original' multiclass labels (1-6)
-    and 'test_indices' for every fold. This allows Stage 2 scripts to perform
-    "Data Purification" (filtering true positives/negatives into sub-category models)
-    directly from the selection outputs without needing to reload the raw data.
-
-    Parameters
-    ----------
-    univariate_results_path : str
-        Path to the results of 'run_coarse_simple_complex_univariate_training'.
-    input_data_path : str
-        Path to the raw extracted feature data .pkl file.
-    output_directory : str
-        Directory to save step-wise selection checkpoints.
-    settings_path : str, optional
-        Path to modeling_settings.json. Defaults to the project standard path.
-    use_top_rank_as_anchor : bool, default=False
-        If True, initializes Step 0 with the highest-ranked significant feature
-        from the univariate pass.
-    p_val : float, default=0.01
-        Significance threshold for the initial univariate screening pass
-        (Bonferroni-corrected internally).
-
-    Returns
-    -------
-    None
-        Results are saved to disk as a series of structured pickle files.
-    """
-
-    print("--- Starting Hierarchical Stage 1 (Simple vs Complex) Model Selection ---")
-
-    # 1. Environment and Settings Setup
-    if settings_path is None:
-        settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
-        settings_path = str(settings_path_obj)
-
-    try:
-        with open(settings_path, 'r') as f:
-            settings = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Settings file not found at {settings_path}")
-
-    os.makedirs(output_directory, exist_ok=True)
-
-    # 2. Univariate Screening (Actual vs. Null)
-    with open(univariate_results_path, 'rb') as f:
-        univariate_data = pickle.load(f)
-
-    candidates = []
-    num_total_features = len(univariate_data)
-
-    for feat_name, payload in univariate_data.items():
-        if isinstance(payload, tuple) and len(payload) == 2:
-            _, results = payload
-        else:
-            results = payload
-
-        if 'actual' not in results:
-            continue
-
-        actual_auc = np.array(results['actual']['folds']['metrics']['auc'])
-        null_auc = np.array(results['null']['folds']['metrics']['auc'])
-
-        valid_actual = actual_auc[~np.isnan(actual_auc)]
-        valid_null = null_auc[~np.isnan(null_auc)]
-
-        if (len(valid_actual) == 0 or len(valid_null) == 0):
-            continue
-
-        mean_actual_auc = np.mean(valid_actual)
-        null_threshold = np.percentile(valid_null, q=100 - ((p_val / num_total_features) * 100))
-
-        if mean_actual_auc > null_threshold:
-            candidates.append({'feature': feat_name, 'mean_auc': mean_actual_auc})
-
-    candidates.sort(key=lambda x: x['mean_auc'], reverse=True)
-    ranked_features = [x['feature'] for x in candidates]
-
-    if not ranked_features:
-        print("No significant features found. Selection aborted.")
-        return
-
-    print(f"Significant candidates: {len(ranked_features)}. Top: {ranked_features[0]}")
-
-    # 3. Data Preparation and Binary Mapping
-    hp = settings['hyperparameters']['jax_linear']['multinomial_logistic']
-    voc_settings = settings['vocal_features']
-    complex_cats = voc_settings['usv_complex_categories']
-    bin_size = hp['bin_resizing_factor']
-
-    print("\n--- Initializing Pipeline to load identically scaled data ---")
-
-    # Utilizing the global classes to ensure Z-scoring/scaling identically matches the univariate run
-    pipeline = MultinomialModelingPipeline(modeling_settings_dict=settings)
-    runner = MultinomialModelRunner(pipeline_instance=pipeline)
-
-    all_blocks = runner.load_univariate_data_blocks(input_data_path, bin_size=bin_size)
-
-    binned_data = {}
-    y_binary_global = None
-    y_original_global = None
-    groups_global = None
-    n_time_bins = None
-
-    for feat in ranked_features:
-        if feat not in all_blocks:
-            continue
-
-        feat_data = all_blocks[feat]
-        X_s = feat_data['X']
-        y_s = feat_data['y']
-        g_s = feat_data['groups']
-
-        y_bin = np.zeros_like(y_s)
-        y_bin[np.isin(y_s, complex_cats)] = 1
-
-        binned_data[feat] = X_s.astype(np.float32)
-
-        if y_binary_global is None:
-            y_binary_global = y_bin.astype(np.int32)
-            y_original_global = y_s
-            groups_global = g_s
-            n_time_bins = X_s.shape[1]
-
-    del all_blocks
-    gc.collect()
-
-    # 4. Cross-Validation Split Strategy (Restored session/mixed logic)
-    model_ops = settings['model_params']
-    split_strategy = model_ops['split_strategy']
-    n_splits = model_ops['split_num']
-    test_prop = model_ops['test_proportion']
-    random_seed = settings['model_params']['random_seed']
-
-    if split_strategy == 'session':
-        cv_folds = get_stratified_group_splits_stable(
-            groups=groups_global,
-            y=y_binary_global,
-            test_prop=test_prop,
-            n_splits=n_splits,
-            random_seed=random_seed
-        )
-    else:
-        sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
-        cv_folds = list(sss.split(binned_data[ranked_features[0]], y_binary_global))
-
-    current_model_features = []
-    best_current_score = 0.5
-    best_current_se = 0.0
-    step_counter = 0
-    prefix = f"model_selection_hierarchical_stage1_{split_strategy}_step_"
-
-    # 5. Auto-Anchor Logic
-    if use_top_rank_as_anchor:
-        anchor = ranked_features[0]
-        print(f"\n*** AUTO-ANCHOR: Initializing Stage 1 with {anchor} ***")
-
-        anchor_data = {
-            'folds': {
-                'metrics': {m: [] for m in ['auc', 'auc_pr', 'score', 'll']},
-                'weights': [], 'intercepts': [], 'y_true': [], 'y_probs': [],
-                'y_original': [], 'test_indices': []
-            },
-            'classes': [0, 1]
-        }
-
-        for tr_idx, te_idx in cv_folds:
-            X_tr, X_te = binned_data[anchor][tr_idx], binned_data[anchor][te_idx]
-            y_tr, y_te = y_binary_global[tr_idx], y_binary_global[te_idx]
-            y_orig_te = y_original_global[te_idx]
-
-            model = SmoothMultinomialLogisticRegression(
-                n_features=1, n_time_bins=n_time_bins,
-                lambda_smooth=hp['lambda_smooth'], l1_reg=hp['l1_reg'], l2_reg=hp['l2_reg'],
-                learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
-                random_state=hp['random_state']
-            )
-            model.fit(X_tr, y_tr)
-
-            probs = model.predict_proba(X_te, balanced=hp['balance_predictions_bool'])[:, 1]
-            preds = (probs >= 0.5).astype(int)
-
-            eps = 1e-15
-            probs_clipped = np.clip(probs, eps, 1 - eps)
-            prob_matrix = np.column_stack([1 - probs_clipped, probs_clipped])
-
-            try:
-                anchor_data['folds']['metrics']['auc'].append(roc_auc_score(y_te, probs))
-                prec, rec, _ = precision_recall_curve(y_te, probs)
-                anchor_data['folds']['metrics']['auc_pr'].append(auc(rec, prec))
-                anchor_data['folds']['metrics']['score'].append(balanced_accuracy_score(y_te, preds))
-                anchor_data['folds']['metrics']['ll'].append(log_loss(y_te, prob_matrix, labels=[0, 1]))
-            except ValueError:
-                for m in ['auc', 'auc_pr', 'score', 'll']:
-                    anchor_data['folds']['metrics'][m].append(np.nan)
-
-            anchor_data['folds']['y_true'].append(y_te)
-            anchor_data['folds']['y_probs'].append(probs)
-            anchor_data['folds']['y_original'].append(y_orig_te)
-            anchor_data['folds']['test_indices'].append(te_idx)
-            anchor_data['folds']['weights'].append(model.coef_)
-            anchor_data['folds']['intercepts'].append(model.intercept_)
-
-        valid_auc = [v for v in anchor_data['folds']['metrics']['auc'] if not np.isnan(v)]
-        if np.mean(valid_auc) > 0.5:
-            best_current_score = np.mean(valid_auc)
-            best_current_se = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
-            current_model_features = [anchor]
-
-            step_0_res = {
-                'step_idx': 0,
-                'current_features': [anchor],
-                'baseline_score': best_current_score,
-                'selected_feature': anchor,
-                'candidates_summary': {anchor: anchor_data}
-            }
-            with open(os.path.join(output_directory, f"{prefix}0.pkl"), 'wb') as f:
-                pickle.dump(step_0_res, f)
-            step_counter = 1
-
-    # 6. Main Forward Selection Loop
-    while True:
-        print(f"\n=== Step {step_counter} === Best ROC-AUC: {best_current_score:.5f}")
-        step_results = {
-            'step_idx': step_counter,
-            'current_features': list(current_model_features),
-            'baseline_score': best_current_score,
-            'candidates_summary': {},
-            'selected_feature': None
-        }
-        best_cand, best_cand_score, best_cand_se = None, 0.0, 0.0
-
-        for feat in ranked_features:
-            if feat in current_model_features:
-                continue
-            gc.collect()
-            print(f"  Testing +{feat}...", end="", flush=True)
-
-            trial_feats = current_model_features + [feat]
-            n_trial_feats = len(trial_feats)
-            cand_data = {
-                'folds': {
-                    'metrics': {m: [] for m in ['auc', 'auc_pr', 'score', 'll']},
-                    'weights': [], 'intercepts': [], 'y_true': [], 'y_probs': [],
-                    'y_original': [], 'test_indices': []
-                }
-            }
-
-            for tr_idx, te_idx in cv_folds:
-                try:
-                    X_tr_stacked = np.hstack([binned_data[f][tr_idx] for f in trial_feats])
-                    X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
-                    y_tr, y_te = y_binary_global[tr_idx], y_binary_global[te_idx]
-                    y_orig_te = y_original_global[te_idx]
-
-                    model = SmoothMultinomialLogisticRegression(
-                        n_features=n_trial_feats, n_time_bins=n_time_bins,
-                        lambda_smooth=hp['lambda_smooth'],
-                        l2_reg=hp['l2_reg'] / np.sqrt(n_trial_feats),
-                        learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
-                        random_state=hp['random_state']
-                    )
-                    model.fit(X_tr_stacked, y_tr)
-
-                    probs = model.predict_proba(X_te_stacked, balanced=hp['balance_predictions_bool'])[:, 1]
-                    preds = (probs >= 0.5).astype(int)
-
-                    eps = 1e-15
-                    probs_clipped = np.clip(probs, eps, 1 - eps)
-                    prob_matrix = np.column_stack([1 - probs_clipped, probs_clipped])
-
-                    cand_data['folds']['metrics']['ll'].append(log_loss(y_te, prob_matrix, labels=[0, 1]))
-                    cand_data['folds']['metrics']['auc'].append(roc_auc_score(y_te, probs))
-                    prec, rec, _ = precision_recall_curve(y_te, probs)
-                    cand_data['folds']['metrics']['auc_pr'].append(auc(rec, prec))
-                    cand_data['folds']['metrics']['score'].append(balanced_accuracy_score(y_te, preds))
-
-                    cand_data['folds']['weights'].append(model.coef_)
-                    cand_data['folds']['intercepts'].append(model.intercept_)
-                    cand_data['folds']['y_true'].append(y_te)
-                    cand_data['folds']['y_probs'].append(probs)
-                    cand_data['folds']['y_original'].append(y_orig_te)
-                    cand_data['folds']['test_indices'].append(te_idx)
-                except Exception:
-                    cand_data['folds']['metrics']['auc'].append(np.nan)
-
-            valid_auc = [v for v in cand_data['folds']['metrics']['auc'] if not np.isnan(v)]
-            if valid_auc:
-                mean_auc = np.mean(valid_auc)
-                se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
-                print(f" AUC: {mean_auc:.4f}")
-                cand_data['mean_auc'], cand_data['se_auc'] = mean_auc, se_auc
-                step_results['candidates_summary'][feat] = cand_data
-                if mean_auc > best_cand_score:
-                    best_cand_score, best_cand_se, best_cand = mean_auc, se_auc, feat
-            else:
-                print(" Failed.")
-
-        if best_cand and (best_cand_score - best_current_score) > best_cand_se:
-            print(f"  ACCEPT {best_cand}")
-            step_results['selected_feature'] = best_cand
-            current_model_features.append(best_cand)
-            with open(os.path.join(output_directory, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
-            best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
-        else:
-            print("  REJECT. Stage 1 Selection Converged.")
-            step_results['selected_feature'] = None
-            with open(os.path.join(output_directory, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
-            break
-
-        if len(current_model_features) == len(ranked_features):
-            break
-
-    # 7. Final visualization data promotion
-    print("\n--- Finalizing Stage 1 Selection Results ---")
-    try:
-        last_step_idx = max(0, step_counter - 1)
-        last_file = os.path.join(output_directory, f"{prefix}{last_step_idx}.pkl")
-        with open(last_file, 'rb') as f:
-            final_step = pickle.load(f)
-
-        winner = final_step['selected_feature'] or current_model_features[-1]
-        raw_weights = np.array(final_step['candidates_summary'][winner]['folds']['weights'])
-        n_features_final, n_classes = len(current_model_features), raw_weights.shape[1]
-
-        final_step['weights_reshaped'] = raw_weights.reshape(n_splits, n_classes, n_features_final, n_time_bins)
-        final_step['final_model_features'] = current_model_features
-        with open(last_file, 'wb') as f:
-            pickle.dump(final_step, f)
-        print(f"Final promotion successful for step {last_step_idx}.")
     except Exception as e:
         print(f"Final promotion failed: {e}")

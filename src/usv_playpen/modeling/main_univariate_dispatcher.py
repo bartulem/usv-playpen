@@ -12,9 +12,7 @@ The dispatcher manages five distinct analysis frameworks:
 2.  Vocal Category: One-vs-Rest classification of specific USV types.
 3.  Vocal Params: Gamma-regression of continuous bout duration and complexity.
 4.  Multinomial: JAX-accelerated flat classification of the 5-6 USV repertoire.
-5.  Binary Coarse: The first stage of a hierarchical model, separating
-    'Complex' (1, 2, 6) from 'Simple' (3, 4, 5) vocalizations.
-6.  Continuous: Bivariate Gaussian modeling of UMAP manifold coordinates.
+5.  Continuous: Bivariate Gaussian modeling of UMAP manifold coordinates.
 
 Computational & Structural Features:
 ------------------------------------
@@ -263,22 +261,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
             results = {feature_name: res}
 
-        # CATEGORY C: HIERARCHICAL STAGE 1 (Simple vs Complex Binary)
-        elif args.analysis_type == 'binary_coarse':
-
-            pipeline = MultinomialModelingPipeline(modeling_settings_dict=settings)
-            runner = MultinomialModelRunner(pipeline_instance=pipeline)
-
-            raw_res = runner.run_coarse_simple_complex_univariate_training(
-                pkl_path=args.input_data,
-                feat_name=feature_name
-            )
-
-            # Bulletproof extraction: unpack tuple if present, otherwise just take the dict
-            res = raw_res[1] if (isinstance(raw_res, tuple) and len(raw_res) == 2) else raw_res
-            results = {feature_name: res}
-
-        # CATEGORY D: CONTINUOUS TOPOGRAPHY (UMAP Manifold)
+        # CATEGORY C: CONTINUOUS TOPOGRAPHY (UMAP Manifold)
         elif args.analysis_type == 'continuous':
 
             pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
@@ -323,7 +306,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--analysis_type',
         required=True,
-        choices=['onset', 'category', 'params', 'multinomial', 'continuous', 'binary_coarse'],
+        choices=['onset', 'category', 'params', 'multinomial', 'continuous'],
         help="The type of USV analysis pipeline to execute."
     )
 

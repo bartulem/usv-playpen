@@ -702,7 +702,8 @@ def harmonize_session_columns(processed_beh_dict: dict,
 
 def zscore_features_across_sessions(processed_beh_dict: dict,
                                     suffixes: list,
-                                    feature_bounds: dict) -> dict:
+                                    feature_bounds: dict,
+                                    abs_features: list | None = None) -> dict:
     """
     Z-scores every session's feature columns using pooled cross-session statistics.
 
@@ -720,6 +721,10 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         `collect_predictor_suffixes`).
     feature_bounds : dict
         Optional per-feature clipping bounds (may be empty).
+    abs_features : list of str, optional
+        Feature names whose values should be folded to their absolute
+        magnitude prior to z-scoring (forwarded to
+        `zscore_different_sessions_together`).
 
     Returns
     -------
@@ -730,7 +735,8 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
     return zscore_different_sessions_together(
         data_dict=processed_beh_dict,
         feature_lst=suffixes,
-        feature_bounds=feature_bounds
+        feature_bounds=feature_bounds,
+        abs_features=abs_features
     )
 
 

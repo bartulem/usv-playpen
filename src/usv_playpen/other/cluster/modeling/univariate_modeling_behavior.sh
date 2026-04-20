@@ -10,7 +10,7 @@
 #SBATCH --mail-user=nsurname@domain.edu
 #SBATCH --mail-type=FAIL
 
-# Usage: sbatch univariate_modeling_behavior.sh (onset|params|category|multinomial|continuous|binary_coarse)
+# Usage: sbatch univariate_modeling_behavior.sh (onset|params|category|multinomial|continuous)
 ANALYSIS_TYPE=$1
 
 # Define your core variables
@@ -23,12 +23,12 @@ mkdir -p logs
 
 # Validate input type
 case $ANALYSIS_TYPE in
-  onset|params|category|multinomial|continuous|binary_coarse)
+  onset|params|category|multinomial|continuous)
     echo "Configuring $ANALYSIS_TYPE analysis using consolidated dispatcher..."
     ;;
   *)
     echo "Error: Invalid analysis type '$ANALYSIS_TYPE'"
-    echo "Usage: sbatch univariate_modeling.sh [onset|params|category|multinomial|continuous|binary_coarse]"
+    echo "Usage: sbatch univariate_modeling.sh [onset|params|category|multinomial|continuous]"
     exit 1
     ;;
 esac

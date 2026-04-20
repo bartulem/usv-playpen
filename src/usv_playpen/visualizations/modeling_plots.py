@@ -3,35 +3,43 @@
 Module for visualizing modeling results and raw behavioral features.
 
 This module provides a comprehensive suite of plotting functions to interpret
-vocal/behavioral modeling outcomes, including:
-1.  Feature importance ranking: Comparison of actual model performance (LL/AUC/etc.)
-    against null distributions with Bonferroni-corrected significance testing.
+vocal/behavioral modeling outcomes across two complementary model families:
+the linear/GAM-based feature ranking pipeline and the deep CNN-based manifold
+mapping pipeline.
+
+Linear / GAM-based visualizations
+---------------------------------
+1.  Feature importance ranking: Comparison of actual model performance
+    (LL/AUC/etc.) against null distributions with Bonferroni-corrected
+    significance testing.
 2.  Temporal filter analysis: Visualizing learned kernels (filter shapes) with
     99% confidence intervals for significantly predictive features.
 3.  Model selection trajectories: Tracking the improvement of model fit and
     classification metrics during forward sequential feature selection.
 4.  Raw data validation: Generating heatmaps and bootstrap-averaged profiles
-    to compare raw behavioral feature intensities between conditions (e.g., USV vs. No-USV).
-5.  Multi-subject comparison**: Consistent color-coding and labeling for
+    to compare raw behavioral feature intensities between conditions
+    (e.g., USV vs. No-USV).
+5.  Multi-subject comparison: Consistent color-coding and labeling for
     Male (self/other) and Female (self/other) subjects across dyads.
 
-Module for deep non-linear USV manifold visualization.
+Deep non-linear USV manifold visualizations
+-------------------------------------------
+A specialized interpretation suite for Dual-Stream MLP/CNN models that
+quantitatively and qualitatively assess how behavioral kinematics map onto
+the continuous acoustic UMAP manifold.
 
-This module provides a specialized interpretation suite for Dual-Stream MLP models.
-It enables the quantitative and qualitative assessment of how behavioral
-kinematics map onto the continuous acoustic UMAP manifold.
-
-Key scientific visualizations:
-1.  Statistical Validation: Bootstrapped permutation testing against null models.
-2.  Global Importance: SNR-weighted feature ranking to identify primary drivers.
-3.  Spatial Calibration: Tiled density grids with Euclidean bias (Delta d) calculation.
-4.  Local Saliency: Contrastive gradient attribution to identify region-specific motifs.
+1.  Statistical validation: Bootstrapped permutation testing against null
+    models.
+2.  Global importance: SNR-weighted feature ranking to identify primary
+    drivers.
+3.  Spatial calibration: Tiled density grids with Euclidean bias
+    (Delta d) calculation.
+4.  Local saliency: Contrastive gradient attribution to identify region-
+    specific motifs.
 """
 
 import cmasher as cmr
 import glob
-import jax
-import jax.numpy as jnp
 import json
 import math
 import matplotlib.pyplot as plt
@@ -52,18 +60,19 @@ import seaborn as sns
 from scipy.stats import gaussian_kde
 from sklearn.metrics import confusion_matrix
 from sklearn.cluster import KMeans
-from typing import Optional, List, Tuple
+from typing import Optional
 import h5py
 import polars as pls
 from tqdm import tqdm
 from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
 
-from ..visualizations.auxiliary_plot_functions import create_colormap
+from .auxiliary_plot_functions import create_colormap
 
 
-fm.fontManager.addfont(f'{pathlib.Path.cwd().parent}/fonts/Helvetica.ttf')
-plt.style.use(f'{pathlib.Path.cwd().parent}/_config/usv_playpen.mplstyle')
+_PKG_ROOT = pathlib.Path(__file__).resolve().parent.parent
+fm.fontManager.addfont(str(_PKG_ROOT / 'fonts' / 'Helvetica.ttf'))
+plt.style.use(str(_PKG_ROOT / '_config' / 'usv_playpen.mplstyle'))
 
 # Global color definitions
 male_color = "#9AC0CD"
@@ -597,10 +606,10 @@ def plot_feature_ranking(
     first_feat = next(iter(modeling_data.values()))
     if 'shuffled' in first_feat:
         null_key = 'shuffled'
-        print(f"Detected 'shuffled' key (Bout Analysis mode)")
+        print("Detected 'shuffled' key (Bout Analysis mode)")
     elif 'null' in first_feat:
         null_key = 'null'
-        print(f"Detected 'null' key (Category Analysis mode)")
+        print("Detected 'null' key (Category Analysis mode)")
     else:
         raise KeyError("Could not find 'shuffled' or 'null' key in results dictionary.")
 
@@ -757,21 +766,31 @@ def plot_significant_filters(
     """
     Plots the temporal filters (kernels) for significantly predictive features.
 
+    For every feature whose actual performance exceeds the Bonferroni-corrected
+    null percentile on the selected metric, the function draws the mean filter
+    shape and a two-sided confidence interval (derived from the per-fold filter
+    ensemble) against time-before-vocalization. Self/other/dyadic features are
+    color-coded from the filename and a dashed zero-reference line is shown.
+
     Parameters
     ----------
     results_file_loc : str
-        Path to the .pkl results file.
-    metric : str
-        Metric used to determine significance (e.g., 'auc' or 'll').
-    ignore_features : list
-        Features to skip.
-    p_val : float
-        The alpha level for significance testing (default 0.05).
-        This is Bonferroni-corrected by the number of valid features.
-    save_plot : bool
-        If True, saves plots to disk.
-    output_dir : str
-        Directory to save plots.
+        Absolute path to the .pkl results file containing per-feature
+        'actual' and 'shuffled'/'null' fold-level metrics and filter shapes.
+    metric : str, default 'auc'
+        Metric used to determine significance (e.g., 'auc' or 'll'). For
+        lower-is-better metrics (ll, nll, rmse, mse, loss) the comparison
+        direction is automatically inverted.
+    ignore_features : list of str, optional
+        Feature names to skip. If None, no features are excluded.
+    p_val : float, default 0.01
+        Family-wise alpha level for significance testing. Internally
+        Bonferroni-corrected by the number of valid features.
+    save_plot : bool, default False
+        If True, saves each per-feature plot as an SVG to disk.
+    output_dir : str, optional
+        Directory to save plots. If None, defaults to the parent directory
+        of `results_file_loc`.
     """
 
     if ignore_features is None:
@@ -895,29 +914,36 @@ def plot_significant_filters_grid(
         output_dir: str = None,
 ) -> None:
     """
-    Loads results, calculates significance, baseline corrects, and plots filter shapes.
+    Loads results, calculates significance, baseline-corrects, and plots filter shapes.
 
     This function loads a pickle file containing modeling results, identifies
     significantly predictive features using a Bonferroni-corrected threshold
     on a specified metric, and plots their temporal filters (kernels) with
-    99% confidence intervals in a small-multiples grid.
+    99% confidence intervals in a small-multiples grid. Each filter is
+    baseline-corrected by subtracting its value at the leftmost time bin so
+    all kernels start at zero and can be visually compared on a shared
+    Y-axis. The filter history length (seconds) is inferred from the filename
+    by matching `histNs` and defaults to 4.0 seconds if not present.
 
     Parameters
     ----------
     results_file_loc : str
         The absolute path to the .pkl results file.
-    save_plot : bool, default False
-        Whether to save the generated SVG plot to disk.
-    output_dir : str, optional
-        The directory where the SVG plot will be saved. If None, defaults to
-        the user's Downloads directory.
     ignore_features : list of str, optional
         A list of feature names to exclude from analysis. Default is None.
     metric : str, default 'auc'
         The performance metric used to assess significance (e.g., 'auc', 'll').
-    p_val_threshold : float, default 0.025
-        The alpha level for significance testing. This value is Bonferroni
-        corrected by the number of valid features found in the file.
+        For lower-is-better metrics (ll, nll, rmse, mse, loss) the direction
+        of the significance test is automatically inverted.
+    p_val_threshold : float, default 0.01
+        The family-wise alpha level for significance testing. This value is
+        Bonferroni-corrected by the number of valid features found in the
+        file.
+    save_plot : bool, default False
+        Whether to save the generated SVG plot to disk.
+    output_dir : str, optional
+        The directory where the SVG plot will be saved. If None, defaults to
+        the parent directory of `results_file_loc`.
 
     Returns
     -------
@@ -1255,6 +1281,10 @@ def plot_raw_feature_difference(
     target_subset = target_subset[~np.all(np.isnan(target_subset), axis=1)]
     other_subset = other_subset[~np.all(np.isnan(other_subset), axis=1)]
 
+    # Sanity filter: values above 90 (typically angular features in degrees
+    # or extreme outliers) are replaced with NaN so they don't bias the
+    # per-frame mean/CI. TODO: make this threshold a parameter or feature-
+    # dependent; the current cap implicitly assumes an angular feature.
     target_subset[target_subset > 90] = np.nan
     other_subset[other_subset > 90] = np.nan
 
@@ -1683,7 +1713,7 @@ def plot_model_selection_results(
 
     if save_plots:
         if output_dir is None: output_dir = selection_results_dir
-        out_name = pathlib.Path(output_dir) / f"model_selection_final_model_filters.svg"
+        out_name = pathlib.Path(output_dir) / "model_selection_final_model_filters.svg"
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=300, facecolor=BG_COLOR, transparent=False)
         print(f"Saved final model filter grid to: {out_name}")
 
@@ -1755,12 +1785,9 @@ def plot_univariate_multinomial_performance(
         results file if None.
     """
 
-    DYADIC_COLOR = "#000000"
-    NEUTRAL_COLOR = "#D3D3D3"
-    male_color = "#9AC0CD"
-    female_color = "#FF6347"
+    # Local override: MEAN_LINE_COLOR differs from the module-level default
+    # ('#DCB400') because the ranking plot reads better with a neutral grey.
     MEAN_LINE_COLOR = "#202020"
-    TEXT_COLOR = '#202020'
 
     results_path = pathlib.Path(results_file_loc)
     with open(results_path, 'rb') as f:
@@ -2012,11 +2039,6 @@ def plot_univariate_multinomial_filters_grid(
         Target directory for saved plots.
     """
 
-    DYADIC_COLOR = "#000000"
-    male_color = "#9AC0CD"
-    female_color = "#FF6347"
-    TEXT_COLOR = '#202020'
-
     results_path = pathlib.Path(results_file_loc)
     with open(results_path, 'rb') as f:
         modeling_data = pickle.load(f)
@@ -2224,9 +2246,10 @@ def plot_multinomial_selection_trajectory(
         Displays the generated Matplotlib figure.
     """
 
-    # 1. FORCE global visibility parameters
+    # 1. Local visibility overrides — scoped below so we don't leak into
+    #    any plot rendered after this function returns.
     TEXT_COLOR = '#202020'
-    plt.rcParams.update({
+    _rcp_override = {
         'axes.titlesize': 14,
         'axes.labelsize': 12,
         'xtick.labelsize': 11,
@@ -2236,7 +2259,9 @@ def plot_multinomial_selection_trajectory(
         'xtick.color': TEXT_COLOR,
         'ytick.color': TEXT_COLOR,
         'text.color': TEXT_COLOR
-    })
+    }
+    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
+    plt.rcParams.update(_rcp_override)
 
     file_pattern = pathlib.Path(selection_results_dir) / "*_step_*.pkl"
     files = sorted(glob.glob(str(file_pattern)),
@@ -2354,6 +2379,8 @@ def plot_multinomial_selection_trajectory(
         print(f"Trajectory plot saved to: {save_path.name}")
 
     plt.show()
+    plt.rcParams.update(_saved_rcp)
+
 
 def plot_multinomial_multivariate_filters(
         selection_results_dir: str,
@@ -2430,13 +2457,16 @@ def plot_multinomial_multivariate_filters(
         Displays the high-resolution Matplotlib grid.
     """
 
-    # 1. FORCE clean slate for visibility
+    # 1. Local overrides — restored at function exit so they don't leak
+    #    into any plot rendered after this function returns.
     TEXT_COLOR = '#000000'
-    plt.rcParams.update({
+    _rcp_override = {
         'axes.grid': False,
         'xtick.minor.visible': False,
         'ytick.minor.visible': False
-    })
+    }
+    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
+    plt.rcParams.update(_rcp_override)
 
     file_pattern = pathlib.Path(selection_results_dir) / "*_step_*.pkl"
     files = sorted(glob.glob(str(file_pattern)),
@@ -2552,6 +2582,7 @@ def plot_multinomial_multivariate_filters(
         fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
 
     plt.show()
+    plt.rcParams.update(_saved_rcp)
 
 
 def plot_multinomial_selection_diagnosis(
@@ -2599,11 +2630,11 @@ def plot_multinomial_selection_diagnosis(
         Displays the multi-panel diagnostic figure.
     """
 
-    # 1. Aesthetics and Global Styling
+    # 1. Aesthetics and local styling overrides — restored at function exit.
     TEXT_COLOR = '#000000'
     BG_COLOR = '#FFFFFF'
 
-    plt.rcParams.update({
+    _rcp_override = {
         'text.color': TEXT_COLOR,
         'axes.labelcolor': TEXT_COLOR,
         'xtick.color': TEXT_COLOR,
@@ -2612,7 +2643,9 @@ def plot_multinomial_selection_diagnosis(
         'figure.facecolor': BG_COLOR,
         'axes.facecolor': BG_COLOR,
         'font.family': 'sans-serif'
-    })
+    }
+    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
+    plt.rcParams.update(_rcp_override)
 
     # 2. File Discovery and Selection
     file_pattern = pathlib.Path(selection_results_dir) / "*_step_*.pkl"
@@ -2770,6 +2803,7 @@ def plot_multinomial_selection_diagnosis(
         fig.savefig(out_path / fname, facecolor=BG_COLOR, bbox_inches='tight')
 
     plt.show()
+    plt.rcParams.update(_saved_rcp)
 
 
 class DeepResultsVisualizer:
@@ -2820,6 +2854,8 @@ class DeepResultsVisualizer:
         if not os.path.exists(results_pkl_path):
             raise FileNotFoundError(f"Results file not found: {results_pkl_path}")
 
+        self.results_pkl_path = results_pkl_path
+
         with open(results_pkl_path, 'rb') as f:
             self.data = pickle.load(f)
 
@@ -2845,6 +2881,8 @@ class DeepResultsVisualizer:
                     self.visualization_settings = json.load(viz_settings_json_file)
             except FileNotFoundError:
                 raise FileNotFoundError(f"Settings file not found at {viz_settings_path}")
+        else:
+            self.visualization_settings = visualization_settings
 
         # Logic to set the default subject color based on filename
         fname = os.path.basename(results_pkl_path).lower()
@@ -2924,7 +2962,7 @@ class DeepResultsVisualizer:
             Font size for the plot title.
         label_fontsize : int, default 8
             Font size for the axis labels.
-        figsize : tuple, default (4, 5)
+        figsize : tuple, default (3, 4)
             Figure dimensions in inches.
         n_bootstraps: int, default 1000
             The number of resampling iterations to generate the null distribution.
@@ -3111,7 +3149,7 @@ class DeepResultsVisualizer:
                                 save_plot: bool = False,
                                 output_dir: Optional[str] = None,
                                 file_format: str = 'svg') -> None:
-        """
+        r"""
         Visualizes Post-Hoc Permutation feature importance with dynamic Signal-to-Noise Ratio (SNR) thresholding.
 
         This method adapts to the raw fold-wise error data from the CNN ablation study. It calculates
@@ -3198,7 +3236,7 @@ class DeepResultsVisualizer:
             label.set_color("#202020" if significant_mask[idx] else "#808080")
 
         ax.set_title('Global Permutation Kinematic Importance', fontsize=title_fontsize, color='#000000', pad=20)
-        ax.set_xlabel('Mean Increase in Euclidean Error ($\Delta E$)', fontsize=label_fontsize + 1, color="#202020")
+        ax.set_xlabel(r'Mean Increase in Euclidean Error ($\Delta E$)', fontsize=label_fontsize + 1, color="#202020")
 
         # Spine and Tick styling
         ax.tick_params(colors="#202020", which='both')
@@ -3383,7 +3421,7 @@ class DeepResultsVisualizer:
             ax.scatter(peak_coord[0], peak_coord[1], marker='+', c=peak_pt_color, s=60, linewidth=2, zorder=15)
 
             # Metadata Display
-            ax.set_title(f"Bias $\Delta d$: {dist:.3f}", fontsize=panel_fontsize, color='#000000')
+            ax.set_title(rf"Bias $\Delta d$: {dist:.3f}", fontsize=panel_fontsize, color='#000000')
 
             ax.set_axis_off()
             ax.set_xlim(global_x_min, global_x_max)
@@ -3490,7 +3528,7 @@ class DeepResultsVisualizer:
         ax2.set_title('Error Reduction vs. Null Model', fontsize=title_fontsize, color='#000000', pad=15)
 
         cbar2 = fig.colorbar(hb2, ax=ax2, pad=0.02, shrink=0.8)
-        cbar2.set_label('Error Reduction ($\Delta E$)', color='#202020', rotation=270, labelpad=20, fontsize=label_fontsize)
+        cbar2.set_label(r'Error Reduction ($\Delta E$)', color='#202020', rotation=270, labelpad=20, fontsize=label_fontsize)
 
         # Formatting all axes
         for ax in axes:
@@ -3552,20 +3590,19 @@ class DeepResultsVisualizer:
         Contrastive Centroid-Gradient Saliency to isolate region-specific drivers
         from the global postural baseline.
 
-        The function operates in two modes:
-        1. Retrieval: If the 'region_key' exists in the pre-computed saliency
-           dictionary (stored during CNN training), it pulls the raw 3D tensors
-           and computes the local mean.
-        2. On-the-fly Computation: If a new or manual polygon is requested, it
-           reloads the raw temporal kinematics, reconstructs the JAX device
-           arrays, and executes a forward-pass gradient attribution using
-           the cluster centroid as a point-attractor.
+        The method operates in retrieval mode only: it expects `region_key`
+        to exist in the pre-computed saliency dictionary
+        (`self.data['saliency_maps']`) that was populated during CNN training.
+        If the key is absent, a NotImplementedError is raised — on-the-fly
+        saliency recomputation is not supported in this plotting helper and
+        must be done in the training module.
 
         Parameters
         ----------
         source_data_path : str
             Full path to the source .pkl file containing the raw temporal
-            kinematics. Required only if saliency needs to be re-computed.
+            kinematics. Currently unused (reserved for future on-the-fly
+            saliency recomputation); kept in the signature for API stability.
         region_key : str
             The internal identifier used to look up pre-computed saliency maps
             stored in self.data['saliency_maps']. Also used as the display title
@@ -3576,9 +3613,9 @@ class DeepResultsVisualizer:
             under spatial_annotations; now passed directly by the caller.
         polygon_centroid : list
             A two-element [x, y] list specifying the centroid of the target
-            region. Used as the point-attractor for on-the-fly saliency
-            computation. Previously stored in modeling_settings under
-            spatial_annotations; now passed directly by the caller.
+            region. Previously stored in modeling_settings under
+            spatial_annotations; now passed directly by the caller. Currently
+            used only for diagnostic printing.
         category_name : str, optional
             The human-readable title for the plot (e.g., 'Category 3: Complex').
             If None, the 'region_key' is used for the display title.
@@ -3648,19 +3685,16 @@ class DeepResultsVisualizer:
             raw_saliency = self.data['saliency_maps'][region_key]['contrastive_saliency']
             contrastive_map = np.mean(raw_saliency, axis=0)
         else:
-            print(f"   > Re-computing saliency for {region_key} (Centroid: {polygon_centroid})...")
-            raw_blocks = self.load_multivariate_data_blocks(source_data_path)
-            test_idx = fold_res['test_indices']
-            X_te_raw = jnp.array(raw_blocks['X_seq'][test_idx])
-
-            full_saliency = self.compute_centroid_saliency(
-                fold_res['params_actual'], fold_res['state_actual'],
-                X_te_raw, self.metadata['Y_center'], self.metadata['Y_scale'],
-                tuple(polygon_centroid)
+            # On-the-fly saliency recomputation is not implemented in this
+            # visualizer. It would require re-loading raw temporal blocks
+            # and rerunning a centroid-gradient attribution pass — both of
+            # which belong in the training module, not a plotting helper.
+            raise NotImplementedError(
+                f"No pre-computed saliency map stored for region '{region_key}'. "
+                f"Re-compute saliency during training and rerun, or pass a "
+                f"region_key already present in self.data['saliency_maps'] "
+                f"(available: {list(self.data.get('saliency_maps', {}).keys())})."
             )
-
-            contrastive_map = np.mean(full_saliency['contrastive_saliency'][r_mask], axis=0)
-            del raw_blocks, X_te_raw
 
         # --- 5. VISUALIZATION PIPELINE ---
         text_color = '#000000'

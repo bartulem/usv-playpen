@@ -35,7 +35,8 @@ def cap_series_values_to_nan(series: pls.Series,
 
 def zscore_different_sessions_together(data_dict: dict,
                                        feature_lst: list,
-                                       feature_bounds: dict) -> dict:
+                                       feature_bounds: dict,
+                                       abs_features: list | None = None) -> dict:
     """
     Computes z-scored behavioral data when different sessions need to
     be pooled together (z-scores are computed on the pooled data,
@@ -50,12 +51,21 @@ def zscore_different_sessions_together(data_dict: dict,
     feature_bounds : dict
         Dictionary with theoretical boundaries
         for each feature (such that outliers can be excluded).
+    abs_features : list, optional
+        Feature names whose values should be replaced by their absolute
+        value *prior* to z-scoring (e.g., signed angles folded onto
+        magnitudes). When None, no features are folded with abs().
 
     Returns
     -------
     data_dict : dict
         Behavioral data (z-scored).
     """
+
+    if abs_features is None:
+        abs_features = []
+
+    abs_features_set = set(abs_features)
 
     # Clean the data *in place* in the DataFrames
     for one_beh_session, df in data_dict.items():
@@ -65,9 +75,7 @@ def zscore_different_sessions_together(data_dict: dict,
             if base_feature not in feature_lst:
                 continue
 
-            if base_feature in ['allo_roll',
-                                'allo_yaw-nose', 'nose-allo_yaw',
-                                'allo_yaw-TTI', 'TTI-allo_yaw']:
+            if base_feature in abs_features_set:
                 cols_to_update.append(pls.col(column).abs().alias(column))
             elif 'usv_' not in base_feature:
                 theoretical_min, theoretical_max = feature_bounds[base_feature]

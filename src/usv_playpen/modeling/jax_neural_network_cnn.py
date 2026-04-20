@@ -41,7 +41,6 @@ import optax
 import numpy as np
 import pathlib
 import pickle
-import copy
 from datetime import datetime
 from functools import partial
 from matplotlib.path import Path
@@ -67,7 +66,8 @@ class HashableDict(dict):
 # PHASE 1: UTILITIES & DATA AUGMENTATION
 # =============================================================================
 
-def apply_kinematic_masking(x_seq: np.ndarray, mask_prob: float, mask_length: int) -> np.ndarray:
+def apply_kinematic_masking(x_seq: np.ndarray, mask_prob: float, mask_length: int,
+                            rng: np.random.Generator | None = None) -> np.ndarray:
     """
     Applies 1D Cutout (Kinematic Masking) to a batch of behavioral sequences.
 
@@ -88,24 +88,30 @@ def apply_kinematic_masking(x_seq: np.ndarray, mask_prob: float, mask_length: in
         The probability (0.0 to 1.0) that any specific feature channel gets blinded.
     mask_length : int
         The duration (in frames) of the masked chunk.
+    rng : np.random.Generator, optional
+        Seeded NumPy generator used for both the mask-decision draws and the start-index
+        draws. If None, a fresh default-seeded generator is created (non-reproducible).
 
     Returns
     -------
     masked_batch : np.ndarray
         The augmented 3D tensor with random temporal chunks zeroed out.
     """
+    if rng is None:
+        rng = np.random.default_rng()
+
     batch_size, n_feats, n_bins = x_seq.shape
     masked_batch = x_seq.copy()
 
     # Generate a boolean matrix determining which (batch, feature) pairs get masked
-    mask_decisions = np.random.rand(batch_size, n_feats) < mask_prob
+    mask_decisions = rng.random((batch_size, n_feats)) < mask_prob
 
     for i in range(batch_size):
         for f in range(n_feats):
             if mask_decisions[i, f]:
                 # Choose a random start point, ensuring we don't slice out of bounds
                 max_start = max(1, n_bins - mask_length)
-                start_idx = np.random.randint(0, max_start)
+                start_idx = int(rng.integers(0, max_start))
                 end_idx = min(start_idx + mask_length, n_bins)
 
                 # Zero out the temporal chunk (0.0 represents the mean in standardized data)
@@ -124,8 +130,13 @@ def apply_temporal_warping(x_seq: np.ndarray, warp_factors: np.ndarray) -> np.nd
     via linear interpolation.
 
     Mathematical Operation:
-    Generates a new temporal axis scaled by $w_i$, and interpolates the feature
-    amplitudes onto this distorted timeline: $t_{warped} = t_{orig} \ times w_i$.
+    Uses a center-anchored warp so the middle frame is a fixed point and the
+    distortion accumulates symmetrically toward both edges of the window:
+    $t_{query} = t_{center} + (t_{orig} - t_{center}) * w_i$,
+    with $t_{query}$ clipped to the valid index range before linear interpolation.
+    This eliminates the one-sided boundary clamp a left-anchored warp would
+    otherwise produce (where warp_factor < 1 forces a constant-value tail and
+    warp_factor > 1 silently truncates the end of the sequence).
 
     Parameters
     ----------
@@ -140,23 +151,27 @@ def apply_temporal_warping(x_seq: np.ndarray, warp_factors: np.ndarray) -> np.nd
     -------
     warped_batch : np.ndarray
         A 3D array of shape (Batch, Features, Time_Bins) containing the
-        temporally warped kinematics, with original start/end boundary values preserved.
+        temporally warped kinematics. Any out-of-range queries at the left and
+        right edges are clipped symmetrically to the first / last input frame.
     """
 
     batch_size, n_feats, n_bins = x_seq.shape
-    t_orig = np.linspace(0, 1, n_bins)
+    input_t = np.arange(n_bins)
+    center = (n_bins - 1) / 2.0
     warped_batch = np.zeros_like(x_seq)
 
     for i in range(batch_size):
-        t_warped = np.linspace(0, 1 * warp_factors[i], n_bins)
+        t_query = center + (input_t - center) * warp_factors[i]
+        t_query = np.clip(t_query, 0.0, n_bins - 1)
         for f in range(n_feats):
-            warped_batch[i, f, :] = np.interp(t_orig, t_warped, x_seq[i, f, :])
+            warped_batch[i, f, :] = np.interp(t_query, input_t, x_seq[i, f, :])
 
     return warped_batch
 
 
 def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
-                              base_samples: int = 40, alpha: float = 0.5) -> np.ndarray:
+                              base_samples: int = 40, alpha: float = 0.5,
+                              rng: np.random.Generator | None = None) -> np.ndarray:
     """
     Generates training indices that uniformly sample the 2D continuous acoustic manifold.
 
@@ -168,8 +183,12 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     Algorithmic Logic:
     1. Divides the empirical 2D continuous space into a `grid_size` x `grid_size` mesh.
     2. Maps every $(x, y)$ coordinate in `Y_vals` to its discrete grid cell.
-    3. Samples `samples_per_cell` indices (with replacement) uniformly from every
-       cell that contains at least one point.
+    3. For every populated cell, draws a density-scaled number of indices
+       (with replacement). The per-cell draw is
+       `ceil(base_samples * (true_count ** alpha) / (base_samples ** alpha))`,
+       so `alpha = 0` enforces a flat quota per cell (perfect grid balance),
+       `alpha = 1` recovers uniform sampling proportional to occupancy (no
+       balancing), and intermediate values interpolate between the two.
 
     Parameters
     ----------
@@ -177,15 +196,25 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
         A 2D array of shape (N, 2) containing the continuous UMAP targets.
     grid_size : int, default 25
         The number of bins to divide both the X and Y spatial axes into.
-    samples_per_cell : int, default 40
-        The fixed number of indices to sample from each populated geographic cell.
+    base_samples : int, default 40
+        Baseline number of indices drawn from a cell with occupancy equal to
+        `base_samples`. The effective per-cell draw scales with the true cell
+        occupancy via the `alpha` exponent below.
+    alpha : float, default 0.5
+        Exponent of the density-scaling rule described above.
+    rng : np.random.Generator, optional
+        Seeded NumPy generator used for the per-cell `choice` draws. If None,
+        a fresh default-seeded generator is created (non-reproducible).
 
     Returns
     -------
     balanced_indices : np.ndarray
-        A 1D array of randomly selected data indices. The final length is exactly
-        (populated_cells * samples_per_cell).
+        A 1D array of randomly selected data indices. The final length is the
+        sum of the density-scaled per-cell draws.
     """
+
+    if rng is None:
+        rng = np.random.default_rng()
 
     x_bins = np.linspace(Y_vals[:, 0].min(), Y_vals[:, 0].max(), grid_size)
     y_bins = np.linspace(Y_vals[:, 1].min(), Y_vals[:, 1].max(), grid_size)
@@ -209,7 +238,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
         target_samples = max(1, target_samples)
 
         sampled_indices.append(
-            np.random.choice(cells[c], size=target_samples, replace=True)
+            rng.choice(cells[c], size=target_samples, replace=True)
         )
 
     return np.concatenate(sampled_indices)
@@ -221,7 +250,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 
 def init_cnn_params_and_state(key: jax.Array, in_channels: int,
                               time_steps: int, hp: Dict[str, Any]) -> Tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
-    """
+    r"""
     Initializes the trainable weights, biases, and non-trainable Batch Normalization
     states for the Depthwise-Separable 1D ResNet.
 
@@ -349,7 +378,7 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
 def _batch_norm_1d(x: jax.Array, gamma: jax.Array, beta: jax.Array,
                    mean: jax.Array, var: jax.Array, is_training: bool,
                    momentum: float = 0.99, eps: float = 1e-5) -> Tuple[jax.Array, jax.Array, jax.Array]:
-    """
+    r"""
     Internal helper function for 1D Batch Normalization over the NCW tensor format.
 
     Batch Normalization solves internal covariate shift by re-centering and scaling
@@ -849,7 +878,7 @@ class NeuralContinuousCNNRunner:
     def compute_centroid_saliency(self, params: Dict[str, jax.Array], state: Dict[str, jax.Array],
                                   X_te: jax.Array, Y_center: jax.Array, Y_scale: jax.Array,
                                   polygon_centroid: Tuple[float, float]) -> Dict[str, np.ndarray]:
-        """
+        r"""
         Extracts kinematic drivers for a specific manifold region via Contrastive Centroid-Gradient Saliency.
 
         This method identifies the precise, millisecond-resolution behavioral motifs that causally
@@ -904,10 +933,10 @@ class NeuralContinuousCNNRunner:
         Returns
         -------
         Dict[str, np.ndarray]
-            A dictionary containing three NumPy arrays, each of shape (Batch, Features, Time_Bins):
-            - 'region_saliency': The isolated Input x Gradient map for the target centroid.
-            - 'global_template': The trial-averaged baseline kinematic effort.
-            - 'contrastive_saliency': The finalized, baseline-subtracted causal driver map.
+            A dictionary containing a single NumPy array of shape
+            (Batch, Features, Time_Bins):
+            - 'contrastive_saliency': The finalized, baseline-subtracted causal
+              driver map (`region_saliency - mean(global_saliency)` over trials).
         """
 
         print(f"   > Extracting drivers for centroid {polygon_centroid}...")
@@ -1071,7 +1100,13 @@ class NeuralContinuousCNNRunner:
         # TRI-STRATEGY EXECUTION
         # ---------------------------------------------------------
         strategies = ['null_model_free', 'null', 'actual']
-        rng = np.random.RandomState(self.random_seed)
+
+        # Single seeded NumPy generator threaded through every stochastic path in
+        # the training loop (batch sampling, warping, masking, permutation test).
+        # This replaces the previous mix of a local RandomState and unseeded global
+        # `np.random` calls, so fold / epoch-level randomness is fully reproducible
+        # from `self.random_seed`.
+        rng = np.random.default_rng(self.random_seed)
 
         # We only persist the heavy parameters for the actual strategy
         best_actual_params_list = []
@@ -1121,7 +1156,7 @@ class NeuralContinuousCNNRunner:
                 if self.hp['use_kde_weights']:
                     steps_per_epoch = len(Y_tr) // self.hp['batch_size']
                 else:
-                    steps_per_epoch = len(get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'])) // self.hp['batch_size']
+                    steps_per_epoch = len(get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'], rng=rng)) // self.hp['batch_size']
 
                 lr_schedule = build_lr_schedule(self.hp['learning_rate'], self.hp['epochs'], steps_per_epoch) if self.hp['use_scheduler'] else self.hp['learning_rate']
 
@@ -1177,16 +1212,16 @@ class NeuralContinuousCNNRunner:
                         # Normalize KDE inverse-density weights to sum to 1.0
                         p_weights = w_tr / np.sum(w_tr)
                         # Draw a full epoch of samples using true continuous probabilities
-                        b_idx = np.random.choice(len(Y_tr), size=len(Y_tr), p=p_weights, replace=True)
+                        b_idx = rng.choice(len(Y_tr), size=len(Y_tr), p=p_weights, replace=True)
                     else:
-                        b_idx = get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'])
-                        np.random.shuffle(b_idx)
+                        b_idx = get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'], rng=rng)
+                        rng.shuffle(b_idx)
 
                     for b in range(len(b_idx) // self.hp['batch_size']):
                         idx = b_idx[b * self.hp['batch_size']:(b + 1) * self.hp['batch_size']]
 
                         # 1. Temporal Warping
-                        warps = np.random.uniform(1.0 - warp_range, 1.0 + warp_range, len(idx))
+                        warps = rng.uniform(1.0 - warp_range, 1.0 + warp_range, len(idx))
                         X_batch = apply_temporal_warping(X_tr[idx], warps)
 
                         # 2. Kinematic Masking (Dynamic Interception)
@@ -1194,7 +1229,8 @@ class NeuralContinuousCNNRunner:
                             X_batch = apply_kinematic_masking(
                                 X_batch,
                                 mask_prob=self.hp['masking_prob'],
-                                mask_length=self.hp['masking_length_frames']
+                                mask_length=self.hp['masking_length_frames'],
+                                rng=rng
                             )
 
                         # 3. Pass to JAX Update Step
@@ -1208,8 +1244,11 @@ class NeuralContinuousCNNRunner:
 
                         if err < best_err - 0.001:
                             best_err = err
-                            best_params = copy.deepcopy(params)
-                            best_state = copy.deepcopy(state)
+                            # JAX arrays are immutable, so a shallow dict copy is
+                            # sufficient to snapshot the best weights / BN state;
+                            # deepcopy would waste allocations on the array payload.
+                            best_params = dict(params)
+                            best_state = dict(state)
                             patience_counter = 0
                         else:
                             patience_counter += 1
@@ -1254,7 +1293,7 @@ class NeuralContinuousCNNRunner:
             feat_scores = []
             for k in range(perm_iters):
                 X_perm = X_te_base.copy()
-                perm_idx = np.random.permutation(len(Y_te_final))
+                perm_idx = rng.permutation(len(Y_te_final))
 
                 # Decouple the specific feature across the trial dimension
                 X_perm[:, f_idx, :] = X_perm[perm_idx, f_idx, :]

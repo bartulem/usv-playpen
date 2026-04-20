@@ -308,6 +308,13 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
         else:
             sample_weight = check_array(sample_weight, ensure_2d=False)
 
+        # Normalize weights to unit mean so the loss magnitude is invariant to the
+        # caller's weighting convention (raw KDE inverse densities, counts, or
+        # already-normalized weights). This decouples lambda_smooth / l2_reg from
+        # the scale of `sample_weight` and matches the assumption stated in the
+        # `_loss_fn` comment ("pipeline normalizes weights to have a mean of 1").
+        sample_weight = sample_weight / (np.mean(sample_weight) + 1e-12)
+
         X_j = jnp.array(X)
         Y_j = jnp.array(y)
         w_j = jnp.array(sample_weight)
@@ -340,7 +347,12 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
 
             # Convergence check every 100 iterations
             if i > 0 and i % 100 == 0:
-                diff = jnp.linalg.norm(params[0] - old_params[0])
+                # Monitor both the spatial weights (params[0]) and the global variance
+                # parameters (params[2]) so the loop doesn't exit while sigma / rho
+                # are still drifting after W_mu has plateaued.
+                diff_w = jnp.linalg.norm(params[0] - old_params[0])
+                diff_v = jnp.linalg.norm(params[2] - old_params[2])
+                diff = jnp.sqrt(diff_w ** 2 + diff_v ** 2)
                 if diff < self.tol:
                     if self.verbose:
                         print(f"Converged at iteration {i} with weight update norm {diff:.2e}")

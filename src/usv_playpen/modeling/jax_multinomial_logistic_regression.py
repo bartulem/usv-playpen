@@ -25,10 +25,14 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
     Multinomial logistic regression with temporal smoothing (JAX implementation).
 
     This estimator learns a weight matrix W of shape (n_features * n_time_bins, n_classes).
-    It minimizes the cross-entropy loss augmented by:
-    1. L2 regularization (ridge) which penalizes large weights.
-    2. Temporal smoothing penalty which penalizes the second derivative of weights
-       along the time axis, forcing the learned filters to be smooth curves.
+    It minimizes an alpha-balanced focal loss augmented by:
+    1. L1 regularization (lasso) which promotes sparsity in the weights.
+    2. L2 regularization (ridge) which penalizes large weights.
+    3. Temporal smoothing penalty which penalizes the second derivative of weights
+       along the time axis, forcing the learned filters to be smooth curves. The
+       per-class smoothing penalty is additionally scaled by the inverse-frequency
+       class weight, so rare-class filters are regularized more strongly (stronger
+       prior where data is thin).
 
     Parameters
     ----------
@@ -39,13 +43,18 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
     n_time_bins : int
         Number of time steps per feature.
         The input X must have `n_features * n_time_bins` columns.
-    lambda_smooth : float, default=1e2
+    lambda_smooth : float, default=1
         Regularization strength for the temporal smoothing penalty (second derivative).
         Higher values force smoother (stiffer) curves.
-    l1_reg : float, default=0.1
+    l1_reg : float, default=0.0
         Regularization strength for standard L1 (Lasso) penalty.
     l2_reg : float, default=0.1
         Regularization strength for standard L2 (Ridge) penalty.
+    focal_gamma : float, default=2.0
+        Focusing parameter of the focal loss: the `(1 - p_t) ** focal_gamma`
+        modulator down-weights easy examples so gradient flow concentrates on
+        hard / misclassified samples. Set to 0.0 to recover plain alpha-balanced
+        cross-entropy.
     learning_rate : float, default=1e-3
         Step size for the Adam optimizer.
     max_iter : int, default=5000
@@ -66,6 +75,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             lambda_smooth: float = 1,
             l1_reg: float = 0.0,
             l2_reg: float = 0.1,
+            focal_gamma: float = 2.0,
             learning_rate: float = 1e-3,
             max_iter: int = 5000,
             tol: float = 1e-4,
@@ -77,6 +87,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self.lambda_smooth = lambda_smooth
         self.l1_reg = l1_reg
         self.l2_reg = l2_reg
+        self.focal_gamma = focal_gamma
         self.learning_rate = learning_rate
         self.max_iter = max_iter
         self.tol = tol
@@ -125,7 +136,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             lam_smooth: float,
             lam_l1: float,
             lam_l2: float,
-            class_weights: jnp.ndarray
+            class_weights: jnp.ndarray,
+            focal_gamma: float
     ) -> jnp.ndarray:
 
         W, b = params
@@ -143,8 +155,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         ce_loss = -jnp.log(pt + 1e-8)
 
         # 4. Calculate the Focal Modulating Factor: (1 - pt)^gamma
-        gamma = 2.0
-        focal_modulator = (1.0 - pt) ** gamma
+        focal_modulator = (1.0 - pt) ** focal_gamma
 
         # 5. Extract the specific alpha (class weight) for each sample's true class
         alpha_t = jnp.sum(Y_onehot * class_weights, axis=1)
@@ -165,8 +176,10 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         # Sum the curvature across features (axis=0) and time (axis=1), leaving shape (n_classes,)
         class_smooth_penalties = jnp.sum(d2w ** 2, axis=(0, 1))
 
-        # Modulate the penalty by the inverse frequency weights
-        smooth_loss = 0.5 * lam_smooth * jnp.sum(class_smooth_penalties / class_weights)
+        # Scale the per-class smoothing penalty by the inverse-frequency class weight:
+        # rare classes receive a larger weight, so their filters are regularized more
+        # strongly (stronger prior where data is thin and noise-to-signal is highest).
+        smooth_loss = 0.5 * lam_smooth * jnp.sum(class_smooth_penalties * class_weights)
 
         # L1 Loss (Sparsity - currently 0.0)
         l1_loss = lam_l1 * jnp.sum(jnp.abs(W))
@@ -244,7 +257,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                 n_feats, n_time,
                 self.lambda_smooth,
                 self.l1_reg, self.l2_reg,
-                w_batch
+                w_batch, self.focal_gamma
             )
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
@@ -270,12 +283,13 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                         self.n_features, self.n_time_bins,
                         self.lambda_smooth,
                         self.l1_reg, self.l2_reg,
-                        c_weights
+                        c_weights, self.focal_gamma
                     )
                     print(f"Iter {i}: Loss = {current_loss:.4f}")
 
         self.coef_ = np.array(params[0].T)
         self.intercept_ = np.array(params[1])
+        self.log_priors_ = np.array(log_priors)
         self.is_fitted_ = True
 
         return self
@@ -289,12 +303,13 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         X : np.ndarray
             Input data, shape (n_samples, n_features).
         balanced : bool, default=False
-            If True, computes probabilities using only the learned coefficients
-            (the behavioral/kinematic evidence) and ignores the intercept.
-            Because the intercept naturally encodes the prior probability (base rate)
-            of the highly imbalanced USV classes, ignoring it forces the model to
-            evaluate the pure feature-to-class relationship as if all categories
-            were equally likely to occur in nature.
+            If True, subtracts the stored training log-priors (`self.log_priors_`)
+            from the logits before the softmax. This cleanly neutralizes the
+            base-rate contribution that the intercept absorbed during fitting,
+            so the returned probabilities reflect the learned feature-to-class
+            evidence as if every category were equally likely a priori. Zeroing
+            the full intercept would be unsafe because, after training, it also
+            carries residual weight adjustments beyond the pure log-prior.
 
         Returns
         -------
@@ -304,11 +319,11 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             will sum to 1 for each sample.
         """
 
-        check_is_fitted(self, ['coef_', 'intercept_'])
+        check_is_fitted(self, ['coef_', 'intercept_', 'log_priors_'])
         X = check_array(X)
 
         if balanced:
-            logits = np.dot(X, self.coef_.T)
+            logits = np.dot(X, self.coef_.T) + self.intercept_ - self.log_priors_
         else:
             logits = np.dot(X, self.coef_.T) + self.intercept_
 

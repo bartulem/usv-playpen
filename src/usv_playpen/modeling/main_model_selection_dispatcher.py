@@ -12,7 +12,6 @@ path validation, error reporting, and specific argument routing for:
 3. Vocal Params: Selection for continuous bout characteristics (Gamma Regression).
 4. Multinomial: Selection for flat USV category probability (JAX/Soft-Hierarchy).
 5. Continuous: Selection for continuous UMAP manifold coordinates (JAX/Gaussian).
-6. Binary Coarse: Selection for hierarchical family separation (Simple vs Complex).
 
 Computational Strategy:
 -----------------------
@@ -35,8 +34,7 @@ from .model_selection import (
     vocal_category_model_selection,
     bout_parameter_model_selection,
     multinomial_vocal_category_model_selection,
-    continuous_vocal_manifold_model_selection,
-    coarse_binary_model_selection
+    continuous_vocal_manifold_model_selection
 )
 
 
@@ -164,19 +162,6 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
                 p_val=args.pval
             )
 
-        elif args.analysis_type == 'binary_coarse':
-
-            print("Initiating Stage 1 Hierarchical Selection (Simple vs Complex)...")
-
-            coarse_binary_model_selection(
-                univariate_results_path=args.univariate_path,
-                input_data_path=args.input_path,
-                settings_path=args.settings_path,
-                output_directory=args.output_dir,
-                use_top_rank_as_anchor=args.anchor,
-                p_val=args.pval
-            )
-
         else:
             print(f"FATAL: Unknown analysis type: {args.analysis_type}")
             return
@@ -193,7 +178,7 @@ if __name__ == "__main__":
 
     # Core Arguments
     parser.add_argument('--analysis_type', required=True,
-                        choices=['onset', 'category', 'params', 'multinomial', 'continuous', 'binary_coarse'],
+                        choices=['onset', 'category', 'params', 'multinomial', 'continuous'],
                         help="The type of model selection framework to execute.")
 
     parser.add_argument('--univariate_path', type=str, required=True,

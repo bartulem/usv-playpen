@@ -229,7 +229,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
-            feature_bounds=getattr(self, 'feature_boundaries', {})
+            feature_bounds=getattr(self, 'feature_boundaries', {}),
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
         print("Extracting epochs...")
@@ -613,7 +614,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         results[key]['score'][split_idx] = accuracy_score(y_te, y_pred)
                         results[key]['precision'][split_idx] = precision_score(y_te, y_pred, zero_division=0.0)
                         results[key]['recall'][split_idx] = recall_score(y_te, y_pred, zero_division=0.0)
-                        results[key]['f1'][split_idx] = f1_score(y_te, y_pred, average='micro', zero_division=0.0)
+                        results[key]['f1'][split_idx] = f1_score(y_te, y_pred, average='binary', zero_division=0.0)
 
                         print(f"    > {strat.capitalize()} Fold {split_idx} (Train N={len(y_tr)}, Test N={len(y_te)}): "
                               f"AUC={results[key]['auc'][split_idx]:.3f}, "
