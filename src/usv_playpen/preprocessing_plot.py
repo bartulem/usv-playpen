@@ -217,6 +217,14 @@ class SummaryPlotter:
                         dobs = _pad_two([subject.get('dob') for subject in subjects_list])
                         weights = _pad_two([subject.get('weight') for subject in subjects_list])
                         housings = _pad_two([subject.get('housing') for subject in subjects_list])
+
+                        # Pull the experimenter name from the session metadata too;
+                        # without this the plot fell through to the "Ø" default because
+                        # the legacy experimenter read lives in the else-branch below.
+                        session_block = metadata.get('Session', {}) or {}
+                        experimenter_from_meta = session_block.get('experimenter')
+                        if experimenter_from_meta:
+                            experimenter = experimenter_from_meta
                     else:
                         for exp_key in user_meta_data.keys():
                             if exp_key == "experimenter" and user_meta_data[exp_key] != "":
@@ -422,7 +430,7 @@ class SummaryPlotter:
                     fontsize=8,
                 )
                 ax[0, device_num].text(
-                    x=0.245,
+                    x=0.340,
                     y=0.9775,
                     s=subject_ids[1] if metadata is not None else f"{cage_2}_{animal_2}",
                     verticalalignment="top",
@@ -447,7 +455,7 @@ class SummaryPlotter:
                     fontsize=8,
                 )
                 ax[0, device_num].text(
-                    x=0.245,
+                    x=0.340,
                     y=0.9375,
                     s=genotypes[1] if metadata is not None else f"{gen_2}",
                     verticalalignment="top",
@@ -472,7 +480,7 @@ class SummaryPlotter:
                     fontsize=8,
                 )
                 ax[0, device_num].text(
-                    x=0.245,
+                    x=0.340,
                     y=0.8975,
                     s=sexes[1] if metadata is not None else f"{sex_2}",
                     verticalalignment="top",
@@ -497,7 +505,7 @@ class SummaryPlotter:
                     fontsize=8,
                 )
                 ax[0, device_num].text(
-                    x=0.245,
+                    x=0.340,
                     y=0.8575,
                     s=dobs[1] if metadata is not None else f"{dob_2}",
                     verticalalignment="top",
@@ -522,7 +530,7 @@ class SummaryPlotter:
                     fontsize=8,
                 )
                 ax[0, device_num].text(
-                    x=0.245,
+                    x=0.340,
                     y=0.8175,
                     s=weights[1] if metadata is not None else f"{weight_2}",
                     verticalalignment="top",
@@ -547,7 +555,7 @@ class SummaryPlotter:
                     fontsize=8,
                 )
                 ax[0, device_num].text(
-                    x=0.245,
+                    x=0.340,
                     y=0.7775,
                     s=housings[1] if metadata is not None else f"{hou_2}",
                     verticalalignment="top",
