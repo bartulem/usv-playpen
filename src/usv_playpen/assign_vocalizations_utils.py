@@ -16,6 +16,27 @@ from scipy.stats import vonmises as sp_vonmises
 from tqdm import tqdm
 
 def softplus(x):
+    """
+    Description
+    ----------
+    Numerically stable softplus activation: f(x) = log(1 + exp(x)).
+    Used to convert unbounded real-valued outputs into strictly positive values
+    (e.g., variances) without introducing NaNs for large negative inputs.
+    ----------
+
+    Parameters
+    ----------
+    x (np.ndarray or float)
+        Input value(s) of arbitrary shape.
+    ----------
+
+    Returns
+    -------
+    (np.ndarray or float)
+        Element-wise softplus of the input, same shape as x.
+    -------
+    """
+
     return np.log1p(np.exp(x))
 
 
@@ -482,6 +503,26 @@ def get_conf_sets_6d(
     points_angular = 0.5 * (bins_angular[1:] + bins_angular[:-1])  # Bin centers
 
     def routine(mean_6d, cov_6d):
+        """
+        Per-vocalization worker that builds the joint spatial/angular PDF
+        from a 6D mean and covariance, then extracts 95% confidence sets
+        with and without the angular marginal.
+
+        Parameters
+        ----------
+        mean_6d (np.ndarray)
+            A (6,) shape vector: (x, y, cos_yaw, sin_yaw, cos_roll, sin_roll).
+        cov_6d (np.ndarray)
+            A (6, 6) covariance matrix for mean_6d.
+
+        Returns
+        -------
+        (tuple)
+            (conf_set, conf_set_no_angle, total_pdf) where
+            conf_set / conf_set_no_angle are boolean masks over the spatial grid
+            and total_pdf is the full 3D PDF over (x, y, angle).
+        """
+
         _, est_angle_pdf = estimate_angle_pdf(
             mean_6d, cov_6d, n_samples=500, theta_bins=bins_angular
         )

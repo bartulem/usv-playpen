@@ -68,7 +68,7 @@ class Vocalocator:
         ----------
         """
 
-        self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         audio_file_path = next((pathlib.Path(self.root_directory) / 'audio').rglob('*_concatenated_audio_*.mmap'), None)
@@ -164,7 +164,7 @@ class Vocalocator:
         ----------
         """
 
-        self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']
@@ -270,7 +270,7 @@ class Vocalocator:
         ----------
         """
 
-        self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']

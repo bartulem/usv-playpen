@@ -19,8 +19,8 @@ class Gatherer:
         """
         Initializes the Gatherer class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)

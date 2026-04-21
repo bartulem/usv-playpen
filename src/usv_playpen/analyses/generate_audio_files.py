@@ -33,8 +33,8 @@ class AudioGenerator:
         """
         Initializes the AudioGenerator class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         exp_id (str)
             Base file server directory.
         root_directory (str)
@@ -107,7 +107,7 @@ class AudioGenerator:
             },
         }
 
-        self.message_output(f"Creating naturalistic USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Creating naturalistic USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         os_base_path = find_base_path()
@@ -214,7 +214,7 @@ class AudioGenerator:
                           rate=int(wav_sampling_rate * 1e3),
                           data=replay_wav_arr)
 
-        self.message_output(f"Creating naturalistic USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Creating naturalistic USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
 
     def create_usv_playback_wav(self) -> None:
@@ -239,7 +239,7 @@ class AudioGenerator:
             Wave file(s) with concatenated USVs.
         """
 
-        self.message_output(f"Creating USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Creating USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         os_base_path = find_base_path()
@@ -287,7 +287,7 @@ class AudioGenerator:
                           rate=int(wav_sampling_rate * 1e3),
                           data=replay_wav_arr)
 
-        self.message_output(f"Creating USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Creating USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
     def frequency_shift_audio_segment(self) -> None:
         """
@@ -329,7 +329,7 @@ class AudioGenerator:
         ----------
         """
 
-        self.message_output(f"Frequency shifting of audio segment by {abs(self.freq_shift_settings_dict['fs_octave_shift'])} octaves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Frequency shifting of audio segment by {abs(self.freq_shift_settings_dict['fs_octave_shift'])} octaves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         audio_dir = self.freq_shift_settings_dict['fs_audio_dir']

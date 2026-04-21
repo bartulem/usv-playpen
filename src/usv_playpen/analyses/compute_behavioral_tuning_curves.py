@@ -14,6 +14,7 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
+from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .compute_behavioral_features import FeatureZoo
 
@@ -231,16 +232,26 @@ class NeuronalTuning(FeatureZoo):
         """
 
         self.message_output(
-            f"Computing behavioral tuning curves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}"
+            f"Computing behavioral tuning curves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}"
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # load behavioral feature data
-        behavioral_data_file = next(pathlib.Path(self.root_directory).rglob('*_behavioral_features.csv*'))
+        behavioral_data_file = first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern='*_behavioral_features.csv*',
+            recursive=True,
+            label="behavioral features CSV",
+        )
         behavioral_data = pls.read_csv(str(behavioral_data_file))
 
         # load mouse and camera frame rate info
-        mouse_data_h5 = next(pathlib.Path(self.root_directory).rglob('[!speaker]*_points3d_translated_rotated_metric.h5*'))
+        mouse_data_h5 = first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5*',
+            recursive=True,
+            label="translated/rotated mouse points3d .h5",
+        )
         with h5py.File(mouse_data_h5, mode="r") as tracking_data_3d:
             animal_ids = [
                 elem.decode("utf-8") for elem in tracking_data_3d["track_names"]

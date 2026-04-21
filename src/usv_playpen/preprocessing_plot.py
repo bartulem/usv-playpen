@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from imgstore import new_for_filename
 
+from .os_utils import first_match_or_raise
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts/Helvetica.ttf")
@@ -28,8 +29,8 @@ class SummaryPlotter:
         """
         Initializes the SummaryPlotter class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -79,7 +80,11 @@ class SummaryPlotter:
         """
 
         # get the total number of frames in the video
-        json_loc = sorted(pathlib.Path(self.root_directory).glob('video/*_camera_frame_count_dict.json'))[0]
+        json_loc = first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern='video/*_camera_frame_count_dict.json',
+            label="camera frame count JSON",
+        )
         with open(json_loc) as camera_count_json_file:
             duration_min = json.load(camera_count_json_file)["total_video_time_least"]
 
@@ -127,6 +132,12 @@ class SummaryPlotter:
 
         # get audio information
         wav_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('*.wav'))
+        if not wav_audio_files:
+            raise FileNotFoundError(
+                f"No .wav files found under "
+                f"'{pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video'}' — "
+                f"expected cropped-to-video audio before preprocessing plot."
+            )
         with wave.open(str(wav_audio_files[0]), mode="rb") as example_audio_file:
             audio_sampling_rate = example_audio_file.getframerate()
             audio_sample_number = example_audio_file.getnframes()
@@ -192,12 +203,20 @@ class SummaryPlotter:
 
                     if metadata is not None:
                         subjects_list = metadata.get('Subjects', [])
-                        subject_ids = [subject.get('subject_id') for subject in subjects_list]
-                        genotypes = [subject.get('genotype_strain') for subject in subjects_list]
-                        sexes = [subject.get('sex') for subject in subjects_list]
-                        dobs = [subject.get('dob') for subject in subjects_list]
-                        weights = [subject.get('weight') for subject in subjects_list]
-                        housings = [subject.get('housing') for subject in subjects_list]
+
+                        def _pad_two(raw_list):
+                            """Return a length-2 list, padding missing entries with '-' so
+                            downstream `list[0]` / `list[1]` indexing never raises IndexError
+                            when the session metadata lists fewer than two subjects."""
+                            padded = list(raw_list) + ['-', '-']
+                            return padded[:2]
+
+                        subject_ids = _pad_two([subject.get('subject_id') for subject in subjects_list])
+                        genotypes = _pad_two([subject.get('genotype_strain') for subject in subjects_list])
+                        sexes = _pad_two([subject.get('sex') for subject in subjects_list])
+                        dobs = _pad_two([subject.get('dob') for subject in subjects_list])
+                        weights = _pad_two([subject.get('weight') for subject in subjects_list])
+                        housings = _pad_two([subject.get('housing') for subject in subjects_list])
                     else:
                         for exp_key in user_meta_data.keys():
                             if exp_key == "experimenter" and user_meta_data[exp_key] != "":

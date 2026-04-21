@@ -79,8 +79,8 @@ class Stylist:
         """
         Initializes the Stylist class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         exp_settings_dict (dict)
             Experimental settings; defaults to None.
         root_directories (list)
@@ -149,7 +149,7 @@ class Stylist:
                   credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                                          message=f"Data preprocessing in progress, started at "
-                                                                                 f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
+                                                                                 f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
                                                                                  f"and run by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
@@ -157,7 +157,7 @@ class Stylist:
         if self.input_parameter_dict['processing_booleans']['conduct_ephys_file_chaining'] or self.input_parameter_dict['processing_booleans']['split_cluster_spikes'] or self.input_parameter_dict['processing_booleans']['prepare_sleap_cluster']:
             try:
                 self.message_output(f"Preprocessing data started at: "
-                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
                 for _dir in (self.root_directories if isinstance(self.root_directories, list) else [self.root_directories]):
                     _stamp_processing_version(_dir)
@@ -181,7 +181,7 @@ class Stylist:
                                       message_output=self.message_output).video_list_to_txt()
 
                 self.message_output(f"Preprocessing data finished at: "
-                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
             except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
                 self.message_output(traceback.format_exc())
@@ -191,7 +191,7 @@ class Stylist:
             for one_directory_idx, one_directory in enumerate(self.root_directories):
                 try:
                     self.message_output(f"Preprocessing data in {one_directory} started at: "
-                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
+                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
                     _stamp_processing_version(one_directory)
 
@@ -315,7 +315,7 @@ class Stylist:
                                         message_output=self.message_output).run_vocalocator_ssl()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
-                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
+                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
                 except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
                     self.message_output(traceback.format_exc())
@@ -326,7 +326,7 @@ class Stylist:
                   credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, processing has been completed",
                                                                          message=f"Data preprocessing has been completed at "
-                                                                                 f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
+                                                                                 f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
                                                                                  f"by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}. "
                                                                                  f"You will be notified about further PC usage "
                                                                                  f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")

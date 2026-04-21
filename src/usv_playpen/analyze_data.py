@@ -33,8 +33,8 @@ class Analyst:
         """
         Initializes the Analyst class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directories (list)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -80,7 +80,7 @@ class Analyst:
                   credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                        message=f"Data analyses in progress, started at "
-                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
+                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
                                                                f"and run by @{self.input_parameter_dict['send_email']['experimenter']}. "
                                                                f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
@@ -98,7 +98,7 @@ class Analyst:
         for one_directory in self.root_directories:
             try:
                 self.message_output(f"Analyzing data in {one_directory} started at: "
-                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
+                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
                 # # # compute behavioral features and plot their distributions
                 if self.input_parameter_dict['analyses_booleans']['compute_behavioral_features_bool']:
@@ -119,7 +119,7 @@ class Analyst:
                                    message_output=self.message_output).frequency_shift_audio_segment()
 
                 self.message_output(f"Analyzing data in {one_directory} finished at: "
-                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}.")
+                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
             except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
                 self.message_output(traceback.format_exc())
@@ -130,7 +130,7 @@ class Analyst:
                   credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, analyses have been completed",
                                                        message=f"Data analyses have been completed at "
-                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d} "
+                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
                                                                f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
                                                                f"You will be notified about further PC usage "
                                                                f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")

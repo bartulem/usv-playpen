@@ -42,6 +42,7 @@ from matplotlib import gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import minimize
 
+from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.auxiliary_plot_functions import (
     choose_animal_colors,
@@ -139,8 +140,8 @@ def calculate_derivatives(
     Returns arrays w/ first and second derivatives.
     NB: Computed according to the central difference derivative!
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     input_arr (np.ndarray)
          A (n_frames, n_features) shape ndarray containing feature data to compute derivatives on.
     diff_bins : int
@@ -301,8 +302,8 @@ def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     Finally, calculate the average curvature by taking the mean over
     all the individual curvatures.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     input_arr (np.ndarray)
          A (n_nodes, n_frames, 3) shape ndarray to compute tail curvature on.
 
@@ -342,8 +343,8 @@ def calculate_planar_social_angle(
     of mouse 2, so where is the head of the second mouse
     relative to the viewing direction of the first mouse)
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     point1_arr (np.ndarray)
          A (n_frames, 2) shape ndarray of first point in XY dimensions.
     point2_arr (np.ndarray)
@@ -386,8 +387,8 @@ def calculate_speed(
     """
     Returns arrays w/ centroid (body minus tail) speed data.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     tracked_points_array (np.ndarray)
          A (n_frames, n_nodes, n_dimensions)
          shape ndarray of tracked points.
@@ -435,8 +436,8 @@ def get_average_point(data_arr: np.ndarray, mouse_speed: np.ndarray) -> np.ndarr
     Finds the closest point to head average, by searching for
     timepoints when the mouse is running fast.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     data_arr (np.ndarray)
          A (4, n_frames, 3) shape ndarray of head point data.
     mouse_speed (np.ndarray)
@@ -496,8 +497,8 @@ def get_head_root(
     """
     Computes the head-root rotation matrices.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     data_arr (np.ndarray)
          A (4, n_frames, 3) shape ndarray of head point data.
     closest_point_to_average (np.ndarray)
@@ -597,8 +598,8 @@ def get_back_root(
     """
     Computes the back-root rotation matrices.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     point_data_3d (np.ndarray)
          A (n_frames, n_mice, n_nodes, 3) shape ndarray of tracked points.
     mouse_id (int)
@@ -703,8 +704,8 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
     Computes Euler angles.
     NB: always in the order roll, pitch, yaw!
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     rot_matrix (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of rotation matrices.
 
@@ -775,8 +776,8 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
         pitch: angle between the back and the horizontal plane
         yaw: angle between the back and the z-axis
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     back_directions (np.ndarray)
         A (n_frames, 3) shape ndarray of back direction data
         Array of back direction data.
@@ -791,6 +792,26 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
     back_euler_angles = np.zeros((back_directions.shape[0], 2))
 
     def get_rotation(argument_ang):
+        """
+        Applies an intrinsic Rx -> Ry -> Rz rotation to back_directions.
+
+        Bounds pitch (argument_ang[0]) and roll (argument_ang[1]) to ±pi/2
+        to avoid gimbal-style flipping; yaw (argument_ang[2]) is unconstrained.
+
+        Parameters
+        ----------
+        argument_ang (array-like of float)
+            A length-3 vector (pitch, roll, yaw) in radians.
+
+        Returns
+        -------
+        (tuple)
+            (new_vector, rotator) — rotated back_directions as a
+            (n_frames, 3) np.ndarray and the corresponding (3, 3)
+            rotation matrix. If the pitch or roll bound is exceeded,
+            returns ([-1], [-1]) as a sentinel.
+        """
+
         # rotations about z (yaw) are ok, but bounds on the other two to avoid flipping
         if abs(argument_ang[0]) > np.pi * 0.5 or abs(argument_ang[1]) > np.pi * 0.5:
             return [-1], [-1]
@@ -820,6 +841,23 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
         return new_vector, rotator
 
     def distance_to_x_axis(argument_ang):
+        """
+        Objective used by the Nelder-Mead optimizer. Rotates the back
+        directions by (0, roll, yaw), takes the mean direction, and returns
+        the unsigned angle between that mean direction and the x-axis.
+
+        Parameters
+        ----------
+        argument_ang (array-like of float)
+            A length-2 vector (roll, yaw) in radians.
+
+        Returns
+        -------
+        (float)
+            Absolute angle (radians) between the mean rotated back direction
+            and the x-axis. Minimized to find the canonical back frame.
+        """
+
         # rotate around yaw and roll to center around zero
         rot_check, rot_m = get_rotation([0.0, argument_ang[0], argument_ang[1]])
         check_vec = np.array(
@@ -1296,11 +1334,16 @@ class FeatureZoo:
         """
 
         self.message_output(
-            f"Computing behavioral features started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}"
+            f"Computing behavioral features started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}"
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        tracked_file_loc = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'))
+        tracked_file_loc = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'video',
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="translated/rotated mouse points3d .h5",
+        )
 
         # load tracking data
         with h5py.File(tracked_file_loc, mode="r") as tracking_data_3d:

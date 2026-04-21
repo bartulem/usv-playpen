@@ -1021,6 +1021,32 @@ def plot_behavior_duration_regressions(
     stats_dict = {}
 
     def plot_and_annotate(data: pd.DataFrame, x_col: str, y_col: str, ax: plt.Axes, color: str, prefix: str):
+        """
+        Draws a seaborn regplot of y_col vs x_col, computes the Pearson correlation,
+        stores the resulting r and p values in the enclosing stats_dict under
+        '{prefix}_r' and '{prefix}_p', and annotates the axes with the statistics.
+
+        Parameters
+        ----------
+        data (pd.DataFrame)
+            Source dataframe containing x_col and y_col.
+        x_col (str)
+            Column name used as the independent variable.
+        y_col (str)
+            Column name used as the dependent variable.
+        ax (plt.Axes)
+            Axes to draw the regression scatter on.
+        color (str)
+            Marker color for the scatter points.
+        prefix (str)
+            Key prefix under which r and p are stored in stats_dict.
+
+        Returns
+        -------
+        (None)
+            Side effects: mutates ax and stats_dict.
+        """
+
         sns.regplot(data=data, x=x_col, y=y_col, ax=ax,
                     scatter_kws={'color': color, 'alpha': 0.5, 's': 15},
                     line_kws={'color': line_color})
@@ -1404,6 +1430,28 @@ def plot_hourly_regressions(
     stats_dict = {}
 
     def annotate_stats(ax: plt.Axes, x_data: np.ndarray, y_data: np.ndarray, prefix: str):
+        """
+        Computes Pearson r and p on the finite subset of (x_data, y_data) and
+        writes them into the enclosing stats_dict under '{prefix}_r' / '{prefix}_p'.
+        Skips annotation if fewer than two valid points remain.
+
+        Parameters
+        ----------
+        ax (plt.Axes)
+            Axes onto which the r/p annotation is drawn.
+        x_data (np.ndarray)
+            Independent variable values; NaNs are dropped in pairwise fashion.
+        y_data (np.ndarray)
+            Dependent variable values; NaNs are dropped in pairwise fashion.
+        prefix (str)
+            Key prefix under which r and p are stored in stats_dict.
+
+        Returns
+        -------
+        (None)
+            Side effects: mutates ax and stats_dict.
+        """
+
         valid_idx = ~np.isnan(x_data) & ~np.isnan(y_data)
         if valid_idx.sum() >= 2:
             r, p = pearsonr(x_data[valid_idx], y_data[valid_idx])

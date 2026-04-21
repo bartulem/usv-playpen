@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..analyses.decode_experiment_label import extract_information
+from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 
@@ -33,8 +34,8 @@ class RatemapFigureMaker(FeatureZoo):
         """
         Initializes the RatemapFigureMaker class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         visualizations_parameter_dict (dict)
@@ -72,7 +73,7 @@ class RatemapFigureMaker(FeatureZoo):
         """
 
         self.message_output(
-            f"Making behavioral tuning curves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}"
+            f"Making behavioral tuning curves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}"
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -91,7 +92,12 @@ class RatemapFigureMaker(FeatureZoo):
         )
 
         # load experimental code and get mouse colors
-        tracked_file_loc = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'))
+        tracked_file_loc = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'video',
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="translated/rotated mouse points3d .h5",
+        )
         with h5py.File(tracked_file_loc, mode="r") as tracking_data_3d:
             mouse_id_list = [
                 elem.decode("utf-8") for elem in tracking_data_3d["track_names"]

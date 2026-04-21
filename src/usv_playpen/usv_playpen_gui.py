@@ -10,7 +10,6 @@ import configparser
 import copy
 import ctypes
 import json
-import numbers
 import os
 import platform
 import re
@@ -63,6 +62,7 @@ from .behavioral_experiments import ExperimentController
 from .os_utils import configure_path
 from .preprocess_data import Stylist
 from .visualize_data import Visualizer
+from .yaml_utils import SmartDumper
 
 # do NOT print logs (debug, warnings, or otherwise) from the qt.qpa.window category.
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.window=false"
@@ -97,24 +97,25 @@ accept_icon = str(_img_dir / 'accept.png')
 cancel_icon = str(_img_dir / 'cancel.png')
 clear_icon = str(_img_dir / 'clear.png')
 
-# Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
-# while keeping dictionaries in block style for overall readability.
-class SmartDumper(yaml.Dumper):
-    def represent_list(self, data):
-        is_simple_list = all(isinstance(item, (str, numbers.Number, bool)) or item is None for item in data)
-
-        if is_simple_list:
-            return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
-        else:
-            return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
-
-SmartDumper.add_representer(list, SmartDumper.represent_list)
-
 class YamlHighlighter(QSyntaxHighlighter):
     """
     A syntax highlighter for basic YAML files that colors keys.
     """
     def __init__(self, parent=None):
+        """
+        Initializes the YamlHighlighter and registers a single highlighting
+        rule that bolds and colors YAML keys (identifiers followed by ':').
+
+        Parameters
+        ----------
+        parent (QTextDocument or None)
+            Parent document to attach the highlighter to; defaults to None.
+
+        Returns
+        -------
+        (None)
+        """
+
         super(YamlHighlighter, self).__init__(parent)
 
         self.highlighting_rules = []
@@ -147,6 +148,25 @@ class YamlHighlighter(QSyntaxHighlighter):
 
 class ChemoDialog(QDialog):
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the chemogenetic-intervention editor/creator dialog. In edit mode
+        (when a subject dict is supplied) the subject selector is locked to that
+        subject and the form is pre-populated; in create mode the user must pick
+        a subject from the metadata before OK becomes enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -330,6 +350,25 @@ class ChemoDialog(QDialog):
 class EphysDialog(QDialog):
     """A custom dialog for E-phys Interventions with edit/delete functionality."""
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the electrophysiology-intervention editor/creator dialog. In edit
+        mode the subject is locked to the supplied record and its existing
+        values (including probe serial numbers and reuse flag) are loaded; in
+        create mode the user must pick a subject before OK becomes enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -424,6 +463,20 @@ class EphysDialog(QDialog):
             self.populate_form()
 
     def populate_form(self):
+        """
+        Fills the E-phys form widgets with the existing intervention data for
+        self.subject. Handles the 'probe_reused' boolean (rendered as Yes/No)
+        and the 'probe_sn' list (rendered as a comma-separated string).
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
         for key, widget in self.fields.items():
             value = interv_data.get(key, "")
@@ -437,6 +490,21 @@ class EphysDialog(QDialog):
                 widget.setText(str(value))
 
     def delete_intervention(self):
+        """
+        Prompts the user to confirm deletion of this E-phys intervention from
+        the subject. On confirmation, removes the intervention, re-saves the
+        session metadata YAML, and mirrors the change into the subject
+        repository on disk.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         reply = QMessageBox.question(self, 'Confirm Delete',
                                      f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
@@ -449,6 +517,22 @@ class EphysDialog(QDialog):
             self.accept()
 
     def save_and_accept(self):
+        """
+        Collects the form values, coerces 'probe_reused' back into a boolean
+        and 'probe_sn' back into a list of ints (or raw strings when
+        non-numeric), attaches the intervention to the chosen subject, and
+        persists both the session metadata YAML and the subject repository
+        before closing the dialog.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
         if not target_subject: return
@@ -476,6 +560,25 @@ class EphysDialog(QDialog):
 class LesionDialog(QDialog):
     """A custom dialog for Lesion Interventions with edit/delete functionality."""
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the lesion-intervention editor/creator dialog. In edit mode the
+        subject is locked to the supplied record and its existing values are
+        loaded; in create mode the user must pick a subject before OK becomes
+        enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -547,6 +650,19 @@ class LesionDialog(QDialog):
             self.populate_form()
 
     def populate_form(self):
+        """
+        Fills the lesion form widgets with the existing intervention data for
+        self.subject.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
         for key, widget in self.fields.items():
             value = interv_data.get(key, "")
@@ -556,6 +672,21 @@ class LesionDialog(QDialog):
                 widget.setText(str(value))
 
     def delete_intervention(self):
+        """
+        Prompts the user to confirm deletion of this lesion intervention from
+        the subject. On confirmation, removes the intervention, re-saves the
+        session metadata YAML, and mirrors the change into the subject
+        repository on disk.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         reply = QMessageBox.question(self, 'Confirm Delete',
                                      f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
@@ -567,6 +698,20 @@ class LesionDialog(QDialog):
             self.accept()
 
     def save_and_accept(self):
+        """
+        Collects the form values, attaches the lesion intervention to the
+        chosen subject, and persists both the session metadata YAML and the
+        subject repository before closing the dialog.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
         if not target_subject: return
@@ -587,6 +732,26 @@ class OptoDialog(QDialog):
     """A custom dialog for Optogenetic Interventions with edit/delete functionality."""
 
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the optogenetic-intervention editor/creator dialog. The list of
+        available setups is pulled from the parent window's
+        equipment_settings_dict['opto']. In edit mode the subject is locked to
+        the supplied record and its existing values are loaded; in create mode
+        the user must pick a subject before OK becomes enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -689,6 +854,19 @@ class OptoDialog(QDialog):
             self.populate_form()
 
     def populate_form(self):
+        """
+        Fills the optogenetics form widgets with the existing intervention
+        data for self.subject.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
         for key, widget in self.fields.items():
             value = interv_data.get(key, "")
@@ -698,6 +876,21 @@ class OptoDialog(QDialog):
                 widget.setText(str(value))
 
     def delete_intervention(self):
+        """
+        Prompts the user to confirm deletion of this optogenetic intervention
+        from the subject. On confirmation, removes the intervention, re-saves
+        the session metadata YAML, and mirrors the change into the subject
+        repository on disk.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         reply = QMessageBox.question(self, 'Confirm Delete',
                                      f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
@@ -709,6 +902,20 @@ class OptoDialog(QDialog):
             self.accept()
 
     def save_and_accept(self):
+        """
+        Collects the form values, attaches the optogenetic intervention to the
+        chosen subject, and persists both the session metadata YAML and the
+        subject repository before closing the dialog.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
         if not target_subject: return
@@ -1025,20 +1232,44 @@ class USVPlaypenWindow(QMainWindow):
         self.main_window()
 
     def _open_chemo_dialog(self):
-        ChemoDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the ChemoDialog modally and refreshes the subject UI only if the
+        dialog was Accepted (OK or Delete). When the user cancels or closes
+        the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if ChemoDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _open_ephys_dialog(self):
-        EphysDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the EphysDialog modally and refreshes the subject UI only if the
+        dialog was Accepted (OK or Delete). When the user cancels or closes
+        the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if EphysDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _open_lesion_dialog(self):
-        LesionDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the LesionDialog modally and refreshes the subject UI only if
+        the dialog was Accepted (OK or Delete). When the user cancels or
+        closes the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if LesionDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _open_opto_dialog(self):
-        OptoDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the OptoDialog modally and refreshes the subject UI only if the
+        dialog was Accepted (OK or Delete). When the user cancels or closes
+        the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if OptoDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _load_subject_repository(self):
         """
@@ -1485,7 +1716,7 @@ class USVPlaypenWindow(QMainWindow):
         start_y_remove = 993
         start_x_remove = 448
         items_per_row_remove = 4
-        horizontal_spacing_remove = 90
+        horizontal_spacing_remove = 100
         vertical_spacing_remove = 30
 
         for i, subject in enumerate(subjects):
@@ -1495,7 +1726,7 @@ class USVPlaypenWindow(QMainWindow):
             button_y = start_y_remove + (row * vertical_spacing_remove)
 
             button = QPushButton(QIcon(remove_icon), f"{subject_id}", self.VideoSettings)
-            button.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 65px; max-height: 13px; }')
+            button.setStyleSheet('QPushButton { min-width: 90px; min-height: 12px; max-width: 90px; max-height: 13px; }')
             button.move(button_x, button_y)
             button.clicked.connect(partial(self._remove_subject, index_to_remove=i))
             button.show()
@@ -1554,18 +1785,17 @@ class USVPlaypenWindow(QMainWindow):
 
         if intervention_key == 'chemogenetics':
             dialog = ChemoDialog(self, subject=target_subject)
-            dialog.exec()
         elif intervention_key == 'electrophysiology':
             dialog = EphysDialog(self, subject=target_subject)
-            dialog.exec()
         elif intervention_key == 'lesion':
             dialog = LesionDialog(self, subject=target_subject)
-            dialog.exec()
         elif intervention_key == 'optogenetics':
             dialog = OptoDialog(self, subject=target_subject)
-            dialog.exec()
+        else:
+            return
 
-        self._update_subject_ui()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _add_subject(self) -> None:
         """
@@ -2228,6 +2458,22 @@ class USVPlaypenWindow(QMainWindow):
         self.ambient_light_cb.move(x_widget, y_pos)
 
         def on_ambient_light_changed(index):
+            """
+            Slot invoked when the ambient-light combo box selection changes.
+            Synchronizes self.ambient_light_bool with the current selection
+            and persists the change by re-saving the session metadata YAML.
+
+            Parameters
+            ----------
+            index (int)
+                Newly selected combo-box index supplied by Qt (unused; the
+                current text is read directly from the widget).
+
+            Returns
+            -------
+            (None)
+            """
+
             self.ambient_light_bool = (self.ambient_light_cb.currentText() == 'on')
             self._save_metadata_to_yaml()
 

@@ -26,6 +26,7 @@ from numba import njit
 from scipy.io import wavfile
 
 from .load_audio_files import DataLoader
+from .os_utils import first_match_or_raise, wait_for_subprocesses
 from .time_utils import is_gui_context, smart_wait
 
 
@@ -240,8 +241,8 @@ class Synchronizer:
         """
         Initializes the Synchronizer class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -289,7 +290,7 @@ class Synchronizer:
             Dictionary w/ information about changepoints, binary file lengths and tracking start/end.
         """
 
-        self.message_output(f"Checking e-phys/video sync started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Checking e-phys/video sync started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # read headstage sampling rates
@@ -297,7 +298,15 @@ class Synchronizer:
         calibrated_sr_config.read(pathlib.Path(__file__).parent / '_config/calibrated_sample_rates_imec.ini')
 
         # load info from camera_frame_count_dict
-        with open(sorted(pathlib.Path(self.root_directory).rglob('*_camera_frame_count_dict.json'))[0], 'r') as frame_count_infile:
+        with open(
+            first_match_or_raise(
+                root=pathlib.Path(self.root_directory),
+                pattern='*_camera_frame_count_dict.json',
+                recursive=True,
+                label="camera frame count JSON (ephys sync)",
+            ),
+            'r',
+        ) as frame_count_infile:
             camera_frame_count_dict = json.load(frame_count_infile)
             total_frame_number_least = camera_frame_count_dict['total_frame_number_least']
             total_video_time_least = camera_frame_count_dict['total_video_time_least']
@@ -852,7 +861,7 @@ class Synchronizer:
         ----------
         """
 
-        self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"A/V synchronization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         wave_data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video')],
@@ -860,7 +869,11 @@ class Synchronizer:
                                                                                  'conditional_arg': [f"_ch{self.input_parameter_dict['find_audio_sync_trains']['sync_ch_receiving_input']:02d}"]}}).load_wavefile_data()
 
         # get the total number of frames in the video
-        json_loc = sorted(pathlib.Path(self.root_directory).glob('video/*_camera_frame_count_dict.json'))[0]
+        json_loc = first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern='video/*_camera_frame_count_dict.json',
+            label="camera frame count JSON",
+        )
         with open(json_loc, 'r') as camera_count_json_file:
             camera_fr_count_dict = json.load(camera_count_json_file)
             total_frame_number = camera_fr_count_dict['total_frame_number_least']
@@ -1001,7 +1014,19 @@ class Synchronizer:
                                     audio_ipi_start_frames = []
                                     for ipi_start_sample in _audio_starts:
                                        temp_arr = video_fr_starts_in_samples - ipi_start_sample
-                                       audio_ipi_start_frames.append(list(temp_arr).index(max(temp_arr[temp_arr<0])))
+                                       negative_mask = temp_arr < 0
+                                       if not np.any(negative_mask):
+                                           # ipi_start_sample precedes every recorded video frame; there is no "last
+                                           # video frame that started before this audio IPI event" to attribute it to.
+                                           # Append NaN rather than crashing on max() of an empty slice.
+                                           self.message_output(
+                                               f"On device {audio_device_prefixes[af_idx]}, audio IPI start sample "
+                                               f"{int(ipi_start_sample)} precedes all video frame starts; "
+                                               f"marking its frame index as NaN."
+                                           )
+                                           audio_ipi_start_frames.append(np.nan)
+                                           continue
+                                       audio_ipi_start_frames.append(list(temp_arr).index(max(temp_arr[negative_mask])))
 
                                     discrepancy_arr = np.array(audio_ipi_start_frames) - _video_frames
                                     self.message_output(f"On device {audio_device_prefixes[af_idx]}, the first IPI event had a {discrepancy_arr[0]} fr discrepancy, and the last one had a {discrepancy_arr[-1]} fr discrepancy.")
@@ -1057,7 +1082,7 @@ class Synchronizer:
         ----------
         """
 
-        self.message_output(f"Cropping WAV files to video started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Cropping WAV files to video started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # load info from camera_frame_count_dict
@@ -1213,12 +1238,17 @@ class Synchronizer:
                                                           shell=False)
                         cut_audio_subprocesses.append(cut_audio_subp)
 
-        while True:
-            status_poll = [query_subp.poll() for query_subp in cut_audio_subprocesses]
-            if any(elem is None for elem in status_poll):
-                smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-            else:
-                break
+        # 2-hour budget — sox "cut to video" on very long sessions can take a
+        # while, but anything beyond this almost certainly means a hang.
+        wait_for_subprocesses(
+            subps=cut_audio_subprocesses,
+            max_seconds=2 * 60 * 60,
+            label="audio cut-to-video",
+            poll_interval_s=5,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
 
         if len(device_ids) > 1:
             for audio_file in all_audio_files:
