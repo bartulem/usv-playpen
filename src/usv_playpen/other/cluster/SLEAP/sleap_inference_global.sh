@@ -55,9 +55,13 @@ save_path="\${linearray[3]}"
 
 module load cudatoolkit/11.8.0 cudnn/11.x/8.9.7.29
 
+# Make the persistently installed 'sleap-nn' tool resolvable.
+# Requires a one-time 'uv tool install sleap-nn' (see repo docs).
+export PATH="\$HOME/.local/bin:\$PATH"
+
 echo "Running inference on: \$video_path"
 
-uv tool run --from sleap-nn sleap-nn track \\
+sleap-nn track \\
     -i "\$video_path" \\
     -m "\$centroid_model" \\
     -m "\$centered_instance_model" \\
