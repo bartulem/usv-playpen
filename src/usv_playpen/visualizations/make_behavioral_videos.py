@@ -1462,7 +1462,7 @@ class Create3DVideo:
 
                 if self.speaker_audio_file != '' and pathlib.Path(self.speaker_audio_file).is_file():
                     speaker_audio_sr, speaker_audio_data = wavfile.read(self.speaker_audio_file)
-                    raspi_input_loc = next((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('m_*ch03_*.wav'))
+                    raspi_input_loc = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('m_*ch03_*.wav'))[0]
                     raspi_input_mic_sr, raspi_input_mic_data = wavfile.read(raspi_input_loc)
                     ttl_start, ttl_end = read_ttl_events(raspi_input_mic_data)
                     time_correction_coefficient = 20000  # 80 ms

@@ -250,10 +250,10 @@ class Operator:
         available_probes = []
         for ord_idx, one_root_dir in enumerate(self.root_directory):
             ephys_save_dir_base = str(pathlib.Path(str(pathlib.Path(one_root_dir).parent).replace('Data', 'EPHYS')) / pathlib.Path(one_root_dir).name.split('_')[0])
-            for one_probe_dir in (pathlib.Path(one_root_dir) / 'ephys').iterdir():
-                if one_probe_dir.name not in available_probes:
-                    available_probes.append(one_probe_dir.name)
+            for one_probe_dir in sorted((pathlib.Path(one_root_dir) / 'ephys').iterdir()):
                 if one_probe_dir.is_dir() and 'imec' in one_probe_dir.name:
+                    if one_probe_dir.name not in available_probes:
+                        available_probes.append(one_probe_dir.name)
                     if not any(one_probe_dir.name in one_concat_dir for one_concat_dir in concat_save_dir):
                         concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir.name}')
 
@@ -429,12 +429,23 @@ class Operator:
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
-        # find name origin for file naming purposes
-        name_origin = first_match_or_raise(
-            root=pathlib.Path(self.root_directory) / 'audio' / 'temp',
-            pattern='m_*_ch*.wav',
-            label="master per-channel .wav for naming",
-        ).name.split('_')[2]
+        # derive name_origin from the master MC file stem (strip the 'm_' device
+        # prefix). stable regardless of (1) how many channels are in audio/temp,
+        # (2) glob ordering, and (3) whether the avisoft filename contains
+        # internal underscores. the previous approach — split('_')[2] on a
+        # per-channel temp file — was an off-by-one that landed on the channel
+        # suffix ('chNN.wav') whenever the MC stem had only two underscore-
+        # separated tokens (the normal 'm_<datetime>' case), corrupting every
+        # downstream filename (cropped_to_video, hpss, filtered, concatenated).
+        master_mc_files = sorted(
+            (pathlib.Path(self.root_directory) / 'audio' / 'original_mc').glob('m_*.wav')
+        )
+        if not master_mc_files:
+            raise FileNotFoundError(
+                f"master multichannel .wav for naming: no 'm_*.wav' files found under "
+                f"'{pathlib.Path(self.root_directory) / 'audio' / 'original_mc'}'."
+            )
+        name_origin = master_mc_files[0].stem[2:]
 
         # concatenate single channel files for master/slave
         separation_subprocesses = []

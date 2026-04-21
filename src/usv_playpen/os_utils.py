@@ -199,11 +199,20 @@ def first_match_or_raise(
     """
     Description
     ----------
-    Returns the first path matching a glob pattern under ``root``, or raises
-    a FileNotFoundError with a clear, debuggable message naming both the
-    pattern and the root that produced zero matches. Replaces the common
-    'sorted(root.glob(...))[0]' / 'list(root.rglob(...))[0]' idiom, which
-    surfaced as bare IndexError with no hint about which pattern failed.
+    Returns the alphabetically-first path matching a glob pattern under
+    ``root``, or raises a FileNotFoundError with a clear, debuggable message
+    naming both the pattern and the root that produced zero matches. Replaces
+    the common 'sorted(root.glob(...))[0]' / 'list(root.rglob(...))[0]' idiom,
+    which surfaced as bare IndexError with no hint about which pattern failed.
+
+    Matches are sorted deterministically before selection so that callers get
+    the same answer across runs, platforms, and filesystems. Earlier revisions
+    used 'next(iter(glob))' which returned matches in directory-entry order;
+    that caused non-deterministic behavior when the pattern matched multiple
+    files (ext4's hash-order directory listing, in particular, is effectively
+    random). Every known caller was the post-refactor equivalent of
+    'sorted(glob)[0]', so sorting is restored as the default — there is no
+    opt-out because non-deterministic first-match is not a feature we want.
     ----------
 
     Parameters
@@ -222,10 +231,7 @@ def first_match_or_raise(
     Returns
     -------
     match (pathlib.Path)
-        The first match. For deterministic callers that cared about ordering,
-        note that this returns the first match in whatever order the
-        underlying glob produces; wrap with sorted() on the caller side if
-        needed.
+        The alphabetically-first match.
     -------
     """
 
@@ -234,14 +240,13 @@ def first_match_or_raise(
         raise FileNotFoundError(
             f"{label or pattern}: search root '{root}' does not exist."
         )
-    matches_iter = root.rglob(pattern) if recursive else root.glob(pattern)
-    match = next(iter(matches_iter), None)
-    if match is None:
+    matches = sorted(root.rglob(pattern) if recursive else root.glob(pattern))
+    if not matches:
         kind = "rglob" if recursive else "glob"
         raise FileNotFoundError(
             f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
         )
-    return match
+    return matches[0]
 
 
 def newest_match_or_raise(
