@@ -21,7 +21,12 @@ from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
 from .modeling_utils import pool_session_arrays
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
-from .modeling_vocal_categories_multinomial import get_stratified_group_splits_stable, MultinomialModelingPipeline, MultinomialModelRunner
+from .modeling_vocal_categories_multinomial import (
+    get_stratified_group_splits_stable,
+    _balance_multinomial_train_indices,
+    MultinomialModelingPipeline,
+    MultinomialModelRunner,
+)
 from .modeling_usv_manifold_position import get_stratified_spatial_splits_stable
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .jax_bivariate_gaussian_regression import SmoothBivariateGaussianRegression
@@ -114,11 +119,21 @@ def bout_onset_model_selection(univariate_results_path: str,
     refit is performed on the final winning model to extract shapes for visualization,
     which are then appended to the results file of the last *successful* step.
 
+    Splitting & balancing invariant:
+    --------------------------------
+    Across both 'session' and 'mixed' strategies, the training fold is down-sampled
+    to a 50/50 class balance (Bout vs. No-Bout), while the test fold preserves the
+    natural class prior of the source data. The 'mixed' strategy achieves this by
+    running `StratifiedShuffleSplit` on the *unbalanced* pool and balancing the
+    training half inside the per-fold loop. Reported metrics should therefore be
+    imbalance-robust: the `score` field stores `balanced_accuracy`, paired with
+    AUC and log-loss.
+
     Crucially, this version preserves full-resolution metric data. For every candidate
     tested at every step, the raw results of all 10 cross-validation folds are saved
-    for Log-Likelihood (LL), AUC, Precision, Recall, F1, and Accuracy (score). This
-    allows plotting scripts to reconstruct model selection trajectories with
-    accurate error bars and individual fold data points.
+    for Log-Likelihood (LL), AUC, Precision, Recall, F1, and Balanced Accuracy
+    (`score`). This allows plotting scripts to reconstruct model selection trajectories
+    with accurate error bars and individual fold data points.
 
     Stability features:
     - Safe cleanup: Prevents `UnboundLocalError` during garbage collection if a
@@ -209,15 +224,16 @@ def bout_onset_model_selection(univariate_results_path: str,
         for train_idx, test_idx in ss.split(all_sessions_arr):
             cv_folds.append({'train_sessions': all_sessions_arr[train_idx], 'test_sessions': all_sessions_arr[test_idx], 'type': 'session'})
     elif split_strategy == 'mixed':
+        # Stratified split over the *unbalanced* pool: preserves the natural class
+        # ratio in both train and test indices. Per-fold, training will be balanced
+        # 50/50 inside the loop; test retains the natural class prior.
         X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-        n_keep = min(X_p_all.shape[0], X_n_all.shape[0])
-        rng = np.random.default_rng(random_seed)
-        pos_indices = rng.choice(X_p_all.shape[0], n_keep, replace=False)
-        neg_indices = rng.choice(X_n_all.shape[0], n_keep, replace=False)
-        y_balanced = np.concatenate((np.ones(n_keep), np.zeros(n_keep)))
+        n_pos_total = X_p_all.shape[0]
+        n_neg_total = X_n_all.shape[0]
+        y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
         sss = StratifiedShuffleSplit(n_splits=n_splits_selection, test_size=test_prop, random_state=random_seed)
-        for train_ix, test_ix in sss.split(np.zeros(len(y_balanced)), y_balanced):
-            cv_folds.append({'train_idx': train_ix, 'test_idx': test_ix, 'pos_indices': pos_indices, 'neg_indices': neg_indices, 'type': 'mixed'})
+        for train_ix, test_ix in sss.split(np.zeros(len(y_full)), y_full):
+            cv_folds.append({'train_idx': train_ix, 'test_idx': test_ix, 'n_pos_total': n_pos_total, 'n_neg_total': n_neg_total, 'type': 'mixed'})
 
     current_model_features = []
     best_current_score = chance_ll
@@ -290,13 +306,31 @@ def bout_onset_model_selection(univariate_results_path: str,
                     X_test_list.append(np.concatenate((X_p_te, X_n_te)))
                 elif fold_info['type'] == 'mixed':
                     train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
-                    pos_ix, neg_ix = fold_info['pos_indices'], fold_info['neg_indices']
-                    y_bal = np.concatenate((np.ones(len(pos_ix)), np.zeros(len(neg_ix))))
-                    y_tr_fold, y_te_fold = y_bal[train_ix], y_bal[test_ix]
+                    n_pos_total = fold_info['n_pos_total']
+                    n_neg_total = fold_info['n_neg_total']
+                    y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
                     X_p, X_n = pool_session_arrays(all_feature_data[anchor_to_force], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                    X_bal = np.concatenate((X_p[pos_ix], X_n[neg_ix]))
-                    X_train_list.append(X_bal[train_ix])
-                    X_test_list.append(X_bal[test_ix])
+                    X_full = np.concatenate((X_p, X_n))
+
+                    X_tr_all = X_full[train_ix]
+                    y_tr_all = y_full[train_ix]
+                    X_te = X_full[test_ix]
+                    y_te_fold = y_full[test_ix]
+
+                    # Balance the training fold 50/50; test preserves natural rate.
+                    X_tr_pos = X_tr_all[y_tr_all == 1]
+                    X_tr_neg = X_tr_all[y_tr_all == 0]
+                    n_tr_keep = min(X_tr_pos.shape[0], X_tr_neg.shape[0])
+                    if n_tr_keep == 0:
+                        raise ValueError("Training fold has no samples in one class after split.")
+                    anc_rng = np.random.default_rng(random_seed + fold_i)
+                    idx_p = anc_rng.choice(X_tr_pos.shape[0], n_tr_keep, replace=False)
+                    idx_n = anc_rng.choice(X_tr_neg.shape[0], n_tr_keep, replace=False)
+                    X_tr_bal = np.concatenate((X_tr_pos[idx_p], X_tr_neg[idx_n]))
+                    y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
+
+                    X_train_list.append(X_tr_bal)
+                    X_test_list.append(X_te)
 
                 X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
                 X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
@@ -307,7 +341,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                 metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
 
                 y_pred_mean = (y_proba_mean > 0.5).astype(int)
-                metrics['score'].append(accuracy_score(y_te_fold, y_pred_mean))
+                metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
                 metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
                 metrics['precision'].append(precision_score(y_te_fold, y_pred_mean, zero_division=0))
                 metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
@@ -387,14 +421,32 @@ def bout_onset_model_selection(univariate_results_path: str,
                             X_test_list.append(np.concatenate((f_p_te, f_n_te)))
                     elif fold_info['type'] == 'mixed':
                         train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
-                        pos_ix, neg_ix = fold_info['pos_indices'], fold_info['neg_indices']
-                        y_tr_fold = np.concatenate((np.ones(len(pos_ix)), np.zeros(len(neg_ix))))[train_ix]
-                        y_te_fold = np.concatenate((np.ones(len(pos_ix)), np.zeros(len(neg_ix))))[test_ix]
+                        n_pos_total = fold_info['n_pos_total']
+                        n_neg_total = fold_info['n_neg_total']
+                        y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
+                        y_tr_all = y_full[train_ix]
+                        y_te_fold = y_full[test_ix]
+
+                        # Determine balanced-train indices once (shared across all trial features).
+                        pos_mask = (y_tr_all == 1)
+                        neg_mask = (y_tr_all == 0)
+                        pos_positions = np.where(pos_mask)[0]
+                        neg_positions = np.where(neg_mask)[0]
+                        n_tr_keep = min(pos_positions.size, neg_positions.size)
+                        if n_tr_keep == 0:
+                            raise ValueError("Training fold has no samples in one class after split.")
+                        fs_rng = np.random.default_rng(random_seed + fold_i)
+                        sel_pos = fs_rng.choice(pos_positions.size, n_tr_keep, replace=False)
+                        sel_neg = fs_rng.choice(neg_positions.size, n_tr_keep, replace=False)
+                        bal_train_local = np.concatenate((pos_positions[sel_pos], neg_positions[sel_neg]))
+                        y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
+
                         for f_name in trial_features:
                             X_p, X_n = pool_session_arrays(all_feature_data[f_name], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                            X_bal = np.concatenate((X_p[pos_ix], X_n[neg_ix]))
-                            X_train_list.append(X_bal[train_ix])
-                            X_test_list.append(X_bal[test_ix])
+                            X_full = np.concatenate((X_p, X_n))
+                            X_tr_all = X_full[train_ix]
+                            X_train_list.append(X_tr_all[bal_train_local])
+                            X_test_list.append(X_full[test_ix])
 
                     X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
                     X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
@@ -405,7 +457,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                     metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
 
                     y_pred_mean = (y_proba_mean > 0.5).astype(int)
-                    metrics['score'].append(accuracy_score(y_te_fold, y_pred_mean))
+                    metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
                     metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
                     metrics['precision'].append(precision_score(y_te_fold, y_pred_mean, zero_division=0))
                     metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
@@ -646,8 +698,18 @@ def vocal_category_model_selection(
     This function identifies the optimal subset of behavioral features that predict
     a specific USV category (one-vs-rest). It adapts the standard forward selection
     algorithm to handle the specific data structure of vocal categories ('target' vs 'other')
-    and ensures rigorous validation by enforcing 50/50 class balance within every
-    cross-validation fold.
+    and enforces a consistent splitting & balancing invariant (see below) across
+    all cross-validation folds.
+
+    Splitting & balancing invariant:
+    --------------------------------
+    Across both 'session' and 'mixed' strategies, the training fold is down-sampled
+    to a 50/50 class balance (Target vs. Other), while the test fold preserves the
+    natural class prior of the source data. The 'mixed' strategy achieves this by
+    running `StratifiedShuffleSplit` on the *unbalanced* pool and balancing the
+    training half inside the per-fold loop. Reported metrics should therefore be
+    imbalance-robust: the `score` field stores `balanced_accuracy`, paired with
+    AUC and log-loss.
 
     Engine Flexibility:
     -------------------
@@ -666,8 +728,8 @@ def vocal_category_model_selection(
     4.  Forward selection loop:
         - Starts with an empty model (or the top-ranked anchor).
         - Iteratively tests adding every remaining candidate feature.
-        - Calculates and saves raw lists of metrics (Log-Loss, AUC, F1, Accuracy,
-          Precision, Recall) for every fold for every candidate.
+        - Calculates and saves raw lists of metrics (Log-Loss, AUC, F1,
+          Balanced Accuracy, Precision, Recall) for every fold for every candidate.
     5.  Decision rule: Adopts the one-standard-error (1SE) rule.
     6.  Final Refit: Computes filter shapes for visualization depending on the chosen
         engine (back-projection for sklearn, partial dependence for pygam).
@@ -916,16 +978,21 @@ def vocal_category_model_selection(
                     X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
 
                 X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_i)
-                X_te_t, X_te_o, y_te_t, y_te_o = _balance_multivariate_arrays(X_te_t_raw, X_te_o_raw, random_seed + fold_i + 100)
 
-                if not X_tr_t or not X_te_t: continue
+                # Test set: natural class prior (no balancing).
+                if not X_tr_t or len(X_te_t_raw) == 0:
+                    continue
+                n_te_targ = X_te_t_raw[0].shape[0]
+                n_te_other = X_te_o_raw[0].shape[0]
+                if (n_te_targ + n_te_other) == 0:
+                    continue
 
                 X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
                 y_tr = np.concatenate([y_tr_t, y_tr_o])
                 perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
 
-                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t, X_te_o)]
-                y_te = np.concatenate([y_te_t, y_te_o]).astype(int)
+                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
+                y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
 
                 if model_type == 'sklearn':
                     X_tr_stacked = np.hstack([np.dot(x[perm], basis_matrix) for x in X_tr_list])
@@ -958,7 +1025,7 @@ def vocal_category_model_selection(
                 metrics['f1'].append(f1_score(y_te, y_pred))
                 metrics['precision'].append(precision_score(y_te, y_pred, zero_division=0))
                 metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
-                metrics['score'].append(accuracy_score(y_te, y_pred))
+                metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
                 gc.collect()
             except Exception as e:
                 print(f"    [!] Error fitting {anchor} (Fold {fold_i}): {e}")
@@ -1027,16 +1094,21 @@ def vocal_category_model_selection(
                         X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
 
                     X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_i)
-                    X_te_t, X_te_o, y_te_t, y_te_o = _balance_multivariate_arrays(X_te_t_raw, X_te_o_raw, random_seed + fold_i + 100)
 
-                    if not X_tr_t or not X_te_t: continue
+                    # Test set: natural class prior (no balancing).
+                    if not X_tr_t or len(X_te_t_raw) == 0:
+                        continue
+                    n_te_targ = X_te_t_raw[0].shape[0]
+                    n_te_other = X_te_o_raw[0].shape[0]
+                    if (n_te_targ + n_te_other) == 0:
+                        continue
 
                     X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
                     y_tr = np.concatenate([y_tr_t, y_tr_o])
                     perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
 
-                    X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t, X_te_o)]
-                    y_te = np.concatenate([y_te_t, y_te_o]).astype(int)
+                    X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
+                    y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
 
                     if model_type == 'sklearn':
                         X_tr_stacked = np.hstack([np.dot(x[perm], basis_matrix) for x in X_tr_list])
@@ -1069,7 +1141,7 @@ def vocal_category_model_selection(
                     metrics['f1'].append(f1_score(y_te, y_pred))
                     metrics['precision'].append(precision_score(y_te, y_pred, zero_division=0))
                     metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
-                    metrics['score'].append(accuracy_score(y_te, y_pred))
+                    metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
                     gc.collect()
                 except Exception as e:
                     print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
@@ -1828,6 +1900,28 @@ def multinomial_vocal_category_model_selection(
     predict the full repertoire of USV categories simultaneously. It uses the
     JAX-accelerated SmoothMultinomialLogisticRegression model.
 
+    Splitting & balancing invariant:
+    --------------------------------
+    The test fold always preserves the natural class prior of the source data
+    (stratified in 'mixed' mode, within-tolerance of global in 'session' mode).
+    The training fold follows one of two paths, selected by
+    `hyperparameters.jax_linear.multinomial_logistic.balance_train_bool`:
+
+    - `false` (default): the training fold retains the natural class prior,
+      and class imbalance is handled inside the JAX loss through softened
+      inverse-frequency alpha weights combined with focal-gamma modulation
+      (`focal_loss_gamma`).
+    - `true`: every learned-model training fold (anchor + forward-selection
+      trials) is sample-level down-sampled so each class contributes
+      `min(class_count)` rows. The JAX fit is then invoked with
+      `focal_gamma=0` and uniform `1 / n_classes` class weights to avoid
+      double-correcting an already balanced batch. The `null_model_free`
+      baseline keeps the natural-rate training distribution so its empirical
+      prior floor remains an informative reference.
+
+    Reported metrics are imbalance-robust (balanced accuracy, log-loss,
+    macro OvR AUC).
+
     Algorithm adaptations for multinomial multi-feature data:
     1.  Data stacking: Instead of unrolling into (Value, Time) columns for pyGAM,
         features are horizontally concatenated (hstack) into a wide matrix of
@@ -1981,20 +2075,54 @@ def multinomial_vocal_category_model_selection(
     n_splits = model_ops['split_num']
     test_prop = model_ops['test_proportion']
     random_seed = settings['model_params']['random_seed']
+    balance_train = hp['balance_train_bool']
 
     if split_strategy == 'session':
-        cv_folds = get_stratified_group_splits_stable(
+        cv_folds, _ = get_stratified_group_splits_stable(
             groups=groups_global,
             y=y_global,
             test_prop=test_prop,
             n_splits=n_splits,
-            random_seed=random_seed
+            random_seed=random_seed,
+            max_total_attempts=model_ops['session_split_max_attempts'],
+            widen_step=model_ops['session_split_widen_step'],
+            widen_every=model_ops['session_split_widen_every']
         )
     elif split_strategy == 'mixed':
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
         cv_folds = list(sss.split(binned_data[ranked_features[0]], y_global))
     else:
         raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
+
+    # When balance_train_bool is active the learned-model paths (anchor,
+    # forward-selection trials) down-sample each training fold per-class and
+    # the JAX fit is switched to focal_gamma=0 + uniform class weights so the
+    # already balanced batch is not double-corrected. The null_model_free
+    # baseline intentionally keeps the natural-rate training distribution so
+    # its empirical-prior floor remains an informative baseline.
+    def _fold_train_indices_for_model(tr_idx: np.ndarray, fold_idx: int) -> np.ndarray:
+        if not balance_train:
+            return tr_idx
+        fold_rng = np.random.default_rng(random_seed + fold_idx + 1)
+        return _balance_multinomial_train_indices(tr_idx, y_global, fold_rng)
+
+    if balance_train:
+        model_focal_gamma = 0.0
+        model_uniform_weights = True
+    else:
+        model_focal_gamma = hp['focal_loss_gamma']
+        model_uniform_weights = False
+
+    # Project-wide canonical class order so every per-fold p_train / p_test
+    # vector has identical length and index-to-class mapping, enabling direct
+    # cross-fold comparison even if a fold happens to miss a rare class.
+    canonical_classes = np.unique(y_global)
+
+    def _class_proportions(labels: np.ndarray) -> np.ndarray:
+        if len(labels) == 0:
+            return np.zeros(len(canonical_classes), dtype=np.float32)
+        counts = np.array([(labels == c).sum() for c in canonical_classes], dtype=np.float64)
+        return (counts / counts.sum()).astype(np.float32)
 
     current_model_features = []
     best_current_score = 0.0
@@ -2123,25 +2251,31 @@ def multinomial_vocal_category_model_selection(
         cand_data = {
             'folds': {
                 'metrics': {m: [] for m in ['auc', 'score', 'precision', 'recall', 'f1', 'll']},
-                'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': []
+                'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                'p_train': [], 'p_test': [],
+                'balanced_train': bool(balance_train)
             },
-            'classes': None
+            'classes': None,
+            'canonical_classes': canonical_classes
         }
 
-        for tr_idx, te_idx in cv_folds:
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
             try:
-                X_tr, X_te = binned_data[anchor][tr_idx], binned_data[anchor][te_idx]
-                y_tr, y_te = y_global[tr_idx], y_global[te_idx]
+                tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
+                X_tr, X_te = binned_data[anchor][tr_idx_model], binned_data[anchor][te_idx]
+                y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
 
                 model = SmoothMultinomialLogisticRegression(
                     n_features=1, n_time_bins=n_time_bins,
                     lambda_smooth=hp['lambda_smooth'],
                     l1_reg=hp['l1_reg'],
                     l2_reg=hp['l2_reg'],
+                    focal_gamma=model_focal_gamma,
+                    uniform_class_weights=model_uniform_weights,
                     learning_rate=hp['learning_rate'],
                     max_iter=hp['max_iter'],
                     tol=hp['tol'],
-                    random_state=hp['random_state']
+                    random_state=hp['random_state'] + fold_idx
                 )
                 model.fit(X_tr, y_tr)
 
@@ -2165,6 +2299,8 @@ def multinomial_vocal_category_model_selection(
                 cand_data['folds']['y_pred'].append(y_pred)
                 cand_data['folds']['y_probs'].append(y_proba)
                 cand_data['folds']['test_indices'].append(te_idx)
+                cand_data['folds']['p_train'].append(_class_proportions(y_tr))
+                cand_data['folds']['p_test'].append(_class_proportions(y_te))
                 if cand_data['classes'] is None:
                     cand_data['classes'] = model.classes_
             except Exception as e:
@@ -2222,26 +2358,39 @@ def multinomial_vocal_category_model_selection(
             cand_data = {
                 'folds': {
                     'metrics': {m: [] for m in ['auc', 'score', 'precision', 'recall', 'f1', 'll']},
-                    'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': []
+                    'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                    'p_train': [], 'p_test': [],
+                    'balanced_train': bool(balance_train)
                 },
-                'classes': None
+                'classes': None,
+                'canonical_classes': canonical_classes
             }
 
             for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
                 try:
-                    X_tr_stacked = np.hstack([binned_data[f][tr_idx] for f in trial_feats])
+                    tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
+                    X_tr_stacked = np.hstack([binned_data[f][tr_idx_model] for f in trial_feats])
                     X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
-                    y_tr, y_te = y_global[tr_idx], y_global[te_idx]
+                    y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
 
                     model = SmoothMultinomialLogisticRegression(
                         n_features=n_trial_feats, n_time_bins=n_time_bins,
                         lambda_smooth=hp['lambda_smooth'],
                         l1_reg=hp['l1_reg'],
+                        # Divide L2 by sqrt(n_trial_feats): the feature trial stacks
+                        # n_trial_feats columns of `n_time_bins` into a wide design
+                        # matrix, so without this rescale the summed L2 penalty on
+                        # `W ** 2` would grow ~linearly with feature count and silently
+                        # over-regularize larger models. Scaling by 1/sqrt(n_feats)
+                        # keeps the per-feature penalty magnitude roughly constant as
+                        # the selector adds features.
                         l2_reg=hp['l2_reg'] / np.sqrt(n_trial_feats),
+                        focal_gamma=model_focal_gamma,
+                        uniform_class_weights=model_uniform_weights,
                         learning_rate=hp['learning_rate'],
                         max_iter=hp['max_iter'],
                         tol=hp['tol'],
-                        random_state=hp['random_state']
+                        random_state=hp['random_state'] + fold_idx
                     )
                     model.fit(X_tr_stacked, y_tr)
 
@@ -2265,6 +2414,8 @@ def multinomial_vocal_category_model_selection(
                     cand_data['folds']['y_pred'].append(y_pred)
                     cand_data['folds']['y_probs'].append(y_proba)
                     cand_data['folds']['test_indices'].append(te_idx)
+                    cand_data['folds']['p_train'].append(_class_proportions(y_tr))
+                    cand_data['folds']['p_test'].append(_class_proportions(y_te))
                     if cand_data['classes'] is None:
                         cand_data['classes'] = model.classes_
                 except Exception:

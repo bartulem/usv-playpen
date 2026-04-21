@@ -290,6 +290,18 @@ class ContinuousModelingPipeline(FeatureZoo):
         smooth_sd = voc_settings['usv_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
         noise_cats = voc_settings['usv_noise_categories']
+        manifold_cols = voc_settings['usv_manifold_column_names']
+
+        if not isinstance(manifold_cols, (list, tuple)) or len(manifold_cols) < 2:
+            raise ValueError(
+                "'vocal_features.usv_manifold_column_names' must be a list with at least "
+                f"two entries; got {manifold_cols!r}."
+            )
+        if len(manifold_cols) != 2:
+            raise ValueError(
+                "The continuous manifold pipeline currently assumes a 2-D target (bivariate "
+                f"Gaussian / CNN regression). Received {len(manifold_cols)} columns: {manifold_cols}."
+            )
 
         filter_hist = self.modeling_settings['model_params']['filter_history']
         pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
@@ -306,7 +318,8 @@ class ContinuousModelingPipeline(FeatureZoo):
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
-            noise_vocal_categories=noise_cats
+            noise_vocal_categories=noise_cats,
+            manifold_column_names=manifold_cols
         )
 
         print("Extracting continuous targets and computing Global Inverse Density Weights...")

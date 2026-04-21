@@ -55,25 +55,68 @@ def get_stratified_group_splits_stable(
         n_splits: int = 100,
         tolerance: float = 0.05,
         random_seed: int = 0,
-        n_categories: int = 6
-) -> list:
+        n_categories: int = 6,
+        max_total_attempts: int = 50000,
+        widen_step: float = 0.02,
+        widen_every: int = 1000
+) -> tuple:
     """
-    Generates 100 independent 80/20 session-based splits that are
-    statistically verified for category representation.
+    Generates `n_splits` independent train/test index pairs and records the
+    splitter metadata needed to audit the realized class distribution of each
+    fold.
 
-    Parameters:
-    -----------
+    Two strategies are supported:
+
+    - 'mixed':  sessions are ignored; `StratifiedShuffleSplit` is used, which
+                perfectly stratifies the `n_categories` labels at the configured
+                test proportion. Both train and test folds therefore preserve
+                the natural class prior.
+    - 'session': whole sessions are sampled into test / train. A fold is only
+                accepted if every class is represented in both halves and the
+                maximum absolute deviation between the test-set empirical class
+                distribution and the global class distribution is below the
+                current `tolerance`. If the sampler cannot find enough valid
+                folds, `tolerance` is widened by `widen_step` every
+                `widen_every` failed attempts (up to `max_total_attempts`).
+                The `tolerance` that was in force at the moment each fold was
+                accepted is recorded per fold so downstream analyses can
+                audit / filter lenient folds.
+
+    Parameters
+    ----------
     groups : np.ndarray
-        Array of session IDs (ensure samples from the same session stay together).
+        Array of session IDs (ensures samples from the same session stay together
+        for 'session' strategy).
     y : np.ndarray
-        Array of USV category labels (1-6).
-    test_prop : float
-        Proportion of sessions to assign to the test set (e.g., 0.2).
-    n_splits : int
-        Number of independent iterations (100).
-    tolerance : float
-        Initial allowable difference in category distribution between
-        the global data and the generated splits.
+        Array of USV category labels.
+    split_strategy : {'session', 'mixed'}, default='session'
+        Splitting rule (see above).
+    test_prop : float, default=0.2
+        Proportion of sessions ('session') or samples ('mixed') routed to test.
+    n_splits : int, default=100
+        Number of independent folds to return.
+    tolerance : float, default=0.05
+        Initial allowable max per-class distribution deviation between the
+        test fold and the global data (only used by 'session').
+    random_seed : int, default=0
+        Seed for reproducibility.
+    n_categories : int, default=6
+        Expected number of USV categories.
+    max_total_attempts : int, default=50000
+        Hard ceiling on rejection-sampling attempts before raising.
+    widen_step : float, default=0.02
+        Amount by which `tolerance` is increased each time the sampler fails
+        to accept a fold for `widen_every` consecutive attempts.
+    widen_every : int, default=1000
+        Number of failed attempts between successive tolerance widenings.
+
+    Returns
+    -------
+    cv_folds : list of tuple[np.ndarray, np.ndarray]
+        List of `(train_idx, test_idx)` pairs.
+    fold_tolerances : list of float
+        Length `n_splits`. For 'session', the `tolerance` in force when each
+        fold was accepted. For 'mixed', always `0.0` (perfectly stratified).
     """
 
     if split_strategy not in ['session', 'mixed']:
@@ -82,7 +125,9 @@ def get_stratified_group_splits_stable(
     # MIXED STRATEGY: Ignores sessions, perfectly stratifies the 6 categories
     if split_strategy == 'mixed':
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
-        return list(sss.split(np.zeros(len(y)), y))
+        cv_folds = list(sss.split(np.zeros(len(y)), y))
+        fold_tolerances = [0.0] * len(cv_folds)
+        return cv_folds, fold_tolerances
 
     # SESSION STRATEGY: Strict cross-session prediction (your original logic)
     unique_sessions = np.unique(groups)
@@ -93,11 +138,11 @@ def get_stratified_group_splits_stable(
     global_dist = global_counts / len(y)
 
     cv_folds = []
+    fold_tolerances = []
     rng = np.random.RandomState(random_seed)
 
     attempts = 0
     current_tolerance = tolerance
-    max_total_attempts = 50000
 
     while len(cv_folds) < n_splits:
         attempts += 1
@@ -122,10 +167,15 @@ def get_stratified_group_splits_stable(
 
             if dist_error < current_tolerance:
                 cv_folds.append((tr_idx, te_idx))
+                fold_tolerances.append(float(current_tolerance))
 
-        # widen the net every 1000 failures
-        if attempts % 1000 == 0:
-            current_tolerance += 0.02
+        # widen the net every `widen_every` failures
+        if attempts % widen_every == 0:
+            current_tolerance += widen_step
+            print(
+                f"[session-splits] widening tolerance -> {current_tolerance:.3f} "
+                f"after {attempts} attempts ({len(cv_folds)}/{n_splits} folds accepted)."
+            )
 
         # prevent infinite loops
         if attempts > max_total_attempts:
@@ -134,7 +184,50 @@ def get_stratified_group_splits_stable(
                 "The rare categories may be concentrated in too few sessions."
             )
 
-    return cv_folds
+    return cv_folds, fold_tolerances
+
+
+def _balance_multinomial_train_indices(
+        train_idx: np.ndarray,
+        y: np.ndarray,
+        rng: np.random.Generator
+) -> np.ndarray:
+    """
+    Down-samples `train_idx` so every USV class contributes the same number of
+    rows (`min(class_count)`). Index order is shuffled so downstream consumers
+    can slice the balanced subset directly.
+
+    Parameters
+    ----------
+    train_idx : np.ndarray
+        Absolute row indices (into the full design matrix) that belong to the
+        training fold.
+    y : np.ndarray
+        Integer class labels aligned to the full design matrix.
+    rng : np.random.Generator
+        Seeded generator used for per-class sampling (and final shuffling).
+
+    Returns
+    -------
+    balanced_idx : np.ndarray
+        Subset of `train_idx` with every class represented `min_count` times.
+    """
+
+    y_train = y[train_idx]
+    classes, counts = np.unique(y_train, return_counts=True)
+    min_count = int(counts.min())
+
+    picked = []
+    for cls in classes:
+        cls_positions = train_idx[y_train == cls]
+        if len(cls_positions) == min_count:
+            picked.append(cls_positions)
+        else:
+            picked.append(rng.choice(cls_positions, size=min_count, replace=False))
+
+    balanced_idx = np.concatenate(picked)
+    rng.shuffle(balanced_idx)
+    return balanced_idx
 
 class MultinomialModelingPipeline(FeatureZoo):
 
@@ -441,16 +534,32 @@ class MultinomialModelRunner:
     ---------------------
     1. Data transformation: Pivots nested session-based dictionaries into
        unified, temporally downsampled (binned) arrays for efficient modeling.
-    2. Experimental control: Implements a dual-pass 'Actual vs. Null' strategy
-       to ensure that behavioral predictors are statistically meaningful.
-    3. Session-aware validation: Utilizes `StratifiedGroupKFold` to prevent
-       data leakage by ensuring all samples from a single recording session
-       remain within either the training or testing set for a given fold.
-    4. Deep metadata storage: Persists raw fold-level data (predictions, labels,
-       and weights) rather than just summary statistics, enabling downstream
-       confusion matrix analysis and significance testing.
+    2. Experimental control: Implements a tri-strategy 'Actual vs. Null vs.
+       Null-Model-Free' design so behavioral predictive power is benchmarked
+       against both a within-session shuffled null and a class-prior floor.
+    3. Cross-validation: Delegates to `get_stratified_group_splits_stable`,
+       which dispatches on `split_strategy`:
+         - 'mixed':  `StratifiedShuffleSplit` on pooled samples — perfectly
+                     stratified across classes, sessions are ignored.
+         - 'session': custom rejection sampler that partitions whole sessions
+                     and accepts folds whose test-set class distribution stays
+                     within a widening tolerance of the global class prior,
+                     ensuring no session leaks between train and test.
+    4. Optional train-fold balancing: when
+       `hyperparameters.jax_linear.multinomial_logistic.balance_train_bool`
+       is `true`, each training fold is per-class down-sampled to the minimum
+       class count, and the JAX fit is switched to `focal_gamma=0` with
+       uniform class weights so focal-alpha does not double-correct an already
+       balanced batch. When `false` (default), the natural training-rate path
+       is kept and rebalancing happens implicitly inside the loss (softened
+       inverse-frequency alpha + focal modulation).
+    5. Deep metadata storage: persists raw fold-level data (predictions,
+       labels, probabilities, learned weights, realized p_train / p_test,
+       per-fold accepted tolerance) rather than just summary statistics,
+       enabling downstream confusion matrix analysis, distribution audits,
+       and significance testing.
 
-    The runner relies strictly on the 'hyperparameters' and 'model_selection'
+    The runner relies strictly on the 'hyperparameters' and 'model_params'
     blocks within the provided modeling settings to ensure reproducibility.
     """
 
@@ -576,13 +685,35 @@ class MultinomialModelRunner:
            distribution for every sample in the test set. If the model cannot beat
            this score, it is merely guessing the majority class.
 
+        Splitting & balancing invariant:
+        --------------------------------
+        The test fold always preserves the natural class prior of the source
+        data (stratified in 'mixed' mode, natural-within-tolerance in 'session'
+        mode). The training fold follows one of two paths, selected by
+        `hyperparameters.jax_linear.multinomial_logistic.balance_train_bool`:
+
+        - `false` (default): the training fold retains the natural class prior,
+          and class imbalance is handled inside the JAX loss through softened
+          inverse-frequency alpha weights combined with focal-gamma modulation
+          (`focal_loss_gamma` in settings).
+        - `true`: the training fold is sample-level down-sampled so every class
+          contributes `min(class_count)` rows. The JAX fit is then invoked with
+          `focal_gamma=0` and uniform `1 / n_classes` class weights to avoid
+          double-correcting an already balanced batch. This mirrors the binary
+          pipeline's "balanced train / natural-rate test" invariant.
+
+        Reported metrics are imbalance-robust (balanced accuracy, log-loss,
+        macro OvR AUC).
+
         Data Persistence (Deep Storage):
         -------------------------------
         Unlike standard training functions, this method saves all raw fold outputs,
-        including true labels, class probabilities, and learned weights. This
-        enables:
+        including true labels, class probabilities, learned weights, realized
+        per-fold class proportions (`p_train`, `p_test`), and the split tolerance
+        in force when each 'session' fold was accepted. This enables:
         - Post-hoc generation of multi-class Confusion Matrices.
         - Construction of ROC and Precision-Recall curves.
+        - Audits of realized train/test class balance per fold.
         - Statistical paired tests between Actual, Null, and Model-Free distributions.
 
         Parameters
@@ -599,11 +730,21 @@ class MultinomialModelRunner:
         combined_results : dict
             A nested dictionary containing 'actual', 'null', and 'null_model_free' strategies.
             Each strategy contains a 'folds' key with list-based storage for:
-            - 'metrics' : Dict of performance scores per cross-validation fold.
-            - 'weights' : The learned coefficient matrices per fold (None for model-free).
-            - 'y_true'  : The actual USV labels per fold.
-            - 'y_pred'  : The model's hard-choice predictions per fold.
-            - 'y_probs' : The softmax probabilities for all classes per fold.
+            - 'metrics'       : Dict of performance scores per cross-validation fold.
+            - 'weights'       : Learned coefficient matrices per fold (None for model-free).
+            - 'intercepts'    : Learned intercept vectors per fold.
+            - 'y_true'        : Actual USV labels per fold.
+            - 'y_pred'        : Model's hard-choice predictions per fold.
+            - 'y_probs'       : Softmax probabilities for all classes per fold.
+            - 'test_indices'  : Absolute row indices defining each test fold.
+            - 'p_train'       : Realized per-class proportions of the training fold
+                                (aligned to the canonical project-wide class order).
+            - 'p_test'        : Realized per-class proportions of the test fold.
+            - 'tolerance'     : Per-fold accepted distribution-error tolerance
+                                (only meaningful for 'session'; 0.0 for 'mixed').
+            - 'balanced_train': Whether `balance_train_bool` was active this run.
+            Plus top-level 'classes' (training class order for this strategy)
+            and 'canonical_classes' (project-wide class ordering for `p_*`).
         """
 
         # Strict dictionary lookups (No .get() allowed)
@@ -612,6 +753,9 @@ class MultinomialModelRunner:
         split_strategy = self.modeling_settings['model_params']['split_strategy']
         test_prop = self.modeling_settings['model_params']['test_proportion']
         bin_size = hp['bin_resizing_factor']
+        balance_train = hp['balance_train_bool']
+        base_seed = self.modeling_settings['model_params']['random_seed']
+        n_categories_total = self.modeling_settings['vocal_features']['usv_category_number']
 
         all_blocks = self.load_univariate_data_blocks(pkl_path, bin_size=bin_size)
         if feat_name not in all_blocks:
@@ -622,18 +766,37 @@ class MultinomialModelRunner:
         groups = feat_data['groups']
         n_time = feat_data['n_time_bins']
 
-        cv_folds = get_stratified_group_splits_stable(
+        mp = self.modeling_settings['model_params']
+        cv_folds, fold_tolerances = get_stratified_group_splits_stable(
             groups=groups,
             y=feat_data['y'],
             split_strategy=split_strategy,
             test_prop=test_prop,
             n_splits=n_splits,
-            random_seed=self.modeling_settings['model_params']['random_seed'],
-            n_categories=self.modeling_settings['vocal_features']['usv_category_number']
+            random_seed=base_seed,
+            n_categories=n_categories_total,
+            max_total_attempts=mp['session_split_max_attempts'],
+            widen_step=mp['session_split_widen_step'],
+            widen_every=mp['session_split_widen_every']
         )
+
+        # Project-wide canonical class ordering so per-fold proportion arrays are
+        # directly comparable across folds and strategies even when a fold happens
+        # to be missing a rare class.
+        canonical_classes = np.unique(feat_data['y'])
+
+        def _class_proportions(labels: np.ndarray) -> np.ndarray:
+            if len(labels) == 0:
+                return np.zeros(len(canonical_classes), dtype=np.float32)
+            counts = np.array([(labels == c).sum() for c in canonical_classes], dtype=np.float64)
+            return (counts / counts.sum()).astype(np.float32)
 
         strategies = ['actual', 'null', 'null_model_free']
         combined_results = {}
+
+        # Reproducible RNG for the 'null' strategy: derived from base_seed, no
+        # reliance on ambient NumPy global state.
+        null_rng = np.random.default_rng(base_seed + 9_973)
 
         for strategy in strategies:
             print(f"\n" + "=" * 60)
@@ -644,8 +807,8 @@ class MultinomialModelRunner:
             if strategy == 'null':
                 for sess_id in np.unique(groups):
                     sess_mask = (groups == sess_id)
-                    sess_labels = y[sess_mask]
-                    np.random.shuffle(sess_labels)
+                    sess_labels = y[sess_mask].copy()
+                    null_rng.shuffle(sess_labels)
                     y[sess_mask] = sess_labels
 
             strategy_data = {
@@ -656,12 +819,27 @@ class MultinomialModelRunner:
                     'y_true': [],
                     'y_pred': [],
                     'y_probs': [],
-                    'test_indices': []
+                    'test_indices': [],
+                    'p_train': [],
+                    'p_test': [],
+                    'tolerance': list(fold_tolerances),
+                    'balanced_train': bool(balance_train)
                 },
-                'classes': None
+                'classes': None,
+                'canonical_classes': canonical_classes
             }
 
-            for fold, (train_idx, test_idx) in enumerate(cv_folds):
+            for fold, (train_idx_raw, test_idx) in enumerate(cv_folds):
+                # Optional sample-level balancing of the training fold. The
+                # natural-rate training distribution is intentionally preserved
+                # for 'null_model_free' so the empirical-prior floor remains a
+                # meaningful baseline (uniform priors would collapse it).
+                if balance_train and strategy != 'null_model_free':
+                    fold_rng = np.random.default_rng(base_seed + fold + 1)
+                    train_idx = _balance_multinomial_train_indices(train_idx_raw, y, fold_rng)
+                else:
+                    train_idx = train_idx_raw
+
                 X_train, X_test = X[train_idx], X[test_idx]
                 y_train, y_test = y[train_idx], y[test_idx]
 
@@ -682,12 +860,25 @@ class MultinomialModelRunner:
 
                     model_classes = unique_classes
                 else:
+                    # When sample-level balancing is active, the softened
+                    # inverse-frequency focal-alpha would double-correct an
+                    # already balanced batch, so we zero the focal-gamma and use
+                    # uniform class weights inside the JAX fit.
+                    if balance_train:
+                        effective_focal_gamma = 0.0
+                        use_uniform_weights = True
+                    else:
+                        effective_focal_gamma = hp['focal_loss_gamma']
+                        use_uniform_weights = False
+
                     model = SmoothMultinomialLogisticRegression(
                         n_features=1,
                         n_time_bins=n_time,
                         lambda_smooth=hp['lambda_smooth'],
                         l1_reg=hp['l1_reg'],
                         l2_reg=hp['l2_reg'],
+                        focal_gamma=effective_focal_gamma,
+                        uniform_class_weights=use_uniform_weights,
                         learning_rate=hp['learning_rate'],
                         max_iter=hp['max_iter'],
                         tol=hp['tol'],
@@ -738,6 +929,8 @@ class MultinomialModelRunner:
                 strategy_data['folds']['y_pred'].append(predictions)
                 strategy_data['folds']['y_probs'].append(probabilities)
                 strategy_data['folds']['test_indices'].append(test_idx)
+                strategy_data['folds']['p_train'].append(_class_proportions(y_train))
+                strategy_data['folds']['p_test'].append(_class_proportions(y_test))
 
                 if strategy_data['classes'] is None:
                     strategy_data['classes'] = model_classes

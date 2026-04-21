@@ -55,6 +55,13 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         modulator down-weights easy examples so gradient flow concentrates on
         hard / misclassified samples. Set to 0.0 to recover plain alpha-balanced
         cross-entropy.
+    uniform_class_weights : bool, default=False
+        If True, replaces the softened inverse-frequency class weights used as the
+        focal-loss alpha and as the class-specific smoothness scaler with uniform
+        weights equal to 1 / n_classes. Intended to be combined with an externally
+        pre-balanced training fold (e.g., via the runner's `balance_train_bool`
+        option), where sample-level balancing has already equalized class exposure
+        and any additional inverse-frequency reweighting would double-correct.
     learning_rate : float, default=1e-3
         Step size for the Adam optimizer.
     max_iter : int, default=5000
@@ -76,6 +83,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             l1_reg: float = 0.0,
             l2_reg: float = 0.1,
             focal_gamma: float = 2.0,
+            uniform_class_weights: bool = False,
             learning_rate: float = 1e-3,
             max_iter: int = 5000,
             tol: float = 1e-4,
@@ -88,6 +96,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self.l1_reg = l1_reg
         self.l2_reg = l2_reg
         self.focal_gamma = focal_gamma
+        self.uniform_class_weights = uniform_class_weights
         self.learning_rate = learning_rate
         self.max_iter = max_iter
         self.tol = tol
@@ -227,11 +236,18 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         Y_j = jnp.array(Y_onehot)
 
         class_counts = jnp.sum(Y_j, axis=0)
-        """ total_samples = Y_j.shape[0]
-        c_weights = total_samples / (n_classes * (class_counts + 1e-8)) """
-        # Soften the extreme class imbalance by using the square root of the counts
-        sqrt_counts = jnp.sqrt(class_counts + 1e-8)
-        c_weights = jnp.sum(sqrt_counts) / (n_classes * sqrt_counts)
+        if self.uniform_class_weights:
+            # Training fold was already sample-level balanced upstream (e.g., the
+            # runner's `balance_train_bool` path). Replace the softened
+            # inverse-frequency weights with uniform `1 / n_classes` weights so the
+            # focal-alpha does not double-correct an already balanced batch.
+            c_weights = jnp.ones(n_classes, dtype=Y_j.dtype) / n_classes
+        else:
+            """ total_samples = Y_j.shape[0]
+            c_weights = total_samples / (n_classes * (class_counts + 1e-8)) """
+            # Soften the extreme class imbalance by using the square root of the counts
+            sqrt_counts = jnp.sqrt(class_counts + 1e-8)
+            c_weights = jnp.sum(sqrt_counts) / (n_classes * sqrt_counts)
 
         # 1. Calculate log-priors for the intercepts
         total_samples = Y_j.shape[0]
@@ -266,12 +282,16 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         if self.verbose:
             print(f"Starting JAX optimization for {self.max_iter} iterations...")
 
+        # Cache the parameters at the last check-point so the convergence
+        # diagnostic measures the cumulative change over the last 100 steps
+        # (rather than the single-step delta, which would collapse trivially).
+        last_check_params = params
+
         for i in range(self.max_iter):
-            old_params = params
             params, opt_state = step(params, opt_state, X_j, Y_j, self.n_features, self.n_time_bins, c_weights)
 
             if i > 0 and i % 100 == 0:
-                diff = jnp.linalg.norm(params[0] - old_params[0])
+                diff = jnp.linalg.norm(params[0] - last_check_params[0])
                 if diff < self.tol:
                     if self.verbose:
                         print(f"Converged at iteration {i} with diff {diff:.2e}")
@@ -286,6 +306,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                         c_weights, self.focal_gamma
                     )
                     print(f"Iter {i}: Loss = {current_loss:.4f}")
+
+                last_check_params = params
 
         self.coef_ = np.array(params[0].T)
         self.intercept_ = np.array(params[1])

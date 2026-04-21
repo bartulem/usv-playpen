@@ -33,7 +33,7 @@ import pickle
 from pygam import LogisticGAM, te
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
-from sklearn.metrics import roc_auc_score, log_loss, f1_score, precision_score, recall_score, accuracy_score
+from sklearn.metrics import roc_auc_score, log_loss, f1_score, precision_score, recall_score, balanced_accuracy_score
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
@@ -325,34 +325,38 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
         This function orchestrates the data splitting for model validation, dynamically
         handling both 'session' and 'mixed' cross-validation strategies based on the
-        project configuration. It ensures rigorous comparability between experimental
-        strategies by strictly enforcing identical sample sizes and class balances.
+        project configuration. Across all strategies, the training fold is down-sampled
+        to a 50/50 class balance (Target vs. Other), while the test fold is kept at
+        the natural class prior. This keeps gradient updates informative for both
+        classes during training, while evaluation reflects the true imbalance of the
+        task. Reported metrics should therefore be imbalance-robust
+        (e.g., balanced_accuracy, AUC, log-loss).
 
         Splitting strategies:
         ---------------------
         1. 'session': Evaluates model generalizability across independent recording sessions.
-           Whole sessions are held out for testing. (e.g., Train on Sessions A and B;
-           Test on Session C).
-        2. 'mixed': Evaluates model performance on a completely randomized pool of data.
-           Epochs from all sessions are combined and then randomized into train/test sets,
-           ensuring a purely proportional split of the total project-wide sample size.
-           This utilizes StratifiedShuffleSplit to ensure class ratios remain identical
-           across all folds.
+           Whole sessions are held out for testing (e.g., Train on Sessions A and B;
+           Test on Session C). Training is balanced 50/50 per split; test retains the
+           natural class prior of the held-out sessions.
+        2. 'mixed': Pools epochs from all sessions and uses `StratifiedShuffleSplit`
+           on the *unbalanced* pool so each split preserves the natural class ratio
+           in both halves. The training fold is then balanced 50/50; the test fold
+           is left at the natural base rate.
 
         Balancing Process:
         ------------------
-        1.  Identifies data containing both target (positive) and other (negative) classes.
+        1.  Identifies sessions containing both target (positive) and other (negative) classes.
         2.  Executes the selected split strategy ('session' or 'mixed') to generate base
-            training and testing data pools.
-        3.  Calculates the maximum possible sample size based on the minority class
-            (usually target USVs) in the resulting pools to prevent frequency bias.
-        4.  Execution strategy:
-            - 'actual': Balances Target vs. Other data 50/50 using the calculated limit.
-              (e.g., 100 Target vs 100 Other).
-            - 'null_other': Uses ONLY 'other' data but splits it into two pseudo-classes.
-              Crucially, it downsamples this data to MATCH the 'actual' size exactly.
-              (e.g., 100 other (A) vs 100 other (B)). This prevents the null model from
-              performing artificially well simply due to having a larger training volume.
+            training and testing data pools at the natural class prior.
+        3.  Executes the selected condition ('actual' or 'null_other'):
+            - 'actual': Balances the training Target vs. Other data 50/50; test
+              data is passed through at the natural class prior.
+            - 'null_other': Uses ONLY 'other' data to construct pseudo-classes.
+              The pseudo-training set is balanced 50/50 and sized to the 'actual'
+              balanced training size for this split. The pseudo-test set is
+              size- and ratio-matched to the 'actual' natural-rate test set,
+              preventing sample-size or prior mismatches between real and null
+              comparisons.
 
         Parameters
         ----------
@@ -369,7 +373,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         ------
         tuple
             A tuple of (X_train, y_train, X_test, y_test) for one validation fold
-            represented as NumPy arrays.
+            represented as NumPy arrays. X_train/y_train are class-balanced;
+            X_test/y_test preserve the natural class prior of the source data.
         """
 
         all_sessions = list(feature_data.keys())
@@ -430,31 +435,45 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         else:
             raise ValueError(f"Unknown split_strategy '{split_strategy}'. Must be 'session' or 'mixed'.")
 
-        # Phase 2: Ensure train/test data are rigorously balanced across strategies
+        # Phase 2: Balance training folds only; keep test folds at the natural class prior.
         for X_tr_targ, X_tr_other, X_te_targ, X_te_other in splits_data:
 
             n_tr_limit = min(X_tr_targ.shape[0], X_tr_other.shape[0])
-            n_te_limit = min(X_te_targ.shape[0], X_te_other.shape[0])
+            n_te_target = X_te_targ.shape[0]
+            n_te_other = X_te_other.shape[0]
 
-            if n_tr_limit == 0 or n_te_limit == 0:
+            if n_tr_limit == 0 or (n_te_target + n_te_other) == 0:
                 continue
 
             if strategy == 'actual':
+                # Balance training 50/50; test passes through at natural rate.
                 X_tr_A, X_tr_B = balance_two_class_arrays(X_tr_targ, X_tr_other)
-                X_te_A, X_te_B = balance_two_class_arrays(X_te_targ, X_te_other)
+                X_te_A = X_te_targ
+                X_te_B = X_te_other
 
             elif strategy == 'null_other':
-                def balance_pseudo(X, limit):
+                # Pseudo-train: balanced 50/50, matching 'actual' train size (n_tr_limit per half).
+                # Pseudo-test: size- and ratio-matched to 'actual' test (n_te_target + n_te_other
+                # drawn from Other pool, split according to the natural-rate target/other shares).
+                def draw_pseudo_train(X, limit):
                     needed = limit * 2
                     if len(X) < needed:
                         return None, None
                     X_sub = X[np.random.choice(len(X), needed, replace=False)]
                     return X_sub[:limit], X_sub[limit:]
 
-                X_tr_A, X_tr_B = balance_pseudo(X_tr_other, n_tr_limit)
-                X_te_A, X_te_B = balance_pseudo(X_te_other, n_te_limit)
+                def draw_pseudo_test(X, n_pseudo_pos, n_pseudo_neg):
+                    needed = n_pseudo_pos + n_pseudo_neg
+                    if needed == 0 or len(X) == 0:
+                        return np.empty((0,) + X.shape[1:]), np.empty((0,) + X.shape[1:])
+                    replace = len(X) < needed
+                    X_sub = X[np.random.choice(len(X), needed, replace=replace)]
+                    return X_sub[:n_pseudo_pos], X_sub[n_pseudo_pos:]
 
-                if X_tr_A is None or X_te_A is None:
+                X_tr_A, X_tr_B = draw_pseudo_train(X_tr_other, n_tr_limit)
+                X_te_A, X_te_B = draw_pseudo_test(X_te_other, n_te_target, n_te_other)
+
+                if X_tr_A is None:
                     continue
 
             X_train, y_train = concat_two_class_with_labels(X_tr_A, X_tr_B)
@@ -611,7 +630,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         results[key]['auc'][split_idx] = roc_auc_score(y_te, y_prob)
                         results[key]['ll'][split_idx] = log_loss(y_te, np.clip(y_prob, 1e-15, 1 - 1e-15))
 
-                        results[key]['score'][split_idx] = accuracy_score(y_te, y_pred)
+                        results[key]['score'][split_idx] = balanced_accuracy_score(y_te, y_pred)
                         results[key]['precision'][split_idx] = precision_score(y_te, y_pred, zero_division=0.0)
                         results[key]['recall'][split_idx] = recall_score(y_te, y_pred, zero_division=0.0)
                         results[key]['f1'][split_idx] = f1_score(y_te, y_pred, average='binary', zero_division=0.0)

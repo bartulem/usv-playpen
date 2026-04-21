@@ -17,7 +17,7 @@ import polars as pls
 from pygam import LogisticGAM, te
 import pickle
 from sklearn.linear_model import LogisticRegressionCV
-from sklearn.metrics import accuracy_score, log_loss, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import balanced_accuracy_score, log_loss, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
@@ -385,22 +385,33 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         A generator that yields train/test splits based on the 'split_strategy'.
 
         This function reads 'self.modeling_settings' for 'split_strategy',
-        'num_splits', and 'test_proportion'. It then yields balanced and
-        shuffled train/test sets according to the chosen strategy.
+        'num_splits', and 'test_proportion'. Across all strategies, the training
+        fold is down-sampled to a 50/50 class balance (Bout vs. No-Bout), while
+        the test fold is kept at the natural class prior. This keeps gradient
+        updates informative for both classes during training, while evaluation
+        reflects the true imbalance of the task. Metrics should therefore be
+        imbalance-robust (e.g., balanced_accuracy, AUC, log-loss).
 
         Strategies:
-        - 'mixed': Pools all sessions, balances the total data (Bout vs. No-Bout),
-          then creates 'n_splits' using StratifiedShuffleSplit based on 'test_proportion'.
-        - 'session': Splits the *list* of sessions into train/test sets 'n_splits'
-          times using ShuffleSplit. The training data (pooled from
-          training sessions) is balanced per-split. The test data remains unbalanced.
-        - 'null_control': (Like 'mixed') Pools all *No-Bout* epochs, creates two
-          fake balanced classes, and runs StratifiedShuffleSplit.
-        - 'session_null_control': (Like 'session') Splits sessions into train/test.
-          Creates a fake balanced training set from the *training sessions'* No-Bout
-          data that **matches the exact size** of the *actual* balanced training set.
-          Creates a fake unbalanced test set from the *test sessions'* No-Bout
-          data that **matches the exact size and class ratio** of the *actual* test set.
+        - 'mixed': Pools all sessions into a single sample-level dataset. Uses
+          `StratifiedShuffleSplit` on the *unbalanced* pool so each split
+          preserves the natural class ratio in both halves. The training fold
+          is then down-sampled to 50/50 via `balance_two_class_arrays`; the
+          test fold is left at the natural base rate.
+        - 'session': Splits the *list* of sessions into train/test sets
+          `n_splits` times using `ShuffleSplit`. The training data (pooled from
+          training sessions) is balanced per split to 50/50; the test data
+          (pooled from test sessions) retains the natural class prior.
+        - 'null_control': Pools all *No-Bout* epochs and runs `StratifiedShuffleSplit`
+          on fake labels matched to the per-split train/test sizes and class
+          ratios produced by 'mixed'. The training fold is balanced 50/50; the
+          test fold mirrors 'mixed's natural-rate test (same N and same ratio).
+        - 'session_null_control': (Like 'session') Splits sessions into
+          train/test. Builds a fake balanced training set from the *training
+          sessions'* No-Bout data matching the exact size of the *actual*
+          balanced training set, and a fake unbalanced test set from the *test
+          sessions'* No-Bout data matching the exact size and class ratio of
+          the *actual* test set.
 
         Parameters
         ----------
@@ -415,6 +426,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         ------
         tuple
             A tuple of (X_train, y_train, X_test, y_test) for each split.
+            X_train/y_train are class-balanced; X_test/y_test preserve the
+            natural class prior of the source data.
         """
 
         split_strategy = self.modeling_settings['model_params']['split_strategy']
@@ -432,20 +445,33 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         ### Strategy 1: 'mixed' (all sessions together)
         if split_strategy == 'mixed':
-            X_pos, X_neg = balance_two_class_arrays(X_pos_all, X_neg_all)
-
-            if X_pos.shape[0] == 0:
-                print(f"Warning: No balanced data for feature. Skipping splits.")
+            if n_pos_total == 0 or n_neg_total == 0:
+                print(f"Warning: No data for one of the classes (pos={n_pos_total}, neg={n_neg_total}). Skipping splits.")
                 return
 
-            X, y = concat_two_class_with_labels(X_pos, X_neg)
+            # Pool all epochs at the natural class prior, then stratified-split.
+            X, y = concat_two_class_with_labels(X_pos_all, X_neg_all)
 
-            print(f"--- 'mixed' strategy: Created balanced dataset of {X.shape[0]} samples.")
+            print(f"--- 'mixed' strategy: pooled {X.shape[0]} samples "
+                  f"(pos={n_pos_total}, neg={n_neg_total}); splitting at natural rate, balancing train only.")
 
             sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_proportion, random_state=random_state)
 
             for train_idx, test_idx in sss.split(X, y):
-                yield X[train_idx], y[train_idx], X[test_idx], y[test_idx]
+                X_train_all, y_train_all = X[train_idx], y[train_idx]
+                X_test, y_test = X[test_idx], y[test_idx]
+
+                # Split the training fold back into classes and balance 50/50.
+                X_pos_train = X_train_all[y_train_all == 1]
+                X_neg_train = X_train_all[y_train_all == 0]
+                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train, X_neg_train)
+
+                if X_pos_train_bal.shape[0] == 0:
+                    print(f"Warning: No balanced training data for a 'mixed' split. Skipping.")
+                    continue
+
+                X_train, y_train = concat_two_class_with_labels(X_pos_train_bal, X_neg_train_bal)
+                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
 
         ### Strategy 2: 'session' (some sessions go to train, some to test)
         elif split_strategy == 'session':
@@ -483,30 +509,59 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                 yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
 
-        ### Strategy 3: 'null_control' (pooled no-bout, matching 'mixed' size)
+        ### Strategy 3: 'null_control' (pooled no-bout, matching new 'mixed' shape per split)
         elif split_strategy == 'null_control':
             print("--- Using 'null_control' (pooled) strategy (No-Bout vs. No-Bout) ---")
 
-            n_balanced_samples = n_pos_total
-            print(f"  Targeting {n_balanced_samples} samples per class to match 'mixed' strategy.")
+            if n_pos_total == 0 or n_neg_total == 0:
+                print(f"Warning: Missing class data (pos={n_pos_total}, neg={n_neg_total}). Skipping null control.")
+                return
 
-            if n_neg_total < n_balanced_samples * 2:
-                print(f"Warning: Not enough No-Bout samples ({n_neg_total}) to create null control of size {n_balanced_samples * 2}. Sampling with replacement.")
-                shuffled_indices = np.random.choice(n_neg_total, size=n_balanced_samples * 2, replace=True)
-            else:
-                shuffled_indices = np.random.permutation(n_neg_total)
-
-            X_fake_pos = X_neg_all[shuffled_indices[:n_balanced_samples]]
-            X_fake_neg = X_neg_all[shuffled_indices[n_balanced_samples: n_balanced_samples * 2]]
-
-            X, y = concat_two_class_with_labels(X_fake_pos, X_fake_neg)
-
-            print(f"  Created null dataset of {X.shape[0]} samples ({X_fake_pos.shape[0]} fake_pos, {X_fake_neg.shape[0]} fake_neg) ---")
-
+            # Mirror 'mixed': stratified split on the natural-rate pool to discover the
+            # per-split train/test sizes and class ratios, then build fake arrays from
+            # No-Bout data that match those sizes/ratios. Training is balanced 50/50,
+            # test preserves the natural class prior.
+            X_real, y_real = concat_two_class_with_labels(X_pos_all, X_neg_all)
             sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_proportion, random_state=random_state)
 
-            for train_idx, test_idx in sss.split(X, y):
-                yield X[train_idx], y[train_idx], X[test_idx], y[test_idx]
+            for train_idx, test_idx in sss.split(X_real, y_real):
+                y_train_real = y_real[train_idx]
+                y_test_real = y_real[test_idx]
+
+                n_pos_train_nat = int(np.sum(y_train_real == 1))
+                n_neg_train_nat = int(np.sum(y_train_real == 0))
+                n_balanced_train_half = min(n_pos_train_nat, n_neg_train_nat)
+
+                n_test_pos_target = int(np.sum(y_test_real == 1))
+                n_test_neg_target = int(np.sum(y_test_real == 0))
+
+                if n_balanced_train_half == 0:
+                    print("Warning: No balanced training data available for a 'null_control' split. Skipping.")
+                    continue
+
+                n_total_needed = (2 * n_balanced_train_half) + n_test_pos_target + n_test_neg_target
+
+                if n_neg_total < n_total_needed:
+                    print(f"Warning: Not enough No-Bout samples ({n_neg_total}) for null control of size "
+                          f"{n_total_needed}. Sampling with replacement.")
+                    draw = np.random.choice(n_neg_total, size=n_total_needed, replace=True)
+                else:
+                    draw = np.random.permutation(n_neg_total)[:n_total_needed]
+
+                c1 = n_balanced_train_half
+                c2 = c1 + n_balanced_train_half
+                c3 = c2 + n_test_pos_target
+                c4 = c3 + n_test_neg_target
+
+                X_fake_pos_train = X_neg_all[draw[:c1]]
+                X_fake_neg_train = X_neg_all[draw[c1:c2]]
+                X_fake_pos_test = X_neg_all[draw[c2:c3]]
+                X_fake_neg_test = X_neg_all[draw[c3:c4]]
+
+                X_train, y_train = concat_two_class_with_labels(X_fake_pos_train, X_fake_neg_train)
+                X_test, y_test = concat_two_class_with_labels(X_fake_pos_test, X_fake_neg_test)
+
+                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
 
         ### Strategy 4: 'session_null_control' (session-split no-bout, matching 'session' size)
         elif split_strategy == 'session_null_control':
@@ -694,7 +749,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 results['actual']['optimal_C'][split_idx] = lr_actual.C_[0]
                 filter_shape_actual = np.dot(lr_actual.coef_, basis_matrix.T).ravel()
                 results['actual']['filter_shapes'][split_idx, :] = filter_shape_actual
-                results['actual']['score'][split_idx] = lr_actual.score(X_test_proj, y_test)
+                results['actual']['score'][split_idx] = balanced_accuracy_score(y_test, y_pred_actual)
                 results['actual']['precision'][split_idx] = precision_score(y_test, y_pred_actual, zero_division=0.0)
                 results['actual']['recall'][split_idx] = recall_score(y_test, y_pred_actual, zero_division=0.0)
                 results['actual']['f1'][split_idx] = f1_score(y_test, y_pred_actual, average='binary', zero_division=0.0)
@@ -730,7 +785,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 results['shuffled']['optimal_C'][split_idx] = lr_shuffled.C_[0]
                 filter_shape_shuffled = np.dot(lr_shuffled.coef_, basis_matrix.T).ravel()
                 results['shuffled']['filter_shapes'][split_idx, :] = filter_shape_shuffled
-                results['shuffled']['score'][split_idx] = lr_shuffled.score(X_test_proj, y_test)
+                results['shuffled']['score'][split_idx] = balanced_accuracy_score(y_test, y_pred_shuffled)
                 results['shuffled']['precision'][split_idx] = precision_score(y_test, y_pred_shuffled, zero_division=0.0)
                 results['shuffled']['recall'][split_idx] = recall_score(y_test, y_pred_shuffled, zero_division=0.0)
                 results['shuffled']['f1'][split_idx] = f1_score(y_test, y_pred_shuffled, average='binary', zero_division=0.0)
@@ -918,7 +973,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     prob_1 = gam_actual.predict_mu(grid_X_1).astype(np.float32)
 
                     results['actual']['filter_shapes'][split_idx, :] = (prob_1 - prob_0).flatten()
-                    results['actual']['score'][split_idx] = accuracy_score(y_test_int, y_pred_mean_epoch)
+                    results['actual']['score'][split_idx] = balanced_accuracy_score(y_test_int, y_pred_mean_epoch)
                     results['actual']['precision'][split_idx] = precision_score(y_test_int, y_pred_mean_epoch, zero_division=0.0)
                     results['actual']['recall'][split_idx] = recall_score(y_test_int, y_pred_mean_epoch, zero_division=0.0)
                     results['actual']['f1'][split_idx] = f1_score(y_test_int, y_pred_mean_epoch, average='binary', zero_division=0.0)
@@ -960,7 +1015,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     filter_shape_null = (prob_1_null - prob_0_null).flatten()
                     results['shuffled']['filter_shapes'][split_idx, :] = filter_shape_null
 
-                    results['shuffled']['score'][split_idx] = accuracy_score(y_test_int_null, y_pred_shuffled_mean)
+                    results['shuffled']['score'][split_idx] = balanced_accuracy_score(y_test_int_null, y_pred_shuffled_mean)
                     results['shuffled']['precision'][split_idx] = precision_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
                     results['shuffled']['recall'][split_idx] = recall_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
                     results['shuffled']['f1'][split_idx] = f1_score(y_test_int_null, y_pred_shuffled_mean, average='binary', zero_division=0.0)

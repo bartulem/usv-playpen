@@ -485,10 +485,12 @@ def find_usv_categories(root_directories: list = None,
                         filter_history: int | float = 0.0,
                         vocal_output_type: str = None,
                         proportion_smoothing_sd: float = 1.0,
-                        noise_vocal_categories: list = None) -> dict:
+                        noise_vocal_categories: list = None,
+                        manifold_column_names: list = None) -> dict:
     """
     Parses USV data for either one-vs-rest (binary) or multinomial (all-category) analysis,
-    as well as extracting continuous spatial targets (UMAP coordinates) for probabilistic modeling.
+    as well as extracting continuous spatial targets (acoustic manifold coordinates) for
+    probabilistic modeling.
 
     This function applies a consistent "Single Pipeline" filter to the raw data:
     1. Filters by mouse.
@@ -527,6 +529,12 @@ def find_usv_categories(root_directories: list = None,
         Standard deviation for Gaussian smoothing (in frames).
     noise_vocal_categories : list, optional
         List of category IDs to exclude from continuous signals, models, and streams.
+    manifold_column_names : list, optional
+        Ordered list of column names in the USV summary CSV that encode each USV's
+        coordinates on the continuous acoustic manifold. If any of the configured
+        columns is missing from the CSV for a given session/mouse, no continuous
+        targets are written for that mouse. When None or empty, continuous target
+        extraction is skipped entirely.
 
     Returns
     -------
@@ -539,7 +547,8 @@ def find_usv_categories(root_directories: list = None,
             'continuous_vocal_signals': Continuous arrays for X variables (smoothed/binary).
             'category_streams': Dict {cat_id: {'start': np.array, 'stop': np.array}} (Filtered).
             'continuous_onsets': np.array of start times for valid USVs (used for continuous models).
-            'continuous_targets': np.array of shape (N, 2) containing (umap1, umap2) coordinates.
+            'continuous_targets': np.array of shape (N, D) stacking the configured
+                manifold columns in the order given by `manifold_column_names`.
     """
 
     usv_data_dict = {}
@@ -652,13 +661,13 @@ def find_usv_categories(root_directories: list = None,
                         'stop': np.sort(cat_df['stop'].to_numpy())
                     }
 
-            # Extract continuous targets (UMAP Coordinates)
-            if 'usv_umap1' in mouse_usvs.columns and 'usv_umap2' in mouse_usvs.columns:
-                usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()
+            # Extract continuous targets (user-configured acoustic manifold coordinates)
+            if manifold_column_names:
+                if all(col in mouse_usvs.columns for col in manifold_column_names):
+                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()
 
-                umap_x = mouse_usvs['usv_umap1'].to_numpy()
-                umap_y = mouse_usvs['usv_umap2'].to_numpy()
-                usv_data_dict[session_id][mouse_name]['continuous_targets'] = np.column_stack((umap_x, umap_y))
+                    manifold_arrays = [mouse_usvs[col].to_numpy() for col in manifold_column_names]
+                    usv_data_dict[session_id][mouse_name]['continuous_targets'] = np.column_stack(manifold_arrays)
 
     return usv_data_dict
 

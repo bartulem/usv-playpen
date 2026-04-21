@@ -20,6 +20,9 @@
     "split_strategy": "mixed",
     "split_num": 100,
     "test_proportion": 0.2,
+    "session_split_max_attempts": 50000,
+    "session_split_widen_step": 0.02,
+    "session_split_widen_every": 1000,
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2
   },
@@ -56,7 +59,8 @@
     "usv_predictor_smoothing_sd": 1,
     "usv_category_column_name": "usv_supercategory",
     "usv_noise_categories": [0],
-    "usv_category_number": 6
+    "usv_category_number": 6,
+    "usv_manifold_column_names": ["usv_umap1", "usv_umap2"]
   },
 
   "gmm_params": {
@@ -117,6 +121,7 @@
       },
       "multinomial_logistic": {
         "balance_predictions_bool": false,
+        "balance_train_bool": false,
         "bin_resizing_factor": 10,
         "lambda_smooth": 1.0,
         "l1_reg": 0.0,
