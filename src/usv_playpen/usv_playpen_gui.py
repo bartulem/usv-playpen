@@ -1714,9 +1714,9 @@ class USVPlaypenWindow(QMainWindow):
             subjects = []
 
         start_y_remove = 993
-        start_x_remove = 418
-        items_per_row_remove = 4
-        horizontal_spacing_remove = 110
+        start_x_remove = 448
+        items_per_row_remove = 3
+        horizontal_spacing_remove = 130
         vertical_spacing_remove = 30
 
         for i, subject in enumerate(subjects):
