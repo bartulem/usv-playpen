@@ -139,11 +139,18 @@ def bout_onset_model_selection(univariate_results_path: str,
     imbalance-robust: the `score` field stores `balanced_accuracy`, paired with
     AUC and log-loss.
 
-    Crucially, this version preserves full-resolution metric data. For every candidate
-    tested at every step, the raw results of all 10 cross-validation folds are saved
-    for Log-Likelihood (LL), AUC, Precision, Recall, F1, and Balanced Accuracy
-    (`score`). This allows plotting scripts to reconstruct model selection trajectories
-    with accurate error bars and individual fold data points.
+    Crucially, this version preserves full-resolution metric data. For every
+    candidate tested at every step, the raw per-fold results are saved for:
+    Log-Likelihood (LL), AUC, Recall, F1, Balanced Accuracy (`score`), Brier
+    score, Expected Calibration Error (ECE), Matthews correlation coefficient
+    (MCC), and the (2, 2) confusion matrix. Per-fold optimizer diagnostics —
+    `n_iter`, `converged`, `fit_time` — are stored alongside so folds that
+    terminated at `max_iter` without meeting the tolerance can be audited
+    after the fact. Precision is intentionally not stored: it is recoverable
+    from the saved confusion matrices and macro-F1 already summarizes the
+    precision / recall trade-off. This allows plotting scripts to
+    reconstruct model selection trajectories with accurate error bars and
+    individual fold data points.
 
     Stability features:
     - Safe cleanup: Prevents `UnboundLocalError` during garbage collection if a
@@ -244,6 +251,31 @@ def bout_onset_model_selection(univariate_results_path: str,
         sss = StratifiedShuffleSplit(n_splits=n_splits_selection, test_size=test_prop, random_state=random_seed)
         for train_ix, test_ix in sss.split(np.zeros(len(y_full)), y_full):
             cv_folds.append({'train_idx': train_ix, 'test_idx': test_ix, 'n_pos_total': n_pos_total, 'n_neg_total': n_neg_total, 'type': 'mixed'})
+    else:
+        raise ValueError(
+            f"Unknown split_strategy '{split_strategy}' for bout-onset model selection. "
+            f"Supported strategies: 'session', 'mixed'."
+        )
+
+    # Pre-pool each candidate feature's full (positive, negative) design matrix
+    # once up front. The forward-selection loop re-evaluates every feature for
+    # every fold and every accepted step; without this cache the inner body
+    # would otherwise call `pool_session_arrays` O(n_steps * n_features * n_folds)
+    # times, re-concatenating the same per-session arrays at every iteration.
+    pooled_feature_cache = {}
+    for _feat_name in ranked_features:
+        _X_p, _X_n = pool_session_arrays(
+            all_feature_data[_feat_name],
+            all_sessions,
+            pos_key="usv_feature_arr",
+            neg_key="no_usv_feature_arr",
+            n_frames=pipeline.history_frames,
+        )
+        pooled_feature_cache[_feat_name] = {
+            'X_pos': _X_p,
+            'X_neg': _X_n,
+            'X_full': np.concatenate((_X_p, _X_n), axis=0),
+        }
 
     current_model_features = []
     best_current_score = chance_ll
@@ -325,8 +357,9 @@ def bout_onset_model_selection(univariate_results_path: str,
                     n_pos_total = fold_info['n_pos_total']
                     n_neg_total = fold_info['n_neg_total']
                     y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
-                    X_p, X_n = pool_session_arrays(all_feature_data[anchor_to_force], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                    X_full = np.concatenate((X_p, X_n))
+                    # Pull the already-pooled full design matrix from the cache
+                    # instead of rebuilding it on every fold.
+                    X_full = pooled_feature_cache[anchor_to_force]['X_full']
 
                     X_tr_all = X_full[train_ix]
                     y_tr_all = y_full[train_ix]
@@ -383,7 +416,15 @@ def bout_onset_model_selection(univariate_results_path: str,
             except Exception as e:
                 print(f"    [!] Error fitting {anchor_to_force} (Fold {fold_i}): {e}")
                 for _k in metrics:
-                    metrics[_k].append(np.nan)
+                    # Keep the per-fold list lengths aligned across every key.
+                    # `confusion_matrix` stores (2, 2) arrays, so on failure we
+                    # append a NaN-filled (2, 2) placeholder rather than a
+                    # scalar NaN; otherwise np.stack(...) downstream would fail
+                    # on a heterogeneous list.
+                    if _k == 'confusion_matrix':
+                        metrics[_k].append(np.full((2, 2), np.nan))
+                    else:
+                        metrics[_k].append(np.nan)
 
         valid_ll = [x for x in metrics['ll'] if np.isfinite(x)]
         if valid_ll:
@@ -406,8 +447,12 @@ def bout_onset_model_selection(univariate_results_path: str,
                     }
                 }
             }
-            target_sex = 'female' if 'female' in univariate_results_path else 'male'
-            s0_name = f"model_selection_{target_sex}_{settings['model_params']['model_target_vocal_type']}_{split_strategy}_step_0.pkl"
+            # Reuse the canonical `prefix` derived above so Step 0 and all
+            # subsequent steps share a single filename scheme — the legacy
+            # substring-based `target_sex` path disagreed with the regex-based
+            # `target_condition` and could orphan the Step 0 file from the rest
+            # of the run on selection resume.
+            s0_name = f"{prefix}0.pkl"
             with open(os.path.join(model_selection_dir, s0_name), 'wb') as f:
                 pickle.dump(step_0_metadata, f)
             step_counter = 1
@@ -479,8 +524,11 @@ def bout_onset_model_selection(univariate_results_path: str,
                         y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
 
                         for f_name in trial_features:
-                            X_p, X_n = pool_session_arrays(all_feature_data[f_name], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                            X_full = np.concatenate((X_p, X_n))
+                            # Use the pre-pooled cache rather than re-running
+                            # `pool_session_arrays` on every fold for every
+                            # trial feature (the dominant cost of the forward
+                            # loop under 'mixed' strategy).
+                            X_full = pooled_feature_cache[f_name]['X_full']
                             X_tr_all = X_full[train_ix]
                             X_train_list.append(X_tr_all[bal_train_local])
                             X_test_list.append(X_full[test_ix])
@@ -520,7 +568,14 @@ def bout_onset_model_selection(univariate_results_path: str,
                 except Exception as e:
                     print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
                     for _k in metrics:
-                        metrics[_k].append(np.nan)
+                        # `confusion_matrix` holds (2, 2) arrays, so on failure
+                        # append a NaN-filled matrix instead of a scalar NaN to
+                        # keep the per-fold list homogeneous for downstream
+                        # np.stack / indexing.
+                        if _k == 'confusion_matrix':
+                            metrics[_k].append(np.full((2, 2), np.nan))
+                        else:
+                            metrics[_k].append(np.nan)
 
             valid = [x for x in metrics['ll'] if np.isfinite(x)]
 
@@ -542,8 +597,6 @@ def bout_onset_model_selection(univariate_results_path: str,
                     best_candidate_score, best_candidate_se, best_candidate = mean_ll, se_ll, feat
             else:
                 print(f" Failed (No valid numeric scores). Metrics: {metrics['ll']}")
-
-        target_sex = 'female' if 'female' in univariate_results_path else 'male'
 
         if (best_current_score - best_candidate_score) > best_candidate_se:
             print(f"  ACCEPT {best_candidate}")
@@ -568,7 +621,10 @@ def bout_onset_model_selection(univariate_results_path: str,
 
     print("\n--- Final Model Fit for Visualization (CV-based) ---")
     try:
-        X_p, X_n = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+        # Use the pre-pooled anchor arrays rather than re-running
+        # pool_session_arrays here.
+        X_p = pooled_feature_cache[anchor_feature]['X_pos']
+        X_n = pooled_feature_cache[anchor_feature]['X_neg']
 
         final_rng = np.random.default_rng(random_seed)
         n_k = min(X_p.shape[0], X_n.shape[0])
@@ -579,7 +635,8 @@ def bout_onset_model_selection(univariate_results_path: str,
 
         X_list_final = []
         for f in current_model_features:
-            f_p, f_n = pool_session_arrays(all_feature_data[f], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+            f_p = pooled_feature_cache[f]['X_pos']
+            f_n = pooled_feature_cache[f]['X_neg']
             X_list_final.append(np.concatenate((f_p[idx_p], f_n[idx_n])))
 
         last_file = os.path.join(model_selection_dir, fname)
@@ -1254,7 +1311,14 @@ def vocal_category_model_selection(
                 except Exception as e:
                     print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
                     for _k in metrics:
-                        metrics[_k].append(np.nan)
+                        # `confusion_matrix` holds (2, 2) arrays, so on failure
+                        # append a NaN-filled matrix instead of a scalar NaN to
+                        # keep the per-fold list homogeneous for downstream
+                        # np.stack / indexing.
+                        if _k == 'confusion_matrix':
+                            metrics[_k].append(np.full((2, 2), np.nan))
+                        else:
+                            metrics[_k].append(np.nan)
 
             valid = [x for x in metrics['ll'] if np.isfinite(x)]
             if not valid:

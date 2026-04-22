@@ -46,6 +46,33 @@ from ..analyses.compute_behavioral_features import FeatureZoo
 
 
 class VocalOnsetModelingPipeline(FeatureZoo):
+    """
+    End-to-end pipeline for modeling the onset of USV bouts from behavioural kinematics.
+
+    The pipeline has three responsibilities:
+
+    1. **Data preparation**: ingests raw behavioural time-series (polars DataFrames
+       produced by the upstream extraction), detects vocal bouts via GMM-driven
+       inter-bout-interval thresholds, assembles per-session history windows
+       around USV and No-USV event timestamps, applies cross-session z-scoring,
+       and serializes the resulting `{feature: {session: {usv_feature_arr,
+       no_usv_feature_arr}}}` dictionary to disk.
+    2. **Cross-validation splitting**: the `create_data_splits` generator
+       implements four strategies ('mixed', 'session', 'null_control',
+       'session_null_control') with the canonical "balanced train / natural-rate
+       test" invariant — the training fold is always down-sampled to 50/50 so
+       gradient updates see both classes, while the test fold preserves the
+       natural base rate so reported metrics reflect real imbalance.
+    3. **Univariate model fitting**: `_run_model_for_feature_sklearn` fits a
+       basis-projected `LogisticRegressionCV` per feature; `_run_model_for_feature_pygam`
+       fits a tensor-product-spline `LogisticGAM`. Both return a
+       `{'actual', 'null'}` results dict with calibration (Brier, ECE),
+       chance-corrected (MCC), and optimizer diagnostic fields per split.
+
+    Subclasses (e.g. `BoutParameterPipeline`) reuse the extraction / splitting
+    infrastructure and override the per-feature modelling methods to handle
+    continuous regression targets instead of classification.
+    """
 
     def __init__(self, modeling_settings_dict, **kwargs):
         """
@@ -92,7 +119,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
-    def extract_and_save_modeling_input_data_(self) -> None:
+    def extract_and_save_modeling_input_data(self) -> None:
         """
         Extracts, processes, and saves behavioral and vocalization data PER SESSION for modeling analysis.
 
@@ -293,24 +320,32 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 if beh_session_id not in modeling_final_data_dict[generic_key]:
                     modeling_final_data_dict[generic_key][beh_session_id] = {}
 
-                # Extract Epochs
-                usv_feature_arr = np.full((usv_event_times.size, history_frames), np.nan)
-                no_usv_feature_arr = np.full((no_usv_event_times.size, history_frames), np.nan)
+                # Extract epochs. Events whose full history window does not fit
+                # inside the session recording (s < 0 or e > max_frame_idx) are
+                # dropped at this stage rather than carried forward as NaN rows:
+                # leaving them in would silently produce NaN-valued basis
+                # projections downstream (np.dot propagates NaN), which the
+                # splitting / balancing helpers do not filter out.
                 column_data_np = session_df[full_column_name].to_numpy()
                 max_frame_idx = len(column_data_np)
 
-                def fill_arr(times, arr):
+                def _collect_valid_windows(times):
                     ends = np.round(times * session_sampling_rate).astype(int)
                     starts = ends - history_frames
-                    for i in range(times.size):
-                        s, e = starts[i], ends[i]
-                        if s >= 0 and e <= max_frame_idx:
-                            chunk = column_data_np[s:e].copy()
-                            chunk[np.isnan(chunk)] = 0.0
-                            arr[i, :] = chunk
+                    valid_mask = (starts >= 0) & (ends <= max_frame_idx)
+                    if not np.any(valid_mask):
+                        return np.empty((0, history_frames), dtype=column_data_np.dtype)
+                    valid_starts = starts[valid_mask]
+                    valid_ends = ends[valid_mask]
+                    out = np.empty((valid_starts.size, history_frames), dtype=column_data_np.dtype)
+                    for row_idx, (s, e) in enumerate(zip(valid_starts, valid_ends)):
+                        chunk = column_data_np[s:e].copy()
+                        chunk[np.isnan(chunk)] = 0.0
+                        out[row_idx, :] = chunk
+                    return out
 
-                fill_arr(usv_event_times, usv_feature_arr)
-                fill_arr(no_usv_event_times, no_usv_feature_arr)
+                usv_feature_arr = _collect_valid_windows(usv_event_times)
+                no_usv_feature_arr = _collect_valid_windows(no_usv_event_times)
 
                 modeling_final_data_dict[generic_key][beh_session_id]['usv_feature_arr'] = usv_feature_arr
                 modeling_final_data_dict[generic_key][beh_session_id]['no_usv_feature_arr'] = no_usv_feature_arr
@@ -528,7 +563,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             X_real, y_real = concat_two_class_with_labels(X_pos_all, X_neg_all)
             sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_proportion, random_state=random_state)
 
-            for train_idx, test_idx in sss.split(X_real, y_real):
+            for split_num, (train_idx, test_idx) in enumerate(sss.split(X_real, y_real)):
                 y_train_real = y_real[train_idx]
                 y_test_real = y_real[test_idx]
 
@@ -545,12 +580,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                 n_total_needed = (2 * n_balanced_train_half) + n_test_pos_target + n_test_neg_target
 
+                # Seeded per split so the null-control draw is reproducible and
+                # does not inherit whatever state prior code left on the global
+                # NumPy RNG.
+                null_rng = np.random.default_rng(random_state + split_num)
                 if n_neg_total < n_total_needed:
                     print(f"Warning: Not enough No-Bout samples ({n_neg_total}) for null control of size "
                           f"{n_total_needed}. Sampling with replacement.")
-                    draw = np.random.choice(n_neg_total, size=n_total_needed, replace=True)
+                    draw = null_rng.choice(n_neg_total, size=n_total_needed, replace=True)
                 else:
-                    draw = np.random.permutation(n_neg_total)[:n_total_needed]
+                    draw = null_rng.permutation(n_neg_total)[:n_total_needed]
 
                 c1 = n_balanced_train_half
                 c2 = c1 + n_balanced_train_half
@@ -586,35 +625,36 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 train_session_list = all_sessions_array[train_session_idx]
                 test_session_list = all_sessions_array[test_session_idx]
 
-                # Get actual data counts for this split to match them
-                X_pos_train_actual, X_neg_train_actual = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
-                X_pos_test_actual, X_neg_test_actual = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+                # Pool actual bout / no-bout data once per session list — the
+                # "pool only No-Bout" duplicate call below is redundant since
+                # `pool_session_arrays` already returns both classes.
+                X_pos_train_actual, X_neg_train_all = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+                X_pos_test_actual, X_neg_test_all = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
 
                 # Find the target sizes from the actual data
-                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train_actual, X_neg_train_actual)
+                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train_actual, X_neg_train_all)
 
                 n_balanced_train_half = X_pos_train_bal.shape[0]
                 n_total_train_needed = n_balanced_train_half * 2
 
                 n_test_pos_target = X_pos_test_actual.shape[0]
-                n_test_neg_target = X_neg_test_actual.shape[0]
+                n_test_neg_target = X_neg_test_all.shape[0]
 
                 if n_balanced_train_half == 0:
                     print(f"Warning: No *actual* balanced training data for split {split_num}. Cannot match size. Skipping.")
                     continue
 
-                # Pool ONLY No-Bout data from selected sessions
-                _, X_neg_train_all = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
-                _, X_neg_test_all = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
-
-                # Create fake balanced training set, matching 'session' size
+                # Create fake balanced training set, matching 'session' size.
+                # The per-split `default_rng` keeps every draw reproducible and
+                # independent of whatever global RNG state prior calls left.
+                null_rng = np.random.default_rng(random_state + split_num)
                 n_train_neg_available = X_neg_train_all.shape[0]
 
                 if n_train_neg_available < n_total_train_needed:
                     print(f"Warning: Not enough No-Bout samples ({n_train_neg_available}) in train sessions to create null control of size {n_total_train_needed}. Sampling with replacement.")
-                    train_neg_indices = np.random.choice(n_train_neg_available, size=n_total_train_needed, replace=True)
+                    train_neg_indices = null_rng.choice(n_train_neg_available, size=n_total_train_needed, replace=True)
                 else:
-                    train_neg_indices = np.random.permutation(n_train_neg_available)
+                    train_neg_indices = null_rng.permutation(n_train_neg_available)
 
                 X_fake_pos_train = X_neg_train_all[train_neg_indices[:n_balanced_train_half]]
                 X_fake_neg_train = X_neg_train_all[train_neg_indices[n_balanced_train_half: n_total_train_needed]]
@@ -628,8 +668,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     print(f"Warning: No No-Bout test samples available for split {split_num}. Skipping.")
                     continue
 
-                fake_pos_indices = np.random.choice(n_test_neg_available, size=n_test_pos_target, replace=True)
-                fake_neg_indices = np.random.choice(n_test_neg_available, size=n_test_neg_target, replace=True)
+                fake_pos_indices = null_rng.choice(n_test_neg_available, size=n_test_pos_target, replace=True)
+                fake_neg_indices = null_rng.choice(n_test_neg_available, size=n_test_neg_target, replace=True)
 
                 X_fake_pos_test = X_neg_test_all[fake_pos_indices]
                 X_fake_neg_test = X_neg_test_all[fake_neg_indices]
@@ -669,8 +709,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         4.  Maps the resulting coefficients back into the
             temporal domain ([coefs x basis.T]) to recover the underlying linear
             filter shape.
-        5.  Optionally repeats the fit on shuffled labels to
-            establish a baseline performance metric (AUC/Log-Loss) for significance testing.
+        5.  Re-fits the same estimator on a reproducibly label-shuffled copy
+            of the training target (seeded per split from `random_seed`) to
+            establish a null performance distribution (AUC / log-loss / Brier
+            / ECE) for significance testing against the `actual` branch.
 
         Parameters
         ----------
@@ -725,7 +767,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # the saved confusion matrix), Brier/ECE/MCC are added as calibration
         # and chance-corrected summary scores, and `n_iter`/`converged`/
         # `fit_time` expose silent-failure modes of the underlying solver.
-        _scalar = lambda: np.full(n_splits, np.nan)
+        def _scalar():
+            return np.full(n_splits, np.nan)
+
         def _make_branch():
             return {
                 'filter_shapes': np.full((n_splits, history_frames), np.nan),
@@ -815,9 +859,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 print(f"  ERROR during ACTUAL model fit/predict for {feature_name}, split {split_idx}: {e}")
 
             try:
-                shuffle_seed = self.modeling_settings['model_params']['random_seed']
-                if shuffle_seed is not None: np.random.seed(shuffle_seed + split_idx + 1)  # Offset seed
-                y_train_shuffled = np.random.permutation(y_train)
+                # Seeded per-split Generator so the label shuffle is reproducible
+                # and independent of any ambient global RNG state.
+                shuffle_rng = np.random.default_rng(
+                    self.modeling_settings['model_params']['random_seed'] + split_idx + 1
+                )
+                y_train_shuffled = shuffle_rng.permutation(y_train)
 
                 fit_start = time.perf_counter()
                 lr_shuffled = LogisticRegressionCV(
@@ -981,7 +1028,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             'lam': lam_penalty
         }
 
-        _scalar = lambda: np.full(n_splits, np.nan)
+        def _scalar():
+            return np.full(n_splits, np.nan)
+
         def _make_pygam_branch():
             return {
                 'filter_shapes': np.full((n_splits, history_frames), np.nan),
@@ -1085,7 +1134,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
             if shuffled_split and shuffled_split[0].shape[0] > 0 and shuffled_split[2].shape[0] > 0:
                 (X_train_null, y_train_null, X_test_null, y_test_null) = shuffled_split
-                print(f"  SHUFFLED Split {split_idx}: Train={X_train_null.shape}, Test={X_test_null.shape}")
+                print(f"  NULL Split {split_idx}: Train={X_train_null.shape}, Test={X_test_null.shape}")
 
                 y_train_tiled_null = np.repeat(y_train_null.astype(np.float32), history_frames)
                 y_test_int_null = y_test_null.astype(int)

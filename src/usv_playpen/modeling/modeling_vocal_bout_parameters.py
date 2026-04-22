@@ -99,7 +99,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         super().__init__(modeling_settings_dict=modeling_settings_dict)
 
-    def extract_and_save_modeling_input_data_(self) -> None:
+    def extract_and_save_modeling_input_data(self) -> None:
         """
         Extracts, processes, and saves (X, y, group) triples for regression analysis of bout parameters.
 
