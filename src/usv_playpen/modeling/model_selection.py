@@ -1562,9 +1562,15 @@ def bout_parameter_model_selection(
 
     Data Persistence:
     -----------------
-    Preserves full-resolution metric data. For every candidate tested at every step,
-    the raw results of all cross-validation folds are saved for Explained Deviance (D2),
-    Spearman's Rho, Mean Squared Logarithmic Error (MSLE), and Residual Deviance.
+    Preserves full-resolution metric data. For every candidate tested at
+    every step, the raw per-fold results are saved to match the metric set
+    emitted by the univariate runner: Explained Deviance (D^2), Residual
+    Gamma Deviance, Spearman's rho, Pearson's r, Mean Squared Logarithmic
+    Error (MSLE), Mean Absolute Error (MAE), Root Mean Squared Error (RMSE),
+    the raw test-fold `y_true` / `y_pred` arrays, and per-fold optimizer
+    diagnostics (`n_iter`, `converged`, `fit_time`). `converged=False`
+    flags folds that terminated at `max_iter` without meeting the tolerance,
+    surfacing the main silent-failure mode of the pyGAM path.
 
     Parameters
     ----------
@@ -1622,29 +1628,26 @@ def bout_parameter_model_selection(
 
         if 'actual' not in results or 'explained_deviance' not in results['actual']:
             continue
-
-        actual_deviance = results['actual']['explained_deviance']
-        null_key = 'null' if 'null' in results else 'shuffled'
-
-        if null_key not in results or 'explained_deviance' not in results[null_key]:
+        if 'null' not in results or 'explained_deviance' not in results['null']:
             continue
 
-        shuffled_deviance = results[null_key]['explained_deviance']
+        actual_deviance = results['actual']['explained_deviance']
+        null_deviance = results['null']['explained_deviance']
 
         valid_actual = actual_deviance[~np.isnan(actual_deviance)]
-        valid_shuffled = shuffled_deviance[~np.isnan(shuffled_deviance)]
+        valid_null = null_deviance[~np.isnan(null_deviance)]
 
-        if len(valid_actual) == 0 or len(valid_shuffled) == 0:
+        if len(valid_actual) == 0 or len(valid_null) == 0:
             continue
 
         mean_actual_deviance = np.mean(valid_actual)
-        shuffled_threshold = np.percentile(valid_shuffled, q=100 - (p_val / num_features) * 100)
+        null_threshold = np.percentile(valid_null, q=100 - (p_val / num_features) * 100)
 
-        if mean_actual_deviance > shuffled_threshold and mean_actual_deviance > 0:
+        if mean_actual_deviance > null_threshold and mean_actual_deviance > 0:
             candidates.append({'feature': feat_name, 'mean_explained_deviance': mean_actual_deviance})
         else:
             reason = "Negative D^2" if mean_actual_deviance <= 0 else "Not Significant"
-            print(f"  Dropping {feat_name}: {reason} (Mean Dev {mean_actual_deviance:.4f} vs Shuffled {shuffled_threshold:.4f})")
+            print(f"  Dropping {feat_name}: {reason} (Mean Dev {mean_actual_deviance:.4f} vs Null {null_threshold:.4f})")
 
     candidates.sort(key=lambda x: x['mean_explained_deviance'], reverse=True)
     ranked_features = [x['feature'] for x in candidates]
@@ -1795,10 +1798,15 @@ def bout_parameter_model_selection(
     if use_top_rank_as_anchor and step_counter == 0:
         anchor = ranked_features[0]
         print(f"\n*** AUTO-ANCHOR: Initializing with {anchor} ***")
+        # Metric set is aligned with the univariate runner so downstream
+        # plotting / aggregation sees the same keys whether it reads a
+        # univariate or a selection-step pickle.
         metrics = {
             'explained_deviance': [], 'residual_deviance': [],
-            'spearman_r': [], 'msle': [],
-            'y_true': [], 'y_pred': []
+            'spearman_r': [], 'pearson_r': [],
+            'msle': [], 'mae': [], 'rmse': [],
+            'y_true': [], 'y_pred': [],
+            'n_iter': [], 'converged': [], 'fit_time': []
         }
 
         for tr_idx, te_idx in cv_folds:
@@ -1811,7 +1819,9 @@ def bout_parameter_model_selection(
                     X_te_proj = np.dot(X_te, basis_matrix)
 
                     y_tr_log = np.log(y_tr + 1e-6)
+                    fit_start = time.perf_counter()
                     model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_proj, y_tr_log)
+                    fit_time = float(time.perf_counter() - fit_start)
 
                     # Jensen bias correction: fitting log(y) with OLS/Ridge targets the median on the
                     # natural scale; for a (conditionally) lognormal model, E[y|X] = exp(Xb + sigma^2/2).
@@ -1820,13 +1830,19 @@ def bout_parameter_model_selection(
                     resid = y_tr_log - model.predict(X_tr_proj)
                     sigma2 = float(np.var(resid, ddof=1))
                     y_pred = np.exp(model.predict(X_te_proj) + 0.5 * sigma2)
+                    # RidgeCV has no iterative optimizer to report; the closed-form
+                    # solve is trivially converged.
+                    fold_n_iter = np.nan
+                    fold_converged = True
                 else:
                     X_tr_unrolled = np.empty((len(X_tr) * history_frames, 2))
                     X_tr_unrolled[:, 0] = X_tr.ravel()
                     X_tr_unrolled[:, 1] = np.tile(np.arange(history_frames), len(X_tr))
 
                     gam = GAM(te(0, 1, n_splines=[n_splines_value, n_splines_time]), distribution='gamma', link='log', **gam_kwargs)
+                    fit_start = time.perf_counter()
                     gam.fit(X_tr_unrolled, np.repeat(y_tr + 1e-6, history_frames))
+                    fit_time = float(time.perf_counter() - fit_start)
 
                     X_te_unrolled = np.empty((len(X_te) * history_frames, 2))
                     X_te_unrolled[:, 0] = X_te.ravel()
@@ -1838,6 +1854,9 @@ def bout_parameter_model_selection(
                     # which would otherwise over-estimate E[y|X] whenever the per-frame eta have any spread.
                     eta_te = np.log(gam.predict_mu(X_te_unrolled)).reshape(len(y_te), history_frames)
                     y_pred = np.exp(np.mean(eta_te, axis=1))
+                    gam_diffs = gam.logs_.get('diffs', [])
+                    fold_n_iter = float(len(gam_diffs))
+                    fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 
                 # Robust Metric Calculation
                 y_te_safe = np.maximum(y_te, 1e-6)
@@ -1852,19 +1871,35 @@ def bout_parameter_model_selection(
                 metrics['residual_deviance'].append(res_dev)
                 metrics['explained_deviance'].append(d2)
                 metrics['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                metrics['pearson_r'].append(pearson_r_safe(y_te, y_pred))
                 metrics['msle'].append(mean_squared_log_error(y_te_safe, y_pred_safe))
+                metrics['mae'].append(mean_absolute_error_1d(y_te, y_pred))
+                metrics['rmse'].append(root_mean_squared_error(y_te, y_pred))
                 metrics['y_true'].append(y_te_safe)
                 metrics['y_pred'].append(y_pred_safe)
+                metrics['n_iter'].append(fold_n_iter)
+                metrics['converged'].append(fold_converged)
+                metrics['fit_time'].append(fit_time)
                 gc.collect()
 
             except Exception as e:
                 print(f"    [!] Error fitting: {e}")
+                # Append shape-preserving placeholders so every per-fold list
+                # stays the same length. y_true / y_pred normally hold test-
+                # fold arrays, so on failure we use empty arrays rather than a
+                # scalar NaN to keep the list homogeneous for stacking.
                 metrics['explained_deviance'].append(np.nan)
                 metrics['residual_deviance'].append(np.nan)
                 metrics['spearman_r'].append(np.nan)
+                metrics['pearson_r'].append(np.nan)
                 metrics['msle'].append(np.nan)
-                metrics['y_true'].append(np.nan)
-                metrics['y_pred'].append(np.nan)
+                metrics['mae'].append(np.nan)
+                metrics['rmse'].append(np.nan)
+                metrics['y_true'].append(np.empty((0,), dtype=np.float64))
+                metrics['y_pred'].append(np.empty((0,), dtype=np.float64))
+                metrics['n_iter'].append(np.nan)
+                metrics['converged'].append(False)
+                metrics['fit_time'].append(np.nan)
 
         valid_dev = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
         if valid_dev:
@@ -1880,12 +1915,7 @@ def bout_parameter_model_selection(
                     'selected_feature': anchor,
                     'candidates_summary': {
                         anchor: {
-                            'explained_deviance': metrics['explained_deviance'],
-                            'residual_deviance': metrics['residual_deviance'],
-                            'spearman_r': metrics['spearman_r'],
-                            'msle': metrics['msle'],
-                            'y_true': metrics['y_true'],
-                            'y_pred': metrics['y_pred'],
+                            **{k: metrics[k] for k in metrics},
                             'mean_explained_deviance': mean_anchor_score,
                             'se_explained_deviance': best_current_se
                         }
@@ -1919,8 +1949,10 @@ def bout_parameter_model_selection(
 
             metrics = {
                 'explained_deviance': [], 'residual_deviance': [],
-                'spearman_r': [], 'msle': [],
-                'y_true': [], 'y_pred': []
+                'spearman_r': [], 'pearson_r': [],
+                'msle': [], 'mae': [], 'rmse': [],
+                'y_true': [], 'y_pred': [],
+                'n_iter': [], 'converged': [], 'fit_time': []
             }
 
             if model_type == 'pygam':
@@ -1939,21 +1971,30 @@ def bout_parameter_model_selection(
                         X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in trial_te])
 
                         y_tr_log = np.log(y_tr + 1e-6)
+                        fit_start = time.perf_counter()
                         model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_stacked, y_tr_log)
+                        fit_time = float(time.perf_counter() - fit_start)
 
                         # Jensen bias correction on the natural scale (see anchor fit for rationale).
                         resid = y_tr_log - model.predict(X_tr_stacked)
                         sigma2 = float(np.var(resid, ddof=1))
                         y_pred = np.exp(model.predict(X_te_stacked) + 0.5 * sigma2)
+                        fold_n_iter = np.nan
+                        fold_converged = True
                     else:
                         X_tr_gam = get_unrolled_X_for_multivariate(trial_tr, history_frames)
                         X_te_gam = get_unrolled_X_for_multivariate(trial_te, history_frames)
 
+                        fit_start = time.perf_counter()
                         gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr + 1e-6, history_frames))
+                        fit_time = float(time.perf_counter() - fit_start)
 
                         # Aggregate the H per-frame predictions on the linear-predictor scale (see anchor fit).
                         eta_te = np.log(gam.predict_mu(X_te_gam)).reshape(len(y_te), history_frames)
                         y_pred = np.exp(np.mean(eta_te, axis=1))
+                        gam_diffs = gam.logs_.get('diffs', [])
+                        fold_n_iter = float(len(gam_diffs))
+                        fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 
                     y_te_safe = np.maximum(y_te, 1e-6)
                     y_pred_safe = np.maximum(y_pred, 1e-6)
@@ -1967,9 +2008,15 @@ def bout_parameter_model_selection(
                     metrics['residual_deviance'].append(res_dev)
                     metrics['explained_deviance'].append(d2)
                     metrics['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                    metrics['pearson_r'].append(pearson_r_safe(y_te, y_pred))
                     metrics['msle'].append(mean_squared_log_error(y_te_safe, y_pred_safe))
+                    metrics['mae'].append(mean_absolute_error_1d(y_te, y_pred))
+                    metrics['rmse'].append(root_mean_squared_error(y_te, y_pred))
                     metrics['y_true'].append(y_te_safe)
                     metrics['y_pred'].append(y_pred_safe)
+                    metrics['n_iter'].append(fold_n_iter)
+                    metrics['converged'].append(fold_converged)
+                    metrics['fit_time'].append(fit_time)
 
                     gc.collect()
                 except Exception as e:
@@ -1977,9 +2024,17 @@ def bout_parameter_model_selection(
                     metrics['explained_deviance'].append(np.nan)
                     metrics['residual_deviance'].append(np.nan)
                     metrics['spearman_r'].append(np.nan)
+                    metrics['pearson_r'].append(np.nan)
                     metrics['msle'].append(np.nan)
-                    metrics['y_true'].append(np.nan)
-                    metrics['y_pred'].append(np.nan)
+                    metrics['mae'].append(np.nan)
+                    metrics['rmse'].append(np.nan)
+                    # Empty arrays rather than scalar NaN so `y_true` /
+                    # `y_pred` stay a list of ndarrays (stackable downstream).
+                    metrics['y_true'].append(np.empty((0,), dtype=np.float64))
+                    metrics['y_pred'].append(np.empty((0,), dtype=np.float64))
+                    metrics['n_iter'].append(np.nan)
+                    metrics['converged'].append(False)
+                    metrics['fit_time'].append(np.nan)
 
             valid = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
             if not valid:
@@ -1990,12 +2045,7 @@ def bout_parameter_model_selection(
             print(f" D^2: {m_dev:.4f}")
 
             step_results['candidates_summary'][feat] = {
-                'explained_deviance': metrics['explained_deviance'],
-                'residual_deviance': metrics['residual_deviance'],
-                'spearman_r': metrics['spearman_r'],
-                'msle': metrics['msle'],
-                'y_true': metrics['y_true'],
-                'y_pred': metrics['y_pred'],
+                **{k: metrics[k] for k in metrics},
                 'mean_explained_deviance': m_dev,
                 'se_explained_deviance': s_dev
             }

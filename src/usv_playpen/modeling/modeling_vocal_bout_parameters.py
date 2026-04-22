@@ -92,7 +92,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         Parameters
         ----------
-        settings_dict : dict, optional
+        modeling_settings_dict : dict, optional
             The dictionary containing configuration settings. If None, the parent
             class loads '_parameter_settings/modeling_settings.json'.
         """
@@ -244,8 +244,12 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             skip_dyadic_suffixes=True
         )
 
-        # Strict lookup instead of getattr with default
-        feature_bounds = self.feature_boundaries if hasattr(self, 'feature_boundaries') else {}
+        # Explicit lookup — feature_boundaries is an optional attribute set by
+        # the parent __init__ when the setting is present in the JSON.
+        if hasattr(self, 'feature_boundaries'):
+            feature_bounds = self.feature_boundaries
+        else:
+            feature_bounds = {}
 
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
@@ -560,6 +564,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         splitter = self.create_data_splits(feature_data)
 
+        # Seed for per-split null-label permutation Generators so the shuffled
+        # control is reproducible and does not inherit ambient global NumPy
+        # RNG state from prior calls.
+        base_seed = self.modeling_settings['model_params']['random_seed']
+
         for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
             print(f"  > Processing Split {split_idx + 1}...")
 
@@ -633,17 +642,25 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             except Exception as e:
                 print(f"Fit failed for Actual Split {split_idx + 1}: {e}")
+                # Keep every per-fold list aligned on failure so downstream
+                # consumers can rely on matching lengths across keys. Fill
+                # `filter_shapes` with a NaN vector of the correct width
+                # rather than a scalar so the list can later stack cleanly.
                 results['actual']['explained_deviance'].append(np.nan)
                 results['actual']['residual_deviance'].append(np.nan)
+                results['actual']['spearman_r'].append(np.nan)
                 results['actual']['pearson_r'].append(np.nan)
+                results['actual']['msle'].append(np.nan)
                 results['actual']['mae'].append(np.nan)
                 results['actual']['rmse'].append(np.nan)
+                results['actual']['filter_shapes'].append(np.full(hist_frames, np.nan))
                 results['actual']['n_iter'].append(np.nan)
                 results['actual']['converged'].append(False)
                 results['actual']['fit_time'].append(np.nan)
 
             try:
-                y_tr_shuff_tiled = np.repeat(np.random.permutation(y_tr) + 1e-6, hist_frames).astype(np.float32)
+                null_rng = np.random.default_rng(base_seed + split_idx + 1)
+                y_tr_shuff_tiled = np.repeat(null_rng.permutation(y_tr) + 1e-6, hist_frames).astype(np.float32)
 
                 gam_null = GAM(
                     te(0, 1, n_splines=[n_val, n_time]),
@@ -703,9 +720,14 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             except Exception as e:
                 print(f"Fit failed for Null Split {split_idx + 1}: {e}")
+                # The pyGAM null branch never writes `filter_shapes`, so that
+                # list stays empty by design; every other per-fold key gets a
+                # NaN placeholder to keep lengths aligned across folds.
                 results['null']['explained_deviance'].append(np.nan)
                 results['null']['residual_deviance'].append(np.nan)
+                results['null']['spearman_r'].append(np.nan)
                 results['null']['pearson_r'].append(np.nan)
+                results['null']['msle'].append(np.nan)
                 results['null']['mae'].append(np.nan)
                 results['null']['rmse'].append(np.nan)
                 results['null']['n_iter'].append(np.nan)
@@ -795,6 +817,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         alphas = ridge_params['alphas']
         cv = ridge_params['cv']
 
+        # Seed for per-split null-label permutation Generators so the shuffled
+        # control is reproducible and independent of ambient global RNG state.
+        base_seed = self.modeling_settings['model_params']['random_seed']
+
         for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
             print(f"  > Processing Split {split_idx + 1}...")
 
@@ -856,15 +882,22 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 print(f"Ridge Fit failed for Actual Split {split_idx + 1}: {e}")
                 results['actual']['explained_deviance'].append(np.nan)
                 results['actual']['residual_deviance'].append(np.nan)
+                results['actual']['spearman_r'].append(np.nan)
                 results['actual']['pearson_r'].append(np.nan)
+                results['actual']['msle'].append(np.nan)
                 results['actual']['mae'].append(np.nan)
                 results['actual']['rmse'].append(np.nan)
+                # The back-projected filter is `history_frames` wide (coef @
+                # basis_matrix.T); use a NaN vector of the same width so the
+                # list stays stackable across folds.
+                results['actual']['filter_shapes'].append(np.full(self.history_frames, np.nan))
                 results['actual']['n_iter'].append(np.nan)
                 results['actual']['converged'].append(False)
                 results['actual']['fit_time'].append(np.nan)
 
             try:
-                y_tr_shuff_log = np.log(np.random.permutation(y_tr) + 1e-6)
+                null_rng = np.random.default_rng(base_seed + split_idx + 1)
+                y_tr_shuff_log = np.log(null_rng.permutation(y_tr) + 1e-6)
 
                 fit_start = time.perf_counter()
                 model_null = RidgeCV(alphas=alphas, cv=cv).fit(X_tr_proj, y_tr_shuff_log)
@@ -907,9 +940,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             except (ValueError, ZeroDivisionError, Exception) as e:
                 print(f"Fit failed for Null Split {split_idx + 1}: {e}")
+                # Ridge null branch does not emit filter shapes; every other
+                # per-fold key gets a NaN placeholder to keep lengths aligned.
                 results['null']['explained_deviance'].append(np.nan)
                 results['null']['residual_deviance'].append(np.nan)
+                results['null']['spearman_r'].append(np.nan)
                 results['null']['pearson_r'].append(np.nan)
+                results['null']['msle'].append(np.nan)
                 results['null']['mae'].append(np.nan)
                 results['null']['rmse'].append(np.nan)
                 results['null']['n_iter'].append(np.nan)
