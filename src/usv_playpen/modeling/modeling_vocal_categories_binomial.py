@@ -57,7 +57,83 @@ from .modeling_utils import (
 from ..analyses.compute_behavioral_features import FeatureZoo
 
 
+def _collect_category_windows(times: np.ndarray,
+                              column_data: np.ndarray,
+                              sampling_rate: float,
+                              history_frames: int,
+                              max_frame_idx: int) -> np.ndarray:
+    """
+    Slice history windows around event timestamps, skipping out-of-bounds rows.
+
+    For each timestamp `t` in `times`, the window `[end - history_frames, end)`
+    with `end = round(t * sampling_rate)` is extracted from `column_data`.
+    Events whose window falls off the start or end of the recording are
+    silently skipped (rather than being stored as a NaN row), so the returned
+    array only contains fully-populated history windows. Any within-window
+    NaN samples are replaced with `0.0` — that is the intended treatment of
+    transient tracking dropouts inside an otherwise valid window.
+
+    Parameters
+    ----------
+    times : np.ndarray
+        Event timestamps in seconds, shape `(n_events,)`.
+    column_data : np.ndarray
+        The 1-D behavioural trace sampled at `sampling_rate`.
+    sampling_rate : float
+        Frames per second of `column_data`.
+    history_frames : int
+        Length of the slice preceding each event, in frames.
+    max_frame_idx : int
+        Length of `column_data`; `end` must not exceed this value.
+
+    Returns
+    -------
+    np.ndarray
+        Dense `(n_valid_events, history_frames)` matrix whose rows are the
+        fully-populated history windows (in `column_data`'s dtype).
+    """
+
+    ends = np.round(times * sampling_rate).astype(int)
+    starts = ends - history_frames
+    valid_mask = (starts >= 0) & (ends <= max_frame_idx)
+    if not np.any(valid_mask):
+        return np.empty((0, history_frames), dtype=column_data.dtype)
+    valid_starts = starts[valid_mask]
+    valid_ends = ends[valid_mask]
+    out = np.empty((valid_starts.size, history_frames), dtype=column_data.dtype)
+    for row_idx, (s, e) in enumerate(zip(valid_starts, valid_ends)):
+        chunk = column_data[s:e].copy()
+        chunk[np.isnan(chunk)] = 0.0
+        out[row_idx, :] = chunk
+    return out
+
+
 class VocalCategoryModelingPipeline(FeatureZoo):
+    """
+    End-to-end pipeline for one-vs-rest USV-category modelling from behavioural kinematics.
+
+    The pipeline has three responsibilities:
+
+    1. **Data preparation**: loads behavioural time-series and USV category
+       assignments, separates the `target_category` bouts from the pooled
+       "other" bouts, injects vocal-syntax predictors (with identity guards
+       to prevent trivial self-prediction), applies cross-session z-scoring,
+       and serializes the resulting `{feature: {session: {target_feature_arr,
+       other_feature_arr}}}` dictionary to disk.
+    2. **Cross-validation splitting**: the `create_category_splits` generator
+       implements two strategies ('session' and 'mixed') plus a size- and
+       ratio-matched `'null_other'` condition that draws pseudo-classes from
+       the negative pool. All strategies honour the canonical "balanced train
+       / natural-rate test" invariant — training is down-sampled to 50/50
+       so gradient updates see both classes, while the test fold preserves
+       the natural base rate so reported metrics reflect real imbalance.
+    3. **Univariate model fitting**: `_run_modeling_category` fits either a
+       basis-projected `LogisticRegressionCV` (sklearn engine) or a
+       tensor-product-spline `LogisticGAM` (pygam engine) per feature and
+       returns an `{'actual', 'null'}` results dict with calibration (Brier,
+       ECE), chance-corrected (MCC), confusion-matrix, and optimizer-
+       diagnostic fields per split.
+    """
 
     def __init__(self, modeling_settings_dict: dict = None, **kwargs):
         """
@@ -119,13 +195,18 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             - Applies refined exclusion logic for directional dyadic features
               (e.g., 'nose-allo_yaw', 'nose-TTI') based on which mouse is the current predictor.
             - Incorporates pre-generated vocal syntax traces directly
-              from the loading module.
-              * **Partner Mouse:** All vocal traces are ingested as predictors.
-                  This is true, unless the partner mouse never vocalized in any of the sessions.
-              * **Subject Mouse (Self):** Ingests vocal categories to capture syntax transitions
-                  (e.g., Cat 1 predicting Cat 3). To ensure scientific validity, it strictly
-                  excludes the 'target_category' itself to avoid self-prediction, and excludes
-                  density traces (proportion/event) to prevent trivial autocorrelation.
+              from the loading module (gated by
+              `vocal_features.usv_predictor_partner_only`).
+              * **Partner Mouse:** all vocal traces are ingested as predictors
+                whenever the partner vocalized in any session; under the
+                `partner_only=True` default this is the only source of vocal
+                predictors.
+              * **Subject Mouse (Self):** when `partner_only=False`, ingests
+                subject-side vocal categories to capture syntax transitions
+                (e.g., Cat 1 predicting Cat 3). To ensure scientific validity,
+                it strictly excludes the 'target_category' itself to avoid
+                self-prediction, and excludes density traces (proportion /
+                event) to prevent trivial autocorrelation.
         4.  Z-scores all features across sessions, respecting physical boundaries
             defined in `feature_boundaries` while bypassing USV traces.
         5.  Slices continuous data into fixed-length history windows using
@@ -270,21 +351,14 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
                 col_data = sess_df[col].to_numpy()
                 max_idx = len(col_data)
-                t_arr = np.full((target_times.size, hist_frames), np.nan)
-                o_arr = np.full((other_times.size, hist_frames), np.nan)
 
-                def fill_epochs(times, arr):
-                    ends = np.round(times * fps).astype(int)
-                    starts = ends - hist_frames
-                    for j in range(times.size):
-                        s, e = starts[j], ends[j]
-                        if s >= 0 and e <= max_idx:
-                            chunk = col_data[s:e].copy()
-                            chunk[np.isnan(chunk)] = 0.0
-                            arr[j, :] = chunk
-
-                fill_epochs(target_times, t_arr)
-                fill_epochs(other_times, o_arr)
+                # Events whose full history window does not fit inside the
+                # session recording are dropped at extraction time instead of
+                # being carried forward as NaN rows. Downstream pooling /
+                # balancing helpers do not filter NaN, so leaving them in
+                # would silently corrupt basis projections.
+                t_arr = _collect_category_windows(target_times, col_data, fps, hist_frames, max_idx)
+                o_arr = _collect_category_windows(other_times, col_data, fps, hist_frames, max_idx)
                 final_data[gen_key][sess_id]['target_feature_arr'] = t_arr
                 final_data[gen_key][sess_id]['other_feature_arr'] = o_arr
 
@@ -440,7 +514,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             raise ValueError(f"Unknown split_strategy '{split_strategy}'. Must be 'session' or 'mixed'.")
 
         # Phase 2: Balance training folds only; keep test folds at the natural class prior.
-        for X_tr_targ, X_tr_other, X_te_targ, X_te_other in splits_data:
+        for split_num, (X_tr_targ, X_tr_other, X_te_targ, X_te_other) in enumerate(splits_data):
 
             n_tr_limit = min(X_tr_targ.shape[0], X_tr_other.shape[0])
             n_te_target = X_te_targ.shape[0]
@@ -459,11 +533,15 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 # Pseudo-train: balanced 50/50, matching 'actual' train size (n_tr_limit per half).
                 # Pseudo-test: size- and ratio-matched to 'actual' test (n_te_target + n_te_other
                 # drawn from Other pool, split according to the natural-rate target/other shares).
+                # Seeded per-split Generator so pseudo-class draws are
+                # reproducible and do not leak ambient global RNG state.
+                null_rng = np.random.default_rng(rand_seed + split_num)
+
                 def draw_pseudo_train(X, limit):
                     needed = limit * 2
                     if len(X) < needed:
                         return None, None
-                    X_sub = X[np.random.choice(len(X), needed, replace=False)]
+                    X_sub = X[null_rng.choice(len(X), needed, replace=False)]
                     return X_sub[:limit], X_sub[limit:]
 
                 def draw_pseudo_test(X, n_pseudo_pos, n_pseudo_neg):
@@ -471,7 +549,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     if needed == 0 or len(X) == 0:
                         return np.empty((0,) + X.shape[1:]), np.empty((0,) + X.shape[1:])
                     replace = len(X) < needed
-                    X_sub = X[np.random.choice(len(X), needed, replace=replace)]
+                    X_sub = X[null_rng.choice(len(X), needed, replace=replace)]
                     return X_sub[:n_pseudo_pos], X_sub[n_pseudo_pos:]
 
                 X_tr_A, X_tr_B = draw_pseudo_train(X_tr_other, n_tr_limit)
@@ -597,7 +675,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     y_pred = None
                     fit_start = time.perf_counter()
                     fold_n_iter = np.nan
-                    fold_converged = np.nan
+                    # `None` is an unambiguous "no diagnostic available" sentinel:
+                    # `np.nan is not np.nan` is only True by CPython's singleton
+                    # reuse, so the previous sentinel was fragile across interpreters.
+                    fold_converged = None
 
                     if model_type == 'sklearn':
                         X_tr_p = np.dot(X_tr, basis_matrix)
@@ -627,7 +708,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             fold_n_iter = float(np.max(lr_actual.n_iter_))
                             fold_converged = bool(fold_n_iter < lr_params['max_iter'])
                         except Exception:
-                            fold_n_iter, fold_converged = np.nan, np.nan
+                            fold_n_iter, fold_converged = np.nan, None
 
                         if strat == 'actual':
                             results['actual']['coefs_projected'][split_idx, :] = lr_actual.coef_.flatten()
@@ -695,7 +776,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             y_te, y_pred, labels=np.array([0, 1])
                         )
                         results[key]['n_iter'][split_idx] = fold_n_iter
-                        results[key]['converged'][split_idx] = float(fold_converged) if fold_converged is not np.nan else np.nan
+                        results[key]['converged'][split_idx] = float(fold_converged) if fold_converged is not None else np.nan
                         results[key]['fit_time'][split_idx] = fit_time
 
                         print(f"    > {strat.capitalize()} Fold {split_idx} (Train N={len(y_tr)}, Test N={len(y_te)}): "

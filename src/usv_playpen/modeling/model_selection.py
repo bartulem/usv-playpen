@@ -910,19 +910,18 @@ def vocal_category_model_selection(
             continue
 
         actual_ll = results['actual']['ll']
-        null_key = 'null' if 'null' in results else 'shuffled'
-        shuffled_ll = results[null_key]['ll']
+        null_ll = results['null']['ll']
 
         valid_actual = actual_ll[~np.isnan(actual_ll)]
-        valid_shuffled = shuffled_ll[~np.isnan(shuffled_ll)]
+        valid_null = null_ll[~np.isnan(null_ll)]
 
-        if len(valid_actual) == 0 or len(valid_shuffled) == 0:
+        if len(valid_actual) == 0 or len(valid_null) == 0:
             continue
 
         mean_actual_ll = np.mean(valid_actual)
-        shuffled_threshold = np.percentile(valid_shuffled, q=(p_val / len(univariate_data)) * 100)
+        null_threshold = np.percentile(valid_null, q=(p_val / len(univariate_data)) * 100)
 
-        if mean_actual_ll < shuffled_threshold:
+        if mean_actual_ll < null_threshold:
             candidates.append({'feature': feat_name, 'mean_ll': mean_actual_ll})
 
     candidates.sort(key=lambda x: x['mean_ll'])
@@ -1011,13 +1010,29 @@ def vocal_category_model_selection(
     cv_folds = []
     n_targ_total, n_other_total = 0, 0
 
+    # Pre-pool each candidate feature's full (target, other) arrays once for
+    # the 'mixed' strategy. Because the pooled result depends only on the
+    # feature (session list is always `all_sessions_arr`), the anchor and
+    # forward loops read from this cache instead of re-running
+    # `_pool_category_features` per fold per trial feature — the dominant cost
+    # of the inner loop at ~ (n_steps * n_features * n_folds) pool calls.
+    pooled_category_cache = {}
     if split_strategy == 'session':
         ss = ShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
         cv_folds = list(ss.split(all_sessions_arr))
     elif split_strategy == 'mixed':
-        ref_targ, ref_other = _pool_category_features(all_feature_data, [ranked_features[0]], all_sessions_arr, history_frames)
-        n_targ_total = ref_targ[0].shape[0]
-        n_other_total = ref_other[0].shape[0]
+        for _feat_name in ranked_features:
+            _t_list, _o_list = _pool_category_features(
+                all_feature_data, [_feat_name], all_sessions_arr, history_frames
+            )
+            pooled_category_cache[_feat_name] = {
+                'target': _t_list[0],
+                'other': _o_list[0],
+            }
+        ref_targ = pooled_category_cache[ranked_features[0]]['target']
+        ref_other = pooled_category_cache[ranked_features[0]]['other']
+        n_targ_total = ref_targ.shape[0]
+        n_other_total = ref_other.shape[0]
 
         y_dummy = np.hstack([np.ones(n_targ_total), np.zeros(n_other_total)])
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
@@ -1080,7 +1095,10 @@ def vocal_category_model_selection(
                     X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[tr_idx], history_frames)
                     X_te_t_raw, X_te_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[te_idx], history_frames)
                 else:
-                    X_all_t_raw, X_all_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr, history_frames)
+                    # Pull the already-pooled target / other arrays from the
+                    # cache instead of rebuilding them on every fold.
+                    X_all_t_raw = [pooled_category_cache[anchor]['target']]
+                    X_all_o_raw = [pooled_category_cache[anchor]['other']]
 
                     tr_targ_idx = tr_idx[tr_idx < n_targ_total]
                     tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
@@ -1167,7 +1185,13 @@ def vocal_category_model_selection(
             except Exception as e:
                 print(f"    [!] Error fitting {anchor} (Fold {fold_i}): {e}")
                 for _k in metrics:
-                    metrics[_k].append(np.nan)
+                    # `confusion_matrix` holds (2, 2) arrays, so on failure we
+                    # append a NaN-filled matrix instead of a scalar NaN to
+                    # keep the per-fold list homogeneous for downstream stacking.
+                    if _k == 'confusion_matrix':
+                        metrics[_k].append(np.full((2, 2), np.nan))
+                    else:
+                        metrics[_k].append(np.nan)
 
         valid = [s for s in metrics['ll'] if np.isfinite(s)]
         if valid:
@@ -1224,7 +1248,12 @@ def vocal_category_model_selection(
                         X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, trial_feats, all_sessions_arr[tr_idx], history_frames)
                         X_te_t_raw, X_te_o_raw = _pool_category_features(all_feature_data, trial_feats, all_sessions_arr[te_idx], history_frames)
                     else:
-                        X_all_t_raw, X_all_o_raw = _pool_category_features(all_feature_data, trial_feats, all_sessions_arr, history_frames)
+                        # Reassemble the per-trial feature list from the
+                        # pre-pooled cache so every fold reuses the same dense
+                        # (target, other) arrays without re-concatenating per
+                        # session on each iteration.
+                        X_all_t_raw = [pooled_category_cache[f]['target'] for f in trial_feats]
+                        X_all_o_raw = [pooled_category_cache[f]['other'] for f in trial_feats]
 
                         tr_targ_idx = tr_idx[tr_idx < n_targ_total]
                         tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
@@ -1348,7 +1377,10 @@ def vocal_category_model_selection(
             step_results_metadata['selected_feature'] = best_cand_name
             with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
                 pickle.dump(step_results_metadata, f)
-            best_current_score, step_counter = best_cand_score, step_counter + 1
+            # Track `best_current_se` alongside the score so the 1SE acceptance
+            # test always compares against the *current* accepted model's
+            # sampling variability rather than a stale Step-0 value.
+            best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
             if len(current_model_features) == len(ranked_features): break
         else:
             print("  REJECT. Stopping.")
@@ -1373,7 +1405,11 @@ def vocal_category_model_selection(
             if split_strategy == 'session':
                 X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
             else:
-                X_all_t_raw, X_all_o_raw = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr, history_frames)
+                # Reuse the pre-pooled target / other arrays for the final
+                # refit so the visualisation loop doesn't re-pool the full
+                # dataset per fold.
+                X_all_t_raw = [pooled_category_cache[f]['target'] for f in current_model_features]
+                X_all_o_raw = [pooled_category_cache[f]['other'] for f in current_model_features]
 
                 tr_targ_idx = tr_idx[tr_idx < n_targ_total]
                 tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
