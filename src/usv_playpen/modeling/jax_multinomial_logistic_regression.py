@@ -68,12 +68,40 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
     max_iter : int, default=5000
         Maximum number of optimization steps (epochs).
     tol : float, default=1e-4
-        Convergence tolerance. Training stops if the parameters change by less
-        than this amount between checks.
+        Convergence tolerance. Training stops if the L2 norm of the parameter
+        update over the previous 100 optimizer steps falls below this value.
     random_state : int, default=0
         Seed for JAX random number generation initialization.
     verbose : bool, default=False
         If True, prints loss progress during training.
+
+    Attributes
+    ----------
+    coef_ : np.ndarray, shape (n_classes, n_features * n_time_bins)
+        Learned weight matrix (sklearn convention — transposed from the
+        internal `(n_inputs, n_classes)` JAX layout).
+    intercept_ : np.ndarray, shape (n_classes,)
+        Learned per-class biases. Initialised from the log class prior.
+    log_priors_ : np.ndarray, shape (n_classes,)
+        `log(count_c / N + eps)` captured at fit time; used by
+        `predict_proba(balanced=True)` to neutralise the base-rate
+        contribution absorbed into the intercept during fitting.
+    classes_ : np.ndarray
+        Ordered class labels in the layout used by `coef_` columns.
+    lb_ : sklearn.preprocessing.LabelBinarizer
+        The binarizer fitted to the training targets.
+    n_iter_ : int
+        Number of optimizer steps actually taken (1-indexed). Equals
+        `max_iter` when the tolerance check never fired.
+    converged_ : bool
+        True if the tolerance check fired before `max_iter`; False otherwise.
+        Flags the main silent-failure mode of the estimator — a
+        `converged_=False` fold has hit the iteration cap without meeting
+        the stopping criterion.
+    fit_time_ : float
+        Wall-clock fit time in seconds.
+    is_fitted_ : bool
+        Convenience flag consumed by `check_is_fitted`.
     """
 
     def __init__(
@@ -126,9 +154,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             Initialized bias vector (n_classes,).
         """
 
-        k1, k2 = jax.random.split(key)
         scale = jnp.sqrt(2.0 / (n_inputs + n_classes))
-        W = jax.random.normal(k1, (n_inputs, n_classes)) * scale
+        W = jax.random.normal(key, (n_inputs, n_classes)) * scale
 
         # Initialize bias with the natural log of class frequencies
         b = log_priors
@@ -268,7 +295,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         opt_state = optimizer.init(params)
 
         @partial(jax.jit, static_argnums=(4, 5))
-        def step(params, opt_state, X_batch, Y_batch, n_feats, n_time, w_batch): # <-- ADD w_batch
+        def step(params, opt_state, X_batch, Y_batch, n_feats, n_time, w_batch):
             grads = jax.grad(self._loss_fn)(
                 params, X_batch, Y_batch,
                 n_feats, n_time,

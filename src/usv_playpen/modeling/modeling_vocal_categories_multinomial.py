@@ -233,7 +233,33 @@ def _balance_multinomial_train_indices(
     rng.shuffle(balanced_idx)
     return balanced_idx
 
+
 class MultinomialModelingPipeline(FeatureZoo):
+    """
+    End-to-end extraction pipeline for multinomial USV-category modelling.
+
+    The pipeline has two responsibilities:
+
+    1. **Data preparation**: loads behavioural time-series and USV category
+       assignments, assembles per-session history windows `[onset -
+       history_frames, onset)` preceding every valid bout (onsets that would
+       require samples before frame 0 are filtered out at collection time so
+       no NaN rows leak into the design matrix), applies cross-session z-
+       scoring, and serializes the resulting `{feature: {session: {X, y}}}`
+       dictionary to disk. The class of each bout (integer category label) is
+       retained alongside the design matrix so downstream fitting can solve
+       the multinomial problem in a single pass rather than target-vs-rest.
+    2. **Identity-guarded vocal predictors**: injects partner-side and,
+       when `usv_predictor_partner_only=False`, subject-side vocal syntax
+       traces as predictors while strictly excluding the target-category
+       density channels to prevent self-prediction / trivial autocorrelation.
+
+    Cross-validation and model fitting live in the separate
+    `MultinomialModelRunner` class below, which consumes the pickle produced
+    here and drives the JAX-accelerated
+    `SmoothMultinomialLogisticRegression` estimator with the "balanced train /
+    natural-rate test" invariant.
+    """
 
     def __init__(self, modeling_settings_dict: dict = None, **kwargs):
         """
@@ -264,9 +290,8 @@ class MultinomialModelingPipeline(FeatureZoo):
         else:
             self.modeling_settings = modeling_settings_dict
 
-        json_bounds = self.modeling_settings.get('feature_boundaries')
-        if json_bounds:
-            self.feature_boundaries = json_bounds
+        if 'feature_boundaries' in self.modeling_settings:
+            self.feature_boundaries = self.modeling_settings['feature_boundaries']
 
         try:
             cam_rate = self.modeling_settings['io']['camera_sampling_rate']
@@ -617,7 +642,9 @@ class MultinomialModelRunner:
             self.feature_boundaries = pipeline_instance.feature_boundaries
 
     @staticmethod
-    def load_univariate_data_blocks(pkl_path: str, bin_size: int = 10) -> dict:
+    def load_univariate_data_blocks(pkl_path: str,
+                                    bin_size: int = 10,
+                                    feature_filter=None) -> dict:
         """
         Loads extracted feature data from disk and applies temporal downsampling.
 
@@ -644,6 +671,13 @@ class MultinomialModelRunner:
         bin_size : int, optional
             The resizing factor for temporal downsampling. A value of 10
             means every 10 frames are averaged into 1 bin. Default is 10.
+        feature_filter : iterable of str or str, optional
+            If provided, only bin and return the listed features. The HPC
+            dispatcher runs one feature per process, so paying the binning
+            cost for every feature in the pickle on every call is wasteful;
+            pass the feature(s) actually needed to skip the rest. The default
+            (`None`) retains the legacy behaviour of binning every feature in
+            the pickle.
 
         Returns
         -------
@@ -665,7 +699,12 @@ class MultinomialModelRunner:
         with open(pkl_path, 'rb') as f:
             raw_data = pickle.load(f)
 
-        sorted_features = sorted(list(raw_data.keys()))
+        if feature_filter is None:
+            sorted_features = sorted(list(raw_data.keys()))
+        else:
+            wanted = {feature_filter} if isinstance(feature_filter, str) else set(feature_filter)
+            sorted_features = sorted(feat for feat in raw_data.keys() if feat in wanted)
+
         data_blocks = {}
 
         for feat in sorted_features:
@@ -794,9 +833,15 @@ class MultinomialModelRunner:
         base_seed = self.modeling_settings['model_params']['random_seed']
         n_categories_total = self.modeling_settings['vocal_features']['usv_category_number']
 
-        all_blocks = self.load_univariate_data_blocks(pkl_path, bin_size=bin_size)
+        # Only bin the feature we are about to train. The HPC dispatcher
+        # invokes this method once per feature per process, so there is no
+        # reason to pay the binning cost for every other feature in the
+        # pickle on every invocation.
+        all_blocks = self.load_univariate_data_blocks(
+            pkl_path, bin_size=bin_size, feature_filter=feat_name
+        )
         if feat_name not in all_blocks:
-            raise KeyError(f"Feature '{feat_name}' not found. Available: {list(all_blocks.keys())}")
+            raise KeyError(f"Feature '{feat_name}' not found in {pkl_path}.")
 
         feat_data = all_blocks[feat_name]
         X = feat_data['X']

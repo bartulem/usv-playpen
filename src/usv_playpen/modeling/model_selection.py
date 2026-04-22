@@ -2237,9 +2237,7 @@ def multinomial_vocal_category_model_selection(
             continue
 
         actual_auc = np.array(results['actual']['folds']['metrics']['auc'])
-
-        null_key = 'null' if 'null' in results else 'shuffled'
-        null_auc = np.array(results[null_key]['folds']['metrics']['auc'])
+        null_auc = np.array(results['null']['folds']['metrics']['auc'])
 
         valid_actual = actual_auc[~np.isnan(actual_auc)]
         valid_null = null_auc[~np.isnan(null_auc)]
@@ -2356,7 +2354,11 @@ def multinomial_vocal_category_model_selection(
     step_counter = 0
 
     fname = os.path.basename(univariate_results_path)
-    cond_match = re.search(r'(male|female.*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    # Match the binomial / bout-onset regex grouping: `(?:...)` non-capture on
+    # the alternation so conditions like `male_mute_partner` are captured in
+    # full. The older `(male|female.*?)` form captured only the literal `male`
+    # for any `male_...` filename and truncated the prefix.
+    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
     prefix = f"model_selection_multinomial_vocal_category_{target_condition}_{split_strategy}_step_"
 
@@ -2579,8 +2581,26 @@ def multinomial_vocal_category_model_selection(
                     cand_data['classes'] = model.classes_
             except Exception as e:
                 print(f"    [!] Error fitting anchor: {e}")
-                for _k in cand_data['folds']['metrics']:
-                    cand_data['folds']['metrics'][_k].append(np.nan)
+                # Keep every per-fold list aligned on failure so downstream
+                # consumers can safely zip / stack across keys. Metrics get
+                # scalar NaNs; confusion_matrix needs a (K, K) NaN placeholder
+                # (to stay stackable); weights / intercepts become None; and
+                # the fold-level data arrays become empty-but-well-shaped.
+                K = len(canonical_classes)
+                for _k, _v in cand_data['folds']['metrics'].items():
+                    _v.append(np.nan)
+                cand_data['folds']['weights'].append(None)
+                cand_data['folds']['intercepts'].append(None)
+                cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
+                cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
+                cand_data['folds']['y_probs'].append(np.empty((0, K), dtype=np.float32))
+                cand_data['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
+                cand_data['folds']['p_train'].append(np.full(K, np.nan, dtype=np.float32))
+                cand_data['folds']['p_test'].append(np.full(K, np.nan, dtype=np.float32))
+                cand_data['folds']['confusion_matrix'].append(np.full((K, K), np.nan))
+                cand_data['folds']['n_iter'].append(np.nan)
+                cand_data['folds']['converged'].append(False)
+                cand_data['folds']['fit_time'].append(np.nan)
 
         valid_auc = [m for m in cand_data['folds']['metrics']['auc'] if np.isfinite(m)]
         if valid_auc:
@@ -2719,8 +2739,24 @@ def multinomial_vocal_category_model_selection(
                     if cand_data['classes'] is None:
                         cand_data['classes'] = model.classes_
                 except Exception:
-                    for _k in cand_data['folds']['metrics']:
-                        cand_data['folds']['metrics'][_k].append(np.nan)
+                    # Append placeholders to every sibling list so per-fold
+                    # lengths stay aligned across `metrics`, the fold-level
+                    # data arrays, and the optimizer-diagnostic flags.
+                    K = len(canonical_classes)
+                    for _k, _v in cand_data['folds']['metrics'].items():
+                        _v.append(np.nan)
+                    cand_data['folds']['weights'].append(None)
+                    cand_data['folds']['intercepts'].append(None)
+                    cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
+                    cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
+                    cand_data['folds']['y_probs'].append(np.empty((0, K), dtype=np.float32))
+                    cand_data['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
+                    cand_data['folds']['p_train'].append(np.full(K, np.nan, dtype=np.float32))
+                    cand_data['folds']['p_test'].append(np.full(K, np.nan, dtype=np.float32))
+                    cand_data['folds']['confusion_matrix'].append(np.full((K, K), np.nan))
+                    cand_data['folds']['n_iter'].append(np.nan)
+                    cand_data['folds']['converged'].append(False)
+                    cand_data['folds']['fit_time'].append(np.nan)
 
             valid_auc = [x for x in cand_data['folds']['metrics']['auc'] if np.isfinite(x)]
             if not valid_auc:
