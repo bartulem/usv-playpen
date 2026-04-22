@@ -74,6 +74,8 @@ callers should import it directly from `load_input_files`.
 import os
 import numpy as np
 import polars as pls
+from scipy.stats import pearsonr
+from sklearn.metrics import confusion_matrix, matthews_corrcoef
 
 from .load_input_files import load_behavioral_feature_data
 from .modeling_cross_session_normalization import zscore_different_sessions_together
@@ -1022,3 +1024,344 @@ def bounded_test_proportion(test_proportion: float,
     if n_sessions <= 0:
         return test_proportion
     return max(test_proportion, min_test_sessions / n_sessions)
+
+
+def brier_score_multi(y_true: np.ndarray,
+                      y_proba: np.ndarray,
+                      classes: np.ndarray) -> float:
+    """
+    Computes the multiclass Brier score — a strictly proper scoring rule that
+    measures both calibration and sharpness of predicted class probabilities.
+
+    The Brier score is the mean over samples of the squared L2 distance between
+    the predicted probability vector and the one-hot encoded true label:
+
+        BS = (1 / N) * sum_i || y_proba_i - onehot(y_true_i) ||_2^2
+
+    It evaluates to `0` for perfectly calibrated and sharp predictions and is
+    upper-bounded by `2` in the multiclass case. Lower is better. Unlike
+    log-loss, the Brier score remains finite for zero-probability predictions
+    on observed classes, which makes it more robust when the estimator is
+    occasionally overconfident. Use it as a complement to log-loss: log-loss
+    rewards sharp correct predictions harshly, whereas Brier penalizes large
+    errors quadratically and smaller ones linearly.
+
+    The helper supports binary problems too: pass `y_proba` of shape (N, 2)
+    and `classes` of length 2. It computes an identical quantity to
+    `sklearn.metrics.brier_score_loss` on the positive-class column (up to a
+    factor of 2 for the two-column parameterization).
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth class labels of shape (N,). Values must appear in
+        `classes`.
+    y_proba : np.ndarray
+        Predicted class probabilities of shape (N, K), one row per sample and
+        one column per class, in the same order as `classes`.
+    classes : np.ndarray
+        Ordered array of the K class labels, matching the column ordering of
+        `y_proba`.
+
+    Returns
+    -------
+    float
+        The mean Brier score across samples.
+    """
+
+    y_true_arr = np.asarray(y_true)
+    classes_arr = np.asarray(classes)
+    onehot = (y_true_arr[:, None] == classes_arr[None, :]).astype(np.float64)
+    return float(np.mean(np.sum((np.asarray(y_proba, dtype=np.float64) - onehot) ** 2, axis=1)))
+
+
+def expected_calibration_error(y_true: np.ndarray,
+                               y_pred: np.ndarray,
+                               y_proba: np.ndarray,
+                               n_bins: int = 10) -> float:
+    """
+    Computes the top-label Expected Calibration Error (ECE).
+
+    ECE partitions the predicted top-class confidences into `n_bins`
+    equal-width bins on [0, 1]. Within each bin it compares the empirical
+    accuracy (fraction of samples whose predicted label matches the true
+    label) against the mean predicted confidence, and reports the weighted
+    mean absolute gap:
+
+        ECE = sum_b (|B_b| / N) * |acc(B_b) - conf(B_b)|
+
+    A perfectly calibrated classifier has `ECE = 0`: samples it predicts with
+    70% confidence are correct 70% of the time. Values > 0 indicate
+    systematic miscalibration (typically overconfidence). Use ECE alongside
+    log-loss and Brier to distinguish calibration error (what ECE measures)
+    from raw predictive accuracy.
+
+    This is the "top-label" variant (aka "ECE-MaxProb"); for multiclass
+    problems it ignores the confidence assigned to non-predicted classes.
+    Binary classifiers can be scored by passing `y_proba` of shape (N, 2)
+    (e.g., `np.column_stack([1 - p_pos, p_pos])`).
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth class labels of shape (N,).
+    y_pred : np.ndarray
+        Predicted class labels of shape (N,) — typically `argmax(y_proba)`.
+    y_proba : np.ndarray
+        Predicted class probabilities of shape (N, K). The top-class
+        confidence is taken as `np.max(y_proba, axis=1)`.
+    n_bins : int, optional
+        Number of equal-width confidence bins. Defaults to `10`.
+
+    Returns
+    -------
+    float
+        The top-label expected calibration error on [0, 1].
+    """
+
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    y_proba = np.asarray(y_proba, dtype=np.float64)
+    if y_proba.ndim != 2:
+        raise ValueError(f"expected_calibration_error requires y_proba of shape (N, K); got {y_proba.shape}.")
+
+    confidences = np.max(y_proba, axis=1)
+    correct = (y_pred == y_true).astype(np.float64)
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    n_total = float(len(y_true))
+    if n_total == 0:
+        return float('nan')
+
+    ece = 0.0
+    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+        if hi == 1.0:
+            mask = (confidences > lo) & (confidences <= hi + 1e-9)
+        else:
+            mask = (confidences > lo) & (confidences <= hi)
+        n_bin = int(np.sum(mask))
+        if n_bin == 0:
+            continue
+        acc_bin = float(np.mean(correct[mask]))
+        conf_bin = float(np.mean(confidences[mask]))
+        ece += (n_bin / n_total) * abs(acc_bin - conf_bin)
+    return float(ece)
+
+
+def safe_matthews_corrcoef(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Wraps `sklearn.metrics.matthews_corrcoef` with NaN-safe degenerate-case
+    handling.
+
+    Matthews Correlation Coefficient (MCC) is a chance-corrected, imbalance-
+    robust summary of a confusion matrix. It returns values in [-1, +1]:
+    `+1` for perfect prediction, `0` for performance indistinguishable from
+    random, and negative values for systematic disagreement. MCC is
+    recommended by the machine-learning literature as the best single
+    number to summarize multi-class imbalanced classifiers because it
+    cannot be inflated by a model that only predicts the majority class.
+
+    If both `y_true` and `y_pred` collapse to a single class (i.e., every
+    entry of the confusion matrix is zero except one cell), MCC is
+    mathematically undefined; scikit-learn returns `0.0` in that case and
+    this wrapper preserves that behavior.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth class labels of shape (N,).
+    y_pred : np.ndarray
+        Predicted class labels of shape (N,).
+
+    Returns
+    -------
+    float
+        The Matthews correlation coefficient.
+    """
+
+    try:
+        return float(matthews_corrcoef(y_true, y_pred))
+    except ValueError:
+        return float('nan')
+
+
+def safe_confusion_matrix(y_true: np.ndarray,
+                          y_pred: np.ndarray,
+                          labels: np.ndarray) -> np.ndarray:
+    """
+    Wraps `sklearn.metrics.confusion_matrix` with explicit `labels` so the
+    returned matrix always has the canonical shape (K, K) even when a fold
+    happens to not observe every class.
+
+    Storing the per-fold confusion matrix is cheap and makes the saved
+    `.pkl` self-sufficient for downstream diagnostics: reviewers can
+    re-derive precision, recall, F1, sensitivity, and specificity on demand,
+    and quickly spot pathological failure modes (e.g., class collapse onto
+    the majority label) without re-running the model.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth class labels of shape (N,).
+    y_pred : np.ndarray
+        Predicted class labels of shape (N,).
+    labels : np.ndarray
+        Canonical class ordering to enforce on the rows and columns of the
+        returned matrix.
+
+    Returns
+    -------
+    np.ndarray
+        Confusion matrix of shape (K, K) with `labels` ordering. Rows are
+        true classes; columns are predicted classes.
+    """
+
+    return confusion_matrix(y_true, y_pred, labels=labels)
+
+
+def pearson_r_safe(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Computes the Pearson correlation coefficient between `y_true` and
+    `y_pred`, returning NaN when either input has zero variance.
+
+    Pearson's r complements Spearman's rho by measuring *linear* (rather
+    than monotonic) agreement on the original scale. For back-transformed
+    predictions from a log-link model, a high Spearman but low Pearson
+    indicates the model has ranked trials correctly but compressed or
+    expanded the magnitudes.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth continuous target of shape (N,).
+    y_pred : np.ndarray
+        Predicted continuous values of shape (N,).
+
+    Returns
+    -------
+    float
+        Pearson's r on [-1, +1], or NaN if either input is constant.
+    """
+
+    y_true = np.asarray(y_true, dtype=np.float64).ravel()
+    y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
+    if np.std(y_true) == 0.0 or np.std(y_pred) == 0.0:
+        return float('nan')
+    try:
+        return float(pearsonr(y_true, y_pred)[0])
+    except ValueError:
+        return float('nan')
+
+
+def root_mean_squared_error(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Computes the Root Mean Squared Error (RMSE) between two 1-D arrays.
+
+    RMSE returns an error magnitude in the native units of the target,
+    making it directly interpretable (e.g., "predictions are off by X
+    seconds on average"). It penalizes large deviations quadratically and
+    is therefore the natural complement to MAE: RMSE grows faster than MAE
+    under heavy-tailed residuals, so a large RMSE / MAE ratio signals a few
+    outlier folds or trials driving the error.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth continuous target.
+    y_pred : np.ndarray
+        Predicted continuous values.
+
+    Returns
+    -------
+    float
+        RMSE in the units of the target.
+    """
+
+    diff = np.asarray(y_true, dtype=np.float64).ravel() - np.asarray(y_pred, dtype=np.float64).ravel()
+    return float(np.sqrt(np.mean(diff ** 2)))
+
+
+def mean_absolute_error_1d(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Computes the Mean Absolute Error (MAE) between two 1-D arrays.
+
+    MAE is a robust linear-scale error magnitude: it penalizes each residual
+    by its absolute value, so a single outlier trial cannot dominate the
+    score the way it would in RMSE. Use MAE as the interpretable baseline
+    error ("the model's typical miss on a held-out bout is X units") and
+    RMSE as the heavy-tail sensitive diagnostic.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth continuous target.
+    y_pred : np.ndarray
+        Predicted continuous values.
+
+    Returns
+    -------
+    float
+        MAE in the units of the target.
+    """
+
+    return float(np.mean(np.abs(
+        np.asarray(y_true, dtype=np.float64).ravel()
+        - np.asarray(y_pred, dtype=np.float64).ravel()
+    )))
+
+
+def bivariate_gaussian_coverage(dx: np.ndarray,
+                                dy: np.ndarray,
+                                sigma_x: np.ndarray,
+                                sigma_y: np.ndarray,
+                                rho: np.ndarray,
+                                target_coverage: float) -> float:
+    """
+    Empirical coverage of the bivariate-Gaussian iso-probability contour
+    that nominally contains `target_coverage` of the probability mass.
+
+    For a bivariate Gaussian distribution with covariance `Sigma`, the
+    squared Mahalanobis distance `D^2 = r^T Sigma^-1 r` of a residual
+    `r = y - mu` follows a chi-squared distribution with 2 degrees of
+    freedom. The contour containing probability mass `p` therefore
+    corresponds to the level set `{r : D^2 <= -2 ln(1 - p)}`. This helper
+    returns the empirical fraction of held-out residuals that fall inside
+    that level set — a direct readout of the model's probabilistic
+    calibration on the 2D manifold:
+
+    - `empirical ≈ target_coverage` indicates a well-calibrated density.
+    - `empirical > target_coverage` indicates under-confidence (the model
+      spreads more mass than needed to catch `target_coverage` of the
+      true residuals).
+    - `empirical < target_coverage` indicates over-confidence (contours are
+      too tight; the model under-estimates its own uncertainty).
+
+    This metric complements the negative log-likelihood: NLL summarizes
+    density magnitude in nats, whereas coverage answers "is the predicted
+    spread the *right size*?" in an interpretable probability-mass sense.
+
+    Parameters
+    ----------
+    dx, dy : np.ndarray
+        Residuals `Y_true - mu` along each manifold axis, shape (N,).
+    sigma_x, sigma_y : np.ndarray
+        Per-sample marginal standard deviations of the predicted density,
+        shape (N,).
+    rho : np.ndarray
+        Per-sample predicted correlation coefficients, shape (N,).
+    target_coverage : float
+        Nominal probability mass, e.g. `0.68` or `0.95`.
+
+    Returns
+    -------
+    float
+        Empirical fraction of residuals inside the `target_coverage`
+        iso-contour.
+    """
+
+    threshold = -2.0 * np.log(1.0 - target_coverage)
+    denom = (1.0 - np.asarray(rho, dtype=np.float64) ** 2)
+    zx = np.asarray(dx, dtype=np.float64) / np.asarray(sigma_x, dtype=np.float64)
+    zy = np.asarray(dy, dtype=np.float64) / np.asarray(sigma_y, dtype=np.float64)
+    d2 = (zx ** 2 + zy ** 2 - 2.0 * np.asarray(rho, dtype=np.float64) * zx * zy) / denom
+    return float(np.mean(d2 <= threshold))

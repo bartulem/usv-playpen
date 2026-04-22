@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import time
 from functools import partial
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
@@ -286,15 +287,20 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         # diagnostic measures the cumulative change over the last 100 steps
         # (rather than the single-step delta, which would collapse trivially).
         last_check_params = params
+        fit_start = time.perf_counter()
+        converged = False
+        completed_iter = 0
 
         for i in range(self.max_iter):
             params, opt_state = step(params, opt_state, X_j, Y_j, self.n_features, self.n_time_bins, c_weights)
+            completed_iter = i + 1
 
             if i > 0 and i % 100 == 0:
                 diff = jnp.linalg.norm(params[0] - last_check_params[0])
                 if diff < self.tol:
                     if self.verbose:
                         print(f"Converged at iteration {i} with diff {diff:.2e}")
+                    converged = True
                     break
 
                 if self.verbose and i % 500 == 0:
@@ -312,6 +318,12 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self.coef_ = np.array(params[0].T)
         self.intercept_ = np.array(params[1])
         self.log_priors_ = np.array(log_priors)
+        # Expose fit-time diagnostics so callers can persist per-fold convergence
+        # evidence alongside the learned weights — the most common silent-failure
+        # mode for this estimator is hitting `max_iter` without converging.
+        self.n_iter_ = int(completed_iter)
+        self.converged_ = bool(converged)
+        self.fit_time_ = float(time.perf_counter() - fit_start)
         self.is_fitted_ = True
 
         return self

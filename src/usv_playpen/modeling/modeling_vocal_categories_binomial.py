@@ -30,10 +30,11 @@ import numpy as np
 import os
 import pathlib
 import pickle
+import time
 from pygam import LogisticGAM, te
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
-from sklearn.metrics import roc_auc_score, log_loss, f1_score, precision_score, recall_score, balanced_accuracy_score
+from sklearn.metrics import roc_auc_score, log_loss, f1_score, recall_score, balanced_accuracy_score, brier_score_loss
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
@@ -49,6 +50,9 @@ from .modeling_utils import (
     unroll_history_matrix,
     concat_two_class_with_labels,
     shuffle_train_test_arrays,
+    expected_calibration_error,
+    safe_matthews_corrcoef,
+    safe_confusion_matrix,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -507,8 +511,25 @@ class VocalCategoryModelingPipeline(FeatureZoo):
               fitting.
             - Estimates non-linear log-odds surfaces across feature values and time lags.
             - Extracts linear filter approximations via partial dependence calculations.
-        4.  Metric aggregation: Computes fold-wise classification statistics (AUC, F1,
-            Log-Loss, Accuracy) for both actual and null models to enable significance testing.
+        4.  Metric aggregation: Computes fold-wise classification statistics for both
+            actual and null models to enable significance testing.
+
+        Metrics saved per split (see the `results[key][...]` layout):
+        - `auc` : threshold-free ranking quality (ROC-AUC).
+        - `score` : balanced accuracy; imbalance-robust hard-label accuracy.
+        - `recall` : positive-class recall (precision is derivable from the
+          saved confusion matrix on demand).
+        - `f1` : binary F1 (harmonic mean of precision and recall).
+        - `ll` : log-loss; strictly proper probabilistic score.
+        - `brier` : Brier score on the positive-class probability; quadratic
+          counterpart to log-loss, robust to occasional overconfidence.
+        - `ece` : top-label Expected Calibration Error (10 equal-width bins);
+          measures whether predicted confidences match empirical accuracies.
+        - `mcc` : Matthews correlation coefficient; chance-corrected
+          imbalance-robust summary in [-1, +1].
+        - `confusion_matrix` : (2, 2) per-split matrix with `[0, 1]` labels.
+        - `n_iter`, `converged`, `fit_time` : optimizer diagnostics that flag
+          folds terminating at `max_iter` without meeting the tolerance.
 
         Parameters
         ----------
@@ -534,11 +555,23 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         model_type = self.modeling_settings['model_params']['model_engine']
         n_splits = self.modeling_settings['model_params']['split_num']
 
-        metrics = ['auc', 'score', 'precision', 'recall', 'f1', 'll']
+        # Scalar per-split metrics. `precision` is dropped because it is
+        # derivable on demand from the saved confusion matrices and macro-F1
+        # already summarizes the precision / recall trade-off.
+        metrics = ['auc', 'score', 'recall', 'f1', 'll', 'brier', 'ece', 'mcc']
         results = {
             'actual': {m: np.full(n_splits, np.nan) for m in metrics},
             'null': {m: np.full(n_splits, np.nan) for m in metrics}
         }
+
+        # Per-split (2, 2) confusion matrix with canonical [0, 1] label
+        # ordering and per-split optimizer diagnostics for silent-failure
+        # detection (`converged=False` flags folds that hit `max_iter`).
+        for key in ('actual', 'null'):
+            results[key]['confusion_matrix'] = np.full((n_splits, 2, 2), np.nan)
+            results[key]['n_iter'] = np.full(n_splits, np.nan)
+            results[key]['converged'] = np.full(n_splits, np.nan)
+            results[key]['fit_time'] = np.full(n_splits, np.nan)
 
         results['actual']['filter_shapes'] = np.full((n_splits, self.history_frames), np.nan)
 
@@ -562,6 +595,9 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 try:
                     y_prob = None
                     y_pred = None
+                    fit_start = time.perf_counter()
+                    fold_n_iter = np.nan
+                    fold_converged = np.nan
 
                     if model_type == 'sklearn':
                         X_tr_p = np.dot(X_tr, basis_matrix)
@@ -583,6 +619,15 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
                         y_prob = lr_actual.predict_proba(X_te_p)[:, 1]
                         y_pred = lr_actual.predict(X_te_p)
+
+                        # Sklearn exposes `n_iter_` per class / per C-grid cell;
+                        # summarize as the max across folds of the regularisation
+                        # CV grid so a non-converged fit is always visible.
+                        try:
+                            fold_n_iter = float(np.max(lr_actual.n_iter_))
+                            fold_converged = bool(fold_n_iter < lr_params['max_iter'])
+                        except Exception:
+                            fold_n_iter, fold_converged = np.nan, np.nan
 
                         if strat == 'actual':
                             results['actual']['coefs_projected'][split_idx, :] = lr_actual.coef_.flatten()
@@ -612,6 +657,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         ).fit(X_tr_gam, y_tr_gam)
 
                         diffs = gam.logs_['diffs']
+                        fold_n_iter = float(len(diffs))
+                        fold_converged = bool(diffs and diffs[-1] < gam_args['tol'])
                         print(f"      Completed in {len(diffs)} iters | "
                               f"Final Δ: {diffs[-1] if diffs else 0.0:.2e} (Tol: {gam_args['tol']:.2e}) | "
                               f"Deviance: {gam.logs_['deviance'][-1]:.2f}")
@@ -626,19 +673,36 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             shape = gam.predict_mu(grid_1) - gam.predict_mu(grid_0)
                             results['actual']['filter_shapes'][split_idx] = shape
 
+                    fit_time = float(time.perf_counter() - fit_start)
+
                     if y_prob is not None and y_pred is not None:
+                        y_prob_clipped = np.clip(y_prob, 1e-15, 1 - 1e-15)
+                        y_proba_2d = np.column_stack([1.0 - y_prob, y_prob])
+
                         results[key]['auc'][split_idx] = roc_auc_score(y_te, y_prob)
-                        results[key]['ll'][split_idx] = log_loss(y_te, np.clip(y_prob, 1e-15, 1 - 1e-15))
+                        results[key]['ll'][split_idx] = log_loss(y_te, y_prob_clipped)
 
                         results[key]['score'][split_idx] = balanced_accuracy_score(y_te, y_pred)
-                        results[key]['precision'][split_idx] = precision_score(y_te, y_pred, zero_division=0.0)
                         results[key]['recall'][split_idx] = recall_score(y_te, y_pred, zero_division=0.0)
                         results[key]['f1'][split_idx] = f1_score(y_te, y_pred, average='binary', zero_division=0.0)
+                        results[key]['brier'][split_idx] = float(brier_score_loss(y_te, y_prob))
+                        try:
+                            results[key]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10)
+                        except Exception:
+                            pass
+                        results[key]['mcc'][split_idx] = safe_matthews_corrcoef(y_te, y_pred)
+                        results[key]['confusion_matrix'][split_idx] = safe_confusion_matrix(
+                            y_te, y_pred, labels=np.array([0, 1])
+                        )
+                        results[key]['n_iter'][split_idx] = fold_n_iter
+                        results[key]['converged'][split_idx] = float(fold_converged) if fold_converged is not np.nan else np.nan
+                        results[key]['fit_time'][split_idx] = fit_time
 
                         print(f"    > {strat.capitalize()} Fold {split_idx} (Train N={len(y_tr)}, Test N={len(y_te)}): "
                               f"AUC={results[key]['auc'][split_idx]:.3f}, "
                               f"LL={results[key]['ll'][split_idx]:.3f}, "
-                              f"Acc={results[key]['score'][split_idx]:.3f}")
+                              f"Brier={results[key]['brier'][split_idx]:.3f}, "
+                              f"MCC={results[key]['mcc'][split_idx]:.3f}")
 
                 except Exception as e:
                     print(f"Fit error {feature_name} ({strat}), fold {split_idx}: {e}")

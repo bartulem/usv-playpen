@@ -36,6 +36,7 @@ import numpy as np
 import os
 import pickle
 import gc
+import time
 from pygam import GAM, te
 from scipy.stats import spearmanr
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
@@ -55,6 +56,9 @@ from .modeling_utils import (
     zero_fill_missing_feature_columns,
     zscore_features_across_sessions,
     unroll_history_matrix,
+    pearson_r_safe,
+    root_mean_squared_error,
+    mean_absolute_error_1d,
 )
 
 
@@ -483,17 +487,26 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
           garbage collection after each model fit to maintain stability on HPC nodes.
 
         Metrics Calculated:
-        - D^2 (Explained Deviance): 1 - (Residual Deviance / Null Deviance). Measures
-          the proportion of deviance explained by the model; the Gamma-equivalent of R^2.
-        - Spearman's $\rho$ (Rank Correlation): Measures the monotonic relationship between
-          predicted and actual values based on their rank order rather than raw magnitude.
-          A positive value indicates that when the model predicts a higher complexity,
-          the actual complexity is consistently higher, making it robust to outliers and
-          the non-linear scaling of the Gamma distribution.
-        - MSLE (Mean Squared Logarithmic Error): Measures the mean squared difference
-          between the log-transformed predicted and actual values. This metric penalizes
-          relative errors (e.g., off by a factor of 2) equally across all scales, aligning
-          perfectly with the multiplicative "Log Link" assumption of the model.
+        - `explained_deviance` (D^2): `1 - (Residual Deviance / Null Deviance)`.
+          Proportion of deviance explained by the model; the Gamma-equivalent of
+          R^2. Higher is better; bounded above by 1 for well-specified models.
+        - `residual_deviance`: raw Gamma deviance on the test set. Interpretable
+          in the native Gamma-GLM scoring scale (lower is better).
+        - `spearman_r`: rank-correlation between predicted and true values;
+          robust to outliers and insensitive to the magnitude of the log-link.
+        - `pearson_r`: linear-scale correlation on the back-transformed
+          predictions; complements Spearman by detecting compression/expansion
+          of magnitudes.
+        - `msle` (Mean Squared Logarithmic Error): penalizes relative errors
+          equally across scales — aligned with the log-link assumption.
+        - `mae` (Mean Absolute Error): interpretable magnitude of per-trial
+          miss in native units (e.g., seconds). Robust to outlier trials.
+        - `rmse` (Root Mean Squared Error): heavy-tail sensitive counterpart
+          to MAE; an `RMSE / MAE` ratio well above `sqrt(pi / 2) ≈ 1.25`
+          flags outlier-dominated folds.
+        - `n_iter`, `converged`, `fit_time`: per-fold optimizer diagnostics.
+          `converged=False` surfaces folds that hit `max_iter` before the
+          tolerance check fired.
 
         Parameters
         ----------
@@ -510,16 +523,29 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         -------
         tuple[str, dict]
             A tuple of (feature_name, results_dict) where results contains 'actual'
-            and 'shuffled' metrics across all cross-validation splits.
+            and 'null' metrics across all cross-validation splits (the 'null'
+            branch holds the permutation control — same estimator re-fit on a
+            shuffled target).
         """
 
         print(f"--- Running [GammaGAM] for: {feature_name} ---")
 
         hist_frames = self.history_frames
 
+        # Metric bundle saved per split for each strategy. The 'null' key holds
+        # the label-shuffled control (renamed from the legacy 'shuffled' to
+        # match the vocabulary used by the classifier / manifold pipelines).
+        def _make_bout_branch():
+            return {
+                'explained_deviance': [], 'spearman_r': [], 'pearson_r': [],
+                'msle': [], 'mae': [], 'rmse': [], 'residual_deviance': [],
+                'filter_shapes': [],
+                'n_iter': [], 'converged': [], 'fit_time': []
+            }
+
         results = {
-            'actual': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []},
-            'shuffled': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []}
+            'actual': _make_bout_branch(),
+            'null': _make_bout_branch()
         }
 
         # Strict dictionary lookups (No .get())
@@ -551,7 +577,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     tol=tol_val,
                     lam=lam
                 )
+                fit_start = time.perf_counter()
                 gam.fit(X_tr_gam, y_tr_tiled)
+                fit_time = float(time.perf_counter() - fit_start)
+
+                gam_diffs = gam.logs_.get('diffs', [])
+                n_iter_actual = int(len(gam_diffs))
+                converged_actual = bool(gam_diffs and gam_diffs[-1] < tol_val)
 
                 # Prediction
                 y_pred_tiled = gam.predict(X_te_gam)
@@ -582,7 +614,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 results['actual']['explained_deviance'].append(d2)
                 results['actual']['residual_deviance'].append(res_dev)
                 results['actual']['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                results['actual']['pearson_r'].append(pearson_r_safe(y_te, y_pred))
                 results['actual']['msle'].append(mean_squared_log_error(y_te, y_pred))
+                results['actual']['mae'].append(mean_absolute_error_1d(y_te, y_pred))
+                results['actual']['rmse'].append(root_mean_squared_error(y_te, y_pred))
+                results['actual']['n_iter'].append(n_iter_actual)
+                results['actual']['converged'].append(converged_actual)
+                results['actual']['fit_time'].append(fit_time)
 
                 # ExtractsShapes
                 grid_0 = np.stack([np.zeros(hist_frames), time_indices], axis=1)
@@ -597,6 +635,12 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 print(f"Fit failed for Actual Split {split_idx + 1}: {e}")
                 results['actual']['explained_deviance'].append(np.nan)
                 results['actual']['residual_deviance'].append(np.nan)
+                results['actual']['pearson_r'].append(np.nan)
+                results['actual']['mae'].append(np.nan)
+                results['actual']['rmse'].append(np.nan)
+                results['actual']['n_iter'].append(np.nan)
+                results['actual']['converged'].append(False)
+                results['actual']['fit_time'].append(np.nan)
 
             try:
                 y_tr_shuff_tiled = np.repeat(np.random.permutation(y_tr) + 1e-6, hist_frames).astype(np.float32)
@@ -610,12 +654,18 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     lam=lam
                 )
 
+                fit_start = time.perf_counter()
                 gam_null.fit(X_tr_gam, y_tr_shuff_tiled)
+                fit_time_null = float(time.perf_counter() - fit_start)
+
+                null_diffs = gam_null.logs_.get('diffs', [])
+                n_iter_null = int(len(null_diffs))
+                converged_null = bool(null_diffs and null_diffs[-1] < tol_val)
 
                 y_pred_shuff_tiled = gam_null.predict(X_te_gam)
                 y_pred_shuff = np.mean(y_pred_shuff_tiled.reshape(len(y_te), hist_frames), axis=1)
 
-                # NOTE: We compare the shuffled prediction against the *REAL* y_te
+                # NOTE: We compare the null-model prediction against the *REAL* y_te
                 try:
                     # Sanitize inputs
                     y_te_safe = np.maximum(y_te, 1e-6)
@@ -633,22 +683,34 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                         d2_null = 1 - (res_dev_null / null_dev)
 
                 except Exception as e:
-                    print(f"      [!] Shuffled Metric Failed: {e}")
+                    print(f"      [!] Null Metric Failed: {e}")
                     d2_null = np.nan
                     res_dev_null = np.nan
 
-                results['shuffled']['explained_deviance'].append(d2_null)
-                results['shuffled']['residual_deviance'].append(res_dev_null)
-                results['shuffled']['spearman_r'].append(spearmanr(y_te, y_pred_shuff)[0])
-                results['shuffled']['msle'].append(mean_squared_log_error(y_te, y_pred_shuff))
+                results['null']['explained_deviance'].append(d2_null)
+                results['null']['residual_deviance'].append(res_dev_null)
+                results['null']['spearman_r'].append(spearmanr(y_te, y_pred_shuff)[0])
+                results['null']['pearson_r'].append(pearson_r_safe(y_te, y_pred_shuff))
+                results['null']['msle'].append(mean_squared_log_error(y_te, y_pred_shuff))
+                results['null']['mae'].append(mean_absolute_error_1d(y_te, y_pred_shuff))
+                results['null']['rmse'].append(root_mean_squared_error(y_te, y_pred_shuff))
+                results['null']['n_iter'].append(n_iter_null)
+                results['null']['converged'].append(converged_null)
+                results['null']['fit_time'].append(fit_time_null)
 
                 del gam_null, y_tr_shuff_tiled
                 gc.collect()
 
             except Exception as e:
-                print(f"Fit failed for Shuffled Split {split_idx + 1}: {e}")
-                results['shuffled']['explained_deviance'].append(np.nan)
-                results['shuffled']['residual_deviance'].append(np.nan)
+                print(f"Fit failed for Null Split {split_idx + 1}: {e}")
+                results['null']['explained_deviance'].append(np.nan)
+                results['null']['residual_deviance'].append(np.nan)
+                results['null']['pearson_r'].append(np.nan)
+                results['null']['mae'].append(np.nan)
+                results['null']['rmse'].append(np.nan)
+                results['null']['n_iter'].append(np.nan)
+                results['null']['converged'].append(False)
+                results['null']['fit_time'].append(np.nan)
 
             del X_tr_gam, X_te_gam
             gc.collect()
@@ -708,14 +770,22 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         tuple[str, dict]
             A tuple of (feature_name, results_dict) containing cross-validated performance
             metrics, optimized hyperparameters, and reconstructed filter shapes for both
-            the actual and shuffled models.
+            the 'actual' model and the 'null' (label-permuted) control.
         """
 
         print(f"--- Running [RidgeCV] for: {feature_name} ---")
 
+        def _make_ridge_branch():
+            return {
+                'explained_deviance': [], 'spearman_r': [], 'pearson_r': [],
+                'msle': [], 'mae': [], 'rmse': [], 'residual_deviance': [],
+                'filter_shapes': [],
+                'n_iter': [], 'converged': [], 'fit_time': []
+            }
+
         results = {
-            'actual': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []},
-            'shuffled': {'explained_deviance': [], 'spearman_r': [], 'msle': [], 'residual_deviance': [], 'filter_shapes': []}
+            'actual': _make_ridge_branch(),
+            'null': _make_ridge_branch()
         }
 
         splitter = self.create_data_splits(feature_data)
@@ -735,7 +805,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 # Log-transform target for ridge (homoscedasticity assumption)
                 y_tr_log = np.log(y_tr + 1e-6)
 
+                fit_start = time.perf_counter()
                 model = RidgeCV(alphas=alphas, cv=cv).fit(X_tr_proj, y_tr_log)
+                fit_time = float(time.perf_counter() - fit_start)
 
                 # Predict and back-transform
                 y_pred_log = model.predict(X_te_proj)
@@ -766,7 +838,15 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 results['actual']['explained_deviance'].append(d2)
                 results['actual']['residual_deviance'].append(res_dev)
                 results['actual']['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                results['actual']['pearson_r'].append(pearson_r_safe(y_te, y_pred))
                 results['actual']['msle'].append(mean_squared_log_error(y_te, y_pred))
+                results['actual']['mae'].append(mean_absolute_error_1d(y_te, y_pred))
+                results['actual']['rmse'].append(root_mean_squared_error(y_te, y_pred))
+                # RidgeCV has no iterative optimizer to report; store NaN for
+                # `n_iter` and `True` for converged (closed-form solve).
+                results['actual']['n_iter'].append(np.nan)
+                results['actual']['converged'].append(True)
+                results['actual']['fit_time'].append(fit_time)
 
                 # Store filter shape (in log domain)
                 shape_log = np.dot(model.coef_, basis_matrix.T)
@@ -776,11 +856,19 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 print(f"Ridge Fit failed for Actual Split {split_idx + 1}: {e}")
                 results['actual']['explained_deviance'].append(np.nan)
                 results['actual']['residual_deviance'].append(np.nan)
+                results['actual']['pearson_r'].append(np.nan)
+                results['actual']['mae'].append(np.nan)
+                results['actual']['rmse'].append(np.nan)
+                results['actual']['n_iter'].append(np.nan)
+                results['actual']['converged'].append(False)
+                results['actual']['fit_time'].append(np.nan)
 
             try:
                 y_tr_shuff_log = np.log(np.random.permutation(y_tr) + 1e-6)
 
+                fit_start = time.perf_counter()
                 model_null = RidgeCV(alphas=alphas, cv=cv).fit(X_tr_proj, y_tr_shuff_log)
+                fit_time_null = float(time.perf_counter() - fit_start)
 
                 y_pred_null_log = model_null.predict(X_te_proj)
                 y_pred_null = np.exp(y_pred_null_log)
@@ -802,19 +890,31 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                         d2_null = 1 - (res_dev_null / null_dev)
 
                 except Exception as e:
-                    print(f"      [!] Shuffled Metric Failed: {e}")
+                    print(f"      [!] Null Metric Failed: {e}")
                     d2_null = np.nan
                     res_dev_null = np.nan
 
-                results['shuffled']['explained_deviance'].append(d2_null)
-                results['shuffled']['residual_deviance'].append(res_dev_null)
-                results['shuffled']['spearman_r'].append(spearmanr(y_te, y_pred_null)[0])
-                results['shuffled']['msle'].append(mean_squared_log_error(y_te, y_pred_null))
+                results['null']['explained_deviance'].append(d2_null)
+                results['null']['residual_deviance'].append(res_dev_null)
+                results['null']['spearman_r'].append(spearmanr(y_te, y_pred_null)[0])
+                results['null']['pearson_r'].append(pearson_r_safe(y_te, y_pred_null))
+                results['null']['msle'].append(mean_squared_log_error(y_te, y_pred_null))
+                results['null']['mae'].append(mean_absolute_error_1d(y_te, y_pred_null))
+                results['null']['rmse'].append(root_mean_squared_error(y_te, y_pred_null))
+                results['null']['n_iter'].append(np.nan)
+                results['null']['converged'].append(True)
+                results['null']['fit_time'].append(fit_time_null)
 
             except (ValueError, ZeroDivisionError, Exception) as e:
-                print(f"Fit failed for Shuffled Split {split_idx + 1}: {e}")
-                results['shuffled']['explained_deviance'].append(np.nan)
-                results['shuffled']['residual_deviance'].append(np.nan)
+                print(f"Fit failed for Null Split {split_idx + 1}: {e}")
+                results['null']['explained_deviance'].append(np.nan)
+                results['null']['residual_deviance'].append(np.nan)
+                results['null']['pearson_r'].append(np.nan)
+                results['null']['mae'].append(np.nan)
+                results['null']['rmse'].append(np.nan)
+                results['null']['n_iter'].append(np.nan)
+                results['null']['converged'].append(False)
+                results['null']['fit_time'].append(np.nan)
 
         # Safely convert lists to arrays
         for k in results:

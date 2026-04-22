@@ -27,7 +27,7 @@ import pickle
 from datetime import datetime
 from sklearn.metrics import (
     balanced_accuracy_score, log_loss, f1_score,
-    precision_score, recall_score, roc_auc_score,
+    recall_score, roc_auc_score,
     precision_recall_curve, auc
 )
 from sklearn.model_selection import StratifiedShuffleSplit
@@ -42,6 +42,10 @@ from .modeling_utils import (
     build_vocal_signal_columns,
     harmonize_session_columns,
     zscore_features_across_sessions,
+    brier_score_multi,
+    expected_calibration_error,
+    safe_matthews_corrcoef,
+    safe_confusion_matrix,
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from ..analyses.compute_behavioral_features import FeatureZoo
@@ -559,6 +563,39 @@ class MultinomialModelRunner:
        enabling downstream confusion matrix analysis, distribution audits,
        and significance testing.
 
+    Metrics saved per fold (stored under `folds.metrics`):
+    ------------------------------------------------------
+    - `auc` : Macro-averaged one-vs-rest ROC-AUC. Threshold-free ranking
+      quality; insensitive to class imbalance but agnostic to calibration.
+    - `score` : Balanced accuracy (mean of per-class recall). Hard-label
+      accuracy that doesn't reward the model for predicting the majority
+      class.
+    - `recall` : Macro-averaged recall. Kept; precision is derivable from
+      the confusion matrix on demand.
+    - `f1` : Macro-averaged F1 (harmonic mean of precision and recall).
+    - `ll` : Log-loss (multinomial cross-entropy). Strictly proper
+      probabilistic score; penalizes confident wrong predictions harshly.
+    - `brier` : Multiclass Brier score (mean squared error between
+      predicted probabilities and one-hot truth). Complements log-loss
+      with a quadratic (rather than logarithmic) penalty, which is more
+      robust to occasional overconfidence.
+    - `ece` : Expected Calibration Error (top-label, 10 equal-width bins).
+      Reports the average gap between predicted confidence and empirical
+      accuracy; near-zero means "70%-confident predictions are correct
+      70% of the time."
+    - `mcc` : Matthews correlation coefficient. Chance-corrected,
+      imbalance-robust single-number summary of the confusion matrix in
+      [-1, +1].
+
+    Additional deep-storage fields per fold:
+    - `confusion_matrix` : (K, K) matrix with canonical class ordering.
+      Cheap to persist, lets downstream code derive precision, class-pair
+      confusions, sensitivity, and specificity on demand.
+    - `n_iter`, `converged`, `fit_time` : JAX optimizer diagnostics —
+      `converged=False` flags folds that terminated at `max_iter` without
+      meeting the tolerance (the main silent-failure mode for this
+      estimator).
+
     The runner relies strictly on the 'hyperparameters' and 'model_params'
     blocks within the provided modeling settings to ensure reproducibility.
     """
@@ -813,7 +850,14 @@ class MultinomialModelRunner:
 
             strategy_data = {
                 'folds': {
-                    'metrics': {m: [] for m in ['auc', 'score', 'precision', 'recall', 'f1', 'll']},
+                    # Per-fold scalar metrics (see class docstring for what
+                    # each one measures). `precision` is not stored: it is
+                    # fully recoverable from the confusion matrix on demand,
+                    # and macro-F1 already summarizes the precision/recall
+                    # trade-off.
+                    'metrics': {m: [] for m in
+                                ['auc', 'score', 'recall', 'f1', 'll',
+                                 'brier', 'ece', 'mcc']},
                     'weights': [],
                     'intercepts': [],
                     'y_true': [],
@@ -822,6 +866,17 @@ class MultinomialModelRunner:
                     'test_indices': [],
                     'p_train': [],
                     'p_test': [],
+                    # Per-fold (K, K) confusion matrix with canonical class
+                    # ordering. Cheap to store, enables reviewers to derive
+                    # precision, recall, and failure-mode diagnostics
+                    # downstream without re-fitting the model.
+                    'confusion_matrix': [],
+                    # Per-fold optimizer diagnostics exposed by the JAX
+                    # estimator — flags folds that terminated at `max_iter`
+                    # without converging.
+                    'n_iter': [],
+                    'converged': [],
+                    'fit_time': [],
                     'tolerance': list(fold_tolerances),
                     'balanced_train': bool(balance_train)
                 },
@@ -859,6 +914,9 @@ class MultinomialModelRunner:
                     predictions = np.full(len(y_test), majority_class)
 
                     model_classes = unique_classes
+                    fold_n_iter = 0
+                    fold_converged = True
+                    fold_fit_time = 0.0
                 else:
                     # When sample-level balancing is active, the softened
                     # inverse-frequency focal-alpha would double-correct an
@@ -894,6 +952,9 @@ class MultinomialModelRunner:
                     model_classes = model.classes_
                     fold_weights = model.coef_
                     fold_intercepts = model.intercept_
+                    fold_n_iter = int(model.n_iter_)
+                    fold_converged = bool(model.converged_)
+                    fold_fit_time = float(model.fit_time_)
 
                 # Apply numerical clipping to prevent log-loss infinity issues
                 eps = 1e-15
@@ -912,15 +973,35 @@ class MultinomialModelRunner:
                 except ValueError:
                     f_auc = np.nan
 
+                # Align the probability matrix to canonical class ordering so
+                # Brier / ECE are computed against a column ordering that does
+                # not silently shift when a rare class is absent from a fold.
+                probs_canonical = np.zeros((len(y_test), len(canonical_classes)), dtype=probabilities.dtype)
+                for col_idx, cls in enumerate(model_classes):
+                    target_col = int(np.where(canonical_classes == cls)[0][0])
+                    probs_canonical[:, target_col] = probabilities[:, col_idx]
+
+                try:
+                    f_brier = brier_score_multi(y_test, probs_canonical, canonical_classes)
+                except Exception:
+                    f_brier = np.nan
+                try:
+                    f_ece = expected_calibration_error(y_test, predictions, probs_canonical, n_bins=10)
+                except Exception:
+                    f_ece = np.nan
+                f_mcc = safe_matthews_corrcoef(y_test, predictions)
+
                 f_met = strategy_data['folds']['metrics']
                 f_met['score'].append(f_score)
                 f_met['ll'].append(f_ll)
                 f_met['auc'].append(f_auc)
-                f_met['precision'].append(precision_score(y_test, predictions, average='macro', zero_division=0))
                 f_met['recall'].append(recall_score(y_test, predictions, average='macro', zero_division=0))
                 f_met['f1'].append(f1_score(y_test, predictions, average='macro', zero_division=0))
+                f_met['brier'].append(f_brier)
+                f_met['ece'].append(f_ece)
+                f_met['mcc'].append(f_mcc)
 
-                print(f"Fold {fold + 1:02d}/{n_splits:02d} | Score: {f_score:.3f} | AUC: {f_auc:.3f} | LL: {f_ll:.3f}")
+                print(f"Fold {fold + 1:02d}/{n_splits:02d} | Score: {f_score:.3f} | AUC: {f_auc:.3f} | LL: {f_ll:.3f} | Brier: {f_brier:.3f} | ECE: {f_ece:.3f} | MCC: {f_mcc:.3f}")
 
                 # Persist deep storage matrices
                 strategy_data['folds']['weights'].append(fold_weights)
@@ -931,6 +1012,12 @@ class MultinomialModelRunner:
                 strategy_data['folds']['test_indices'].append(test_idx)
                 strategy_data['folds']['p_train'].append(_class_proportions(y_train))
                 strategy_data['folds']['p_test'].append(_class_proportions(y_test))
+                strategy_data['folds']['confusion_matrix'].append(
+                    safe_confusion_matrix(y_test, predictions, labels=canonical_classes)
+                )
+                strategy_data['folds']['n_iter'].append(fold_n_iter)
+                strategy_data['folds']['converged'].append(fold_converged)
+                strategy_data['folds']['fit_time'].append(fold_fit_time)
 
                 if strategy_data['classes'] is None:
                     strategy_data['classes'] = model_classes

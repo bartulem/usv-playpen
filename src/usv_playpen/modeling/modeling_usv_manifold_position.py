@@ -539,7 +539,23 @@ class ContinuousModelRunner:
     3. Spatial Validation: Utilizes deterministic K-Means geographic clustering
        to ensure spatially fair cross-validation folds.
     4. Deep metadata storage: Persists fold-level probabilistic predictions (mu, sigma, rho),
-       performance metrics (NLL, Mahalanobis, Euclidean), and exact test indices.
+       performance metrics, and exact test indices.
+
+    Metrics saved per fold (see `SmoothBivariateGaussianRegression.evaluate_metrics`
+    for full definitions):
+    - `nll_weighted` — density-weighted negative log-likelihood (headline
+      probabilistic score, lower is better).
+    - `nll_unweighted` — diagnostic NLL without the inverse-density weights;
+      biased toward dense UMAP regions and must not be used for ranking.
+    - `euclidean_mae`, `euclidean_rmse` — interpretable spatial-error
+      magnitudes; a large RMSE / MAE ratio flags heavy-tailed outlier folds.
+    - `mahalanobis_dist` — average spatial error normalized by the model's
+      predicted spread (over-confidence detector).
+    - `coverage_68`, `coverage_95` — empirical fraction of residuals inside
+      the nominal 68% / 95% iso-contours (calibration check).
+    - `r2_spatial` — spatial variance explained by the predicted means,
+      bounded above by 1 (use for cross-feature ranking).
+    - `n_iter`, `converged`, `fit_time` — per-fold optimizer diagnostics.
     """
 
     def __init__(self, pipeline_instance: Any) -> None:
@@ -715,10 +731,28 @@ class ContinuousModelRunner:
             results[strategy] = {
                 'folds': {
                     'metrics': {
+                        # Probabilistic scores (lower is better for the NLLs).
+                        # `nll_weighted` is the headline density-weighted score;
+                        # `nll_unweighted` is a diagnostic that reveals whether
+                        # the inverse-density weights materially change the
+                        # ranking (see `evaluate_metrics` docstring for detail).
                         'nll_weighted': [],
-                        'nll_raw': [],
+                        'nll_unweighted': [],
+                        # Interpretable error magnitudes in native UMAP units.
+                        # RMSE complements MAE by surfacing heavy-tailed folds.
                         'euclidean_mae': [],
+                        'euclidean_rmse': [],
+                        # Mahalanobis conditions the Euclidean error on the
+                        # predicted spread — small Euclidean but large
+                        # Mahalanobis = over-confident covariance.
                         'mahalanobis_dist': [],
+                        # Direct calibration readouts: fraction of residuals
+                        # inside the nominal 68%/95% iso-contour.
+                        'coverage_68': [],
+                        'coverage_95': [],
+                        # Variance-explained analogue to R^2 on the 2D manifold,
+                        # bounded above by 1 and directly comparable across
+                        # features for ranking purposes.
                         'r2_spatial': []
                     },
                     'weights': [],
@@ -726,7 +760,16 @@ class ContinuousModelRunner:
                     'test_indices': [],
                     'y_true': [],
                     'w_test': [],
-                    'y_pred_params': []
+                    'y_pred_params': [],
+                    # Per-fold convergence evidence: `n_iter` is the number of
+                    # optimizer steps actually taken, `converged` is True only
+                    # if the tolerance check fired before `max_iter`, and
+                    # `fit_time` is the wall-clock in seconds. Together they
+                    # expose the most common silent-failure mode of the JAX
+                    # estimator (terminating at `max_iter` without converging).
+                    'n_iter': [],
+                    'converged': [],
+                    'fit_time': []
                 }
             }
 
@@ -770,11 +813,19 @@ class ContinuousModelRunner:
                     sse = np.sum((Y_test - mu) ** 2)
                     sst = np.sum((Y_test - np.mean(Y_test, axis=0)) ** 2)
 
+                    # Closed-form metrics aligned with the `evaluate_metrics`
+                    # dictionary returned by the JAX estimator so downstream
+                    # plotting / aggregation code can treat both branches
+                    # identically.
+                    d2_mf = z / (1 - rho ** 2)
                     metrics = {
-                        'nll_raw': float(-np.mean(log_pdf)),
+                        'nll_unweighted': float(-np.mean(log_pdf)),
                         'nll_weighted': float(-np.average(log_pdf, weights=w_test)),
                         'euclidean_mae': float(np.mean(np.sqrt(dx ** 2 + dy ** 2))),
-                        'mahalanobis_dist': float(np.mean(np.sqrt(z / (1 - rho ** 2)))),
+                        'euclidean_rmse': float(np.sqrt(np.mean(dx ** 2 + dy ** 2))),
+                        'mahalanobis_dist': float(np.mean(np.sqrt(d2_mf))),
+                        'coverage_68': float(np.mean(d2_mf <= -2.0 * np.log(1.0 - 0.68))),
+                        'coverage_95': float(np.mean(d2_mf <= -2.0 * np.log(1.0 - 0.95))),
                         'r2_spatial': float(1.0 - (sse / sst)) if sst > 0 else 0.0
                     }
 
@@ -786,6 +837,10 @@ class ContinuousModelRunner:
 
                     # Model-free has no trainable weights
                     fold_weights, fold_intercepts = None, None
+                    # Closed-form "fit" is instantaneous and trivially converged.
+                    fold_n_iter = 0
+                    fold_converged = True
+                    fold_fit_time = 0.0
 
                 else:
                     # Execute actual modeling using JAX
@@ -806,8 +861,11 @@ class ContinuousModelRunner:
                     # Extract full continuous density predictions
                     y_pred_params = model.predict_density(X_test)
                     fold_weights, fold_intercepts = model.coef_, model.intercept_
+                    fold_n_iter = int(model.n_iter_)
+                    fold_converged = bool(model.converged_)
+                    fold_fit_time = float(model.fit_time_)
 
-                print(f"      Fold {fold_idx + 1:03d}/{n_splits} | Weighted NLL: {metrics['nll_weighted']:.4f} | Euclidean Err: {metrics['euclidean_mae']:.4f}", flush=True)
+                print(f"      Fold {fold_idx + 1:03d}/{n_splits} | Weighted NLL: {metrics['nll_weighted']:.4f} | Euclidean Err: {metrics['euclidean_mae']:.4f} | Cov68: {metrics['coverage_68']:.2f} | Cov95: {metrics['coverage_95']:.2f}", flush=True)
 
                 for m_key, m_val in metrics.items():
                     results[strategy]['folds']['metrics'][m_key].append(m_val)
@@ -819,8 +877,11 @@ class ContinuousModelRunner:
                 results[strategy]['folds']['y_true'].append(Y_test)
                 results[strategy]['folds']['w_test'].append(w_test)
                 results[strategy]['folds']['y_pred_params'].append(y_pred_params)
+                results[strategy]['folds']['n_iter'].append(fold_n_iter)
+                results[strategy]['folds']['converged'].append(fold_converged)
+                results[strategy]['folds']['fit_time'].append(fold_fit_time)
 
-        metrics_to_test = ['nll_weighted', 'euclidean_mae', 'mahalanobis_dist', 'r2_spatial']
+        metrics_to_test = ['nll_weighted', 'euclidean_mae', 'euclidean_rmse', 'mahalanobis_dist', 'coverage_68', 'coverage_95', 'r2_spatial']
 
         print(f"\n" + "=" * 90)
         print(f"FINAL STATISTICAL SUMMARY: {feat_name}")
@@ -835,7 +896,9 @@ class ContinuousModelRunner:
             null_m = np.mean(null_vals)
             mf_m = np.mean(mf_vals)
 
-            alt = 'greater' if metric == 'r2_spatial' else 'less'
+            # For error / NLL / Mahalanobis, lower is better; for r2_spatial
+            # and coverage, higher against the null is the informative direction.
+            alt = 'greater' if metric in ('r2_spatial', 'coverage_68', 'coverage_95') else 'less'
 
             try:
                 _, p_null = wilcoxon(act_vals, null_vals, alternative=alt)

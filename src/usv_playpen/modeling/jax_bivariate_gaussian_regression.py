@@ -39,6 +39,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import time
 from functools import partial
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
@@ -341,9 +342,14 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
         if self.verbose:
             print(f"Starting Homoscedastic JAX optimization for {self.max_iter} iterations...")
 
+        fit_start = time.perf_counter()
+        converged = False
+        completed_iter = 0
+
         for i in range(self.max_iter):
             old_params = params
             params, opt_state = step(params, opt_state, X_j, Y_j, w_j, self.n_features, self.n_time_bins)
+            completed_iter = i + 1
 
             # Convergence check every 100 iterations
             if i > 0 and i % 100 == 0:
@@ -356,12 +362,19 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
                 if diff < self.tol:
                     if self.verbose:
                         print(f"Converged at iteration {i} with weight update norm {diff:.2e}")
+                    converged = True
                     break
 
         # Store the learned parameters in standard scikit-learn format
         self.coef_ = np.array(params[0])
         self.intercept_ = np.array(params[1])
         self.global_var_params_ = np.array(params[2])
+        # Fit-time diagnostics used by the pipeline runner to persist per-fold
+        # convergence evidence — a fold that terminates via `max_iter` without
+        # `converged_ = True` is the main silent-failure mode of this estimator.
+        self.n_iter_ = int(completed_iter)
+        self.converged_ = bool(converged)
+        self.fit_time_ = float(time.perf_counter() - fit_start)
         self.is_fitted_ = True
 
         return self
@@ -434,6 +447,44 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
         Evaluates the fitted model on test data and returns the comprehensive suite
         of probabilistic and physical performance metrics.
 
+        Metrics glossary
+        ----------------
+        - `nll_weighted` : Sample-mean of the bivariate-Gaussian negative
+          log-likelihood on the test set, multiplied by the caller-supplied
+          inverse-density `weights`. This is the headline probabilistic score:
+          lower means the predicted density assigns more mass to the true
+          coordinates, and the weighting makes rare acoustic regions count as
+          much as the dense core.
+        - `nll_unweighted` : **Diagnostic only.** The same NLL without the
+          density weights. Because the natural UMAP distribution is highly
+          non-uniform, an unweighted NLL rewards models that overfit dense
+          regions at the expense of satellites, so it is biased and must
+          never be compared across feature rankings on its own — it is
+          retained purely to expose whether the weights materially change
+          the score.
+        - `euclidean_mae` : Mean Euclidean distance between predicted and
+          true coordinates. Interpretable error magnitude in native UMAP
+          units (lower is better).
+        - `euclidean_rmse` : Root-mean-squared Euclidean distance.
+          Complements MAE: an `RMSE / MAE` ratio substantially greater than
+          `sqrt(pi / 2) ≈ 1.25` indicates heavy-tailed residuals or outlier
+          test points dominating the score.
+        - `mahalanobis_dist` : Sample-mean of the Mahalanobis distance in the
+          fitted covariance. It conditions the Euclidean error on the
+          model's predicted uncertainty — a small Euclidean error with a
+          large Mahalanobis distance indicates the model is over-confident
+          given the observed residuals.
+        - `coverage_68`, `coverage_95` : Empirical fraction of test points
+          inside the iso-probability contour that nominally contains 68% or
+          95% of the predicted Gaussian mass. A well-calibrated model
+          returns coverage values close to the nominal target; deviations
+          flag over- or under-confidence directly on an interpretable
+          probability-mass scale.
+        - `r2_spatial` : Fraction of total spatial variance of the test set
+          explained by the predicted means, pooled across both UMAP axes.
+          Unlike the NLL it is bounded above by 1 and directly comparable
+          across feature rankings (higher is better).
+
         Parameters
         ----------
         X : np.ndarray
@@ -446,8 +497,9 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
         Returns
         -------
         metrics : dict
-            A dictionary containing: nll_raw, nll_weighted, euclidean_mae,
-            mahalanobis_dist, and r2_spatial.
+            A dictionary containing: `nll_weighted`, `nll_unweighted`,
+            `euclidean_mae`, `euclidean_rmse`, `mahalanobis_dist`,
+            `coverage_68`, `coverage_95`, and `r2_spatial`.
         """
         check_is_fitted(self, ['coef_', 'intercept_', 'global_var_params_'])
 
@@ -466,6 +518,7 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
         dy = Y_true[:, 1] - mu_y
         euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
         euclidean_mae = float(np.mean(euclidean_dist))
+        euclidean_rmse = float(np.sqrt(np.mean(euclidean_dist ** 2)))
 
         # Compute probabilistic error (Mahalanobis / z-score)
         z = ((dx / sigma_x) ** 2
@@ -474,7 +527,7 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
 
         mahalanobis_dist = float(np.mean(np.sqrt(z / (1 - rho ** 2))))
 
-        # Compute Negative Log-Likelihoods (raw and weighted)
+        # Compute Negative Log-Likelihoods (unweighted diagnostic and weighted headline)
         log_term = (np.log(2 * np.pi)
                     + np.log(sigma_x)
                     + np.log(sigma_y)
@@ -482,8 +535,15 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
 
         nll_instance = log_term + (z / (2 * (1 - rho ** 2)))
 
-        nll_raw = float(np.mean(nll_instance))
+        nll_unweighted = float(np.mean(nll_instance))
         nll_weighted = float(np.mean(weights * nll_instance))
+
+        # Empirical coverage of the nominal 68% and 95% iso-contours.
+        # For a well-calibrated Gaussian, D^2 = z / (1 - rho^2) is chi-square(2);
+        # the threshold for target mass p is -2 ln(1 - p).
+        d2 = z / (1 - rho ** 2)
+        coverage_68 = float(np.mean(d2 <= -2.0 * np.log(1.0 - 0.68)))
+        coverage_95 = float(np.mean(d2 <= -2.0 * np.log(1.0 - 0.95)))
 
         # Compute spatial R-squared (variance explained by the means)
         ss_res = np.sum(dx ** 2 + dy ** 2)
@@ -492,9 +552,12 @@ class SmoothBivariateGaussianRegression(BaseEstimator, RegressorMixin):
         r2_spatial = float(1 - (ss_res / (ss_tot_x + ss_tot_y)))
 
         return {
-            'nll_raw': nll_raw,
+            'nll_unweighted': nll_unweighted,
             'nll_weighted': nll_weighted,
             'euclidean_mae': euclidean_mae,
+            'euclidean_rmse': euclidean_rmse,
             'mahalanobis_dist': mahalanobis_dist,
+            'coverage_68': coverage_68,
+            'coverage_95': coverage_95,
             'r2_spatial': r2_spatial
         }

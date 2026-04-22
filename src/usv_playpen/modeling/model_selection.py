@@ -10,16 +10,26 @@ import json
 import pathlib
 import re
 import gc
+import time
 from pygam import LogisticGAM, GAM, te
 from scipy.stats import spearmanr, wilcoxon
 from sklearn.linear_model import LogisticRegressionCV, RidgeCV
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, ShuffleSplit
-from sklearn.metrics import (log_loss, roc_auc_score, f1_score, precision_score, recall_score,
+from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
                              accuracy_score, balanced_accuracy_score, mean_squared_log_error,
-                             mean_gamma_deviance, precision_recall_curve, auc)
+                             mean_gamma_deviance, precision_recall_curve, auc, brier_score_loss)
 from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
-from .modeling_utils import pool_session_arrays
+from .modeling_utils import (
+    pool_session_arrays,
+    brier_score_multi,
+    expected_calibration_error,
+    safe_matthews_corrcoef,
+    safe_confusion_matrix,
+    pearson_r_safe,
+    root_mean_squared_error,
+    mean_absolute_error_1d,
+)
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
     get_stratified_group_splits_stable,
@@ -170,14 +180,14 @@ def bout_onset_model_selection(univariate_results_path: str,
         if 'actual' not in results or 'll' not in results['actual']:
             continue
         actual_ll = results['actual']['ll']
-        shuffled_ll = results['shuffled']['ll']
+        null_ll = results['null']['ll']
         valid_actual = actual_ll[~np.isnan(actual_ll)]
-        valid_shuffled = shuffled_ll[~np.isnan(shuffled_ll)]
-        if len(valid_actual) == 0 or len(valid_shuffled) == 0:
+        valid_null = null_ll[~np.isnan(null_ll)]
+        if len(valid_actual) == 0 or len(valid_null) == 0:
             continue
         mean_actual_ll = np.mean(valid_actual)
-        shuffled_threshold = np.percentile(valid_shuffled, q=(p_val / len(univariate_data)) * 100)
-        if mean_actual_ll < shuffled_threshold:
+        null_threshold = np.percentile(valid_null, q=(p_val / len(univariate_data)) * 100)
+        if mean_actual_ll < null_threshold:
             candidates.append({'feature': feat_name, 'mean_ll': mean_actual_ll})
 
     candidates.sort(key=lambda x: x['mean_ll'])
@@ -286,7 +296,13 @@ def bout_onset_model_selection(univariate_results_path: str,
         print(f"\n*** AUTO-ANCHOR: Starting with top ranked feature '{anchor_to_force}' ***")
         current_model_features = [anchor_to_force]
         gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'precision': [], 'recall': []}
+        # Per-fold scalar metrics for the anchor. See the function docstring for
+        # the definition of each key. `precision` is not stored (derivable from
+        # the confusion matrix); `brier` / `ece` / `mcc` are added as
+        # calibration and chance-corrected summary scores.
+        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                   'brier': [], 'ece': [], 'mcc': [],
+                   'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
 
         for fold_i, fold_info in enumerate(cv_folds):
             try:
@@ -334,7 +350,9 @@ def bout_onset_model_selection(univariate_results_path: str,
 
                 X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
                 X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
+                fit_start = time.perf_counter()
                 gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
+                fit_time = float(time.perf_counter() - fit_start)
 
                 y_proba_tiled = gam.predict_proba(X_te_gam)
                 y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
@@ -343,9 +361,22 @@ def bout_onset_model_selection(univariate_results_path: str,
                 y_pred_mean = (y_proba_mean > 0.5).astype(int)
                 metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
                 metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
-                metrics['precision'].append(precision_score(y_te_fold, y_pred_mean, zero_division=0))
                 metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
                 metrics['auc'].append(roc_auc_score(y_te_fold, y_proba_mean) if len(np.unique(y_te_fold)) > 1 else np.nan)
+                metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
+                try:
+                    y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
+                    metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=10))
+                except Exception:
+                    metrics['ece'].append(np.nan)
+                metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
+                metrics['confusion_matrix'].append(safe_confusion_matrix(
+                    y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
+                ))
+                gam_diffs = gam.logs_.get('diffs', [])
+                metrics['n_iter'].append(float(len(gam_diffs)))
+                metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
+                metrics['fit_time'].append(fit_time)
 
                 del gam, X_tr_gam, X_te_gam
                 gc.collect()
@@ -366,7 +397,11 @@ def bout_onset_model_selection(univariate_results_path: str,
                 'candidates_summary': {
                     anchor_to_force: {
                         'll': metrics['ll'], 'auc': metrics['auc'], 'score': metrics['score'],
-                        'f1': metrics['f1'], 'precision': metrics['precision'], 'recall': metrics['recall'],
+                        'f1': metrics['f1'], 'recall': metrics['recall'],
+                        'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                        'confusion_matrix': metrics['confusion_matrix'],
+                        'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                        'fit_time': metrics['fit_time'],
                         'mean_ll': best_current_score, 'se_ll': best_current_se
                     }
                 }
@@ -397,7 +432,9 @@ def bout_onset_model_selection(univariate_results_path: str,
             for i in range(1, len(trial_features)):
                 gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
 
-            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'precision': [], 'recall': []}
+            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                       'brier': [], 'ece': [], 'mcc': [],
+                       'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
             for fold_i, fold_info in enumerate(cv_folds):
                 try:
                     X_train_list, X_test_list = [], []
@@ -450,7 +487,9 @@ def bout_onset_model_selection(univariate_results_path: str,
 
                     X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
                     X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
+                    fit_start = time.perf_counter()
                     gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
+                    fit_time = float(time.perf_counter() - fit_start)
 
                     y_proba_tiled = gam.predict_proba(X_te_gam)
                     y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
@@ -459,9 +498,22 @@ def bout_onset_model_selection(univariate_results_path: str,
                     y_pred_mean = (y_proba_mean > 0.5).astype(int)
                     metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
                     metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
-                    metrics['precision'].append(precision_score(y_te_fold, y_pred_mean, zero_division=0))
                     metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
                     metrics['auc'].append(roc_auc_score(y_te_fold, y_proba_mean) if len(np.unique(y_te_fold)) > 1 else np.nan)
+                    metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
+                    try:
+                        y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
+                        metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=10))
+                    except Exception:
+                        metrics['ece'].append(np.nan)
+                    metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
+                    metrics['confusion_matrix'].append(safe_confusion_matrix(
+                        y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
+                    ))
+                    gam_diffs = gam.logs_.get('diffs', [])
+                    metrics['n_iter'].append(float(len(gam_diffs)))
+                    metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
+                    metrics['fit_time'].append(fit_time)
 
                     del gam, X_tr_gam, X_te_gam
                     gc.collect()
@@ -478,7 +530,11 @@ def bout_onset_model_selection(univariate_results_path: str,
 
                 step_results_metadata['candidates_summary'][feat] = {
                     'll': metrics['ll'], 'auc': metrics['auc'], 'score': metrics['score'],
-                    'f1': metrics['f1'], 'precision': metrics['precision'], 'recall': metrics['recall'],
+                    'f1': metrics['f1'], 'recall': metrics['recall'],
+                    'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                    'confusion_matrix': metrics['confusion_matrix'],
+                    'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                    'fit_time': metrics['fit_time'],
                     'mean_ll': mean_ll, 'se_ll': se_ll
                 }
 
@@ -954,7 +1010,9 @@ def vocal_category_model_selection(
         anchor = ranked_features[0]
         print(f"\n*** AUTO-ANCHOR: Starting with {anchor} ***")
         current_model_features = [anchor]
-        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'precision': [], 'recall': []}
+        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                   'brier': [], 'ece': [], 'mcc': [],
+                   'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
 
         if model_type == 'pygam':
             gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
@@ -1007,25 +1065,47 @@ def vocal_category_model_selection(
                         max_iter=lr_params['max_iter'],
                         random_state=random_seed
                     )
+                    fit_start = time.perf_counter()
                     model.fit(X_tr_stacked, y_tr[perm])
+                    fit_time = float(time.perf_counter() - fit_start)
                     y_proba = model.predict_proba(X_te_stacked)[:, 1]
                     y_pred = model.predict(X_te_stacked)
+                    try:
+                        fold_n_iter = float(np.max(model.n_iter_))
+                        fold_converged = bool(fold_n_iter < lr_params['max_iter'])
+                    except Exception:
+                        fold_n_iter, fold_converged = np.nan, False
                 else:
                     X_tr_gam = get_unrolled_X_for_multivariate([x[perm] for x in X_tr_list], history_frames)
                     y_tr_gam = np.repeat(y_tr[perm].astype(float), history_frames)
+                    fit_start = time.perf_counter()
                     gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, y_tr_gam)
+                    fit_time = float(time.perf_counter() - fit_start)
 
                     X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
                     y_proba_tiled = gam.predict_proba(X_te_gam)
                     y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
                     y_pred = (y_proba >= 0.5).astype(int)
+                    gam_diffs = gam.logs_.get('diffs', [])
+                    fold_n_iter = float(len(gam_diffs))
+                    fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 
                 metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
                 metrics['auc'].append(roc_auc_score(y_te, y_proba))
                 metrics['f1'].append(f1_score(y_te, y_pred))
-                metrics['precision'].append(precision_score(y_te, y_pred, zero_division=0))
                 metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
                 metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
+                metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
+                try:
+                    y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
+                    metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10))
+                except Exception:
+                    metrics['ece'].append(np.nan)
+                metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+                metrics['confusion_matrix'].append(safe_confusion_matrix(y_te, y_pred, labels=np.array([0, 1])))
+                metrics['n_iter'].append(fold_n_iter)
+                metrics['converged'].append(fold_converged)
+                metrics['fit_time'].append(fit_time)
                 gc.collect()
             except Exception as e:
                 print(f"    [!] Error fitting {anchor} (Fold {fold_i}): {e}")
@@ -1043,8 +1123,12 @@ def vocal_category_model_selection(
                 'candidates_summary': {
                     anchor: {
                         'll': metrics['ll'], 'auc': metrics['auc'],
-                        'f1': metrics['f1'], 'precision': metrics['precision'],
-                        'recall': metrics['recall'], 'score': metrics['score'],
+                        'f1': metrics['f1'], 'recall': metrics['recall'],
+                        'score': metrics['score'],
+                        'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                        'confusion_matrix': metrics['confusion_matrix'],
+                        'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                        'fit_time': metrics['fit_time'],
                         'mean_ll': best_current_score, 'se_ll': best_current_se
                     }
                 }
@@ -1073,7 +1157,9 @@ def vocal_category_model_selection(
                 for i in range(1, len(trial_feats)):
                     gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
 
-            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'precision': [], 'recall': []}
+            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                       'brier': [], 'ece': [], 'mcc': [],
+                       'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
 
             for fold_i, (tr_idx, te_idx) in enumerate(cv_folds):
                 try:
@@ -1123,25 +1209,47 @@ def vocal_category_model_selection(
                             max_iter=lr_params['max_iter'],
                             random_state=random_seed
                         )
+                        fit_start = time.perf_counter()
                         model.fit(X_tr_stacked, y_tr[perm])
+                        fit_time = float(time.perf_counter() - fit_start)
                         y_proba = model.predict_proba(X_te_stacked)[:, 1]
                         y_pred = model.predict(X_te_stacked)
+                        try:
+                            fold_n_iter = float(np.max(model.n_iter_))
+                            fold_converged = bool(fold_n_iter < lr_params['max_iter'])
+                        except Exception:
+                            fold_n_iter, fold_converged = np.nan, False
                     else:
                         X_tr_gam = get_unrolled_X_for_multivariate([x[perm] for x in X_tr_list], history_frames)
                         y_tr_gam = np.repeat(y_tr[perm].astype(float), history_frames)
+                        fit_start = time.perf_counter()
                         gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, y_tr_gam)
+                        fit_time = float(time.perf_counter() - fit_start)
 
                         X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
                         y_proba_tiled = gam.predict_proba(X_te_gam)
                         y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
                         y_pred = (y_proba >= 0.5).astype(int)
+                        gam_diffs = gam.logs_.get('diffs', [])
+                        fold_n_iter = float(len(gam_diffs))
+                        fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 
                     metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
                     metrics['auc'].append(roc_auc_score(y_te, y_proba))
                     metrics['f1'].append(f1_score(y_te, y_pred))
-                    metrics['precision'].append(precision_score(y_te, y_pred, zero_division=0))
                     metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
                     metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
+                    metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
+                    try:
+                        y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
+                        metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10))
+                    except Exception:
+                        metrics['ece'].append(np.nan)
+                    metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+                    metrics['confusion_matrix'].append(safe_confusion_matrix(y_te, y_pred, labels=np.array([0, 1])))
+                    metrics['n_iter'].append(fold_n_iter)
+                    metrics['converged'].append(fold_converged)
+                    metrics['fit_time'].append(fit_time)
                     gc.collect()
                 except Exception as e:
                     print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
@@ -1159,8 +1267,12 @@ def vocal_category_model_selection(
 
             step_results_metadata['candidates_summary'][feat] = {
                 'll': metrics['ll'], 'auc': metrics['auc'],
-                'f1': metrics['f1'], 'precision': metrics['precision'],
-                'recall': metrics['recall'], 'score': metrics['score'],
+                'f1': metrics['f1'], 'recall': metrics['recall'],
+                'score': metrics['score'],
+                'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                'confusion_matrix': metrics['confusion_matrix'],
+                'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                'fit_time': metrics['fit_time'],
                 'mean_ll': mean_ll, 'se_ll': se_ll
             }
             if mean_ll < best_cand_score:
@@ -1953,11 +2065,25 @@ def multinomial_vocal_category_model_selection(
         - 'mean_auc', 'se_auc': Aggregated AUC metrics used for the 1SE rule.
         - 'classes': Array of original USV category string labels.
         - 'folds': A nested dictionary containing lists (length = n_splits) of:
-            * 'metrics': dict of 'll', 'auc', 'f1', 'precision', 'recall', 'score'.
+            * 'metrics': dict of the following per-fold scalars —
+                - `ll` : multinomial log-loss; strictly proper probabilistic score.
+                - `auc` : macro one-vs-rest ROC-AUC; threshold-free ranking quality.
+                - `f1` : macro F1; imbalance-robust harmonic mean of precision / recall.
+                - `recall` : macro recall (precision is derivable from the saved
+                  confusion matrix, so it is intentionally not stored).
+                - `score` : balanced accuracy (mean of per-class recall).
+                - `brier` : multiclass Brier score; quadratic counterpart to log-loss.
+                - `ece` : top-label expected calibration error (10 bins); gap
+                  between predicted confidence and empirical accuracy.
+                - `mcc` : Matthews correlation coefficient; chance-corrected
+                  [-1, +1] summary of the confusion matrix.
             * 'weights': The learned JAX coefficient matrix.
             * 'intercepts': The learned JAX biases.
             * 'y_true', 'y_pred', 'y_probs': Ground truth, hard predictions, and softmax arrays.
             * 'test_indices': The specific dataset rows used in the validation fold.
+            * 'confusion_matrix': (K, K) matrix with canonical class ordering.
+            * 'p_train', 'p_test': Realized per-class proportions in the fold.
+            * 'n_iter', 'converged', 'fit_time': JAX optimizer diagnostics.
 
     *Note: The final step's file is additionally appended with 'final_model_features'
     and 'weights_reshaped' (the extracted temporal kernels for all included features).*
@@ -2176,8 +2302,14 @@ def multinomial_vocal_category_model_selection(
 
         baseline_data = {
             'folds': {
-                'metrics': {m: [] for m in ['auc', 'score', 'precision', 'recall', 'f1', 'll']},
-                'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': []
+                # `precision` is not stored (derivable from the saved
+                # confusion matrix); Brier / ECE / MCC are added as
+                # calibration and chance-corrected summary scores.
+                'metrics': {m: [] for m in
+                            ['auc', 'score', 'recall', 'f1', 'll',
+                             'brier', 'ece', 'mcc']},
+                'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                'confusion_matrix': []
             },
             'classes': None
         }
@@ -2205,7 +2337,6 @@ def multinomial_vocal_category_model_selection(
             f_met['auc'].append(f_auc)
             f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
             f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
-            f_met['precision'].append(precision_score(y_te, y_pred, average='macro', zero_division=0))
             f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
 
             try:
@@ -2214,10 +2345,28 @@ def multinomial_vocal_category_model_selection(
                 f_ll = np.nan
             f_met['ll'].append(f_ll)
 
+            # Canonical-ordered probability matrix for Brier / ECE.
+            probs_canonical = np.zeros((len(y_te), len(canonical_classes)), dtype=y_proba.dtype)
+            for col_idx, cls in enumerate(unique_classes):
+                target_col = int(np.where(canonical_classes == cls)[0][0])
+                probs_canonical[:, target_col] = y_proba[:, col_idx]
+            try:
+                f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
+            except Exception:
+                f_met['brier'].append(np.nan)
+            try:
+                f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+            except Exception:
+                f_met['ece'].append(np.nan)
+            f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+
             baseline_data['folds']['y_true'].append(y_te)
             baseline_data['folds']['y_pred'].append(y_pred)
             baseline_data['folds']['y_probs'].append(y_proba)
             baseline_data['folds']['test_indices'].append(te_idx)
+            baseline_data['folds']['confusion_matrix'].append(
+                safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
+            )
             if baseline_data['classes'] is None:
                 baseline_data['classes'] = unique_classes
 
@@ -2250,9 +2399,13 @@ def multinomial_vocal_category_model_selection(
 
         cand_data = {
             'folds': {
-                'metrics': {m: [] for m in ['auc', 'score', 'precision', 'recall', 'f1', 'll']},
+                'metrics': {m: [] for m in
+                            ['auc', 'score', 'recall', 'f1', 'll',
+                             'brier', 'ece', 'mcc']},
                 'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
                 'p_train': [], 'p_test': [],
+                'confusion_matrix': [],
+                'n_iter': [], 'converged': [], 'fit_time': [],
                 'balanced_train': bool(balance_train)
             },
             'classes': None,
@@ -2289,9 +2442,24 @@ def multinomial_vocal_category_model_selection(
                 f_met['auc'].append(roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=model.classes_))
                 f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
                 f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
-                f_met['precision'].append(precision_score(y_te, y_pred, average='macro', zero_division=0))
                 f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
                 f_met['ll'].append(log_loss(y_te, y_proba_clipped, labels=model.classes_))
+
+                # Canonical-ordered probability matrix for Brier / ECE so
+                # missing classes don't misalign columns against `canonical_classes`.
+                probs_canonical = np.zeros((len(y_te), len(canonical_classes)), dtype=y_proba.dtype)
+                for col_idx, cls in enumerate(model.classes_):
+                    target_col = int(np.where(canonical_classes == cls)[0][0])
+                    probs_canonical[:, target_col] = y_proba[:, col_idx]
+                try:
+                    f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
+                except Exception:
+                    f_met['brier'].append(np.nan)
+                try:
+                    f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+                except Exception:
+                    f_met['ece'].append(np.nan)
+                f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
                 cand_data['folds']['weights'].append(model.coef_)
                 cand_data['folds']['intercepts'].append(model.intercept_)
@@ -2301,6 +2469,12 @@ def multinomial_vocal_category_model_selection(
                 cand_data['folds']['test_indices'].append(te_idx)
                 cand_data['folds']['p_train'].append(_class_proportions(y_tr))
                 cand_data['folds']['p_test'].append(_class_proportions(y_te))
+                cand_data['folds']['confusion_matrix'].append(
+                    safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
+                )
+                cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                cand_data['folds']['converged'].append(bool(model.converged_))
+                cand_data['folds']['fit_time'].append(float(model.fit_time_))
                 if cand_data['classes'] is None:
                     cand_data['classes'] = model.classes_
             except Exception as e:
@@ -2357,9 +2531,13 @@ def multinomial_vocal_category_model_selection(
             n_trial_feats = len(trial_feats)
             cand_data = {
                 'folds': {
-                    'metrics': {m: [] for m in ['auc', 'score', 'precision', 'recall', 'f1', 'll']},
+                    'metrics': {m: [] for m in
+                                ['auc', 'score', 'recall', 'f1', 'll',
+                                 'brier', 'ece', 'mcc']},
                     'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
                     'p_train': [], 'p_test': [],
+                    'confusion_matrix': [],
+                    'n_iter': [], 'converged': [], 'fit_time': [],
                     'balanced_train': bool(balance_train)
                 },
                 'classes': None,
@@ -2404,9 +2582,25 @@ def multinomial_vocal_category_model_selection(
                     f_met['auc'].append(roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=model.classes_))
                     f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
                     f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
-                    f_met['precision'].append(precision_score(y_te, y_pred, average='macro', zero_division=0))
                     f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
                     f_met['ll'].append(log_loss(y_te, y_proba_clipped, labels=model.classes_))
+
+                    # Canonical-ordered probability matrix so Brier / ECE are
+                    # computed against a stable column ordering across folds
+                    # even when a rare class is absent from `model.classes_`.
+                    probs_canonical = np.zeros((len(y_te), len(canonical_classes)), dtype=y_proba.dtype)
+                    for col_idx, cls in enumerate(model.classes_):
+                        target_col = int(np.where(canonical_classes == cls)[0][0])
+                        probs_canonical[:, target_col] = y_proba[:, col_idx]
+                    try:
+                        f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
+                    except Exception:
+                        f_met['brier'].append(np.nan)
+                    try:
+                        f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+                    except Exception:
+                        f_met['ece'].append(np.nan)
+                    f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
                     cand_data['folds']['weights'].append(model.coef_)
                     cand_data['folds']['intercepts'].append(model.intercept_)
@@ -2416,6 +2610,12 @@ def multinomial_vocal_category_model_selection(
                     cand_data['folds']['test_indices'].append(te_idx)
                     cand_data['folds']['p_train'].append(_class_proportions(y_tr))
                     cand_data['folds']['p_test'].append(_class_proportions(y_te))
+                    cand_data['folds']['confusion_matrix'].append(
+                        safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
+                    )
+                    cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                    cand_data['folds']['converged'].append(bool(model.converged_))
+                    cand_data['folds']['fit_time'].append(float(model.fit_time_))
                     if cand_data['classes'] is None:
                         cand_data['classes'] = model.classes_
                 except Exception:
@@ -2719,9 +2919,14 @@ def continuous_vocal_manifold_model_selection(
     if not existing_steps:
         print("\n--- Establishing Absolute Baseline (Model-Free Spatial Density Prior) ---")
 
+        # `nll_unweighted` replaces the older `nll_raw` name and is stored as
+        # a diagnostic only — biased toward dense UMAP regions. Coverage_68 /
+        # coverage_95 expose bivariate-Gaussian calibration directly, and
+        # `euclidean_rmse` complements MAE by surfacing heavy-tailed folds.
         baseline_metrics = {
-            'nll_weighted': [], 'nll_raw': [], 'euclidean_mae': [],
-            'mahalanobis_dist': [], 'r2_spatial': []
+            'nll_weighted': [], 'nll_unweighted': [], 'euclidean_mae': [],
+            'euclidean_rmse': [], 'mahalanobis_dist': [],
+            'coverage_68': [], 'coverage_95': [], 'r2_spatial': []
         }
 
         baseline_data = {
@@ -2754,12 +2959,16 @@ def continuous_vocal_manifold_model_selection(
 
             sse = np.sum((Y_te - mu) ** 2)
             sst = np.sum((Y_te - np.mean(Y_te, axis=0)) ** 2)
+            d2_mf = z / (1 - rho ** 2)
 
             f_met = baseline_data['folds']['metrics']
-            f_met['nll_raw'].append(float(-np.mean(log_pdf)))
+            f_met['nll_unweighted'].append(float(-np.mean(log_pdf)))
             f_met['nll_weighted'].append(float(-np.average(log_pdf, weights=w_te)))
             f_met['euclidean_mae'].append(float(np.mean(np.sqrt(dx ** 2 + dy ** 2))))
-            f_met['mahalanobis_dist'].append(float(np.mean(np.sqrt(z / (1 - rho ** 2)))))
+            f_met['euclidean_rmse'].append(float(np.sqrt(np.mean(dx ** 2 + dy ** 2))))
+            f_met['mahalanobis_dist'].append(float(np.mean(np.sqrt(d2_mf))))
+            f_met['coverage_68'].append(float(np.mean(d2_mf <= -2.0 * np.log(1.0 - 0.68))))
+            f_met['coverage_95'].append(float(np.mean(d2_mf <= -2.0 * np.log(1.0 - 0.95))))
             f_met['r2_spatial'].append(float(1.0 - (sse / sst)) if sst > 0 else 0.0)
 
             static_params = np.array([mu[0], mu[1], sig_x, sig_y, rho], dtype=np.float32)
@@ -2799,9 +3008,13 @@ def continuous_vocal_manifold_model_selection(
 
         cand_data = {
             'folds': {
-                'metrics': {m: [] for m in ['nll_weighted', 'nll_raw', 'euclidean_mae', 'mahalanobis_dist', 'r2_spatial']},
+                'metrics': {m: [] for m in
+                            ['nll_weighted', 'nll_unweighted', 'euclidean_mae',
+                             'euclidean_rmse', 'mahalanobis_dist',
+                             'coverage_68', 'coverage_95', 'r2_spatial']},
                 'weights': [], 'intercepts': [], 'global_vars': [],
-                'test_indices': [], 'y_true': [], 'w_test': [], 'y_pred_params': []
+                'test_indices': [], 'y_true': [], 'w_test': [], 'y_pred_params': [],
+                'n_iter': [], 'converged': [], 'fit_time': []
             }
         }
 
@@ -2823,11 +3036,8 @@ def continuous_vocal_manifold_model_selection(
                 y_pred_params = model.predict_density(X_te)
 
                 f_met = cand_data['folds']['metrics']
-                f_met['nll_weighted'].append(metrics['nll_weighted'])
-                f_met['nll_raw'].append(metrics['nll_raw'])
-                f_met['euclidean_mae'].append(metrics['euclidean_mae'])
-                f_met['mahalanobis_dist'].append(metrics['mahalanobis_dist'])
-                f_met['r2_spatial'].append(metrics['r2_spatial'])
+                for _mk in f_met:
+                    f_met[_mk].append(metrics[_mk])
 
                 cand_data['folds']['weights'].append(model.coef_)
                 cand_data['folds']['intercepts'].append(model.intercept_)
@@ -2836,6 +3046,9 @@ def continuous_vocal_manifold_model_selection(
                 cand_data['folds']['y_true'].append(Y_te)
                 cand_data['folds']['w_test'].append(w_te)
                 cand_data['folds']['y_pred_params'].append(y_pred_params)
+                cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                cand_data['folds']['converged'].append(bool(model.converged_))
+                cand_data['folds']['fit_time'].append(float(model.fit_time_))
 
                 del model
                 gc.collect()
@@ -2892,9 +3105,13 @@ def continuous_vocal_manifold_model_selection(
 
             cand_data = {
                 'folds': {
-                    'metrics': {m: [] for m in ['nll_weighted', 'nll_raw', 'euclidean_mae', 'mahalanobis_dist', 'r2_spatial']},
+                    'metrics': {m: [] for m in
+                                ['nll_weighted', 'nll_unweighted', 'euclidean_mae',
+                                 'euclidean_rmse', 'mahalanobis_dist',
+                                 'coverage_68', 'coverage_95', 'r2_spatial']},
                     'weights': [], 'intercepts': [], 'global_vars': [],
-                    'test_indices': [], 'y_true': [], 'w_test': [], 'y_pred_params': []
+                    'test_indices': [], 'y_true': [], 'w_test': [], 'y_pred_params': [],
+                    'n_iter': [], 'converged': [], 'fit_time': []
                 }
             }
 
@@ -2919,11 +3136,8 @@ def continuous_vocal_manifold_model_selection(
                     y_pred_params = model.predict_density(X_te_stacked)
 
                     f_met = cand_data['folds']['metrics']
-                    f_met['nll_weighted'].append(metrics['nll_weighted'])
-                    f_met['nll_raw'].append(metrics['nll_raw'])
-                    f_met['euclidean_mae'].append(metrics['euclidean_mae'])
-                    f_met['mahalanobis_dist'].append(metrics['mahalanobis_dist'])
-                    f_met['r2_spatial'].append(metrics['r2_spatial'])
+                    for _mk in f_met:
+                        f_met[_mk].append(metrics[_mk])
 
                     cand_data['folds']['weights'].append(model.coef_)
                     cand_data['folds']['intercepts'].append(model.intercept_)
@@ -2932,6 +3146,9 @@ def continuous_vocal_manifold_model_selection(
                     cand_data['folds']['y_true'].append(Y_te)
                     cand_data['folds']['w_test'].append(w_te)
                     cand_data['folds']['y_pred_params'].append(y_pred_params)
+                    cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                    cand_data['folds']['converged'].append(bool(model.converged_))
+                    cand_data['folds']['fit_time'].append(float(model.fit_time_))
 
                     del model, X_tr_stacked, X_te_stacked
                     gc.collect()

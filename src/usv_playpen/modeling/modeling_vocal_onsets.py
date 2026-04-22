@@ -16,8 +16,9 @@ import pathlib
 import polars as pls
 from pygam import LogisticGAM, te
 import pickle
+import time
 from sklearn.linear_model import LogisticRegressionCV
-from sklearn.metrics import balanced_accuracy_score, log_loss, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import balanced_accuracy_score, log_loss, f1_score, recall_score, roc_auc_score, brier_score_loss
 from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
@@ -37,6 +38,9 @@ from .modeling_utils import (
     concat_two_class_with_labels,
     shuffle_train_test_arrays,
     bounded_test_proportion,
+    expected_calibration_error,
+    safe_matthews_corrcoef,
+    safe_confusion_matrix,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -683,11 +687,33 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         -------
         tuple[str, dict]
             A tuple containing the feature name and a results' dictionary. The dictionary
-            contains 'actual' and 'shuffled' sub-structures holding arrays for:
-            - filter_shapes: The reconstructed temporal filters across splits.
-            - coefs_projected: The raw weights in the basis space.
-            - auc, score, log_loss: Standard performance metrics for binary classification.
-            - split_sizes: Metadata tracking the N for each training/test fold.
+            contains 'actual' and 'null' sub-structures (the 'null' branch holds
+            the label-shuffled control — same estimator fit to a permuted target)
+            with arrays for:
+            - `filter_shapes` : reconstructed temporal filters across splits.
+            - `coefs_projected` : raw weights in the basis space.
+            - `optimal_C` : regularisation strength selected by `LogisticRegressionCV`.
+            - `auc` : threshold-free ranking quality (macro one-vs-rest ROC-AUC);
+              imbalance-robust but blind to calibration.
+            - `score` : balanced accuracy (mean per-class recall).
+            - `recall` : positive-class recall; kept because macro-F1 already
+              summarizes the precision/recall trade-off.
+            - `f1` : binary F1 (harmonic mean of precision and recall).
+            - `ll` : log-loss; strictly proper probabilistic score that punishes
+              confident wrong predictions.
+            - `brier` : Brier score (mean squared error of the positive-class
+              probability). Quadratic counterpart to log-loss, more robust to
+              occasional overconfidence.
+            - `ece` : top-label Expected Calibration Error (10 bins). Measures
+              whether "N%-confident" predictions are right N% of the time.
+            - `mcc` : Matthews correlation coefficient; chance-corrected,
+              imbalance-robust summary in [-1, +1].
+            - `confusion_matrix` : (2, 2) per-split matrix with `[0, 1]` label
+              ordering. Cheap to persist, lets downstream code derive precision
+              and sensitivity / specificity on demand.
+            - `n_iter`, `converged`, `fit_time` : optimizer diagnostics exposing
+              folds that terminated at `max_iter` without converging.
+            - `split_sizes` : metadata tracking the N for each training/test fold.
         """
 
         # Initialize results structure with 'actual' and 'shuffled' keys
@@ -695,23 +721,30 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         n_bases = basis_matrix.shape[1]
         history_frames = basis_matrix.shape[0]
 
+        # Scalar per-split metrics. `precision` is dropped (recoverable from
+        # the saved confusion matrix), Brier/ECE/MCC are added as calibration
+        # and chance-corrected summary scores, and `n_iter`/`converged`/
+        # `fit_time` expose silent-failure modes of the underlying solver.
+        _scalar = lambda: np.full(n_splits, np.nan)
+        def _make_branch():
+            return {
+                'filter_shapes': np.full((n_splits, history_frames), np.nan),
+                'coefs_projected': np.full((n_splits, n_bases), np.nan),
+                'optimal_C': _scalar(),
+                'score': _scalar(), 'recall': _scalar(),
+                'f1': _scalar(), 'auc': _scalar(),
+                'll': _scalar(),
+                'brier': _scalar(), 'ece': _scalar(), 'mcc': _scalar(),
+                'confusion_matrix': np.full((n_splits, 2, 2), np.nan),
+                'n_iter': _scalar(), 'converged': _scalar(), 'fit_time': _scalar()
+            }
+
+        # Renamed "shuffled" -> "null" to match the modeling vocabulary used
+        # by the multinomial / manifold pipelines (all three mean "same
+        # training procedure, label-destroyed control").
         results = {
-            'actual': {
-                'filter_shapes': np.full((n_splits, history_frames), np.nan),
-                'coefs_projected': np.full((n_splits, n_bases), np.nan),
-                'optimal_C': np.full(n_splits, np.nan), 'score': np.full(n_splits, np.nan),
-                'precision': np.full(n_splits, np.nan), 'recall': np.full(n_splits, np.nan),
-                'f1': np.full(n_splits, np.nan), 'auc': np.full(n_splits, np.nan),
-                'll': np.full(n_splits, np.nan)
-            },
-            'shuffled': {
-                'filter_shapes': np.full((n_splits, history_frames), np.nan),
-                'coefs_projected': np.full((n_splits, n_bases), np.nan),
-                'optimal_C': np.full(n_splits, np.nan), 'score': np.full(n_splits, np.nan),
-                'precision': np.full(n_splits, np.nan), 'recall': np.full(n_splits, np.nan),
-                'f1': np.full(n_splits, np.nan), 'auc': np.full(n_splits, np.nan),
-                'll': np.full(n_splits, np.nan)
-            },
+            'actual': _make_branch(),
+            'null': _make_branch(),
             'split_sizes': {'train': [], 'test': []}
         }
 
@@ -732,15 +765,18 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             X_test_proj = np.dot(X_test, basis_matrix)
 
             try:
+                lr_max_iter = self.modeling_settings['hyperparameters']['classical']['logistic_regression']['max_iter']
+                fit_start = time.perf_counter()
                 lr_actual = LogisticRegressionCV(
                     penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
                     Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
                     cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
                     class_weight='balanced',
                     solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
-                    max_iter=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['max_iter'],
+                    max_iter=lr_max_iter,
                     random_state=self.modeling_settings['model_params']['random_seed']
                 ).fit(X_train_proj, y_train)
+                fit_time = float(time.perf_counter() - fit_start)
 
                 y_pred_actual = lr_actual.predict(X_test_proj)
                 y_proba_actual = lr_actual.predict_proba(X_test_proj)[:, 1]
@@ -750,15 +786,30 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 filter_shape_actual = np.dot(lr_actual.coef_, basis_matrix.T).ravel()
                 results['actual']['filter_shapes'][split_idx, :] = filter_shape_actual
                 results['actual']['score'][split_idx] = balanced_accuracy_score(y_test, y_pred_actual)
-                results['actual']['precision'][split_idx] = precision_score(y_test, y_pred_actual, zero_division=0.0)
                 results['actual']['recall'][split_idx] = recall_score(y_test, y_pred_actual, zero_division=0.0)
                 results['actual']['f1'][split_idx] = f1_score(y_test, y_pred_actual, average='binary', zero_division=0.0)
+                results['actual']['mcc'][split_idx] = safe_matthews_corrcoef(y_test, y_pred_actual)
+                results['actual']['confusion_matrix'][split_idx] = safe_confusion_matrix(
+                    y_test, y_pred_actual, labels=np.array([0, 1])
+                )
+                try:
+                    results['actual']['n_iter'][split_idx] = float(np.max(lr_actual.n_iter_))
+                    results['actual']['converged'][split_idx] = float(results['actual']['n_iter'][split_idx] < lr_max_iter)
+                except Exception:
+                    pass
+                results['actual']['fit_time'][split_idx] = fit_time
 
                 if len(np.unique(y_test)) > 1:
                     results['actual']['auc'][split_idx] = roc_auc_score(y_test, y_proba_actual)
                     epsilon = 1e-15
                     y_proba_actual_clipped = np.clip(y_proba_actual, epsilon, 1 - epsilon)
                     results['actual']['ll'][split_idx] = log_loss(y_test, y_proba_actual_clipped)
+                    results['actual']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_actual))
+                    try:
+                        y_proba_2d = np.column_stack([1.0 - y_proba_actual, y_proba_actual])
+                        results['actual']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_actual, y_proba_2d, n_bins=10)
+                    except Exception:
+                        pass
 
             except Exception as e:
                 print(f"  ERROR during ACTUAL model fit/predict for {feature_name}, split {split_idx}: {e}")
@@ -768,36 +819,53 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 if shuffle_seed is not None: np.random.seed(shuffle_seed + split_idx + 1)  # Offset seed
                 y_train_shuffled = np.random.permutation(y_train)
 
+                fit_start = time.perf_counter()
                 lr_shuffled = LogisticRegressionCV(
                     penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
                     Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
                     cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
                     class_weight='balanced',
                     solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
-                    max_iter=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['max_iter'],
+                    max_iter=lr_max_iter,
                     random_state=self.modeling_settings['model_params']['random_seed']
                 ).fit(X_train_proj, y_train_shuffled)
+                fit_time = float(time.perf_counter() - fit_start)
 
                 y_pred_shuffled = lr_shuffled.predict(X_test_proj)
                 y_proba_shuffled = lr_shuffled.predict_proba(X_test_proj)[:, 1]
 
-                results['shuffled']['coefs_projected'][split_idx, :] = lr_shuffled.coef_.flatten()
-                results['shuffled']['optimal_C'][split_idx] = lr_shuffled.C_[0]
+                results['null']['coefs_projected'][split_idx, :] = lr_shuffled.coef_.flatten()
+                results['null']['optimal_C'][split_idx] = lr_shuffled.C_[0]
                 filter_shape_shuffled = np.dot(lr_shuffled.coef_, basis_matrix.T).ravel()
-                results['shuffled']['filter_shapes'][split_idx, :] = filter_shape_shuffled
-                results['shuffled']['score'][split_idx] = balanced_accuracy_score(y_test, y_pred_shuffled)
-                results['shuffled']['precision'][split_idx] = precision_score(y_test, y_pred_shuffled, zero_division=0.0)
-                results['shuffled']['recall'][split_idx] = recall_score(y_test, y_pred_shuffled, zero_division=0.0)
-                results['shuffled']['f1'][split_idx] = f1_score(y_test, y_pred_shuffled, average='binary', zero_division=0.0)
+                results['null']['filter_shapes'][split_idx, :] = filter_shape_shuffled
+                results['null']['score'][split_idx] = balanced_accuracy_score(y_test, y_pred_shuffled)
+                results['null']['recall'][split_idx] = recall_score(y_test, y_pred_shuffled, zero_division=0.0)
+                results['null']['f1'][split_idx] = f1_score(y_test, y_pred_shuffled, average='binary', zero_division=0.0)
+                results['null']['mcc'][split_idx] = safe_matthews_corrcoef(y_test, y_pred_shuffled)
+                results['null']['confusion_matrix'][split_idx] = safe_confusion_matrix(
+                    y_test, y_pred_shuffled, labels=np.array([0, 1])
+                )
+                try:
+                    results['null']['n_iter'][split_idx] = float(np.max(lr_shuffled.n_iter_))
+                    results['null']['converged'][split_idx] = float(results['null']['n_iter'][split_idx] < lr_max_iter)
+                except Exception:
+                    pass
+                results['null']['fit_time'][split_idx] = fit_time
 
                 if len(np.unique(y_test)) > 1:
-                    results['shuffled']['auc'][split_idx] = roc_auc_score(y_test, y_proba_shuffled)
+                    results['null']['auc'][split_idx] = roc_auc_score(y_test, y_proba_shuffled)
                     epsilon = 1e-15
                     y_proba_shuffled_clipped = np.clip(y_proba_shuffled, epsilon, 1 - epsilon)
-                    results['shuffled']['ll'][split_idx] = log_loss(y_test, y_proba_shuffled_clipped)
+                    results['null']['ll'][split_idx] = log_loss(y_test, y_proba_shuffled_clipped)
+                    results['null']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_shuffled))
+                    try:
+                        y_proba_2d = np.column_stack([1.0 - y_proba_shuffled, y_proba_shuffled])
+                        results['null']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_shuffled, y_proba_2d, n_bins=10)
+                    except Exception:
+                        pass
 
             except Exception as e:
-                print(f"  ERROR during SHUFFLED model fit/predict for {feature_name}, split {split_idx}: {e}")
+                print(f"  ERROR during NULL model fit/predict for {feature_name}, split {split_idx}: {e}")
 
         results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
         results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
@@ -805,8 +873,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         if split_has_data:
             mean_auc_actual = np.nanmean(results['actual']['auc'])
             print_msg = f"  --- Finished {feature_name}. Mean Actual AUC: {mean_auc_actual:.4f}"
-            mean_auc_shuffled = np.nanmean(results['shuffled']['auc'])
-            print_msg += f", Mean Shuffled AUC: {mean_auc_shuffled:.4f}"
+            mean_auc_null = np.nanmean(results['null']['auc'])
+            print_msg += f", Mean Null AUC: {mean_auc_null:.4f}"
             print(print_msg)
         else:
             print(f"  --- No valid splits processed for feature: {feature_name} ---")
@@ -839,7 +907,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             smoothness penalty (penalizing the "wiggleness" of the 2D surface)
             and finds the optimal penalty strength using Generalized Cross-Validation (GCV).
         3.  It calculates metrics for both the 'actual' data
-            and a 'shuffled' (null) model. Note: For evaluation, the tiled
+            and a 'null' (label-shuffled) model. Note: For evaluation, the tiled
             probabilities from the test set are averaged per-epoch before
             calculating scores like AUC, F1, etc., against the original y_test labels.
         4.  It extracts the 1D *linear filter shape* by
@@ -864,10 +932,21 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         tuple[str, dict]
             A tuple containing:
             1. feature_name (str): The name of the feature analyzed.
-            2. results (dict): A nested dictionary containing 'actual' and 'shuffled'
-               keys, each holding arrays of metrics (e.g., 'filter_shapes', 'auc',
-               'score', 'precision', 'recall', 'f1', 'll'). Also contains a
-               'split_sizes' key. 'shuffled' metrics are NaN if not calculated.
+            2. results (dict): A nested dictionary containing 'actual' and 'null'
+               keys (the 'null' branch holds the label-shuffled control), each
+               holding arrays of metrics:
+               - `filter_shapes` : 1D partial-dependence filter per split.
+               - `auc` : macro one-vs-rest ROC-AUC (threshold-free ranking).
+               - `score` : balanced accuracy.
+               - `recall`, `f1` : standard imbalance-robust summaries.
+               - `ll` : log-loss (strictly proper probabilistic score).
+               - `brier` : mean squared error on predicted probabilities.
+               - `ece` : top-label calibration error (10 equal-width bins).
+               - `mcc` : Matthews correlation coefficient.
+               - `confusion_matrix` : (2, 2) per-split confusion matrix.
+               - `n_iter`, `converged`, `fit_time` : optimizer diagnostics.
+               Also contains a 'split_sizes' key. 'null' metrics are NaN if not
+               calculated.
         """
 
         print(f"--- Running [pygam] analysis for feature: {feature_name} ---")
@@ -902,22 +981,22 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             'lam': lam_penalty
         }
 
-        results = {
-            'actual': {
+        _scalar = lambda: np.full(n_splits, np.nan)
+        def _make_pygam_branch():
+            return {
                 'filter_shapes': np.full((n_splits, history_frames), np.nan),
                 'coefs_projected': np.empty((n_splits, 0)),
                 'optimal_C': np.empty((n_splits, 0)),
-                'score': np.full(n_splits, np.nan), 'precision': np.full(n_splits, np.nan),
-                'recall': np.full(n_splits, np.nan), 'f1': np.full(n_splits, np.nan),
-                'auc': np.full(n_splits, np.nan), 'll': np.full(n_splits, np.nan)
-            },
-            'shuffled': {
-                'filter_shapes': np.full((n_splits, history_frames), np.nan),
-                'coefs_projected': np.empty((n_splits, 0)), 'optimal_C': np.empty((n_splits, 0)),
-                'score': np.full(n_splits, np.nan), 'precision': np.full(n_splits, np.nan),
-                'recall': np.full(n_splits, np.nan), 'f1': np.full(n_splits, np.nan),
-                'auc': np.full(n_splits, np.nan), 'll': np.full(n_splits, np.nan)
-            },
+                'score': _scalar(), 'recall': _scalar(),
+                'f1': _scalar(), 'auc': _scalar(), 'll': _scalar(),
+                'brier': _scalar(), 'ece': _scalar(), 'mcc': _scalar(),
+                'confusion_matrix': np.full((n_splits, 2, 2), np.nan),
+                'n_iter': _scalar(), 'converged': _scalar(), 'fit_time': _scalar()
+            }
+
+        results = {
+            'actual': _make_pygam_branch(),
+            'null': _make_pygam_branch(),
             'split_sizes': {'train': [], 'test': []}
         }
 
@@ -953,9 +1032,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 X_test_gam = unroll_data_for_gam(X_test.astype(np.float32))
 
                 try:
+                    fit_start = time.perf_counter()
                     gam_actual = LogisticGAM(
                         te(0, 1, n_splines=[n_splines_value, n_splines_time]), **gam_kwargs_actual
                     ).fit(X_train_gam, y_train_tiled)
+                    fit_time = float(time.perf_counter() - fit_start)
 
                     diffs = gam_actual.logs_.get('diffs', [])
                     print(f"      Completed in {len(diffs)} iters | "
@@ -974,17 +1055,30 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                     results['actual']['filter_shapes'][split_idx, :] = (prob_1 - prob_0).flatten()
                     results['actual']['score'][split_idx] = balanced_accuracy_score(y_test_int, y_pred_mean_epoch)
-                    results['actual']['precision'][split_idx] = precision_score(y_test_int, y_pred_mean_epoch, zero_division=0.0)
                     results['actual']['recall'][split_idx] = recall_score(y_test_int, y_pred_mean_epoch, zero_division=0.0)
                     results['actual']['f1'][split_idx] = f1_score(y_test_int, y_pred_mean_epoch, average='binary', zero_division=0.0)
+                    results['actual']['mcc'][split_idx] = safe_matthews_corrcoef(y_test_int, y_pred_mean_epoch)
+                    results['actual']['confusion_matrix'][split_idx] = safe_confusion_matrix(
+                        y_test_int, y_pred_mean_epoch, labels=np.array([0, 1])
+                    )
+                    results['actual']['n_iter'][split_idx] = float(len(diffs))
+                    results['actual']['converged'][split_idx] = float(bool(diffs and diffs[-1] < tol_val))
+                    results['actual']['fit_time'][split_idx] = fit_time
+
                     if len(np.unique(y_test_int)) > 1:
                         results['actual']['auc'][split_idx] = roc_auc_score(y_test_int, y_proba_mean_epoch)
                         results['actual']['ll'][split_idx] = log_loss(y_test_int, np.clip(y_proba_mean_epoch, 1e-15, 1 - 1e-15))
+                        results['actual']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_mean_epoch))
+                        try:
+                            y_proba_2d = np.column_stack([1.0 - y_proba_mean_epoch, y_proba_mean_epoch])
+                            results['actual']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_mean_epoch, y_proba_2d, n_bins=10)
+                        except Exception:
+                            pass
 
                     print(f"    > ACTUAL Fold {split_idx} (Train N={len(y_train)}, Test N={len(y_test)}): "
                           f"AUC={results['actual']['auc'][split_idx]:.3f}, "
                           f"LL={results['actual']['ll'][split_idx]:.3f}, "
-                          f"Acc={results['actual']['score'][split_idx]:.3f}")
+                          f"Brier={results['actual']['brier'][split_idx]:.3f}")
 
                 except Exception as e:
                     print(f"  ERROR during ACTUAL [pygam] fit/predict for {feature_name}, split {split_idx}: {e}")
@@ -999,9 +1093,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 X_test_gam_null = unroll_data_for_gam(X_test_null.astype(np.float32))
 
                 try:
+                    fit_start = time.perf_counter()
                     gam_shuffled = LogisticGAM(
                         te(0, 1, n_splines=[n_splines_value, n_splines_time]), **gam_kwargs_shuffled
                     ).fit(X_train_gam_null, y_train_tiled_null)
+                    fit_time = float(time.perf_counter() - fit_start)
 
                     y_proba_shuffled_tiled = gam_shuffled.predict_proba(X_test_gam_null)
                     y_proba_shuffled_mean = np.mean(y_proba_shuffled_tiled.reshape(X_test_null.shape), axis=1)
@@ -1013,18 +1109,32 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     prob_0_null = gam_shuffled.predict_mu(grid_X_0_null).astype(np.float32)
                     prob_1_null = gam_shuffled.predict_mu(grid_X_1_null).astype(np.float32)
                     filter_shape_null = (prob_1_null - prob_0_null).flatten()
-                    results['shuffled']['filter_shapes'][split_idx, :] = filter_shape_null
+                    results['null']['filter_shapes'][split_idx, :] = filter_shape_null
 
-                    results['shuffled']['score'][split_idx] = balanced_accuracy_score(y_test_int_null, y_pred_shuffled_mean)
-                    results['shuffled']['precision'][split_idx] = precision_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
-                    results['shuffled']['recall'][split_idx] = recall_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
-                    results['shuffled']['f1'][split_idx] = f1_score(y_test_int_null, y_pred_shuffled_mean, average='binary', zero_division=0.0)
+                    results['null']['score'][split_idx] = balanced_accuracy_score(y_test_int_null, y_pred_shuffled_mean)
+                    results['null']['recall'][split_idx] = recall_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
+                    results['null']['f1'][split_idx] = f1_score(y_test_int_null, y_pred_shuffled_mean, average='binary', zero_division=0.0)
+                    results['null']['mcc'][split_idx] = safe_matthews_corrcoef(y_test_int_null, y_pred_shuffled_mean)
+                    results['null']['confusion_matrix'][split_idx] = safe_confusion_matrix(
+                        y_test_int_null, y_pred_shuffled_mean, labels=np.array([0, 1])
+                    )
+                    null_diffs = gam_shuffled.logs_.get('diffs', [])
+                    results['null']['n_iter'][split_idx] = float(len(null_diffs))
+                    results['null']['converged'][split_idx] = float(bool(null_diffs and null_diffs[-1] < tol_val))
+                    results['null']['fit_time'][split_idx] = fit_time
+
                     if len(np.unique(y_test_int_null)) > 1:
-                        results['shuffled']['auc'][split_idx] = roc_auc_score(y_test_int_null, y_proba_shuffled_mean)
-                        results['shuffled']['ll'][split_idx] = log_loss(y_test_int_null, np.clip(y_proba_shuffled_mean, 1e-15, 1 - 1e-15))
+                        results['null']['auc'][split_idx] = roc_auc_score(y_test_int_null, y_proba_shuffled_mean)
+                        results['null']['ll'][split_idx] = log_loss(y_test_int_null, np.clip(y_proba_shuffled_mean, 1e-15, 1 - 1e-15))
+                        results['null']['brier'][split_idx] = float(brier_score_loss(y_test_int_null, y_proba_shuffled_mean))
+                        try:
+                            y_proba_2d = np.column_stack([1.0 - y_proba_shuffled_mean, y_proba_shuffled_mean])
+                            results['null']['ece'][split_idx] = expected_calibration_error(y_test_int_null, y_pred_shuffled_mean, y_proba_2d, n_bins=10)
+                        except Exception:
+                            pass
 
                 except Exception as e:
-                    print(f"  ERROR during SHUFFLED [pygam] fit/predict for {feature_name}, split {split_idx}: {e}")
+                    print(f"  ERROR during NULL [pygam] fit/predict for {feature_name}, split {split_idx}: {e}")
 
         results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
         results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
@@ -1032,8 +1142,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         if split_has_data_actual:
             mean_auc_actual = np.nanmean(results['actual']['auc'])
             print_msg = f"  --- Finished {feature_name} [pygam]. Mean Actual AUC: {mean_auc_actual:.4f}"
-            mean_auc_shuffled = np.nanmean(results['shuffled']['auc'])
-            print_msg += f", Mean Shuffled (Null Control) AUC: {mean_auc_shuffled:.4f}"
+            mean_auc_null = np.nanmean(results['null']['auc'])
+            print_msg += f", Mean Null (Null Control) AUC: {mean_auc_null:.4f}"
             print(print_msg)
         else:
             print(f"  --- No valid splits processed for feature: {feature_name} [pygam] ---")
