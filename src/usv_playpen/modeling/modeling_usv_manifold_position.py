@@ -1,28 +1,39 @@
 """
 @author: bartulem
-Module for continuous probabilistic USV modeling (based on JAX, assumes GPU usage).
+Module for continuous UMAP-position USV modelling (JAX, assumes GPU usage).
 
-This module provides a specialized pipeline for mapping behavioral kinematics to the
-continuous topological space of the vocal repertoire. Rather than imposing arbitrary
-discrete boundaries, it predicts the full conditional probability density (modeled
-as a Bivariate Gaussian) of an upcoming vocalization's (x, y) coordinates on a
-2D acoustic manifold (UMAP).
+This module provides a pipeline for mapping behavioural kinematics onto the
+continuous 2-D UMAP manifold of the vocal repertoire. It predicts the
+deterministic `(x, y)` location of an upcoming vocalisation from a short
+history window of behavioural features. Earlier revisions fitted a full
+bivariate-Gaussian density with globally shared variance parameters; we
+replaced that formulation with plain 2-D regression because (a) the
+variance parameters were not conditional on the behavioural history, so
+the "calibration" metrics (coverage at 68 %/95 %, Mahalanobis distance)
+only tested whether the empirical residual distribution happened to match
+a single global ellipse, and (b) UMAP coordinates are not a metric space
+in any principled sense, which makes density-level claims fragile anyway.
+The regression retains everything that carried scientific weight — the
+learned linear map, the temporal smoothness penalty, and the inverse-
+density sample weighting — and drops only the density head.
 
 Key scientific capabilities:
-1.  Probabilistic target extraction: Extracts continuous spatial coordinate pairs
-    for every valid bout, enabling the model to learn a continuous mapping from
-    behavioral history to acoustic outcomes alongside structural uncertainty.
-2.  Geographic fairness (Inverse Density Weighting): Computes a Gaussian Kernel
-    Density Estimate (KDE) over the acoustic space to apply inverse density sample
-    weights. This prevents the model from ignoring rare acoustic "satellite islands"
-    in favor of the dense manifold core.
-3.  Spatial cross-validation: Implements a deterministic K-Means spatial proxy
-    strategy for Stratified Group K-Fold splitting. This strictly prevents session
-    leakage while guaranteeing that both rare and common acoustic regions are
-    proportionally represented in all training and testing folds.
-4.  Rigorous Null Baselines: Compares model performance against both a within-session
-    shuffled control ('null') and a purely spatial density-based prior ('null_model_free')
-    to strictly validate behavioral predictive power.
+1.  Continuous target extraction: extracts `(x, y)` UMAP coordinate pairs
+    for every valid bout, enabling the model to learn a continuous mapping
+    from behavioural history to acoustic outcomes.
+2.  Geographic fairness (inverse density weighting): computes a Gaussian
+    Kernel Density Estimate (KDE) over the acoustic space to apply inverse
+    density sample weights. This prevents the model from ignoring rare
+    acoustic "satellite islands" in favour of the dense manifold core.
+3.  Spatial cross-validation: implements a deterministic K-Means spatial-
+    proxy strategy for Stratified Group K-Fold splitting, strictly
+    preventing session leakage while guaranteeing that rare and common
+    acoustic regions are proportionally represented in every train / test
+    fold.
+4.  Rigorous null baselines: compares model performance against both a
+    within-session shuffled control (`null`) and a spatial-centroid
+    baseline (`null_model_free`, the KDE-weighted training-set centroid)
+    to validate behavioural predictive power.
 """
 
 import json
@@ -47,7 +58,7 @@ from .modeling_utils import (
     harmonize_session_columns,
     zscore_features_across_sessions,
 )
-from .jax_bivariate_gaussian_regression import SmoothBivariateGaussianRegression
+from .jax_bivariate_regression import SmoothBivariateRegression
 from ..analyses.compute_behavioral_features import FeatureZoo
 
 
@@ -523,39 +534,46 @@ class ContinuousModelingPipeline(FeatureZoo):
 
 class ContinuousModelRunner:
     """
-    Orchestrates the training and statistical evaluation of continuous probabilistic
-    USV models.
+    Orchestrates the training and statistical evaluation of continuous UMAP-
+    position USV regression models.
 
-    This class serves as the execution engine for the continuous modeling phase. It
-    consumes the extracted (X, Y, w) data produced by the `ContinuousModelingPipeline`,
-    transforms it into binned univariate design matrices, and performs rigorous
-    cross-validation using the JAX-accelerated Bivariate Gaussian estimator.
+    This class serves as the execution engine for the continuous modelling
+    phase. It consumes the extracted `(X, Y, w)` data produced by the
+    `ContinuousModelingPipeline`, transforms it into binned univariate
+    design matrices, and performs cross-validation using the JAX-accelerated
+    `SmoothBivariateRegression` estimator.
 
     Key responsibilities:
-    1. Data transformation: Pivots nested session dictionaries into unified,
-       temporally downsampled (binned) arrays for efficient gradient descent.
-    2. Experimental control: Evaluates features against an 'actual' framework, a
-       shuffled 'null' framework, and a 'null_model_free' spatial density prior.
-    3. Spatial Validation: Utilizes deterministic K-Means geographic clustering
-       to ensure spatially fair cross-validation folds.
-    4. Deep metadata storage: Persists fold-level probabilistic predictions (mu, sigma, rho),
-       performance metrics, and exact test indices.
+    1. Data transformation: pivots nested session dictionaries into unified,
+       temporally downsampled (binned) arrays for efficient gradient
+       descent.
+    2. Experimental control: evaluates features against an `actual`
+       framework, a within-session shuffled `null` framework, and a
+       `null_model_free` spatial-centroid baseline (weighted training-set
+       mean, matching the marginal prior used by the KDE weighting).
+    3. Spatial validation: uses deterministic K-Means geographic clustering
+       to build spatially fair cross-validation folds.
+    4. Deep metadata storage: persists fold-level predictions `(y_pred_xy)`,
+       learned weights and intercepts, and per-fold optimizer diagnostics.
 
-    Metrics saved per fold (see `SmoothBivariateGaussianRegression.evaluate_metrics`
+    Metrics saved per fold (see `SmoothBivariateRegression.evaluate_metrics`
     for full definitions):
-    - `nll_weighted` — density-weighted negative log-likelihood (headline
-      probabilistic score, lower is better).
-    - `nll_unweighted` — diagnostic NLL without the inverse-density weights;
-      biased toward dense UMAP regions and must not be used for ranking.
-    - `euclidean_mae`, `euclidean_rmse` — interpretable spatial-error
-      magnitudes; a large RMSE / MAE ratio flags heavy-tailed outlier folds.
-    - `mahalanobis_dist` — average spatial error normalized by the model's
-      predicted spread (over-confidence detector).
-    - `coverage_68`, `coverage_95` — empirical fraction of residuals inside
-      the nominal 68% / 95% iso-contours (calibration check).
-    - `r2_spatial` — spatial variance explained by the predicted means,
+    - `euclidean_mae` — mean Euclidean distance between predicted and true
+      UMAP coordinates. Headline score (lower is better).
+    - `euclidean_rmse` — root-mean-squared Euclidean distance; a large
+      `RMSE / MAE` ratio flags heavy-tailed outlier folds.
+    - `euclidean_mae_weighted` — MAE on the Euclidean residual weighted by
+      the inverse-density KDE weights so satellite vocalisations count as
+      much as dense-core bouts.
+    - `mae_x`, `mae_y` — per-axis absolute error; useful when one UMAP
+      axis is systematically easier to predict than the other.
+    - `pearson_x`, `pearson_y`, `spearman_x`, `spearman_y` — per-axis
+      linear and rank correlations between predictions and truth.
+    - `r2_spatial` — pooled spatial variance explained by the predictions,
       bounded above by 1 (use for cross-feature ranking).
-    - `n_iter`, `converged`, `fit_time` — per-fold optimizer diagnostics.
+    - `n_iter`, `converged`, `fit_time` — per-fold JAX optimizer
+      diagnostics. `converged=False` flags folds that terminated at
+      `max_iter` without meeting the tolerance.
     """
 
     def __init__(self, pipeline_instance: Any) -> None:
@@ -652,38 +670,46 @@ class ContinuousModelRunner:
 
     def run_univariate_training(self, data_blocks: dict, feat_name: str) -> dict:
         """
-        Executes the cross-validation and statistical evaluation loop for a single feature.
+        Executes the cross-validation and statistical evaluation loop for a
+        single feature.
 
-        This method applies the Bivariate Gaussian JAX model to the temporal kinematics
-        (X) to predict the acoustic topography (Y). It rigidly evaluates performance across
-        three distinct strategies:
+        This method applies `SmoothBivariateRegression` to the temporal
+        kinematics `X` to predict the UMAP position `Y`. Performance is
+        evaluated across three strategies:
 
-        1. 'actual': Fits the true kinematic-to-acoustic mapping.
-        2. 'null': Shuffles acoustic labels within-session. This destroys the temporal
-           mapping but maintains session-level biases.
-        3. 'null_model_free': Abandons modeling entirely and computes the literal global
-           Marginal Prior (density of the point space). It calculates the closed-form Bivariate
-           Gaussian of the training set and uses it as the static prediction for the test set.
+        1. `actual` — fits the true kinematic-to-acoustic mapping.
+        2. `null` — shuffles UMAP labels within-session (seeded per fold),
+           destroying the temporal kinematics-to-manifold mapping while
+           preserving session-level biases.
+        3. `null_model_free` — bypasses modelling entirely and predicts the
+           KDE-weighted centroid of the training set's UMAP coordinates for
+           every test point. This is the "no-kinematics" floor that a real
+           model must beat.
 
-        Data Persistence:
+        Data persistence
         -----------------
-        Saves full-resolution tracking data (`test_indices`, `y_true`, `y_pred_params`) for
-        ALL three strategies to enable downstream comparative scatter plotting and manifold
-        visualization.
+        Saves full-resolution tracking data (`test_indices`, `y_true`,
+        `y_pred_xy`, `weights`, `intercepts`, convergence diagnostics,
+        `w_test`) for every strategy so downstream comparative scatter
+        plotting and manifold visualisation can be regenerated without
+        re-training.
 
         Parameters
         ----------
         data_blocks : dict
-            The full dictionary of loaded and binned data returned by `load_univariate_data_blocks`.
+            The full dictionary of loaded and binned data returned by
+            `load_univariate_data_blocks`.
         feat_name : str
-            The specific behavioral feature (e.g., 'self.speed') to evaluate.
+            The specific behavioural feature (e.g., `'self.speed'`) to
+            evaluate.
 
         Returns
         -------
         results : dict
-            The comprehensive Deep Storage dictionary containing global metrics,
-            frozen model parameters, raw test data, and full probability predictions
-            for all strategies.
+            Nested dictionary keyed by strategy. Each strategy exposes a
+            `folds` dict whose `metrics` sub-dict mirrors the output of
+            `SmoothBivariateRegression.evaluate_metrics` plus the per-fold
+            optimiser diagnostics documented in the class docstring.
         """
 
         print(f"--- Starting Univariate Training: {feat_name} ---")
@@ -695,9 +721,10 @@ class ContinuousModelRunner:
         groups = feat_data['groups']
         n_time_bins = feat_data['n_time_bins']
 
-        hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate_gaussian']
+        hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate']
         lam_smooth = hp['lambda_smooth']
         lam_l2 = hp['l2_reg']
+        huber_delta = hp['huber_delta']
         lr = hp['learning_rate']
         max_iter = hp['max_iter']
         tol = hp['tol']
@@ -721,55 +748,50 @@ class ContinuousModelRunner:
             random_seed=random_seed
         )
 
+        # Canonical set of metric keys emitted by `evaluate_metrics`. Used
+        # both to initialise the per-fold metric dict and to summarise at
+        # the end so the two stay in lockstep.
+        metric_keys = [
+            'euclidean_mae',
+            'euclidean_rmse',
+            'euclidean_mae_weighted',
+            'mae_x',
+            'mae_y',
+            'pearson_x',
+            'pearson_y',
+            'spearman_x',
+            'spearman_y',
+            'r2_spatial',
+        ]
+
         results = {}
         strategies = ['actual', 'null', 'null_model_free']
-        rng = np.random.RandomState(random_seed)
 
         for strategy in strategies:
             print(f"  Executing Strategy: [{strategy.upper()}]")
 
             results[strategy] = {
                 'folds': {
-                    'metrics': {
-                        # Probabilistic scores (lower is better for the NLLs).
-                        # `nll_weighted` is the headline density-weighted score;
-                        # `nll_unweighted` is a diagnostic that reveals whether
-                        # the inverse-density weights materially change the
-                        # ranking (see `evaluate_metrics` docstring for detail).
-                        'nll_weighted': [],
-                        'nll_unweighted': [],
-                        # Interpretable error magnitudes in native UMAP units.
-                        # RMSE complements MAE by surfacing heavy-tailed folds.
-                        'euclidean_mae': [],
-                        'euclidean_rmse': [],
-                        # Mahalanobis conditions the Euclidean error on the
-                        # predicted spread — small Euclidean but large
-                        # Mahalanobis = over-confident covariance.
-                        'mahalanobis_dist': [],
-                        # Direct calibration readouts: fraction of residuals
-                        # inside the nominal 68%/95% iso-contour.
-                        'coverage_68': [],
-                        'coverage_95': [],
-                        # Variance-explained analogue to R^2 on the 2D manifold,
-                        # bounded above by 1 and directly comparable across
-                        # features for ranking purposes.
-                        'r2_spatial': []
-                    },
+                    'metrics': {m: [] for m in metric_keys},
+                    # Learned linear map and bias (None for `null_model_free`,
+                    # which has no trainable parameters).
                     'weights': [],
                     'intercepts': [],
                     'test_indices': [],
                     'y_true': [],
                     'w_test': [],
-                    'y_pred_params': [],
-                    # Per-fold convergence evidence: `n_iter` is the number of
-                    # optimizer steps actually taken, `converged` is True only
-                    # if the tolerance check fired before `max_iter`, and
-                    # `fit_time` is the wall-clock in seconds. Together they
-                    # expose the most common silent-failure mode of the JAX
-                    # estimator (terminating at `max_iter` without converging).
+                    # Deterministic (x, y) predictions for every test trial —
+                    # shape `(n_test, 2)`. This replaces the older
+                    # 5-column `(mu_x, mu_y, sigma_x, sigma_y, rho)` array
+                    # emitted by the Gaussian density model.
+                    'y_pred_xy': [],
+                    # Per-fold optimiser diagnostics. `converged=False`
+                    # flags folds that terminated at `max_iter` without
+                    # meeting the tolerance — the main silent-failure
+                    # mode of the JAX estimator.
                     'n_iter': [],
                     'converged': [],
-                    'fit_time': []
+                    'fit_time': [],
                 }
             }
 
@@ -779,10 +801,14 @@ class ContinuousModelRunner:
                 w_active = w.copy()
 
                 if strategy == 'null':
+                    # Seeded per-fold Generator so within-session shuffles
+                    # are reproducible and independent of ambient global RNG
+                    # state.
+                    null_rng = np.random.default_rng(random_seed + fold_idx + 1)
                     unique_groups = np.unique(groups)
                     for g in unique_groups:
                         g_idx = np.where(groups == g)[0]
-                        shuffled_idx = rng.permutation(g_idx)
+                        shuffled_idx = null_rng.permutation(g_idx)
                         Y_active[g_idx] = Y_active[shuffled_idx]
                         w_active[g_idx] = w_active[shuffled_idx]
 
@@ -790,65 +816,52 @@ class ContinuousModelRunner:
                 Y_train, Y_test = Y_active[train_idx], Y_active[test_idx]
                 w_train, w_test = w_active[train_idx], w_active[test_idx]
 
-                y_pred_params = None
-
                 if strategy == 'null_model_free':
-                    # Bypass the JAX model and manually compute the Marginal Prior (Spatial Density)
+                    # Spatial-centroid baseline: predict the KDE-weighted
+                    # training-set mean for every test trial. This is the
+                    # "no-kinematics" floor that any model with real
+                    # behavioural signal must clear.
                     mu = np.average(Y_train, axis=0, weights=w_train)
-                    diff = Y_train - mu
-                    cov = np.average(diff[:, :, None] * diff[:, None, :], axis=0, weights=w_train)
+                    y_pred_xy = np.tile(mu.astype(np.float32), (len(Y_test), 1))
 
-                    sig_x = np.sqrt(cov[0, 0])
-                    sig_y = np.sqrt(cov[1, 1])
-                    rho = np.clip(cov[0, 1] / (sig_x * sig_y), -0.99, 0.99)
-
-                    # Compute closed-form metrics for the test set against this fixed prior
                     dx = Y_test[:, 0] - mu[0]
                     dy = Y_test[:, 1] - mu[1]
+                    euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
+                    sse = np.sum(dx ** 2 + dy ** 2)
+                    ss_tot_x = np.sum((Y_test[:, 0] - np.mean(Y_test[:, 0])) ** 2)
+                    ss_tot_y = np.sum((Y_test[:, 1] - np.mean(Y_test[:, 1])) ** 2)
+                    denom = ss_tot_x + ss_tot_y
 
-                    z = (dx / sig_x) ** 2 - 2 * rho * (dx / sig_x) * (dy / sig_y) + (dy / sig_y) ** 2
-                    det = sig_x * sig_y * np.sqrt(1 - rho ** 2)
-                    log_pdf = -np.log(2 * np.pi * det) - z / (2 * (1 - rho ** 2))
-
-                    sse = np.sum((Y_test - mu) ** 2)
-                    sst = np.sum((Y_test - np.mean(Y_test, axis=0)) ** 2)
-
-                    # Closed-form metrics aligned with the `evaluate_metrics`
-                    # dictionary returned by the JAX estimator so downstream
-                    # plotting / aggregation code can treat both branches
-                    # identically.
-                    d2_mf = z / (1 - rho ** 2)
+                    # Constant predictions make the per-axis correlations
+                    # undefined; report them as NaN to match the regressor's
+                    # NaN-safe convention and keep downstream plotting sane.
                     metrics = {
-                        'nll_unweighted': float(-np.mean(log_pdf)),
-                        'nll_weighted': float(-np.average(log_pdf, weights=w_test)),
-                        'euclidean_mae': float(np.mean(np.sqrt(dx ** 2 + dy ** 2))),
-                        'euclidean_rmse': float(np.sqrt(np.mean(dx ** 2 + dy ** 2))),
-                        'mahalanobis_dist': float(np.mean(np.sqrt(d2_mf))),
-                        'coverage_68': float(np.mean(d2_mf <= -2.0 * np.log(1.0 - 0.68))),
-                        'coverage_95': float(np.mean(d2_mf <= -2.0 * np.log(1.0 - 0.95))),
-                        'r2_spatial': float(1.0 - (sse / sst)) if sst > 0 else 0.0
+                        'euclidean_mae': float(np.mean(euclidean_dist)),
+                        'euclidean_rmse': float(np.sqrt(np.mean(euclidean_dist ** 2))),
+                        'euclidean_mae_weighted': float(
+                            np.sum(w_test * euclidean_dist) / (np.sum(w_test) + 1e-12)
+                        ),
+                        'mae_x': float(np.mean(np.abs(dx))),
+                        'mae_y': float(np.mean(np.abs(dy))),
+                        'pearson_x': float('nan'),
+                        'pearson_y': float('nan'),
+                        'spearman_x': float('nan'),
+                        'spearman_y': float('nan'),
+                        'r2_spatial': float(1.0 - (sse / denom)) if denom > 0 else 0.0,
                     }
 
-                    # Construct the static (N, 5) prediction array for downstream plotting.
-                    # Columns are [mu_x, mu_y, sigma_x, sigma_y, rho] — stddevs, matching
-                    # SmoothBivariateGaussianRegression.predict_density output semantics.
-                    static_params = np.array([mu[0], mu[1], sig_x, sig_y, rho], dtype=np.float32)
-                    y_pred_params = np.tile(static_params, (len(Y_test), 1))
-
-                    # Model-free has no trainable weights
                     fold_weights, fold_intercepts = None, None
-                    # Closed-form "fit" is instantaneous and trivially converged.
+                    # The centroid "fit" is closed-form and instantaneous.
                     fold_n_iter = 0
                     fold_converged = True
                     fold_fit_time = 0.0
-
                 else:
-                    # Execute actual modeling using JAX
-                    model = SmoothBivariateGaussianRegression(
+                    model = SmoothBivariateRegression(
                         n_features=1,
                         n_time_bins=n_time_bins,
                         lambda_smooth=lam_smooth,
                         l2_reg=lam_l2,
+                        huber_delta=huber_delta,
                         learning_rate=lr,
                         max_iter=max_iter,
                         tol=tol,
@@ -858,58 +871,73 @@ class ContinuousModelRunner:
                     model.fit(X_train, Y_train, sample_weight=w_train)
                     metrics = model.evaluate_metrics(X_test, Y_test, weights=w_test)
 
-                    # Extract full continuous density predictions
-                    y_pred_params = model.predict_density(X_test)
-                    fold_weights, fold_intercepts = model.coef_, model.intercept_
+                    y_pred_xy = model.predict(X_test).astype(np.float32)
+                    fold_weights = model.coef_
+                    fold_intercepts = model.intercept_
                     fold_n_iter = int(model.n_iter_)
                     fold_converged = bool(model.converged_)
                     fold_fit_time = float(model.fit_time_)
 
-                print(f"      Fold {fold_idx + 1:03d}/{n_splits} | Weighted NLL: {metrics['nll_weighted']:.4f} | Euclidean Err: {metrics['euclidean_mae']:.4f} | Cov68: {metrics['coverage_68']:.2f} | Cov95: {metrics['coverage_95']:.2f}", flush=True)
+                print(
+                    f"      Fold {fold_idx + 1:03d}/{n_splits} | MAE: {metrics['euclidean_mae']:.4f} "
+                    f"| RMSE: {metrics['euclidean_rmse']:.4f} | R^2: {metrics['r2_spatial']:.3f} "
+                    f"| converged: {fold_converged}",
+                    flush=True,
+                )
 
                 for m_key, m_val in metrics.items():
                     results[strategy]['folds']['metrics'][m_key].append(m_val)
 
-                # Save deep storage for ALL strategies to enable comparative visualization
                 results[strategy]['folds']['weights'].append(fold_weights)
                 results[strategy]['folds']['intercepts'].append(fold_intercepts)
                 results[strategy]['folds']['test_indices'].append(test_idx)
                 results[strategy]['folds']['y_true'].append(Y_test)
                 results[strategy]['folds']['w_test'].append(w_test)
-                results[strategy]['folds']['y_pred_params'].append(y_pred_params)
+                results[strategy]['folds']['y_pred_xy'].append(y_pred_xy)
                 results[strategy]['folds']['n_iter'].append(fold_n_iter)
                 results[strategy]['folds']['converged'].append(fold_converged)
                 results[strategy]['folds']['fit_time'].append(fold_fit_time)
 
-        metrics_to_test = ['nll_weighted', 'euclidean_mae', 'euclidean_rmse', 'mahalanobis_dist', 'coverage_68', 'coverage_95', 'r2_spatial']
+        # Summary Wilcoxon tests against the two null baselines. Error
+        # metrics are "lower is better"; `r2_spatial` and the correlations
+        # are "higher is better against the null", so the alternative flips
+        # accordingly.
+        higher_is_better = {
+            'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
+        }
 
         print(f"\n" + "=" * 90)
         print(f"FINAL STATISTICAL SUMMARY: {feat_name}")
         print("=" * 90)
 
-        for metric in metrics_to_test:
-            act_vals = results['actual']['folds']['metrics'][metric]
-            null_vals = results['null']['folds']['metrics'][metric]
-            mf_vals = results['null_model_free']['folds']['metrics'][metric]
+        for metric in metric_keys:
+            act_vals = np.asarray(results['actual']['folds']['metrics'][metric], dtype=float)
+            null_vals = np.asarray(results['null']['folds']['metrics'][metric], dtype=float)
+            mf_vals = np.asarray(results['null_model_free']['folds']['metrics'][metric], dtype=float)
 
-            act_m = np.mean(act_vals)
-            null_m = np.mean(null_vals)
-            mf_m = np.mean(mf_vals)
+            act_m = float(np.nanmean(act_vals)) if act_vals.size else float('nan')
+            null_m = float(np.nanmean(null_vals)) if null_vals.size else float('nan')
+            mf_m = float(np.nanmean(mf_vals)) if mf_vals.size else float('nan')
 
-            # For error / NLL / Mahalanobis, lower is better; for r2_spatial
-            # and coverage, higher against the null is the informative direction.
-            alt = 'greater' if metric in ('r2_spatial', 'coverage_68', 'coverage_95') else 'less'
+            alt = 'greater' if metric in higher_is_better else 'less'
 
             try:
                 _, p_null = wilcoxon(act_vals, null_vals, alternative=alt)
+            except ValueError:
+                p_null = 1.0
+            try:
                 _, p_mf = wilcoxon(act_vals, mf_vals, alternative=alt)
             except ValueError:
-                p_null, p_mf = 1.0, 1.0
+                p_mf = 1.0
 
             sig_null = "***" if p_null < 0.01 else "   "
             sig_mf = "***" if p_mf < 0.01 else "   "
 
-            print(f"{metric:<16} | Act: {act_m:>7.4f} | Null: {null_m:>7.4f} (p={p_null:>7.1e}) {sig_null} | MF: {mf_m:>7.4f} (p={p_mf:>7.1e}) {sig_mf}")
+            print(
+                f"{metric:<22} | Act: {act_m:>7.4f} | Null: {null_m:>7.4f} "
+                f"(p={p_null:>7.1e}) {sig_null} | MF: {mf_m:>7.4f} "
+                f"(p={p_mf:>7.1e}) {sig_mf}"
+            )
 
         print("=" * 90 + "\n")
 

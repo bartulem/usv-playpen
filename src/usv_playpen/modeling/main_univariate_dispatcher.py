@@ -267,7 +267,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
             runner = ContinuousModelRunner(pipeline_instance=pipeline)
 
-            hp = settings['hyperparameters']['jax_linear']['bivariate_gaussian']
+            hp = settings['hyperparameters']['jax_linear']['bivariate']
 
             data_blocks = runner.load_univariate_data_blocks(
                 pkl_path=args.input_data,

@@ -109,10 +109,11 @@
       }
     },
     "jax_linear": {
-      "bivariate_gaussian": {
+      "bivariate": {
         "bin_resizing_factor": 10,
         "lambda_smooth": 1.0,
         "l2_reg": 0.1,
+        "huber_delta": 1.0,
         "learning_rate": 0.01,
         "max_iter": 10000,
         "tol": 1e-4,
