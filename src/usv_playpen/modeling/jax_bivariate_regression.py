@@ -43,13 +43,32 @@ Density-weighted Huber regression on the 2-D residual:
   axis, just as in the old Gaussian model, so learned kinematic filters
   remain biologically plausible smooth curves.
 
+Manifold-bounded predictions
+----------------------------
+At predict time, every raw linear output `X @ W + b` is projected onto
+the nearest observed training UMAP point (`k=1` in Euclidean distance
+over `Y_train_`, cached in a `scipy.spatial.cKDTree`). Training targets
+and their kd-tree are stored on the fitted model, so `predict(snap=True)`
+returns only coordinates that the training manifold actually contained.
+This matters for the fairness of comparisons against the baselines:
+`null_model_free` predicts the weighted training centroid and the
+candidate X-history shuffled `null` predicts on the same manifold
+support, so the active model must not be allowed to gain apparent
+accuracy by extrapolating off-manifold and then being penalised by a
+metric the baselines structurally cannot incur. `predict(snap=False)`
+is retained for diagnostics.
+
 Outputs
 -------
-- `predict(X)`  -> (n_samples, 2) predicted UMAP coordinates.
-- `evaluate_metrics(X, Y_true, weights=None)` returns a metric dictionary
-  with `euclidean_mae`, `euclidean_rmse`, per-axis `mae_x` / `mae_y`,
-  `spearman_x` / `spearman_y`, `pearson_x` / `pearson_y`, and `r2_spatial`.
-  Every metric is evaluated on the natural UMAP scale.
+- `predict(X, snap=True)` -> (n_samples, 2) snapped UMAP coordinates, or
+  the raw linear prediction when `snap=False`.
+- `evaluate_metrics(X, Y_true, weights=None)` returns a metric bundle
+  containing `r2_spatial` (the selection score), `euclidean_mae` /
+  `euclidean_rmse` / `euclidean_mae_weighted` (native-scale
+  interpretable errors on the *snapped* predictions), `euclidean_mae_raw`
+  (unsnapped diagnostic), `mahalanobis_mae` (dimensionless error in the
+  inverse-density-weighted training covariance), plus per-axis `mae_x`
+  / `mae_y`, `spearman_x` / `spearman_y`, and `pearson_x` / `pearson_y`.
 """
 
 import jax
@@ -58,6 +77,7 @@ import numpy as np
 import optax
 import time
 from functools import partial
+from scipy.spatial import cKDTree
 from scipy.stats import pearsonr, spearmanr
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
@@ -118,6 +138,20 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         Learned weight matrix.
     intercept_ : np.ndarray, shape (2,)
         Learned bias vector.
+    Y_train_ : np.ndarray, shape (n_samples, 2)
+        Copy of the training UMAP targets. Used by `predict(snap=True)`
+        to project raw linear predictions onto the nearest observed
+        training point — a hard manifold constraint that keeps the model's
+        output inside the same convex support as the null baselines so
+        metric magnitudes remain directly comparable.
+    train_mean_ : np.ndarray, shape (2,)
+        Inverse-density-weighted training centroid (matches the weighting
+        convention of the training loss).
+    train_cov_inv_ : np.ndarray, shape (2, 2)
+        Inverse of the inverse-density-weighted training covariance of
+        `Y_train_`. Powers the `mahalanobis_mae` evaluation metric so a
+        unit error on a tight UMAP axis is not silently treated the same
+        as a unit error on a loose one.
     n_iter_ : int
         Number of optimiser steps actually taken (1-indexed). Equals
         `max_iter` when the tolerance check never fired.
@@ -366,60 +400,117 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         self.n_iter_ = int(completed_iter)
         self.converged_ = bool(converged)
         self.fit_time_ = float(time.perf_counter() - fit_start)
+
+        # Store the training targets + their precomputed spatial structures.
+        # The kd-tree powers `predict(snap=True)`, projecting raw linear
+        # predictions onto the nearest observed training UMAP point so the
+        # model never extrapolates outside the convex support its metrics are
+        # compared against. The inverse-density-weighted covariance of
+        # `Y_train` powers the Mahalanobis metric — a standardized distance
+        # that removes the axis-scale arbitrariness of the UMAP embedding.
+        Y_train_np = np.asarray(y, dtype=np.float64)
+        self.Y_train_ = Y_train_np
+        try:
+            self._train_kdtree = cKDTree(Y_train_np)
+        except Exception:
+            self._train_kdtree = None
+
+        # Re-normalise the already-unit-mean sample weights to unit sum so
+        # the weighted mean / covariance correspond to the density-weighted
+        # empirical distribution of the training manifold.
+        w_cov = sample_weight / (np.sum(sample_weight) + 1e-12)
+        mu_train = np.sum(w_cov[:, None] * Y_train_np, axis=0)
+        diff = Y_train_np - mu_train
+        cov = (w_cov[:, None] * diff).T @ diff
+        # Pinv guards against singular covariance in degenerate folds
+        # (e.g. very small test splits on a rare satellite cluster).
+        self.train_mean_ = mu_train.astype(np.float64)
+        self.train_cov_inv_ = np.linalg.pinv(cov)
+
         self.is_fitted_ = True
 
         return self
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, X: np.ndarray, snap: bool = True) -> np.ndarray:
         """
-        Predicts the deterministic 2-D UMAP coordinates of upcoming vocalisations.
+        Predicts the 2-D UMAP coordinates of upcoming vocalisations.
 
         Parameters
         ----------
         X : np.ndarray
             Input behavioural history matrix, shape
             `(n_samples, n_features * n_time_bins)`.
+        snap : bool, default=True
+            When True (the default), each raw prediction `X @ W + b` is
+            projected onto the nearest training UMAP point (1-NN in
+            Euclidean distance over `Y_train_`) so the model's output is
+            constrained to the same convex support as the training
+            manifold and the null baselines. When False, returns the raw
+            linear-map prediction, which can land outside the manifold
+            support for extreme kinematic inputs — useful as a diagnostic
+            for how often the unconstrained model extrapolates.
 
         Returns
         -------
         Y_pred : np.ndarray
-            Predicted `(mu_x, mu_y)` coordinates, shape `(n_samples, 2)`.
+            Predicted `(x, y)` coordinates, shape `(n_samples, 2)`.
+            `float32` when `snap=True` (matches `Y_train_` dtype semantics
+            in the runner), else `float64`.
         """
 
         check_is_fitted(self, ['coef_', 'intercept_'])
         X = check_array(X)
-        return np.dot(X, self.coef_) + self.intercept_
+        raw = np.dot(X, self.coef_) + self.intercept_
+
+        if snap and getattr(self, '_train_kdtree', None) is not None:
+            _, idx = self._train_kdtree.query(raw, k=1)
+            return self.Y_train_[idx]
+        return raw
 
     def evaluate_metrics(self, X: np.ndarray, Y_true: np.ndarray, weights: Optional[np.ndarray] = None) -> dict:
         """
         Evaluates the fitted model on test data and returns a metric bundle
-        aligned with the expectations of the univariate runner and the
-        forward-selection routine.
+        aligned with the univariate runner and the forward-selection routine.
+
+        All Euclidean- and correlation-based metrics are computed on the
+        **snapped** predictions (raw linear output projected onto the
+        nearest observed training UMAP point), so the regressor competes
+        against the null baselines on the same manifold support.
+        `euclidean_mae_raw` is preserved as a diagnostic to quantify how
+        often the unconstrained linear map extrapolates off-manifold.
 
         Metrics glossary
         ----------------
-        - `euclidean_mae` : Mean Euclidean distance between predicted and
-          true UMAP coordinates. Interpretable error magnitude in native
-          UMAP units (lower is better). This is the headline regression
-          score.
-        - `euclidean_rmse` : Root-mean-squared Euclidean distance.
-          Complements MAE; an `RMSE / MAE` ratio substantially greater than
-          `sqrt(pi / 2) ≈ 1.25` signals heavy-tailed residuals or outlier
-          test folds.
+        - `r2_spatial` : pooled-axis coefficient of determination against
+          the test-fold marginal mean. **Selection score.** Higher is
+          better; bounded above by 1 for well-specified models and can be
+          slightly negative when the model under-performs a constant
+          test-fold-mean predictor.
+        - `euclidean_mae` : mean Euclidean distance between snapped
+          predictions and truth, in native UMAP units. Interpretable
+          headline error magnitude for reporting.
+        - `euclidean_rmse` : root-mean-squared Euclidean distance on the
+          snapped predictions. `RMSE / MAE` well above `sqrt(pi / 2)
+          ≈ 1.25` signals heavy-tailed residuals.
         - `euclidean_mae_weighted` : MAE on the Euclidean residual weighted
           by the caller-supplied inverse-density weights so rare satellite
           vocalisations carry the same influence as dense-core bouts.
-        - `mae_x`, `mae_y` : Per-axis Mean Absolute Error. Useful when one
-          UMAP axis is systematically easier to predict than the other.
-        - `spearman_x`, `spearman_y` : Per-axis rank correlation between
-          predictions and truth (robust to monotonic transformations of the
-          embedding).
-        - `pearson_x`, `pearson_y` : Per-axis linear correlation on the
-          natural scale. Complements Spearman by detecting magnitude
-          compression / expansion.
-        - `r2_spatial` : Fraction of total spatial variance (pooled across
-          both axes) explained by the predictions. Bounded above by 1 for
-          well-specified models.
+        - `euclidean_mae_raw` : **diagnostic only.** MAE on the *raw*
+          unsnapped linear predictions. The gap `euclidean_mae_raw -
+          euclidean_mae` quantifies how much the manifold projection
+          improves the fair-comparison number.
+        - `mahalanobis_mae` : mean Mahalanobis distance of the residual in
+          the inverse-density-weighted training covariance of `Y_train`.
+          Removes the axis-scale arbitrariness of the UMAP embedding so a
+          unit error on a tight axis is not silently treated the same as
+          a unit error on a loose one. Dimensionless; lower is better.
+        - `mae_x`, `mae_y` : per-axis absolute error on the snapped
+          predictions. Useful when one UMAP axis is systematically easier
+          to predict than the other.
+        - `spearman_x`, `spearman_y` : per-axis rank correlation between
+          snapped predictions and truth.
+        - `pearson_x`, `pearson_y` : per-axis linear correlation on the
+          natural scale.
 
         Parameters
         ----------
@@ -440,7 +531,17 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         check_is_fitted(self, ['coef_', 'intercept_'])
 
-        Y_pred = self.predict(X)
+        # Snapped predictions — constrained to the training manifold,
+        # which is the fair-comparison mode for every metric below. The
+        # raw linear prediction is recomputed separately so we can expose
+        # `euclidean_mae_raw` as a diagnostic without paying two kd-tree
+        # queries.
+        Y_pred_raw = self.predict(X, snap=False)
+        if getattr(self, '_train_kdtree', None) is not None:
+            _, nn_idx = self._train_kdtree.query(Y_pred_raw, k=1)
+            Y_pred = self.Y_train_[nn_idx]
+        else:
+            Y_pred = Y_pred_raw
 
         if weights is None:
             weights = np.ones(Y_true.shape[0])
@@ -451,12 +552,29 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
         euclidean_mae = float(np.mean(euclidean_dist))
         euclidean_rmse = float(np.sqrt(np.mean(euclidean_dist ** 2)))
-        # Use the raw caller-supplied weights rather than internally
-        # normalising so reviewers can directly compare this number with the
-        # unweighted MAE for the same fold.
         euclidean_mae_weighted = float(
             np.sum(weights * euclidean_dist) / (np.sum(weights) + 1e-12)
         )
+
+        # Raw (unsnapped) Euclidean MAE — how far off the manifold the
+        # unconstrained linear map lands on average.
+        dx_raw = Y_true[:, 0] - Y_pred_raw[:, 0]
+        dy_raw = Y_true[:, 1] - Y_pred_raw[:, 1]
+        euclidean_mae_raw = float(np.mean(np.sqrt(dx_raw ** 2 + dy_raw ** 2)))
+
+        # Mahalanobis MAE using the inverse-density-weighted training
+        # covariance. Interprets "how many spread-units off" rather than
+        # "how many raw UMAP units off", removing the arbitrariness of the
+        # UMAP embedding's axis scales.
+        if getattr(self, 'train_cov_inv_', None) is not None:
+            residual = np.stack([dx, dy], axis=1)
+            # r @ Cov^-1 @ r.T for every row, extracted as the diagonal.
+            quad = np.einsum('ij,jk,ik->i', residual, self.train_cov_inv_, residual)
+            # Numerical noise in near-singular covariances can push tiny
+            # residuals slightly negative; clip before the sqrt.
+            mahalanobis_mae = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
+        else:
+            mahalanobis_mae = float('nan')
 
         mae_x = float(np.mean(np.abs(dx)))
         mae_y = float(np.mean(np.abs(dy)))
@@ -491,14 +609,16 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         r2_spatial = float(1.0 - (ss_res / denom)) if denom > 0 else 0.0
 
         return {
+            'r2_spatial': r2_spatial,
             'euclidean_mae': euclidean_mae,
             'euclidean_rmse': euclidean_rmse,
             'euclidean_mae_weighted': euclidean_mae_weighted,
+            'euclidean_mae_raw': euclidean_mae_raw,
+            'mahalanobis_mae': mahalanobis_mae,
             'mae_x': mae_x,
             'mae_y': mae_y,
             'pearson_x': pearson_x,
             'pearson_y': pearson_y,
             'spearman_x': spearman_x,
             'spearman_y': spearman_y,
-            'r2_spatial': r2_spatial,
         }

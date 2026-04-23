@@ -30,10 +30,17 @@ Key scientific capabilities:
     preventing session leakage while guaranteeing that rare and common
     acoustic regions are proportionally represented in every train / test
     fold.
-4.  Rigorous null baselines: compares model performance against both a
-    within-session shuffled control (`null`) and a spatial-centroid
-    baseline (`null_model_free`, the KDE-weighted training-set centroid)
-    to validate behavioural predictive power.
+4.  Rigorous null baselines: compares model performance against a
+    within-session **X-history shuffle** (`null`) and the KDE-weighted
+    training-set centroid (`null_model_free`). The X-history shuffle is
+    the canonical permutation test for regression: trial `i`'s Y stays
+    where it is, but its kinematic history is replaced with the history
+    of another trial from the same session. This preserves session-level
+    biases and within-session vocal-repertoire autocorrelation — so a
+    predictor that just memorises "this session tends to vocalise at
+    region R" cannot beat the null by accident — and isolates the
+    kinematics-to-manifold mapping as the only signal the actual model
+    can exploit.
 """
 
 import json
@@ -557,20 +564,28 @@ class ContinuousModelRunner:
        learned weights and intercepts, and per-fold optimizer diagnostics.
 
     Metrics saved per fold (see `SmoothBivariateRegression.evaluate_metrics`
-    for full definitions):
-    - `euclidean_mae` — mean Euclidean distance between predicted and true
-      UMAP coordinates. Headline score (lower is better).
+    for full definitions). Every fit uses the manifold-snapped predictions
+    so the active model and both baselines are evaluated on the same
+    support:
+    - `r2_spatial` — pooled spatial variance explained by the predictions;
+      bounded above by 1. **Selection score** (higher is better).
+    - `euclidean_mae` — mean Euclidean distance between snapped predictions
+      and truth, in native UMAP units. Interpretable headline error.
     - `euclidean_rmse` — root-mean-squared Euclidean distance; a large
       `RMSE / MAE` ratio flags heavy-tailed outlier folds.
     - `euclidean_mae_weighted` — MAE on the Euclidean residual weighted by
       the inverse-density KDE weights so satellite vocalisations count as
       much as dense-core bouts.
-    - `mae_x`, `mae_y` — per-axis absolute error; useful when one UMAP
-      axis is systematically easier to predict than the other.
+    - `euclidean_mae_raw` — diagnostic only; MAE on the *unsnapped* raw
+      linear predictions. The gap `euclidean_mae_raw - euclidean_mae`
+      quantifies how often the unconstrained model extrapolates
+      off-manifold.
+    - `mahalanobis_mae` — mean standardized residual distance using the
+      inverse-density-weighted training covariance of `Y_train`. Removes
+      the UMAP axis-scale arbitrariness; dimensionless, lower is better.
+    - `mae_x`, `mae_y` — per-axis absolute error on snapped predictions.
     - `pearson_x`, `pearson_y`, `spearman_x`, `spearman_y` — per-axis
       linear and rank correlations between predictions and truth.
-    - `r2_spatial` — pooled spatial variance explained by the predictions,
-      bounded above by 1 (use for cross-feature ranking).
     - `n_iter`, `converged`, `fit_time` — per-fold JAX optimizer
       diagnostics. `converged=False` flags folds that terminated at
       `max_iter` without meeting the tolerance.
@@ -678,21 +693,36 @@ class ContinuousModelRunner:
         evaluated across three strategies:
 
         1. `actual` — fits the true kinematic-to-acoustic mapping.
-        2. `null` — shuffles UMAP labels within-session (seeded per fold),
-           destroying the temporal kinematics-to-manifold mapping while
-           preserving session-level biases.
+        2. `null` — within-session X-history shuffle. For the training
+           fold, every trial's kinematic history is replaced with the
+           history of another trial from the same session (seeded per
+           fold via `np.random.default_rng`); `Y_train` and `w_train`
+           stay in place. This is the classical permutation test for
+           regression and, crucially, preserves session-level vocal-
+           repertoire autocorrelation — so a predictor that exploits
+           "this session tends to vocalise around region R" cannot beat
+           the null accidentally. The test fold is left untouched so the
+           null estimator is evaluated on the same real `(X_test,
+           Y_test)` pairing as the actual model.
         3. `null_model_free` — bypasses modelling entirely and predicts the
-           KDE-weighted centroid of the training set's UMAP coordinates for
-           every test point. This is the "no-kinematics" floor that a real
-           model must beat.
+           KDE-weighted training centroid for every test trial. This is
+           the "no-kinematics, no-session-structure" floor that any model
+           with genuine signal must beat.
+
+        Selection score
+        ---------------
+        `r2_spatial` (pooled-axis coefficient of determination against the
+        test-fold marginal mean) is the headline score — directly
+        comparable across features and sex groups. All other metrics are
+        reported as diagnostics (see the class docstring).
 
         Data persistence
         -----------------
         Saves full-resolution tracking data (`test_indices`, `y_true`,
-        `y_pred_xy`, `weights`, `intercepts`, convergence diagnostics,
-        `w_test`) for every strategy so downstream comparative scatter
-        plotting and manifold visualisation can be regenerated without
-        re-training.
+        `y_pred_xy` — manifold-snapped, `weights`, `intercepts`,
+        convergence diagnostics, `w_test`) for every strategy so
+        downstream comparative scatter plotting and manifold
+        visualisation can be regenerated without re-training.
 
         Parameters
         ----------
@@ -750,22 +780,42 @@ class ContinuousModelRunner:
 
         # Canonical set of metric keys emitted by `evaluate_metrics`. Used
         # both to initialise the per-fold metric dict and to summarise at
-        # the end so the two stay in lockstep.
+        # the end so the two stay in lockstep. `r2_spatial` is first
+        # because it is the selection score.
         metric_keys = [
+            'r2_spatial',
             'euclidean_mae',
             'euclidean_rmse',
             'euclidean_mae_weighted',
+            'euclidean_mae_raw',
+            'mahalanobis_mae',
             'mae_x',
             'mae_y',
             'pearson_x',
             'pearson_y',
             'spearman_x',
             'spearman_y',
-            'r2_spatial',
         ]
 
         results = {}
         strategies = ['actual', 'null', 'null_model_free']
+
+        def _shuffle_X_within_groups(X_block: np.ndarray,
+                                     groups_block: np.ndarray,
+                                     rng_: np.random.Generator) -> np.ndarray:
+            """
+            Returns `X_block` with its rows permuted inside each session
+            block. `Y_train` and `w_train` are expected to stay aligned to
+            the original row order at the call site — only the kinematic
+            histories are re-paired.
+            """
+            perm = np.arange(len(X_block))
+            for sess_id in np.unique(groups_block):
+                sess_positions = np.where(groups_block == sess_id)[0]
+                shuffled = sess_positions.copy()
+                rng_.shuffle(shuffled)
+                perm[sess_positions] = shuffled
+            return X_block[perm]
 
         for strategy in strategies:
             print(f"  Executing Strategy: [{strategy.upper()}]")
@@ -781,9 +831,10 @@ class ContinuousModelRunner:
                     'y_true': [],
                     'w_test': [],
                     # Deterministic (x, y) predictions for every test trial —
-                    # shape `(n_test, 2)`. This replaces the older
-                    # 5-column `(mu_x, mu_y, sigma_x, sigma_y, rho)` array
-                    # emitted by the Gaussian density model.
+                    # shape `(n_test, 2)`. Predictions are manifold-snapped
+                    # to the nearest training UMAP point for the active and
+                    # `null` strategies; `null_model_free` predicts the
+                    # training centroid (already inside the manifold hull).
                     'y_pred_xy': [],
                     # Per-fold optimiser diagnostics. `converged=False`
                     # flags folds that terminated at `max_iter` without
@@ -797,30 +848,25 @@ class ContinuousModelRunner:
 
             for fold_idx, (train_idx, test_idx) in enumerate(folds):
 
-                Y_active = Y.copy()
-                w_active = w.copy()
+                X_train, X_test = X[train_idx], X[test_idx]
+                Y_train, Y_test = Y[train_idx], Y[test_idx]
+                w_train, w_test = w[train_idx], w[test_idx]
+                groups_train = groups[train_idx]
 
                 if strategy == 'null':
-                    # Seeded per-fold Generator so within-session shuffles
-                    # are reproducible and independent of ambient global RNG
-                    # state.
-                    null_rng = np.random.default_rng(random_seed + fold_idx + 1)
-                    unique_groups = np.unique(groups)
-                    for g in unique_groups:
-                        g_idx = np.where(groups == g)[0]
-                        shuffled_idx = null_rng.permutation(g_idx)
-                        Y_active[g_idx] = Y_active[shuffled_idx]
-                        w_active[g_idx] = w_active[shuffled_idx]
-
-                X_train, X_test = X[train_idx], X[test_idx]
-                Y_train, Y_test = Y_active[train_idx], Y_active[test_idx]
-                w_train, w_test = w_active[train_idx], w_active[test_idx]
+                    # Within-session X-history shuffle: each training
+                    # trial's kinematic history is swapped with another
+                    # trial's history from the same session. Session-level
+                    # vocal-repertoire structure is preserved, so the null
+                    # is strictly about "does the specific kinematic
+                    # signal matter?"
+                    shuffle_rng = np.random.default_rng(random_seed + fold_idx + 1)
+                    X_train = _shuffle_X_within_groups(X_train, groups_train, shuffle_rng)
 
                 if strategy == 'null_model_free':
                     # Spatial-centroid baseline: predict the KDE-weighted
-                    # training-set mean for every test trial. This is the
-                    # "no-kinematics" floor that any model with real
-                    # behavioural signal must clear.
+                    # training centroid for every test trial — the
+                    # absolute floor before any kinematic signal enters.
                     mu = np.average(Y_train, axis=0, weights=w_train)
                     y_pred_xy = np.tile(mu.astype(np.float32), (len(Y_test), 1))
 
@@ -832,22 +878,37 @@ class ContinuousModelRunner:
                     ss_tot_y = np.sum((Y_test[:, 1] - np.mean(Y_test[:, 1])) ** 2)
                     denom = ss_tot_x + ss_tot_y
 
-                    # Constant predictions make the per-axis correlations
-                    # undefined; report them as NaN to match the regressor's
-                    # NaN-safe convention and keep downstream plotting sane.
+                    # Mahalanobis MAE using the KDE-weighted training
+                    # covariance, matching the regressor's convention.
+                    w_cov = w_train / (np.sum(w_train) + 1e-12)
+                    diff_tr = Y_train - mu
+                    cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
+                    cov_inv = np.linalg.pinv(cov_tr)
+                    residual = np.stack([dx, dy], axis=1)
+                    quad = np.einsum('ij,jk,ik->i', residual, cov_inv, residual)
+                    mahalanobis_mae = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
+
+                    # Constant predictions: per-axis correlations are
+                    # mathematically undefined → NaN, matching the
+                    # estimator's NaN-safe convention. The centroid is
+                    # already on-manifold so the raw / snapped MAE are
+                    # identical.
+                    mae_val = float(np.mean(euclidean_dist))
                     metrics = {
-                        'euclidean_mae': float(np.mean(euclidean_dist)),
+                        'r2_spatial': float(1.0 - (sse / denom)) if denom > 0 else 0.0,
+                        'euclidean_mae': mae_val,
                         'euclidean_rmse': float(np.sqrt(np.mean(euclidean_dist ** 2))),
                         'euclidean_mae_weighted': float(
                             np.sum(w_test * euclidean_dist) / (np.sum(w_test) + 1e-12)
                         ),
+                        'euclidean_mae_raw': mae_val,
+                        'mahalanobis_mae': mahalanobis_mae,
                         'mae_x': float(np.mean(np.abs(dx))),
                         'mae_y': float(np.mean(np.abs(dy))),
                         'pearson_x': float('nan'),
                         'pearson_y': float('nan'),
                         'spearman_x': float('nan'),
                         'spearman_y': float('nan'),
-                        'r2_spatial': float(1.0 - (sse / denom)) if denom > 0 else 0.0,
                     }
 
                     fold_weights, fold_intercepts = None, None
@@ -871,7 +932,7 @@ class ContinuousModelRunner:
                     model.fit(X_train, Y_train, sample_weight=w_train)
                     metrics = model.evaluate_metrics(X_test, Y_test, weights=w_test)
 
-                    y_pred_xy = model.predict(X_test).astype(np.float32)
+                    y_pred_xy = model.predict(X_test, snap=True).astype(np.float32)
                     fold_weights = model.coef_
                     fold_intercepts = model.intercept_
                     fold_n_iter = int(model.n_iter_)
@@ -879,9 +940,9 @@ class ContinuousModelRunner:
                     fold_fit_time = float(model.fit_time_)
 
                 print(
-                    f"      Fold {fold_idx + 1:03d}/{n_splits} | MAE: {metrics['euclidean_mae']:.4f} "
-                    f"| RMSE: {metrics['euclidean_rmse']:.4f} | R^2: {metrics['r2_spatial']:.3f} "
-                    f"| converged: {fold_converged}",
+                    f"      Fold {fold_idx + 1:03d}/{n_splits} | "
+                    f"R^2: {metrics['r2_spatial']:.3f} | MAE: {metrics['euclidean_mae']:.4f} "
+                    f"| Mahal: {metrics['mahalanobis_mae']:.4f} | converged: {fold_converged}",
                     flush=True,
                 )
 

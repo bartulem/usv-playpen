@@ -2883,43 +2883,46 @@ def continuous_vocal_manifold_model_selection(
 
     The selector identifies the minimal set of behavioural features that
     jointly predict the `(x, y)` UMAP coordinates of upcoming USVs.
-    Following the shift away from a bivariate-Gaussian density (whose
-    variance parameters were not conditional on `X`), this routine scores
-    candidates by their density-weighted Euclidean MAE on the natural UMAP
-    scale — the headline regression metric emitted by
-    `SmoothBivariateRegression.evaluate_metrics`.
+    Candidates are ranked by `r2_spatial` (the coefficient of
+    determination pooled across UMAP axes) — higher is better,
+    interpretable as the fraction of test-fold spatial variance the
+    model explains above the test-fold marginal mean.
 
-    Key algorithmic choices:
-    1. Wilcoxon screening. Rather than comparing means to a shuffled
-       percentile, candidates are ranked by a Bonferroni-corrected
-       Wilcoxon signed-rank test on paired, spatially-identical
-       cross-validation folds of the univariate `euclidean_mae_weighted`
-       vector (actual < null).
-    2. Spatial stratification. Folds come from
+    Key algorithmic choices
+    -----------------------
+    1. Manifold-bounded predictions. Every candidate prediction is
+       snapped to the nearest observed training UMAP point before
+       metrics are computed, so the active model and the baselines
+       compete on the same support and the metric magnitudes are
+       directly comparable (see `SmoothBivariateRegression.predict`).
+    2. Wilcoxon screening (higher-is-better). Candidates are ranked by a
+       Bonferroni-corrected one-sided Wilcoxon signed-rank test on the
+       paired per-fold `r2_spatial` of `actual` vs. `null` (the within-
+       session X-history shuffle).
+    3. Spatial stratification. Folds come from
        `get_stratified_spatial_splits_stable`, which uses deterministic
        K-Means geographic clustering so rare acoustic satellites are
        proportionally represented across train / test halves under both
        `session` and `mixed` strategies.
-    3. Inverse-density weighting. The pre-computed KDE spatial weights
+    4. Inverse-density weighting. The pre-computed KDE spatial weights
        `w` are forwarded to the JAX optimiser so gradient updates give
        satellite vocalisations the same pull as dense-core bouts.
-    4. Spatial-centroid baseline (Step 0). `null_model_free` predicts the
-       KDE-weighted training-set centroid for every test point. Features
-       must prove they offer temporal predictive power above and beyond
-       predicting the acoustic centre of mass.
-    5. 1SE rule on weighted MAE. A feature is added only when it reduces
-       `mean_mae_weighted` by more than the candidate's standard error
-       across the validation folds. Lower MAE is better, so the
-       acceptance test is `(best_current_score - best_cand_score) >
-       best_cand_se`.
+    5. Spatial-centroid baseline (Step 0). `null_model_free` predicts
+       the KDE-weighted training centroid for every test trial — the
+       absolute floor any model with real signal must clear.
+    6. 1SE rule on R². Because R² is higher-is-better, a feature is
+       added only when `(best_cand_score - best_current_score) >
+       best_cand_se`, i.e. the candidate's mean score beats the current
+       best by more than one SE of its own per-fold distribution.
 
     Deep storage for post-hoc visualisation
     ---------------------------------------
-    Every step persists, for each candidate and fold: the
-    `evaluate_metrics` bundle, the learned `coef_` / `intercept_` matrices,
-    the raw test coordinates `y_true`, the deterministic `(x, y)`
-    predictions `y_pred_xy`, the test-fold weights `w_test`, and the per-
-    fold JAX optimiser diagnostics (`n_iter`, `converged`, `fit_time`).
+    Every step persists, for each candidate and fold: the full
+    `evaluate_metrics` bundle, the learned `coef_` / `intercept_`
+    matrices, the test coordinates `y_true`, the manifold-snapped
+    predictions `y_pred_xy`, the test-fold weights `w_test`, and the
+    per-fold JAX optimiser diagnostics (`n_iter`, `converged`,
+    `fit_time`).
 
     Parameters
     ----------
@@ -2965,11 +2968,13 @@ def continuous_vocal_manifold_model_selection(
     alpha_corrected = p_val / num_features
     candidates = []
 
-    # `euclidean_mae_weighted` is the headline screening score because it
-    # (a) lives on the native UMAP scale reviewers can interpret and (b)
-    # mirrors the inverse-density-weighted loss the estimator actually
-    # optimises. Lower is better, so the Wilcoxon alternative is `less`.
-    SCREENING_METRIC = 'euclidean_mae_weighted'
+    # `r2_spatial` is the headline screening score: it's directly
+    # comparable across features / sex groups, bounded above by 1, and
+    # universally interpretable as "fraction of test-fold spatial
+    # variance explained above the marginal mean". Higher is better, so
+    # the one-sided Wilcoxon alternative is `greater` (actual beats the
+    # within-session X-history shuffled null).
+    SCREENING_METRIC = 'r2_spatial'
 
     print(f"Screening {num_features} features (Bonferroni alpha = {alpha_corrected:.2e})...")
     for feat_name, payload in univariate_data.items():
@@ -2996,7 +3001,7 @@ def continuous_vocal_manifold_model_selection(
             continue
 
         try:
-            _, p_value = wilcoxon(valid_actual, valid_null, alternative='less')
+            _, p_value = wilcoxon(valid_actual, valid_null, alternative='greater')
         except ValueError:
             p_value = 1.0
 
@@ -3004,11 +3009,12 @@ def continuous_vocal_manifold_model_selection(
             mean_score = float(np.mean(valid_actual))
             candidates.append({
                 'feature': feat_name,
-                'mean_mae_weighted': mean_score,
+                'mean_r2': mean_score,
                 'p_val': p_value,
             })
 
-    candidates.sort(key=lambda x: x['mean_mae_weighted'])
+    # Rank by descending R^2 (best features first).
+    candidates.sort(key=lambda x: x['mean_r2'], reverse=True)
     ranked_features = [x['feature'] for x in candidates]
 
     if not ranked_features:
@@ -3076,7 +3082,10 @@ def continuous_vocal_manifold_model_selection(
     )
 
     current_model_features = []
-    best_current_score = float('inf')
+    # R^2 is higher-is-better, so the pre-Step-0 "best" is `-inf` (any
+    # finite baseline beats it); 1SE acceptance becomes
+    # `(best_cand_score - best_current_score) > best_cand_se`.
+    best_current_score = float('-inf')
     best_current_se = 0.0
     step_counter = 0
 
@@ -3108,17 +3117,18 @@ def continuous_vocal_manifold_model_selection(
 
             if 'candidates_summary' in last_res and last_res['candidates_summary']:
                 cand_dict = last_res['candidates_summary']
-                best_cand_in_file = min(
+                # Best-of-file is the candidate with highest mean R^2.
+                best_cand_in_file = max(
                     cand_dict.items(),
-                    key=lambda x: x[1]['mean_mae_weighted'],
+                    key=lambda x: x[1]['mean_r2'],
                 )
                 name, stats = best_cand_in_file
 
-                if (best_current_score - stats['mean_mae_weighted']) > stats['se_mae_weighted']:
+                if (stats['mean_r2'] - best_current_score) > stats['se_r2']:
                     if name not in current_model_features:
                         current_model_features.append(name)
-                    best_current_score = stats['mean_mae_weighted']
-                    best_current_se = stats['se_mae_weighted']
+                    best_current_score = stats['mean_r2']
+                    best_current_se = stats['se_r2']
                     step_counter = last_step + 1
                 else:
                     print("[RESUME] Selection already converged. Stopping loop.")
@@ -3129,17 +3139,20 @@ def continuous_vocal_manifold_model_selection(
 
     # Canonical ordering of the metric keys so the dict initialiser and the
     # downstream aggregation stay in lockstep with the estimator output.
+    # `r2_spatial` is first because it is the selection score.
     MANIFOLD_METRIC_KEYS = [
+        'r2_spatial',
         'euclidean_mae',
         'euclidean_rmse',
         'euclidean_mae_weighted',
+        'euclidean_mae_raw',
+        'mahalanobis_mae',
         'mae_x',
         'mae_y',
         'pearson_x',
         'pearson_y',
         'spearman_x',
         'spearman_y',
-        'r2_spatial',
     ]
 
     # Calculate Model-Free Baseline (Step 0) if starting fresh.
@@ -3172,12 +3185,29 @@ def continuous_vocal_manifold_model_selection(
             ss_tot_y = np.sum((Y_te[:, 1] - np.mean(Y_te[:, 1])) ** 2)
             denom = ss_tot_x + ss_tot_y
 
+            # Mahalanobis MAE under the KDE-weighted training covariance
+            # of Y_tr — matches the regressor's convention so the baseline
+            # and the active models compete on the same distance metric.
+            w_cov = w_tr / (np.sum(w_tr) + 1e-12)
+            diff_tr = Y_tr - mu
+            cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
+            cov_inv = np.linalg.pinv(cov_tr)
+            residual = np.stack([dx, dy], axis=1)
+            quad = np.einsum('ij,jk,ik->i', residual, cov_inv, residual)
+            mahalanobis_mae_val = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
+
+            mae_val = float(np.mean(euclidean_dist))
             f_met = baseline_data['folds']['metrics']
-            f_met['euclidean_mae'].append(float(np.mean(euclidean_dist)))
+            f_met['r2_spatial'].append(float(1.0 - (sse / denom)) if denom > 0 else 0.0)
+            f_met['euclidean_mae'].append(mae_val)
             f_met['euclidean_rmse'].append(float(np.sqrt(np.mean(euclidean_dist ** 2))))
             f_met['euclidean_mae_weighted'].append(
                 float(np.sum(w_te * euclidean_dist) / (np.sum(w_te) + 1e-12))
             )
+            # Centroid prediction is constant and already on-manifold, so
+            # raw and snapped MAE coincide.
+            f_met['euclidean_mae_raw'].append(mae_val)
+            f_met['mahalanobis_mae'].append(mahalanobis_mae_val)
             f_met['mae_x'].append(float(np.mean(np.abs(dx))))
             f_met['mae_y'].append(float(np.mean(np.abs(dy))))
             # Constant predictions make per-axis correlations undefined;
@@ -3186,7 +3216,6 @@ def continuous_vocal_manifold_model_selection(
             f_met['pearson_y'].append(float('nan'))
             f_met['spearman_x'].append(float('nan'))
             f_met['spearman_y'].append(float('nan'))
-            f_met['r2_spatial'].append(float(1.0 - (sse / denom)) if denom > 0 else 0.0)
 
             y_pred_xy = np.tile(mu.astype(np.float32), (len(Y_te), 1))
 
@@ -3196,19 +3225,21 @@ def continuous_vocal_manifold_model_selection(
             baseline_data['folds']['y_pred_xy'].append(y_pred_xy)
 
         baseline_scores = np.asarray(
-            baseline_data['folds']['metrics']['euclidean_mae_weighted'], dtype=float
+            baseline_data['folds']['metrics']['r2_spatial'], dtype=float
         )
         valid_scores = baseline_scores[~np.isnan(baseline_scores)]
-        best_current_score = float(np.mean(valid_scores)) if valid_scores.size else float('inf')
+        best_current_score = (
+            float(np.mean(valid_scores)) if valid_scores.size else float('-inf')
+        )
         best_current_se = (
             float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
             if valid_scores.size > 1 else 0.0
         )
 
-        print(f"  Baseline weighted-MAE established at: {best_current_score:.4f}")
+        print(f"  Baseline R^2 (centroid) established at: {best_current_score:.4f}")
 
-        baseline_data['mean_mae_weighted'] = best_current_score
-        baseline_data['se_mae_weighted'] = best_current_se
+        baseline_data['mean_r2'] = best_current_score
+        baseline_data['se_r2'] = best_current_se
 
         step_0_res = {
             'step_idx': 0,
@@ -3299,7 +3330,7 @@ def continuous_vocal_manifold_model_selection(
                 _append_failed_fold(cand_data)
 
         valid_scores = np.asarray(
-            cand_data['folds']['metrics']['euclidean_mae_weighted'], dtype=float
+            cand_data['folds']['metrics']['r2_spatial'], dtype=float
         )
         valid_scores = valid_scores[np.isfinite(valid_scores)]
         if valid_scores.size:
@@ -3309,14 +3340,14 @@ def continuous_vocal_manifold_model_selection(
                 if valid_scores.size > 1 else 0.0
             )
 
-            cand_data['mean_mae_weighted'] = mean_anc
-            cand_data['se_mae_weighted'] = se_anc
+            cand_data['mean_r2'] = mean_anc
+            cand_data['se_r2'] = se_anc
 
-            # 1SE rule — lower MAE is better, so the candidate is accepted
-            # only when its mean score beats the current best by more than
-            # one SE of its own per-fold distribution.
-            if (best_current_score - mean_anc) > se_anc:
-                print(f"  *** ANCHOR ACCEPTED: weighted MAE dropped to {mean_anc:.4f} ***")
+            # 1SE rule — R^2 is higher-is-better, so the candidate is
+            # accepted only when its mean score beats the current best by
+            # more than one SE of its own per-fold distribution.
+            if (mean_anc - best_current_score) > se_anc:
+                print(f"  *** ANCHOR ACCEPTED: R^2 rose to {mean_anc:.4f} ***")
                 best_current_score = mean_anc
                 best_current_se = se_anc
                 current_model_features = [anchor]
@@ -3335,14 +3366,16 @@ def continuous_vocal_manifold_model_selection(
     # Forward stepwise selection loop
     print("\n--- Starting Forward Selection ---")
     while True:
-        print(f"\n=== Step {step_counter} === Best weighted MAE: {best_current_score:.5f}")
+        print(f"\n=== Step {step_counter} === Best R^2: {best_current_score:.5f}")
         step_results = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'candidates_summary': {},
             'selected_feature': None
         }
 
-        best_cand, best_cand_score, best_cand_se = None, float('inf'), 0.0
+        # R^2 is higher-is-better; initialise the per-step best score at
+        # `-inf` so any finite candidate score is an improvement.
+        best_cand, best_cand_score, best_cand_se = None, float('-inf'), 0.0
 
         for i_feat, feat in enumerate(ranked_features):
             if feat in current_model_features: continue
@@ -3401,7 +3434,7 @@ def continuous_vocal_manifold_model_selection(
                     _append_failed_fold(cand_data)
 
             valid_scores = np.asarray(
-                cand_data['folds']['metrics']['euclidean_mae_weighted'], dtype=float
+                cand_data['folds']['metrics']['r2_spatial'], dtype=float
             )
             valid_scores = valid_scores[np.isfinite(valid_scores)]
             if not valid_scores.size:
@@ -3413,17 +3446,19 @@ def continuous_vocal_manifold_model_selection(
                 float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
                 if valid_scores.size > 1 else 0.0
             )
-            mean_r2 = float(np.nanmean(cand_data['folds']['metrics']['r2_spatial']))
-            print(f" weighted MAE: {mean_score:.4f} | R^2: {mean_r2:.4f}")
+            mean_mae = float(np.nanmean(cand_data['folds']['metrics']['euclidean_mae']))
+            print(f" R^2: {mean_score:.4f} | MAE: {mean_mae:.4f}")
 
-            cand_data['mean_mae_weighted'] = mean_score
-            cand_data['se_mae_weighted'] = se_score
+            cand_data['mean_r2'] = mean_score
+            cand_data['se_r2'] = se_score
             step_results['candidates_summary'][feat] = cand_data
 
-            if mean_score < best_cand_score:
+            if mean_score > best_cand_score:
                 best_cand_score, best_cand_se, best_cand = mean_score, se_score, feat
 
-        if best_cand and (best_current_score - best_cand_score) > best_cand_se:
+        # 1SE rule on R^2 (higher is better): accept only when the best
+        # candidate beats the current best by more than its own SE.
+        if best_cand and (best_cand_score - best_current_score) > best_cand_se:
             print(f"  ACCEPT {best_cand}")
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
