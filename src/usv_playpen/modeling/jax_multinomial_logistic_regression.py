@@ -3,10 +3,10 @@
 JAX-based multinomial logistic regression with temporal smoothing.
 
 This module implements a custom scikit-learn compatible estimator that solves
-multinomial logistic regression with two forms of regularization:
+multinomial logistic regression with two forms of regularisation:
 1. Standard L2 (Ridge) on the weights.
-2. Temporal smoothing (L2 on the second derivative) to force weights to vary
-   smoothly over time indices.
+2. Temporal smoothing (penalising the n-th derivative of the weights along
+   the time axis) to force filters to vary smoothly over time lags.
 """
 
 import jax
@@ -26,14 +26,14 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
     Multinomial logistic regression with temporal smoothing (JAX implementation).
 
     This estimator learns a weight matrix W of shape (n_features * n_time_bins, n_classes).
-    It minimizes an alpha-balanced focal loss augmented by:
-    1. L1 regularization (lasso) which promotes sparsity in the weights.
-    2. L2 regularization (ridge) which penalizes large weights.
-    3. Temporal smoothing penalty which penalizes the second derivative of weights
-       along the time axis, forcing the learned filters to be smooth curves. The
-       per-class smoothing penalty is additionally scaled by the inverse-frequency
-       class weight, so rare-class filters are regularized more strongly (stronger
-       prior where data is thin).
+    It minimises an alpha-balanced focal loss augmented by:
+    1. L2 regularisation (ridge) which penalises large weights.
+    2. Temporal smoothing penalty which penalises the discrete n-th derivative
+       of the weights along the time axis (order 1 or 2, see
+       `smoothness_derivative_order`), forcing the learned filters to be
+       smooth. The per-class smoothing penalty is additionally scaled by the
+       inverse-frequency class weight so rare-class filters are regularised
+       more strongly (stronger prior where data is thin).
 
     Parameters
     ----------
@@ -45,13 +45,11 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         Number of time steps per feature.
         The input X must have `n_features * n_time_bins` columns.
     lambda_smooth : float, default=1
-        Regularization strength for the temporal smoothing penalty (see
+        Regularisation strength for the temporal smoothing penalty (see
         `smoothness_derivative_order` below for which derivative is
         penalised). Higher values force smoother (stiffer) curves.
-    l1_reg : float, default=0.0
-        Regularization strength for standard L1 (Lasso) penalty.
     l2_reg : float, default=0.1
-        Regularization strength for standard L2 (Ridge) penalty.
+        Regularisation strength for standard L2 (Ridge) penalty.
     smoothness_derivative_order : int, default=2
         Order of the finite-difference derivative used to build the
         temporal-smoothness penalty on every class's filter along the
@@ -128,7 +126,6 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             n_features: int = 1,
             n_time_bins: int = 1,
             lambda_smooth: float = 1,
-            l1_reg: float = 0.0,
             l2_reg: float = 0.1,
             smoothness_derivative_order: int = 2,
             focal_gamma: float = 2.0,
@@ -146,7 +143,6 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self.n_features = n_features
         self.n_time_bins = n_time_bins
         self.lambda_smooth = lambda_smooth
-        self.l1_reg = l1_reg
         self.l2_reg = l2_reg
         self.smoothness_derivative_order = int(smoothness_derivative_order)
         self.focal_gamma = focal_gamma
@@ -188,7 +184,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         return W, b
 
     @staticmethod
-    @partial(jax.jit, static_argnums=(3, 4, 10))
+    @partial(jax.jit, static_argnums=(3, 4, 9))
     def _loss_fn(
             params: Tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
@@ -196,7 +192,6 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             n_feats: int,
             n_time: int,
             lam_smooth: float,
-            lam_l1: float,
             lam_l2: float,
             class_weights: jnp.ndarray,
             focal_gamma: float,
@@ -243,14 +238,11 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         class_smooth_penalties = jnp.sum(dW ** 2, axis=(0, 1))
 
         # Scale the per-class smoothing penalty by the inverse-frequency class weight:
-        # rare classes receive a larger weight, so their filters are regularized more
+        # rare classes receive a larger weight, so their filters are regularised more
         # strongly (stronger prior where data is thin and noise-to-signal is highest).
         smooth_loss = 0.5 * lam_smooth * jnp.sum(class_smooth_penalties * class_weights)
 
-        # L1 Loss (Sparsity - currently 0.0)
-        l1_loss = lam_l1 * jnp.sum(jnp.abs(W))
-
-        return mean_focal_loss + l1_loss + l2_loss + smooth_loss
+        return mean_focal_loss + l2_loss + smooth_loss
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "SmoothMultinomialLogisticRegression":
         """
@@ -328,8 +320,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             grads = jax.grad(self._loss_fn)(
                 params, X_batch, Y_batch,
                 n_feats, n_time,
-                self.lambda_smooth,
-                self.l1_reg, self.l2_reg,
+                self.lambda_smooth, self.l2_reg,
                 w_batch, self.focal_gamma,
                 self.smoothness_derivative_order,
             )
@@ -364,8 +355,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                     current_loss = self._loss_fn(
                         params, X_j, Y_j,
                         self.n_features, self.n_time_bins,
-                        self.lambda_smooth,
-                        self.l1_reg, self.l2_reg,
+                        self.lambda_smooth, self.l2_reg,
                         c_weights, self.focal_gamma,
                         self.smoothness_derivative_order,
                     )

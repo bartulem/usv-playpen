@@ -234,6 +234,253 @@ def _balance_multinomial_train_indices(
     return balanced_idx
 
 
+def _log_spaced_grid_multinomial(center: float, decades_each_side: int) -> np.ndarray:
+    """
+    Log-spaced hyperparameter grid centred on `center`, spanning
+    `decades_each_side` orders of magnitude on each side. `decades_each_side=0`
+    returns `[center]` (the no-tuning degenerate case).
+    """
+
+    if decades_each_side < 0:
+        raise ValueError(f"decades_each_side must be >= 0, got {decades_each_side}.")
+    if center <= 0:
+        raise ValueError(f"center must be positive, got {center}.")
+    offsets = np.arange(-decades_each_side, decades_each_side + 1, dtype=np.float64)
+    return float(center) * (10.0 ** offsets)
+
+
+def _tune_multinomial_regularization(X_train: np.ndarray,
+                                     y_train: np.ndarray,
+                                     *,
+                                     lambda_smooth_grid: np.ndarray,
+                                     l2_reg_grid: np.ndarray,
+                                     inner_cv_folds: int,
+                                     inner_cv_scoring_metric: str,
+                                     inner_cv_use_one_se_rule: bool,
+                                     n_features: int,
+                                     n_time_bins: int,
+                                     smoothness_derivative_order: int,
+                                     focal_gamma: float,
+                                     uniform_class_weights: bool,
+                                     learning_rate: float,
+                                     max_iter: int,
+                                     tol: float,
+                                     random_state: int,
+                                     verbose: bool,
+                                     regressor_cls) -> tuple:
+    """
+    Selects `(lambda_smooth, l2_reg)` jointly for a multinomial logistic
+    fit by stratified inner cross-validation on the supplied training
+    fold.
+
+    `focal_gamma` and `uniform_class_weights` are intentionally **not**
+    tuned — they are treated as structural loss-modelling choices (how
+    imbalanced is the dataset, how aggressively should hard samples
+    drive the gradient) rather than regularisation dials. They are
+    passed through verbatim on every inner fit.
+
+    Strategy mirrors `_tune_manifold_regularization` in the manifold
+    runner:
+    1. Partition the training fold with `StratifiedShuffleSplit` on the
+       class labels (`inner_cv_folds` splits, test_prop = 1 /
+       inner_cv_folds). Session-mixing inside the outer training fold
+       is acceptable so the inner splitter doesn't need a second layer
+       of session-holdout logic.
+    2. For every `(lambda_smooth, l2_reg)` pair, fit the regressor on
+       each inner-training sub-fold and score it on the inner-validation
+       sub-fold using `inner_cv_scoring_metric`. Aggregate per-pair
+       across inner folds to a mean score and a standard error.
+    3. Identify the argmax pair. If `inner_cv_use_one_se_rule=True`,
+       return the smoothest pair whose mean score is within one SE of
+       the argmax (tiebreak: smallest `l2_reg`). This biases the choice
+       toward filter interpretability by refusing to chase wiggly
+       filters whose apparent R^2 / AUC gain is statistically
+       indistinguishable from noise.
+
+    Supported scoring metrics
+    -------------------------
+    - higher-is-better: `auc` (macro OvR), `score` (balanced accuracy),
+      `f1` (macro), `recall` (macro), `mcc` (Matthews correlation).
+    - lower-is-better: `ll` (log-loss), `brier` (multiclass Brier),
+      `ece` (expected calibration error).
+
+    Parameters mirror the manifold tuner; the `regressor_cls` injection
+    keeps the function unit-testable without importing JAX at module
+    scope.
+
+    Returns
+    -------
+    best_lambda_smooth : float
+    best_l2_reg : float
+    grid_audit : dict
+        Keys `grid_scores`, `grid_ses`, `argmax_pair`, `one_se_applied`,
+        `one_se_threshold`. See `_tune_manifold_regularization` in the
+        manifold pipeline for identical semantics.
+    """
+
+    higher_is_better_metrics = {'auc', 'score', 'f1', 'recall', 'mcc'}
+    lower_is_better_metrics = {'ll', 'brier', 'ece'}
+    if inner_cv_scoring_metric in higher_is_better_metrics:
+        higher_is_better = True
+    elif inner_cv_scoring_metric in lower_is_better_metrics:
+        higher_is_better = False
+    else:
+        raise ValueError(
+            f"Unsupported inner_cv_scoring_metric '{inner_cv_scoring_metric}' for "
+            f"the multinomial tuner. Supported: "
+            f"{sorted(higher_is_better_metrics | lower_is_better_metrics)}."
+        )
+
+    def _empty_audit():
+        return {
+            'grid_scores': {},
+            'grid_ses': {},
+            'argmax_pair': None,
+            'one_se_applied': False,
+            'one_se_threshold': None,
+        }
+
+    unique_y = np.unique(y_train)
+    n_unique = int(unique_y.size)
+    if len(y_train) < inner_cv_folds * 2 or n_unique < 2:
+        return (
+            float(lambda_smooth_grid[len(lambda_smooth_grid) // 2]),
+            float(l2_reg_grid[len(l2_reg_grid) // 2]),
+            _empty_audit(),
+        )
+
+    sss = StratifiedShuffleSplit(
+        n_splits=inner_cv_folds,
+        test_size=1.0 / inner_cv_folds,
+        random_state=random_state + 7919,
+    )
+    inner_folds = list(sss.split(np.zeros(len(y_train)), y_train))
+
+    def _compute_score(y_true_, y_pred_, y_proba_, model_classes_):
+        try:
+            if inner_cv_scoring_metric == 'auc':
+                return float(roc_auc_score(
+                    y_true_, y_proba_, multi_class='ovr', average='macro',
+                    labels=model_classes_,
+                ))
+            if inner_cv_scoring_metric == 'score':
+                return float(balanced_accuracy_score(y_true_, y_pred_))
+            if inner_cv_scoring_metric == 'f1':
+                return float(f1_score(y_true_, y_pred_, average='macro', zero_division=0))
+            if inner_cv_scoring_metric == 'recall':
+                return float(recall_score(y_true_, y_pred_, average='macro', zero_division=0))
+            if inner_cv_scoring_metric == 'mcc':
+                return float(safe_matthews_corrcoef(y_true_, y_pred_))
+            if inner_cv_scoring_metric == 'll':
+                return float(log_loss(
+                    y_true_, np.clip(y_proba_, 1e-15, 1 - 1e-15),
+                    labels=model_classes_,
+                ))
+            if inner_cv_scoring_metric == 'brier':
+                return float(brier_score_multi(y_true_, y_proba_, model_classes_))
+            if inner_cv_scoring_metric == 'ece':
+                return float(expected_calibration_error(y_true_, y_pred_, y_proba_, n_bins=10))
+        except (ValueError, RuntimeError):
+            return float('nan')
+        return float('nan')
+
+    grid_scores = {}
+    grid_ses = {}
+    for lam_sm in lambda_smooth_grid:
+        for lam_l2 in l2_reg_grid:
+            fold_scores = []
+            for inner_idx, (in_tr, in_va) in enumerate(inner_folds):
+                try:
+                    model = regressor_cls(
+                        n_features=n_features,
+                        n_time_bins=n_time_bins,
+                        lambda_smooth=float(lam_sm),
+                        l2_reg=float(lam_l2),
+                        smoothness_derivative_order=smoothness_derivative_order,
+                        focal_gamma=focal_gamma,
+                        uniform_class_weights=uniform_class_weights,
+                        learning_rate=learning_rate,
+                        max_iter=max_iter,
+                        tol=tol,
+                        random_state=random_state + inner_idx,
+                        verbose=False,
+                    )
+                    model.fit(X_train[in_tr], y_train[in_tr])
+                    y_pred = model.predict(X_train[in_va], balanced=False)
+                    y_proba = model.predict_proba(X_train[in_va], balanced=False)
+                    fold_scores.append(_compute_score(
+                        y_train[in_va], y_pred, y_proba, model.classes_,
+                    ))
+                except Exception as exc:
+                    if verbose:
+                        print(
+                            f"        [inner-cv] λ_smooth={lam_sm:.3g}, l2={lam_l2:.3g}, "
+                            f"fold {inner_idx}: {exc}"
+                        )
+                    fold_scores.append(np.nan)
+
+            finite = np.asarray([s for s in fold_scores if np.isfinite(s)], dtype=float)
+            pair_key = (float(lam_sm), float(lam_l2))
+            if finite.size:
+                grid_scores[pair_key] = float(np.mean(finite))
+                grid_ses[pair_key] = (
+                    float(np.std(finite, ddof=1) / np.sqrt(finite.size))
+                    if finite.size > 1 else 0.0
+                )
+            else:
+                grid_scores[pair_key] = float('nan')
+                grid_ses[pair_key] = float('nan')
+
+    valid_pairs = [(pair, score) for pair, score in grid_scores.items() if np.isfinite(score)]
+    if not valid_pairs:
+        audit = _empty_audit()
+        audit['grid_scores'] = grid_scores
+        audit['grid_ses'] = grid_ses
+        return (
+            float(lambda_smooth_grid[len(lambda_smooth_grid) // 2]),
+            float(l2_reg_grid[len(l2_reg_grid) // 2]),
+            audit,
+        )
+
+    key_fn = (lambda kv: kv[1]) if higher_is_better else (lambda kv: -kv[1])
+    argmax_pair, argmax_score = max(valid_pairs, key=key_fn)
+    argmax_se = grid_ses.get(argmax_pair, 0.0)
+    if not np.isfinite(argmax_se):
+        argmax_se = 0.0
+
+    audit = {
+        'grid_scores': grid_scores,
+        'grid_ses': grid_ses,
+        'argmax_pair': (float(argmax_pair[0]), float(argmax_pair[1])),
+        'one_se_applied': False,
+        'one_se_threshold': None,
+    }
+
+    if not inner_cv_use_one_se_rule:
+        return float(argmax_pair[0]), float(argmax_pair[1]), audit
+
+    if higher_is_better:
+        threshold = argmax_score - argmax_se
+
+        def _within(score_: float) -> bool:
+            return score_ >= threshold
+    else:
+        threshold = argmax_score + argmax_se
+
+        def _within(score_: float) -> bool:
+            return score_ <= threshold
+
+    in_band = [pair for pair, score in valid_pairs if _within(score)]
+    if not in_band:
+        return float(argmax_pair[0]), float(argmax_pair[1]), audit
+
+    # Tiebreak: largest lambda_smooth (smoothness preference), then smallest l2_reg.
+    winner = max(in_band, key=lambda p: (p[0], -p[1]))
+    audit['one_se_applied'] = True
+    audit['one_se_threshold'] = float(threshold)
+    return float(winner[0]), float(winner[1]), audit
+
+
 class MultinomialModelingPipeline(FeatureZoo):
     """
     End-to-end extraction pipeline for multinomial USV-category modelling.
@@ -833,6 +1080,29 @@ class MultinomialModelRunner:
         base_seed = self.modeling_settings['model_params']['random_seed']
         n_categories_total = self.modeling_settings['vocal_features']['usv_category_number']
 
+        # Joint-tuning configuration. Fixed-fallback `lambda_smooth_fixed`
+        # and `l2_reg_fixed` are used when the toggle is off; when on,
+        # every outer fold runs an inner CV over log-spaced grids centred
+        # on those fixed values and picks the winning pair subject to the
+        # 1-SE interpretability rule if enabled. `focal_loss_gamma` stays
+        # structural (data-modelling choice), not part of the grid.
+        lam_smooth_fixed = hp['lambda_smooth_fixed']
+        lam_l2_fixed = hp['l2_reg_fixed']
+        smoothness_order = hp['smoothness_derivative_order']
+        tune_regularization_bool = hp['tune_regularization_bool']
+        tune_params = hp['tune_regularization_params']
+        lambda_smooth_grid = _log_spaced_grid_multinomial(
+            center=lam_smooth_fixed,
+            decades_each_side=tune_params['lambda_smooth_decades_each_side'],
+        )
+        l2_reg_grid = _log_spaced_grid_multinomial(
+            center=lam_l2_fixed,
+            decades_each_side=tune_params['l2_reg_decades_each_side'],
+        )
+        inner_cv_folds = tune_params['inner_cv_folds']
+        inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
+        inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
+
         # Only bin the feature we are about to train. The HPC dispatcher
         # invokes this method once per feature per process, so there is no
         # reason to pay the binning cost for every other feature in the
@@ -922,6 +1192,19 @@ class MultinomialModelRunner:
                     'n_iter': [],
                     'converged': [],
                     'fit_time': [],
+                    # Hyperparameter audit trail. When the tuning toggle is
+                    # on, every outer fold's `(lambda_smooth, l2_reg)` is
+                    # chosen by an inner CV; the winning pair, the full
+                    # grid scores / SEs, the raw argmax pair, and whether
+                    # the 1-SE rule softened the choice are persisted
+                    # here so the published filters can always be paired
+                    # with the hyperparameters that produced them.
+                    # `null_model_free` writes NaN / empty placeholders so
+                    # the schema is uniform across strategies.
+                    'selected_lambda_smooth': [],
+                    'selected_l2_reg': [],
+                    'hyperparam_grid_audit': [],
+                    'hyperparams_tuned': [],
                     'tolerance': list(fold_tolerances),
                     'balanced_train': bool(balance_train)
                 },
@@ -962,6 +1245,15 @@ class MultinomialModelRunner:
                     fold_n_iter = 0
                     fold_converged = True
                     fold_fit_time = 0.0
+                    # `null_model_free` has no model to tune.
+                    fold_lambda_smooth = float('nan')
+                    fold_l2_reg = float('nan')
+                    fold_grid_audit = {
+                        'grid_scores': {}, 'grid_ses': {},
+                        'argmax_pair': None,
+                        'one_se_applied': False, 'one_se_threshold': None,
+                    }
+                    fold_tuned_flag = False
                 else:
                     # When sample-level balancing is active, the softened
                     # inverse-frequency focal-alpha would double-correct an
@@ -974,13 +1266,51 @@ class MultinomialModelRunner:
                         effective_focal_gamma = hp['focal_loss_gamma']
                         use_uniform_weights = False
 
+                    # Per-fold hyperparameters. When tuning is on we run an
+                    # inner CV (same focal_gamma / uniform_class_weights as
+                    # the outer fit) to pick (lambda_smooth, l2_reg); when
+                    # off we use the settings-level fixed centres. Both the
+                    # `actual` and within-session X-shuffled `null`
+                    # strategies are tuned identically so the permutation
+                    # test compares like-against-like hyperparameters.
+                    if tune_regularization_bool:
+                        fold_lambda_smooth, fold_l2_reg, fold_grid_audit = _tune_multinomial_regularization(
+                            X_train=X_train,
+                            y_train=y_train,
+                            lambda_smooth_grid=lambda_smooth_grid,
+                            l2_reg_grid=l2_reg_grid,
+                            inner_cv_folds=inner_cv_folds,
+                            inner_cv_scoring_metric=inner_cv_scoring_metric,
+                            inner_cv_use_one_se_rule=inner_cv_use_one_se_rule,
+                            n_features=1,
+                            n_time_bins=n_time,
+                            smoothness_derivative_order=smoothness_order,
+                            focal_gamma=effective_focal_gamma,
+                            uniform_class_weights=use_uniform_weights,
+                            learning_rate=hp['learning_rate'],
+                            max_iter=hp['max_iter'],
+                            tol=hp['tol'],
+                            random_state=hp['random_state'] + fold,
+                            verbose=hp['verbose'],
+                            regressor_cls=SmoothMultinomialLogisticRegression,
+                        )
+                        fold_tuned_flag = True
+                    else:
+                        fold_lambda_smooth = float(lam_smooth_fixed)
+                        fold_l2_reg = float(lam_l2_fixed)
+                        fold_grid_audit = {
+                            'grid_scores': {}, 'grid_ses': {},
+                            'argmax_pair': None,
+                            'one_se_applied': False, 'one_se_threshold': None,
+                        }
+                        fold_tuned_flag = False
+
                     model = SmoothMultinomialLogisticRegression(
                         n_features=1,
                         n_time_bins=n_time,
-                        lambda_smooth=hp['lambda_smooth'],
-                        l1_reg=hp['l1_reg'],
-                        l2_reg=hp['l2_reg'],
-                        smoothness_derivative_order=hp['smoothness_derivative_order'],
+                        lambda_smooth=fold_lambda_smooth,
+                        l2_reg=fold_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
                         focal_gamma=effective_focal_gamma,
                         uniform_class_weights=use_uniform_weights,
                         learning_rate=hp['learning_rate'],
@@ -1064,6 +1394,10 @@ class MultinomialModelRunner:
                 strategy_data['folds']['n_iter'].append(fold_n_iter)
                 strategy_data['folds']['converged'].append(fold_converged)
                 strategy_data['folds']['fit_time'].append(fold_fit_time)
+                strategy_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                strategy_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                strategy_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
+                strategy_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
 
                 if strategy_data['classes'] is None:
                     strategy_data['classes'] = model_classes
@@ -1072,5 +1406,43 @@ class MultinomialModelRunner:
             print(f"\nFINISHED {strategy.upper()} | Avg Score: {m['score']:.3f} | Avg AUC: {m['auc']:.3f}")
 
             combined_results[strategy] = strategy_data
+
+        # Cross-fold hyperparameter report. If tuning was on, the spread
+        # of the selected (λ_smooth, l2_reg) across folds tells us
+        # whether the data supports a well-defined regularisation level
+        # (tight concentration → yes; wide scatter → no). Mirrors the
+        # manifold-runner summary so users get the same diagnostic for
+        # both pipelines.
+        if tune_regularization_bool:
+            print("-" * 60)
+            print("HYPERPARAMETER SELECTION SUMMARY (log10 units)")
+            for strat in ('actual', 'null'):
+                if strat not in combined_results:
+                    continue
+                sm_vals = np.asarray(
+                    combined_results[strat]['folds']['selected_lambda_smooth'], dtype=float
+                )
+                l2_vals = np.asarray(
+                    combined_results[strat]['folds']['selected_l2_reg'], dtype=float
+                )
+                grid_audits = combined_results[strat]['folds']['hyperparam_grid_audit']
+                one_se_fired = [bool(a.get('one_se_applied')) for a in grid_audits]
+                one_se_count = int(sum(one_se_fired))
+                one_se_total = len(one_se_fired)
+                valid_sm = sm_vals[np.isfinite(sm_vals) & (sm_vals > 0)]
+                valid_l2 = l2_vals[np.isfinite(l2_vals) & (l2_vals > 0)]
+                if valid_sm.size == 0 or valid_l2.size == 0:
+                    continue
+                log_sm = np.log10(valid_sm)
+                log_l2 = np.log10(valid_l2)
+                print(
+                    f"  {strat.upper():<6} | "
+                    f"λ_smooth: mean(log10)={np.mean(log_sm):+.2f}, "
+                    f"SD(log10)={np.std(log_sm, ddof=1):.2f} | "
+                    f"l2: mean(log10)={np.mean(log_l2):+.2f}, "
+                    f"SD(log10)={np.std(log_l2, ddof=1):.2f} | "
+                    f"1SE-softened: {one_se_count}/{one_se_total}"
+                )
+            print("-" * 60 + "\n")
 
         return feat_name, combined_results

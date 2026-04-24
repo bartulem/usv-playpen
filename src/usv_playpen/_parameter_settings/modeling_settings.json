@@ -133,16 +133,23 @@
         "balance_predictions_bool": false,
         "balance_train_bool": false,
         "bin_resizing_factor": 10,
-        "lambda_smooth": 1.0,
-        "l1_reg": 0.0,
-        "l2_reg": 0.1,
+        "lambda_smooth_fixed": 1.0,
+        "l2_reg_fixed": 0.1,
         "smoothness_derivative_order": 2,
         "learning_rate": 0.001,
         "max_iter": 10000,
         "tol": 1e-4,
         "random_state": 0,
         "verbose": false,
-        "focal_loss_gamma": 2.0
+        "focal_loss_gamma": 2.0,
+        "tune_regularization_bool": false,
+        "tune_regularization_params": {
+          "lambda_smooth_decades_each_side": 3,
+          "l2_reg_decades_each_side": 2,
+          "inner_cv_folds": 5,
+          "inner_cv_scoring_metric": "auc",
+          "inner_cv_use_one_se_rule": true
+        }
       }
     },
     "classical": {

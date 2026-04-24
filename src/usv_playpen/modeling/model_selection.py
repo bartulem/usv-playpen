@@ -34,6 +34,8 @@ from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
     get_stratified_group_splits_stable,
     _balance_multinomial_train_indices,
+    _log_spaced_grid_multinomial,
+    _tune_multinomial_regularization,
     MultinomialModelingPipeline,
     MultinomialModelRunner,
 )
@@ -2391,6 +2393,81 @@ def multinomial_vocal_category_model_selection(
         model_focal_gamma = hp['focal_loss_gamma']
         model_uniform_weights = False
 
+    # Joint-tuning configuration. Mirrors the multinomial runner: fixed
+    # `lambda_smooth_fixed` / `l2_reg_fixed` centres are used when tuning
+    # is off; when on, every outer fold / candidate runs an inner CV over
+    # log-spaced grids centred on those values, with the 1-SE
+    # interpretability rule optionally promoting the smoothest pair in
+    # the SE band. `focal_loss_gamma` is intentionally not tuned — it is
+    # treated as a data-modelling choice.
+    smoothness_order = hp['smoothness_derivative_order']
+    tune_regularization_bool = hp['tune_regularization_bool']
+    tune_params = hp['tune_regularization_params']
+    lambda_smooth_grid_mn = _log_spaced_grid_multinomial(
+        center=hp['lambda_smooth_fixed'],
+        decades_each_side=tune_params['lambda_smooth_decades_each_side'],
+    )
+    l2_reg_grid_mn = _log_spaced_grid_multinomial(
+        center=hp['l2_reg_fixed'],
+        decades_each_side=tune_params['l2_reg_decades_each_side'],
+    )
+    inner_cv_folds_mn = tune_params['inner_cv_folds']
+    inner_cv_scoring_metric_mn = tune_params['inner_cv_scoring_metric']
+    inner_cv_use_one_se_rule_mn = tune_params['inner_cv_use_one_se_rule']
+
+    if tune_regularization_bool:
+        print(
+            f"  Joint per-fold tuning ENABLED: |λ_smooth grid|={len(lambda_smooth_grid_mn)}, "
+            f"|l2_reg grid|={len(l2_reg_grid_mn)}, inner CV folds={inner_cv_folds_mn}, "
+            f"scoring={inner_cv_scoring_metric_mn}, 1SE rule={'ON' if inner_cv_use_one_se_rule_mn else 'OFF'}"
+        )
+    else:
+        print(
+            f"  Joint per-fold tuning DISABLED (fixed λ_smooth={hp['lambda_smooth_fixed']}, "
+            f"fixed l2_reg={hp['l2_reg_fixed']})"
+        )
+
+    def _pick_multinomial_fold_hyperparams(X_tr_, y_tr_, n_feats_, fold_idx_):
+        """
+        Returns `(lambda_smooth, l2_reg, grid_audit, tuned_flag)` for the
+        current outer fold and trial feature set. When tuning is off the
+        fixed centres are used with the standard `1 / sqrt(n_features)`
+        rescale on l2 so larger trial models don't silently
+        over-regularise. When tuning is on the inner-CV search rescales
+        the l2 grid the same way.
+        """
+        if not tune_regularization_bool:
+            lam_sm = float(hp['lambda_smooth_fixed'])
+            lam_l2 = float(hp['l2_reg_fixed'] / np.sqrt(n_feats_))
+            return lam_sm, lam_l2, {
+                'grid_scores': {}, 'grid_ses': {},
+                'argmax_pair': None,
+                'one_se_applied': False, 'one_se_threshold': None,
+            }, False
+
+        rescaled_l2_grid = l2_reg_grid_mn / np.sqrt(n_feats_)
+        lam_sm_win, lam_l2_win, grid_audit_ = _tune_multinomial_regularization(
+            X_train=X_tr_,
+            y_train=y_tr_,
+            lambda_smooth_grid=lambda_smooth_grid_mn,
+            l2_reg_grid=rescaled_l2_grid,
+            inner_cv_folds=inner_cv_folds_mn,
+            inner_cv_scoring_metric=inner_cv_scoring_metric_mn,
+            inner_cv_use_one_se_rule=inner_cv_use_one_se_rule_mn,
+            n_features=n_feats_,
+            n_time_bins=n_time_bins,
+            smoothness_derivative_order=smoothness_order,
+            focal_gamma=model_focal_gamma,
+            uniform_class_weights=model_uniform_weights,
+            learning_rate=hp['learning_rate'],
+            max_iter=hp['max_iter'],
+            tol=hp['tol'],
+            random_state=hp['random_state'] + fold_idx_,
+            verbose=False,
+            regressor_cls=SmoothMultinomialLogisticRegression,
+        )
+        return lam_sm_win, lam_l2_win, grid_audit_, True
+
     # Project-wide canonical class order so every per-fold p_train / p_test
     # vector has identical length and index-to-class mapping, enabling direct
     # cross-fold comparison even if a fold happens to miss a rare class.
@@ -2465,7 +2542,15 @@ def multinomial_vocal_category_model_selection(
                             ['auc', 'score', 'recall', 'f1', 'll',
                              'brier', 'ece', 'mcc']},
                 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
-                'confusion_matrix': []
+                'confusion_matrix': [],
+                # Hyperparameter audit fields — the centroid baseline has
+                # no model to tune, so these are all NaN / empty / False.
+                # Kept so the per-strategy schema stays uniform with the
+                # anchor and forward-selection cand_data blocks.
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_audit': [],
+                'hyperparams_tuned': [],
             },
             'classes': None
         }
@@ -2523,6 +2608,14 @@ def multinomial_vocal_category_model_selection(
             baseline_data['folds']['confusion_matrix'].append(
                 safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
             )
+            baseline_data['folds']['selected_lambda_smooth'].append(float('nan'))
+            baseline_data['folds']['selected_l2_reg'].append(float('nan'))
+            baseline_data['folds']['hyperparam_grid_audit'].append({
+                'grid_scores': {}, 'grid_ses': {},
+                'argmax_pair': None,
+                'one_se_applied': False, 'one_se_threshold': None,
+            })
+            baseline_data['folds']['hyperparams_tuned'].append(False)
             if baseline_data['classes'] is None:
                 baseline_data['classes'] = unique_classes
 
@@ -2562,6 +2655,10 @@ def multinomial_vocal_category_model_selection(
                 'p_train': [], 'p_test': [],
                 'confusion_matrix': [],
                 'n_iter': [], 'converged': [], 'fit_time': [],
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_audit': [],
+                'hyperparams_tuned': [],
                 'balanced_train': bool(balance_train)
             },
             'classes': None,
@@ -2574,12 +2671,17 @@ def multinomial_vocal_category_model_selection(
                 X_tr, X_te = binned_data[anchor][tr_idx_model], binned_data[anchor][te_idx]
                 y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
 
+                fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+                    _pick_multinomial_fold_hyperparams(
+                        X_tr, y_tr, n_feats_=1, fold_idx_=fold_idx,
+                    )
+                )
+
                 model = SmoothMultinomialLogisticRegression(
                     n_features=1, n_time_bins=n_time_bins,
-                    lambda_smooth=hp['lambda_smooth'],
-                    l1_reg=hp['l1_reg'],
-                    l2_reg=hp['l2_reg'],
-                    smoothness_derivative_order=hp['smoothness_derivative_order'],
+                    lambda_smooth=fold_lambda_smooth,
+                    l2_reg=fold_l2_reg,
+                    smoothness_derivative_order=smoothness_order,
                     focal_gamma=model_focal_gamma,
                     uniform_class_weights=model_uniform_weights,
                     learning_rate=hp['learning_rate'],
@@ -2632,6 +2734,10 @@ def multinomial_vocal_category_model_selection(
                 cand_data['folds']['n_iter'].append(int(model.n_iter_))
                 cand_data['folds']['converged'].append(bool(model.converged_))
                 cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
+                cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
                 if cand_data['classes'] is None:
                     cand_data['classes'] = model.classes_
             except Exception as e:
@@ -2656,6 +2762,14 @@ def multinomial_vocal_category_model_selection(
                 cand_data['folds']['n_iter'].append(np.nan)
                 cand_data['folds']['converged'].append(False)
                 cand_data['folds']['fit_time'].append(np.nan)
+                cand_data['folds']['selected_lambda_smooth'].append(float('nan'))
+                cand_data['folds']['selected_l2_reg'].append(float('nan'))
+                cand_data['folds']['hyperparam_grid_audit'].append({
+                    'grid_scores': {}, 'grid_ses': {},
+                    'argmax_pair': None,
+                    'one_se_applied': False, 'one_se_threshold': None,
+                })
+                cand_data['folds']['hyperparams_tuned'].append(False)
 
         valid_auc = [m for m in cand_data['folds']['metrics']['auc'] if np.isfinite(m)]
         if valid_auc:
@@ -2713,6 +2827,10 @@ def multinomial_vocal_category_model_selection(
                     'p_train': [], 'p_test': [],
                     'confusion_matrix': [],
                     'n_iter': [], 'converged': [], 'fit_time': [],
+                    'selected_lambda_smooth': [],
+                    'selected_l2_reg': [],
+                    'hyperparam_grid_audit': [],
+                    'hyperparams_tuned': [],
                     'balanced_train': bool(balance_train)
                 },
                 'classes': None,
@@ -2726,19 +2844,27 @@ def multinomial_vocal_category_model_selection(
                     X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
                     y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
 
+                    # Per-fold hyperparameters. When tuning is off, the
+                    # closure falls back to the fixed centres with the
+                    # standard 1 / sqrt(n_trial_feats) rescale on l2 so
+                    # the summed L2 penalty on `W ** 2` does not grow
+                    # ~linearly with feature count and silently over-
+                    # regularise larger models. When tuning is on, the
+                    # inner CV searches a rescaled l2 grid with the same
+                    # shape.
+                    fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+                        _pick_multinomial_fold_hyperparams(
+                            X_tr_stacked, y_tr,
+                            n_feats_=n_trial_feats,
+                            fold_idx_=fold_idx,
+                        )
+                    )
+
                     model = SmoothMultinomialLogisticRegression(
                         n_features=n_trial_feats, n_time_bins=n_time_bins,
-                        lambda_smooth=hp['lambda_smooth'],
-                        l1_reg=hp['l1_reg'],
-                        # Divide L2 by sqrt(n_trial_feats): the feature trial stacks
-                        # n_trial_feats columns of `n_time_bins` into a wide design
-                        # matrix, so without this rescale the summed L2 penalty on
-                        # `W ** 2` would grow ~linearly with feature count and silently
-                        # over-regularize larger models. Scaling by 1/sqrt(n_feats)
-                        # keeps the per-feature penalty magnitude roughly constant as
-                        # the selector adds features.
-                        l2_reg=hp['l2_reg'] / np.sqrt(n_trial_feats),
-                        smoothness_derivative_order=hp['smoothness_derivative_order'],
+                        lambda_smooth=fold_lambda_smooth,
+                        l2_reg=fold_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
                         focal_gamma=model_focal_gamma,
                         uniform_class_weights=model_uniform_weights,
                         learning_rate=hp['learning_rate'],
@@ -2792,6 +2918,10 @@ def multinomial_vocal_category_model_selection(
                     cand_data['folds']['n_iter'].append(int(model.n_iter_))
                     cand_data['folds']['converged'].append(bool(model.converged_))
                     cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                    cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                    cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                    cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
+                    cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
                     if cand_data['classes'] is None:
                         cand_data['classes'] = model.classes_
                 except Exception:
@@ -2813,6 +2943,14 @@ def multinomial_vocal_category_model_selection(
                     cand_data['folds']['n_iter'].append(np.nan)
                     cand_data['folds']['converged'].append(False)
                     cand_data['folds']['fit_time'].append(np.nan)
+                    cand_data['folds']['selected_lambda_smooth'].append(float('nan'))
+                    cand_data['folds']['selected_l2_reg'].append(float('nan'))
+                    cand_data['folds']['hyperparam_grid_audit'].append({
+                        'grid_scores': {}, 'grid_ses': {},
+                        'argmax_pair': None,
+                        'one_se_applied': False, 'one_se_threshold': None,
+                    })
+                    cand_data['folds']['hyperparams_tuned'].append(False)
 
             valid_auc = [x for x in cand_data['folds']['metrics']['auc'] if np.isfinite(x)]
             if not valid_auc:
