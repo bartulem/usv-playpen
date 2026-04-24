@@ -255,6 +255,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   l2_reg_grid: np.ndarray,
                                   inner_cv_folds: int,
                                   inner_cv_scoring_metric: str,
+                                  inner_cv_use_one_se_rule: bool,
                                   n_features: int,
                                   n_time_bins: int,
                                   spatial_cluster_num: int,
@@ -267,7 +268,9 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   regressor_cls) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly by inner cross-validation on
-    the supplied training fold.
+    the supplied training fold, with an optional 1-SE rule biased toward
+    the smoothest regulariser that is statistically indistinguishable from
+    the performance-argmax.
 
     Strategy
     --------
@@ -276,13 +279,28 @@ def _tune_manifold_regularization(X_train: np.ndarray,
        splitter (`get_stratified_spatial_splits_stable`), with a reduced
        cluster count so rare clusters still populate every inner split.
     2. For every `(lambda_smooth, l2_reg)` pair on the Cartesian product of
-       the two grids, fit the regressor on each inner-training sub-fold and
-       score it on the inner-validation sub-fold using
+       the two grids, fit the regressor on each inner-training sub-fold
+       and score it on the inner-validation sub-fold using
        `inner_cv_scoring_metric`. Aggregate per-pair across the inner folds
-       to a mean score.
-    3. Return the pair that maximises the aggregated score (when the metric
-       is higher-is-better) or minimises it (when lower-is-better), along
-       with the full grid of scores for downstream auditability.
+       to a mean score and a standard error of the mean (SE = std / sqrt(n)
+       over finite fold scores).
+    3. Identify the argmax pair — the pure performance-maximising winner.
+    4. If `inner_cv_use_one_se_rule=False`, return the argmax winner.
+       Otherwise apply the canonical 1-SE rule biased toward filter
+       interpretability: find every pair whose mean score is within
+       `SE(argmax)` of the argmax (i.e. statistically indistinguishable
+       from the best), and among those pick the one with the **largest
+       `lambda_smooth`** (tiebreak: smallest `l2_reg`). Intuition: if two
+       smoothness levels score within noise of each other there is no
+       data-supported reason to prefer the wigglier filter, so we pick
+       the smoother one. `l2_reg` does not shape the temporal structure
+       of the filter, only its magnitude, so it is not subject to the
+       same interpretability preference.
+
+    Returned hyperparameters are **always** the selected winner (argmax
+    when the flag is off, 1-SE winner when it is on). The audit payload
+    includes the full grid of mean scores *and* the argmax pair so a
+    reader can see how much the 1-SE rule softened the choice.
 
     The scoring direction is inferred from the metric name: `r2_spatial`,
     `pearson_*`, and `spearman_*` are higher-is-better; everything else is
@@ -298,8 +316,11 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     inner_cv_folds : int
         Number of inner sub-folds.
     inner_cv_scoring_metric : str
-        Key returned by `SmoothBivariateRegression.evaluate_metrics` used to
-        select the winning pair.
+        Key returned by `SmoothBivariateRegression.evaluate_metrics` used
+        to select the winning pair.
+    inner_cv_use_one_se_rule : bool
+        When True, apply the 1-SE interpretability rule described above.
+        When False, return the performance-argmax pair.
     n_features, n_time_bins : int
         Regressor shape arguments.
     spatial_cluster_num : int
@@ -319,10 +340,21 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         Winning smoothness penalty strength.
     best_l2_reg : float
         Winning L2 penalty strength.
-    grid_scores : dict
-        `{(lambda_smooth, l2_reg): mean_inner_score}` for every pair on the
-        grid. Useful for persistence / diagnostics so the user can inspect
-        how peaked or flat the tuning landscape was.
+    grid_audit : dict
+        Audit payload with keys:
+
+        - `'grid_scores'` : `{(lambda_smooth, l2_reg): mean_inner_score}`
+          for every pair on the grid. Useful for persistence / plotting.
+        - `'grid_ses'`    : `{(lambda_smooth, l2_reg): se_inner_score}`.
+        - `'argmax_pair'` : tuple `(lambda_smooth, l2_reg)` the pair that
+          maximises (or minimises) the mean inner score without the 1-SE
+          adjustment.
+        - `'one_se_applied'` : bool. True when the returned pair was
+          selected by the 1-SE rule rather than the raw argmax.
+        - `'one_se_threshold'` : float or None. The score threshold used
+          when the rule fired (argmax_score - SE(argmax) for
+          higher-is-better metrics; argmax_score + SE(argmax) for
+          lower-is-better).
     """
 
     higher_is_better_metrics = {
@@ -332,6 +364,15 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     }
     higher_is_better = inner_cv_scoring_metric in higher_is_better_metrics
 
+    def _empty_audit():
+        return {
+            'grid_scores': {},
+            'grid_ses': {},
+            'argmax_pair': None,
+            'one_se_applied': False,
+            'one_se_threshold': None,
+        }
+
     # Degenerate training folds (single session, single class) cannot be
     # inner-split; fall back to the grid centre (= the user's fixed value)
     # and a single-pair "grid" so the caller still receives a well-formed
@@ -340,7 +381,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         return (
             float(lambda_smooth_grid[len(lambda_smooth_grid) // 2]),
             float(l2_reg_grid[len(l2_reg_grid) // 2]),
-            {},
+            _empty_audit(),
         )
 
     inner_cluster_num = max(2, spatial_cluster_num // 2)
@@ -358,6 +399,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     )
 
     grid_scores = {}
+    grid_ses = {}
     for lam_sm in lambda_smooth_grid:
         for lam_l2 in l2_reg_grid:
             fold_scores = []
@@ -388,28 +430,83 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         )
                     fold_scores.append(np.nan)
 
-            finite = [s for s in fold_scores if np.isfinite(s)]
-            if finite:
-                grid_scores[(float(lam_sm), float(lam_l2))] = float(np.mean(finite))
+            finite = np.asarray([s for s in fold_scores if np.isfinite(s)], dtype=float)
+            pair_key = (float(lam_sm), float(lam_l2))
+            if finite.size:
+                grid_scores[pair_key] = float(np.mean(finite))
+                grid_ses[pair_key] = (
+                    float(np.std(finite, ddof=1) / np.sqrt(finite.size))
+                    if finite.size > 1 else 0.0
+                )
             else:
                 # Preserve a NaN entry so the grid shape is recoverable; it
                 # just can't win the selection.
-                grid_scores[(float(lam_sm), float(lam_l2))] = float('nan')
+                grid_scores[pair_key] = float('nan')
+                grid_ses[pair_key] = float('nan')
 
-    # Pick the winning pair. Ignore NaN entries.
+    # Argmax winner (pure performance).
     valid_pairs = [(pair, score) for pair, score in grid_scores.items() if np.isfinite(score)]
     if not valid_pairs:
         # Every pair failed — fall back to the grid centres so the outer
         # fit still runs with a reasonable default instead of crashing.
+        audit = _empty_audit()
+        audit['grid_scores'] = grid_scores
+        audit['grid_ses'] = grid_ses
         return (
             float(lambda_smooth_grid[len(lambda_smooth_grid) // 2]),
             float(l2_reg_grid[len(l2_reg_grid) // 2]),
-            grid_scores,
+            audit,
         )
 
     key_fn = (lambda kv: kv[1]) if higher_is_better else (lambda kv: -kv[1])
-    best_pair, _ = max(valid_pairs, key=key_fn)
-    return float(best_pair[0]), float(best_pair[1]), grid_scores
+    argmax_pair, argmax_score = max(valid_pairs, key=key_fn)
+    argmax_se = grid_ses.get(argmax_pair, 0.0)
+    if not np.isfinite(argmax_se):
+        argmax_se = 0.0
+
+    audit = {
+        'grid_scores': grid_scores,
+        'grid_ses': grid_ses,
+        'argmax_pair': (float(argmax_pair[0]), float(argmax_pair[1])),
+        'one_se_applied': False,
+        'one_se_threshold': None,
+    }
+
+    if not inner_cv_use_one_se_rule:
+        return float(argmax_pair[0]), float(argmax_pair[1]), audit
+
+    # 1-SE rule: "smoothest pair whose mean score is within one SE of the
+    # argmax". Biases the tuner toward interpretable filters when two
+    # regularisation levels are statistically indistinguishable.
+    #
+    # `threshold` is the worst score a pair can have and still be
+    # considered "within noise" of the argmax. For higher-is-better
+    # metrics this is `argmax_score - SE(argmax)`; for lower-is-better
+    # it flips to `argmax_score + SE(argmax)`.
+    if higher_is_better:
+        threshold = argmax_score - argmax_se
+
+        def _within(score_: float) -> bool:
+            return score_ >= threshold
+    else:
+        threshold = argmax_score + argmax_se
+
+        def _within(score_: float) -> bool:
+            return score_ <= threshold
+
+    in_band = [pair for pair, score in valid_pairs if _within(score)]
+    if not in_band:
+        # Pathological: the argmax pair itself should always be in-band,
+        # so this path is unreachable under normal numerics. Defensive
+        # fallback keeps the function total.
+        return float(argmax_pair[0]), float(argmax_pair[1]), audit
+
+    # Tiebreak: largest lambda_smooth (smoothness preference), then
+    # smallest l2_reg (minimise variance-shrinkage when smoothness ties).
+    winner = max(in_band, key=lambda p: (p[0], -p[1]))
+    audit['one_se_applied'] = True
+    audit['one_se_threshold'] = float(threshold)
+    return float(winner[0]), float(winner[1]), audit
 
 
 class ContinuousModelingPipeline(FeatureZoo):
@@ -796,9 +893,14 @@ class ContinuousModelRunner:
       the winners of per-fold joint inner CV when `True`. Always
       persisted so the storage schema is fixed and the published filter
       shapes can be paired with the hyperparameters that produced them.
-    - `hyperparam_grid_scores` — per-fold dict mapping
-      `(lambda_smooth, l2_reg) -> mean_inner_score` from the inner CV
-      grid; empty dict when tuning is off. Diagnostic only.
+    - `hyperparam_grid_audit` — per-fold dict with keys `grid_scores`
+      (`{(λ_smooth, l2_reg) -> mean inner score}`), `grid_ses` (the
+      matching per-pair standard errors across inner folds), the
+      performance `argmax_pair`, and flags `one_se_applied` /
+      `one_se_threshold` recording whether the 1-SE interpretability
+      rule softened the final choice and what the resulting score
+      threshold was. Empty / `False` when tuning is off. Diagnostic
+      only.
     - `hyperparams_tuned` — bool flag per fold recording whether the
       hyperparameters were tuned or fixed.
     """
@@ -945,10 +1047,21 @@ class ContinuousModelRunner:
           penalising the null by forcing it to use the actual model's
           settings.
 
+          When `inner_cv_use_one_se_rule=True` (default) the tuner then
+          applies the canonical 1-SE rule biased toward filter
+          interpretability: the returned pair is the smoothest one whose
+          mean inner score is within one SE of the performance argmax,
+          with `l2_reg` broken as a secondary tiebreak. This prevents
+          the tuner from chasing wiggly filters whose R² gains are
+          statistically indistinguishable from noise. Set the flag to
+          `False` to recover the raw performance-argmax behaviour.
+
         The winning pair per outer fold is persisted alongside the filter
         weights (see `selected_lambda_smooth`, `selected_l2_reg`,
-        `hyperparam_grid_scores`, `hyperparams_tuned` in the class
-        docstring).
+        `hyperparam_grid_audit`, `hyperparams_tuned` in the class
+        docstring). The `hyperparam_grid_audit` entry also records the
+        raw argmax pair and whether the 1-SE rule fired, so downstream
+        code can see how much the rule softened the choice.
 
         Data persistence
         -----------------
@@ -1010,6 +1123,7 @@ class ContinuousModelRunner:
         )
         inner_cv_folds = tune_params['inner_cv_folds']
         inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
+        inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
 
         cv_settings = self.modeling_settings['model_params']
         n_clusters = cv_settings['spatial_cluster_num']
@@ -1101,12 +1215,16 @@ class ContinuousModelRunner:
                     # model to tune.
                     'selected_lambda_smooth': [],
                     'selected_l2_reg': [],
-                    # Full inner-CV grid (pair -> mean inner score) per
-                    # fold — empty dict when tuning is disabled or when the
-                    # inner splitter degenerated. Kept for auditability so
-                    # the reader can see how peaked / flat the tuning
-                    # landscape was.
-                    'hyperparam_grid_scores': [],
+                    # Full inner-CV audit payload per fold. Dict with
+                    # keys `grid_scores`, `grid_ses`, `argmax_pair`,
+                    # `one_se_applied`, `one_se_threshold` — see
+                    # `_tune_manifold_regularization`. Empty audit when
+                    # tuning is disabled or when the inner splitter
+                    # degenerated. Kept so the reader can see how peaked
+                    # or flat the tuning landscape was, how much the
+                    # 1-SE rule softened the choice, and what the raw
+                    # performance-argmax would have been.
+                    'hyperparam_grid_audit': [],
                     # Booleans declaring whether this fold's hyperparameters
                     # were tuned or fixed. Handy for downstream plots that
                     # want to overlay the tuned / fixed runs on the same
@@ -1188,7 +1306,13 @@ class ContinuousModelRunner:
                     # `null_model_free` has no hyperparameters to tune.
                     fold_lambda_smooth = float('nan')
                     fold_l2_reg = float('nan')
-                    fold_grid_scores = {}
+                    fold_grid_audit = {
+                        'grid_scores': {},
+                        'grid_ses': {},
+                        'argmax_pair': None,
+                        'one_se_applied': False,
+                        'one_se_threshold': None,
+                    }
                     fold_tuned_flag = False
                 else:
                     # Pick the regularisation strengths for this outer fold.
@@ -1198,7 +1322,7 @@ class ContinuousModelRunner:
                     # hyperparameters rather than penalising the null by
                     # forcing it to use the actual model's fixed values.
                     if tune_regularization_bool:
-                        fold_lambda_smooth, fold_l2_reg, fold_grid_scores = _tune_manifold_regularization(
+                        fold_lambda_smooth, fold_l2_reg, fold_grid_audit = _tune_manifold_regularization(
                             X_train=X_train,
                             Y_train=Y_train,
                             w_train=w_train,
@@ -1207,6 +1331,7 @@ class ContinuousModelRunner:
                             l2_reg_grid=l2_reg_grid,
                             inner_cv_folds=inner_cv_folds,
                             inner_cv_scoring_metric=inner_cv_scoring_metric,
+                            inner_cv_use_one_se_rule=inner_cv_use_one_se_rule,
                             n_features=1,
                             n_time_bins=n_time_bins,
                             spatial_cluster_num=n_clusters,
@@ -1222,7 +1347,13 @@ class ContinuousModelRunner:
                     else:
                         fold_lambda_smooth = float(lam_smooth_fixed)
                         fold_l2_reg = float(lam_l2_fixed)
-                        fold_grid_scores = {}
+                        fold_grid_audit = {
+                            'grid_scores': {},
+                            'grid_ses': {},
+                            'argmax_pair': None,
+                            'one_se_applied': False,
+                            'one_se_threshold': None,
+                        }
                         fold_tuned_flag = False
 
                     model = SmoothBivariateRegression(
@@ -1269,7 +1400,7 @@ class ContinuousModelRunner:
                 results[strategy]['folds']['fit_time'].append(fold_fit_time)
                 results[strategy]['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
                 results[strategy]['folds']['selected_l2_reg'].append(fold_l2_reg)
-                results[strategy]['folds']['hyperparam_grid_scores'].append(fold_grid_scores)
+                results[strategy]['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
                 results[strategy]['folds']['hyperparams_tuned'].append(fold_tuned_flag)
 
         # Summary Wilcoxon tests against the two null baselines. Error
@@ -1330,6 +1461,10 @@ class ContinuousModelRunner:
                 lam_l2_vals = np.asarray(
                     results[strategy]['folds']['selected_l2_reg'], dtype=float
                 )
+                grid_audits = results[strategy]['folds']['hyperparam_grid_audit']
+                one_se_fired = [bool(a.get('one_se_applied')) for a in grid_audits]
+                one_se_count = int(sum(one_se_fired))
+                one_se_total = len(one_se_fired)
                 valid_sm = lam_sm_vals[np.isfinite(lam_sm_vals) & (lam_sm_vals > 0)]
                 valid_l2 = lam_l2_vals[np.isfinite(lam_l2_vals) & (lam_l2_vals > 0)]
                 if valid_sm.size == 0 or valid_l2.size == 0:
@@ -1339,7 +1474,8 @@ class ContinuousModelRunner:
                 print(
                     f"  {strategy.upper():<6} | "
                     f"λ_smooth: mean(log10)={np.mean(log_sm):+.2f}, SD(log10)={np.std(log_sm, ddof=1):.2f} | "
-                    f"l2: mean(log10)={np.mean(log_l2):+.2f}, SD(log10)={np.std(log_l2, ddof=1):.2f}"
+                    f"l2: mean(log10)={np.mean(log_l2):+.2f}, SD(log10)={np.std(log_l2, ddof=1):.2f} | "
+                    f"1SE-softened: {one_se_count}/{one_se_total}"
                 )
 
         print("=" * 90 + "\n")

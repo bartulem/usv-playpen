@@ -124,7 +124,8 @@
           "lambda_smooth_decades_each_side": 3,
           "l2_reg_decades_each_side": 2,
           "inner_cv_folds": 5,
-          "inner_cv_scoring_metric": "r2_spatial"
+          "inner_cv_scoring_metric": "r2_spatial",
+          "inner_cv_use_one_se_rule": true
         }
       },
       "multinomial_logistic": {
