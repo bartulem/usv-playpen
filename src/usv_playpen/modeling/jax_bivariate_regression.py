@@ -112,6 +112,29 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
     l2_reg : float, default=0.1
         Strength of the standard L2 (ridge) penalty to constrain overall
         weight magnitude.
+    smoothness_derivative_order : int, default=2
+        Order of the finite-difference derivative used to build the
+        temporal-smoothness penalty on `W` along the time axis. Both
+        choices correspond to improper Gaussian-process priors and neither
+        fixes a basis, but they push the filter toward different shape
+        families:
+          - `1` — squared first-difference penalty
+            `sum((w_{t+1} - w_t)^2)`. Zero cost when the filter is flat;
+            any change between adjacent time bins is penalised equally.
+            Corresponds to a Brownian-motion / Ornstein-Uhlenbeck prior
+            and biases the filter toward piecewise-constant / step-like
+            shapes. This is the form used in the Paninski/Pillow
+            GLM-HMM tradition (e.g., Calhoun et al. *Nature Neurosci*
+            2019).
+          - `2` — squared second-difference penalty
+            `sum((w_{t+1} - 2 w_t + w_{t-1})^2)`. Zero cost when the
+            filter is any straight line (constant or with non-zero
+            slope); only curvature is penalised. Corresponds to a
+            thin-plate-spline / smoothing-spline prior and biases the
+            filter toward smooth curves. This is the classical GAM /
+            `pyGAM`-style smoothness and is typically preferred when
+            the scientific goal is to learn unbiased filter *shape*
+            without a preference for piecewise-constant plateaux.
     huber_delta : float, default=1.0
         Transition point of the Huber loss in the native UMAP distance
         units. Residuals with `||r||_2 <= huber_delta` are penalised
@@ -171,6 +194,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             n_time_bins: int = 1,
             lambda_smooth: float = 1e2,
             l2_reg: float = 0.1,
+            smoothness_derivative_order: int = 2,
             huber_delta: float = 1.0,
             learning_rate: float = 1e-3,
             max_iter: int = 5000,
@@ -178,10 +202,15 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             random_state: int = 0,
             verbose: bool = False
     ):
+        if smoothness_derivative_order not in (1, 2):
+            raise ValueError(
+                f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
+            )
         self.n_features = n_features
         self.n_time_bins = n_time_bins
         self.lambda_smooth = lambda_smooth
         self.l2_reg = l2_reg
+        self.smoothness_derivative_order = int(smoothness_derivative_order)
         self.huber_delta = huber_delta
         self.learning_rate = learning_rate
         self.max_iter = max_iter
@@ -221,7 +250,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         return W, b
 
     @staticmethod
-    @partial(jax.jit, static_argnums=(4, 5))
+    @partial(jax.jit, static_argnums=(4, 5, 9))
     def _loss_fn(
             params: Tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
@@ -231,7 +260,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             n_time: int,
             lam_smooth: float,
             lam_l2: float,
-            huber_delta: float
+            huber_delta: float,
+            smoothness_derivative_order: int,
     ) -> jnp.ndarray:
         """
         Computes the total optimisation loss: density-weighted Huber + L2 +
@@ -295,11 +325,15 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # L2 (Ridge) penalty on the linear weights.
         l2_loss = 0.5 * lam_l2 * jnp.sum(W ** 2)
 
-        # Temporal smoothness: penalise the discrete second derivative of the
+        # Temporal smoothness: penalise the discrete n-th derivative of the
         # weights along the time axis of each (feature, output-dim) slice.
+        # `smoothness_derivative_order=1` = first-difference penalty
+        # (Brownian / piecewise-constant prior); `=2` = second-difference
+        # penalty (thin-plate-spline / smooth-curve prior). See the class
+        # docstring for the full tradeoff.
         W_reshaped = W.reshape(n_feats, n_time, 2)
-        d2w = jnp.diff(W_reshaped, n=2, axis=1)
-        smooth_loss = 0.5 * lam_smooth * jnp.sum(d2w ** 2)
+        dW = jnp.diff(W_reshaped, n=smoothness_derivative_order, axis=1)
+        smooth_loss = 0.5 * lam_smooth * jnp.sum(dW ** 2)
 
         return weighted_loss + l2_loss + smooth_loss
 
@@ -365,7 +399,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             grads = jax.grad(self._loss_fn)(
                 params, X_batch, Y_batch, w_batch,
                 n_feats, n_time,
-                self.lambda_smooth, self.l2_reg, self.huber_delta
+                self.lambda_smooth, self.l2_reg, self.huber_delta,
+                self.smoothness_derivative_order,
             )
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)

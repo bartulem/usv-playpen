@@ -259,6 +259,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   n_features: int,
                                   n_time_bins: int,
                                   spatial_cluster_num: int,
+                                  smoothness_derivative_order: int,
                                   huber_delta: float,
                                   learning_rate: float,
                                   max_iter: int,
@@ -410,6 +411,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         n_time_bins=n_time_bins,
                         lambda_smooth=float(lam_sm),
                         l2_reg=float(lam_l2),
+                        smoothness_derivative_order=smoothness_derivative_order,
                         huber_delta=huber_delta,
                         learning_rate=learning_rate,
                         max_iter=max_iter,
@@ -1101,6 +1103,7 @@ class ContinuousModelRunner:
         hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate']
         lam_smooth_fixed = hp['lambda_smooth_fixed']
         lam_l2_fixed = hp['l2_reg_fixed']
+        smoothness_order = hp['smoothness_derivative_order']
         huber_delta = hp['huber_delta']
         lr = hp['learning_rate']
         max_iter = hp['max_iter']
@@ -1335,6 +1338,7 @@ class ContinuousModelRunner:
                             n_features=1,
                             n_time_bins=n_time_bins,
                             spatial_cluster_num=n_clusters,
+                            smoothness_derivative_order=smoothness_order,
                             huber_delta=huber_delta,
                             learning_rate=lr,
                             max_iter=max_iter,
@@ -1361,6 +1365,7 @@ class ContinuousModelRunner:
                         n_time_bins=n_time_bins,
                         lambda_smooth=fold_lambda_smooth,
                         l2_reg=fold_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
                         huber_delta=huber_delta,
                         learning_rate=lr,
                         max_iter=max_iter,

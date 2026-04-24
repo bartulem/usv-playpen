@@ -2579,6 +2579,7 @@ def multinomial_vocal_category_model_selection(
                     lambda_smooth=hp['lambda_smooth'],
                     l1_reg=hp['l1_reg'],
                     l2_reg=hp['l2_reg'],
+                    smoothness_derivative_order=hp['smoothness_derivative_order'],
                     focal_gamma=model_focal_gamma,
                     uniform_class_weights=model_uniform_weights,
                     learning_rate=hp['learning_rate'],
@@ -2737,6 +2738,7 @@ def multinomial_vocal_category_model_selection(
                         # keeps the per-feature penalty magnitude roughly constant as
                         # the selector adds features.
                         l2_reg=hp['l2_reg'] / np.sqrt(n_trial_feats),
+                        smoothness_derivative_order=hp['smoothness_derivative_order'],
                         focal_gamma=model_focal_gamma,
                         uniform_class_weights=model_uniform_weights,
                         learning_rate=hp['learning_rate'],
@@ -3112,6 +3114,7 @@ def continuous_vocal_manifold_model_selection(
     inner_cv_folds = tune_params['inner_cv_folds']
     inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
     inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
+    smoothness_order = hp['smoothness_derivative_order']
 
     print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Split Strategy: Spatial Proxy ({split_strategy.upper()})")
     if tune_regularization_bool:
@@ -3413,6 +3416,7 @@ def continuous_vocal_manifold_model_selection(
             n_features=n_feats_,
             n_time_bins=n_time_bins,
             spatial_cluster_num=n_clusters,
+            smoothness_derivative_order=smoothness_order,
             huber_delta=hp['huber_delta'],
             learning_rate=hp['learning_rate'],
             max_iter=hp['max_iter'],
@@ -3448,6 +3452,7 @@ def continuous_vocal_manifold_model_selection(
                 model = SmoothBivariateRegression(
                     n_features=1, n_time_bins=n_time_bins,
                     lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
+                    smoothness_derivative_order=smoothness_order,
                     huber_delta=hp['huber_delta'],
                     learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                     tol=hp['tol'], random_state=hp['random_state'] + fold_idx
@@ -3565,6 +3570,7 @@ def continuous_vocal_manifold_model_selection(
                     model = SmoothBivariateRegression(
                         n_features=n_trial_feats, n_time_bins=n_time_bins,
                         lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
                         huber_delta=hp['huber_delta'],
                         learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                         tol=hp['tol'], random_state=hp['random_state'] + fold_idx

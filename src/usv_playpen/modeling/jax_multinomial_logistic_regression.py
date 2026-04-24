@@ -45,12 +45,31 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         Number of time steps per feature.
         The input X must have `n_features * n_time_bins` columns.
     lambda_smooth : float, default=1
-        Regularization strength for the temporal smoothing penalty (second derivative).
-        Higher values force smoother (stiffer) curves.
+        Regularization strength for the temporal smoothing penalty (see
+        `smoothness_derivative_order` below for which derivative is
+        penalised). Higher values force smoother (stiffer) curves.
     l1_reg : float, default=0.0
         Regularization strength for standard L1 (Lasso) penalty.
     l2_reg : float, default=0.1
         Regularization strength for standard L2 (Ridge) penalty.
+    smoothness_derivative_order : int, default=2
+        Order of the finite-difference derivative used to build the
+        temporal-smoothness penalty on every class's filter along the
+        time axis. Both choices correspond to improper Gaussian-process
+        priors and neither fixes a basis, but they push the filters
+        toward different shape families:
+          - `1` — squared first-difference penalty
+            `sum((w_{t+1} - w_t)^2)`, zero cost when the filter is flat.
+            Biases the filter toward piecewise-constant / step-like
+            shapes. Used in the Paninski/Pillow GLM-HMM literature
+            (e.g., Calhoun et al. *Nature Neurosci* 2019 on fly song
+            modes).
+          - `2` — squared second-difference penalty
+            `sum((w_{t+1} - 2 w_t + w_{t-1})^2)`, zero cost when the
+            filter is any straight line. Biases the filter toward
+            smooth curves; classical GAM / smoothing-spline choice.
+            Recommended when the scientific goal is to learn unbiased
+            filter *shape* without a piecewise-constant prior.
     focal_gamma : float, default=2.0
         Focusing parameter of the focal loss: the `(1 - p_t) ** focal_gamma`
         modulator down-weights easy examples so gradient flow concentrates on
@@ -111,6 +130,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             lambda_smooth: float = 1,
             l1_reg: float = 0.0,
             l2_reg: float = 0.1,
+            smoothness_derivative_order: int = 2,
             focal_gamma: float = 2.0,
             uniform_class_weights: bool = False,
             learning_rate: float = 1e-3,
@@ -119,11 +139,16 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             random_state: int = 0,
             verbose: bool = False
     ):
+        if smoothness_derivative_order not in (1, 2):
+            raise ValueError(
+                f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
+            )
         self.n_features = n_features
         self.n_time_bins = n_time_bins
         self.lambda_smooth = lambda_smooth
         self.l1_reg = l1_reg
         self.l2_reg = l2_reg
+        self.smoothness_derivative_order = int(smoothness_derivative_order)
         self.focal_gamma = focal_gamma
         self.uniform_class_weights = uniform_class_weights
         self.learning_rate = learning_rate
@@ -163,7 +188,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         return W, b
 
     @staticmethod
-    @partial(jax.jit, static_argnums=(3, 4))
+    @partial(jax.jit, static_argnums=(3, 4, 10))
     def _loss_fn(
             params: Tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
@@ -174,7 +199,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             lam_l1: float,
             lam_l2: float,
             class_weights: jnp.ndarray,
-            focal_gamma: float
+            focal_gamma: float,
+            smoothness_derivative_order: int,
     ) -> jnp.ndarray:
 
         W, b = params
@@ -206,12 +232,15 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         # L2 Penalty
         l2_loss = 0.5 * lam_l2 * jnp.sum(W ** 2)
 
-        # Class-Specific Temporal Smoothness
+        # Class-Specific Temporal Smoothness — penalise the discrete
+        # n-th derivative of each class's filter along the time axis.
+        # `smoothness_derivative_order=1` biases toward piecewise-
+        # constant filters; `=2` (default) biases toward smooth curves.
         W_reshaped = W.reshape(n_feats, n_time, -1)
-        d2w = jnp.diff(W_reshaped, n=2, axis=1)
+        dW = jnp.diff(W_reshaped, n=smoothness_derivative_order, axis=1)
 
-        # Sum the curvature across features (axis=0) and time (axis=1), leaving shape (n_classes,)
-        class_smooth_penalties = jnp.sum(d2w ** 2, axis=(0, 1))
+        # Sum the penalty across features (axis=0) and time (axis=1), leaving shape (n_classes,)
+        class_smooth_penalties = jnp.sum(dW ** 2, axis=(0, 1))
 
         # Scale the per-class smoothing penalty by the inverse-frequency class weight:
         # rare classes receive a larger weight, so their filters are regularized more
@@ -301,7 +330,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                 n_feats, n_time,
                 self.lambda_smooth,
                 self.l1_reg, self.l2_reg,
-                w_batch, self.focal_gamma
+                w_batch, self.focal_gamma,
+                self.smoothness_derivative_order,
             )
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
@@ -336,7 +366,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                         self.n_features, self.n_time_bins,
                         self.lambda_smooth,
                         self.l1_reg, self.l2_reg,
-                        c_weights, self.focal_gamma
+                        c_weights, self.focal_gamma,
+                        self.smoothness_derivative_order,
                     )
                     print(f"Iter {i}: Loss = {current_loss:.4f}")
 

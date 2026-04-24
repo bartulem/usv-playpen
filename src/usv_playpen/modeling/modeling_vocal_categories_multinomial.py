@@ -980,6 +980,7 @@ class MultinomialModelRunner:
                         lambda_smooth=hp['lambda_smooth'],
                         l1_reg=hp['l1_reg'],
                         l2_reg=hp['l2_reg'],
+                        smoothness_derivative_order=hp['smoothness_derivative_order'],
                         focal_gamma=effective_focal_gamma,
                         uniform_class_weights=use_uniform_weights,
                         learning_rate=hp['learning_rate'],
