@@ -37,7 +37,11 @@ from .modeling_vocal_categories_multinomial import (
     MultinomialModelingPipeline,
     MultinomialModelRunner,
 )
-from .modeling_usv_manifold_position import get_stratified_spatial_splits_stable
+from .modeling_usv_manifold_position import (
+    get_stratified_spatial_splits_stable,
+    _log_spaced_grid,
+    _tune_manifold_regularization,
+)
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .jax_bivariate_regression import SmoothBivariateRegression
 
@@ -2915,14 +2919,29 @@ def continuous_vocal_manifold_model_selection(
        best_cand_se`, i.e. the candidate's mean score beats the current
        best by more than one SE of its own per-fold distribution.
 
+    Joint per-fold hyperparameter tuning
+    ------------------------------------
+    When `hyperparameters.jax_linear.bivariate.tune_regularization_bool`
+    is `true`, every candidate fold (anchor + every forward-selection
+    trial) runs its own joint inner CV over the log-spaced
+    `(lambda_smooth, l2_reg)` grids before the outer fit. The l2 grid is
+    rescaled by `1 / sqrt(n_trial_features)` so the search window tracks
+    the same effective regularisation strength as the fixed fallback
+    (which is rescaled the same way). The winning pair, the full grid of
+    inner-CV scores, and a `hyperparams_tuned` flag are persisted per
+    candidate per fold alongside the filter weights. Setting the flag to
+    `false` preserves the legacy single-fixed-centre behaviour and
+    writes the same schema.
+
     Deep storage for post-hoc visualisation
     ---------------------------------------
     Every step persists, for each candidate and fold: the full
     `evaluate_metrics` bundle, the learned `coef_` / `intercept_`
     matrices, the test coordinates `y_true`, the manifold-snapped
-    predictions `y_pred_xy`, the test-fold weights `w_test`, and the
-    per-fold JAX optimiser diagnostics (`n_iter`, `converged`,
-    `fit_time`).
+    predictions `y_pred_xy`, the test-fold weights `w_test`, the per-
+    fold JAX optimiser diagnostics (`n_iter`, `converged`, `fit_time`),
+    and the hyperparameter audit trail (`selected_lambda_smooth`,
+    `selected_l2_reg`, `hyperparam_grid_scores`, `hyperparams_tuned`).
 
     Parameters
     ----------
@@ -3069,7 +3088,39 @@ def continuous_vocal_manifold_model_selection(
     split_strategy = model_ops['split_strategy']
     random_seed = settings['model_params']['random_seed']
 
+    # Joint-tuning configuration. Mirrors the runner: fixed fallback values
+    # are the grid centres; the `tune_regularization_bool` flag flips
+    # whether each outer fold / candidate runs an inner CV to pick the
+    # `(λ_smooth, l2_reg)` pair. Keeping both regularisers in the same
+    # search guarantees the selector behaves consistently — the current
+    # active model, the anchor, and every forward-selection trial all use
+    # hyperparameters chosen by their own inner CV on their own training
+    # fold.
+    tune_regularization_bool = hp['tune_regularization_bool']
+    tune_params = hp['tune_regularization_params']
+    lambda_smooth_grid = _log_spaced_grid(
+        center=hp['lambda_smooth_fixed'],
+        decades_each_side=tune_params['lambda_smooth_decades_each_side'],
+    )
+    l2_reg_grid = _log_spaced_grid(
+        center=hp['l2_reg_fixed'],
+        decades_each_side=tune_params['l2_reg_decades_each_side'],
+    )
+    inner_cv_folds = tune_params['inner_cv_folds']
+    inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
+
     print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Split Strategy: Spatial Proxy ({split_strategy.upper()})")
+    if tune_regularization_bool:
+        print(
+            f"  Joint per-fold tuning ENABLED: |λ_smooth grid|={len(lambda_smooth_grid)}, "
+            f"|l2_reg grid|={len(l2_reg_grid)}, inner CV folds={inner_cv_folds}, "
+            f"scoring={inner_cv_scoring_metric}"
+        )
+    else:
+        print(
+            f"  Joint per-fold tuning DISABLED (fixed λ_smooth={hp['lambda_smooth_fixed']}, "
+            f"fixed l2_reg={hp['l2_reg_fixed']})"
+        )
 
     cv_folds = get_stratified_spatial_splits_stable(
         groups=groups_global,
@@ -3168,6 +3219,13 @@ def continuous_vocal_manifold_model_selection(
                 # `(x, y)` predictions per fold: the KDE-weighted centroid of
                 # the training set tiled across the test fold.
                 'y_pred_xy': [],
+                # Hyperparameter audit fields — the centroid baseline has
+                # no model, so these are all NaN / empty / False. Kept so
+                # the saved schema is uniform across strategies.
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_scores': [],
+                'hyperparams_tuned': [],
             }
         }
 
@@ -3223,6 +3281,10 @@ def continuous_vocal_manifold_model_selection(
             baseline_data['folds']['y_true'].append(Y_te)
             baseline_data['folds']['w_test'].append(w_te)
             baseline_data['folds']['y_pred_xy'].append(y_pred_xy)
+            baseline_data['folds']['selected_lambda_smooth'].append(float('nan'))
+            baseline_data['folds']['selected_l2_reg'].append(float('nan'))
+            baseline_data['folds']['hyperparam_grid_scores'].append({})
+            baseline_data['folds']['hyperparams_tuned'].append(False)
 
         baseline_scores = np.asarray(
             baseline_data['folds']['metrics']['r2_spatial'], dtype=float
@@ -3267,6 +3329,14 @@ def continuous_vocal_manifold_model_selection(
                 'n_iter': [],
                 'converged': [],
                 'fit_time': [],
+                # Mirror of the runner's schema so the selection-step pickles
+                # and the univariate pickles carry the same hyperparameter
+                # audit trail. Both tuned and fixed runs populate these
+                # keys; `null_model_free` writes NaN.
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_scores': [],
+                'hyperparams_tuned': [],
             }
         }
 
@@ -3283,6 +3353,51 @@ def continuous_vocal_manifold_model_selection(
         cand_data_['folds']['n_iter'].append(np.nan)
         cand_data_['folds']['converged'].append(False)
         cand_data_['folds']['fit_time'].append(np.nan)
+        cand_data_['folds']['selected_lambda_smooth'].append(float('nan'))
+        cand_data_['folds']['selected_l2_reg'].append(float('nan'))
+        cand_data_['folds']['hyperparam_grid_scores'].append({})
+        cand_data_['folds']['hyperparams_tuned'].append(False)
+
+    def _pick_fold_hyperparams(X_tr_, Y_tr_, w_tr_, groups_tr_, n_feats_, fold_idx_):
+        """
+        Returns `(lambda_smooth, l2_reg, grid_scores, tuned_flag)` for this
+        fold and trial feature set.
+
+        When `tune_regularization_bool` is False the fixed centres are used
+        directly (with the standard `1 / sqrt(n_features)` rescale on the
+        l2 centre so larger trial models don't silently over-regularise).
+        When tuning is on, the inner-CV routine searches the Cartesian
+        product of the settings-level grids, with the l2 grid *also*
+        rescaled by `1 / sqrt(n_features)` so the search window tracks
+        the same effective regularisation strength as the fixed fallback.
+        """
+        if not tune_regularization_bool:
+            lam_sm = float(hp['lambda_smooth_fixed'])
+            lam_l2 = float(hp['l2_reg_fixed'] / np.sqrt(n_feats_))
+            return lam_sm, lam_l2, {}, False
+
+        rescaled_l2_grid = l2_reg_grid / np.sqrt(n_feats_)
+        lam_sm_win, lam_l2_win, grid_scores_ = _tune_manifold_regularization(
+            X_train=X_tr_,
+            Y_train=Y_tr_,
+            w_train=w_tr_,
+            groups_train=groups_tr_,
+            lambda_smooth_grid=lambda_smooth_grid,
+            l2_reg_grid=rescaled_l2_grid,
+            inner_cv_folds=inner_cv_folds,
+            inner_cv_scoring_metric=inner_cv_scoring_metric,
+            n_features=n_feats_,
+            n_time_bins=n_time_bins,
+            spatial_cluster_num=n_clusters,
+            huber_delta=hp['huber_delta'],
+            learning_rate=hp['learning_rate'],
+            max_iter=hp['max_iter'],
+            tol=hp['tol'],
+            random_state=hp['random_state'] + fold_idx_,
+            verbose=False,
+            regressor_cls=SmoothBivariateRegression,
+        )
+        return lam_sm_win, lam_l2_win, grid_scores_, True
 
     # Auto-anchor logic
     if use_top_rank_as_anchor and step_counter == 1:
@@ -3296,10 +3411,19 @@ def continuous_vocal_manifold_model_selection(
                 X_tr, X_te = binned_data[anchor][tr_idx], binned_data[anchor][te_idx]
                 Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
                 w_tr, w_te = w_global[tr_idx], w_global[te_idx]
+                groups_tr = groups_global[tr_idx]
+
+                fold_lambda_smooth, fold_l2_reg, fold_grid_scores, fold_tuned_flag = (
+                    _pick_fold_hyperparams(
+                        X_tr, Y_tr, w_tr, groups_tr,
+                        n_feats_=1,
+                        fold_idx_=fold_idx,
+                    )
+                )
 
                 model = SmoothBivariateRegression(
                     n_features=1, n_time_bins=n_time_bins,
-                    lambda_smooth=hp['lambda_smooth'], l2_reg=hp['l2_reg'],
+                    lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
                     huber_delta=hp['huber_delta'],
                     learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                     tol=hp['tol'], random_state=hp['random_state'] + fold_idx
@@ -3307,7 +3431,7 @@ def continuous_vocal_manifold_model_selection(
                 model.fit(X_tr, Y_tr, sample_weight=w_tr)
 
                 metrics = model.evaluate_metrics(X_te, Y_te, weights=w_te)
-                y_pred_xy = model.predict(X_te).astype(np.float32)
+                y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
 
                 f_met = cand_data['folds']['metrics']
                 for _mk in f_met:
@@ -3322,6 +3446,10 @@ def continuous_vocal_manifold_model_selection(
                 cand_data['folds']['n_iter'].append(int(model.n_iter_))
                 cand_data['folds']['converged'].append(bool(model.converged_))
                 cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                cand_data['folds']['hyperparam_grid_scores'].append(fold_grid_scores)
+                cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
 
                 del model
                 gc.collect()
@@ -3393,17 +3521,26 @@ def continuous_vocal_manifold_model_selection(
                     X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
                     Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
                     w_tr, w_te = w_global[tr_idx], w_global[te_idx]
+                    groups_tr = groups_global[tr_idx]
 
-                    # Divide L2 by sqrt(n_trial_feats) so the summed L2 penalty
-                    # on `W ** 2` does not grow ~linearly with feature count
-                    # and silently over-regularise larger models; the
-                    # per-feature penalty magnitude stays roughly constant as
-                    # the selector adds features.
-                    adjusted_l2 = hp['l2_reg'] / np.sqrt(n_trial_feats)
+                    # Per-fold hyperparameters. When tuning is off,
+                    # `_pick_fold_hyperparams` returns the fixed centres
+                    # with the standard `1 / sqrt(n_trial_feats)` rescale
+                    # on l2 so larger trial models don't silently get
+                    # over-regularised as the selector grows. When tuning
+                    # is on, the inner CV searches a rescaled grid with
+                    # the same centre structure.
+                    fold_lambda_smooth, fold_l2_reg, fold_grid_scores, fold_tuned_flag = (
+                        _pick_fold_hyperparams(
+                            X_tr_stacked, Y_tr, w_tr, groups_tr,
+                            n_feats_=n_trial_feats,
+                            fold_idx_=fold_idx,
+                        )
+                    )
 
                     model = SmoothBivariateRegression(
                         n_features=n_trial_feats, n_time_bins=n_time_bins,
-                        lambda_smooth=hp['lambda_smooth'], l2_reg=adjusted_l2,
+                        lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
                         huber_delta=hp['huber_delta'],
                         learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                         tol=hp['tol'], random_state=hp['random_state'] + fold_idx
@@ -3411,7 +3548,7 @@ def continuous_vocal_manifold_model_selection(
                     model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr)
 
                     metrics = model.evaluate_metrics(X_te_stacked, Y_te, weights=w_te)
-                    y_pred_xy = model.predict(X_te_stacked).astype(np.float32)
+                    y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
 
                     f_met = cand_data['folds']['metrics']
                     for _mk in f_met:
@@ -3426,6 +3563,10 @@ def continuous_vocal_manifold_model_selection(
                     cand_data['folds']['n_iter'].append(int(model.n_iter_))
                     cand_data['folds']['converged'].append(bool(model.converged_))
                     cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                    cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                    cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                    cand_data['folds']['hyperparam_grid_scores'].append(fold_grid_scores)
+                    cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
 
                     del model, X_tr_stacked, X_te_stacked
                     gc.collect()

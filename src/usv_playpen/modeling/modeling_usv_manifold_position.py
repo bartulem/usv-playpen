@@ -211,6 +211,207 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         return cv_folds
 
 
+def _log_spaced_grid(center: float, decades_each_side: int) -> np.ndarray:
+    """
+    Returns a log-spaced grid of candidate regularisation strengths centred
+    on `center`, spanning `decades_each_side` orders of magnitude on each
+    side.
+
+    Example
+    -------
+    `_log_spaced_grid(center=1.0, decades_each_side=3)` returns
+    `[1e-3, 1e-2, 1e-1, 1e+0, 1e+1, 1e+2, 1e+3]`. `decades_each_side=0`
+    returns `[center]` — the "no tuning" degenerate case.
+
+    Parameters
+    ----------
+    center : float
+        Centre of the grid. This is the "best guess" fixed value from the
+        settings block; the grid searches a symmetric window of orders of
+        magnitude around it.
+    decades_each_side : int
+        Half-width of the search window in decades. Must be non-negative.
+
+    Returns
+    -------
+    np.ndarray
+        Sorted 1-D array of length `2 * decades_each_side + 1`.
+    """
+
+    if decades_each_side < 0:
+        raise ValueError(f"decades_each_side must be >= 0, got {decades_each_side}.")
+    if center <= 0:
+        raise ValueError(f"center must be positive, got {center}.")
+    offsets = np.arange(-decades_each_side, decades_each_side + 1, dtype=np.float64)
+    return float(center) * (10.0 ** offsets)
+
+
+def _tune_manifold_regularization(X_train: np.ndarray,
+                                  Y_train: np.ndarray,
+                                  w_train: np.ndarray,
+                                  groups_train: np.ndarray,
+                                  *,
+                                  lambda_smooth_grid: np.ndarray,
+                                  l2_reg_grid: np.ndarray,
+                                  inner_cv_folds: int,
+                                  inner_cv_scoring_metric: str,
+                                  n_features: int,
+                                  n_time_bins: int,
+                                  spatial_cluster_num: int,
+                                  huber_delta: float,
+                                  learning_rate: float,
+                                  max_iter: int,
+                                  tol: float,
+                                  random_state: int,
+                                  verbose: bool,
+                                  regressor_cls) -> tuple:
+    """
+    Selects `(lambda_smooth, l2_reg)` jointly by inner cross-validation on
+    the supplied training fold.
+
+    Strategy
+    --------
+    1. Partition the training fold into `inner_cv_folds` spatially-
+       stratified sub-folds using the same K-means proxy used by the outer
+       splitter (`get_stratified_spatial_splits_stable`), with a reduced
+       cluster count so rare clusters still populate every inner split.
+    2. For every `(lambda_smooth, l2_reg)` pair on the Cartesian product of
+       the two grids, fit the regressor on each inner-training sub-fold and
+       score it on the inner-validation sub-fold using
+       `inner_cv_scoring_metric`. Aggregate per-pair across the inner folds
+       to a mean score.
+    3. Return the pair that maximises the aggregated score (when the metric
+       is higher-is-better) or minimises it (when lower-is-better), along
+       with the full grid of scores for downstream auditability.
+
+    The scoring direction is inferred from the metric name: `r2_spatial`,
+    `pearson_*`, and `spearman_*` are higher-is-better; everything else is
+    treated as lower-is-better (MAE / RMSE / Mahalanobis variants).
+
+    Parameters
+    ----------
+    X_train, Y_train, w_train, groups_train : np.ndarray
+        Training-fold design matrix, UMAP targets, inverse-density weights,
+        and session IDs.
+    lambda_smooth_grid, l2_reg_grid : np.ndarray
+        1-D candidate grids, typically log-spaced.
+    inner_cv_folds : int
+        Number of inner sub-folds.
+    inner_cv_scoring_metric : str
+        Key returned by `SmoothBivariateRegression.evaluate_metrics` used to
+        select the winning pair.
+    n_features, n_time_bins : int
+        Regressor shape arguments.
+    spatial_cluster_num : int
+        Outer `spatial_cluster_num`. The inner splitter uses
+        `max(2, spatial_cluster_num // 2)` so it still partitions the
+        manifold at a reasonable granularity without requiring as many
+        points per cluster as the outer run.
+    huber_delta, learning_rate, max_iter, tol, random_state, verbose :
+        Passed through to `regressor_cls` on every inner fit.
+    regressor_cls : callable
+        The estimator class (injected so the function is unit-testable
+        without importing the JAX estimator at module scope).
+
+    Returns
+    -------
+    best_lambda_smooth : float
+        Winning smoothness penalty strength.
+    best_l2_reg : float
+        Winning L2 penalty strength.
+    grid_scores : dict
+        `{(lambda_smooth, l2_reg): mean_inner_score}` for every pair on the
+        grid. Useful for persistence / diagnostics so the user can inspect
+        how peaked or flat the tuning landscape was.
+    """
+
+    higher_is_better_metrics = {
+        'r2_spatial',
+        'pearson_x', 'pearson_y',
+        'spearman_x', 'spearman_y',
+    }
+    higher_is_better = inner_cv_scoring_metric in higher_is_better_metrics
+
+    # Degenerate training folds (single session, single class) cannot be
+    # inner-split; fall back to the grid centre (= the user's fixed value)
+    # and a single-pair "grid" so the caller still receives a well-formed
+    # diagnostic payload.
+    if len(np.unique(groups_train)) < 2 or len(Y_train) < inner_cv_folds * 2:
+        return (
+            float(lambda_smooth_grid[len(lambda_smooth_grid) // 2]),
+            float(l2_reg_grid[len(l2_reg_grid) // 2]),
+            {},
+        )
+
+    inner_cluster_num = max(2, spatial_cluster_num // 2)
+    inner_folds = get_stratified_spatial_splits_stable(
+        groups=groups_train,
+        Y=Y_train,
+        n_clusters=inner_cluster_num,
+        test_prop=1.0 / inner_cv_folds,
+        n_splits=inner_cv_folds,
+        # Inner CV lives inside the outer training fold, where session-mixing
+        # is already acceptable; use 'mixed' so inner splits are quick and
+        # cluster-balanced without a second layer of session-holdout logic.
+        split_strategy='mixed',
+        random_seed=random_state + 7919,
+    )
+
+    grid_scores = {}
+    for lam_sm in lambda_smooth_grid:
+        for lam_l2 in l2_reg_grid:
+            fold_scores = []
+            for inner_idx, (in_tr, in_va) in enumerate(inner_folds):
+                try:
+                    model = regressor_cls(
+                        n_features=n_features,
+                        n_time_bins=n_time_bins,
+                        lambda_smooth=float(lam_sm),
+                        l2_reg=float(lam_l2),
+                        huber_delta=huber_delta,
+                        learning_rate=learning_rate,
+                        max_iter=max_iter,
+                        tol=tol,
+                        random_state=random_state + inner_idx,
+                        verbose=False,
+                    )
+                    model.fit(X_train[in_tr], Y_train[in_tr], sample_weight=w_train[in_tr])
+                    metrics = model.evaluate_metrics(
+                        X_train[in_va], Y_train[in_va], weights=w_train[in_va]
+                    )
+                    fold_scores.append(metrics[inner_cv_scoring_metric])
+                except Exception as exc:
+                    if verbose:
+                        print(
+                            f"        [inner-cv] λ_smooth={lam_sm:.3g}, l2={lam_l2:.3g}, "
+                            f"fold {inner_idx}: {exc}"
+                        )
+                    fold_scores.append(np.nan)
+
+            finite = [s for s in fold_scores if np.isfinite(s)]
+            if finite:
+                grid_scores[(float(lam_sm), float(lam_l2))] = float(np.mean(finite))
+            else:
+                # Preserve a NaN entry so the grid shape is recoverable; it
+                # just can't win the selection.
+                grid_scores[(float(lam_sm), float(lam_l2))] = float('nan')
+
+    # Pick the winning pair. Ignore NaN entries.
+    valid_pairs = [(pair, score) for pair, score in grid_scores.items() if np.isfinite(score)]
+    if not valid_pairs:
+        # Every pair failed — fall back to the grid centres so the outer
+        # fit still runs with a reasonable default instead of crashing.
+        return (
+            float(lambda_smooth_grid[len(lambda_smooth_grid) // 2]),
+            float(l2_reg_grid[len(l2_reg_grid) // 2]),
+            grid_scores,
+        )
+
+    key_fn = (lambda kv: kv[1]) if higher_is_better else (lambda kv: -kv[1])
+    best_pair, _ = max(valid_pairs, key=key_fn)
+    return float(best_pair[0]), float(best_pair[1]), grid_scores
+
+
 class ContinuousModelingPipeline(FeatureZoo):
 
     def __init__(self, modeling_settings_dict: dict = None, **kwargs):
@@ -589,6 +790,17 @@ class ContinuousModelRunner:
     - `n_iter`, `converged`, `fit_time` — per-fold JAX optimizer
       diagnostics. `converged=False` flags folds that terminated at
       `max_iter` without meeting the tolerance.
+    - `selected_lambda_smooth`, `selected_l2_reg` — the regularisation
+      strengths actually used for each outer fold's fit. Equal to the
+      fixed settings centres when `tune_regularization_bool=False`, or
+      the winners of per-fold joint inner CV when `True`. Always
+      persisted so the storage schema is fixed and the published filter
+      shapes can be paired with the hyperparameters that produced them.
+    - `hyperparam_grid_scores` — per-fold dict mapping
+      `(lambda_smooth, l2_reg) -> mean_inner_score` from the inner CV
+      grid; empty dict when tuning is off. Diagnostic only.
+    - `hyperparams_tuned` — bool flag per fold recording whether the
+      hyperparameters were tuned or fixed.
     """
 
     def __init__(self, pipeline_instance: Any) -> None:
@@ -716,6 +928,28 @@ class ContinuousModelRunner:
         comparable across features and sex groups. All other metrics are
         reported as diagnostics (see the class docstring).
 
+        Hyperparameter tuning
+        ---------------------
+        Reads `hyperparameters.jax_linear.bivariate.tune_regularization_bool`:
+
+        - `false` (default): every outer fold uses the fixed settings-
+          level `lambda_smooth_fixed` and `l2_reg_fixed` values.
+        - `true`: each outer fold runs a joint inner CV over the log-
+          spaced `(lambda_smooth, l2_reg)` grids (centred on the fixed
+          values, half-width controlled by
+          `tune_regularization_params.{lambda_smooth, l2_reg}_decades_each_side`)
+          and picks the pair that maximises `r2_spatial` (or whatever
+          `inner_cv_scoring_metric` is set to) on held-out inner folds.
+          The `null` strategy is tuned the same way so the permutation
+          test compares like-against-like hyperparameters rather than
+          penalising the null by forcing it to use the actual model's
+          settings.
+
+        The winning pair per outer fold is persisted alongside the filter
+        weights (see `selected_lambda_smooth`, `selected_l2_reg`,
+        `hyperparam_grid_scores`, `hyperparams_tuned` in the class
+        docstring).
+
         Data persistence
         -----------------
         Saves full-resolution tracking data (`test_indices`, `y_true`,
@@ -752,14 +986,30 @@ class ContinuousModelRunner:
         n_time_bins = feat_data['n_time_bins']
 
         hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate']
-        lam_smooth = hp['lambda_smooth']
-        lam_l2 = hp['l2_reg']
+        lam_smooth_fixed = hp['lambda_smooth_fixed']
+        lam_l2_fixed = hp['l2_reg_fixed']
         huber_delta = hp['huber_delta']
         lr = hp['learning_rate']
         max_iter = hp['max_iter']
         tol = hp['tol']
         random_seed = hp['random_state']
         verbose = hp['verbose']
+
+        tune_regularization_bool = hp['tune_regularization_bool']
+        tune_params = hp['tune_regularization_params']
+        # Grids are reconstructed once up front from the settings-level
+        # centre + half-width so the user interacts with a compact numeric
+        # spec rather than explicit lists.
+        lambda_smooth_grid = _log_spaced_grid(
+            center=lam_smooth_fixed,
+            decades_each_side=tune_params['lambda_smooth_decades_each_side'],
+        )
+        l2_reg_grid = _log_spaced_grid(
+            center=lam_l2_fixed,
+            decades_each_side=tune_params['l2_reg_decades_each_side'],
+        )
+        inner_cv_folds = tune_params['inner_cv_folds']
+        inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
 
         cv_settings = self.modeling_settings['model_params']
         n_clusters = cv_settings['spatial_cluster_num']
@@ -843,6 +1093,25 @@ class ContinuousModelRunner:
                     'n_iter': [],
                     'converged': [],
                     'fit_time': [],
+                    # Hyperparameters actually used for the outer fit (either
+                    # the user-supplied fixed values or the winners of the
+                    # per-fold inner-CV tuning). Always persisted so the
+                    # storage schema is the same whether tuning was on or
+                    # off. `null_model_free` records NaN since there is no
+                    # model to tune.
+                    'selected_lambda_smooth': [],
+                    'selected_l2_reg': [],
+                    # Full inner-CV grid (pair -> mean inner score) per
+                    # fold — empty dict when tuning is disabled or when the
+                    # inner splitter degenerated. Kept for auditability so
+                    # the reader can see how peaked / flat the tuning
+                    # landscape was.
+                    'hyperparam_grid_scores': [],
+                    # Booleans declaring whether this fold's hyperparameters
+                    # were tuned or fixed. Handy for downstream plots that
+                    # want to overlay the tuned / fixed runs on the same
+                    # axes.
+                    'hyperparams_tuned': [],
                 }
             }
 
@@ -916,12 +1185,51 @@ class ContinuousModelRunner:
                     fold_n_iter = 0
                     fold_converged = True
                     fold_fit_time = 0.0
+                    # `null_model_free` has no hyperparameters to tune.
+                    fold_lambda_smooth = float('nan')
+                    fold_l2_reg = float('nan')
+                    fold_grid_scores = {}
+                    fold_tuned_flag = False
                 else:
+                    # Pick the regularisation strengths for this outer fold.
+                    # Tuning is strategy-agnostic: the within-session
+                    # X-history shuffled `null` is also tuned, so the
+                    # permutation test compares like-against-like
+                    # hyperparameters rather than penalising the null by
+                    # forcing it to use the actual model's fixed values.
+                    if tune_regularization_bool:
+                        fold_lambda_smooth, fold_l2_reg, fold_grid_scores = _tune_manifold_regularization(
+                            X_train=X_train,
+                            Y_train=Y_train,
+                            w_train=w_train,
+                            groups_train=groups_train,
+                            lambda_smooth_grid=lambda_smooth_grid,
+                            l2_reg_grid=l2_reg_grid,
+                            inner_cv_folds=inner_cv_folds,
+                            inner_cv_scoring_metric=inner_cv_scoring_metric,
+                            n_features=1,
+                            n_time_bins=n_time_bins,
+                            spatial_cluster_num=n_clusters,
+                            huber_delta=huber_delta,
+                            learning_rate=lr,
+                            max_iter=max_iter,
+                            tol=tol,
+                            random_state=random_seed + fold_idx,
+                            verbose=verbose,
+                            regressor_cls=SmoothBivariateRegression,
+                        )
+                        fold_tuned_flag = True
+                    else:
+                        fold_lambda_smooth = float(lam_smooth_fixed)
+                        fold_l2_reg = float(lam_l2_fixed)
+                        fold_grid_scores = {}
+                        fold_tuned_flag = False
+
                     model = SmoothBivariateRegression(
                         n_features=1,
                         n_time_bins=n_time_bins,
-                        lambda_smooth=lam_smooth,
-                        l2_reg=lam_l2,
+                        lambda_smooth=fold_lambda_smooth,
+                        l2_reg=fold_l2_reg,
                         huber_delta=huber_delta,
                         learning_rate=lr,
                         max_iter=max_iter,
@@ -942,7 +1250,8 @@ class ContinuousModelRunner:
                 print(
                     f"      Fold {fold_idx + 1:03d}/{n_splits} | "
                     f"R^2: {metrics['r2_spatial']:.3f} | MAE: {metrics['euclidean_mae']:.4f} "
-                    f"| Mahal: {metrics['mahalanobis_mae']:.4f} | converged: {fold_converged}",
+                    f"| Mahal: {metrics['mahalanobis_mae']:.4f} | "
+                    f"λ_sm={fold_lambda_smooth:.3g} l2={fold_l2_reg:.3g} | converged: {fold_converged}",
                     flush=True,
                 )
 
@@ -958,6 +1267,10 @@ class ContinuousModelRunner:
                 results[strategy]['folds']['n_iter'].append(fold_n_iter)
                 results[strategy]['folds']['converged'].append(fold_converged)
                 results[strategy]['folds']['fit_time'].append(fold_fit_time)
+                results[strategy]['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                results[strategy]['folds']['selected_l2_reg'].append(fold_l2_reg)
+                results[strategy]['folds']['hyperparam_grid_scores'].append(fold_grid_scores)
+                results[strategy]['folds']['hyperparams_tuned'].append(fold_tuned_flag)
 
         # Summary Wilcoxon tests against the two null baselines. Error
         # metrics are "lower is better"; `r2_spatial` and the correlations
@@ -999,6 +1312,35 @@ class ContinuousModelRunner:
                 f"(p={p_null:>7.1e}) {sig_null} | MF: {mf_m:>7.4f} "
                 f"(p={p_mf:>7.1e}) {sig_mf}"
             )
+
+        # Cross-fold hyperparameter report. If tuning was on, the spread of
+        # the selected `(λ_smooth, l2_reg)` across folds is a direct
+        # diagnostic: tight concentration (small SD of log10) means the
+        # data pick the same regularisation strength regardless of which
+        # folds they see; wide spread means the "right" amount of
+        # regularisation is itself fold-dependent and any single number
+        # would be a poor summary.
+        if tune_regularization_bool:
+            print("-" * 90)
+            print("HYPERPARAMETER SELECTION SUMMARY (log10 units)")
+            for strategy in ('actual', 'null'):
+                lam_sm_vals = np.asarray(
+                    results[strategy]['folds']['selected_lambda_smooth'], dtype=float
+                )
+                lam_l2_vals = np.asarray(
+                    results[strategy]['folds']['selected_l2_reg'], dtype=float
+                )
+                valid_sm = lam_sm_vals[np.isfinite(lam_sm_vals) & (lam_sm_vals > 0)]
+                valid_l2 = lam_l2_vals[np.isfinite(lam_l2_vals) & (lam_l2_vals > 0)]
+                if valid_sm.size == 0 or valid_l2.size == 0:
+                    continue
+                log_sm = np.log10(valid_sm)
+                log_l2 = np.log10(valid_l2)
+                print(
+                    f"  {strategy.upper():<6} | "
+                    f"λ_smooth: mean(log10)={np.mean(log_sm):+.2f}, SD(log10)={np.std(log_sm, ddof=1):.2f} | "
+                    f"l2: mean(log10)={np.mean(log_l2):+.2f}, SD(log10)={np.std(log_l2, ddof=1):.2f}"
+                )
 
         print("=" * 90 + "\n")
 

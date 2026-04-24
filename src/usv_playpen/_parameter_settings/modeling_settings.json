@@ -110,15 +110,22 @@
     },
     "jax_linear": {
       "bivariate": {
-        "bin_resizing_factor": 10,
-        "lambda_smooth": 1.0,
-        "l2_reg": 0.1,
+        "bin_resizing_factor": 1,
+        "lambda_smooth_fixed": 1.0,
+        "l2_reg_fixed": 0.1,
         "huber_delta": 1.0,
         "learning_rate": 0.01,
         "max_iter": 10000,
         "tol": 1e-4,
         "random_state": 0,
-        "verbose": false
+        "verbose": false,
+        "tune_regularization_bool": false,
+        "tune_regularization_params": {
+          "lambda_smooth_decades_each_side": 3,
+          "l2_reg_decades_each_side": 2,
+          "inner_cv_folds": 5,
+          "inner_cv_scoring_metric": "r2_spatial"
+        }
       },
       "multinomial_logistic": {
         "balance_predictions_bool": false,
