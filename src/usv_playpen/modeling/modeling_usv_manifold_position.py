@@ -116,7 +116,10 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          test_prop: float = 0.2,
                                          n_splits: int = 100,
                                          tolerance: float = 0.05,
-                                         random_seed: int = 0) -> List[Tuple[np.ndarray, np.ndarray]]:
+                                         random_seed: int = 0,
+                                         max_total_attempts: int = 50000,
+                                         widen_step: float = 0.02,
+                                         widen_every: int = 1000) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
     Generates deterministic folds ensuring spatial geographic fairness across the UMAP manifold.
 
@@ -148,6 +151,16 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         distribution between the global data and the generated test splits.
     random_seed : int, default 0
         Fixed seed for absolute reproducibility.
+    max_total_attempts : int, default 50000
+        (For 'session' strategy only). Hard ceiling on rejection-sampling
+        attempts before raising `RuntimeError`.
+    widen_step : float, default 0.02
+        (For 'session' strategy only). Amount by which `tolerance` is
+        increased each time the sampler fails to accept a fold for
+        `widen_every` consecutive attempts.
+    widen_every : int, default 1000
+        (For 'session' strategy only). Number of failed attempts between
+        successive tolerance widenings.
 
     Returns
     -------
@@ -172,12 +185,21 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         _, global_counts = np.unique(proxy_labels, return_counts=True)
         global_dist = global_counts / len(proxy_labels)
 
+        # Precompute a session-ID -> row-indices map once so each rejection
+        # iteration becomes a cheap `np.concatenate([session_rows[s] for s
+        # in te_sess])` instead of a linear `np.isin` scan over every row
+        # of the groups array. With `max_total_attempts=50000` this is a
+        # measurable saving.
+        session_to_rows = {
+            sess: np.where(groups == sess)[0]
+            for sess in unique_sessions
+        }
+
         cv_folds = []
         rng = np.random.RandomState(random_seed)
 
         attempts = 0
         current_tolerance = tolerance
-        max_total_attempts = 50000
 
         while len(cv_folds) < n_splits:
             attempts += 1
@@ -185,8 +207,8 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
             te_sess = shuffled[:n_test_sessions]
             tr_sess = shuffled[n_test_sessions:]
 
-            tr_idx = np.where(np.isin(groups, tr_sess))[0]
-            te_idx = np.where(np.isin(groups, te_sess))[0]
+            te_idx = np.concatenate([session_to_rows[s] for s in te_sess])
+            tr_idx = np.concatenate([session_to_rows[s] for s in tr_sess])
 
             tr_clusters = np.unique(proxy_labels[tr_idx])
             te_clusters = np.unique(proxy_labels[te_idx])
@@ -199,8 +221,8 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                 if dist_error < current_tolerance:
                     cv_folds.append((tr_idx, te_idx))
 
-            if attempts % 1000 == 0:
-                current_tolerance += 0.02
+            if attempts % widen_every == 0:
+                current_tolerance += widen_step
 
             if attempts > max_total_attempts:
                 raise RuntimeError(
@@ -263,9 +285,11 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   huber_delta: float,
                                   learning_rate: float,
                                   max_iter: int,
+                                  inner_max_iter: int,
                                   tol: float,
                                   random_state: int,
                                   verbose: bool,
+                                  use_lax_loop: bool,
                                   regressor_cls) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly by inner cross-validation on
@@ -329,8 +353,18 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         `max(2, spatial_cluster_num // 2)` so it still partitions the
         manifold at a reasonable granularity without requiring as many
         points per cluster as the outer run.
-    huber_delta, learning_rate, max_iter, tol, random_state, verbose :
+    huber_delta, learning_rate, tol, random_state, verbose :
         Passed through to `regressor_cls` on every inner fit.
+    max_iter : int
+        Iteration cap for the *outer* fit (unused here — kept in the
+        signature so callers can share a single settings block across
+        both the outer and inner paths).
+    inner_max_iter : int
+        Iteration cap used for every inner-CV fit. Typically smaller
+        than `max_iter` (e.g., 2500 vs. 10000) — the inner CV only
+        needs a usable score to rank regularisation pairs, not the
+        final fully-converged weights. Reduces tuning wall time by
+        `max_iter / inner_max_iter` per pair per fold.
     regressor_cls : callable
         The estimator class (injected so the function is unit-testable
         without importing the JAX estimator at module scope).
@@ -414,10 +448,11 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         smoothness_derivative_order=smoothness_derivative_order,
                         huber_delta=huber_delta,
                         learning_rate=learning_rate,
-                        max_iter=max_iter,
+                        max_iter=inner_max_iter,
                         tol=tol,
                         random_state=random_state + inner_idx,
                         verbose=False,
+                        _use_lax_loop=use_lax_loop,
                     )
                     model.fit(X_train[in_tr], Y_train[in_tr], sample_weight=w_train[in_tr])
                     metrics = model.evaluate_metrics(
@@ -923,7 +958,9 @@ class ContinuousModelRunner:
             self.feature_boundaries = pipeline_instance.feature_boundaries
 
     @staticmethod
-    def load_univariate_data_blocks(pkl_path: str, bin_size: int = 10) -> dict:
+    def load_univariate_data_blocks(pkl_path: str,
+                                    bin_size: int = 1,
+                                    feature_filter=None) -> dict:
         """
         Loads extracted feature data from disk and applies temporal downsampling (binning).
 
@@ -943,7 +980,18 @@ class ContinuousModelRunner:
             dictionaries from the ContinuousModelingPipeline.
         bin_size : int, optional
             The resizing factor for temporal downsampling. A value of 10
-            means every 10 frames are averaged into 1 bin. Default is 10.
+            means every 10 frames are averaged into 1 bin. Default is 1,
+            matching `hyperparameters.jax_linear.bivariate.bin_resizing_factor`
+            in the settings file — any downstream caller should normally
+            pass the settings value through rather than rely on this
+            default.
+        feature_filter : iterable of str or str, optional
+            If provided, only bin and return the listed features. The HPC
+            dispatcher runs one feature per process, so paying the binning
+            cost for every feature in the pickle on every call is wasteful;
+            pass the feature(s) actually needed to skip the rest. The
+            default (`None`) retains the behaviour of binning every
+            feature in the pickle.
 
         Returns
         -------
@@ -967,7 +1015,12 @@ class ContinuousModelRunner:
         with open(pkl_path, 'rb') as f:
             raw_data = pickle.load(f)
 
-        sorted_features = sorted(list(raw_data.keys()))
+        if feature_filter is None:
+            sorted_features = sorted(list(raw_data.keys()))
+        else:
+            wanted = {feature_filter} if isinstance(feature_filter, str) else set(feature_filter)
+            sorted_features = sorted(feat for feat in raw_data.keys() if feat in wanted)
+
         data_blocks = {}
 
         for feat in sorted_features:
@@ -999,7 +1052,7 @@ class ContinuousModelRunner:
 
         return data_blocks
 
-    def run_univariate_training(self, data_blocks: dict, feat_name: str) -> dict:
+    def run_univariate_training(self, pkl_path: str, feat_name: str) -> dict:
         """
         Executes the cross-validation and statistical evaluation loop for a
         single feature.
@@ -1075,9 +1128,12 @@ class ContinuousModelRunner:
 
         Parameters
         ----------
-        data_blocks : dict
-            The full dictionary of loaded and binned data returned by
-            `load_univariate_data_blocks`.
+        pkl_path : str
+            Path to the source data pickle produced by
+            `ContinuousModelingPipeline.extract_and_save_continuous_data`.
+            Only the single feature named by `feat_name` is loaded and
+            binned — matches the multinomial runner's per-feature HPC
+            dispatch convention.
         feat_name : str
             The specific behavioural feature (e.g., `'self.speed'`) to
             evaluate.
@@ -1093,6 +1149,19 @@ class ContinuousModelRunner:
 
         print(f"--- Starting Univariate Training: {feat_name} ---")
 
+        hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate']
+        bin_size = hp['bin_resizing_factor']
+
+        # Only bin the feature we're about to train. Mirrors the multinomial
+        # runner's per-feature dispatch so HPC one-feature-per-process
+        # invocations don't pay the binning cost for every other feature
+        # in the pickle.
+        data_blocks = self.load_univariate_data_blocks(
+            pkl_path, bin_size=bin_size, feature_filter=feat_name,
+        )
+        if feat_name not in data_blocks:
+            raise KeyError(f"Feature '{feat_name}' not found in {pkl_path}.")
+
         feat_data = data_blocks[feat_name]
         X = feat_data['X']
         Y = feat_data['Y']
@@ -1100,7 +1169,6 @@ class ContinuousModelRunner:
         groups = feat_data['groups']
         n_time_bins = feat_data['n_time_bins']
 
-        hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate']
         lam_smooth_fixed = hp['lambda_smooth_fixed']
         lam_l2_fixed = hp['l2_reg_fixed']
         smoothness_order = hp['smoothness_derivative_order']
@@ -1110,6 +1178,7 @@ class ContinuousModelRunner:
         tol = hp['tol']
         random_seed = hp['random_state']
         verbose = hp['verbose']
+        use_lax_loop = hp['use_lax_loop']
 
         tune_regularization_bool = hp['tune_regularization_bool']
         tune_params = hp['tune_regularization_params']
@@ -1127,6 +1196,7 @@ class ContinuousModelRunner:
         inner_cv_folds = tune_params['inner_cv_folds']
         inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
         inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
+        inner_max_iter = tune_params['inner_max_iter']
 
         cv_settings = self.modeling_settings['model_params']
         n_clusters = cv_settings['spatial_cluster_num']
@@ -1142,7 +1212,10 @@ class ContinuousModelRunner:
             test_prop=test_prop,
             n_splits=n_splits,
             split_strategy=split_strategy,
-            random_seed=random_seed
+            random_seed=random_seed,
+            max_total_attempts=cv_settings['session_split_max_attempts'],
+            widen_step=cv_settings['session_split_widen_step'],
+            widen_every=cv_settings['session_split_widen_every'],
         )
 
         # Canonical set of metric keys emitted by `evaluate_metrics`. Used
@@ -1172,9 +1245,38 @@ class ContinuousModelRunner:
                                      rng_: np.random.Generator) -> np.ndarray:
             """
             Returns `X_block` with its rows permuted inside each session
-            block. `Y_train` and `w_train` are expected to stay aligned to
-            the original row order at the call site — only the kinematic
-            histories are re-paired.
+            block, preserving cross-session structure.
+
+            This implements the "within-session X-history shuffle" that
+            underpins the `null` permutation test: every trial's kinematic
+            history is re-paired with another trial's history from the
+            same session, while `Y_train` and `w_train` stay aligned to
+            the original row order at the call site. The permutation is
+            drawn independently per session so trials never cross session
+            boundaries (session-level vocal-repertoire autocorrelation is
+            preserved under the null) and single-trial sessions are left
+            untouched (a 1-element permutation is a no-op).
+
+            Parameters
+            ----------
+            X_block : np.ndarray
+                Flattened behavioural-history design matrix of shape
+                `(n_samples, n_features * n_time_bins)`. Row `i`
+                corresponds to the kinematic history preceding trial `i`.
+            groups_block : np.ndarray
+                Session-ID label for each row of `X_block`, shape
+                `(n_samples,)`. Determines which rows may be shuffled
+                together.
+            rng_ : np.random.Generator
+                Seeded NumPy generator used to draw the per-session
+                permutations. Passed in from the caller so the null
+                strategy is deterministic per fold.
+
+            Returns
+            -------
+            X_shuffled : np.ndarray
+                Copy of `X_block` with rows permuted inside each session
+                block. Same shape and dtype as the input.
             """
             perm = np.arange(len(X_block))
             for sess_id in np.unique(groups_block):
@@ -1342,9 +1444,11 @@ class ContinuousModelRunner:
                             huber_delta=huber_delta,
                             learning_rate=lr,
                             max_iter=max_iter,
+                            inner_max_iter=inner_max_iter,
                             tol=tol,
                             random_state=random_seed + fold_idx,
                             verbose=verbose,
+                            use_lax_loop=use_lax_loop,
                             regressor_cls=SmoothBivariateRegression,
                         )
                         fold_tuned_flag = True
@@ -1371,7 +1475,8 @@ class ContinuousModelRunner:
                         max_iter=max_iter,
                         tol=tol,
                         random_state=random_seed + fold_idx,
-                        verbose=verbose
+                        verbose=verbose,
+                        _use_lax_loop=use_lax_loop,
                     )
                     model.fit(X_train, Y_train, sample_weight=w_train)
                     metrics = model.evaluate_metrics(X_test, Y_test, weights=w_test)

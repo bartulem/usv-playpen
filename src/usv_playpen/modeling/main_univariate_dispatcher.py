@@ -267,15 +267,8 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
             runner = ContinuousModelRunner(pipeline_instance=pipeline)
 
-            hp = settings['hyperparameters']['jax_linear']['bivariate']
-
-            data_blocks = runner.load_univariate_data_blocks(
-                pkl_path=args.input_data,
-                bin_size=hp['bin_resizing_factor']
-            )
-
             raw_res = runner.run_univariate_training(
-                data_blocks=data_blocks,
+                pkl_path=args.input_data,
                 feat_name=feature_name
             )
 

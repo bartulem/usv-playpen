@@ -112,43 +112,47 @@
       "bivariate": {
         "bin_resizing_factor": 1,
         "lambda_smooth_fixed": 1.0,
-        "l2_reg_fixed": 0.1,
+        "l2_reg_fixed": 0.001,
         "smoothness_derivative_order": 2,
         "huber_delta": 1.0,
-        "learning_rate": 0.01,
-        "max_iter": 10000,
-        "tol": 1e-4,
+        "learning_rate": 0.005,
+        "max_iter": 20000,
+        "tol": 1e-3,
         "random_state": 0,
         "verbose": false,
-        "tune_regularization_bool": false,
+        "use_lax_loop": true,
+        "tune_regularization_bool": true,
         "tune_regularization_params": {
           "lambda_smooth_decades_each_side": 3,
           "l2_reg_decades_each_side": 2,
           "inner_cv_folds": 5,
           "inner_cv_scoring_metric": "r2_spatial",
-          "inner_cv_use_one_se_rule": true
+          "inner_cv_use_one_se_rule": true,
+          "inner_max_iter": 2500
         }
       },
       "multinomial_logistic": {
         "balance_predictions_bool": false,
         "balance_train_bool": false,
-        "bin_resizing_factor": 10,
+        "bin_resizing_factor": 1,
         "lambda_smooth_fixed": 1.0,
-        "l2_reg_fixed": 0.1,
+        "l2_reg_fixed": 0.001,
         "smoothness_derivative_order": 2,
-        "learning_rate": 0.001,
-        "max_iter": 10000,
-        "tol": 1e-4,
+        "learning_rate": 0.005,
+        "max_iter": 20000,
+        "tol": 1e-3,
         "random_state": 0,
         "verbose": false,
-        "focal_loss_gamma": 2.0,
-        "tune_regularization_bool": false,
+        "use_lax_loop": true,
+        "focal_loss_gamma": 0.5,
+        "tune_regularization_bool": true,
         "tune_regularization_params": {
           "lambda_smooth_decades_each_side": 3,
           "l2_reg_decades_each_side": 2,
           "inner_cv_folds": 5,
           "inner_cv_scoring_metric": "auc",
-          "inner_cv_use_one_se_rule": true
+          "inner_cv_use_one_se_rule": true,
+          "inner_max_iter": 2500
         }
       }
     },

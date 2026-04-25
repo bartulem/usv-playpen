@@ -46,6 +46,7 @@ from .modeling_utils import (
     expected_calibration_error,
     safe_matthews_corrcoef,
     safe_confusion_matrix,
+    align_probs_to_canonical,
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from ..analyses.compute_behavioral_features import FeatureZoo
@@ -236,9 +237,38 @@ def _balance_multinomial_train_indices(
 
 def _log_spaced_grid_multinomial(center: float, decades_each_side: int) -> np.ndarray:
     """
-    Log-spaced hyperparameter grid centred on `center`, spanning
-    `decades_each_side` orders of magnitude on each side. `decades_each_side=0`
-    returns `[center]` (the no-tuning degenerate case).
+    Returns a log-spaced grid of candidate regularisation strengths centred
+    on `center`, spanning `decades_each_side` orders of magnitude on each
+    side.
+
+    The multinomial tuner consumes the Cartesian product of two such
+    grids (one for `lambda_smooth`, one for `l2_reg`), so the centre is
+    always the user-supplied fixed value from the settings block and the
+    half-width controls how aggressively the inner CV is allowed to
+    stray from it.
+
+    Example
+    -------
+    `_log_spaced_grid_multinomial(center=1.0, decades_each_side=3)`
+    returns `[1e-3, 1e-2, 1e-1, 1e+0, 1e+1, 1e+2, 1e+3]`.
+    `decades_each_side=0` returns `[center]` — the "no tuning" degenerate
+    case that collapses the grid to the fixed value.
+
+    Parameters
+    ----------
+    center : float
+        Centre of the grid. This is the fixed "best guess" value from the
+        settings block (`lambda_smooth_fixed` or `l2_reg_fixed`); the grid
+        searches a symmetric window of orders of magnitude around it.
+        Must be strictly positive.
+    decades_each_side : int
+        Half-width of the search window in decades. Must be non-negative;
+        `0` collapses the grid to the single value `[center]`.
+
+    Returns
+    -------
+    grid : np.ndarray
+        Sorted 1-D array of length `2 * decades_each_side + 1`.
     """
 
     if decades_each_side < 0:
@@ -264,9 +294,11 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
                                      uniform_class_weights: bool,
                                      learning_rate: float,
                                      max_iter: int,
+                                     inner_max_iter: int,
                                      tol: float,
                                      random_state: int,
                                      verbose: bool,
+                                     use_lax_loop: bool,
                                      regressor_cls) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly for a multinomial logistic
@@ -306,7 +338,9 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
 
     Parameters mirror the manifold tuner; the `regressor_cls` injection
     keeps the function unit-testable without importing JAX at module
-    scope.
+    scope. `inner_max_iter` caps iterations on every inner fit — kept
+    smaller than the outer `max_iter` so the tuner produces usable
+    ranking scores without paying full-convergence wall time per pair.
 
     Returns
     -------
@@ -400,10 +434,11 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
                         focal_gamma=focal_gamma,
                         uniform_class_weights=uniform_class_weights,
                         learning_rate=learning_rate,
-                        max_iter=max_iter,
+                        max_iter=inner_max_iter,
                         tol=tol,
                         random_state=random_state + inner_idx,
                         verbose=False,
+                        _use_lax_loop=use_lax_loop,
                     )
                     model.fit(X_train[in_tr], y_train[in_tr])
                     y_pred = model.predict(X_train[in_va], balanced=False)
@@ -1102,6 +1137,8 @@ class MultinomialModelRunner:
         inner_cv_folds = tune_params['inner_cv_folds']
         inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
         inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
+        inner_max_iter = tune_params['inner_max_iter']
+        use_lax_loop = hp['use_lax_loop']
 
         # Only bin the feature we are about to train. The HPC dispatcher
         # invokes this method once per feature per process, so there is no
@@ -1289,9 +1326,11 @@ class MultinomialModelRunner:
                             uniform_class_weights=use_uniform_weights,
                             learning_rate=hp['learning_rate'],
                             max_iter=hp['max_iter'],
+                            inner_max_iter=inner_max_iter,
                             tol=hp['tol'],
                             random_state=hp['random_state'] + fold,
                             verbose=hp['verbose'],
+                            use_lax_loop=use_lax_loop,
                             regressor_cls=SmoothMultinomialLogisticRegression,
                         )
                         fold_tuned_flag = True
@@ -1317,7 +1356,8 @@ class MultinomialModelRunner:
                         max_iter=hp['max_iter'],
                         tol=hp['tol'],
                         random_state=hp['random_state'] + fold,
-                        verbose=hp['verbose']
+                        verbose=hp['verbose'],
+                        _use_lax_loop=use_lax_loop,
                     )
 
                     model.fit(X_train, y_train)
@@ -1352,10 +1392,9 @@ class MultinomialModelRunner:
                 # Align the probability matrix to canonical class ordering so
                 # Brier / ECE are computed against a column ordering that does
                 # not silently shift when a rare class is absent from a fold.
-                probs_canonical = np.zeros((len(y_test), len(canonical_classes)), dtype=probabilities.dtype)
-                for col_idx, cls in enumerate(model_classes):
-                    target_col = int(np.where(canonical_classes == cls)[0][0])
-                    probs_canonical[:, target_col] = probabilities[:, col_idx]
+                probs_canonical = align_probs_to_canonical(
+                    probabilities, model_classes, canonical_classes
+                )
 
                 try:
                     f_brier = brier_score_multi(y_test, probs_canonical, canonical_classes)

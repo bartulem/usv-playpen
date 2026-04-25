@@ -1219,6 +1219,55 @@ def safe_confusion_matrix(y_true: np.ndarray,
     return confusion_matrix(y_true, y_pred, labels=labels)
 
 
+def align_probs_to_canonical(probabilities: np.ndarray,
+                             model_classes: np.ndarray,
+                             canonical_classes: np.ndarray) -> np.ndarray:
+    """
+    Reorders a probability matrix so its columns line up with the
+    project-wide canonical class ordering.
+
+    When a fold happens to miss a rare class, `model.classes_` is a
+    subset of `canonical_classes`, and naïvely stacking the per-fold
+    `model.predict_proba` outputs would silently shift column indices
+    across folds. This helper builds a `(N, K_canonical)` matrix where
+    every column `k` holds the probability for class
+    `canonical_classes[k]` if the model trained on it, and zero
+    otherwise — enabling downstream Brier / ECE / cross-fold stacking
+    to compare apples to apples.
+
+    Parameters
+    ----------
+    probabilities : np.ndarray
+        Per-row class probabilities as returned by the estimator, shape
+        `(n_samples, len(model_classes))`.
+    model_classes : np.ndarray
+        The classes the estimator actually trained on, in the column
+        order of `probabilities`. Typically `model.classes_`.
+    canonical_classes : np.ndarray
+        Project-wide class ordering. Defines the column layout of the
+        returned matrix.
+
+    Returns
+    -------
+    probs_canonical : np.ndarray
+        Reordered probability matrix of shape
+        `(n_samples, len(canonical_classes))`, same dtype as
+        `probabilities`. Columns for classes absent from
+        `model_classes` are filled with zeros.
+    """
+
+    n_samples = probabilities.shape[0]
+    probs_canonical = np.zeros(
+        (n_samples, len(canonical_classes)), dtype=probabilities.dtype
+    )
+    # `np.searchsorted` finds each model class's position in the sorted
+    # canonical ordering in O((K_model + K_canon) log K_canon), replacing
+    # the explicit Python for-loop in the callers.
+    target_cols = np.searchsorted(canonical_classes, model_classes)
+    probs_canonical[:, target_cols] = probabilities
+    return probs_canonical
+
+
 def pearson_r_safe(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """
     Computes the Pearson correlation coefficient between `y_true` and

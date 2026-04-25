@@ -26,6 +26,7 @@ from .modeling_utils import (
     expected_calibration_error,
     safe_matthews_corrcoef,
     safe_confusion_matrix,
+    align_probs_to_canonical,
     pearson_r_safe,
     root_mean_squared_error,
     mean_absolute_error_1d,
@@ -2414,6 +2415,8 @@ def multinomial_vocal_category_model_selection(
     inner_cv_folds_mn = tune_params['inner_cv_folds']
     inner_cv_scoring_metric_mn = tune_params['inner_cv_scoring_metric']
     inner_cv_use_one_se_rule_mn = tune_params['inner_cv_use_one_se_rule']
+    inner_max_iter_mn = tune_params['inner_max_iter']
+    use_lax_loop_mn = hp['use_lax_loop']
 
     if tune_regularization_bool:
         print(
@@ -2461,9 +2464,11 @@ def multinomial_vocal_category_model_selection(
             uniform_class_weights=model_uniform_weights,
             learning_rate=hp['learning_rate'],
             max_iter=hp['max_iter'],
+            inner_max_iter=inner_max_iter_mn,
             tol=hp['tol'],
             random_state=hp['random_state'] + fold_idx_,
             verbose=False,
+            use_lax_loop=use_lax_loop_mn,
             regressor_cls=SmoothMultinomialLogisticRegression,
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
@@ -2587,10 +2592,9 @@ def multinomial_vocal_category_model_selection(
             f_met['ll'].append(f_ll)
 
             # Canonical-ordered probability matrix for Brier / ECE.
-            probs_canonical = np.zeros((len(y_te), len(canonical_classes)), dtype=y_proba.dtype)
-            for col_idx, cls in enumerate(unique_classes):
-                target_col = int(np.where(canonical_classes == cls)[0][0])
-                probs_canonical[:, target_col] = y_proba[:, col_idx]
+            probs_canonical = align_probs_to_canonical(
+                y_proba, unique_classes, canonical_classes
+            )
             try:
                 f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
             except Exception:
@@ -2687,7 +2691,8 @@ def multinomial_vocal_category_model_selection(
                     learning_rate=hp['learning_rate'],
                     max_iter=hp['max_iter'],
                     tol=hp['tol'],
-                    random_state=hp['random_state'] + fold_idx
+                    random_state=hp['random_state'] + fold_idx,
+                    _use_lax_loop=use_lax_loop_mn,
                 )
                 model.fit(X_tr, y_tr)
 
@@ -2706,10 +2711,9 @@ def multinomial_vocal_category_model_selection(
 
                 # Canonical-ordered probability matrix for Brier / ECE so
                 # missing classes don't misalign columns against `canonical_classes`.
-                probs_canonical = np.zeros((len(y_te), len(canonical_classes)), dtype=y_proba.dtype)
-                for col_idx, cls in enumerate(model.classes_):
-                    target_col = int(np.where(canonical_classes == cls)[0][0])
-                    probs_canonical[:, target_col] = y_proba[:, col_idx]
+                probs_canonical = align_probs_to_canonical(
+                    y_proba, model.classes_, canonical_classes
+                )
                 try:
                     f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
                 except Exception:
@@ -2797,6 +2801,10 @@ def multinomial_vocal_category_model_selection(
                 step_counter = 2
             else:
                 print(f"  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
+        else:
+            print(
+                f"  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
+            )
 
     # Main Forward Selection Loop
     while True:
@@ -2870,7 +2878,8 @@ def multinomial_vocal_category_model_selection(
                         learning_rate=hp['learning_rate'],
                         max_iter=hp['max_iter'],
                         tol=hp['tol'],
-                        random_state=hp['random_state'] + fold_idx
+                        random_state=hp['random_state'] + fold_idx,
+                        _use_lax_loop=use_lax_loop_mn,
                     )
                     model.fit(X_tr_stacked, y_tr)
 
@@ -2890,10 +2899,9 @@ def multinomial_vocal_category_model_selection(
                     # Canonical-ordered probability matrix so Brier / ECE are
                     # computed against a stable column ordering across folds
                     # even when a rare class is absent from `model.classes_`.
-                    probs_canonical = np.zeros((len(y_te), len(canonical_classes)), dtype=y_proba.dtype)
-                    for col_idx, cls in enumerate(model.classes_):
-                        target_col = int(np.where(canonical_classes == cls)[0][0])
-                        probs_canonical[:, target_col] = y_proba[:, col_idx]
+                    probs_canonical = align_probs_to_canonical(
+                        y_proba, model.classes_, canonical_classes
+                    )
                     try:
                         f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
                     except Exception:
@@ -3252,6 +3260,8 @@ def continuous_vocal_manifold_model_selection(
     inner_cv_folds = tune_params['inner_cv_folds']
     inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
     inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
+    inner_max_iter = tune_params['inner_max_iter']
+    use_lax_loop = hp['use_lax_loop']
     smoothness_order = hp['smoothness_derivative_order']
 
     print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Split Strategy: Spatial Proxy ({split_strategy.upper()})")
@@ -3274,7 +3284,10 @@ def continuous_vocal_manifold_model_selection(
         test_prop=test_prop,
         n_splits=n_splits,
         split_strategy=split_strategy,
-        random_seed=random_seed
+        random_seed=random_seed,
+        max_total_attempts=model_ops['session_split_max_attempts'],
+        widen_step=model_ops['session_split_widen_step'],
+        widen_every=model_ops['session_split_widen_every'],
     )
 
     current_model_features = []
@@ -3558,9 +3571,11 @@ def continuous_vocal_manifold_model_selection(
             huber_delta=hp['huber_delta'],
             learning_rate=hp['learning_rate'],
             max_iter=hp['max_iter'],
+            inner_max_iter=inner_max_iter,
             tol=hp['tol'],
             random_state=hp['random_state'] + fold_idx_,
             verbose=False,
+            use_lax_loop=use_lax_loop,
             regressor_cls=SmoothBivariateRegression,
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
@@ -3593,7 +3608,8 @@ def continuous_vocal_manifold_model_selection(
                     smoothness_derivative_order=smoothness_order,
                     huber_delta=hp['huber_delta'],
                     learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
-                    tol=hp['tol'], random_state=hp['random_state'] + fold_idx
+                    tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
+                    _use_lax_loop=use_lax_loop,
                 )
                 model.fit(X_tr, Y_tr, sample_weight=w_tr)
 
@@ -3657,6 +3673,10 @@ def continuous_vocal_manifold_model_selection(
                 step_counter = 2
             else:
                 print(f"  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
+        else:
+            print(
+                f"  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
+            )
 
     # Forward stepwise selection loop
     print("\n--- Starting Forward Selection ---")
@@ -3711,7 +3731,8 @@ def continuous_vocal_manifold_model_selection(
                         smoothness_derivative_order=smoothness_order,
                         huber_delta=hp['huber_delta'],
                         learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
-                        tol=hp['tol'], random_state=hp['random_state'] + fold_idx
+                        tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
+                        _use_lax_loop=use_lax_loop,
                     )
                     model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr)
 
