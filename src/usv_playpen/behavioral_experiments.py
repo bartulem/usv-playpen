@@ -27,6 +27,7 @@ import toml
 import yaml
 
 from .cli_utils import override_toml_values
+from .os_utils import newest_match_or_raise, wait_for_subprocesses
 from .send_email import Messenger
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import SmartDumper
@@ -90,8 +91,8 @@ class ExperimentController:
         """
         Initializes the ExperimentController class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         exp_settings_dict (dict)
             Experiment settings; defaults to None.
         email_receivers (list)
@@ -192,6 +193,172 @@ class ExperimentController:
                 self.message_output(f"Timeout: Adapter '{ethernet_name}' did not come Up after {max_wait_seconds} seconds.")
                 sys.exit(1)
 
+    def verify_avisoft_is_recording(self,
+                                    warmup_s: int = 3,
+                                    poll_interval_s: int = 3,
+                                    max_wait_s: int = 12) -> bool:
+        """
+        Description
+        -----------
+        Verifies that Avisoft Recorder is actually producing audio to disk
+        shortly after launch. Instead of relying on Windows' 'STATUS eq Not
+        Responding' tasklist heuristic (which tracks UI-thread responsiveness
+        and misses audio-thread / USB-device freezes, as well as cases where a
+        modal dialog has eaten the UI), this watches the per-channel .wav files
+        under 'avisoft_basedirectory/chN/' and declares success only when every
+        required channel directory has shown real byte growth.
+
+        Behavior:
+        1. Waits 'warmup_s' seconds so Avisoft has a chance to create its first
+           .wav in each chN directory.
+        2. Snapshots the newest .wav file and its size in every watched channel
+           directory as the baseline (None / 0 bytes if Avisoft has not created
+           one yet).
+        3. Polls every 'poll_interval_s' seconds up to a total of 'max_wait_s'
+           seconds, marking a channel directory 'verified' as soon as either
+           (a) a new .wav file appears relative to the baseline, or
+           (b) the newest .wav grew in size relative to the baseline.
+        4. Returns True only if all channel directories got verified inside the
+           polling window.
+
+        Parameters
+        ----------
+        warmup_s (int)
+            Seconds to wait after Avisoft launch before the first size snapshot.
+        poll_interval_s (int)
+            Seconds between successive polls of the .wav files.
+        max_wait_s (int)
+            Total budget, in seconds, for the verification window after warmup.
+
+        Returns
+        -------
+        is_recording (bool)
+            True if every watched chN directory has produced byte-level progress
+            within the window; False otherwise.
+        """
+
+        base = pathlib.Path(self.exp_settings_dict['avisoft_basedirectory'])
+        if self.exp_settings_dict['audio']['general']['total'] == 0:
+            channel_dirs = [base / f"ch{mic_idx + 1}"
+                            for mic_idx in self.exp_settings_dict['audio']['used_mics']]
+        else:
+            channel_dirs = [base / f"ch{mic_idx + 1}" for mic_idx in [0, 12]]
+
+        if not channel_dirs:
+            self.message_output("[**Avisoft health check**] No channel directories resolved to watch — skipping verification.")
+            return True
+
+        smart_wait(app_context_bool=self.app_context_bool, seconds=warmup_s)
+
+        def newest_wav(ch_dir: pathlib.Path):
+            """
+            Returns the (path, size) of the newest .wav file in ch_dir, or
+            (None, 0) if the directory is missing or contains no .wav files.
+            Stat errors (file vanished mid-glob, permission denied) are
+            treated the same as 'no file'.
+            """
+            if not ch_dir.is_dir():
+                return None, 0
+            try:
+                wavs = list(ch_dir.glob('*.wav'))
+            except OSError:
+                return None, 0
+            if not wavs:
+                return None, 0
+            try:
+                newest = max(wavs, key=lambda p: p.stat().st_ctime)
+                return newest, newest.stat().st_size
+            except (OSError, ValueError):
+                return None, 0
+
+        baselines = {ch_dir: newest_wav(ch_dir) for ch_dir in channel_dirs}
+
+        verified = set()
+        elapsed = 0
+        while elapsed < max_wait_s and len(verified) < len(channel_dirs):
+            smart_wait(app_context_bool=self.app_context_bool, seconds=poll_interval_s)
+            elapsed += poll_interval_s
+
+            for ch_dir in channel_dirs:
+                if ch_dir in verified:
+                    continue
+                baseline_file, baseline_size = baselines[ch_dir]
+                curr_file, curr_size = newest_wav(ch_dir)
+                if curr_file is None:
+                    continue
+                if curr_file != baseline_file:
+                    verified.add(ch_dir)
+                    self.message_output(f"[**Avisoft health check**] {ch_dir.name}: new recording file detected ({curr_file.name}, {curr_size} bytes).")
+                elif curr_size > baseline_size:
+                    verified.add(ch_dir)
+                    self.message_output(f"[**Avisoft health check**] {ch_dir.name}: recording file is growing ({curr_file.name}, {curr_size} bytes).")
+
+        if len(verified) < len(channel_dirs):
+            unverified = [ch_dir.name for ch_dir in channel_dirs if ch_dir not in verified]
+            self.message_output(f"[**Avisoft health check**] FAILED: no byte growth detected in channel dir(s) {unverified} within {warmup_s + max_wait_s} s of Avisoft launch.")
+            return False
+
+        self.message_output(f"[**Avisoft health check**] All {len(channel_dirs)} watched channel dir(s) are producing audio.")
+        return True
+
+    def purge_cup_connections_on_windows(self) -> None:
+        """
+        Description
+        -----------
+        Tears down every existing SMB connection to the CUP file server on the
+        local Windows machine. This is used both as a standalone pre-recording
+        cleanup step (to guarantee a clean mount state before a session starts)
+        and as the first phase of the post-recording remount routine.
+
+        After Ethernet disconnect/reconnect cycles, or when the machine has
+        previously been used by a different university account, Windows SMB
+        sessions to \\cup can become stale. The mapped drive letters (e.g., F:,
+        M:) may remain in the registry as zombies with expired credentials, and
+        cached Kerberos tickets may still hold credentials from a prior user.
+        Mounting on top of those stale entries fails with System error 1219
+        ("Multiple connections to a server or shared resource by the same user,
+        using more than one user name, are not allowed.").
+
+        This method:
+        1. Deletes every known drive-letter and UNC mapping to \\cup\\falkner
+           and \\cup\\murthy (regardless of which the current user needs).
+        2. Deletes the server-level session to \\cup itself.
+        3. Purges cached Kerberos tickets via 'klist purge'.
+        4. Sleeps briefly so Windows fully tears the SMB sessions down.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        all_possible_drives = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
+
+        # Always purge ALL connections to \\cup, regardless of which drives the
+        # current user needs. This prevents System error 1219 when switching
+        # between users with different credentials on the same machine.
+        # Use shell=False and argv lists so drive-letter / UNC values are never
+        # interpolated into a cmd.exe string.
+        for letter, unc in all_possible_drives.items():
+            subprocess.run(["net", "use", letter, "/delete", "/y"], shell=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["net", "use", unc, "/delete", "/y"], shell=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Kill the server-level session itself, not just individual share mappings
+        subprocess.run(["net", "use", r"\\cup", "/delete", "/y"], shell=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Clear any cached Kerberos tickets that may hold stale auth
+        subprocess.run(["klist", "purge"], shell=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Brief pause so Windows fully tears down the SMB sessions
+        smart_wait(app_context_bool=self.app_context_bool, seconds=3)
+
     def remount_cup_drives_on_windows(self) -> None:
         """
         Description
@@ -234,25 +401,10 @@ class ExperimentController:
         self.message_output("[**Local mount check**] Waiting for network services to stabilize...")
         smart_wait(app_context_bool=self.app_context_bool, seconds=5)
 
-        # Always purge ALL connections to \\cup before mounting, regardless of which
-        # drives this user needs. This prevents System error 1219 when switching
-        # between users with different credentials on the same machine.
-        for letter, unc in all_possible_drives.items():
-            subprocess.run(f"net use {letter} /delete /y", shell=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(f"net use {unc} /delete /y", shell=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        # Kill the server-level session itself, not just individual share mappings
-        subprocess.run(r"net use \\cup /delete /y", shell=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        # Clear any cached Kerberos tickets that may hold stale auth
-        subprocess.run("klist purge", shell=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        # Brief pause so Windows fully tears down the SMB sessions
-        smart_wait(app_context_bool=self.app_context_bool, seconds=3)
+        # Purge every existing connection to \\cup before mounting so we do not
+        # collide with stale sessions from a previous user or a prior Ethernet
+        # cycle (System error 1219 otherwise).
+        self.purge_cup_connections_on_windows()
 
         # Mount only the drives the current user needs
         for drive_letter, unc_path in drives_to_mount.items():
@@ -263,9 +415,18 @@ class ExperimentController:
             for attempt in range(1, max_retries + 1):
                 self.message_output(f"[**Local mount check**] Mounting {drive_letter} -> {unc_path} (attempt {attempt}/{max_retries})...")
 
+                # argv list keeps the password (user-supplied) out of a cmd.exe
+                # string — shell metacharacters in the password cannot break the
+                # command, and it never appears in a process listing as a single
+                # flat command line.
                 mount_result = subprocess.run(
-                    f'net use {drive_letter} "{unc_path}" "{cup_password}" /user:{cup_username}@princeton.edu /persistent:yes',
-                    shell=True,
+                    [
+                        "net", "use", drive_letter, unc_path,
+                        cup_password,
+                        f"/user:{cup_username}@princeton.edu",
+                        "/persistent:yes",
+                    ],
+                    shell=False,
                     capture_output=True,
                     text=True
                 )
@@ -275,11 +436,11 @@ class ExperimentController:
 
                     # If "already in use" or "multiple connections", try removing again
                     if "already" in mount_result.stderr.lower() or "multiple" in mount_result.stderr.lower():
-                        subprocess.run(f"net use {drive_letter} /delete /y", shell=True,
+                        subprocess.run(["net", "use", drive_letter, "/delete", "/y"], shell=False,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(f"net use {unc_path} /delete /y", shell=True,
+                        subprocess.run(["net", "use", unc_path, "/delete", "/y"], shell=False,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(r"net use \\cup /delete /y", shell=True,
+                        subprocess.run(["net", "use", r"\\cup", "/delete", "/y"], shell=False,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         smart_wait(app_context_bool=self.app_context_bool, seconds=3)
                         continue
@@ -593,7 +754,7 @@ class ExperimentController:
         ----------
         """
 
-        self.message_output(f"Video calibration started at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
+        self.message_output(f"Video calibration started at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}")
 
         self.check_camera_vitals(camera_fr=self.exp_settings_dict['video']['general']['calibration_frame_rate'])
 
@@ -604,7 +765,7 @@ class ExperimentController:
                       codec=self.exp_settings_dict['video']['general']['recording_codec'])
         smart_wait(app_context_bool=self.app_context_bool, seconds=(self.exp_settings_dict['calibration_duration'] * 60) + 5)
 
-        self.message_output(f"Video calibration completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
+        self.message_output(f"Video calibration completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}")
 
     def modify_audio_file(self) -> None:
         """
@@ -795,11 +956,18 @@ class ExperimentController:
                   credentials_file=pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is busy, do NOT attempt to remote in!",
                                                                          message=f"Experiment in progress, started at "
-                                                                                 f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d} "
+                                                                                 f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d} "
                                                                                  f"and run by @{self.exp_settings_dict['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
         # reconnect to ethernet if it is off
         self.check_ethernet_connection()
+
+        # Purge any stale \\cup sessions/credentials left over from previous
+        # users or Ethernet cycles before recording starts. We do NOT remount
+        # here: the drives are remounted only at the end of the recording via
+        # remount_cup_drives_on_windows(), once transfer to the file server
+        # actually needs to happen.
+        self.purge_cup_connections_on_windows()
 
         # start capturing sync LEDS
         if not (pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc').is_file():
@@ -854,28 +1022,16 @@ class ExperimentController:
 
                 subprocess.Popen(args=f'''powershell -Command "{run_avisoft_command}"''', stdout=subprocess.PIPE, cwd=self.exp_settings_dict['avisoft_recorder_exe_directory'])
 
-                # pause for N seconds
-                smart_wait(app_context_bool=self.app_context_bool, seconds=10)
-
-                # check if Avisoft Recorder is running and exit GUI if not
-                is_running = False
-                is_frozen = False
-                cmd_result = subprocess.run(args=f'''tasklist /FI "IMAGENAME eq {avisoft_recorder_program_name}"''',
-                                            capture_output=True, text=True, check=False, shell=True)
-                if cmd_result.returncode == 0 and avisoft_recorder_program_name.lower() in cmd_result.stdout.lower():
-                    # check if Avisoft Recorder is frozen and exit GUI if so
-                    cmd_result_frozen = subprocess.run(args=f'''tasklist /NH /FI "IMAGENAME eq {avisoft_recorder_program_name}" /FI "STATUS eq Not Responding''',
-                                                       capture_output=True, text=True, check=False, shell=True)
-                    if not (cmd_result_frozen.returncode == 0 and avisoft_recorder_program_name.lower() in cmd_result_frozen.stdout.lower()):
-                        is_running = True
-                    else:
-                        is_frozen = True
-                if not is_running:
+                # Verify Avisoft is actually producing audio by watching the
+                # per-channel .wav files grow on disk. This replaces the old
+                # 'tasklist STATUS eq Not Responding' heuristic, which tracked
+                # only UI-thread responsiveness and missed audio-thread / USB
+                # freezes as well as modal-dialog hangs.
+                if not self.verify_avisoft_is_recording():
                     subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
-                    if is_frozen:
-                        subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
-                        subprocess.Popen(['powershell', '-Command', f"Stop-Process -Name '{avisoft_recorder_program_name}' -Force -ErrorAction SilentlyContinue"]).wait()
-                    print("Aborted experiment as Avisoft Recorder was not running or was frozen.")
+                    subprocess.Popen(['powershell', '-Command', f"Stop-Process -Name '{avisoft_recorder_program_name}' -Force -ErrorAction SilentlyContinue"]).wait()
+                    self.message_output("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
+                    print("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
                     sys.exit(1)
 
         # record video data
@@ -889,7 +1045,7 @@ class ExperimentController:
                           duration=self.exp_settings_dict['video_session_duration'] * 60,
                           codec=self.exp_settings_dict['video']['general']['recording_codec'])
 
-        self.message_output(f"Video recording in progress since {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}, it will last {round(self.exp_settings_dict['video_session_duration'], 2)} minute(s). Please be patient.")
+        self.message_output(f"Video recording in progress since {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}, it will last {round(self.exp_settings_dict['video_session_duration'], 2)} minute(s). Please be patient.")
 
         if self.exp_settings_dict['disable_ethernet']:
 
@@ -899,13 +1055,13 @@ class ExperimentController:
                 stderr=subprocess.STDOUT
             ).wait()
 
-            self.message_output(f"Ethernet DISCONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
+            self.message_output(f"Ethernet DISCONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}.")
 
         # wait until cameras have finished recording
         # pause for N extra seconds so audio is done, too
         smart_wait(app_context_bool=self.app_context_bool, seconds=25 + (self.exp_settings_dict['video_session_duration'] * 60))
 
-        self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
+        self.message_output(f"Recording fully completed at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}.")
 
         # close serial monitor sync LED capture
         subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
@@ -918,7 +1074,7 @@ class ExperimentController:
                 stderr=subprocess.STDOUT
             ).wait()
 
-            self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}.")
+            self.message_output(f"Ethernet RECONNECTED at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}.")
 
             smart_wait(app_context_bool=self.app_context_bool, seconds=20)
 
@@ -934,7 +1090,7 @@ class ExperimentController:
                 (pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original').mkdir(parents=True, exist_ok=True)
                 (pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original_mc').mkdir(parents=True, exist_ok=True)
 
-        self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
+        self.message_output(f"Transferring audio/video files started at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
         # move video file(s) to primary file server
@@ -947,64 +1103,12 @@ class ExperimentController:
                       delete_after=self.exp_settings_dict['video']['general']['delete_post_copy'],
                       location=f"{total_dir_name_linux[0]}/video")
 
-        # move audio file(s) to primary file server
-        if self.exp_settings_dict['conduct_audio_recording']:
-            audio_copy_subprocesses = []
-            if self.exp_settings_dict['audio']['general']['total'] == 0:
-                for mic_idx in self.exp_settings_dict['audio']['used_mics']:
-                    ch_dir = pathlib.Path(self.exp_settings_dict['avisoft_basedirectory']) / f"ch{mic_idx + 1}"
-                    last_modified_audio_file = max(ch_dir.glob('*.wav'), key=lambda p: p.stat().st_ctime)
-
-                    full_destination_path = str(pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original' / f"ch{mic_idx + 1}_{last_modified_audio_file.name}")
-                    move_file_ps_command = f"Move-Item -Path '{last_modified_audio_file.name}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
-
-                    single_audio_copy_subp = subprocess.Popen(
-                        args=['powershell', '-Command', move_file_ps_command],
-                        cwd=ch_dir,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.STDOUT,
-                        shell=False
-                    )
-
-                    audio_copy_subprocesses.append(single_audio_copy_subp)
-            else:
-                relevant_file_count = max(1, int(math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
-                device_id = ['m', 's']
-                for mic_pos_idx, mic_idx in enumerate([0, 12]):
-                    ch_dir = pathlib.Path(self.exp_settings_dict['avisoft_basedirectory']) / f"ch{mic_idx + 1}"
-                    audio_file_list = sorted(ch_dir.glob('*.wav'), key=lambda p: p.stat().st_ctime, reverse=True)[:relevant_file_count]
-                    for aud_file in audio_file_list:
-
-                        full_destination_path = str(pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original_mc' / f"{device_id[mic_pos_idx]}_{aud_file.name}")
-                        move_file_ps_command = f"Move-Item -Path '{aud_file.name}' -Destination '{full_destination_path}' -ErrorAction SilentlyContinue"
-
-                        multi_audio_copy_subp = subprocess.Popen(
-                            args=['powershell', '-Command', move_file_ps_command],
-                            cwd=ch_dir,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.STDOUT,
-                            shell=False
-                        )
-
-                        audio_copy_subprocesses.append(multi_audio_copy_subp)
-
-            while True:
-                status_poll = [query_subp.poll() for query_subp in audio_copy_subprocesses]
-                if any(elem is None for elem in status_poll):
-                    smart_wait(app_context_bool=self.app_context_bool, seconds=1)
-                else:
-                    break
-
-        # move last modified sync file to primary file server
-        last_modified_sync_file = max((pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Data').glob('*.txt'), key=lambda p: p.stat().st_ctime)
-        shutil.move(src=last_modified_sync_file,
-                    dst=pathlib.Path(total_dir_name_windows[0]) / 'sync' / last_modified_sync_file.name)
-
-        # ensure the video is done copying before proceeding
-        while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
-            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
-
-        # copy metadata file to the file server(s)
+        # copy metadata file to the file server(s) BEFORE the audio move.
+        # rationale: the multi-GB audio copy over SMB to \\cup can stall or
+        # run for tens of minutes; if the user aborts during that wait the
+        # metadata would otherwise never be written. writing it first
+        # guarantees every session has a _metadata.yaml on disk regardless
+        # of what happens to the audio transfer.
         if self.metadata_settings:
             self.metadata_settings['Session']['session_id'] = session_id
             self.metadata_settings['Environment']['playpen_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
@@ -1023,18 +1127,27 @@ class ExperimentController:
                     indent=2
                 )
 
-        # copy the audio, sync and video directories to the backup network drive(s)
-        if len(total_dir_name_windows) > 1:
-            for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
-                subprocess.Popen(
-                    args=['robocopy', total_dir_name_windows[0], win_dir, '/MIR'],
-                    cwd=total_dir_name_windows[0],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.STDOUT,
-                    shell=False
-                )
+        # move last modified sync file (CoolTerm .txt) to primary file server
+        # BEFORE the audio move, for the same reason as the metadata dump:
+        # this file is tiny and must not be held hostage by a slow/hung
+        # audio transfer.
+        coolterm_data_dir = pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Data'
+        try:
+            last_modified_sync_file = newest_match_or_raise(
+                root=coolterm_data_dir,
+                pattern='*.txt',
+                label="most recent CoolTerm sync .txt",
+            )
+            shutil.move(src=last_modified_sync_file,
+                        dst=pathlib.Path(total_dir_name_windows[0]) / 'sync' / last_modified_sync_file.name)
+        except FileNotFoundError as e:
+            self.message_output(f"Sync file move skipped: {e}")
 
-        # check number of dropouts in audio recordings
+        # check number of dropouts in audio recordings BEFORE the audio
+        # move, for the same reason as the metadata dump and CoolTerm
+        # sync move: the dropout counts are derived from local Avisoft
+        # log files and written to a tiny JSON on the file server; they
+        # must not be held hostage by a slow/hung audio transfer.
         if self.exp_settings_dict['conduct_audio_recording'] and self.exp_settings_dict['audio']['devices']['usghflags'] != 1574:
 
             audio_triggerbox_sync_info_dict = {device: {'start_first_recorded_frame': 0, 'end_last_recorded_frame': 0, 'largest_break_duration': 0,
@@ -1057,7 +1170,147 @@ class ExperimentController:
             with open(pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'audio_triggerbox_sync_info.json', 'w') as audio_dict_outfile:
                 json.dump(audio_triggerbox_sync_info_dict, audio_dict_outfile, indent=4)
 
-        self.message_output(f"Transferring audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}")
+        # move audio file(s) to primary file server.
+        #
+        # implementation notes:
+        #   - robocopy (not powershell Move-Item) does the network move.
+        #     robocopy was designed for SMB and has real retry/timeout
+        #     knobs, unbuffered I/O for large files, and visible exit
+        #     codes. powershell Move-Item blocked in uninterruptible SMB
+        #     I/O with no timeout, producing the "stuck transfer" symptom.
+        #   - /J      unbuffered I/O — much better for multi-GB files
+        #             over SMB; avoids the Windows cache manager holding
+        #             pages while the server is slow to ACK.
+        #   - /R:1    one retry on per-file failure (default: 1,000,000).
+        #   - /W:5    5 s wait between retries (default: 30 s).
+        #   - /MOV    delete source after a successful copy.
+        #   - /NP /NFL /NDL /NJH /NJS  quiet output (progress, file list,
+        #             dir list, job header, job summary all suppressed;
+        #             subprocess stdout/stderr is still captured below).
+        #   - the m_/s_ or ch{N}_ prefix is baked into the source
+        #     filename via a LOCAL Path.rename before the network move.
+        #     rationale: Avisoft can assign identical timestamp-based
+        #     names to files produced on ch1 and ch13 simultaneously, so
+        #     copying them to the same destination directory without
+        #     prefixing would cause collisions. a rename inside ch_dir is
+        #     an instant same-volume metadata operation — it cannot
+        #     itself hang the way a network move can.
+        if self.exp_settings_dict['conduct_audio_recording']:
+            audio_copy_subprocesses = []
+            if self.exp_settings_dict['audio']['general']['total'] == 0:
+                dest_dir = pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original'
+                for mic_idx in self.exp_settings_dict['audio']['used_mics']:
+                    ch_dir = pathlib.Path(self.exp_settings_dict['avisoft_basedirectory']) / f"ch{mic_idx + 1}"
+                    try:
+                        last_modified_audio_file = newest_match_or_raise(
+                            root=ch_dir,
+                            pattern='*.wav',
+                            label=f"most recent Avisoft .wav in ch{mic_idx + 1}",
+                        )
+                    except FileNotFoundError as e:
+                        self.message_output(f"Skipping ch{mic_idx + 1} audio move: {e}")
+                        continue
+
+                    prefixed_name = f"ch{mic_idx + 1}_{last_modified_audio_file.name}"
+                    renamed_src = ch_dir / prefixed_name
+                    try:
+                        last_modified_audio_file.rename(renamed_src)
+                    except OSError as e:
+                        self.message_output(f"Local rename failed for {last_modified_audio_file.name}: {e}")
+                        continue
+
+                    single_audio_copy_subp = subprocess.Popen(
+                        args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
+                              '/J', '/R:1', '/W:5', '/MOV',
+                              '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.STDOUT,
+                        shell=False
+                    )
+
+                    audio_copy_subprocesses.append(single_audio_copy_subp)
+            else:
+                relevant_file_count = max(1, int(math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
+                device_id = ['m', 's']
+                dest_dir = pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original_mc'
+                for mic_pos_idx, mic_idx in enumerate([0, 12]):
+                    ch_dir = pathlib.Path(self.exp_settings_dict['avisoft_basedirectory']) / f"ch{mic_idx + 1}"
+                    audio_file_list = sorted(ch_dir.glob('*.wav'), key=lambda p: p.stat().st_ctime, reverse=True)[:relevant_file_count]
+                    if not audio_file_list:
+                        self.message_output(
+                            f"Skipping ch{mic_idx + 1} multichannel audio move: "
+                            f"no .wav files found under '{ch_dir}' (expected {relevant_file_count})."
+                        )
+                        continue
+                    for aud_file in audio_file_list:
+                        prefixed_name = f"{device_id[mic_pos_idx]}_{aud_file.name}"
+                        renamed_src = ch_dir / prefixed_name
+                        try:
+                            aud_file.rename(renamed_src)
+                        except OSError as e:
+                            self.message_output(f"Local rename failed for {aud_file.name}: {e}")
+                            continue
+
+                        multi_audio_copy_subp = subprocess.Popen(
+                            args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
+                                  '/J', '/R:1', '/W:5', '/MOV',
+                                  '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.STDOUT,
+                            shell=False
+                        )
+
+                        audio_copy_subprocesses.append(multi_audio_copy_subp)
+
+            # 30-minute budget for moving the audio files.
+            #
+            # robocopy exit codes are a bitmask, not a plain status:
+            #   bit 0 (1): files were copied
+            #   bit 1 (2): extra files/dirs detected at destination
+            #   bit 2 (4): mismatched files/dirs detected
+            #   bit 3 (8): some files/dirs could not be copied
+            #   bit 4 (16): serious error (usage, permissions, etc.)
+            # so 0-7 are all forms of success (rc=1 is the typical
+            # "copied OK") and rc >= 8 is a genuine failure. wait_for_
+            # subprocesses' generic "non-zero rc is a failure" log line
+            # would flag every successful robocopy, so its own logger is
+            # silenced and we emit a robocopy-aware summary below.
+            #
+            # metadata and CoolTerm sync were already written above, so
+            # a hung or failed audio move cannot rob the session of its
+            # non-audio artifacts.
+            return_codes = wait_for_subprocesses(
+                subps=audio_copy_subprocesses,
+                max_seconds=30 * 60,
+                label="audio file move",
+                poll_interval_s=1,
+                message_output=lambda _msg: None,
+                raise_on_nonzero=False,
+                raise_on_timeout=False,
+            )
+            robocopy_failures = [(i, rc) for i, rc in enumerate(return_codes) if rc is None or rc >= 8]
+            if robocopy_failures:
+                failures_str = ", ".join(f"#{i}(rc={rc})" for i, rc in robocopy_failures)
+                self.message_output(
+                    f"[audio file move] {len(robocopy_failures)}/{len(return_codes)} robocopy invocation(s) failed: {failures_str}"
+                )
+
+        # ensure the video is done copying before proceeding
+        while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        # copy the audio, sync and video directories to the backup network drive(s)
+        if len(total_dir_name_windows) > 1:
+            for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
+                subprocess.Popen(
+                    args=['robocopy', total_dir_name_windows[0], win_dir, '/MIR'],
+                    cwd=total_dir_name_windows[0],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
+                    shell=False
+                )
+
+        self.message_output(f"Transferring audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}")
 
         Messenger(message_output=self.message_output,
                   receivers=self.email_receivers,
@@ -1065,7 +1318,7 @@ class ExperimentController:
                   credentials_file=pathlib.Path(self.exp_settings_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=self.exp_settings_dict).send_message(subject="Audio PC in 165B is available again, recording has been completed.",
                                                                          message=f"Thank you for your patience, recording by @{self.exp_settings_dict['experimenter']} was completed at "
-                                                                                 f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}.{datetime.datetime.now().second:02d}. "
+                                                                                 f"{datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}. "
                                                                                  f"You will be notified about further experiments "
                                                                                  f"should they occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
         return self.metadata_settings

@@ -20,8 +20,8 @@ class DataLoader:
         """
         Initializes the DataLoader class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         input_parameter_dict (dict)
             Processing parameters; defaults to None.
 
@@ -129,15 +129,28 @@ class DataLoader:
                                 wave_data_dict[one_file.name]["wav_data"],
                             ) = wavfile.read(one_file)
                         except struct.error:
+                            # The .wav header is malformed; try to rewrite it with sox.
+                            # We do NOT delete the original until sox has successfully
+                            # produced the corrected file, otherwise a sox failure
+                            # (missing codec, path issue, crash) would permanently
+                            # destroy the original recording.
                             correct_file = one_file.parent / f"{one_file.stem}_correct.wav"
-                            subprocess.run(
+                            sox_result = subprocess.run(
                                 args=["static_sox", one_file.name, correct_file.name],
                                 shell=False,
                                 cwd=one_file.parent,
-                                stdout=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
                                 check=False,
+                                text=True,
                             )
+                            if sox_result.returncode != 0 or not correct_file.is_file():
+                                raise RuntimeError(
+                                    f"sox failed to repair '{one_file}' "
+                                    f"(return code {sox_result.returncode}); "
+                                    f"sox output: {sox_result.stdout.strip() if sox_result.stdout else '<empty>'}. "
+                                    f"Original file left untouched."
+                                )
                             one_file.unlink()
                             correct_file.rename(one_file)
                             (

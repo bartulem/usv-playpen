@@ -31,7 +31,7 @@ from scipy.io import wavfile
 from tqdm import tqdm
 
 from .load_audio_files import DataLoader
-from .os_utils import configure_path
+from .os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
@@ -44,8 +44,8 @@ class Operator:
         """
         Initializes the Operator class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (str / list of str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -100,7 +100,7 @@ class Operator:
             saved as .npy files in a separate directory.
         """
 
-        self.message_output(f"Splitting clusters to sessions started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Splitting clusters to sessions started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # read headstage sampling rates
@@ -116,7 +116,14 @@ class Operator:
                 self.message_output(f"Working on getting spike times from clusters in: {ephys_dir}, started at {datetime.now()}.")
 
                 # load the changepoint .json file
-                with open(sorted(ephys_dir.glob('changepoints_info_*.json'))[0], 'r') as binary_info_input_file:
+                with open(
+                    first_match_or_raise(
+                        root=ephys_dir,
+                        pattern='changepoints_info_*.json',
+                        label="ephys changepoints_info JSON",
+                    ),
+                    'r',
+                ) as binary_info_input_file:
                     binary_files_info = json.load(binary_info_input_file)
 
                     for session_key in binary_files_info.keys():
@@ -133,7 +140,14 @@ class Operator:
                     unit_count_dict[session_key] = {'good': 0, 'mua': 0}
 
                     # load info from camera_frame_count_dict
-                    with open(sorted(pathlib.Path(binary_files_info[session_key]['root_directory']).glob('video/*_camera_frame_count_dict.json'))[0], 'r') as frame_count_infile:
+                    with open(
+                        first_match_or_raise(
+                            root=pathlib.Path(binary_files_info[session_key]['root_directory']),
+                            pattern='video/*_camera_frame_count_dict.json',
+                            label=f"camera frame count JSON for session '{session_key}'",
+                        ),
+                        'r',
+                    ) as frame_count_infile:
                         camera_frame_info = json.load(frame_count_infile)
                         esr_dict[session_key] = camera_frame_info['median_empirical_camera_sr']
                         frame_least_dict[session_key] = camera_frame_info['total_frame_number_least']
@@ -223,7 +237,7 @@ class Operator:
            Concatenated binary file.
         """
 
-        self.message_output(f"E-phys file concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}. "
+        self.message_output(f"E-phys file concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}. "
                             f"Please be patient - this could take >1 hour.")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -236,10 +250,10 @@ class Operator:
         available_probes = []
         for ord_idx, one_root_dir in enumerate(self.root_directory):
             ephys_save_dir_base = str(pathlib.Path(str(pathlib.Path(one_root_dir).parent).replace('Data', 'EPHYS')) / pathlib.Path(one_root_dir).name.split('_')[0])
-            for one_probe_dir in (pathlib.Path(one_root_dir) / 'ephys').iterdir():
-                if one_probe_dir.name not in available_probes:
-                    available_probes.append(one_probe_dir.name)
+            for one_probe_dir in sorted((pathlib.Path(one_root_dir) / 'ephys').iterdir()):
                 if one_probe_dir.is_dir() and 'imec' in one_probe_dir.name:
+                    if one_probe_dir.name not in available_probes:
+                        available_probes.append(one_probe_dir.name)
                     if not any(one_probe_dir.name in one_concat_dir for one_concat_dir in concat_save_dir):
                         concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir.name}')
 
@@ -309,7 +323,12 @@ class Operator:
             concat_save_path = pathlib.Path(concat_save_dir[probe_idx])
             concatenated_meta_file = concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.meta"
             if not concatenated_meta_file.is_file():
-                with open(sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))[0], 'r', encoding='utf-8') as f_in, \
+                src_meta_file = first_match_or_raise(
+                    root=ephys_probe_dir,
+                    pattern=f"*{npx_file_type}.meta*",
+                    label=f"source .{npx_file_type}.meta for concatenation",
+                )
+                with open(src_meta_file, 'r', encoding='utf-8') as f_in, \
                         open(concatenated_meta_file, 'w', encoding='utf-8') as f_out:
                     for line in f_in:
                         if line.strip().startswith('fileSizeBytes='):
@@ -379,7 +398,7 @@ class Operator:
         ----------
         """
 
-        self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         (pathlib.Path(self.root_directory) / 'audio' / 'temp').mkdir(parents=True, exist_ok=True)
@@ -398,17 +417,35 @@ class Operator:
 
                 separate_ch_subprocesses.append(sep_ch_subp)
 
-            while True:
-                status_poll = [query_subp.poll() for query_subp in separate_ch_subprocesses]
-                if any(elem is None for elem in status_poll):
-                    smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-                else:
-                    break
+            wait_for_subprocesses(
+                subps=separate_ch_subprocesses,
+                max_seconds=2 * 60 * 60,
+                label="multichannel channel-separation",
+                poll_interval_s=5,
+                message_output=self.message_output,
+                raise_on_nonzero=False,
+                raise_on_timeout=False,
+            )
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
-        # find name origin for file naming purposes
-        name_origin = sorted((pathlib.Path(self.root_directory) / 'audio' / 'temp').glob('m_*_ch*.wav'))[0].name.split('_')[2]
+        # derive name_origin from the master MC file stem (strip the 'm_' device
+        # prefix). stable regardless of (1) how many channels are in audio/temp,
+        # (2) glob ordering, and (3) whether the avisoft filename contains
+        # internal underscores. the previous approach — split('_')[2] on a
+        # per-channel temp file — was an off-by-one that landed on the channel
+        # suffix ('chNN.wav') whenever the MC stem had only two underscore-
+        # separated tokens (the normal 'm_<datetime>' case), corrupting every
+        # downstream filename (cropped_to_video, hpss, filtered, concatenated).
+        master_mc_files = sorted(
+            (pathlib.Path(self.root_directory) / 'audio' / 'original_mc').glob('m_*.wav')
+        )
+        if not master_mc_files:
+            raise FileNotFoundError(
+                f"master multichannel .wav for naming: no 'm_*.wav' files found under "
+                f"'{pathlib.Path(self.root_directory) / 'audio' / 'original_mc'}'."
+            )
+        name_origin = master_mc_files[0].stem[2:]
 
         # concatenate single channel files for master/slave
         separation_subprocesses = []
@@ -425,12 +462,15 @@ class Operator:
 
                 separation_subprocesses.append(mc_to_sc_subp)
 
-        while True:
-            status_poll = [query_subp.poll() for query_subp in separation_subprocesses]
-            if any(elem is None for elem in status_poll):
-                smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-            else:
-                break
+        wait_for_subprocesses(
+            subps=separation_subprocesses,
+            max_seconds=2 * 60 * 60,
+            label="master/slave single-channel concatenation",
+            poll_interval_s=5,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
 
         # delete temp directory (w/ all files in it)
         shutil.rmtree(pathlib.Path(self.root_directory) / 'audio' / 'temp')
@@ -454,7 +494,7 @@ class Operator:
             Output audio file w/ only the harmonics component.
         """
 
-        self.message_output(f"Harmonic-percussive source separation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Harmonic-percussive source separation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         wav_file_lst = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('*.wav'))
@@ -534,7 +574,7 @@ class Operator:
         freq_hp = self.input_parameter_dict['filter_audio_files']['filter_freq_bounds'][1]
 
         self.message_output(f"Filtering out signal between {freq_lp} and {freq_hp} Hz in audio files started at: "
-                            f"{datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+                            f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         for one_dir in self.input_parameter_dict['filter_audio_files']['filter_dirs']:
@@ -555,12 +595,15 @@ class Operator:
 
                     filter_subprocesses.append(filter_subp)
 
-            while True:
-                status_poll = [query_subp.poll() for query_subp in filter_subprocesses]
-                if any(elem is None for elem in status_poll):
-                    smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-                else:
-                    break
+            wait_for_subprocesses(
+                subps=filter_subprocesses,
+                max_seconds=2 * 60 * 60,
+                label="audio band-pass filtering",
+                poll_interval_s=5,
+                message_output=self.message_output,
+                raise_on_nonzero=False,
+                raise_on_timeout=False,
+            )
 
     def concatenate_audio_files(self) -> None:
         """
@@ -580,7 +623,7 @@ class Operator:
         ----------
         """
 
-        self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         for audio_file_type in self.input_parameter_dict['concatenate_audio_files']['concat_dirs']:
@@ -631,7 +674,7 @@ class Operator:
         ----------
         """
 
-        self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
         subprocesses = []
 
@@ -661,12 +704,15 @@ class Operator:
 
                     subprocesses.append(one_subprocess)
 
-        while True:
-            status_poll = [query_subp.poll() for query_subp in subprocesses]
-            if any(elem is None for elem in status_poll):
-                smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-            else:
-                break
+        wait_for_subprocesses(
+            subps=subprocesses,
+            max_seconds=3 * 60 * 60,
+            label="video concatenation",
+            poll_interval_s=5,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
 
         #  copy files over to video directory
         for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
@@ -704,7 +750,7 @@ class Operator:
         ----------
         """
 
-        self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
         video_dir = pathlib.Path(self.root_directory) / 'video'
         non_hidden_files = [p.name for p in video_dir.iterdir() if p.is_file() and not p.name.startswith('.')]
@@ -793,12 +839,15 @@ class Operator:
 
                 fsp_subprocesses.append(fps_subp)
 
-        while True:
-            status_poll = [query_subp.poll() for query_subp in fsp_subprocesses]
-            if any(elem is None for elem in status_poll):
-                smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-            else:
-                break
+        wait_for_subprocesses(
+            subps=fsp_subprocesses,
+            max_seconds=6 * 60 * 60,
+            label="video re-encoding (fps/crf)",
+            poll_interval_s=5,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
 
         # move files to special directory
         for sd_idx, sub_directory in enumerate(sorted(video_dir.iterdir())):

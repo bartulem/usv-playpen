@@ -19,8 +19,8 @@ class PrepareClusterJob:
         """
         Initializes the PrepareClusterJob class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (list of str)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -51,8 +51,8 @@ class PrepareClusterJob:
         NB: You need the output text file to run SLEAP inference on the cluster!
         ----------
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         camera_names (list)
             Cameras used for recording video.
         inference_root_dir (str)

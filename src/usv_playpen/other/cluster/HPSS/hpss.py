@@ -26,8 +26,8 @@ def hpss_func(
     back to the time domain and saved as a new WAV file.
     ----------
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     cup_recording_directory : str
         Personal file server subdirectory name, e.g. "Bartul".
     recording_identifier : str
@@ -41,9 +41,14 @@ def hpss_func(
         Output audio file w/ only the harmonics component.
     """
 
-    wav_file = sorted(
-        (pathlib.Path('/mnt/cup/labs') / cup_recording_directory / recording_identifier / 'audio' / 'cropped_to_video').glob('*.wav')
-    )[wav_file_idx]
+    wav_dir = pathlib.Path('/mnt/cup/labs') / cup_recording_directory / recording_identifier / 'audio' / 'cropped_to_video'
+    wav_files = sorted(wav_dir.glob('*.wav'))
+    if wav_file_idx < 0 or wav_file_idx >= len(wav_files):
+        raise IndexError(
+            f"wav_file_idx={wav_file_idx} is out of range for "
+            f"{len(wav_files)} .wav file(s) found under '{wav_dir}'."
+        )
+    wav_file = wav_files[wav_file_idx]
 
     # read the audio file (use Scipy, not Librosa because Librosa performs scaling)
     sampling_rate_audio, audio_data = wavfile.read(wav_file)

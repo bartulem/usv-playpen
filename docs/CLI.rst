@@ -702,11 +702,7 @@ In order to exploit the full functionality of *usv-playpen*, one should install 
 
 .. code-block:: bash
 
-    $ module load cudatoolkit/11.8.0 cudnn/11.x/8.9.7.29
-    $ git clone https://github.com/talmolab/sleap.git && cd sleap
-    $ uv venv --python=3.13
-    $ source .venv/bin/activate
-    $ UV_HTTP_TIMEOUT=1000 uv sync --extra dev --extra nn-cuda118 --index https://download.pytorch.org/whl/cu118 --index https://pypi.org/simple
+    $ uv tool install --python 3.11 "sleap-nn[torch]==0.1.2" --torch-backend cu118
 
 .. code-block:: bash
 
@@ -722,11 +718,5 @@ In order to exploit the full functionality of *usv-playpen*, one should install 
     $ conda create --name vcl-ssl python=3.10 torchaudio packaging -y
     $ git clone https://github.com/Aramist/vocalocator-ssl.git && cd vocalocator-ssl
     $ conda activate vcl-ssl && pip install -e .
-
-One should also set up an additional environment (hpss):
-
-.. code-block:: bash
-
-    $ conda create -n hpss3 python=3.10 librosa=0.10.2 numpy=1.26.4 scipy=1.11.4 numba=0.59.1 -c conda-forge -y
 
 Having set up these environments, you can set up directories with bash scripts in /src/other/DAS, /src/other/HPSS, /src/other/SLEAP and /src/other/USV_PLAYPEN and run them to expedite your data processing or analysis.

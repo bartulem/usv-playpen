@@ -26,6 +26,7 @@ from numba import njit
 from scipy.io import wavfile
 
 from ..analyses.decode_experiment_label import extract_information
+from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
 
@@ -38,8 +39,8 @@ def read_ttl_events(input_array: np.ndarray) -> tuple:
     """
     Return TTL ON and OFF in the least significant bit array.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     input_arr (np.ndarray)
         A (n_samples) shape ndarray of audio data.
 
@@ -63,8 +64,8 @@ def filter_spikes_for_raster(input_arr: np.ndarray,
     """
     Return spike times relative to current frame.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     input_arr (np.ndarray)
         A (n_spikes) shape ndarray of spike train.
     ra_st_fr (int)
@@ -91,8 +92,8 @@ def find_region_by_channel(cluster_id: str,
     """
     Returns name and color of particular brain region.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     cluster_id (str)
         Cluster ID.
     brain_area_dict (dict)
@@ -129,8 +130,8 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
     Returns audio data w/ sampling rate.
     NB: Audio is loaded from mmap file!
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     root_directory (str)
         Root directory.
 
@@ -140,7 +141,12 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
        Audio data and audio sampling rate.
     """
 
-    audio_loc = next(pathlib.Path(root_directory).rglob('*_int16.mmap*'))
+    audio_loc = first_match_or_raise(
+        root=pathlib.Path(root_directory),
+        pattern='*_int16.mmap*',
+        recursive=True,
+        label="concatenated int16 audio memmap",
+    )
     channel_num = int(audio_loc.name.split('_')[-2])
     sample_num = int(audio_loc.name.split('_')[-3])
     sampling_rate = int(audio_loc.name.split('_')[-4])
@@ -1101,12 +1107,14 @@ class Create3DVideo:
                                      "TTI-TTI": "ΔT(cm)", "TTI-TTI_1st_der": "ΔT'(cm/s)", "TTI-TTI_2nd_der": "ΔT''(cm/s²)",
                                      "nose-TTI": "ΔNT(cm)", "nose-TTI_1st_der": "ΔNT'(cm/s)", "nose-TTI_2nd_der": "ΔNT''(cm/s²)",
                                      "TTI-nose": "ΔTN(cm)", "TTI-nose_1st_der": "ΔTN'(cm/s)", "TTI-nose_2nd_der": "ΔTN''(cm/s²)",
-                                     "neck_elevation_diff": "ΔElev(cm)", "neck_elevation_diff_1st_der": "ΔElev'(cm/s)", "neck_elevation_diff_2nd_der": "ΔElev''(cm/s²)",
-                                     "speed_diff": "ΔSpeed(cm/s)", "speed_diff_1st_der": "ΔSpeed'(cm/s²)", "speed_diff_2nd_der": "ΔSpeed''(cm/s³)",
                                      "allo_yaw-nose": "Yaw-N(°)", "allo_yaw-nose_1st_der": "Yaw-N'(°/s)", "allo_yaw-nose_2nd_der": "Yaw-N''(°/s²)",
                                      "nose-allo_yaw": "N-Yaw(°)", "nose-allo_yaw_1st_der": "N-Yaw'(°/s)", "nose-allo_yaw_2nd_der": "N-Yaw''(°/s²)",
                                      "allo_yaw-TTI": "Yaw-T(°)", "allo_yaw-TTI_1st_der": "Yaw-T'(°/s)", "allo_yaw-TTI_2nd_der": "Yaw-T''(°/s²)",
                                      "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)",
+                                     "allo_pitch-nose": "Pitch-N(°)", "allo_pitch-nose_1st_der": "Pitch-N'(°/s)", "allo_pitch-nose_2nd_der": "Pitch-N''(°/s²)",
+                                     "nose-allo_pitch": "N-Pitch(°)", "nose-allo_pitch_1st_der": "N-Pitch'(°/s)", "nose-allo_pitch_2nd_der": "N-Pitch''(°/s²)",
+                                     "allo_pitch-TTI": "Pitch-T(°)", "allo_pitch-TTI_1st_der": "Pitch-T'(°/s)", "allo_pitch-TTI_2nd_der": "Pitch-T''(°/s²)",
+                                     "TTI-allo_pitch": "T-Pitch(°)", "TTI-allo_pitch_1st_der": "T-Pitch'(°/s)", "TTI-allo_pitch_2nd_der": "T-Pitch''(°/s²)",
                                      "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
                                      "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
 
@@ -1157,7 +1165,12 @@ class Create3DVideo:
         """
 
         # load behavioral feature data
-        behavioral_data_file = next(pathlib.Path(self.root_directory).rglob('*_behavioral_features.csv*'))
+        behavioral_data_file = first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern='*_behavioral_features.csv*',
+            recursive=True,
+            label="behavioral features CSV",
+        )
         beh_feature_data = pls.read_csv(str(behavioral_data_file))
 
         return beh_feature_data
@@ -1180,8 +1193,18 @@ class Create3DVideo:
         ----------
         """
 
-        h5_file_arena = next((pathlib.Path(self.arena_directory) / 'video').rglob('*_points3d_translated_rotated_metric.h5'))
-        h5_file_mouse = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'))
+        h5_file_arena = first_match_or_raise(
+            root=pathlib.Path(self.arena_directory) / 'video',
+            pattern='*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="arena points3d .h5",
+        )
+        h5_file_mouse = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'video',
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="translated/rotated mouse points3d .h5",
+        )
 
         # load HDF5 file
         with h5py.File(name=h5_file_arena, mode='r') as h5_file_arena_obj:
@@ -1195,7 +1218,12 @@ class Create3DVideo:
             empirical_camera_sr = float(h5_file_mouse_obj['recording_frame_rate'][()])
 
         if self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
-            h5_file_speaker = next((pathlib.Path(self.root_directory) / 'video').rglob('speaker*_points3d_translated_rotated_metric.h5'))
+            h5_file_speaker = first_match_or_raise(
+                root=pathlib.Path(self.root_directory) / 'video',
+                pattern='speaker*_points3d_translated_rotated_metric.h5',
+                recursive=True,
+                label="speaker points3d .h5",
+            )
             with h5py.File(name=h5_file_speaker, mode='r') as h5_file_speaker_obj:
                 speaker_tracks = np.array(h5_file_speaker_obj['tracks'])
                 speaker_track_name = h5_file_speaker_obj['track_names'][0].decode('utf-8')
@@ -1229,7 +1257,7 @@ class Create3DVideo:
         ----------
         """
 
-        self.message_output(f"Creating data visualization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}")
+        self.message_output(f"Creating data visualization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # create save directory (if one doesn't exist already)
@@ -1391,7 +1419,7 @@ class Create3DVideo:
                             beh_features_to_plot.append(f"{mouse_track_names[0]}.{tentative_feature}")
                     else:
                         tentative_features = ["speed", "neck_elevation", "allo_yaw", "allo_pitch", "tail_curvature"]
-                        tentative_social_features = ["nose-nose", "allo_yaw-nose", "nose-allo_yaw", "orofacial-sei"]
+                        tentative_social_features = ["nose-nose", "allo_yaw-nose", "nose-allo_yaw", "allo_pitch-nose", "nose-allo_pitch", "orofacial-sei"]
                         for mouse_name in mouse_track_names:
                             for tentative_feature in tentative_features:
                                 beh_features_to_plot.append(f"{mouse_name}.{tentative_feature}")
@@ -1436,7 +1464,7 @@ class Create3DVideo:
 
                 if self.speaker_audio_file != '' and pathlib.Path(self.speaker_audio_file).is_file():
                     speaker_audio_sr, speaker_audio_data = wavfile.read(self.speaker_audio_file)
-                    raspi_input_loc = next((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('m_*ch03_*.wav'))
+                    raspi_input_loc = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('m_*ch03_*.wav'))[0]
                     raspi_input_mic_sr, raspi_input_mic_data = wavfile.read(raspi_input_loc)
                     ttl_start, ttl_end = read_ttl_events(raspi_input_mic_data)
                     time_correction_coefficient = 20000  # 80 ms
@@ -1707,6 +1735,24 @@ class Create3DVideo:
             plt.tight_layout(pad=figure_pad)
 
             def animate(frame_num):
+                """
+                Matplotlib FuncAnimation callback. Renders a single video frame
+                by clearing the 3D arena axis, (optionally) rotating the side
+                view, and re-plotting arena geometry, mouse skeletons, and any
+                accompanying time-series panels for the current frame index.
+
+                Parameters
+                ----------
+                frame_num (int)
+                    Frame index relative to frame_start (0-based).
+
+                Returns
+                -------
+                (None)
+                    The function is used for its side effects on the current
+                    matplotlib figure.
+                """
+
                 ax[0].clear()
 
                 # rotates plot

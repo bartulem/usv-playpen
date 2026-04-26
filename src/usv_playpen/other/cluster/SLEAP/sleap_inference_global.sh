@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# Usage: bash sleap_inference_global.sh
-
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
@@ -9,65 +7,82 @@ SLEAP_ROOT="Name"
 CPUS_PER_TASK=2
 MEMORY_PER_CPU="24G"
 TIME_RESTRICTION="05:00:00"
-EMAIL_ADDRESS="nsurname@domain.edu"
+EMAIL_ADDRESS="nsurname@princeton.edu"
 EMAIL_TYPE="ALL"
-SLEAP_VENV="/usr/people/nsurname/sleap/.venv/bin/activate"
 
+# SLEAP parameters
 SLEAP_BATCH_SIZE=2
-SLEAP_TRACKER="flow"
-SLEAP_TRACKING_SIMILARITY="instance"
-SLEAP_TRACKING_WINDOW=5
-SLEAP_CONNECT_SINGLE_BREAKS=1
-SLEAP_PEAK_THRESHOLD=0.25
-SLEAP_IOU_THRESHOLD=0.3
-SLEAP_PRECULL_TO_TARGET=2
 SLEAP_MAX_INSTANCES=2
+
+SLEAP_FILTER_MIN_INSTANCE_SCORE=0.5
+SLEAP_FILTER_MIN_MEAN_NODE_SCORE=0.62
+SLEAP_FILTER_MIN_VISIBLE_NODES=7
+SLEAP_FILTER_OVERLAPPING_METHOD="oks"
+SLEAP_FILTER_OVERLAPPING_THRESHOLD=0.5
+SLEAP_TRACKING_WINDOW_SIZE=150
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
 WORK_DIR="/mnt/cup/labs/falkner/$SLEAP_ROOT/SLEAP/inference"
 JOB_SCRIPT="$WORK_DIR/sleap_inference_settings.sh"
-
-touch "$JOB_SCRIPT"
-echo "#!/bin/bash" > "$JOB_SCRIPT"
-echo "#SBATCH --job-name=sleap-inference-topdown" >> "$JOB_SCRIPT"
-echo "#SBATCH --output=logs/infer-topdown_%j.out" >> "$JOB_SCRIPT"
-echo "#SBATCH --error=logs/infer-topdown_%j.err" >> "$JOB_SCRIPT"
-echo "#SBATCH --gpus=1" >> "$JOB_SCRIPT"
-echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
-echo "#SBATCH --mem-per-cpu=$MEMORY_PER_CPU" >> "$JOB_SCRIPT"
-echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"
-echo "#SBATCH --mail-type=$EMAIL_TYPE" >> "$JOB_SCRIPT"
-echo "#SBATCH --mail-user=$EMAIL_ADDRESS" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "text_file=\"\$1\"" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "linenum=\$SLURM_ARRAY_TASK_ID" >> "$JOB_SCRIPT"
-echo "linetxt=\$(sed -n \"\$linenum p\" \$text_file)" >> "$JOB_SCRIPT"
-echo "linetxt=\$(echo \$linetxt | tr -d '\r\n')" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "echo \"\$linetxt\"" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "delim=' ' read -r -a linearray <<< \"\$linetxt\"" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "centroid_model=\"\${linearray[0]}\"" >> "$JOB_SCRIPT"
-echo "centered_instance_model=\"\${linearray[1]}\"" >> "$JOB_SCRIPT"
-echo "video_path=\"\${linearray[2]}\"" >> "$JOB_SCRIPT"
-echo "save_path=\"\${linearray[3]}\"" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "module load cudatoolkit/11.8.0 cudnn/11.x/8.9.7.29" >> "$JOB_SCRIPT"
-echo "source $SLEAP_VENV" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "sleap-track \"\$video_path\" -m \"\$centroid_model\" -m \"\$centered_instance_model\" -o \"\$save_path\" --tracking.tracker \$3 --max_instances \$8 --tracking.pre_cull_to_target \$9 --tracking.pre_cull_iou_threshold \${10} --tracking.track_window \$7 --peak_threshold \$5 --tracking.post_connect_single_breaks \$6 --tracking.similarity \$4 --batch_size \$2" >> "$JOB_SCRIPT"
-
-# -------------------------------------------------- #
-# ---------------- CREATE JOB ARRAY ---------------- #
-
 ARRAY_ARGS_FILE="$WORK_DIR/job_list.txt"
 
-NUM_ARRAY_JOBS="$(cat $ARRAY_ARGS_FILE | wc -l)"
+mkdir -p "$WORK_DIR/logs"
 
-echo "Jobs: $NUM_ARRAY_JOBS"
+cat << EOF > "$JOB_SCRIPT"
+#!/bin/bash
+#SBATCH --job-name=sleap-inference
+#SBATCH --output=logs/infer_%j.out
+#SBATCH --error=logs/infer_%j.err
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=$CPUS_PER_TASK
+#SBATCH --mem-per-cpu=$MEMORY_PER_CPU
+#SBATCH --time=$TIME_RESTRICTION
+#SBATCH --mail-type=$EMAIL_TYPE
+#SBATCH --mail-user=$EMAIL_ADDRESS
 
-sbatch -a 1-"$NUM_ARRAY_JOBS" "$JOB_SCRIPT" "$ARRAY_ARGS_FILE" "$SLEAP_BATCH_SIZE" "$SLEAP_TRACKER" "$SLEAP_TRACKING_SIMILARITY" "$SLEAP_PEAK_THRESHOLD" "$SLEAP_CONNECT_SINGLE_BREAKS" "$SLEAP_TRACKING_WINDOW" "$SLEAP_MAX_INSTANCES" "$SLEAP_PRECULL_TO_TARGET" "$SLEAP_IOU_THRESHOLD"
+# Parse the input file for this specific array task
+text_file="\$1"
+linenum=\$SLURM_ARRAY_TASK_ID
+linetxt=\$(sed -n "\${linenum}p" "\$text_file" | tr -d '\r\n')
+
+delim=' ' read -r -a linearray <<< "\$linetxt"
+centroid_model="\${linearray[0]}"
+centered_instance_model="\${linearray[1]}"
+video_path="\${linearray[2]}"
+save_path="\${linearray[3]}"
+
+module load cudatoolkit/11.8.0 cudnn/11.x/8.9.7.29
+
+# Make the persistently installed 'sleap-nn' tool resolvable.
+# Requires a one-time 'uv tool install sleap-nn' (see repo docs).
+export PATH="\$HOME/.local/bin:\$PATH"
+
+echo "Running inference on: \$video_path"
+
+sleap-nn track \\
+    -i "\$video_path" \\
+    -m "\$centroid_model" \\
+    -m "\$centered_instance_model" \\
+    -o "\$save_path" \\
+    --batch_size $SLEAP_BATCH_SIZE \\
+    --max_instances $SLEAP_MAX_INSTANCES \\
+    --filter_min_instance_score $SLEAP_FILTER_MIN_INSTANCE_SCORE \\
+    --filter_min_mean_node_score $SLEAP_FILTER_MIN_MEAN_NODE_SCORE \\
+    --filter_min_visible_nodes $SLEAP_FILTER_MIN_VISIBLE_NODES \\
+    --filter_overlapping \\
+    --filter_overlapping_method $SLEAP_FILTER_OVERLAPPING_METHOD \\
+    --filter_overlapping_threshold $SLEAP_FILTER_OVERLAPPING_THRESHOLD \\
+    --tracking \\
+    --tracking_window_size $SLEAP_TRACKING_WINDOW_SIZE
+EOF
+
+# -------------------------------------------------- #
+# ---------------- RUN JOB ARRAY ------------------- #
+
+NUM_ARRAY_JOBS=$(cat "$ARRAY_ARGS_FILE" | wc -l)
+
+echo "Submitting $NUM_ARRAY_JOBS jobs."
+
+sbatch -a 1-"$NUM_ARRAY_JOBS" "$JOB_SCRIPT" "$ARRAY_ARGS_FILE"

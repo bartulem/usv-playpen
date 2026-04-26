@@ -143,15 +143,23 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     """
     Description
     -----------
-    Sets a value in a nested dictionary using a dot-separated path.
+    Sets a value in a nested dictionary using a dot-separated path. The path
+    is validated against the existing structure of ``d`` — if any intermediate
+    key does not exist, is not itself a dict, or the leaf key is missing, a
+    KeyError is raised that names the offending sub-path. This is important
+    when the dictionary represents a typed configuration schema: a typo in a
+    CLI override (e.g. 'video.general.delete-post-copy' with a hyphen) would
+    otherwise silently create a new, useless key rather than updating the
+    real one.
     -----------
 
     Parameters
     ----------
     d (dict)
-        The dictionary to modify.
+        The dictionary to modify. Must contain the full target path already.
     path (str)
         The dot-separated path to the key where the value should be set.
+        Empty strings and components starting/ending with a dot are rejected.
     value (Any)
         The value to set at the specified path.
     ----------
@@ -161,12 +169,53 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     (None)
         This function modifies the dictionary in place and does not return anything.
     ----------
+
+    Raises
+    ------
+    ValueError
+        If ``path`` is empty, contains empty components, or is not a string.
+    KeyError
+        If any component of the path does not correspond to an existing key
+        in the dictionary, or an intermediate key exists but is not itself
+        a dictionary.
+    ------
     """
 
+    if not isinstance(path, str) or path == "":
+        raise ValueError("set_nested_value_by_path: 'path' must be a non-empty string.")
+
     keys = path.split(".")
+    if any(k == "" for k in keys):
+        raise ValueError(
+            f"set_nested_value_by_path: 'path' has empty component(s): {path!r}."
+        )
+
     current_level = d
+    traversed = []
     for key in keys[:-1]:
-        current_level = current_level.setdefault(key, {})
+        if not isinstance(current_level, dict):
+            raise KeyError(
+                f"set_nested_value_by_path: '{'.'.join(traversed)}' is not a dict "
+                f"in the target dictionary (full path: {path!r})."
+            )
+        if key not in current_level:
+            raise KeyError(
+                f"set_nested_value_by_path: unknown key "
+                f"'{'.'.join(traversed + [key])}' (full path: {path!r})."
+            )
+        current_level = current_level[key]
+        traversed.append(key)
+
+    if not isinstance(current_level, dict):
+        raise KeyError(
+            f"set_nested_value_by_path: '{'.'.join(traversed)}' is not a dict "
+            f"in the target dictionary (full path: {path!r})."
+        )
+    if keys[-1] not in current_level:
+        raise KeyError(
+            f"set_nested_value_by_path: unknown key "
+            f"'{'.'.join(traversed + [keys[-1]])}' (full path: {path!r})."
+        )
     current_level[keys[-1]] = value
 
 

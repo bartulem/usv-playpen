@@ -10,6 +10,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 # Matches strings that YAML 1.1 would silently coerce to a non-string type.
@@ -28,7 +29,35 @@ _YAML11_BOOL_PATTERN = re.compile(
 # Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
 # while keeping dictionaries in block style for overall readability.
 class SmartDumper(yaml.Dumper):
+    """
+    Custom yaml.Dumper that emits simple (scalar-only) lists in flow style
+    (e.g., [1, 2, 3]) while keeping nested or complex lists and dictionaries
+    in block style for readability. Also single-quotes strings that YAML 1.1
+    would otherwise silently coerce to ints, dates, or booleans.
+    """
+
     def represent_list(self, data):
+        """
+        Description
+        ----------
+        Represents a Python list in YAML. Chooses flow style (inline) when
+        every element is a scalar (str, number, or None); otherwise falls
+        back to block style (one item per line).
+        ----------
+
+        Parameters
+        ----------
+        data (list)
+            The list to serialize.
+        ----------
+
+        Returns
+        -------
+        yaml.nodes.SequenceNode
+            A YAML sequence node emitted in flow or block style.
+        -------
+        """
+
         is_simple_list = all(isinstance(item, (str, numbers.Number)) or item is None for item in data)
 
         if is_simple_list:
@@ -37,6 +66,28 @@ class SmartDumper(yaml.Dumper):
             return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
 
     def represent_str(self, data):
+        """
+        Description
+        ----------
+        Represents a Python string in YAML. If the string looks like an integer,
+        ISO date/datetime, or YAML 1.1 boolean literal (e.g., 'yes', 'off', '2024-01-01'),
+        it is emitted with single quotes so consumers do not silently coerce it
+        to a non-string type on load.
+        ----------
+
+        Parameters
+        ----------
+        data (str)
+            The string value to serialize.
+        ----------
+
+        Returns
+        -------
+        yaml.nodes.ScalarNode
+            A YAML scalar node, single-quoted when coercion would occur.
+        -------
+        """
+
         if (
             _YAML11_INT_PATTERN.match(data)
             or _YAML11_DATE_PATTERN.match(data)
@@ -45,8 +96,40 @@ class SmartDumper(yaml.Dumper):
             return self.represent_scalar('tag:yaml.org,2002:str', data, style="'")
         return self.represent_scalar('tag:yaml.org,2002:str', data)
 
+    def represent_numpy_scalar(self, data):
+        """
+        Description
+        ----------
+        Represents a NumPy scalar (np.float64, np.int32, np.bool_, etc.) in
+        YAML by first converting it to the equivalent native Python scalar via
+        .item(). Without this, PyYAML falls back to the generic Python-object
+        representer and emits tagged values like '!!python/object/apply:numpy
+        .float64', which round-trip poorly across environments and break
+        downstream consumers that expect plain scalars.
+        ----------
+
+        Parameters
+        ----------
+        data (numpy.generic)
+            A NumPy scalar instance (any subclass of numpy.generic).
+        ----------
+
+        Returns
+        -------
+        yaml.nodes.Node
+            A YAML node produced by the Dumper's representer for the
+            corresponding native Python type (int, float, bool, or str).
+        -------
+        """
+
+        return self.represent_data(data.item())
+
 SmartDumper.add_representer(list, SmartDumper.represent_list)
 SmartDumper.add_representer(str, SmartDumper.represent_str)
+# Register a multi-representer so every numpy scalar subclass (np.float64,
+# np.int32, np.bool_, np.str_, etc.) is funneled through represent_numpy_scalar
+# and emitted as its native Python equivalent.
+SmartDumper.add_multi_representer(np.generic, SmartDumper.represent_numpy_scalar)
 
 
 def load_session_metadata(root_directory: str, logger: Callable = print) -> tuple[dict | None, Path | None]:

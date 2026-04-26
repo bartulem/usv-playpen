@@ -25,8 +25,8 @@ class Messenger:
         """
         Initializes the Messenger class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         receivers (list)
             Root directories for data; defaults to None.
         exp_settings_dict (dict)
@@ -82,6 +82,15 @@ class Messenger:
         Description
         ----------
         This method sends e-mails about 165B PC usage.
+
+        Failure reporting:
+        * Returns True when the message was handed off to the SMTP server.
+        * Returns False when an error occurred while attempting delivery; the
+          exception class, exception message, and SMTP host/port are logged to
+          self.message_output so the failure is visible in the GUI console and
+          in any log that mirrors it. This distinguishes a real delivery
+          failure from the 'no receivers configured' no-op, which returns None.
+        * Returns None when the receiver list is empty (no-op).
         ----------
 
         Parameters
@@ -94,10 +103,15 @@ class Messenger:
 
         Returns
         ----------
+        outcome (bool or None)
+            True on successful handoff, False on delivery error, None when
+            there are no receivers configured.
         ----------
         """
 
         if len(self.receivers) > 0:
+            email_host = None
+            email_port = None
             try:
                 email_host, email_port, email_address, email_password = self.get_email_params()
 
@@ -121,8 +135,16 @@ class Messenger:
                     smtp.send_message(msg)
                 return True
             except Exception as e:
-                self.message_output("Error occurred during an attempt to send e-mail.")
-                self.message_output(str(e))
+                # Surface the concrete failure mode (auth, DNS, TLS handshake,
+                # connection reset, etc.) so a silent mail outage does not go
+                # unnoticed for days. The exception class name plus the SMTP
+                # host:port gives the on-call enough to diagnose.
+                host_info = f"{email_host}:{email_port}" if email_host else "<unresolved host>"
+                self.message_output(
+                    f"Error occurred during an attempt to send e-mail via {host_info}: "
+                    f"{type(e).__name__}: {e}"
+                )
+                return False
         elif self.no_receivers_notification:
             self.message_output(
                 "You chose not to notify anyone via e-mail about PC usage."

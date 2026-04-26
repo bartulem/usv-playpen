@@ -20,6 +20,7 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
+from .os_utils import wait_for_subprocesses
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
@@ -38,8 +39,8 @@ class FindMouseVocalizations:
         """
         Initializes the FindMouseVocalizations class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -99,7 +100,7 @@ class FindMouseVocalizations:
         """
 
         self.message_output(
-            f"DAS inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}. Please be patient, this can take >5 min/file."
+            f"DAS inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}. Please be patient, this can take >5 min/file."
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -143,12 +144,19 @@ class FindMouseVocalizations:
                 shell=False,
             )
 
-            while True:
-                status_poll = inference_subp.poll()
-                if status_poll is None:
-                    smart_wait(app_context_bool=self.app_context_bool, seconds=5)
-                else:
-                    break
+            # DAS inference on a long recording can take hours on CPU, so the
+            # per-file budget is generous. A 12 h ceiling still catches a
+            # genuinely hung process (GPU lost, file-descriptor deadlock)
+            # rather than letting it sit indefinitely.
+            wait_for_subprocesses(
+                subps=[inference_subp],
+                max_seconds=12 * 60 * 60,
+                label=f"DAS inference on {pathlib.Path(one_file).name}",
+                poll_interval_s=5,
+                message_output=self.message_output,
+                raise_on_nonzero=False,
+                raise_on_timeout=False,
+            )
 
         # create save directory if it doesn't exist
         das_dir = pathlib.Path(self.root_directory) / "audio" / "das_annotations"
@@ -183,7 +191,7 @@ class FindMouseVocalizations:
         """
 
         self.message_output(
-            f"DAS summary started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}."
+            f"DAS summary started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 

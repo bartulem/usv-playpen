@@ -10,7 +10,6 @@ import configparser
 import copy
 import ctypes
 import json
-import numbers
 import os
 import platform
 import re
@@ -63,6 +62,7 @@ from .behavioral_experiments import ExperimentController
 from .os_utils import configure_path
 from .preprocess_data import Stylist
 from .visualize_data import Visualizer
+from .yaml_utils import SmartDumper
 
 # do NOT print logs (debug, warnings, or otherwise) from the qt.qpa.window category.
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.window=false"
@@ -97,24 +97,25 @@ accept_icon = str(_img_dir / 'accept.png')
 cancel_icon = str(_img_dir / 'cancel.png')
 clear_icon = str(_img_dir / 'clear.png')
 
-# Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
-# while keeping dictionaries in block style for overall readability.
-class SmartDumper(yaml.Dumper):
-    def represent_list(self, data):
-        is_simple_list = all(isinstance(item, (str, numbers.Number, bool)) or item is None for item in data)
-
-        if is_simple_list:
-            return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
-        else:
-            return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
-
-SmartDumper.add_representer(list, SmartDumper.represent_list)
-
 class YamlHighlighter(QSyntaxHighlighter):
     """
     A syntax highlighter for basic YAML files that colors keys.
     """
     def __init__(self, parent=None):
+        """
+        Initializes the YamlHighlighter and registers a single highlighting
+        rule that bolds and colors YAML keys (identifiers followed by ':').
+
+        Parameters
+        ----------
+        parent (QTextDocument or None)
+            Parent document to attach the highlighter to; defaults to None.
+
+        Returns
+        -------
+        (None)
+        """
+
         super(YamlHighlighter, self).__init__(parent)
 
         self.highlighting_rules = []
@@ -147,6 +148,25 @@ class YamlHighlighter(QSyntaxHighlighter):
 
 class ChemoDialog(QDialog):
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the chemogenetic-intervention editor/creator dialog. In edit mode
+        (when a subject dict is supplied) the subject selector is locked to that
+        subject and the form is pre-populated; in create mode the user must pick
+        a subject from the metadata before OK becomes enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -330,6 +350,25 @@ class ChemoDialog(QDialog):
 class EphysDialog(QDialog):
     """A custom dialog for E-phys Interventions with edit/delete functionality."""
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the electrophysiology-intervention editor/creator dialog. In edit
+        mode the subject is locked to the supplied record and its existing
+        values (including probe serial numbers and reuse flag) are loaded; in
+        create mode the user must pick a subject before OK becomes enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -424,6 +463,20 @@ class EphysDialog(QDialog):
             self.populate_form()
 
     def populate_form(self):
+        """
+        Fills the E-phys form widgets with the existing intervention data for
+        self.subject. Handles the 'probe_reused' boolean (rendered as Yes/No)
+        and the 'probe_sn' list (rendered as a comma-separated string).
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
         for key, widget in self.fields.items():
             value = interv_data.get(key, "")
@@ -437,6 +490,21 @@ class EphysDialog(QDialog):
                 widget.setText(str(value))
 
     def delete_intervention(self):
+        """
+        Prompts the user to confirm deletion of this E-phys intervention from
+        the subject. On confirmation, removes the intervention, re-saves the
+        session metadata YAML, and mirrors the change into the subject
+        repository on disk.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         reply = QMessageBox.question(self, 'Confirm Delete',
                                      f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
@@ -449,6 +517,22 @@ class EphysDialog(QDialog):
             self.accept()
 
     def save_and_accept(self):
+        """
+        Collects the form values, coerces 'probe_reused' back into a boolean
+        and 'probe_sn' back into a list of ints (or raw strings when
+        non-numeric), attaches the intervention to the chosen subject, and
+        persists both the session metadata YAML and the subject repository
+        before closing the dialog.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
         if not target_subject: return
@@ -476,6 +560,25 @@ class EphysDialog(QDialog):
 class LesionDialog(QDialog):
     """A custom dialog for Lesion Interventions with edit/delete functionality."""
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the lesion-intervention editor/creator dialog. In edit mode the
+        subject is locked to the supplied record and its existing values are
+        loaded; in create mode the user must pick a subject before OK becomes
+        enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -547,6 +650,19 @@ class LesionDialog(QDialog):
             self.populate_form()
 
     def populate_form(self):
+        """
+        Fills the lesion form widgets with the existing intervention data for
+        self.subject.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
         for key, widget in self.fields.items():
             value = interv_data.get(key, "")
@@ -556,6 +672,21 @@ class LesionDialog(QDialog):
                 widget.setText(str(value))
 
     def delete_intervention(self):
+        """
+        Prompts the user to confirm deletion of this lesion intervention from
+        the subject. On confirmation, removes the intervention, re-saves the
+        session metadata YAML, and mirrors the change into the subject
+        repository on disk.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         reply = QMessageBox.question(self, 'Confirm Delete',
                                      f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
@@ -567,6 +698,20 @@ class LesionDialog(QDialog):
             self.accept()
 
     def save_and_accept(self):
+        """
+        Collects the form values, attaches the lesion intervention to the
+        chosen subject, and persists both the session metadata YAML and the
+        subject repository before closing the dialog.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
         if not target_subject: return
@@ -587,6 +732,26 @@ class OptoDialog(QDialog):
     """A custom dialog for Optogenetic Interventions with edit/delete functionality."""
 
     def __init__(self, parent=None, subject: dict = None):
+        """
+        Builds the optogenetic-intervention editor/creator dialog. The list of
+        available setups is pulled from the parent window's
+        equipment_settings_dict['opto']. In edit mode the subject is locked to
+        the supplied record and its existing values are loaded; in create mode
+        the user must pick a subject before OK becomes enabled.
+
+        Parameters
+        ----------
+        parent (QWidget or None)
+            Parent widget (expected to be USVPlaypenWindow); defaults to None.
+        subject (dict or None)
+            Existing subject record to edit. If None, a new intervention is
+            being added.
+
+        Returns
+        -------
+        (None)
+        """
+
         super().__init__(parent)
         self.parent_window = parent
         self.subject = subject
@@ -689,6 +854,19 @@ class OptoDialog(QDialog):
             self.populate_form()
 
     def populate_form(self):
+        """
+        Fills the optogenetics form widgets with the existing intervention
+        data for self.subject.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
         for key, widget in self.fields.items():
             value = interv_data.get(key, "")
@@ -698,6 +876,21 @@ class OptoDialog(QDialog):
                 widget.setText(str(value))
 
     def delete_intervention(self):
+        """
+        Prompts the user to confirm deletion of this optogenetic intervention
+        from the subject. On confirmation, removes the intervention, re-saves
+        the session metadata YAML, and mirrors the change into the subject
+        repository on disk.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         reply = QMessageBox.question(self, 'Confirm Delete',
                                      f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
@@ -709,6 +902,20 @@ class OptoDialog(QDialog):
             self.accept()
 
     def save_and_accept(self):
+        """
+        Collects the form values, attaches the optogenetic intervention to the
+        chosen subject, and persists both the session metadata YAML and the
+        subject repository before closing the dialog.
+
+        Parameters
+        ----------
+        ----------
+
+        Returns
+        -------
+        (None)
+        """
+
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
         if not target_subject: return
@@ -1025,20 +1232,44 @@ class USVPlaypenWindow(QMainWindow):
         self.main_window()
 
     def _open_chemo_dialog(self):
-        ChemoDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the ChemoDialog modally and refreshes the subject UI only if the
+        dialog was Accepted (OK or Delete). When the user cancels or closes
+        the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if ChemoDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _open_ephys_dialog(self):
-        EphysDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the EphysDialog modally and refreshes the subject UI only if the
+        dialog was Accepted (OK or Delete). When the user cancels or closes
+        the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if EphysDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _open_lesion_dialog(self):
-        LesionDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the LesionDialog modally and refreshes the subject UI only if
+        the dialog was Accepted (OK or Delete). When the user cancels or
+        closes the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if LesionDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _open_opto_dialog(self):
-        OptoDialog(self).exec()
-        self._update_subject_ui()
+        """
+        Opens the OptoDialog modally and refreshes the subject UI only if the
+        dialog was Accepted (OK or Delete). When the user cancels or closes
+        the dialog, metadata is untouched and the UI redraw is skipped.
+        """
+
+        if OptoDialog(self).exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _load_subject_repository(self):
         """
@@ -1320,12 +1551,12 @@ class USVPlaypenWindow(QMainWindow):
         self.credentials_save_dir_edit = QLineEdit(f"{platformdirs.user_config_dir(appname='usv_playpen', appauthor='lab')}", self.Credentials)
         self.credentials_save_dir_edit.setPlaceholderText('Save credentials directory')
         self.credentials_save_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.credentials_save_dir_edit.setStyleSheet('QLineEdit { width: 235px; }')
-        self.credentials_save_dir_edit.move(115, 40)
+        self.credentials_save_dir_edit.setStyleSheet('QLineEdit { width: 225px; }')
+        self.credentials_save_dir_edit.move(120, 42)
         credentials_save_dir_btn = QPushButton('Browse', self.Credentials)
         credentials_save_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        credentials_save_dir_btn.move(355, 40)
-        credentials_save_dir_btn.setStyleSheet('QPushButton { min-width: 36px; min-height: 12px; max-width: 36px; max-height: 13px; }')
+        credentials_save_dir_btn.move(350, 40)
+        credentials_save_dir_btn.setStyleSheet('QPushButton { min-width: 40px; min-height: 13px; max-width: 40px; max-height: 13px; }')
         credentials_save_dir_dialog = partial(self._open_directory_dialog, self.credentials_save_dir_edit, 'Select credentials directory')
         credentials_save_dir_btn.clicked.connect(credentials_save_dir_dialog)
 
@@ -1340,8 +1571,8 @@ class USVPlaypenWindow(QMainWindow):
         email_host_label.move(5, 95)
         self.email_host = QLineEdit("smtp.gmail.com", self.Credentials)
         self.email_host.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_host.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_host.move(80, 95)
+        self.email_host.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_host.move(95, 97)
 
         email_port_label = QLabel('[port num]:', self.Credentials)
         email_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1349,8 +1580,8 @@ class USVPlaypenWindow(QMainWindow):
         email_port_label.move(5, 120)
         self.email_port = QLineEdit("465", self.Credentials)
         self.email_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_port.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_port.move(80, 120)
+        self.email_port.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_port.move(95, 122)
 
         email_address_label = QLabel('[address]:', self.Credentials)
         email_address_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1358,8 +1589,8 @@ class USVPlaypenWindow(QMainWindow):
         email_address_label.move(5, 145)
         self.email_address = QLineEdit("165b.pni@gmail.com", self.Credentials)
         self.email_address.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_address.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_address.move(80, 145)
+        self.email_address.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_address.move(95, 147)
 
         email_password_label = QLabel('[password]:', self.Credentials)
         email_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1367,8 +1598,8 @@ class USVPlaypenWindow(QMainWindow):
         email_password_label.move(5, 170)
         self.email_password = QLineEdit("XXX", self.Credentials)
         self.email_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.email_password.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.email_password.move(80, 170)
+        self.email_password.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.email_password.move(95, 172)
 
         credentials_label = QLabel('UNIVERSITY credentials', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1381,8 +1612,8 @@ class USVPlaypenWindow(QMainWindow):
         university_username_label.move(5, 225)
         self.university_username = QLineEdit("nsurname", self.Credentials)
         self.university_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.university_username.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.university_username.move(80, 225)
+        self.university_username.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.university_username.move(95, 227)
 
         university_password_label = QLabel('[password]:', self.Credentials)
         university_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1390,8 +1621,8 @@ class USVPlaypenWindow(QMainWindow):
         university_password_label.move(5, 250)
         self.university_password = QLineEdit("XXX", self.Credentials)
         self.university_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.university_password.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.university_password.move(80, 250)
+        self.university_password.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.university_password.move(95, 252)
 
         credentials_label = QLabel('MOTIF credentials', self.Credentials)
         credentials_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1404,8 +1635,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_master_ip_label.move(5, 305)
         self.motif_master_ip = QLineEdit("10.241.1.205", self.Credentials)
         self.motif_master_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_master_ip.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_master_ip.move(80, 305)
+        self.motif_master_ip.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_master_ip.move(95, 307)
 
         motif_second_ip_label = QLabel('[second ip]:', self.Credentials)
         motif_second_ip_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1413,8 +1644,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_second_ip_label.move(5, 330)
         self.motif_second_ip = QLineEdit("10.241.1.183", self.Credentials)
         self.motif_second_ip.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_second_ip.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_second_ip.move(80, 330)
+        self.motif_second_ip.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_second_ip.move(95, 332)
 
         motif_ssh_port_label = QLabel('[ssh port]:', self.Credentials)
         motif_ssh_port_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1422,8 +1653,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_ssh_port_label.move(5, 355)
         self.motif_ssh_port = QLineEdit("22", self.Credentials)
         self.motif_ssh_port.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_ssh_port.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_ssh_port.move(80, 355)
+        self.motif_ssh_port.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_ssh_port.move(95, 357)
 
         motif_username_label = QLabel('[username]:', self.Credentials)
         motif_username_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1431,8 +1662,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_username_label.move(5, 380)
         self.motif_username = QLineEdit("labadmin", self.Credentials)
         self.motif_username.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_username.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_username.move(80, 380)
+        self.motif_username.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_username.move(95, 382)
 
         motif_password_label = QLabel('[password]:', self.Credentials)
         motif_password_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1440,8 +1671,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_password_label.move(5, 405)
         self.motif_password = QLineEdit("XXX", self.Credentials)
         self.motif_password.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_password.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_password.move(80, 405)
+        self.motif_password.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_password.move(95, 407)
 
         motif_api_label = QLabel('[api key]:', self.Credentials)
         motif_api_label.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -1449,8 +1680,8 @@ class USVPlaypenWindow(QMainWindow):
         motif_api_label.move(5, 430)
         self.motif_api = QLineEdit("XXX", self.Credentials)
         self.motif_api.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.motif_api.setStyleSheet('QLineEdit { height: 15px; width: 335px; }')
-        self.motif_api.move(80, 430)
+        self.motif_api.setStyleSheet('QLineEdit { height: 15px; width: 320px; }')
+        self.motif_api.move(95, 432)
 
         self._create_buttons_credentials(class_option=self.Credentials,
                                          button_pos_y=465,
@@ -1484,8 +1715,8 @@ class USVPlaypenWindow(QMainWindow):
 
         start_y_remove = 993
         start_x_remove = 448
-        items_per_row_remove = 4
-        horizontal_spacing_remove = 90
+        items_per_row_remove = 3
+        horizontal_spacing_remove = 120
         vertical_spacing_remove = 30
 
         for i, subject in enumerate(subjects):
@@ -1495,7 +1726,7 @@ class USVPlaypenWindow(QMainWindow):
             button_y = start_y_remove + (row * vertical_spacing_remove)
 
             button = QPushButton(QIcon(remove_icon), f"{subject_id}", self.VideoSettings)
-            button.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 65px; max-height: 13px; }')
+            button.setStyleSheet('QPushButton { min-width: 90px; min-height: 12px; max-width: 90px; max-height: 13px; }')
             button.move(button_x, button_y)
             button.clicked.connect(partial(self._remove_subject, index_to_remove=i))
             button.show()
@@ -1554,18 +1785,17 @@ class USVPlaypenWindow(QMainWindow):
 
         if intervention_key == 'chemogenetics':
             dialog = ChemoDialog(self, subject=target_subject)
-            dialog.exec()
         elif intervention_key == 'electrophysiology':
             dialog = EphysDialog(self, subject=target_subject)
-            dialog.exec()
         elif intervention_key == 'lesion':
             dialog = LesionDialog(self, subject=target_subject)
-            dialog.exec()
         elif intervention_key == 'optogenetics':
             dialog = OptoDialog(self, subject=target_subject)
-            dialog.exec()
+        else:
+            return
 
-        self._update_subject_ui()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._update_subject_ui()
 
     def _add_subject(self) -> None:
         """
@@ -1836,7 +2066,7 @@ class USVPlaypenWindow(QMainWindow):
         self.recorder_settings_edit.textChanged.connect(update_avisoft_recorder_dir)
         self.recorder_settings_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.recorder_settings_edit.setStyleSheet('QLineEdit { width: 400px; }')
-        self.recorder_settings_edit.move(220, 40)
+        self.recorder_settings_edit.move(220, 42)
         recorder_dir_btn = QPushButton('Browse', self.Record)
         recorder_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
         recorder_dir_btn.move(625, 40)
@@ -1853,7 +2083,7 @@ class USVPlaypenWindow(QMainWindow):
         self.avisoft_base_edit.textChanged.connect(update_avisoft_base_dir)
         self.avisoft_base_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.avisoft_base_edit.setStyleSheet('QLineEdit { width: 400px; }')
-        self.avisoft_base_edit.move(220, 70)
+        self.avisoft_base_edit.move(220, 72)
         avisoft_base_dir_btn = QPushButton('Browse', self.Record)
         avisoft_base_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
         avisoft_base_dir_btn.move(625, 70)
@@ -1870,7 +2100,7 @@ class USVPlaypenWindow(QMainWindow):
         self.avisoft_config_edit.textChanged.connect(update_avisoft_config_dir)
         self.avisoft_config_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.avisoft_config_edit.setStyleSheet('QLineEdit { width: 400px; }')
-        self.avisoft_config_edit.move(220, 100)
+        self.avisoft_config_edit.move(220, 102)
         avisoft_config_dir_btn = QPushButton('Browse', self.Record)
         avisoft_config_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
         avisoft_config_dir_btn.move(625, 100)
@@ -1887,7 +2117,7 @@ class USVPlaypenWindow(QMainWindow):
         self.coolterm_base_edit.textChanged.connect(update_coolterm_base_dir)
         self.coolterm_base_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.coolterm_base_edit.setStyleSheet('QLineEdit { width: 400px; }')
-        self.coolterm_base_edit.move(220, 130)
+        self.coolterm_base_edit.move(220, 132)
         coolterm_base_dir_btn = QPushButton('Browse', self.Record)
         coolterm_base_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
         coolterm_base_dir_btn.move(625, 130)
@@ -1904,7 +2134,7 @@ class USVPlaypenWindow(QMainWindow):
         self.recording_credentials_dir_edit.textChanged.connect(update_recording_credentials_dir)
         self.recording_credentials_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.recording_credentials_dir_edit.setStyleSheet('QLineEdit { width: 400px; }')
-        self.recording_credentials_dir_edit.move(220, 160)
+        self.recording_credentials_dir_edit.move(220, 162)
         recording_credentials_dir_btn = QPushButton('Browse', self.Record)
         recording_credentials_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
         recording_credentials_dir_btn.move(625, 160)
@@ -1965,7 +2195,7 @@ class USVPlaypenWindow(QMainWindow):
         self.video_session_duration = QLineEdit(f"{self.exp_settings_dict['video_session_duration']}", self.Record)
         self.video_session_duration.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.video_session_duration.setStyleSheet('QLineEdit { width: 493px; }')
-        self.video_session_duration.move(220, 390)
+        self.video_session_duration.move(220, 392)
 
         cal_duration_label = QLabel('Calibration duration (min):', self.Record)
         cal_duration_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -1973,7 +2203,7 @@ class USVPlaypenWindow(QMainWindow):
         self.calibration_session_duration = QLineEdit(f"{self.exp_settings_dict['calibration_duration']}", self.Record)
         self.calibration_session_duration.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.calibration_session_duration.setStyleSheet('QLineEdit { width: 493px; }')
-        self.calibration_session_duration.move(220, 420)
+        self.calibration_session_duration.move(220, 422)
 
         ethernet_network_label = QLabel('Ethernet network ID:', self.Record)
         ethernet_network_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -1981,7 +2211,7 @@ class USVPlaypenWindow(QMainWindow):
         self.ethernet_network = QLineEdit(f"{self.exp_settings_dict['ethernet_network']}", self.Record)
         self.ethernet_network.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.ethernet_network.setStyleSheet('QLineEdit { width: 493px; }')
-        self.ethernet_network.move(220, 450)
+        self.ethernet_network.move(220, 452)
 
         email_notification_label = QLabel('Notify e-mail(s) of PC usage:', self.Record)
         email_notification_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -1989,7 +2219,7 @@ class USVPlaypenWindow(QMainWindow):
         self.email_recipients = QLineEdit('', self.Record)
         self.email_recipients.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.email_recipients.setStyleSheet('QLineEdit { width: 493px; }')
-        self.email_recipients.move(220, 480)
+        self.email_recipients.move(220, 482)
 
         self._create_buttons_record(seq=0, class_option=self.Record,
                                     button_pos_y=record_one_y-35, next_button_x_pos=record_one_x-100)
@@ -2053,7 +2283,7 @@ class USVPlaypenWindow(QMainWindow):
         self.cpu_affinity_edit = QLineEdit(','.join([str(x) for x in self.exp_settings_dict['audio']['cpu_affinity']]), self.VideoSettings)
         self.cpu_affinity_edit.setFixedWidth(150)
         self.cpu_affinity_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.cpu_affinity_edit.move(260, 130)
+        self.cpu_affinity_edit.move(260, 132)
 
         gvs_label = QLabel('Video settings', self.VideoSettings)
         gvs_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
@@ -2095,7 +2325,7 @@ class USVPlaypenWindow(QMainWindow):
         self.monitor_recording_cb.activated.connect(partial(self._combo_box_prior_true if self.monitor_recording_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='monitor_recording_cb_bool'))
         self.monitor_recording_cb.move(160, 290)
 
-        monitor_cam_label = QLabel('Monitor ONE camera:', self.VideoSettings)
+        monitor_cam_label = QLabel('Monitor camera X:', self.VideoSettings)
         monitor_cam_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         monitor_cam_label.setStyleSheet(self.orange_label_style)
         monitor_cam_label.move(5, 320)
@@ -2106,7 +2336,7 @@ class USVPlaypenWindow(QMainWindow):
         self.monitor_specific_camera_cb.activated.connect(partial(self._combo_box_prior_true if self.monitor_specific_camera_cb_list[0] == 'Yes' else self._combo_box_prior_false, variable_id='monitor_specific_camera_cb_bool'))
         self.monitor_specific_camera_cb.move(160, 320)
 
-        specific_camera_serial_label = QLabel('ONE camera serial:', self.VideoSettings)
+        specific_camera_serial_label = QLabel('X camera serial:', self.VideoSettings)
         specific_camera_serial_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         specific_camera_serial_label.move(5, 350)
         self.specific_camera_serial_list = sorted(self.exp_settings_dict['video']['general']['expected_cameras'], key=lambda x: x == self.exp_settings_dict['video']['general']['specific_camera_serial'], reverse=True)
@@ -2191,7 +2421,7 @@ class USVPlaypenWindow(QMainWindow):
         self.institution_edit = QLineEdit(self.metadata_settings['Session']['institution'], self.VideoSettings)
         self.institution_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.institution_edit.setFixedWidth(widget_width)
-        self.institution_edit.move(x_widget, y_pos)
+        self.institution_edit.move(x_widget, y_pos + 2)
         self.institution_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2201,7 +2431,7 @@ class USVPlaypenWindow(QMainWindow):
         self.lab_edit = QLineEdit(self.metadata_settings['Session']['lab'], self.VideoSettings)
         self.lab_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.lab_edit.setFixedWidth(widget_width)
-        self.lab_edit.move(x_widget, y_pos)
+        self.lab_edit.move(x_widget, y_pos + 2)
         self.lab_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2211,7 +2441,7 @@ class USVPlaypenWindow(QMainWindow):
         self.experimenter_edit = QLineEdit(self.exp_id, self.VideoSettings)
         self.experimenter_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.experimenter_edit.setFixedWidth(widget_width)
-        self.experimenter_edit.move(x_widget, y_pos)
+        self.experimenter_edit.move(x_widget, y_pos + 2)
         self.experimenter_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2228,6 +2458,22 @@ class USVPlaypenWindow(QMainWindow):
         self.ambient_light_cb.move(x_widget, y_pos)
 
         def on_ambient_light_changed(index):
+            """
+            Slot invoked when the ambient-light combo box selection changes.
+            Synchronizes self.ambient_light_bool with the current selection
+            and persists the change by re-saving the session metadata YAML.
+
+            Parameters
+            ----------
+            index (int)
+                Newly selected combo-box index supplied by Qt (unused; the
+                current text is read directly from the widget).
+
+            Returns
+            -------
+            (None)
+            """
+
             self.ambient_light_bool = (self.ambient_light_cb.currentText() == 'on')
             self._save_metadata_to_yaml()
 
@@ -2241,7 +2487,7 @@ class USVPlaypenWindow(QMainWindow):
         self.session_experiment_code_edit.setPlaceholderText('e.g., ECL2MSFSd')
         self.session_experiment_code_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.session_experiment_code_edit.setFixedWidth(widget_width)
-        self.session_experiment_code_edit.move(x_widget, y_pos)
+        self.session_experiment_code_edit.move(x_widget, y_pos + 2)
         self.session_experiment_code_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2252,7 +2498,7 @@ class USVPlaypenWindow(QMainWindow):
         self.calibration_session_edit.setPlaceholderText('Tracking calibration session')
         self.calibration_session_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.calibration_session_edit.setFixedWidth(widget_width)
-        self.calibration_session_edit.move(x_widget, y_pos)
+        self.calibration_session_edit.move(x_widget, y_pos + 2)
         self.calibration_session_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2263,7 +2509,7 @@ class USVPlaypenWindow(QMainWindow):
         self.session_usv_playback_file_edit.setPlaceholderText('Playback .wav file (if any)')
         self.session_usv_playback_file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.session_usv_playback_file_edit.setFixedWidth(widget_width)
-        self.session_usv_playback_file_edit.move(x_widget, y_pos)
+        self.session_usv_playback_file_edit.move(x_widget, y_pos + 2)
         self.session_usv_playback_file_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2273,7 +2519,7 @@ class USVPlaypenWindow(QMainWindow):
         self.session_description_edit = QLineEdit(self.metadata_settings['Session']['session_description'], self.VideoSettings)
         self.session_description_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.session_description_edit.setFixedWidth(widget_width)
-        self.session_description_edit.move(x_widget, y_pos)
+        self.session_description_edit.move(x_widget, y_pos + 2)
         self.session_description_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2284,7 +2530,7 @@ class USVPlaypenWindow(QMainWindow):
         self.keywords_edit.setPlaceholderText('Comma-separated, e.g., social, e-phys, etc.')
         self.keywords_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.keywords_edit.setFixedWidth(widget_width)
-        self.keywords_edit.move(x_widget, y_pos)
+        self.keywords_edit.move(x_widget, y_pos + 2)
         self.keywords_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2294,7 +2540,7 @@ class USVPlaypenWindow(QMainWindow):
         self.notes_edit = QLineEdit(self.metadata_settings['Session']['notes'], self.VideoSettings)
         self.notes_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.notes_edit.setFixedWidth(widget_width)
-        self.notes_edit.move(x_widget, y_pos)
+        self.notes_edit.move(x_widget, y_pos + 2)
         self.notes_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
@@ -2384,7 +2630,7 @@ class USVPlaypenWindow(QMainWindow):
 
             widget.setFont(QFont(self.font_id, 10 + self.font_size_increase))
             widget.setFixedWidth(230)
-            widget.move(180, y_pos)
+            widget.move(180, y_pos + 2 if isinstance(widget, QLineEdit) else y_pos)
 
             self.subject_form_widgets[key] = widget
             setattr(self, f"{key}_edit", widget)
@@ -2547,7 +2793,7 @@ class USVPlaypenWindow(QMainWindow):
         processing_dir_label = QLabel('(*) Root directories', self.ProcessSettings)
         processing_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
         processing_dir_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        processing_dir_label.move(85, 10)
+        processing_dir_label.move(80, 10)
         self.processing_dir_edit = QTextEdit('', self.ProcessSettings)
         self.processing_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.processing_dir_edit.move(10, 40)
@@ -2556,7 +2802,7 @@ class USVPlaypenWindow(QMainWindow):
         exp_codes_dir_label = QLabel('ExCode', self.ProcessSettings)
         exp_codes_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
         exp_codes_dir_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        exp_codes_dir_label.move(330, 10)
+        exp_codes_dir_label.move(325, 10)
         self.exp_codes_edit = QTextEdit('', self.ProcessSettings)
         self.exp_codes_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.exp_codes_edit.move(310, 40)
@@ -2571,7 +2817,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_credentials_dir_edit.move(10, 335)
         processing_credentials_dir_btn = QPushButton('Browse', self.ProcessSettings)
         processing_credentials_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        processing_credentials_dir_btn.move(310, 335)
+        processing_credentials_dir_btn.move(310, 334)
         processing_credentials_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         open_dialog = partial(self._open_directory_dialog, self.processing_credentials_dir_edit, 'Select Credentials Directory')
         processing_credentials_dir_btn.clicked.connect(open_dialog)
@@ -2585,7 +2831,7 @@ class USVPlaypenWindow(QMainWindow):
         self.centroid_model_edit.move(10, 365)
         centroid_model_btn = QPushButton('Browse', self.ProcessSettings)
         centroid_model_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        centroid_model_btn.move(310, 365)
+        centroid_model_btn.move(310, 364)
         centroid_model_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         centroid_model_dir_dialog = partial(self._open_directory_dialog, self.centroid_model_edit, 'Select SLEAP centroid model directory')
         centroid_model_btn.clicked.connect(centroid_model_dir_dialog)
@@ -2599,7 +2845,7 @@ class USVPlaypenWindow(QMainWindow):
         self.centered_instance_model_edit.move(10, 395)
         centered_instance_btn = QPushButton('Browse', self.ProcessSettings)
         centered_instance_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        centered_instance_btn.move(310, 395)
+        centered_instance_btn.move(310, 394)
         centered_instance_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         open_centered_instance_dir_dialog = partial(self._open_directory_dialog, self.centered_instance_model_edit, 'Select SLEAP centered instance directory')
         centered_instance_btn.clicked.connect(open_centered_instance_dir_dialog)
@@ -2613,7 +2859,7 @@ class USVPlaypenWindow(QMainWindow):
         self.inference_root_dir_edit.move(10, 425)
         inference_root_dir_btn = QPushButton('Browse', self.ProcessSettings)
         inference_root_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        inference_root_dir_btn.move(310, 425)
+        inference_root_dir_btn.move(310, 424)
         inference_root_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         inference_root_dir_dialog = partial(self._open_directory_dialog, self.inference_root_dir_edit, 'Select SLEAP inference directory')
         inference_root_dir_btn.clicked.connect(inference_root_dir_dialog)
@@ -2629,7 +2875,7 @@ class USVPlaypenWindow(QMainWindow):
         self.calibration_file_loc_edit.move(10, 455)
         calibration_file_loc_btn = QPushButton('Browse', self.ProcessSettings)
         calibration_file_loc_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        calibration_file_loc_btn.move(310, 455)
+        calibration_file_loc_btn.move(310, 454)
         calibration_file_loc_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
         calibration_file_loc_dialog = partial(self._open_directory_dialog, self.calibration_file_loc_edit, 'Select calibration/arena root directory')
         calibration_file_loc_btn.clicked.connect(calibration_file_loc_dialog)
@@ -2640,7 +2886,7 @@ class USVPlaypenWindow(QMainWindow):
         self.das_conda = QLineEdit(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_conda_env_name'], self.ProcessSettings)
         self.das_conda.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_conda.setStyleSheet('QLineEdit { width: 98px; }')
-        self.das_conda.move(310, 485)
+        self.das_conda.move(310, 487)
 
         self.das_model_dir_edit = QLineEdit(self.das_model_dir_global, self.ProcessSettings)
         update_das_model_dir = partial(self._update_nested_dict_value, self.processing_input_dict, ('usv_inference', 'FindMouseVocalizations', 'das_command_line_inference', 'das_model_directory'))
@@ -2651,7 +2897,7 @@ class USVPlaypenWindow(QMainWindow):
         self.das_model_dir_edit.move(10, 515)
         das_model_dir_btn = QPushButton('Browse', self.ProcessSettings)
         das_model_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        das_model_dir_btn.move(310, 515)
+        das_model_dir_btn.move(310, 514)
         das_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
         open_das_model_dir_dialog = partial(self._open_directory_dialog, self.das_model_dir_edit, 'Select DAS model directory')
         das_model_dir_btn.clicked.connect(open_das_model_dir_dialog)
@@ -2661,8 +2907,8 @@ class USVPlaypenWindow(QMainWindow):
         das_model_base_label.move(10, 545)
         self.das_model_base = QLineEdit(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_name_base'], self.ProcessSettings)
         self.das_model_base.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.das_model_base.setStyleSheet('QLineEdit { width: 183px; }')
-        self.das_model_base.move(225, 545)
+        self.das_model_base.setStyleSheet('QLineEdit { width: 178px; }')
+        self.das_model_base.move(230, 547)
 
         vcl_conda_label = QLabel('Vocalocator conda environment name:', self.ProcessSettings)
         vcl_conda_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2670,7 +2916,7 @@ class USVPlaypenWindow(QMainWindow):
         self.vcl_conda = QLineEdit(self.processing_input_dict['vocalocator']['vcl_conda_env_name'], self.ProcessSettings)
         self.vcl_conda.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.vcl_conda.setStyleSheet('QLineEdit { width: 98px; }')
-        self.vcl_conda.move(310, 575)
+        self.vcl_conda.move(310, 577)
 
         self.vcl_model_dir_edit = QLineEdit(self.vcl_model_dir_global, self.ProcessSettings)
         update_vcl_model_dir = partial(self._update_nested_dict_value, self.processing_input_dict, ('vocalocator', 'vcl_model_directory'))
@@ -2681,7 +2927,7 @@ class USVPlaypenWindow(QMainWindow):
         self.vcl_model_dir_edit.move(10, 605)
         vcl_model_dir_btn = QPushButton('Browse', self.ProcessSettings)
         vcl_model_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        vcl_model_dir_btn.move(310, 605)
+        vcl_model_dir_btn.move(310, 604)
         vcl_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
         vcl_model_dir_dialog = partial(self._open_directory_dialog, self.vcl_model_dir_edit, 'Select VCL model directory')
         vcl_model_dir_btn.clicked.connect(vcl_model_dir_dialog)
@@ -2692,7 +2938,7 @@ class USVPlaypenWindow(QMainWindow):
         self.pc_usage_process = QLineEdit('', self.ProcessSettings)
         self.pc_usage_process.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.pc_usage_process.setStyleSheet('QLineEdit { width: 183px; }')
-        self.pc_usage_process.move(225, 635)
+        self.pc_usage_process.move(225, 637)
 
         processing_pc_label = QLabel('Processing PC of choice:', self.ProcessSettings)
         processing_pc_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -2745,7 +2991,7 @@ class USVPlaypenWindow(QMainWindow):
         self.min_spike_num = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num']}", self.ProcessSettings)
         self.min_spike_num.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.min_spike_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.min_spike_num.move(225, 825)
+        self.min_spike_num.move(225, 827)
 
         # column 2
         column_two_x1 = 440
@@ -2782,7 +3028,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conversion_target_file = QLineEdit(self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'], self.ProcessSettings)
         self.conversion_target_file.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.conversion_target_file.setStyleSheet('QLineEdit { width: 108px; }')
-        self.conversion_target_file.move(column_two_x2, 100)
+        self.conversion_target_file.move(column_two_x2, 102)
 
         constant_rate_factor_label = QLabel('FFMPEG crf (0–51):', self.ProcessSettings)
         constant_rate_factor_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2790,7 +3036,7 @@ class USVPlaypenWindow(QMainWindow):
         self.constant_rate_factor = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor']}", self.ProcessSettings)
         self.constant_rate_factor.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.constant_rate_factor.setStyleSheet('QLineEdit { width: 108px; }')
-        self.constant_rate_factor.move(column_two_x2, 130)
+        self.constant_rate_factor.move(column_two_x2, 132)
 
         encoding_preset_label = QLabel('FFMPEG preset:', self.ProcessSettings)
         encoding_preset_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2811,7 +3057,7 @@ class USVPlaypenWindow(QMainWindow):
         self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
         self.delete_con_file_cb.move(column_two_x2, 190)
 
-        sleap_cluster_cb_label = QLabel('Prepare SLEAP cluster job:', self.ProcessSettings)
+        sleap_cluster_cb_label = QLabel('Make SLEAP job list:', self.ProcessSettings)
         sleap_cluster_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         sleap_cluster_cb_label.setStyleSheet(self.orange_label_style)
         sleap_cluster_cb_label.move(column_two_x1, 220)
@@ -2885,7 +3131,7 @@ class USVPlaypenWindow(QMainWindow):
         self.frame_restriction = QLineEdit(frame_restriction_input, self.ProcessSettings)
         self.frame_restriction.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.frame_restriction.setStyleSheet('QLineEdit { width: 108px; }')
-        self.frame_restriction.move(column_two_x2, 430)
+        self.frame_restriction.move(column_two_x2, 432)
 
         excluded_views_label = QLabel('Excluded camera views:', self.ProcessSettings)
         excluded_views_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2893,7 +3139,7 @@ class USVPlaypenWindow(QMainWindow):
         self.excluded_views = QLineEdit(','.join([str(x) for x in self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['excluded_views']]), self.ProcessSettings)
         self.excluded_views.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.excluded_views.setStyleSheet('QLineEdit { width: 108px; }')
-        self.excluded_views.move(column_two_x2, 460)
+        self.excluded_views.move(column_two_x2, 462)
 
         ransac_cb_label = QLabel('Ransac:', self.ProcessSettings)
         ransac_cb_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2910,7 +3156,7 @@ class USVPlaypenWindow(QMainWindow):
         self.rigid_body_constraints = QLineEdit('', self.ProcessSettings)
         self.rigid_body_constraints.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.rigid_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
-        self.rigid_body_constraints.move(column_two_x2, 520)
+        self.rigid_body_constraints.move(column_two_x2, 522)
 
         weak_body_constraints_label = QLabel('Weak body constraints:', self.ProcessSettings)
         weak_body_constraints_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2918,7 +3164,7 @@ class USVPlaypenWindow(QMainWindow):
         self.weak_body_constraints = QLineEdit('', self.ProcessSettings)
         self.weak_body_constraints.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.weak_body_constraints.setStyleSheet('QLineEdit { width: 108px; }')
-        self.weak_body_constraints.move(column_two_x2, 550)
+        self.weak_body_constraints.move(column_two_x2, 552)
 
         smooth_scale_label = QLabel('Smoothing scale:', self.ProcessSettings)
         smooth_scale_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2926,7 +3172,7 @@ class USVPlaypenWindow(QMainWindow):
         self.smooth_scale = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['smooth_scale']}", self.ProcessSettings)
         self.smooth_scale.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.smooth_scale.setStyleSheet('QLineEdit { width: 108px; }')
-        self.smooth_scale.move(column_two_x2, 580)
+        self.smooth_scale.move(column_two_x2, 582)
 
         weight_rigid_label = QLabel('Rigid constraints weight:', self.ProcessSettings)
         weight_rigid_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2934,7 +3180,7 @@ class USVPlaypenWindow(QMainWindow):
         self.weight_rigid = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_rigid']}", self.ProcessSettings)
         self.weight_rigid.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.weight_rigid.setStyleSheet('QLineEdit { width: 108px; }')
-        self.weight_rigid.move(column_two_x2, 610)
+        self.weight_rigid.move(column_two_x2, 612)
 
         weight_weak_label = QLabel('Weak constraints weight:', self.ProcessSettings)
         weight_weak_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2942,7 +3188,7 @@ class USVPlaypenWindow(QMainWindow):
         self.weight_weak = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_weak']}", self.ProcessSettings)
         self.weight_weak.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.weight_weak.setStyleSheet('QLineEdit { width: 108px; }')
-        self.weight_weak.move(column_two_x2, 640)
+        self.weight_weak.move(column_two_x2, 642)
 
         reprojection_error_threshold_label = QLabel('Reproject error threshold:', self.ProcessSettings)
         reprojection_error_threshold_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2950,7 +3196,7 @@ class USVPlaypenWindow(QMainWindow):
         self.reprojection_error_threshold = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['reprojection_error_threshold']}", self.ProcessSettings)
         self.reprojection_error_threshold.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.reprojection_error_threshold.setStyleSheet('QLineEdit { width: 108px; }')
-        self.reprojection_error_threshold.move(column_two_x2, 670)
+        self.reprojection_error_threshold.move(column_two_x2, 672)
 
         regularization_function_label = QLabel('Regularization:', self.ProcessSettings)
         regularization_function_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2958,7 +3204,7 @@ class USVPlaypenWindow(QMainWindow):
         self.regularization_function = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['regularization_function']}", self.ProcessSettings)
         self.regularization_function.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.regularization_function.setStyleSheet('QLineEdit { width: 108px; }')
-        self.regularization_function.move(column_two_x2, 700)
+        self.regularization_function.move(column_two_x2, 702)
 
         n_deriv_smooth_label = QLabel('Derivation kernel order:', self.ProcessSettings)
         n_deriv_smooth_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -2966,7 +3212,7 @@ class USVPlaypenWindow(QMainWindow):
         self.n_deriv_smooth = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['n_deriv_smooth']}", self.ProcessSettings)
         self.n_deriv_smooth.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.n_deriv_smooth.setStyleSheet('QLineEdit { width: 108px; }')
-        self.n_deriv_smooth.move(column_two_x2, 730)
+        self.n_deriv_smooth.move(column_two_x2, 732)
 
         translate_rotate_metric_label = QLabel('Re-coordinate (ExCode!):', self.ProcessSettings)
         translate_rotate_metric_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
@@ -2984,7 +3230,7 @@ class USVPlaypenWindow(QMainWindow):
         self.static_reference_len = QLineEdit(f"{self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['static_reference_len']}", self.ProcessSettings)
         self.static_reference_len.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.static_reference_len.setStyleSheet('QLineEdit { width: 108px; }')
-        self.static_reference_len.move(column_two_x2, 790)
+        self.static_reference_len.move(column_two_x2, 792)
 
         save_transformed_data_cb_label = QLabel('Save transformation type:', self.ProcessSettings)
         save_transformed_data_cb_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3049,7 +3295,7 @@ class USVPlaypenWindow(QMainWindow):
         self.ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input']}", self.ProcessSettings)
         self.ch_receiving_input.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.ch_receiving_input.move(column_three_x2, 130)
+        self.ch_receiving_input.move(column_three_x2, 132)
 
         conduct_hpss_cb_label = QLabel('Run HPSS (slow!):', self.ProcessSettings)
         conduct_hpss_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
@@ -3067,7 +3313,7 @@ class USVPlaypenWindow(QMainWindow):
         self.stft_window_hop = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size']]), self.ProcessSettings)
         self.stft_window_hop.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.stft_window_hop.setStyleSheet('QLineEdit { width: 108px; }')
-        self.stft_window_hop.move(column_three_x2, 190)
+        self.stft_window_hop.move(column_three_x2, 192)
 
         hpss_kernel_size_label = QLabel('HPSS kernel size:', self.ProcessSettings)
         hpss_kernel_size_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3075,7 +3321,7 @@ class USVPlaypenWindow(QMainWindow):
         self.hpss_kernel_size = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['hpss_audio']['kernel_size']]), self.ProcessSettings)
         self.hpss_kernel_size.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.hpss_kernel_size.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_kernel_size.move(column_three_x2, 220)
+        self.hpss_kernel_size.move(column_three_x2, 222)
 
         hpss_power_label = QLabel('HPSS power:', self.ProcessSettings)
         hpss_power_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3083,7 +3329,7 @@ class USVPlaypenWindow(QMainWindow):
         self.hpss_power = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['hpss_audio']['hpss_power']}", self.ProcessSettings)
         self.hpss_power.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.hpss_power.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_power.move(column_three_x2, 250)
+        self.hpss_power.move(column_three_x2, 252)
 
         hpss_margin_label = QLabel('HPSS margin:', self.ProcessSettings)
         hpss_margin_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3091,7 +3337,7 @@ class USVPlaypenWindow(QMainWindow):
         self.hpss_margin = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['hpss_audio']['margin']]), self.ProcessSettings)
         self.hpss_margin.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.hpss_margin.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_margin.move(column_three_x2, 280)
+        self.hpss_margin.move(column_three_x2, 282)
 
         filter_audio_cb_label = QLabel('Filter audio files:', self.ProcessSettings)
         filter_audio_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
@@ -3109,7 +3355,7 @@ class USVPlaypenWindow(QMainWindow):
         self.filter_freq_bounds = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds']]), self.ProcessSettings)
         self.filter_freq_bounds.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.filter_freq_bounds.setStyleSheet('QLineEdit { width: 108px; }')
-        self.filter_freq_bounds.move(column_three_x2, 340)
+        self.filter_freq_bounds.move(column_three_x2, 342)
 
         filter_dirs_label = QLabel('Folder(s) to filter:', self.ProcessSettings)
         filter_dirs_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3117,7 +3363,7 @@ class USVPlaypenWindow(QMainWindow):
         self.filter_dirs = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_dirs']]), self.ProcessSettings)
         self.filter_dirs.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.filter_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.filter_dirs.move(column_three_x2, 370)
+        self.filter_dirs.move(column_three_x2, 372)
 
         conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
         conc_audio_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
@@ -3135,7 +3381,7 @@ class USVPlaypenWindow(QMainWindow):
         self.concat_dirs = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['concatenate_audio_files']['concat_dirs']]), self.ProcessSettings)
         self.concat_dirs.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.concat_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.concat_dirs.move(column_three_x2, 430)
+        self.concat_dirs.move(column_three_x2, 432)
 
         das_inference_cb_label = QLabel('Run DAS inference:', self.ProcessSettings)
         das_inference_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
@@ -3153,7 +3399,7 @@ class USVPlaypenWindow(QMainWindow):
         self.segment_confidence_threshold = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_confidence_threshold']}", self.ProcessSettings)
         self.segment_confidence_threshold.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.segment_confidence_threshold.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_confidence_threshold.move(column_three_x2, 490)
+        self.segment_confidence_threshold.move(column_three_x2, 492)
 
         segment_minlen_label = QLabel('USV min duration (s):', self.ProcessSettings)
         segment_minlen_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3161,7 +3407,7 @@ class USVPlaypenWindow(QMainWindow):
         self.segment_minlen = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_minlen']}", self.ProcessSettings)
         self.segment_minlen.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.segment_minlen.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_minlen.move(column_three_x2, 520)
+        self.segment_minlen.move(column_three_x2, 522)
 
         segment_fillgap_label = QLabel('Fill gaps shorter than (s):', self.ProcessSettings)
         segment_fillgap_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3169,7 +3415,7 @@ class USVPlaypenWindow(QMainWindow):
         self.segment_fillgap = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_fillgap']}", self.ProcessSettings)
         self.segment_fillgap.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.segment_fillgap.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_fillgap.move(column_three_x2, 550)
+        self.segment_fillgap.move(column_three_x2, 552)
 
         das_output_type_label = QLabel('Inference output file type:', self.ProcessSettings)
         das_output_type_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3177,7 +3423,7 @@ class USVPlaypenWindow(QMainWindow):
         self.das_output_type = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['output_file_type']}", self.ProcessSettings)
         self.das_output_type.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_output_type.setStyleSheet('QLineEdit { width: 108px; }')
-        self.das_output_type.move(column_three_x2, 580)
+        self.das_output_type.move(column_three_x2, 582)
 
         das_summary_cb_label = QLabel('Curate DAS outputs:', self.ProcessSettings)
         das_summary_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
@@ -3240,7 +3486,7 @@ class USVPlaypenWindow(QMainWindow):
         self.phidget_extra_data_camera = QLineEdit(f"{self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera']}", self.ProcessSettings)
         self.phidget_extra_data_camera.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.phidget_extra_data_camera.setStyleSheet('QLineEdit { width: 108px; }')
-        self.phidget_extra_data_camera.move(column_three_x2, 800)
+        self.phidget_extra_data_camera.move(column_three_x2, 802)
 
         a_ch_receiving_input_label = QLabel('Arduino-USGH ch (1-12):', self.ProcessSettings)
         a_ch_receiving_input_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3248,7 +3494,7 @@ class USVPlaypenWindow(QMainWindow):
         self.a_ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input']}", self.ProcessSettings)
         self.a_ch_receiving_input.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.a_ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.a_ch_receiving_input.move(column_three_x2, 830)
+        self.a_ch_receiving_input.move(column_three_x2, 832)
 
         v_camera_serial_num_label = QLabel('Sync camera serial num(s):', self.ProcessSettings)
         v_camera_serial_num_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3256,7 +3502,7 @@ class USVPlaypenWindow(QMainWindow):
         self.v_camera_serial_num = QLineEdit(','.join([str(x) for x in self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_camera_serial_num']]), self.ProcessSettings)
         self.v_camera_serial_num.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.v_camera_serial_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_camera_serial_num.move(column_three_x2, 860)
+        self.v_camera_serial_num.move(column_three_x2, 862)
 
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
                                      button_pos_y=process_one_y - 35, next_button_x_pos=process_one_x - 100)
@@ -3331,12 +3577,12 @@ class USVPlaypenWindow(QMainWindow):
         update_analyses_credentials_dir = partial(self._update_nested_dict_value, self.analyses_input_dict, ('credentials_directory',))
         self.analyses_credentials_dir_edit.textChanged.connect(update_analyses_credentials_dir)
         self.analyses_credentials_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.analyses_credentials_dir_edit.setStyleSheet('QLineEdit { width: 285px; }')
+        self.analyses_credentials_dir_edit.setStyleSheet('QLineEdit { width: 280px; }')
         self.analyses_credentials_dir_edit.move(10, 365)
         analyses_credentials_dir_btn = QPushButton('Browse', self.AnalysesSettings)
         analyses_credentials_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        analyses_credentials_dir_btn.move(300, 365)
-        analyses_credentials_dir_btn.setStyleSheet('QPushButton { min-width: 36px; min-height: 12px; max-width: 36px; max-height: 13px; }')
+        analyses_credentials_dir_btn.move(295, 364)
+        analyses_credentials_dir_btn.setStyleSheet('QPushButton { min-width: 41px; min-height: 12px; max-width: 41px; max-height: 13px; }')
         open_analyses_credentials_dir_dialog = partial(self._open_directory_dialog, self.analyses_credentials_dir_edit, 'Select credentials directory')
         analyses_credentials_dir_btn.clicked.connect(open_analyses_credentials_dir_dialog)
 
@@ -3346,7 +3592,7 @@ class USVPlaypenWindow(QMainWindow):
         self.pc_usage_analyses = QLineEdit('', self.AnalysesSettings)
         self.pc_usage_analyses.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.pc_usage_analyses.setStyleSheet('QLineEdit { width: 135px; }')
-        self.pc_usage_analyses.move(225, 395)
+        self.pc_usage_analyses.move(225, 397)
 
         analyses_pc_label = QLabel('Analyses PC of choice:', self.AnalysesSettings)
         analyses_pc_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3431,7 +3677,7 @@ class USVPlaypenWindow(QMainWindow):
         self.fs_sequence_start = QLineEdit(f"{self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_start']}", self.AnalysesSettings)
         self.fs_sequence_start.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.fs_sequence_start.setStyleSheet('QLineEdit { width: 85px; }')
-        self.fs_sequence_start.move(analyses_col_two_x2, 160)
+        self.fs_sequence_start.move(analyses_col_two_x2, 162)
 
         fs_sequence_duration_label = QLabel('Total duration of audio sequence (s):', self.AnalysesSettings)
         fs_sequence_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3439,7 +3685,7 @@ class USVPlaypenWindow(QMainWindow):
         self.fs_sequence_duration = QLineEdit(f"{self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_duration']}", self.AnalysesSettings)
         self.fs_sequence_duration.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.fs_sequence_duration.setStyleSheet('QLineEdit { width: 85px; }')
-        self.fs_sequence_duration.move(analyses_col_two_x2, 190)
+        self.fs_sequence_duration.move(analyses_col_two_x2, 192)
 
         fs_octave_shift_label = QLabel('Octave shift (direction and quantity):', self.AnalysesSettings)
         fs_octave_shift_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3447,10 +3693,10 @@ class USVPlaypenWindow(QMainWindow):
         self.fs_octave_shift = QLineEdit(f"{self.analyses_input_dict['frequency_shift_audio_segment']['fs_octave_shift']}", self.AnalysesSettings)
         self.fs_octave_shift.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.fs_octave_shift.setStyleSheet('QLineEdit { width: 85px; }')
-        self.fs_octave_shift.move(analyses_col_two_x2, 220)
+        self.fs_octave_shift.move(analyses_col_two_x2, 222)
 
         volume_adjust_audio_segment_label = QLabel('Volume-adjust audio segment:', self.AnalysesSettings)
-        volume_adjust_audio_segment_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        volume_adjust_audio_segment_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         volume_adjust_audio_segment_label.move(analyses_col_two_x1, 250)
         self.volume_adjust_audio_segment_cb = QComboBox(self.AnalysesSettings)
         self.volume_adjust_audio_segment_cb.addItems(['Yes', 'No'])
@@ -3458,7 +3704,7 @@ class USVPlaypenWindow(QMainWindow):
         self.volume_adjust_audio_segment_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='volume_adjust_audio_segment_cb_bool'))
         self.volume_adjust_audio_segment_cb.move(analyses_col_two_x2, 250)
 
-        create_usv_playback_wav_label = QLabel('Create artificial playback .WAV file:', self.AnalysesSettings)
+        create_usv_playback_wav_label = QLabel('Create artificial playback .WAV:', self.AnalysesSettings)
         create_usv_playback_wav_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         create_usv_playback_wav_label.setStyleSheet(self.orange_label_style)
         create_usv_playback_wav_label.move(analyses_col_two_x1, 280)
@@ -3468,21 +3714,21 @@ class USVPlaypenWindow(QMainWindow):
         self.create_usv_playback_wav_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='create_usv_playback_wav_cb_bool'))
         self.create_usv_playback_wav_cb.move(analyses_col_two_x2, 280)
 
-        num_usv_files_label = QLabel('Number of artificial playback files:', self.AnalysesSettings)
+        num_usv_files_label = QLabel('Number of playback files:', self.AnalysesSettings)
         num_usv_files_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         num_usv_files_label.move(analyses_col_two_x1, 310)
         self.num_usv_files = QLineEdit(f"{self.analyses_input_dict['create_usv_playback_wav']['num_usv_files']}", self.AnalysesSettings)
         self.num_usv_files.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.num_usv_files.setStyleSheet('QLineEdit { width: 85px; }')
-        self.num_usv_files.move(analyses_col_two_x2, 310)
+        self.num_usv_files.move(analyses_col_two_x2, 312)
 
-        total_usv_number_label = QLabel('Total number os USVs per file:', self.AnalysesSettings)
+        total_usv_number_label = QLabel('Total number of USVs per file:', self.AnalysesSettings)
         total_usv_number_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         total_usv_number_label.move(analyses_col_two_x1, 340)
         self.total_usv_number = QLineEdit(f"{self.analyses_input_dict['create_usv_playback_wav']['total_usv_number']}", self.AnalysesSettings)
         self.total_usv_number.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.total_usv_number.setStyleSheet('QLineEdit { width: 85px; }')
-        self.total_usv_number.move(analyses_col_two_x2, 340)
+        self.total_usv_number.move(analyses_col_two_x2, 342)
 
         ipi_duration_label = QLabel('Fixed silence between USVs (s):', self.AnalysesSettings)
         ipi_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3490,9 +3736,9 @@ class USVPlaypenWindow(QMainWindow):
         self.ipi_duration = QLineEdit(f"{self.analyses_input_dict['create_usv_playback_wav']['ipi_duration']}", self.AnalysesSettings)
         self.ipi_duration.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.ipi_duration.setStyleSheet('QLineEdit { width: 85px; }')
-        self.ipi_duration.move(analyses_col_two_x2, 370)
+        self.ipi_duration.move(analyses_col_two_x2, 372)
 
-        create_naturalistic_usv_playback_wav_label = QLabel('Create naturalistic playback .WAV file:', self.AnalysesSettings)
+        create_naturalistic_usv_playback_wav_label = QLabel('Create naturalistic playback .WAV:', self.AnalysesSettings)
         create_naturalistic_usv_playback_wav_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         create_naturalistic_usv_playback_wav_label.setStyleSheet(self.orange_label_style)
         create_naturalistic_usv_playback_wav_label.move(analyses_col_two_x1, 400)
@@ -3502,13 +3748,13 @@ class USVPlaypenWindow(QMainWindow):
         self.create_naturalistic_usv_playback_wav_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='create_naturalistic_usv_playback_wav_cb_bool'))
         self.create_naturalistic_usv_playback_wav_cb.move(analyses_col_two_x2, 400)
 
-        num_naturalistic_usv_files_label = QLabel('Number of naturalistic playback files:', self.AnalysesSettings)
+        num_naturalistic_usv_files_label = QLabel('Number of playback files:', self.AnalysesSettings)
         num_naturalistic_usv_files_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         num_naturalistic_usv_files_label.move(analyses_col_two_x1, 430)
         self.num_naturalistic_usv_files = QLineEdit(f"{self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files']}", self.AnalysesSettings)
         self.num_naturalistic_usv_files.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.num_naturalistic_usv_files.setStyleSheet('QLineEdit { width: 85px; }')
-        self.num_naturalistic_usv_files.move(analyses_col_two_x2, 430)
+        self.num_naturalistic_usv_files.move(analyses_col_two_x2, 432)
 
         total_playback_file_duration_label = QLabel('Total playback file duration (s):', self.AnalysesSettings)
         total_playback_file_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3516,9 +3762,9 @@ class USVPlaypenWindow(QMainWindow):
         self.total_playback_file_duration = QLineEdit(f"{self.analyses_input_dict['create_naturalistic_usv_playback_wav']['total_acceptable_naturalistic_playback_time']}", self.AnalysesSettings)
         self.total_playback_file_duration.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.total_playback_file_duration.setStyleSheet('QLineEdit { width: 85px; }')
-        self.total_playback_file_duration.move(analyses_col_two_x2, 460)
+        self.total_playback_file_duration.move(analyses_col_two_x2, 462)
 
-        preferred_mouse_sex_label = QLabel('Sex that produced the vocalizations:', self.AnalysesSettings)
+        preferred_mouse_sex_label = QLabel('Sex of USV emitter:', self.AnalysesSettings)
         preferred_mouse_sex_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         preferred_mouse_sex_label.move(analyses_col_two_x1, 490)
         self.preferred_mouse_sex_list = sorted(['combined', 'male', 'female'], key=lambda x: x == self.analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix'], reverse=True)
@@ -3656,7 +3902,7 @@ class USVPlaypenWindow(QMainWindow):
         visualizations_dir_label = QLabel('(*) Root directories for visualizations', self.VisualizationsSettings)
         visualizations_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
         visualizations_dir_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        visualizations_dir_label.move(50, 10)
+        visualizations_dir_label.move(35, 10)
         self.visualizations_dir_edit = QTextEdit('', self.VisualizationsSettings)
         self.visualizations_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.visualizations_dir_edit.move(10, 40)
@@ -3667,12 +3913,12 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_credentials_dir_edit.textChanged.connect(update_visualizations_credentials_dir)
         self.visualizations_credentials_dir_edit.setPlaceholderText('Credentials directory')
         self.visualizations_credentials_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.visualizations_credentials_dir_edit.setStyleSheet('QLineEdit { width: 285px; }')
+        self.visualizations_credentials_dir_edit.setStyleSheet('QLineEdit { width: 280px; }')
         self.visualizations_credentials_dir_edit.move(10, 365)
         visualizations_credentials_dir_btn = QPushButton('Browse', self.VisualizationsSettings)
         visualizations_credentials_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        visualizations_credentials_dir_btn.move(300, 365)
-        visualizations_credentials_dir_btn.setStyleSheet('QPushButton { min-width: 36px; min-height: 12px; max-width: 36px; max-height: 13px; }')
+        visualizations_credentials_dir_btn.move(295, 364)
+        visualizations_credentials_dir_btn.setStyleSheet('QPushButton { min-width: 41px; min-height: 12px; max-width: 41px; max-height: 13px; }')
         open_visualizations_credentials_dir_dialog = partial(self._open_directory_dialog, self.visualizations_credentials_dir_edit, 'Select credentials directory')
         visualizations_credentials_dir_btn.clicked.connect(open_visualizations_credentials_dir_dialog)
 
@@ -3682,7 +3928,7 @@ class USVPlaypenWindow(QMainWindow):
         self.pc_usage_visualizations = QLineEdit('', self.VisualizationsSettings)
         self.pc_usage_visualizations.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.pc_usage_visualizations.setStyleSheet('QLineEdit { width: 135px; }')
-        self.pc_usage_visualizations.move(225, 395)
+        self.pc_usage_visualizations.move(225, 397)
 
         visualizations_pc_label = QLabel('Visualizations PC of choice:', self.VisualizationsSettings)
         visualizations_pc_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
@@ -3715,7 +3961,7 @@ class USVPlaypenWindow(QMainWindow):
         self.smoothing_sd = QLineEdit(f"{self.visualizations_input_dict['neuronal_tuning_figures']['smoothing_sd']}", self.VisualizationsSettings)
         self.smoothing_sd.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.smoothing_sd.setStyleSheet('QLineEdit { width: 85px; }')
-        self.smoothing_sd.move(275, 525)
+        self.smoothing_sd.move(275, 527)
 
         occ_threshold_label = QLabel('Minimal occupancy allowed (s):', self.VisualizationsSettings)
         occ_threshold_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3723,7 +3969,7 @@ class USVPlaypenWindow(QMainWindow):
         self.occ_threshold = QLineEdit(f"{self.visualizations_input_dict['neuronal_tuning_figures']['occ_threshold']}", self.VisualizationsSettings)
         self.occ_threshold.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.occ_threshold.setStyleSheet('QLineEdit { width: 85px; }')
-        self.occ_threshold.move(275, 555)
+        self.occ_threshold.move(275, 557)
 
         vis_col_two_x1, vis_col_two_x2 = 380, 670
 
@@ -3746,7 +3992,7 @@ class USVPlaypenWindow(QMainWindow):
         self.arena_root_directory_edit.move(vis_col_two_x1, 70)
         arena_root_directory_btn = QPushButton('Browse', self.VisualizationsSettings)
         arena_root_directory_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        arena_root_directory_btn.move(vis_col_two_x2, 70)
+        arena_root_directory_btn.move(vis_col_two_x2, 69)
         arena_root_directory_btn.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 656px; max-height: 12px; }')
         open_arena_root_dir_dialog = partial(self._open_directory_dialog, self.arena_root_directory_edit, 'Select arena tracking root directory')
         arena_root_directory_btn.clicked.connect(open_arena_root_dir_dialog)
@@ -3760,7 +4006,7 @@ class USVPlaypenWindow(QMainWindow):
         self.speaker_audio_file_edit.move(vis_col_two_x1, 100)
         speaker_audio_file_btn = QPushButton('Browse', self.VisualizationsSettings)
         speaker_audio_file_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        speaker_audio_file_btn.move(vis_col_two_x2, 100)
+        speaker_audio_file_btn.move(vis_col_two_x2, 99)
         speaker_audio_file_btn.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 656px; max-height: 12px; }')
         speaker_audio_file_dialog = partial(self._open_file_dialog, self.speaker_audio_file_edit, 'Select speaker audio file', 'Wave Files (*.wav)')
         speaker_audio_file_btn.clicked.connect(speaker_audio_file_dialog)
@@ -3774,7 +4020,7 @@ class USVPlaypenWindow(QMainWindow):
         self.sequence_audio_file_edit.move(vis_col_two_x1, 130)
         sequence_audio_file_btn = QPushButton('Browse', self.VisualizationsSettings)
         sequence_audio_file_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        sequence_audio_file_btn.move(vis_col_two_x2, 130)
+        sequence_audio_file_btn.move(vis_col_two_x2, 129)
         sequence_audio_file_btn.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 656px; max-height: 12px; }')
         sequence_audio_file_dialog = partial(self._open_file_dialog, self.sequence_audio_file_edit, 'Select audible sequence file', 'Wave Files (*.wav)')
         sequence_audio_file_btn.clicked.connect(sequence_audio_file_dialog)
@@ -3804,7 +4050,7 @@ class USVPlaypenWindow(QMainWindow):
         self.video_start_time = QLineEdit(f"{self.visualizations_input_dict['make_behavioral_videos']['video_start_time']}", self.VisualizationsSettings)
         self.video_start_time.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.video_start_time.setStyleSheet('QLineEdit { width: 85px; }')
-        self.video_start_time.move(vis_col_two_x2, 220)
+        self.video_start_time.move(vis_col_two_x2, 222)
 
         video_duration_label = QLabel('Total animation duration (s):', self.VisualizationsSettings)
         video_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3812,7 +4058,7 @@ class USVPlaypenWindow(QMainWindow):
         self.video_duration = QLineEdit(f"{self.visualizations_input_dict['make_behavioral_videos']['video_duration']}", self.VisualizationsSettings)
         self.video_duration.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.video_duration.setStyleSheet('QLineEdit { width: 85px; }')
-        self.video_duration.move(vis_col_two_x2, 250)
+        self.video_duration.move(vis_col_two_x2, 252)
 
         plot_theme_cb_label = QLabel('Animation/figure background theme:', self.VisualizationsSettings)
         plot_theme_cb_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3840,7 +4086,7 @@ class USVPlaypenWindow(QMainWindow):
         self.side_azimuth_start = QLineEdit(f"{self.visualizations_input_dict['make_behavioral_videos']['side_azimuth_start']}", self.VisualizationsSettings)
         self.side_azimuth_start.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.side_azimuth_start.setStyleSheet('QLineEdit { width: 85px; }')
-        self.side_azimuth_start.move(vis_col_two_x2, 340)
+        self.side_azimuth_start.move(vis_col_two_x2, 342)
 
         rotate_side_view_label = QLabel('Rotate side view in animation:', self.VisualizationsSettings)
         rotate_side_view_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3857,7 +4103,7 @@ class USVPlaypenWindow(QMainWindow):
         self.rotation_speed = QLineEdit(f"{self.visualizations_input_dict['make_behavioral_videos']['rotation_speed']}", self.VisualizationsSettings)
         self.rotation_speed.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.rotation_speed.setStyleSheet('QLineEdit { width: 85px; }')
-        self.rotation_speed.move(vis_col_two_x2, 400)
+        self.rotation_speed.move(vis_col_two_x2, 402)
 
         track_history_label = QLabel('Plot history of single body node:', self.VisualizationsSettings)
         track_history_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -3911,7 +4157,7 @@ class USVPlaypenWindow(QMainWindow):
         self.raster_special_units = QLineEdit(','.join(map(str, self.visualizations_input_dict['make_behavioral_videos']['raster_special_units'])), self.VisualizationsSettings)
         self.raster_special_units.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.raster_special_units.setStyleSheet('QLineEdit { width: 85px; }')
-        self.raster_special_units.move(vis_col_two_x2, 580)
+        self.raster_special_units.move(vis_col_two_x2, 582)
 
         spike_sound_bool_label = QLabel('Create a spike .WAV for special unit(s):', self.VisualizationsSettings)
         spike_sound_bool_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -5761,10 +6007,6 @@ class USVPlaypenWindow(QMainWindow):
         # Windows/Linux path normalization
         if isinstance(text, str):
             text = str(Path(text))
-
-        # If 'text' came in via *args (because partial didn't capture it)
-        if text is None and args:
-            text = args[0]
 
         # navigate to the second-to-last dictionary
         current_level = base_dict

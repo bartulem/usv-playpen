@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import pathlib
 import platform
 import subprocess
@@ -19,6 +18,7 @@ import numpy as np
 import sleap_anipose
 from imgstore import new_for_filename
 
+from .os_utils import first_match_or_raise, wait_for_subprocesses
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
@@ -309,8 +309,8 @@ class ConvertTo3D:
         """
         Initializes the ConvertTo3D class.
 
-        Parameter
-        ---------
+        Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -362,7 +362,7 @@ class ConvertTo3D:
         """
 
         self.message_output(
-            f"SLEAP file conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}"
+            f"SLEAP file conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}"
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -371,33 +371,37 @@ class ConvertTo3D:
             if cam_directory.is_dir():
                 for one_file in cam_directory.iterdir():
                     if one_file.name.endswith(".slp"):
-                        if self.app_context_bool:
-                            if platform.system() == "Darwin":
-                                sleap_convert_command = f'''uvx --from "sleap[nn]" sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}'''
-                            else:
-                                sleap_convert_command = f'''uvx --from "sleap[nn]" --index https://download.pytorch.org/whl/cpu --index https://pypi.org/simple sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
+                        if platform.system() == "Darwin":
+                            sleap_convert_command = ['uvx', '--from', 'sleap[nn]', 'sleap-convert',
+                                                     '--format', 'analysis',
+                                                     '-o', f'{one_file.stem}.analysis.h5',
+                                                     one_file.name]
                         else:
-                            sleap_venv_path = self.input_parameter_dict["sleap_venv_path"]
-                            if os.name == "nt":
-                                sleap_convert_command = f'''{sleap_venv_path} && sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
-                            else:
-                                sleap_convert_command = f'''source {sleap_venv_path} && sleap-convert --format analysis -o "{one_file.stem}analysis.h5" "{one_file.name}"'''
+                            sleap_convert_command = ['uvx', '--from', 'sleap[nn]',
+                                                     '--index', 'https://download.pytorch.org/whl/cpu',
+                                                     '--index', 'https://pypi.org/simple',
+                                                     'sleap-convert', '--format', 'analysis',
+                                                     '-o', f'{one_file.stem}.analysis.h5',
+                                                     one_file.name]
 
                         conversion_subp = subprocess.Popen(
                             args=sleap_convert_command,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT,
                             cwd=cam_directory,
-                            shell=True,
+                            shell=False,
                         )
                         conversion_subprocesses.append(conversion_subp)
 
-        while True:
-            status_poll = [query_subp.poll() for query_subp in conversion_subprocesses]
-            if any(elem is None for elem in status_poll):
-                smart_wait(app_context_bool=self.app_context_bool, seconds=1)
-            else:
-                break
+        wait_for_subprocesses(
+            subps=conversion_subprocesses,
+            max_seconds=3 * 60 * 60,
+            label="SLEAP→.slp conversion",
+            poll_interval_s=1,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
 
     def conduct_anipose_calibration(self) -> None:
         """
@@ -421,7 +425,7 @@ class ConvertTo3D:
         """
 
         self.message_output(
-            f"ANIPOSE calibration started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}"
+            f"ANIPOSE calibration started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}"
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -486,7 +490,7 @@ class ConvertTo3D:
         """
 
         self.message_output(
-            f"ANIPOSE triangulation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}"
+            f"ANIPOSE triangulation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}"
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -509,7 +513,11 @@ class ConvertTo3D:
                     is None
                 ):
                     with open(
-                        sorted((pathlib.Path(self.root_directory) / 'video').glob('*_camera_frame_count_dict.json*'))[0]
+                        first_match_or_raise(
+                            root=pathlib.Path(self.root_directory) / 'video',
+                            pattern='*_camera_frame_count_dict.json*',
+                            label="camera frame count JSON",
+                        )
                     ) as frame_count_infile:
                         camera_frame_count_dict = json.load(frame_count_infile)
                         self.input_parameter_dict["conduct_anipose_triangulation"][
@@ -631,7 +639,7 @@ class ConvertTo3D:
         """
 
         self.message_output(
-            f"Translation, rotation and metric conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}.{datetime.now().second:02d}"
+            f"Translation, rotation and metric conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}"
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -643,14 +651,23 @@ class ConvertTo3D:
 
         # get recording frame rate
         with open(
-            sorted((pathlib.Path(self.root_directory) / 'video').glob('*_camera_frame_count_dict.json*'))[0]
+            first_match_or_raise(
+                root=pathlib.Path(self.root_directory) / 'video',
+                pattern='*_camera_frame_count_dict.json*',
+                label="camera frame count JSON",
+            )
         ) as frame_count_infile:
             recording_frame_rate = json.load(frame_count_infile)[
                 "median_empirical_camera_sr"
             ]
 
         # load original arena data
-        arena_data_original_h5 = list(pathlib.Path(self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc']).rglob('*_points3d.h5*'))[0]
+        arena_data_original_h5 = first_match_or_raise(
+            root=pathlib.Path(self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc']),
+            pattern='*_points3d.h5*',
+            recursive=True,
+            label="original arena points3d.h5",
+        )
         with h5py.File(arena_data_original_h5, mode="r") as h5_file_arena:
             arena_data = np.array(h5_file_arena["tracks"], dtype="float64")
 

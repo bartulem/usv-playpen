@@ -24,7 +24,6 @@
   "credentials_directory": "",
   "anipose_operations": {
     "ConvertTo3D": {
-      "sleap_venv_path": "",
       "conduct_anipose_calibration": {
         "board_provided_bool": false,
         "board_xy": [8, 11],
