@@ -1107,12 +1107,14 @@ class Create3DVideo:
                                      "TTI-TTI": "ΔT(cm)", "TTI-TTI_1st_der": "ΔT'(cm/s)", "TTI-TTI_2nd_der": "ΔT''(cm/s²)",
                                      "nose-TTI": "ΔNT(cm)", "nose-TTI_1st_der": "ΔNT'(cm/s)", "nose-TTI_2nd_der": "ΔNT''(cm/s²)",
                                      "TTI-nose": "ΔTN(cm)", "TTI-nose_1st_der": "ΔTN'(cm/s)", "TTI-nose_2nd_der": "ΔTN''(cm/s²)",
-                                     "neck_elevation_diff": "ΔElev(cm)", "neck_elevation_diff_1st_der": "ΔElev'(cm/s)", "neck_elevation_diff_2nd_der": "ΔElev''(cm/s²)",
-                                     "speed_diff": "ΔSpeed(cm/s)", "speed_diff_1st_der": "ΔSpeed'(cm/s²)", "speed_diff_2nd_der": "ΔSpeed''(cm/s³)",
                                      "allo_yaw-nose": "Yaw-N(°)", "allo_yaw-nose_1st_der": "Yaw-N'(°/s)", "allo_yaw-nose_2nd_der": "Yaw-N''(°/s²)",
                                      "nose-allo_yaw": "N-Yaw(°)", "nose-allo_yaw_1st_der": "N-Yaw'(°/s)", "nose-allo_yaw_2nd_der": "N-Yaw''(°/s²)",
                                      "allo_yaw-TTI": "Yaw-T(°)", "allo_yaw-TTI_1st_der": "Yaw-T'(°/s)", "allo_yaw-TTI_2nd_der": "Yaw-T''(°/s²)",
                                      "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)",
+                                     "allo_pitch-nose": "Pitch-N(°)", "allo_pitch-nose_1st_der": "Pitch-N'(°/s)", "allo_pitch-nose_2nd_der": "Pitch-N''(°/s²)",
+                                     "nose-allo_pitch": "N-Pitch(°)", "nose-allo_pitch_1st_der": "N-Pitch'(°/s)", "nose-allo_pitch_2nd_der": "N-Pitch''(°/s²)",
+                                     "allo_pitch-TTI": "Pitch-T(°)", "allo_pitch-TTI_1st_der": "Pitch-T'(°/s)", "allo_pitch-TTI_2nd_der": "Pitch-T''(°/s²)",
+                                     "TTI-allo_pitch": "T-Pitch(°)", "TTI-allo_pitch_1st_der": "T-Pitch'(°/s)", "TTI-allo_pitch_2nd_der": "T-Pitch''(°/s²)",
                                      "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
                                      "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
 
@@ -1417,7 +1419,7 @@ class Create3DVideo:
                             beh_features_to_plot.append(f"{mouse_track_names[0]}.{tentative_feature}")
                     else:
                         tentative_features = ["speed", "neck_elevation", "allo_yaw", "allo_pitch", "tail_curvature"]
-                        tentative_social_features = ["nose-nose", "allo_yaw-nose", "nose-allo_yaw", "orofacial-sei"]
+                        tentative_social_features = ["nose-nose", "allo_yaw-nose", "nose-allo_yaw", "allo_pitch-nose", "nose-allo_pitch", "orofacial-sei"]
                         for mouse_name in mouse_track_names:
                             for tentative_feature in tentative_features:
                                 beh_features_to_plot.append(f"{mouse_name}.{tentative_feature}")
