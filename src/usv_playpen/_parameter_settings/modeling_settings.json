@@ -1,0 +1,204 @@
+{
+  "io": {
+    "session_list_file": "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt",
+    "save_directory": "/mnt/falkner/Bartul/modeling",
+    "csv_separator": ",",
+    "camera_sampling_rate": 150
+  },
+
+  "model_params": {
+    "filter_history": 4,
+    "gmm_component_index": 0,
+    "gmm_z_score": 2.58,
+    "model_basis_function": "raised_cosine",
+    "model_engine": "pygam",
+    "model_predictor_mouse_index": 1,
+    "model_target_vocal_type": "bout",
+    "model_target_variable": "mean_mask_complexity",
+    "random_seed": 0,
+    "spatial_cluster_num": 20,
+    "split_strategy": "mixed",
+    "split_num": 100,
+    "test_proportion": 0.2,
+    "session_split_max_attempts": 50000,
+    "session_split_widen_step": 0.02,
+    "session_split_widen_every": 1000,
+    "usv_bout_time": 2,
+    "usv_per_bout_floor": 2
+  },
+
+  "kinematic_features": {
+    "egocentric": [
+      "speed",
+      "neck_elevation",
+      "allo_roll",
+      "allo_pitch",
+      "ego_yaw",
+      "back_pitch",
+      "back_yaw",
+      "tail_curvature"
+    ],
+    "dyadic_pose": [
+      "nose-nose",
+      "nose-TTI",
+      "TTI-nose",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_yaw-TTI",
+      "TTI-allo_yaw"
+    ],
+    "dyadic_engagement": ["orofacial-sei", "anogenital-sei"],
+    "dyadic_pose_symmetric": false,
+    "include_1st_derivatives": false,
+    "include_2nd_derivatives": false
+  },
+
+  "vocal_features": {
+    "usv_predictor_type": "presence_all",
+    "usv_predictor_partner_only": true,
+    "usv_predictor_smoothing_sd": 1,
+    "usv_category_column_name": "usv_supercategory",
+    "usv_noise_categories": [0],
+    "usv_category_number": 6,
+    "usv_manifold_column_names": ["usv_umap1", "usv_umap2"]
+  },
+
+  "gmm_params": {
+    "male": {
+      "means": [-2.77722, -1.60209, -0.52512],
+      "sds": [0.26468, 0.75324, 2.224]
+    },
+    "female": {
+      "means": [-1.50576, 1.62977],
+      "sds": [1.23229, 1.3938]
+    }
+  },
+
+  "hyperparameters": {
+    "deep_learning": {
+      "cnn_continuous": {
+        "use_kde_weights": true,
+        "loss_function": "huber",
+        "huber_delta": 1.0,
+        "learning_rate": 0.0005,
+        "weight_decay": 0.001,
+        "epochs": 301,
+        "batch_size": 32,
+        "kernel_size": 15,
+        "use_inception_kernels": false,
+        "inception_kernel_sizes": [3, 15, 31],
+        "dropout_rate": 0.3,
+        "se_reduction": 4,
+        "se_activation": "sigmoid",
+        "hidden_dim": 128,
+        "act_func": "relu",
+        "bn_momentum": 0.99,
+        "bn_eps": 1e-5,
+        "grid_size": 25,
+        "samples_per_cell": 40,
+        "use_scheduler": true,
+        "patience": 12,
+        "null_patience": 3,
+        "warp_range": 0.1,
+        "n_folds": 10,
+        "permutation_iterations": 10,
+        "use_kinematic_masking": true,
+        "masking_prob": 0.15,
+        "masking_length_frames": 60,
+        "use_hybrid_flatten": false
+      }
+    },
+    "jax_linear": {
+      "bivariate": {
+        "bin_resizing_factor": 1,
+        "lambda_smooth_fixed": 1.0,
+        "l2_reg_fixed": 0.001,
+        "smoothness_derivative_order": 2,
+        "huber_delta": 1.0,
+        "learning_rate": 0.005,
+        "max_iter": 20000,
+        "tol": 1e-3,
+        "random_state": 0,
+        "verbose": false,
+        "use_lax_loop": true,
+        "tune_regularization_bool": true,
+        "tune_regularization_params": {
+          "lambda_smooth_decades_each_side": 3,
+          "l2_reg_decades_each_side": 2,
+          "inner_cv_folds": 5,
+          "inner_cv_scoring_metric": "r2_spatial",
+          "inner_cv_use_one_se_rule": true,
+          "inner_max_iter": 2500
+        }
+      },
+      "multinomial_logistic": {
+        "balance_predictions_bool": false,
+        "balance_train_bool": false,
+        "bin_resizing_factor": 1,
+        "lambda_smooth_fixed": 1.0,
+        "l2_reg_fixed": 0.001,
+        "smoothness_derivative_order": 2,
+        "learning_rate": 0.005,
+        "max_iter": 20000,
+        "tol": 1e-3,
+        "random_state": 0,
+        "verbose": false,
+        "use_lax_loop": true,
+        "focal_loss_gamma": 0.5,
+        "tune_regularization_bool": true,
+        "tune_regularization_params": {
+          "lambda_smooth_decades_each_side": 3,
+          "l2_reg_decades_each_side": 2,
+          "inner_cv_folds": 5,
+          "inner_cv_scoring_metric": "auc",
+          "inner_cv_use_one_se_rule": true,
+          "inner_max_iter": 2500
+        }
+      }
+    },
+    "classical": {
+      "pygam": {
+        "n_splines_time": 8,
+        "n_splines_value": 5,
+        "lam_penalty": 0.6,
+        "max_iterations": 100,
+        "tol_val": 1e-4,
+        "distribution": "gamma",
+        "link": "log"
+      },
+      "logistic_regression": {
+        "penalty": "l2",
+        "cs": [0.0001, 0.001, 0.01, 0.1],
+        "cv": 10,
+        "solver": "liblinear",
+        "max_iter": 10000
+      },
+      "ridge_regression": {
+        "alphas": [0.1, 1.0, 10.0, 100.0],
+        "cv": 10,
+        "fit_intercept": true
+      }
+    },
+    "basis_functions": {
+      "raised_cosine": {
+        "neye": 0,
+        "ncos": 6,
+        "kpeaks_proportion": 0.95,
+        "b": 96,
+        "plot_bool": true
+      },
+      "bspline": {
+        "n_splines": 32,
+        "degree": 3,
+        "spacing": "log",
+        "plot_bool": true
+      },
+      "laplacian_pyramid": {
+        "levels": 9.5,
+        "step": 0.5,
+        "fwhm": 10,
+        "plot_bool": true
+      }
+    }
+  }
+}
