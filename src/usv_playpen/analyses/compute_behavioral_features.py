@@ -12,10 +12,16 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 
 [B] SOCIAL FEATURES (DISTANCES & ANGLES)
 (0) Nose distance (1) Nose distance der (2) Nose distance 2der (3) TTI distance (4) TTI distance der (5) TTI distance 2der
-(6) Nose-TTI distance  (7) Nose-TTI distance der  (8) Nose-TTI distance 2der  (9) TTI-Nose distance  (10) TTI-Nose distance der  (11) TTI-Nose distance 2der
-(12) Neck elevation distance (13) Neck elevation distance der (14) Neck elevation distance 2der (15) Speed difference (16) Speed difference der (17) Speed difference 2der
-(18) Yaw-Nose (19) Yaw-Nose der (20) Yaw-Nose 2der (21) Nose-Yaw (22) Nose-Yaw der (23) Nose-Yaw 2der
-(24) Yaw-TTI (25) Yaw-TTI der (26) Yaw-TTI 2der (27) TTI-Yaw (28) TTI-Yaw angle der (29) TTI-Yaw 2der
+(6) Nose-TTI distance (7) Nose-TTI distance der (8) Nose-TTI distance 2der (9) TTI-Nose distance (10) TTI-Nose distance der (11) TTI-Nose distance 2der
+(12) Yaw-Nose (13) Yaw-Nose der (14) Yaw-Nose 2der (15) Nose-Yaw (16) Nose-Yaw der (17) Nose-Yaw 2der
+(18) Yaw-TTI (19) Yaw-TTI der (20) Yaw-TTI 2der (21) TTI-Yaw (22) TTI-Yaw der (23) TTI-Yaw 2der
+(24) Pitch-Nose (25) Pitch-Nose der (26) Pitch-Nose 2der (27) Nose-Pitch (28) Nose-Pitch der (29) Nose-Pitch 2der
+(30) Pitch-TTI (31) Pitch-TTI der (32) Pitch-TTI 2der (33) TTI-Pitch (34) TTI-Pitch der (35) TTI-Pitch 2der
+
+NB: Yaw-* and Pitch-* are egocentric — the yaw/pitch components of the
+target body point expressed in the observer's anatomical head frame
+(via get_egocentric_direction). yaw=0,pitch=0 means the target sits on
+the observer's gaze axis.
 
 [C] SOCIAL ENGAGEMENT INDICES
 (0) mouse1-mouse2 orofacial SEI (1) mouse1-mouse2 orofacial SEI der (2) mouse1-mouse2 orofacial SEI 2der
@@ -209,10 +215,13 @@ def calculate_sei(
         observer_idx: int,
         observed_idx: int,
         observed_node_idx: int,
+        observer_head_root: np.ndarray,
         idx_nose: int = 0,
         idx_tti: int = 3,
         idx_head: int = 5,
-        v_max: float = None
+        v_max: float = None,
+        sigma_yaw_deg: int | float = 45.0,
+        sigma_pitch_deg: int | float = 45.0,
 ) -> np.ndarray:
     """
     Computes the Social Engagement Index (SEI) using a pursuit-proximity weight transition.
@@ -223,14 +232,35 @@ def calculate_sei(
 
     Mathematical Logic:
     -------------------
-    1. Orientation: Uses 3D cosine similarity between the observer's head-nose vector
-       and the vector pointing toward the partner's target node.
-    2. Sharpening: As distance (d) decreases, a dynamic exponent (gamma = 1 + L/d)
-       sharpens the social gaze, requiring higher angular precision for high scores.
-    3. Social Weight (W): An exponential gate that balances speed and proximity:
-       - At distance (d > L): Speed (V/V_max) is required to identify active pursuit.
-       - Up close (d < L): Proximity (e^-d/L) ensures engagement remains high during
-         stationary investigation (sniffing), even if locomotor speed is zero.
+    1. Orientation: A separable, axis-aligned Gaussian gate over the
+       observer's egocentric (yaw, pitch) error toward the target. The
+       inter-point vector (target - observer_head) is rotated into the
+       observer's anatomical head frame via `observer_head_root`, and
+       its yaw and pitch components in that frame are read off via
+       `get_egocentric_direction`. The gate is
+           gaze = exp(-yaw^2 / (2 * sigma_yaw^2))
+                * exp(-pitch^2 / (2 * sigma_pitch^2))
+       so that yaw=0,pitch=0 (target on the observer's gaze axis) gives
+       1, and the score decays smoothly as the target moves off-axis in
+       either channel. sigma_yaw_deg and sigma_pitch_deg control the
+       acceptance cone width per channel and are tunable.
+    2. Sharpening: As distance (d) decreases, a dynamic exponent
+       (gamma = 1 + L/d) sharpens the gate, requiring higher angular
+       precision for high scores.
+    3. Social Weight (W): An exponential interpolator that balances
+       speed and proximity:
+       - At distance (d > L): Speed (V/V_max) is required to identify
+         active pursuit.
+       - Up close (d < L): Proximity (e^-d/L) ensures engagement remains
+         high during stationary investigation (sniffing), even if
+         locomotor speed is zero.
+
+    Note: this version of the SEI replaces the legacy 3D cosine
+    similarity with the explicit (yaw, pitch) Gaussian gate. Output is
+    in [0, 1] (unsigned); the legacy SEI's negative values for
+    "facing-away" frames are absorbed into the smooth Gaussian decay
+    (gate becomes near-zero rather than negative when the target sits
+    far off the observer's gaze axis).
 
     Parameters:
     -----------
@@ -244,6 +274,10 @@ def calculate_sei(
         Index of the social partner animal.
     observed_node_idx : int
         The index of the target body point on the observed partner (e.g., Nose or TTI).
+    observer_head_root : np.ndarray
+        A (n_frames, 3, 3) rotation tensor for the observer mouse, with
+        rows (h_x, h_y, h_z) expressing the observer's anatomical body
+        axes in world coordinates (typically `global_head_roots[observer_idx]`).
     idx_nose : int, optional
         Index for the observer's Nose (default 0).
     idx_tti : int, optional
@@ -252,11 +286,17 @@ def calculate_sei(
         Index for the observer's Head/Pivot (default 5).
     v_max : float, optional
         Normalization factor for speed. Defaults to the 99th percentile of speed_arr.
+    sigma_yaw_deg : int / float, optional
+        Standard deviation (in degrees) of the yaw-channel Gaussian
+        gate. Defaults to 45.0.
+    sigma_pitch_deg : int / float, optional
+        Standard deviation (in degrees) of the pitch-channel Gaussian
+        gate. Defaults to 45.0.
 
     Returns:
     --------
     sei : np.ndarray
-        A (n_frames,) array of SEI values bounded between -1 and 1.
+        A (n_frames,) array of SEI values in [0, 1].
     """
 
     obs_head = tracks[:, observer_idx, idx_head, :]
@@ -272,17 +312,23 @@ def calculate_sei(
     d_raw = np.linalg.norm(target_point - obs_nose, axis=1)
     d_norm = d_raw / (body_length + 1e-6)
 
-    # perform vector orientation (Pivot at Head)
-    v_h = obs_nose - obs_head
-    v_t = target_point - obs_head
+    # egocentric (yaw, pitch) of the target as seen from the observer's head
+    yaw_deg, pitch_deg = get_egocentric_direction(
+        head_root=observer_head_root,
+        head_pivot=obs_head,
+        target_point=target_point,
+    )
+    yaw_rad = yaw_deg * np.pi / 180.0
+    pitch_rad = pitch_deg * np.pi / 180.0
+    sigma_yaw_rad = sigma_yaw_deg * np.pi / 180.0
+    sigma_pitch_rad = sigma_pitch_deg * np.pi / 180.0
 
     with np.errstate(divide='ignore', invalid='ignore'):
-        # compute cosine similarity via 3D dot product
-        v_h_unit = v_h / (np.linalg.norm(v_h, axis=1, keepdims=True) + 1e-6)
-        v_t_unit = v_t / (np.linalg.norm(v_t, axis=1, keepdims=True) + 1e-6)
-
-        cos_theta = np.sum(v_h_unit * v_t_unit, axis=1)
-        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+        # separable Gaussian gate over the (yaw, pitch) error; in [0, 1],
+        # peaks at 1 when the target is exactly on the observer's gaze axis
+        gaze_score = np.exp(-(yaw_rad ** 2) / (2 * sigma_yaw_rad ** 2)) * np.exp(
+            -(pitch_rad ** 2) / (2 * sigma_pitch_rad ** 2)
+        )
 
         if v_max is None:
             v_max = np.nanpercentile(speed_arr, 99)
@@ -296,7 +342,7 @@ def calculate_sei(
         w_proximity = np.exp(-d_norm)
         w_social = w_pursuit + w_proximity
 
-        sei = np.sign(cos_theta) * (np.abs(cos_theta) ** gamma) * w_social
+        sei = (gaze_score ** gamma) * w_social
 
     return sei
 
@@ -375,64 +421,108 @@ def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     return np.reshape(avg_curvature, newshape=(avg_curvature.shape[0], 1))
 
 
-def calculate_planar_social_angle(
-    point1_arr: np.ndarray,
-    point2_arr: np.ndarray,
-    point3_arr: np.ndarray,
-) -> np.ndarray:
+def get_egocentric_direction(
+    head_root: np.ndarray,
+    head_pivot: np.ndarray,
+    target_point: np.ndarray,
+    spatial_resolution_tolerance: int | float = 0.001,
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Return arrays w/ planar social angle
-    (e.g., points 1 and 2 can be the "head" and "nose"
-    tracks of mouse 1, and point 3 can be the "head"
-    of mouse 2, so where is the head of the second mouse
-    relative to the viewing direction of the first mouse)
+    Computes the per-frame egocentric direction (yaw, pitch) of a target
+    point as seen from an observer's head pivot, expressed in the
+    observer's anatomical head frame.
 
-    Computes, for every frame, the signed planar angle between the
-    vector (point1 -> point2) and the vector (point1 -> point3). The
-    angle is evaluated in the XY plane, so any Z component of the input
-    arrays is ignored; only the first two columns are used. Each per-
-    vector orientation is taken with `np.arctan2`, giving an unambiguous
-    angle in (-pi, pi]; the difference is then wrapped to (-180, 180]
-    degrees so that the returned value is the shortest signed rotation
-    from the reference (point1 -> point2) to the target (point1 -> point3),
-    with positive values denoting counter-clockwise rotation in standard
-    image-plane orientation. Frames containing NaN in any of the three
-    input points produce NaN in the output.
+    The method consists of three steps. First, the world-frame vector
+    `v = target_point - head_pivot` is built. Second, `v` is rotated
+    into the observer's anatomical head frame by left-multiplying with
+    `head_root` (the (n_frames, 3, 3) tensor produced by
+    `get_head_root`, whose rows are the body-axes h_x, h_y, h_z written
+    in world coordinates), giving `v_local = head_root @ v`. Third, the
+    spherical coordinates of `v_local` in the head frame are extracted:
+
+        yaw   = atan2(v_local.y, v_local.x)            in (-180, 180] deg
+        pitch = atan2(v_local.z, sqrt(v_local.x^2 + v_local.y^2))
+                                                       in (-90, 90] deg
+
+    Geometric interpretation:
+        - `yaw` is the signed left/right offset of the target from the
+          observer's head-forward axis (h_x). yaw = 0 deg means the
+          target sits in the observer's sagittal plane in the
+          forward direction; positive yaw means the target is on the
+          observer's left (toward h_y); +/-180 deg means the target is
+          directly behind.
+        - `pitch` is the signed elevation of the target above (positive)
+          or below (negative) the observer's gaze axis. pitch = 0 deg
+          means the target lies in the equatorial plane through the
+          observer's gaze (the plane spanned by h_x and h_y); +90 deg
+          means the target sits along the observer's dorsal axis (h_z).
+
+    Together (yaw, pitch) parametrize every direction on the unit sphere
+    centered at `head_pivot`, with the gimbal-lock degeneracy at
+    pitch = +/-90 deg (target directly along h_z; yaw becomes
+    coordinate-undefined). Because the underlying transformation is a
+    rigid rotation (head_root is orthonormal by construction in
+    get_head_root), no length or angular information is lost in the
+    change of basis - this is the spherical decomposition of v in the
+    observer's head frame, not a projection.
+
+    Frames where `‖v‖ < spatial_resolution_tolerance` (target essentially
+    coincident with the head pivot) are returned as NaN in both yaw and
+    pitch, since the direction is geometrically undefined. Frames where
+    any of `head_root`, `head_pivot`, or `target_point` contain NaN
+    propagate NaN to the outputs.
 
     Parameters
     ----------
-    point1_arr (np.ndarray)
-         A (n_frames, 2) shape ndarray of first point in XY dimensions.
-    point2_arr (np.ndarray)
-         A (n_frames, 2) shape ndarray of second point in XY dimensions.
-    point3_arr (np.ndarray)
-         A (n_frames, 2) shape ndarray of third point in XY dimensions.
+    head_root (np.ndarray)
+        A (n_frames, 3, 3) shape ndarray of observer head rotation
+        matrices, with rows (h_x, h_y, h_z) expressing the observer's
+        anatomical body axes in world coordinates. Typically produced by
+        `get_head_root`.
+    head_pivot (np.ndarray)
+        A (n_frames, 3) shape ndarray of observer head pivot point
+        positions in world coordinates (usually the `Head` tracked
+        point).
+    target_point (np.ndarray)
+        A (n_frames, 3) shape ndarray of target point positions in
+        world coordinates.
+    spatial_resolution_tolerance (int / float)
+        Minimum acceptable norm of the inter-point vector
+        (target_point - head_pivot), in the same units as the inputs
+        (typically meters); frames below this length yield NaN outputs.
+        Defaults to 0.001.
 
     Returns
     -------
-    angles_arr (np.ndarray)
-         A (n_frames) shape ndarray of planar social angle of interest.
+    yaw_deg (np.ndarray)
+        A (n_frames,) shape ndarray of signed yaw angles in
+        (-180, 180] degrees.
+    pitch_deg (np.ndarray)
+        A (n_frames,) shape ndarray of signed pitch angles in
+        [-90, 90] degrees.
     """
 
-    # shape points into vectors
-    vector1 = np.stack((point1_arr, point2_arr), axis=1)
-    vector2 = np.stack((point1_arr, point3_arr), axis=1)
+    v = target_point - head_pivot
 
-    # vector difference (point1 -> point2) and (point1 -> point3)
-    diff_vector1 = vector1[:, 1, :] - vector1[:, 0, :]
-    diff_vector2 = vector2[:, 1, :] - vector2[:, 0, :]
+    v_len = np.linalg.norm(v, axis=1).astype(np.float64)
+    invalid = v_len < spatial_resolution_tolerance
 
-    # calculate the angle between the vectors in radians
-    angles_radians = np.arctan2(diff_vector2[:, 1], diff_vector2[:, 0]) - np.arctan2(
-        diff_vector1[:, 1], diff_vector1[:, 0]
+    v_local = np.einsum("ijk,ik->ij", head_root, v)
+
+    yaw_deg = np.arctan2(v_local[:, 1], v_local[:, 0]) * 180.0 / np.pi
+    pitch_deg = (
+        np.arctan2(
+            v_local[:, 2],
+            np.sqrt(v_local[:, 0] ** 2 + v_local[:, 1] ** 2),
+        )
+        * 180.0
+        / np.pi
     )
 
-    # convert to degrees
-    angles_arr = angles_radians * 180.0 / np.pi
-    angles_arr[angles_arr < -180] += 360
-    angles_arr[angles_arr > 180] -= 360
+    yaw_deg[invalid] = np.nan
+    pitch_deg[invalid] = np.nan
 
-    return angles_arr
+    return yaw_deg, pitch_deg
 
 
 def calculate_speed(
@@ -1036,12 +1126,6 @@ class FeatureZoo:
         "TTI-nose": [0, 90],
         "TTI-nose_1st_der": [-54, 54],
         "TTI-nose_2nd_der": [-240, 240],
-        "neck_elevation_diff": [-12, 12],
-        "neck_elevation_diff_1st_der": [-18, 18],
-        "neck_elevation_diff_2nd_der": [-90, 90],
-        "speed_diff": [-54, 54],
-        "speed_diff_1st_der": [-180, 180],
-        "speed_diff_2nd_der": [-1800, 1800],
         "allo_yaw-nose": [-180, 180],
         "allo_yaw-nose_1st_der": [-480, 480],
         "allo_yaw-nose_2nd_der": [-4500, 4500],
@@ -1054,10 +1138,22 @@ class FeatureZoo:
         "TTI-allo_yaw": [-180, 180],
         "TTI-allo_yaw_1st_der": [-480, 480],
         "TTI-allo_yaw_2nd_der": [-4500, 4500],
-        "orofacial-sei": [-1, 1],
+        "allo_pitch-nose": [-90, 90],
+        "allo_pitch-nose_1st_der": [-480, 480],
+        "allo_pitch-nose_2nd_der": [-4500, 4500],
+        "nose-allo_pitch": [-90, 90],
+        "nose-allo_pitch_1st_der": [-480, 480],
+        "nose-allo_pitch_2nd_der": [-4500, 4500],
+        "allo_pitch-TTI": [-90, 90],
+        "allo_pitch-TTI_1st_der": [-480, 480],
+        "allo_pitch-TTI_2nd_der": [-4500, 4500],
+        "TTI-allo_pitch": [-90, 90],
+        "TTI-allo_pitch_1st_der": [-480, 480],
+        "TTI-allo_pitch_2nd_der": [-4500, 4500],
+        "orofacial-sei": [0, 1],
         "orofacial-sei_1st_der": [-6, 6],
         "orofacial-sei_2nd_der": [-36, 36],
-        "anogenital-sei": [-1, 1],
+        "anogenital-sei": [0, 1],
         "anogenital-sei_1st_der": [-6, 6],
         "anogenital-sei_2nd_der": [-36, 36]
     }
@@ -1107,12 +1203,6 @@ class FeatureZoo:
             "TTI-nose": "near -- (cm) -- far",
             "TTI-nose_1st_der": "near -- (cm/s) -- far",
             "TTI-nose_2nd_der": "near -- (cm/s²) -- far",
-            "neck_elevation_diff": "m2 higher -- (cm) -- m1 higher",
-            "neck_elevation_diff_1st_der": "m2 higher -- (cm) -- m1 higher",
-            "neck_elevation_diff_2nd_der": "m2 higher -- (cm) -- m1 higher",
-            "speed_diff": "m2 faster -- m1 faster",
-            "speed_diff_1st_der": "m2 faster -- m1 faster",
-            "speed_diff_2nd_der": "m2 faster -- m1 faster",
             "allo_yaw-nose": "ccw -- (°) -- cw",
             "allo_yaw-nose_1st_der": "ccw -- (°/s) -- cw",
             "allo_yaw-nose_2nd_der": "ccw -- (°/s²) -- cw",
@@ -1125,6 +1215,18 @@ class FeatureZoo:
             "TTI-allo_yaw": "ccw -- (°) -- cw",
             "TTI-allo_yaw_1st_der": "ccw -- (°/s) -- cw",
             "TTI-allo_yaw_2nd_der": "ccw -- (°/s²) -- cw",
+            "allo_pitch-nose": "down -- (°) -- up",
+            "allo_pitch-nose_1st_der": "down -- (°/s) -- up",
+            "allo_pitch-nose_2nd_der": "down -- (°/s²) -- up",
+            "nose-allo_pitch": "down -- (°) -- up",
+            "nose-allo_pitch_1st_der": "down -- (°/s) -- up",
+            "nose-allo_pitch_2nd_der": "down -- (°/s²) -- up",
+            "allo_pitch-TTI": "down -- (°) -- up",
+            "allo_pitch-TTI_1st_der": "down -- (°/s) -- up",
+            "allo_pitch-TTI_2nd_der": "down -- (°/s²) -- up",
+            "TTI-allo_pitch": "down -- (°) -- up",
+            "TTI-allo_pitch_1st_der": "down -- (°/s) -- up",
+            "TTI-allo_pitch_2nd_der": "down -- (°/s²) -- up",
             "orofacial-sei": "asocial -- (a.u.) -- engaged",
             "orofacial-sei_1st_der": "asocial -- (a.u./s) -- engaged",
             "orofacial-sei_2nd_der": "asocial -- (a.u./s²) -- engaged",
@@ -1475,11 +1577,18 @@ class FeatureZoo:
               derivatives.
 
         For every ordered pair of mice the function then computes the
-        social distances (nose-nose, TTI-TTI, nose-TTI, TTI-nose, neck-
-        elevation difference, speed difference) and the planar social
-        angles (allo_yaw-nose, nose-allo_yaw, allo_yaw-TTI, TTI-allo_yaw)
-        via `calculate_planar_social_angle`, plus the orofacial and
-        anogenital social engagement indices via `calculate_sei`.
+        social distances (nose-nose, TTI-TTI, nose-TTI, TTI-nose) and
+        the egocentric social angles via `get_egocentric_direction`,
+        which expresses each target body point (Nose / TTI of the
+        partner) in the observer's anatomical head frame and returns
+        signed yaw (left/right of gaze axis) and pitch (above/below
+        gaze axis) per frame. Both directions of every (observer,
+        target_node) pair are stored, yielding eight angle quartets:
+        allo_yaw-nose, nose-allo_yaw, allo_yaw-TTI, TTI-allo_yaw plus
+        the matching allo_pitch-nose, nose-allo_pitch, allo_pitch-TTI,
+        TTI-allo_pitch. The orofacial and anogenital social engagement
+        indices are computed via `calculate_sei`, which now uses the
+        same egocentric (yaw, pitch) decomposition for its gaze gate.
 
         The full table is materialized as a `polars.DataFrame`,
         feature-by-feature feature distributions are computed via
@@ -1545,6 +1654,9 @@ class FeatureZoo:
         neck_elevation = np.zeros((mouse_data.shape[1], mouse_data.shape[0], 1))
         neck_elevation_1st_der = np.zeros((mouse_data.shape[1], mouse_data.shape[0], 1))
         neck_elevation_2nd_der = np.zeros((mouse_data.shape[1], mouse_data.shape[0], 1))
+        global_head_roots = np.zeros(
+            (mouse_data.shape[1], mouse_data.shape[0], 3, 3)
+        )
         global_head_angles = np.zeros((mouse_data.shape[1], mouse_data.shape[0], 3))
         global_head_angles_1st_der = np.zeros(
             (mouse_data.shape[1], mouse_data.shape[0], 3)
@@ -1665,6 +1777,7 @@ class FeatureZoo:
             head_input_arr = np.swapaxes(head_input_arr, axis1=0, axis2=1)
 
             global_head_root = get_head_root(data_arr=head_input_arr)
+            global_head_roots[mouse_num, :, :, :] = global_head_root
             global_head_angles[mouse_num, :, :] = get_euler_ang(global_head_root)
 
             (
@@ -2062,8 +2175,8 @@ class FeatureZoo:
             mouse_pairs = list(itertools.combinations(range(mouse_data.shape[1]), 2))
 
             for mouse1_idx, mouse2_idx in mouse_pairs:
-                # # social distances (cm or cm/s) for the current pair
-                social_distances = np.zeros((mouse_data.shape[0], 6))
+                # # social distances (cm) for the current pair
+                social_distances = np.zeros((mouse_data.shape[0], 4))
 
                 # nose to nose distance
                 social_distances[:, 0] = (
@@ -2105,12 +2218,6 @@ class FeatureZoo:
                         * 100
                 )
 
-                # neck elevation difference
-                social_distances[:, 4] = neck_elevation[mouse1_idx, :, 0] - neck_elevation[mouse2_idx, :, 0]
-
-                # speed difference
-                social_distances[:, 5] = speed[mouse1_idx, :, 0] - speed[mouse2_idx, :, 0]
-
                 # compute derivatives for distances
                 social_distances_1st_der, social_distances_2nd_der = calculate_derivatives(
                     input_arr=social_distances,
@@ -2119,35 +2226,42 @@ class FeatureZoo:
                     capture_fr=empirical_camera_sr,
                 )
 
-                # # social angles (in degrees) for the current pair
-                social_angles = np.zeros((mouse_data.shape[0], 4))
+                # # egocentric social angles (yaw and pitch, in degrees) for the
+                # current pair, expressed in the observer's anatomical head
+                # frame: yaw = signed left/right of observer's gaze axis,
+                # pitch = signed elevation above/below observer's gaze axis.
+                # Layout: columns 0..3 = yaw to {m2.Nose, m1.Nose seen from m2,
+                # m2.TTI, m1.TTI seen from m2}; columns 4..7 = matching pitch.
+                social_angles = np.zeros((mouse_data.shape[0], 8))
 
-                # planar head direction(mouse1)-Nose(mouse2) angle
-                social_angles[:, 0] = calculate_planar_social_angle(
-                    point1_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Head"), :2],
-                    point2_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :2],
-                    point3_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :2],
+                head1 = mouse_data[:, mouse1_idx, mouse_nodes.index("Head"), :]
+                head2 = mouse_data[:, mouse2_idx, mouse_nodes.index("Head"), :]
+                nose1 = mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :]
+                nose2 = mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :]
+                tti1 = mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :]
+                tti2 = mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :]
+                root1 = global_head_roots[mouse1_idx, :, :, :]
+                root2 = global_head_roots[mouse2_idx, :, :, :]
+
+                # mouse1 observes mouse2's nose
+                social_angles[:, 0], social_angles[:, 4] = get_egocentric_direction(
+                    head_root=root1, head_pivot=head1, target_point=nose2
                 )
 
-                # planar head direction(mouse2)-Nose(mouse1) angle
-                social_angles[:, 1] = calculate_planar_social_angle(
-                    point1_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Head"), :2],
-                    point2_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :2],
-                    point3_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :2],
+                # mouse2 observes mouse1's nose (reverse direction; column
+                # naming follows the legacy asymmetric pattern nose-allo_yaw)
+                social_angles[:, 1], social_angles[:, 5] = get_egocentric_direction(
+                    head_root=root2, head_pivot=head2, target_point=nose1
                 )
 
-                # planar head direction(mouse1)-TTI(mouse2) angle
-                social_angles[:, 2] = calculate_planar_social_angle(
-                    point1_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Head"), :2],
-                    point2_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :2],
-                    point3_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :2],
+                # mouse1 observes mouse2's TTI
+                social_angles[:, 2], social_angles[:, 6] = get_egocentric_direction(
+                    head_root=root1, head_pivot=head1, target_point=tti2
                 )
 
-                # planar head direction(mouse2)-TTI(mouse1) angle
-                social_angles[:, 3] = calculate_planar_social_angle(
-                    point1_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Head"), :2],
-                    point2_arr=mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :2],
-                    point3_arr=mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :2],
+                # mouse2 observes mouse1's TTI
+                social_angles[:, 3], social_angles[:, 7] = get_egocentric_direction(
+                    head_root=root2, head_pivot=head2, target_point=tti1
                 )
 
                 # compute derivatives for angles
@@ -2202,26 +2316,6 @@ class FeatureZoo:
                 )
 
                 behavioral_features_df = behavioral_features_df.with_columns(
-                    pls.Series(f"{pair_name}.neck_elevation_diff", social_distances[:, 4])
-                )
-                behavioral_features_df = behavioral_features_df.with_columns(
-                    pls.Series(f"{pair_name}.neck_elevation_diff_1st_der", social_distances_1st_der[:, 4])
-                )
-                behavioral_features_df = behavioral_features_df.with_columns(
-                    pls.Series(f"{pair_name}.neck_elevation_diff_2nd_der", social_distances_2nd_der[:, 4])
-                )
-
-                behavioral_features_df = behavioral_features_df.with_columns(
-                    pls.Series(f"{pair_name}.speed_diff", social_distances[:, 5])
-                )
-                behavioral_features_df = behavioral_features_df.with_columns(
-                    pls.Series(f"{pair_name}.speed_diff_1st_der", social_distances_1st_der[:, 5])
-                )
-                behavioral_features_df = behavioral_features_df.with_columns(
-                    pls.Series(f"{pair_name}.speed_diff_2nd_der", social_distances_2nd_der[:, 5])
-                )
-
-                behavioral_features_df = behavioral_features_df.with_columns(
                     pls.Series(f"{pair_name}.allo_yaw-nose", social_angles[:, 0])
                 )
                 behavioral_features_df = behavioral_features_df.with_columns(
@@ -2261,6 +2355,46 @@ class FeatureZoo:
                     pls.Series(f"{pair_name}.TTI-allo_yaw_2nd_der", social_angles_2nd_der[:, 3])
                 )
 
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_pitch-nose", social_angles[:, 4])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_pitch-nose_1st_der", social_angles_1st_der[:, 4])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_pitch-nose_2nd_der", social_angles_2nd_der[:, 4])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-allo_pitch", social_angles[:, 5])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-allo_pitch_1st_der", social_angles_1st_der[:, 5])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.nose-allo_pitch_2nd_der", social_angles_2nd_der[:, 5])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_pitch-TTI", social_angles[:, 6])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_pitch-TTI_1st_der", social_angles_1st_der[:, 6])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_pitch-TTI_2nd_der", social_angles_2nd_der[:, 6])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-allo_pitch", social_angles[:, 7])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-allo_pitch_1st_der", social_angles_1st_der[:, 7])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.TTI-allo_pitch_2nd_der", social_angles_2nd_der[:, 7])
+                )
+
                 # # social engagement index (SEI)
                 social_engagement_indices = np.zeros((mouse_data.shape[0], 4))
 
@@ -2270,6 +2404,7 @@ class FeatureZoo:
                                                                 observer_idx=mouse1_idx,
                                                                 observed_idx=mouse2_idx,
                                                                 observed_node_idx=mouse_nodes.index("Nose"),
+                                                                observer_head_root=global_head_roots[mouse1_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))
@@ -2280,6 +2415,7 @@ class FeatureZoo:
                                                                 observer_idx=mouse1_idx,
                                                                 observed_idx=mouse2_idx,
                                                                 observed_node_idx=mouse_nodes.index("TTI"),
+                                                                observer_head_root=global_head_roots[mouse1_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))
@@ -2290,6 +2426,7 @@ class FeatureZoo:
                                                                 observer_idx=mouse2_idx,
                                                                 observed_idx=mouse1_idx,
                                                                 observed_node_idx=mouse_nodes.index("Nose"),
+                                                                observer_head_root=global_head_roots[mouse2_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))
@@ -2300,6 +2437,7 @@ class FeatureZoo:
                                                                 observer_idx=mouse2_idx,
                                                                 observed_idx=mouse1_idx,
                                                                 observed_node_idx=mouse_nodes.index("TTI"),
+                                                                observer_head_root=global_head_roots[mouse2_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))
