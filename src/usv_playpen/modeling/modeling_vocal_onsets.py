@@ -33,8 +33,7 @@ from .modeling_utils import (
     select_kinematic_columns,
     build_vocal_signal_columns,
     identify_empty_event_sessions,
-    collect_predictor_suffixes,
-    zero_fill_missing_feature_columns,
+    harmonize_session_columns,
     zscore_features_across_sessions,
     pool_session_arrays,
     balance_two_class_arrays,
@@ -269,22 +268,24 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             print("Error: No sessions remaining after filtering.")
             return
 
-        revised_behavioral_predictors = collect_predictor_suffixes(processed_beh_feature_data_dict)
-        if not revised_behavioral_predictors:
-            raise ValueError("No features selected.")
-        print(f"Final feature suffixes selected: {revised_behavioral_predictors}")
-
         print("Standardizing columns across sessions...")
-        processed_beh_feature_data_dict = zero_fill_missing_feature_columns(
+        # `harmonize_session_columns` performs the dyad-rename
+        # (`{m1-m2}.{suffix}` -> `{suffix}`) in addition to zero-filling
+        # missing ego/dyadic/USV columns with a project-wide existence
+        # gate. The dyad-rename is required *before* the audit so that
+        # dyadic columns share a stable cross-session key — otherwise
+        # every dyadic feature looks unique-to-one-session and gets
+        # dropped by the audit's "feature must contribute a block in
+        # every contributing session" filter.
+        processed_beh_feature_data_dict, revised_behavioral_predictors = harmonize_session_columns(
             processed_beh_dict=processed_beh_feature_data_dict,
             mouse_names_dict=mouse_track_names_dict,
             target_idx=target_mouse_idx,
             predictor_idx=predictor_mouse_idx,
-            suffixes=revised_behavioral_predictors,
-            voc_settings=voc_settings,
-            session_list_file=self.modeling_settings['io']['session_list_file'],
-            skip_dyadic_suffixes=True
         )
+        if not revised_behavioral_predictors:
+            raise ValueError("No features selected.")
+        print(f"Final feature suffixes selected: {revised_behavioral_predictors}")
 
         print("Z-scoring features across sessions...")
         processed_beh_feature_data_dict = zscore_features_across_sessions(

@@ -35,6 +35,7 @@ the extraction pipeline; the wrapper `run_predictor_audits` in
 """
 
 import pickle
+import time
 import warnings
 import numpy as np
 from datetime import datetime
@@ -871,12 +872,20 @@ def audit_predictor_timescales(processed_beh_dict: dict,
 
     acf_stack = np.full((n_features, len(session_blocks), max_lag_frames + 1),
                         np.nan, dtype=np.float32)
+    n_sess_total = len(session_blocks)
+    acf_t0 = time.monotonic()
     for s_i, (sess_id, per_feature) in enumerate(session_blocks.items()):
         for f_i, fname in enumerate(feature_names):
             if fname not in per_feature:
                 continue
             acf_stack[f_i, s_i, :] = _per_session_acf(per_feature[fname],
                                                      max_lag_frames).astype(np.float32)
+        if (s_i + 1) % 10 == 0 or (s_i + 1) == n_sess_total:
+            elapsed = time.monotonic() - acf_t0
+            rate = (s_i + 1) / elapsed if elapsed > 0 else 0.0
+            eta = (n_sess_total - (s_i + 1)) / rate if rate > 0 else float('inf')
+            print(f"[audit]   ACF: session {s_i + 1}/{n_sess_total} "
+                  f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
 
     # `np.nanmedian` / `np.nanpercentile` emit a "All-NaN slice
     # encountered" warning whenever a (feature, lag) cell is NaN for
@@ -1001,6 +1010,10 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         Y_ffts = []                    # length n_variants, each (n_pad // 2 + 1) complex64
         Y_norms = np.zeros(n_variants, dtype=np.float64)
 
+        print(f"[audit]   Predictive ρ: pre-computing {n_variants} "
+              f"Y-variant rank FFTs (1 actual + {n_shuffles} shuffles, "
+              f"n_pad={n_pad}, total_frames={total_frames})...")
+        y_t0 = time.monotonic()
         for vi in range(n_variants):
             if vi == 0:
                 Y_v = Y_pooled
@@ -1018,6 +1031,12 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             Y_ffts.append(np.fft.rfft(Y_c, n=n_pad))
             Y_norms[vi] = float(np.sqrt(np.sum(np.square(Y_c, dtype=np.float64))))
             del Y_v, Y_r, Y_c
+            if (vi + 1) % 10 == 0 or (vi + 1) == n_variants:
+                elapsed = time.monotonic() - y_t0
+                rate = (vi + 1) / elapsed if elapsed > 0 else 0.0
+                eta = (n_variants - (vi + 1)) / rate if rate > 0 else float('inf')
+                print(f"[audit]   Predictive ρ: Y-variant {vi + 1}/{n_variants} "
+                      f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
 
         rho_actual = np.zeros((n_features, len(lag_grid_frames)), dtype=np.float32)
         null_abs_max = np.zeros((n_shuffles, n_features, len(lag_grid_frames)),
@@ -1027,6 +1046,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         # rfft, compute its norm, then `n_variants` complex-multiply +
         # irfft passes for the cross-correlations and divide by the
         # paired norms.
+        print(f"[audit]   Predictive ρ: scoring {n_features} features "
+              f"× {n_variants} Y-variants × {max_lag_frames + 1} lags...")
+        feat_t0 = time.monotonic()
         for f_i, fname in enumerate(feature_names):
             x_col = np.zeros(total_frames, dtype=np.float32)
             for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
@@ -1063,6 +1085,13 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                     null_abs_max[vi - 1, f_i, :] = np.abs(rho_k)
 
             del x_col, x_ranks, x_centered, x_fft, x_fft_conj
+
+            if (f_i + 1) % 25 == 0 or (f_i + 1) == n_features:
+                elapsed = time.monotonic() - feat_t0
+                rate = (f_i + 1) / elapsed if elapsed > 0 else 0.0
+                eta = (n_features - (f_i + 1)) / rate if rate > 0 else float('inf')
+                print(f"[audit]   Predictive ρ: feature {f_i + 1}/{n_features} "
+                      f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
 
         rho_null_p95 = np.percentile(null_abs_max, 95, axis=0).astype(np.float32)
 
