@@ -35,6 +35,7 @@ the extraction pipeline; the wrapper `run_predictor_audits` in
 """
 
 import pickle
+import warnings
 import numpy as np
 from datetime import datetime
 from pathlib import Path
@@ -88,7 +89,19 @@ def _build_event_summary_matrix(processed_beh_dict: dict,
         with no in-bounds events contribute zero rows.
     """
 
-    per_feature_blocks = {}
+    # Two-pass build. First pass: walk every session, decide which
+    # features it has, and stash the per-session window-mean blocks per
+    # feature. Track each contributing session and its valid-event count
+    # so we can later restrict the output to features that contributed
+    # *for every contributing session* — the column_stack at the end
+    # requires equal per-feature row totals, and that only holds if a
+    # feature was present in every session whose events landed in the
+    # pool. (The legacy single-pass build silently dropped sessions
+    # that lacked some features and produced a ragged dict that
+    # crashed `column_stack`; see the per-feature row-count
+    # mismatch reported on dense-USV cohorts.)
+    per_feature_session_blocks = {}   # generic_key -> {sess_id: ndarray}
+    contributing_sessions = []        # list[(sess_id, n_valid_events)]
 
     for sess_id, sess_df in processed_beh_dict.items():
         if sess_id not in event_times_per_session:
@@ -114,6 +127,8 @@ def _build_event_summary_matrix(processed_beh_dict: dict,
         if starts.size == 0:
             continue
 
+        contributing_sessions.append((sess_id, int(starts.size)))
+
         for col_name in sess_df.columns:
             suffix = col_name.split('.')[-1]
             if suffix.isdigit():
@@ -134,19 +149,46 @@ def _build_event_summary_matrix(processed_beh_dict: dict,
                     chunk = np.nan_to_num(chunk, nan=0.0)
                 window_means[i] = float(chunk.mean())
 
-            per_feature_blocks.setdefault(generic_key, []).append(window_means)
+            per_feature_session_blocks.setdefault(generic_key, {})[sess_id] = window_means
 
-    if not per_feature_blocks:
+    if not per_feature_session_blocks or not contributing_sessions:
         return [], np.empty((0, 0), dtype=np.float32)
 
-    feature_names = sorted(per_feature_blocks.keys())
-    # Every feature's blocks have the same per-session row count by
-    # construction (they iterate the same valid event mask), so a flat
-    # concatenate per feature followed by a column-stack across features
-    # produces the rectangular `(n_events_total, n_features)` summary
-    # matrix without any padding step.
-    aligned_columns = [np.concatenate(per_feature_blocks[f], axis=0)
-                       for f in feature_names]
+    # Second pass: keep only features that contributed a block for
+    # *every* contributing session. Drop the rest with a single
+    # consolidated warning so the operator can see which features were
+    # removed (typically rare-category vocal channels that only fire
+    # in some sessions).
+    contributing_session_ids = {sid for sid, _ in contributing_sessions}
+    kept_features = []
+    dropped_features = []
+    for f, sess_to_block in per_feature_session_blocks.items():
+        if contributing_session_ids.issubset(sess_to_block.keys()):
+            kept_features.append(f)
+        else:
+            dropped_features.append(f)
+
+    if dropped_features:
+        n_drop = len(dropped_features)
+        sample = ', '.join(sorted(dropped_features)[:6])
+        more = f" (+ {n_drop - 6} more)" if n_drop > 6 else ''
+        print(f"[audit] collinearity: dropped {n_drop} feature(s) absent from "
+              f"some sessions: {sample}{more}.")
+
+    if not kept_features:
+        return [], np.empty((0, 0), dtype=np.float32)
+
+    feature_names = sorted(kept_features)
+    # Concatenate each feature's per-session blocks in the same order
+    # so column_stack is rectangular by construction.
+    ordered_session_ids = [sid for sid, _ in contributing_sessions]
+    aligned_columns = [
+        np.concatenate(
+            [per_feature_session_blocks[f][sid] for sid in ordered_session_ids],
+            axis=0,
+        )
+        for f in feature_names
+    ]
     summary_matrix = np.column_stack(aligned_columns).astype(np.float32)
     return feature_names, summary_matrix
 
@@ -802,9 +844,17 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             acf_stack[f_i, s_i, :] = _per_session_acf(per_feature[fname],
                                                      max_lag_frames).astype(np.float32)
 
-    acf_median = np.nanmedian(acf_stack, axis=1)
-    acf_p25 = np.nanpercentile(acf_stack, 25, axis=1)
-    acf_p75 = np.nanpercentile(acf_stack, 75, axis=1)
+    # `np.nanmedian` / `np.nanpercentile` emit a "All-NaN slice
+    # encountered" warning whenever a (feature, lag) cell is NaN for
+    # every session — common for features that fail to compute on
+    # constant traces or that the loader stripped from some sessions.
+    # The NaNs propagate cleanly through the rest of the audit; the
+    # warning is just stdout noise.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        acf_median = np.nanmedian(acf_stack, axis=1)
+        acf_p25 = np.nanpercentile(acf_stack, 25, axis=1)
+        acf_p75 = np.nanpercentile(acf_stack, 75, axis=1)
 
     tau_1e = np.array([_first_crossing_below(acf_median[i], 1.0 / np.e)
                        for i in range(n_features)], dtype=np.float32) / fps
@@ -840,43 +890,49 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         empirical_pcts = {'p50': float('nan'), 'p90': float('nan'), 'p99': float('nan')}
         n_total_events = 0
     else:
-        # Per-feature pooled column.
-        feature_columns = np.zeros((sum(n for _, n in valid_sessions), n_features),
-                                   dtype=np.float32)
-        Y_pooled = np.zeros(feature_columns.shape[0], dtype=np.float32)
+        # ----- streaming predictive-ρ -----
+        # The legacy implementation built a single `(total_frames,
+        # n_features)` matrix and rank-transformed the whole thing
+        # before scoring. On large cohorts (~500 features × ~100
+        # sessions × ~10⁵ frames @ float32) that allocation is ~25 GB,
+        # plus another ~25 GB for the pre-ranked copy and a few GB for
+        # the null tensor — so on the actual workload the kernel was
+        # OOM-killed before the audit's try/except could fire.
+        #
+        # The refactor below streams feature-by-feature: only one
+        # `(total_frames,)` column and its ranks are resident at any
+        # given time; the binary event trace `Y` and its `n_shuffles`
+        # circular-shifted ranks are computed once outside the loop
+        # because they do not depend on which feature is being scored.
+        # Memory scales as `O(total_frames * (n_shuffles + 1))` instead
+        # of `O(total_frames * n_features)`, which is roughly a 50×
+        # reduction on this cohort while keeping the same numerical
+        # output.
+        total_frames = sum(n for _, n in valid_sessions)
         ses_starts = []
         cursor = 0
-        for sess_id, n_frames_sess in valid_sessions:
+        for _, n_frames_sess in valid_sessions:
             ses_starts.append(cursor)
-            per_feature = session_blocks[sess_id]
-            for f_i, fname in enumerate(feature_names):
-                if fname in per_feature:
-                    arr = per_feature[fname]
-                    arr = np.where(np.isfinite(arr), arr, 0.0)
-                    feature_columns[cursor:cursor + n_frames_sess, f_i] = arr
-            ev_times = event_times_per_session[sess_id]
-            Y_pooled[cursor:cursor + n_frames_sess] = _binary_event_trace(
-                ev_times, n_frames_sess, camera_fps_dict[sess_id]
-            )
             cursor += n_frames_sess
         ses_starts.append(cursor)
 
-        # Pre-rank columns (one sort per feature × pool) and Y once.
-        # Spearman ρ at any lag is then a centred dot product on the
-        # pre-ranked arrays.
-        X_ranks = np.apply_along_axis(rankdata, 0, feature_columns).astype(np.float32)
+        # Build the pooled binary event trace once, and rank it once.
+        Y_pooled = np.zeros(total_frames, dtype=np.float32)
+        for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
+            start = ses_starts[k]
+            ev_times = event_times_per_session[sess_id]
+            Y_pooled[start:start + n_frames_sess] = _binary_event_trace(
+                ev_times, n_frames_sess, camera_fps_dict[sess_id]
+            )
         Y_ranks = rankdata(Y_pooled).astype(np.float32)
 
-        rho_actual = np.zeros((n_features, len(lag_grid_frames)), dtype=np.float32)
-        for li, lag in enumerate(lag_grid_frames):
-            rho_actual[:, li] = _spearman_at_lag(X_ranks, Y_ranks, int(lag)).astype(np.float32)
-
-        # Within-session circular-shift null — preserves Y's autocorrelation
-        # but destroys its temporal alignment with X. Each shuffle takes
-        # the same per-lag pass.
+        # Pre-compute the `n_shuffles` within-session circular-shifted
+        # rank vectors. Caching them once is what lets the per-feature
+        # inner loop stay cheap; recomputing per feature would scale as
+        # `O(n_shuffles * n_features * total_frames * log total_frames)`
+        # and dominate.
         rng = np.random.default_rng(random_seed)
-        null_abs_max = np.zeros((n_shuffles, n_features, len(lag_grid_frames)),
-                                dtype=np.float32)
+        Y_shuffled_ranks_cache = np.zeros((n_shuffles, total_frames), dtype=np.float32)
         for sh in range(n_shuffles):
             Y_shuffled = np.empty_like(Y_pooled)
             for k in range(len(valid_sessions)):
@@ -885,11 +941,41 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 length = end - start
                 shift = int(rng.integers(0, length))
                 Y_shuffled[start:end] = np.roll(Y_pooled[start:end], shift)
-            Yr = rankdata(Y_shuffled).astype(np.float32)
+            Y_shuffled_ranks_cache[sh] = rankdata(Y_shuffled).astype(np.float32)
+
+        # Streaming feature loop. For each feature we build the pooled
+        # column, rank it, score it against actual `Y_ranks` and the
+        # cached null shuffles at every lag, then drop both before
+        # moving to the next feature.
+        rho_actual = np.zeros((n_features, len(lag_grid_frames)), dtype=np.float32)
+        null_abs_max = np.zeros((n_shuffles, n_features, len(lag_grid_frames)),
+                                dtype=np.float32)
+
+        for f_i, fname in enumerate(feature_names):
+            x_col = np.zeros(total_frames, dtype=np.float32)
+            for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
+                per_feature = session_blocks[sess_id]
+                if fname not in per_feature:
+                    continue
+                arr = per_feature[fname]
+                arr = np.where(np.isfinite(arr), arr, 0.0)
+                x_col[ses_starts[k]:ses_starts[k] + n_frames_sess] = arr
+
+            x_ranks = rankdata(x_col).astype(np.float32)
+            x_ranks_2d = x_ranks[:, None]
+
             for li, lag in enumerate(lag_grid_frames):
-                null_abs_max[sh, :, li] = np.abs(
-                    _spearman_at_lag(X_ranks, Yr, int(lag))
-                ).astype(np.float32)
+                rho_actual[f_i, li] = _spearman_at_lag(
+                    x_ranks_2d, Y_ranks, int(lag)
+                )[0].astype(np.float32)
+                for sh in range(n_shuffles):
+                    null_abs_max[sh, f_i, li] = np.abs(
+                        _spearman_at_lag(
+                            x_ranks_2d, Y_shuffled_ranks_cache[sh], int(lag)
+                        )[0]
+                    ).astype(np.float32)
+
+            del x_col, x_ranks, x_ranks_2d
 
         rho_null_p95 = np.percentile(null_abs_max, 95, axis=0).astype(np.float32)
 
