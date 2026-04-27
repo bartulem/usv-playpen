@@ -55,6 +55,7 @@ from .modeling_utils import (
     identify_empty_event_sessions,
     zero_fill_missing_feature_columns,
     zscore_features_across_sessions,
+    run_predictor_audits,
     unroll_history_matrix,
     pearson_r_safe,
     root_mean_squared_error,
@@ -258,6 +259,25 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
+        t_sex = 'male' if target_mouse_idx == 0 else 'female'
+        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings['model_params']['filter_history']}.pkl"
+
+        # Predictor diagnostics audit (collinearity + timescales). Diagnostic-
+        # only: any failure inside the wrapper warns and continues.
+        run_predictor_audits(
+            processed_beh_dict=processed_beh_feature_data_dict,
+            usv_data_dict=bout_data_dict,
+            mouse_names_dict=mouse_track_names_dict,
+            camera_fps_dict=camera_fr_dict,
+            target_idx=target_mouse_idx,
+            predictor_idx=predictor_mouse_idx,
+            history_frames=self.history_frames,
+            event_keys=['bout_onsets'],
+            settings=self.modeling_settings,
+            save_dir=self.modeling_settings['io']['save_directory'],
+            pickle_basename=fname,
+        )
+
         final_data_dict = {}
         for sess_id, df in tqdm(processed_beh_feature_data_dict.items(), desc="Extracting Epochs"):
             t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
@@ -359,8 +379,6 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             print(f"      (This will cause the model to misalign behavioral predictors with USV targets!)")
         print("=" * 105 + "\n")
 
-        t_sex = 'male' if target_mouse_idx == 0 else 'female'
-        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings['model_params']['filter_history']}.pkl"
         save_path = os.path.join(self.modeling_settings['io']['save_directory'], fname)
         os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
         with open(save_path, 'wb') as f:

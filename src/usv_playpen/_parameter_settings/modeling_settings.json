@@ -63,6 +63,13 @@
     "usv_manifold_column_names": ["usv_umap1", "usv_umap2"]
   },
 
+  "diagnostics": {
+    "collinearity_audit": true,
+    "timescale_audit": true,
+    "timescale_max_lag_seconds": 10.0,
+    "timescale_n_shuffles": 50
+  },
+
   "gmm_params": {
     "male": {
       "means": [-2.77722, -1.60209, -0.52512],

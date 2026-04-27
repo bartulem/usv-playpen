@@ -42,6 +42,7 @@ from .modeling_utils import (
     build_vocal_signal_columns,
     harmonize_session_columns,
     zscore_features_across_sessions,
+    run_predictor_audits,
     brier_score_multi,
     expected_calibration_error,
     safe_matthews_corrcoef,
@@ -736,6 +737,32 @@ class MultinomialModelingPipeline(FeatureZoo):
             abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
+        target_mouse_sex = 'male' if targ_idx == 0 else 'female'
+        fname = f"modeling_multinomial_category_{target_mouse_sex}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
+
+        # Predictor diagnostics audit. Multinomial stores onsets as frame
+        # indices keyed by category; convert to seconds-per-session for the
+        # audit wrapper. Diagnostic-only — failures warn and continue.
+        precomputed_events = {}
+        for sess_id, targets in multinomial_targets.items():
+            fps_local = cam_fps_dict[sess_id]
+            precomputed_events[sess_id] = (targets['onsets'].astype(np.float64) / fps_local)
+
+        run_predictor_audits(
+            processed_beh_dict=processed_beh_data,
+            usv_data_dict=usv_data_dict,
+            mouse_names_dict=mouse_names_dict,
+            camera_fps_dict=cam_fps_dict,
+            target_idx=targ_idx,
+            predictor_idx=pred_idx,
+            history_frames=self.history_frames,
+            event_keys=[],
+            settings=self.modeling_settings,
+            save_dir=self.modeling_settings['io']['save_directory'],
+            pickle_basename=fname,
+            precomputed_event_times=precomputed_events,
+        )
+
         # slice epochs and save to disk
         print("Extracting epochs and saving to disk...")
         final_data = {}
@@ -817,8 +844,6 @@ class MultinomialModelingPipeline(FeatureZoo):
                 print(f"  Category {cat: <2}: {count: >6} USVs ({percentage: >5.2f}%)")
             print("=" * 60 + "\n")
 
-        target_mouse_sex = 'male' if targ_idx == 0 else 'female'
-        fname = f"modeling_multinomial_category_{target_mouse_sex}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
         save_dir = self.modeling_settings['io']['save_directory']
         save_path = os.path.join(save_dir, fname)
 

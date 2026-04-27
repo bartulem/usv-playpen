@@ -77,7 +77,11 @@ import polars as pls
 from scipy.stats import pearsonr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
 
-from .load_input_files import load_behavioral_feature_data
+from .load_input_files import load_behavioral_feature_data, _calculate_ibi_threshold
+from .modeling_collinearity_audit import (
+    audit_predictor_collinearity,
+    audit_predictor_timescales,
+)
 from .modeling_cross_session_normalization import zscore_different_sessions_together
 from ..os_utils import configure_path
 
@@ -690,7 +694,12 @@ def harmonize_session_columns(processed_beh_dict: dict,
                     generic_key = f"{prefix}.{suffix}"
 
                     if expected_col not in existing_cols:
-                        if 'usv' in suffix:
+                        # Use the same `'usv_'` substring test as
+                        # `zero_fill_missing_feature_columns` so the two
+                        # helpers gate vocal suffixes identically (no risk
+                        # of a non-vocal suffix that happens to contain the
+                        # bare `'usv'` substring being silently gated).
+                        if 'usv_' in suffix:
                             if generic_key in generic_existence_map:
                                 new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
                         else:
@@ -1257,13 +1266,24 @@ def align_probs_to_canonical(probabilities: np.ndarray,
     """
 
     n_samples = probabilities.shape[0]
+    canonical_arr = np.asarray(canonical_classes)
+    # `np.searchsorted` is only correct when `canonical_classes` is sorted
+    # ascending. Every current caller passes `np.unique(y_global)` which
+    # satisfies this; assert it explicitly so a future caller that supplies
+    # a custom (unsorted) class ordering fails loudly rather than silently
+    # returning a column-shuffled probability matrix.
+    if canonical_arr.size > 1 and not np.all(np.diff(canonical_arr) > 0):
+        raise ValueError(
+            "align_probs_to_canonical requires `canonical_classes` to be "
+            "strictly ascending; got an unsorted ordering."
+        )
     probs_canonical = np.zeros(
-        (n_samples, len(canonical_classes)), dtype=probabilities.dtype
+        (n_samples, len(canonical_arr)), dtype=probabilities.dtype
     )
     # `np.searchsorted` finds each model class's position in the sorted
     # canonical ordering in O((K_model + K_canon) log K_canon), replacing
     # the explicit Python for-loop in the callers.
-    target_cols = np.searchsorted(canonical_classes, model_classes)
+    target_cols = np.searchsorted(canonical_arr, model_classes)
     probs_canonical[:, target_cols] = probabilities
     return probs_canonical
 
@@ -1357,3 +1377,189 @@ def mean_absolute_error_1d(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         np.asarray(y_true, dtype=np.float64).ravel()
         - np.asarray(y_pred, dtype=np.float64).ravel()
     )))
+
+
+def run_predictor_audits(processed_beh_dict: dict,
+                         usv_data_dict: dict,
+                         mouse_names_dict: dict,
+                         camera_fps_dict: dict,
+                         target_idx: int,
+                         predictor_idx: int,
+                         history_frames: int,
+                         event_keys: list,
+                         settings: dict,
+                         save_dir: str,
+                         pickle_basename: str,
+                         precomputed_event_times: dict = None) -> None:
+    """
+    Runs the collinearity and timescale audits as a single non-fatal
+    diagnostic step at modeling-input-pickle creation time.
+
+    This wrapper is the only entry point each `extract_and_save_*`
+    pipeline needs to call. It:
+
+    1. Reads the `diagnostics` block from `settings`. When neither audit
+       is enabled the wrapper returns immediately without touching disk.
+    2. Pools per-session event time arrays from the supplied USV data
+       dict by walking the per-pipeline `event_keys` (e.g.
+       `['positive_events']` for the Onset pipeline,
+       `['target_events', 'other_events']` for the binomial Category
+       pipeline). The union of all listed keys is used both as the row
+       basis of the collinearity audit's per-event summary matrix and as
+       the binary event indicator `Y(t)` of the timescale audit's
+       predictive-ρ profile.
+    3. Computes the sex-specific IBI thresholds via
+       `_calculate_ibi_threshold` so the timescale audit can report them
+       alongside the configured `filter_history` for the headline
+       recommendation line.
+    4. Calls each audit inside its own `try/except` — any failure is
+       logged with a warning but does not abort the calling pipeline.
+       The audits are diagnostic only; downstream modeling does not
+       depend on their artifacts existing.
+
+    The two artifacts are written next to the modeling input pickle
+    using the basename suffixes `_collinearity.pkl` and `_timescales.pkl`
+    so they are trivially co-locatable for downstream plotting.
+
+    Parameters
+    ----------
+    processed_beh_dict : dict
+        Mapping `session_id -> polars.DataFrame` of z-scored, harmonized
+        per-session feature traces. Must already have been through
+        `harmonize_session_columns` (or equivalent) and
+        `zscore_features_across_sessions`.
+    usv_data_dict : dict
+        Nested USV data dictionary
+        (`session_id -> mouse_name -> {event_key: ndarray, ...}`)
+        produced by the loaders in `load_input_files.py`.
+    mouse_names_dict : dict
+        Mapping `session_id -> list[mouse_name]`.
+    camera_fps_dict : dict
+        Mapping `session_id -> camera_sampling_rate_hz`.
+    target_idx, predictor_idx : int
+        Mouse slot indices used to translate per-mouse columns into
+        generic `self.*` / `other.*` keys.
+    history_frames : int
+        Pre-event window length in frames (used by the collinearity
+        audit's per-event summary matrix).
+    event_keys : list of str
+        Per-pipeline list of keys under each `usv_data_dict[session][mouse]`
+        entry whose stored arrays should be unioned to form the audit's
+        event time set. Pass every event class the pipeline will actually
+        train on (e.g. `['positive_events']` for Onset,
+        `['target_events', 'other_events']` for binomial Category).
+    settings : dict
+        The modeling settings dictionary. Reads
+        `settings['diagnostics']` (toggle flags + `timescale_max_lag_seconds`
+        / `timescale_n_shuffles`), `settings['model_params']['filter_history']`
+        (recommendation line), `settings['model_params']['gmm_component_index']`
+        and `settings['model_params']['gmm_z_score']` (IBI thresholds), and
+        `settings['gmm_params']` (per-sex GMM components).
+    save_dir : str
+        Output directory for the audit artifacts (typically the modeling
+        save directory).
+    pickle_basename : str
+        Filename of the paired modeling input pickle. Used to derive the
+        artifact basenames and as a provenance string written into each
+        artifact.
+    precomputed_event_times : dict, optional
+        Pre-built `session_id -> np.ndarray` mapping of pooled event onset
+        times (seconds). When supplied, the wrapper skips the per-mouse
+        `event_keys` extraction step. Use this when the calling pipeline
+        stores its events in a non-standard shape (e.g. the multinomial
+        pipeline's `events_by_category` dict).
+    """
+
+    diagnostics_cfg = settings['diagnostics'] if 'diagnostics' in settings else {}
+    do_collinearity = diagnostics_cfg['collinearity_audit'] if 'collinearity_audit' in diagnostics_cfg else True
+    do_timescale = diagnostics_cfg['timescale_audit'] if 'timescale_audit' in diagnostics_cfg else True
+
+    if not (do_collinearity or do_timescale):
+        return
+
+    # Pool per-session event time arrays across the requested event keys.
+    # The audit treats every listed key as a "model row" so the summary
+    # matrix and the binary event indicator span every epoch the model
+    # will ever see. Callers with non-standard event storage can pass
+    # `precomputed_event_times` to bypass this loop.
+    if precomputed_event_times is not None:
+        event_times_per_session = precomputed_event_times
+    else:
+        event_times_per_session = {}
+        for sess_id, track_names in mouse_names_dict.items():
+            if sess_id not in usv_data_dict:
+                continue
+            target_name = track_names[target_idx]
+            if target_name not in usv_data_dict[sess_id]:
+                continue
+            per_mouse = usv_data_dict[sess_id][target_name]
+
+            pooled = []
+            for key in event_keys:
+                arr = per_mouse[key] if key in per_mouse else None
+                if arr is None:
+                    continue
+                arr = np.asarray(arr)
+                if arr.size > 0:
+                    pooled.append(arr.ravel())
+            if pooled:
+                event_times_per_session[sess_id] = np.sort(np.concatenate(pooled))
+
+    base_no_ext = os.path.splitext(pickle_basename)[0]
+    coll_path = os.path.join(save_dir, f"{base_no_ext}_collinearity.pkl")
+    ts_path = os.path.join(save_dir, f"{base_no_ext}_timescales.pkl")
+
+    if do_collinearity:
+        try:
+            audit_predictor_collinearity(
+                processed_beh_dict=processed_beh_dict,
+                event_times_per_session=event_times_per_session,
+                mouse_names_dict=mouse_names_dict,
+                target_idx=target_idx,
+                predictor_idx=predictor_idx,
+                history_frames=history_frames,
+                camera_fps_dict=camera_fps_dict,
+                save_path=coll_path,
+                source_pickle=pickle_basename,
+            )
+        except Exception as exc:
+            print(f"[audit] collinearity audit failed (non-fatal): {exc}")
+
+    if do_timescale:
+        try:
+            # Sex-specific IBI thresholds — same recipe used by the loaders
+            # so the audit's headline matches what gates bout detection.
+            gmm_idx = settings['model_params']['gmm_component_index']
+            gmm_z = settings['model_params']['gmm_z_score']
+            gmm_params = settings['gmm_params']
+            ibi_thresholds = {}
+            for sex in ('male', 'female'):
+                params = gmm_params[sex]
+                if gmm_idx < len(params['means']):
+                    ibi_thresholds[sex] = float(_calculate_ibi_threshold(
+                        params['means'][gmm_idx], params['sds'][gmm_idx], gmm_z
+                    ))
+                else:
+                    ibi_thresholds[sex] = float('nan')
+
+            max_lag = float(diagnostics_cfg['timescale_max_lag_seconds']) if 'timescale_max_lag_seconds' in diagnostics_cfg else 10.0
+            n_shuffles = int(diagnostics_cfg['timescale_n_shuffles']) if 'timescale_n_shuffles' in diagnostics_cfg else 50
+            random_seed = settings['model_params']['random_seed'] if settings['model_params']['random_seed'] is not None else 0
+
+            audit_predictor_timescales(
+                processed_beh_dict=processed_beh_dict,
+                event_times_per_session=event_times_per_session,
+                mouse_names_dict=mouse_names_dict,
+                target_idx=target_idx,
+                predictor_idx=predictor_idx,
+                configured_filter_history=float(settings['model_params']['filter_history']),
+                camera_fps_dict=camera_fps_dict,
+                max_lag_seconds=max_lag,
+                n_shuffles=n_shuffles,
+                ibi_thresholds=ibi_thresholds,
+                save_path=ts_path,
+                source_pickle=pickle_basename,
+                random_seed=int(random_seed),
+            )
+        except Exception as exc:
+            print(f"[audit] timescale audit failed (non-fatal): {exc}")

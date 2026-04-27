@@ -41,6 +41,7 @@ from .modeling_utils import (
     expected_calibration_error,
     safe_matthews_corrcoef,
     safe_confusion_matrix,
+    run_predictor_audits,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -101,10 +102,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         else:
             self.modeling_settings = modeling_settings_dict
 
-        json_bounds = self.modeling_settings.get('feature_boundaries')
-
-        if json_bounds:
-            self.feature_boundaries = json_bounds
+        # Strict membership-then-index access (matches the other pipelines)
+        # rather than `.get()`. `feature_boundaries` is an optional top-level
+        # JSON key; when absent the downstream `getattr` fallback kicks in.
+        if 'feature_boundaries' in self.modeling_settings:
+            self.feature_boundaries = self.modeling_settings['feature_boundaries']
 
         try:
             camera_rate = self.modeling_settings['io']['camera_sampling_rate']
@@ -286,6 +288,29 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         )
         print("Z-scoring complete.")
 
+        target_mouse_sex = 'male' if target_mouse_idx == 0 else 'female'
+        max_hist_sec = self.modeling_settings['model_params']['filter_history']
+        file_name_ = f"modeling_{self.modeling_settings['model_params']['model_target_vocal_type']}_gmm{self.modeling_settings['model_params']['gmm_component_index']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(txt_modeling_sessions)}sess_hist{max_hist_sec}s.pkl"
+
+        # Predictor diagnostics audit (collinearity + timescales). Runs on
+        # the harmonized, z-scored, but not-yet-sliced feature dict so the
+        # ACF traces and the per-event summary statistics are computed on
+        # the same processed signal the model will see. Diagnostic-only:
+        # any failure inside the wrapper warns and continues.
+        run_predictor_audits(
+            processed_beh_dict=processed_beh_feature_data_dict,
+            usv_data_dict=usv_data_dict,
+            mouse_names_dict=mouse_track_names_dict,
+            camera_fps_dict=camera_fr_dict,
+            target_idx=target_mouse_idx,
+            predictor_idx=predictor_mouse_idx,
+            history_frames=self.history_frames,
+            event_keys=['positive_events', 'negative_events'],
+            settings=self.modeling_settings,
+            save_dir=self.modeling_settings['io']['save_directory'],
+            pickle_basename=file_name_,
+        )
+
         print("Extracting epochs per session and renaming features...")
         modeling_final_data_dict = {}
 
@@ -406,9 +431,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             print(f"  [!] ALERT: Dimensional mismatch in sessions: {set(mismatched_sessions)}")
         print("=" * 105 + "\n")
 
-        target_mouse_sex = 'male' if target_mouse_idx == 0 else 'female'
-        max_hist_sec = self.modeling_settings['model_params']['filter_history']
-        file_name_ = f"modeling_{self.modeling_settings['model_params']['model_target_vocal_type']}_gmm{self.modeling_settings['model_params']['gmm_component_index']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(txt_modeling_sessions)}sess_hist{max_hist_sec}s.pkl"
         save_path = os.path.join(self.modeling_settings['io']['save_directory'], file_name_)
 
         try:

@@ -3838,3 +3838,384 @@ class DeepResultsVisualizer:
         self._handle_save(fig, f"cnn_regional_saliency_{region_key}_{sex_mod}",
                           save_plot, output_dir, file_format)
         plt.show()
+
+
+# ---------------------------------------------------------------------------
+# Predictor diagnostics: plotting for the audits in
+# `modeling.modeling_collinearity_audit`.
+# ---------------------------------------------------------------------------
+
+def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = 'svg') -> str:
+    """
+    Writes an audit figure to disk in the requested format and returns the
+    absolute path. Defaults to SVG (vector, lossless) so the diagnostic
+    plots remain publication-ready by default; pass `file_format='png'` /
+    `'pdf'` to override.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure to save.
+    out_dir : str
+        Output directory; created if missing.
+    basename : str
+        Filename stem (no extension).
+    file_format : str, default 'svg'
+        Matplotlib `savefig` format.
+
+    Returns
+    -------
+    str
+        Absolute path of the written file.
+    """
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{basename}.{file_format}")
+    fig.savefig(out_path, format=file_format, bbox_inches='tight')
+    return out_path
+
+
+def plot_collinearity_audit(audit_pkl_path: str,
+                            save_dir: str = None,
+                            file_format: str = 'svg',
+                            top_n_pairs: int = 25) -> dict:
+    """
+    Renders the collinearity audit produced by
+    `modeling.modeling_collinearity_audit.audit_predictor_collinearity` as
+    a single three-panel diagnostic figure.
+
+    The figure summarises whether the kept predictor set is sufficiently
+    decorrelated for stable forward stepwise selection. It is intended to
+    accompany the modeling input pickle and to be visually inspected
+    before committing to a particular feature shortlist.
+
+    Panels
+    ------
+    Left
+        Spearman ρ heatmap, with rows / columns reordered by hierarchical
+        clustering on the absolute correlation distance so that blocks of
+        mutually correlated features cluster visually. Cells whose
+        absolute value exceeds the artifact's `concern_threshold` are
+        annotated with their numeric value. Diverging blue/red colormap,
+        symmetric around zero.
+    Middle
+        VIF bar chart, sorted descending, with horizontal reference lines
+        at VIF = 5 (concern) and VIF = 10 (serious). Bars exceeding 10
+        are highlighted in red.
+    Right
+        Top-N flagged pairs (where N = `top_n_pairs`) as horizontal bars
+        of `|ρ|`, color-coded by tier (`exclude` vs. `concern`). Each bar
+        labelled with the two feature names and the signed ρ value.
+
+    The panel widths are scaled to keep a square heatmap on the left, a
+    proportional VIF chart in the middle, and a long-and-narrow pair list
+    on the right.
+
+    Parameters
+    ----------
+    audit_pkl_path : str
+        Path to the `_collinearity.pkl` artifact produced at extraction
+        time. The artifact's `source_pickle` field is used in the figure
+        title for provenance.
+    save_dir : str, optional
+        Output directory for the figure. Defaults to the directory
+        containing the audit pickle.
+    file_format : str, default 'svg'
+        Matplotlib `savefig` format. SVG is the project default for
+        publication-quality output.
+    top_n_pairs : int, default 25
+        Maximum number of flagged pairs to render in the right-hand
+        panel. The artifact's `flagged_pairs` list is already sorted by
+        descending |ρ|.
+
+    Returns
+    -------
+    dict
+        `{'figure_path': str, 'n_features': int, 'n_flagged': int}` —
+        useful for callers that want to reference the artifact
+        downstream.
+    """
+
+    with open(audit_pkl_path, 'rb') as fh:
+        payload = pickle.load(fh)
+
+    feature_names = payload['features']
+    rho = np.asarray(payload['spearman_rho'])
+    vif = np.asarray(payload['vif'])
+    flagged = payload['flagged_pairs']
+    concern_thr = payload['concern_threshold']
+    exclude_thr = payload['exclude_threshold']
+    n_events = payload['n_events']
+    cond_num = payload['condition_number']
+    source = payload['source_pickle']
+
+    n_features = len(feature_names)
+    if n_features == 0:
+        print(f"[plot] collinearity audit at {audit_pkl_path} has no features — skipping.")
+        return {'figure_path': '', 'n_features': 0, 'n_flagged': 0}
+
+    # Hierarchical-clustering reorder via SciPy linkage on |ρ|-distance.
+    from scipy.cluster.hierarchy import linkage, leaves_list
+    from scipy.spatial.distance import squareform
+    dist = 1.0 - np.abs(rho)
+    np.fill_diagonal(dist, 0.0)
+    dist = (dist + dist.T) / 2.0
+    try:
+        order = leaves_list(linkage(squareform(dist, checks=False), method='average'))
+    except ValueError:
+        order = np.arange(n_features)
+    rho_ord = rho[np.ix_(order, order)]
+    names_ord = [feature_names[i] for i in order]
+
+    fig = plt.figure(figsize=(20, max(8, 0.25 * n_features + 4)))
+    gs = gridspec.GridSpec(1, 3, width_ratios=[2.4, 1.2, 1.4], wspace=0.35)
+
+    # Panel 1: Spearman ρ heatmap
+    ax1 = fig.add_subplot(gs[0, 0])
+    im = ax1.imshow(rho_ord, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
+    ax1.set_xticks(np.arange(n_features))
+    ax1.set_yticks(np.arange(n_features))
+    ax1.set_xticklabels(names_ord, rotation=90, fontsize=7)
+    ax1.set_yticklabels(names_ord, fontsize=7)
+    ax1.set_title(f"Spearman ρ (clustered)\n{n_events} events × {n_features} features", fontsize=11)
+    cb = fig.colorbar(im, ax=ax1, fraction=0.04, pad=0.02)
+    cb.set_label('ρ', rotation=0, labelpad=8)
+    # Annotate cells above concern threshold
+    for i in range(n_features):
+        for j in range(n_features):
+            if i == j:
+                continue
+            r = rho_ord[i, j]
+            if abs(r) >= concern_thr:
+                ax1.text(j, i, f"{r:.2f}", ha='center', va='center',
+                         fontsize=5,
+                         color='white' if abs(r) > 0.6 else 'black')
+
+    # Panel 2: VIF bar chart
+    ax2 = fig.add_subplot(gs[0, 1])
+    sort_idx = np.argsort(-np.where(np.isfinite(vif), vif, -np.inf))
+    vif_sorted = vif[sort_idx]
+    names_sorted_v = [feature_names[i] for i in sort_idx]
+    colors = ['#cc3333' if (np.isfinite(v) and v > 10)
+              else '#dd9933' if (np.isfinite(v) and v > 5)
+              else '#3377bb' for v in vif_sorted]
+    # Cap displayed VIF for readability; annotate inf separately.
+    vif_display = np.where(np.isfinite(vif_sorted),
+                           np.minimum(vif_sorted, 50.0),
+                           50.0)
+    y_pos = np.arange(n_features)[::-1]
+    ax2.barh(y_pos, vif_display, color=colors, edgecolor='none')
+    for k, v in enumerate(vif_sorted):
+        if not np.isfinite(v):
+            ax2.text(50.0, y_pos[k], '  inf', va='center', fontsize=6, color='#cc3333')
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels(names_sorted_v, fontsize=7)
+    ax2.axvline(5, color='#dd9933', linestyle=':', linewidth=1, label='VIF = 5')
+    ax2.axvline(10, color='#cc3333', linestyle=':', linewidth=1, label='VIF = 10')
+    ax2.set_xlabel('VIF (capped at 50)', fontsize=9)
+    ax2.set_title(f"Variance Inflation\ncond(X) = {cond_num:.1f}", fontsize=11)
+    ax2.legend(fontsize=7, loc='lower right')
+
+    # Panel 3: Flagged pairs
+    ax3 = fig.add_subplot(gs[0, 2])
+    pairs = flagged[:top_n_pairs]
+    if pairs:
+        labels = [f"{f1}  ↔  {f2}" for f1, f2, _, _ in pairs]
+        rhos = [r for *_, r, _ in pairs]
+        tiers = [t for *_, t in pairs]
+        bar_colors = ['#cc3333' if t == 'exclude' else '#dd9933' for t in tiers]
+        y_pos = np.arange(len(pairs))[::-1]
+        ax3.barh(y_pos, [abs(r) for r in rhos], color=bar_colors, edgecolor='none')
+        for k, (label, r) in enumerate(zip(labels, rhos)):
+            ax3.text(abs(r) + 0.01, y_pos[k], f"{r:+.2f}", va='center', fontsize=6)
+        ax3.set_yticks(y_pos)
+        ax3.set_yticklabels(labels, fontsize=6)
+        ax3.set_xlim(0, 1.05)
+        ax3.axvline(concern_thr, color='#dd9933', linestyle=':', linewidth=1)
+        ax3.axvline(exclude_thr, color='#cc3333', linestyle=':', linewidth=1)
+        ax3.set_xlabel('|ρ|', fontsize=9)
+        ax3.set_title(
+            f"Flagged pairs (top {len(pairs)} of {len(flagged)})\n"
+            f"red: |ρ| > {exclude_thr}, orange: > {concern_thr}",
+            fontsize=11,
+        )
+    else:
+        ax3.text(0.5, 0.5, "No pairs above\nconcern threshold",
+                 ha='center', va='center', fontsize=12, transform=ax3.transAxes)
+        ax3.set_xticks([]); ax3.set_yticks([])
+        ax3.set_title("Flagged pairs", fontsize=11)
+
+    fig.suptitle(f"Collinearity audit  —  source: {source}", fontsize=13, y=1.02)
+
+    if save_dir is None:
+        save_dir = os.path.dirname(audit_pkl_path)
+    base = os.path.splitext(os.path.basename(audit_pkl_path))[0]
+    out_path = _save_audit_figure(fig, save_dir, base, file_format=file_format)
+    plt.close(fig)
+    print(f"[plot] collinearity figure written: {out_path}")
+    return {'figure_path': out_path, 'n_features': n_features, 'n_flagged': len(flagged)}
+
+
+def plot_timescale_audit(timescale_pkl_path: str,
+                         save_dir: str = None,
+                         file_format: str = 'svg') -> dict:
+    """
+    Renders the timescale audit produced by
+    `modeling.modeling_collinearity_audit.audit_predictor_timescales` as
+    a single three-panel diagnostic figure.
+
+    The figure brackets the defensible range for the configured
+    `filter_history` window using two complementary diagnostics:
+
+    Panels
+    ------
+    Top-left (ACF, lower bound)
+        Per-feature autocorrelation curves: the median ACF across
+        sessions (solid) with the inter-quartile range as a translucent
+        envelope. The configured `filter_history` is drawn as a heavy
+        vertical reference line; per-feature `τ_int` markers are drawn as
+        tick marks on the x-axis. Useful to confirm that the configured
+        window is at least as long as the slowest predictor's memory.
+
+    Top-right (Predictive ρ, upper bound)
+        Per-feature event-locked Spearman ρ vs. lag. The within-session
+        circular-shift 95th-percentile null envelope is shaded. Curves
+        that re-enter the noise band define the per-feature
+        `τ_predictive`; the largest such lag across features is the
+        principled upper bound for `filter_history`. Curves whose
+        `τ_predictive` exceeds the configured window are annotated
+        explicitly so under-sized windows are easy to spot.
+
+    Bottom (timescale summary)
+        Horizontal grouped bar chart per feature of `τ_int` (ACF lower
+        bound) and `τ_predictive` (predictive upper bound), sorted by
+        `τ_predictive` descending. Vertical reference lines at the
+        configured `filter_history` and the IBI 90th-percentile mark the
+        operational and response-side bounds respectively.
+
+    Parameters
+    ----------
+    timescale_pkl_path : str
+        Path to the `_timescales.pkl` artifact.
+    save_dir : str, optional
+        Output directory for the figure. Defaults to the directory
+        containing the timescale pickle.
+    file_format : str, default 'svg'
+        Matplotlib `savefig` format.
+
+    Returns
+    -------
+    dict
+        `{'figure_path': str, 'n_features': int, 'configured_filter_history': float}`.
+    """
+
+    with open(timescale_pkl_path, 'rb') as fh:
+        payload = pickle.load(fh)
+
+    feature_names = payload['features']
+    lags_seconds = np.asarray(payload['lags_seconds'])
+    acf_med = np.asarray(payload['acf_median'])
+    acf_p25 = np.asarray(payload['acf_p25'])
+    acf_p75 = np.asarray(payload['acf_p75'])
+    tau_int = np.asarray(payload['tau_acf_integrated'])
+    rho_pred = np.asarray(payload['rho_predictive'])
+    rho_null = np.asarray(payload['rho_predictive_null_p95'])
+    tau_pred = np.asarray(payload['tau_predictive'])
+    cfg_hist = float(payload['configured_filter_history'])
+    ibi_pcts = payload['ibi_empirical_pcts']
+    source = payload['source_pickle']
+
+    n_features = len(feature_names)
+    if n_features == 0:
+        print(f"[plot] timescale audit at {timescale_pkl_path} has no features — skipping.")
+        return {'figure_path': '', 'n_features': 0, 'configured_filter_history': cfg_hist}
+
+    fig = plt.figure(figsize=(20, max(10, 0.25 * n_features + 8)))
+    gs = gridspec.GridSpec(2, 2, height_ratios=[1.0, max(1.0, 0.05 * n_features + 0.6)], hspace=0.35, wspace=0.25)
+
+    # Stable per-feature colour mapping shared across panels.
+    cmap = plt.get_cmap('tab20', max(n_features, 20))
+    colors = [cmap(i % cmap.N) for i in range(n_features)]
+
+    # Panel A: ACF
+    axA = fig.add_subplot(gs[0, 0])
+    for i, fname in enumerate(feature_names):
+        med = acf_med[i]
+        p25 = acf_p25[i]
+        p75 = acf_p75[i]
+        axA.fill_between(lags_seconds, p25, p75, color=colors[i], alpha=0.15, linewidth=0)
+        axA.plot(lags_seconds, med, color=colors[i], linewidth=1.0, label=fname)
+    axA.axhline(0, color='black', linewidth=0.5)
+    axA.axhline(1.0 / np.e, color='gray', linestyle=':', linewidth=0.7, label='1/e')
+    axA.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.0,
+                label=f'filter_history = {cfg_hist:.1f}s')
+    axA.set_xlim(0, lags_seconds[-1] if lags_seconds.size else 1.0)
+    axA.set_ylim(-0.3, 1.05)
+    axA.set_xlabel('Lag (s)')
+    axA.set_ylabel('ACF (median ± IQR)')
+    axA.set_title('Predictor ACF (lower bound on filter_history)', fontsize=11)
+    axA.legend(fontsize=6, loc='upper right', ncol=2)
+
+    # Panel B: Predictive ρ
+    axB = fig.add_subplot(gs[0, 1])
+    for i, fname in enumerate(feature_names):
+        actual = rho_pred[i]
+        null_env = rho_null[i]
+        axB.fill_between(lags_seconds, -null_env, null_env, color=colors[i],
+                         alpha=0.10, linewidth=0)
+        axB.plot(lags_seconds, actual, color=colors[i], linewidth=1.0, label=fname)
+    axB.axhline(0, color='black', linewidth=0.5)
+    axB.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.0,
+                label=f'filter_history = {cfg_hist:.1f}s')
+    # Annotate features whose predictive horizon exceeds filter_history.
+    over = [(feature_names[i], tau_pred[i]) for i in range(n_features)
+            if np.isfinite(tau_pred[i]) and tau_pred[i] > cfg_hist]
+    if over:
+        msg = "τ_pred > filter_history:\n" + "\n".join(f"  {n}: {t:.2f}s" for n, t in over[:6])
+        axB.text(0.02, 0.98, msg, ha='left', va='top', transform=axB.transAxes,
+                 fontsize=7, color='#cc3333',
+                 bbox=dict(facecolor='white', edgecolor='#cc3333', boxstyle='round,pad=0.3'))
+    axB.set_xlim(0, lags_seconds[-1] if lags_seconds.size else 1.0)
+    axB.set_xlabel('Lag (s)')
+    axB.set_ylabel('Spearman ρ (event-locked) — shaded: |null| 95th pct')
+    axB.set_title('Predictive ρ (upper bound on filter_history)', fontsize=11)
+    axB.legend(fontsize=6, loc='upper right', ncol=2)
+
+    # Panel C: Per-feature timescale bars
+    axC = fig.add_subplot(gs[1, :])
+    sort_idx = np.argsort(np.where(np.isfinite(tau_pred), tau_pred, -np.inf))[::-1]
+    names_sorted = [feature_names[i] for i in sort_idx]
+    tau_int_sorted = tau_int[sort_idx]
+    tau_pred_sorted = tau_pred[sort_idx]
+    y_pos = np.arange(len(sort_idx))
+    bar_h = 0.4
+    axC.barh(y_pos - bar_h / 2, tau_pred_sorted, height=bar_h, color='#7755aa',
+             label='τ_predictive (upper bound)')
+    axC.barh(y_pos + bar_h / 2, tau_int_sorted, height=bar_h, color='#33aabb',
+             label='τ_int (lower bound)')
+    axC.set_yticks(y_pos)
+    axC.set_yticklabels(names_sorted, fontsize=8)
+    axC.invert_yaxis()
+    axC.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.2,
+                label=f'filter_history = {cfg_hist:.1f}s')
+    p90 = ibi_pcts['p90']
+    if np.isfinite(p90):
+        axC.axvline(p90, color='#cc3333', linestyle=':', linewidth=1.0,
+                    label=f'IBI 90th pct = {p90:.2f}s')
+    axC.set_xlabel('Timescale (s)')
+    axC.set_title('Per-feature timescale bracket vs. configured filter_history', fontsize=11)
+    axC.legend(fontsize=8, loc='lower right')
+
+    fig.suptitle(f"Timescale audit  —  source: {source}", fontsize=13, y=0.995)
+
+    if save_dir is None:
+        save_dir = os.path.dirname(timescale_pkl_path)
+    base = os.path.splitext(os.path.basename(timescale_pkl_path))[0]
+    out_path = _save_audit_figure(fig, save_dir, base, file_format=file_format)
+    plt.close(fig)
+    print(f"[plot] timescale figure written: {out_path}")
+    return {
+        'figure_path': out_path,
+        'n_features': n_features,
+        'configured_filter_history': cfg_hist,
+    }

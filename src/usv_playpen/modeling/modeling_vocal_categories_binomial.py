@@ -45,6 +45,7 @@ from .modeling_utils import (
     build_vocal_signal_columns,
     harmonize_session_columns,
     zscore_features_across_sessions,
+    run_predictor_audits,
     pool_session_arrays,
     balance_two_class_arrays,
     unroll_history_matrix,
@@ -318,6 +319,27 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
+        target_mouse_sex = 'male' if targ_idx == 0 else 'female'
+        fname = f"modeling_category_{target_category}_{target_mouse_sex}_{voc_mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
+
+        # Predictor diagnostics audit (collinearity + timescales). Runs on
+        # the harmonized, z-scored, but not-yet-sliced feature dict.
+        # Diagnostic-only: any failure inside the wrapper warns and
+        # continues.
+        run_predictor_audits(
+            processed_beh_dict=processed_beh_data,
+            usv_data_dict=usv_data_dict,
+            mouse_names_dict=mouse_names_dict,
+            camera_fps_dict=cam_fps_dict,
+            target_idx=targ_idx,
+            predictor_idx=pred_idx,
+            history_frames=self.history_frames,
+            event_keys=['target_events', 'other_events'],
+            settings=self.modeling_settings,
+            save_dir=self.modeling_settings['io']['save_directory'],
+            pickle_basename=fname,
+        )
+
         print("Extracting epochs...")
         final_data = {}
         for sess_id in tqdm(processed_beh_data.keys(), desc='Sessions'):
@@ -389,8 +411,6 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         print(f"  > Grand total USVs (N):         {total_target + total_rest}")
         print("=" * 105 + "\n")
 
-        target_mouse_sex = 'male' if targ_idx == 0 else 'female'
-        fname = f"modeling_category_{target_category}_{target_mouse_sex}_{voc_mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
         save_path = os.path.join(self.modeling_settings['io']['save_directory'], fname)
         os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
         with open(save_path, 'wb') as f:
