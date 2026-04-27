@@ -25,9 +25,9 @@ Computational Strategy:
 """
 
 import argparse
-import os
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 from .model_selection import (
     bout_onset_model_selection,
@@ -66,7 +66,7 @@ def validate_paths(
     paths_to_check = [univariate_path, input_path, settings_path]
 
     for p in paths_to_check:
-        if not os.path.exists(p):
+        if not Path(p).exists():
             print(f"CRITICAL ERROR: Path not found: {p}")
             raise FileNotFoundError(f"Missing required file or mount point: {p}")
 
@@ -92,7 +92,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
         orchestrator functions.
     """
     print(f"--- USV Model Selection Dispatcher | Task: {args.analysis_type.upper()} ---")
-    print(f"[{datetime.now()}] Univariate Source: {os.path.basename(args.univariate_path)}")
+    print(f"[{datetime.now()}] Univariate Source: {Path(args.univariate_path).name}")
 
     # 1. Mount Point Verification
     validate_paths(

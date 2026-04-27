@@ -20,8 +20,7 @@ Key Capabilities:
 
 import h5py
 import numpy as np
-import os
-import pathlib
+from pathlib import Path
 import pickle
 import polars as pls
 from astropy.convolution import convolve
@@ -50,12 +49,14 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
     camera_fr_dict = {}
     mouse_track_names_dict = {}
     for behavior_file_path in behavior_file_paths:
-        features_csv_file_path = next(pathlib.Path(f"{behavior_file_path}{os.sep}video{os.sep}").glob(f"**{os.sep}*_points3d_translated_rotated_metric_behavioral_features.csv"), None)
-        track_file_path = next(pathlib.Path(f"{behavior_file_path}{os.sep}video{os.sep}").glob(f"**{os.sep}[!speaker]*_points3d_translated_rotated_metric.h5"), None)
+        beh_root = Path(behavior_file_path)
+        sess_id = beh_root.name
+        features_csv_file_path = next((beh_root / 'video').glob('**/*_points3d_translated_rotated_metric_behavioral_features.csv'), None)
+        track_file_path = next((beh_root / 'video').glob('**/[!speaker]*_points3d_translated_rotated_metric.h5'), None)
         with h5py.File(name=track_file_path, mode='r') as h5_file_mouse_obj:
-            camera_fr_dict[behavior_file_path.split(os.sep)[-1]] = float(h5_file_mouse_obj['recording_frame_rate'][()])
-            mouse_track_names_dict[behavior_file_path.split(os.sep)[-1]] = [item.decode('utf-8') for item in list(h5_file_mouse_obj['track_names'])]
-        beh_feature_data_dict[behavior_file_path.split(os.sep)[-1]] = pls.read_csv(source=features_csv_file_path, separator=csv_sep)
+            camera_fr_dict[sess_id] = float(h5_file_mouse_obj['recording_frame_rate'][()])
+            mouse_track_names_dict[sess_id] = [item.decode('utf-8') for item in list(h5_file_mouse_obj['track_names'])]
+        beh_feature_data_dict[sess_id] = pls.read_csv(source=features_csv_file_path, separator=csv_sep)
 
     return beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict
 
@@ -285,10 +286,11 @@ def find_bout_epochs(root_directories: list = None,
 
     usv_data_dict = {}
     for one_root_directory in root_directories:
-        session_id = one_root_directory.split(os.sep)[-1]
+        sess_root = Path(one_root_directory)
+        session_id = sess_root.name
         usv_data_dict[session_id] = {}
 
-        csv_path = next(pathlib.Path(f"{one_root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
+        csv_path = next((sess_root / 'audio').glob('**/*_usv_summary.csv'), None)
         if csv_path is None:
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
@@ -570,11 +572,12 @@ def find_usv_categories(root_directories: list = None,
     usv_data_dict = {}
 
     for one_root_directory in root_directories:
-        session_id = one_root_directory.split(os.sep)[-1]
+        sess_root = Path(one_root_directory)
+        session_id = sess_root.name
         usv_data_dict[session_id] = {}
 
         # Locate USV Summary CSV
-        csv_path = next(pathlib.Path(f"{one_root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
+        csv_path = next((sess_root / 'audio').glob('**/*_usv_summary.csv'), None)
         if csv_path is None:
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
@@ -806,10 +809,11 @@ def find_variable_length_bouts(root_directories: list = None,
     usv_data_dict = {}
 
     for one_root_directory in root_directories:
-        session_id = one_root_directory.split(os.sep)[-1]
+        sess_root = Path(one_root_directory)
+        session_id = sess_root.name
         usv_data_dict[session_id] = {}
 
-        csv_path = next(pathlib.Path(f"{one_root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
+        csv_path = next((sess_root / 'audio').glob('**/*_usv_summary.csv'), None)
         if csv_path is None:
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue

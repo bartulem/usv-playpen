@@ -3,14 +3,13 @@
 Forward stepwise model selection for predicting bout and USV dynamics.
 """
 
-import os
 import numpy as np
 import pickle
 import json
-import pathlib
 import re
 import gc
 import time
+from pathlib import Path
 from pygam import LogisticGAM, GAM, te
 from scipy.stats import spearmanr, wilcoxon
 from sklearn.linear_model import LogisticRegressionCV, RidgeCV
@@ -48,6 +47,101 @@ from .modeling_usv_manifold_position import (
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .jax_bivariate_regression import SmoothBivariateRegression
+from .modeling_metadata import (
+    build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
+)
+
+
+def _harvest_upstream_metadata(univariate_data: dict,
+                               input_data: dict) -> tuple:
+    """
+    Pulls the upstream metadata blocks out of the loaded Level-2
+    consolidated univariate file and the Level-1 modeling input pickle.
+
+    The function pops the reserved keys (`_input_metadata`,
+    `_run_metadata`, `_consolidation_metadata`) from each dict so the
+    downstream selection loop can iterate `*.items()` over feature data
+    only. It returns the harvested `_input_metadata` (preferring the
+    Level-2 value if both files supply one — the consolidator already
+    asserted Level-2's matched every per-feature file) and the Level-2
+    `_run_metadata` (re-tagged as `_univariate_metadata` for embedding
+    into the selection step file).
+
+    Parameters
+    ----------
+    univariate_data : dict
+        The dict returned by `pickle.load` on the consolidated
+        univariate artifact.
+    input_data : dict
+        The dict returned by `pickle.load` on the Level-1 modeling
+        input pickle.
+
+    Returns
+    -------
+    tuple
+        `(input_metadata, univariate_metadata)`. Either may be `None`
+        if the upstream file was a legacy artifact without metadata.
+    """
+
+    in_md = None
+    if '_input_metadata' in univariate_data:
+        in_md = univariate_data.pop('_input_metadata')
+    if '_input_metadata' in input_data:
+        # Prefer the Level-2 copy (already consolidator-asserted) but
+        # fall back to the Level-1 copy if Level-2 was a legacy run.
+        if in_md is None:
+            in_md = input_data.pop('_input_metadata')
+        else:
+            input_data.pop('_input_metadata', None)
+
+    univ_md = None
+    if '_run_metadata' in univariate_data:
+        univ_md = univariate_data.pop('_run_metadata')
+
+    # Drop other reserved keys from both dicts so the iteration is clean.
+    for k in ('_consolidation_metadata',):
+        univariate_data.pop(k, None)
+        input_data.pop(k, None)
+
+    return in_md, univ_md
+
+
+def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
+    """
+    Returns a closure `wrap(payload) -> dict` that injects the three
+    metadata blocks into a step-pickle payload before serialization.
+
+    Each selection function loads its upstream metadata once, builds
+    its own `_run_metadata`, and then uses the closure to attach all
+    three blocks at every `pickle.dump` site. The closure short-
+    circuits cleanly when an upstream block is `None` (legacy
+    artifact); the run-level block is always emitted.
+
+    Parameters
+    ----------
+    input_md : dict or None
+        `_input_metadata` block to embed.
+    univariate_md : dict or None
+        `_univariate_metadata` block to embed.
+    run_md : dict
+        `_run_metadata` block to embed (always present for new runs).
+
+    Returns
+    -------
+    callable
+        `wrap(payload)` returning a new dict with the metadata blocks
+        injected. Never mutates the input payload.
+    """
+
+    def wrap(payload: dict) -> dict:
+        blocks = {'_run_metadata': run_md}
+        if input_md is not None:
+            blocks['_input_metadata'] = input_md
+        if univariate_md is not None:
+            blocks['_univariate_metadata'] = univariate_md
+        return inject_metadata(payload, **blocks)
+
+    return wrap
 
 
 def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
@@ -172,7 +266,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     chance_ll = np.log(2)
 
     if settings_path is None:
-        settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
 
     try:
@@ -182,14 +276,23 @@ def bout_onset_model_selection(univariate_results_path: str,
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
-    model_selection_dir = output_directory
-    os.makedirs(model_selection_dir, exist_ok=True)
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading univariate results from: {univariate_results_path}")
     print(f"Loading raw data from: {input_data_path}")
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
+    all_feature_data = load_pickle_modeling_data(input_data_path)
 
+    # Strip upstream metadata blocks before iterating either dict — the
+    # reserved-key blocks (`_input_metadata` etc.) must not be mistaken
+    # for feature entries. The harvested blocks are embedded into every
+    # step pickle below via `_wrap_step`.
+    _input_md, _univariate_md = _harvest_upstream_metadata(univariate_data, all_feature_data)
+
+    # Filter feature-level candidates *after* metadata extraction so the
+    # iteration only sees behavioral-feature keys.
     candidates = []
     for feat_name, results in univariate_data.items():
         if 'actual' not in results or 'll' not in results['actual']:
@@ -211,7 +314,6 @@ def bout_onset_model_selection(univariate_results_path: str,
         print("No significant features found. Aborting.")
         return
 
-    all_feature_data = load_pickle_modeling_data(input_data_path)
     pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
     if not hasattr(pipeline, 'history_frames'):
         pipeline.history_frames = int(np.floor(settings['io']['camera_sampling_rate'] * settings['model_params']['filter_history']))
@@ -241,6 +343,32 @@ def bout_onset_model_selection(univariate_results_path: str,
     random_seed = settings['model_params']['random_seed']
     print(f"Random Seed: {random_seed} | Split Strategy: {split_strategy} | Num Splits: {n_splits_selection}")
     anchor_feature = ranked_features[0]
+
+    # Build the selection-level `_run_metadata` block. Frozen here so
+    # every step pickle written by this function carries an identical
+    # block (the consolidator asserts equality across step files).
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='bout_onset_model_selection',
+        selection_metric='log_likelihood',
+        n_splits_selection=int(n_splits_selection),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=anchor_feature,
+        gam_kwargs=gam_kwargs,
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'n_splines_time': int(n_splines_time),
+            'n_splines_value': int(n_splines_value),
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
 
     cv_folds = []
     if split_strategy == 'session':
@@ -307,7 +435,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     time_indices = np.arange(history_frames, dtype=float)
     step_counter = 0
 
-    fname = os.path.basename(univariate_results_path)
+    fname = Path(univariate_results_path).name
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
     prediction_mode = settings['model_params']['model_target_vocal_type']
@@ -315,8 +443,8 @@ def bout_onset_model_selection(univariate_results_path: str,
     prefix = f"model_selection_{target_condition}_{prediction_mode}_{split_strategy}_step_"
 
     existing_steps = []
-    if os.path.exists(model_selection_dir):
-        for f_name in os.listdir(model_selection_dir):
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
                 try:
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
@@ -327,7 +455,7 @@ def bout_onset_model_selection(univariate_results_path: str,
         last_step = max(existing_steps)
         print(f"\n[RESUME] Detected previous run. Checking Step {last_step}...")
         try:
-            with open(os.path.join(model_selection_dir, f"{prefix}{last_step}.pkl"), 'rb') as f:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_results = pickle.load(f)
             current_model_features = last_results['current_features']
             best_current_score = last_results['baseline_score']
@@ -477,8 +605,8 @@ def bout_onset_model_selection(univariate_results_path: str,
             # `target_condition` and could orphan the Step 0 file from the rest
             # of the run on selection resume.
             s0_name = f"{prefix}0.pkl"
-            with open(os.path.join(model_selection_dir, s0_name), 'wb') as f:
-                pickle.dump(step_0_metadata, f)
+            with open(model_selection_dir / s0_name, 'wb') as f:
+                pickle.dump(_wrap_step(step_0_metadata), f)
             step_counter = 1
 
     while True:
@@ -628,16 +756,16 @@ def bout_onset_model_selection(univariate_results_path: str,
             current_model_features.append(best_candidate)
 
             fname = f"{prefix}{step_counter}.pkl"
-            with open(os.path.join(model_selection_dir, fname), 'wb') as f:
-                pickle.dump(step_results_metadata, f)
+            with open(model_selection_dir / fname, 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
 
             best_current_score, best_current_se, step_counter = best_candidate_score, best_candidate_se, step_counter + 1
         else:
             print("  REJECT. Selection Finished.")
             step_results_metadata['selected_feature'] = None
             fname = f"{prefix}{step_counter}.pkl"
-            with open(os.path.join(model_selection_dir, fname), 'wb') as f:
-                pickle.dump(step_results_metadata, f)
+            with open(model_selection_dir / fname, 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
             break
 
         if len(current_model_features) == len(ranked_features):
@@ -673,7 +801,7 @@ def bout_onset_model_selection(univariate_results_path: str,
             f_n = pooled_feature_cache[f]['X_neg']
             X_list_final.append(np.concatenate((f_p[idx_p], f_n[idx_n])))
 
-        last_file = os.path.join(model_selection_dir, fname)
+        last_file = model_selection_dir / fname
 
         X_gam_tr = get_unrolled_X_for_multivariate(X_list_final, history_frames)
         y_gam_tr = np.repeat(y_final.astype(float), history_frames)
@@ -705,6 +833,11 @@ def bout_onset_model_selection(univariate_results_path: str,
         with open(last_file, 'rb') as f:
             data = pickle.load(f)
 
+        # Strip existing metadata blocks so `_wrap_step` can re-inject
+        # them cleanly without colliding with the prior write's keys.
+        for _k in RESERVED_METADATA_KEYS:
+            data.pop(_k, None)
+
         data.update({
             'final_model_features': current_model_features,
             'filter_shapes': final_fold_shapes,
@@ -713,7 +846,7 @@ def bout_onset_model_selection(univariate_results_path: str,
         })
 
         with open(last_file, 'wb') as f:
-            pickle.dump(data, f)
+            pickle.dump(_wrap_step(data), f)
         print("Final model filters saved.")
 
     except Exception as e:
@@ -895,7 +1028,7 @@ def vocal_category_model_selection(
     chance_ll = np.log(2)
 
     if settings_path is None:
-        settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
 
     try:
@@ -904,14 +1037,14 @@ def vocal_category_model_selection(
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
-    model_selection_dir = output_directory
-    os.makedirs(model_selection_dir, exist_ok=True)
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
     print(f"Results will be saved to: {model_selection_dir}")
     print(f"Loading univariate results from: {univariate_results_path}")
     print(f"Loading raw data from: {input_data_path}")
 
     # Extract target metadata safely
-    fname = os.path.basename(univariate_results_path)
+    fname = Path(univariate_results_path).name
 
     cat_match = re.search(r'category_(\d+)', fname)
     target_category = f"category_{cat_match.group(1)}" if cat_match else "category_unknown"
@@ -924,6 +1057,13 @@ def vocal_category_model_selection(
 
     # Filter candidates safely
     candidates = []
+    # Defer the upstream-input metadata harvest until `all_feature_data`
+    # is loaded below. Strip just the univariate-side blocks here so the
+    # `for feat_name, payload in univariate_data.items()` loop only sees
+    # behavioral-feature entries.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
     for feat_name, payload in univariate_data.items():
         if isinstance(payload, tuple) and len(payload) == 2:
             _, results = payload
@@ -957,6 +1097,18 @@ def vocal_category_model_selection(
 
     print("Loading raw input data...")
     all_feature_data = load_pickle_modeling_data(input_data_path)
+
+    # Final upstream-metadata harvest. Prefer the value the consolidator
+    # asserted across every per-feature pickle; fall back to the
+    # Level-1 input pickle's copy for legacy runs.
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in all_feature_data:
+        _input_md = all_feature_data.pop('_input_metadata')
+    else:
+        all_feature_data.pop('_input_metadata', None)
+    all_feature_data.pop('_run_metadata', None)
+    all_feature_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
 
     common_sessions = set(all_feature_data[ranked_features[0]].keys())
     for feat in ranked_features[1:]:
@@ -1076,10 +1228,37 @@ def vocal_category_model_selection(
     else:
         raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
 
+    # Build the selection-level `_run_metadata` block + step-wrapper once.
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='vocal_category_model_selection',
+        selection_metric='log_likelihood',
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs=gam_kwargs,
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'model_type': model_type,
+            'n_splines_time': int(n_splines_time),
+            'n_splines_value': int(n_splines_value),
+            'target_category': target_category,
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
     prefix = f"model_selection_{target_condition}_{target_category}_step_"
     existing_steps = []
-    if os.path.exists(model_selection_dir):
-        for f_name in os.listdir(model_selection_dir):
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
                 try:
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
@@ -1093,7 +1272,7 @@ def vocal_category_model_selection(
         last_step = max(existing_steps)
         print(f"\n[RESUME] Detected previous run. Checking Step {last_step}...")
         try:
-            with open(os.path.join(model_selection_dir, f"{prefix}{last_step}.pkl"), 'rb') as f:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_results = pickle.load(f)
             current_model_features = last_results['current_features']
             best_current_score = last_results['baseline_score']
@@ -1250,8 +1429,8 @@ def vocal_category_model_selection(
                     }
                 }
             }
-            with open(os.path.join(model_selection_dir, f"{prefix}0.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
+            with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
             step_counter = 1
 
     print("\n--- Starting Forward Selection ---")
@@ -1411,8 +1590,8 @@ def vocal_category_model_selection(
             print(f"  ACCEPT {best_cand_name}")
             current_model_features.append(best_cand_name)
             step_results_metadata['selected_feature'] = best_cand_name
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results_metadata, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
             # Track `best_current_se` alongside the score so the 1SE acceptance
             # test always compares against the *current* accepted model's
             # sampling variability rather than a stale Step-0 value.
@@ -1421,17 +1600,17 @@ def vocal_category_model_selection(
         else:
             print("  REJECT. Stopping.")
             step_results_metadata['selected_feature'] = None
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results_metadata, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
             break
 
     print("Final Feature Set:", current_model_features)
 
     print("\n--- Final Refit for Visualization (CV-based) ---")
     try:
-        last_file = os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl")
-        if not os.path.exists(last_file):
-            last_file = os.path.join(model_selection_dir, f"{prefix}{step_counter - 1}.pkl")
+        last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
+        if not last_file.exists():
+            last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
 
         final_fold_shapes = []
         print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
@@ -1524,10 +1703,12 @@ def vocal_category_model_selection(
         with open(last_file, 'rb') as f:
             data = pickle.load(f)
 
+        for _k in RESERVED_METADATA_KEYS:
+            data.pop(_k, None)
         data.update(final_res)
 
         with open(last_file, 'wb') as f:
-            pickle.dump(data, f)
+            pickle.dump(_wrap_step(data), f)
 
         print("Model selection complete. CV-based shapes saved.")
 
@@ -1634,7 +1815,7 @@ def bout_parameter_model_selection(
     print(f"--- Starting Regression Model Selection for {target_variable} ---")
 
     if settings_path is None:
-        settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
 
     try:
@@ -1643,14 +1824,21 @@ def bout_parameter_model_selection(
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
-    model_selection_dir = output_directory
-    os.makedirs(model_selection_dir, exist_ok=True)
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
     print(f"Results will be saved to: {model_selection_dir}")
 
     print(f"Loading univariate results from: {univariate_results_path}")
     print(f"Loading raw data from: {input_data_path}")
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
+
+    # Strip the upstream metadata blocks from `univariate_data` before
+    # iterating its `.items()`. The same pattern is applied to
+    # `all_feature_data` further down once it is loaded.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
 
     # 1. Feature Screening & Ranking
     candidates = []
@@ -1697,6 +1885,19 @@ def bout_parameter_model_selection(
     # 2. Raw Data Preparation
     print("Loading raw input data...")
     all_feature_data = load_pickle_modeling_data(input_data_path)
+
+    # Final upstream-metadata harvest: prefer the value the consolidator
+    # asserted against every per-feature univariate pickle, then fall
+    # back to the Level-1 pickle's own block for legacy runs.
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in all_feature_data:
+        _input_md = all_feature_data.pop('_input_metadata')
+    else:
+        all_feature_data.pop('_input_metadata', None)
+    all_feature_data.pop('_run_metadata', None)
+    all_feature_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
+
     y_global = all_feature_data[ranked_features[0]]['y']
     groups_global = all_feature_data[ranked_features[0]]['groups']
 
@@ -1789,15 +1990,43 @@ def bout_parameter_model_selection(
     best_current_se = 0.0
     step_counter = 0
 
-    fname = os.path.basename(univariate_results_path)
+    fname = Path(univariate_results_path).name
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
     prefix = f"model_selection_{target_variable}_{target_condition}_{split_strategy}_step_"
 
+    # Selection-level run metadata + step-wrapper, frozen here so every
+    # step file carries an identical block.
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='bout_parameter_model_selection',
+        selection_metric='explained_deviance',
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs=gam_kwargs,
+        extra_knobs={
+            'target_variable': target_variable,
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'model_type': model_type,
+            'n_splines_time': int(n_splines_time),
+            'n_splines_value': int(n_splines_value),
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
     existing_steps = []
-    if os.path.exists(model_selection_dir):
-        for f_name in os.listdir(model_selection_dir):
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
                 try:
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
@@ -1808,7 +2037,7 @@ def bout_parameter_model_selection(
         last_step = max(existing_steps)
         print(f"[RESUME] Restoring from Step {last_step}...")
         try:
-            with open(os.path.join(model_selection_dir, f"{prefix}{last_step}.pkl"), 'rb') as f:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
             current_model_features = last_res['current_features']
             best_current_score = last_res['baseline_score']
@@ -1957,8 +2186,8 @@ def bout_parameter_model_selection(
                         }
                     }
                 }
-                with open(os.path.join(model_selection_dir, f"{prefix}0.pkl"), 'wb') as f:
-                    pickle.dump(step_0_res, f)
+                with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+                    pickle.dump(_wrap_step(step_0_res), f)
                 step_counter = 1
             else:
                 print(f"*** ANCHOR FAILED: {anchor} D^2={mean_anchor_score:.4f} <= 0. Reverting to empty start. ***")
@@ -2094,8 +2323,8 @@ def bout_parameter_model_selection(
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
 
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
 
             best_current_score = best_cand_score
             best_current_se = best_cand_se
@@ -2103,8 +2332,8 @@ def bout_parameter_model_selection(
         else:
             print("  REJECT. Selection Finished.")
             step_results['selected_feature'] = None
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
             break
 
         if len(current_model_features) == len(ranked_features): break
@@ -2112,8 +2341,9 @@ def bout_parameter_model_selection(
     # 7. Final Model Fit for Visualization
     print("\n--- Final Model Fit for Visualization (CV-based) ---")
     try:
-        last_file = os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl")
-        if not os.path.exists(last_file): last_file = os.path.join(model_selection_dir, f"{prefix}{step_counter - 1}.pkl")
+        last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
+        if not last_file.exists():
+            last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
 
         final_fold_shapes = []
         print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
@@ -2172,10 +2402,12 @@ def bout_parameter_model_selection(
         with open(last_file, 'rb') as open_pkl_file:
             data = pickle.load(open_pkl_file)
 
+        for _k in RESERVED_METADATA_KEYS:
+            data.pop(_k, None)
         data.update(final_res)
 
         with open(last_file, 'wb') as save_pkl_file:
-            pickle.dump(data, save_pkl_file)
+            pickle.dump(_wrap_step(data), save_pkl_file)
 
         print("Model selection complete. CV-based shapes saved.")
 
@@ -2294,7 +2526,7 @@ def multinomial_vocal_category_model_selection(
     print("--- Starting Multinomial Vocal Category Model Selection ---")
 
     if settings_path is None:
-        settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
 
     try:
@@ -2303,11 +2535,16 @@ def multinomial_vocal_category_model_selection(
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
-    model_selection_dir = output_directory
-    os.makedirs(model_selection_dir, exist_ok=True)
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
 
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
+
+    # Strip upstream metadata blocks before iterating feature entries.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
 
     candidates = []
     num_features = len(univariate_data)
@@ -2347,6 +2584,18 @@ def multinomial_vocal_category_model_selection(
     print("Loading and binning raw input data...")
     with open(input_data_path, 'rb') as f:
         raw_data = pickle.load(f)
+
+    # Final upstream-metadata harvest. The univariate-side blocks were
+    # captured above; the input-side block falls back to the Level-1
+    # pickle if the consolidator did not provide one (legacy run).
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in raw_data:
+        _input_md = raw_data.pop('_input_metadata')
+    else:
+        raw_data.pop('_input_metadata', None)
+    raw_data.pop('_run_metadata', None)
+    raw_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
 
     hp = settings['hyperparameters']['jax_linear']['multinomial_logistic']
     bin_size = hp['bin_resizing_factor']
@@ -2518,7 +2767,7 @@ def multinomial_vocal_category_model_selection(
     best_current_se = 0.0
     step_counter = 0
 
-    fname = os.path.basename(univariate_results_path)
+    fname = Path(univariate_results_path).name
     # Match the binomial / bout-onset regex grouping: `(?:...)` non-capture on
     # the alternation so conditions like `male_mute_partner` are captured in
     # full. The older `(male|female.*?)` form captured only the literal `male`
@@ -2527,9 +2776,32 @@ def multinomial_vocal_category_model_selection(
     target_condition = cond_match.group(1) if cond_match else "unknown"
     prefix = f"model_selection_multinomial_vocal_category_{target_condition}_{split_strategy}_step_"
 
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='multinomial_vocal_category_model_selection',
+        selection_metric='auc',
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs={},
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'bin_resizing_factor': int(bin_size),
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
     existing_steps = []
-    if os.path.exists(model_selection_dir):
-        for f_name in os.listdir(model_selection_dir):
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
                 try:
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
@@ -2540,7 +2812,7 @@ def multinomial_vocal_category_model_selection(
         last_step = max(existing_steps)
         print(f"[RESUME] Restoring from Step {last_step}...")
         try:
-            with open(os.path.join(model_selection_dir, f"{prefix}{last_step}.pkl"), 'rb') as f:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
             current_model_features = last_res['current_features']
             best_current_score = last_res['baseline_score']
@@ -2669,8 +2941,8 @@ def multinomial_vocal_category_model_selection(
             'candidates_summary': {'null_model_free': baseline_data}
         }
 
-        with open(os.path.join(model_selection_dir, f"{prefix}0.pkl"), 'wb') as f:
-            pickle.dump(step_0_res, f)
+        with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+            pickle.dump(_wrap_step(step_0_res), f)
 
         step_counter = 1
 
@@ -2825,8 +3097,8 @@ def multinomial_vocal_category_model_selection(
                     'selected_feature': anchor,
                     'candidates_summary': {anchor: cand_data}
                 }
-                with open(os.path.join(model_selection_dir, f"{prefix}1.pkl"), 'wb') as f:
-                    pickle.dump(step_1_res, f)
+                with open(model_selection_dir / f"{prefix}1.pkl", 'wb') as f:
+                    pickle.dump(_wrap_step(step_1_res), f)
                 step_counter = 2
             else:
                 print(f"  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
@@ -3006,14 +3278,14 @@ def multinomial_vocal_category_model_selection(
             print(f"  ACCEPT {best_cand}")
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
             best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
         else:
             print("  REJECT. Selection Finished.")
             step_results['selected_feature'] = None
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
             break
 
         if len(current_model_features) == len(ranked_features):
@@ -3022,7 +3294,7 @@ def multinomial_vocal_category_model_selection(
     # 7. Final Data Promotion for Visualization
     print("\n--- Finalizing Results for Visualization ---")
     try:
-        last_file_path = os.path.join(model_selection_dir, f"{prefix}{max(0, step_counter - 1)}.pkl")
+        last_file_path = model_selection_dir / f"{prefix}{max(0, step_counter - 1)}.pkl"
         with open(last_file_path, 'rb') as f:
             step_data = pickle.load(f)
 
@@ -3043,8 +3315,10 @@ def multinomial_vocal_category_model_selection(
             'weights_reshaped': reshaped_weights,
             'classes': winning_cand_data['classes']
         })
+        for _k in RESERVED_METADATA_KEYS:
+            step_data.pop(_k, None)
         with open(last_file_path, 'wb') as f:
-            pickle.dump(step_data, f)
+            pickle.dump(_wrap_step(step_data), f)
 
         print("Final model configuration successfully saved.")
     except Exception as e:
@@ -3146,7 +3420,7 @@ def continuous_vocal_manifold_model_selection(
     print("--- Starting Continuous Vocal Manifold Model Selection ---")
 
     if settings_path is None:
-        settings_path_obj = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
 
     try:
@@ -3155,13 +3429,18 @@ def continuous_vocal_manifold_model_selection(
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
-    model_selection_dir = output_directory
-    os.makedirs(model_selection_dir, exist_ok=True)
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
     print(f"Results will be saved to: {model_selection_dir}")
 
     print(f"Loading univariate results from: {univariate_results_path}")
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
+
+    # Strip upstream metadata blocks before iterating feature entries.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
 
     num_features = len(univariate_data)
     alpha_corrected = p_val / num_features
@@ -3225,6 +3504,16 @@ def continuous_vocal_manifold_model_selection(
     print("Loading and binning raw continuous input data...")
     with open(input_data_path, 'rb') as f:
         raw_data = pickle.load(f)
+
+    # Final upstream-metadata harvest.
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in raw_data:
+        _input_md = raw_data.pop('_input_metadata')
+    else:
+        raw_data.pop('_input_metadata', None)
+    raw_data.pop('_run_metadata', None)
+    raw_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
 
     hp = settings['hyperparameters']['jax_linear']['bivariate']
     bin_size = hp['bin_resizing_factor']
@@ -3327,7 +3616,7 @@ def continuous_vocal_manifold_model_selection(
     best_current_se = 0.0
     step_counter = 0
 
-    fname = os.path.basename(univariate_results_path)
+    fname = Path(univariate_results_path).name
     # Use a non-capturing alternation so conditions like `male_mute_partner`
     # are captured in full rather than truncated to `male`.
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
@@ -3335,9 +3624,33 @@ def continuous_vocal_manifold_model_selection(
 
     prefix = f"model_selection_continuous_manifold_{target_condition}_{split_strategy}_step_"
 
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='continuous_vocal_manifold_model_selection',
+        selection_metric='r2_spatial',
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=True,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs={},
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'bin_resizing_factor': int(bin_size),
+            'screening_metric': SCREENING_METRIC,
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
     existing_steps = []
-    if os.path.exists(model_selection_dir):
-        for f_name in os.listdir(model_selection_dir):
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
                 try:
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
@@ -3348,7 +3661,7 @@ def continuous_vocal_manifold_model_selection(
         last_step = max(existing_steps)
         print(f"[RESUME] Restoring from Step {last_step}...")
         try:
-            with open(os.path.join(model_selection_dir, f"{prefix}{last_step}.pkl"), 'rb') as f:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
             current_model_features = last_res['current_features']
             best_current_score = last_res['baseline_score']
@@ -3506,8 +3819,8 @@ def continuous_vocal_manifold_model_selection(
             'candidates_summary': {'null_model_free': baseline_data}
         }
 
-        with open(os.path.join(model_selection_dir, f"{prefix}0.pkl"), 'wb') as f:
-            pickle.dump(step_0_res, f)
+        with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+            pickle.dump(_wrap_step(step_0_res), f)
 
         step_counter = 1
 
@@ -3697,8 +4010,8 @@ def continuous_vocal_manifold_model_selection(
                     'baseline_score': best_current_score, 'selected_feature': anchor,
                     'candidates_summary': {anchor: cand_data}
                 }
-                with open(os.path.join(model_selection_dir, f"{prefix}1.pkl"), 'wb') as f:
-                    pickle.dump(step_1_res, f)
+                with open(model_selection_dir / f"{prefix}1.pkl", 'wb') as f:
+                    pickle.dump(_wrap_step(step_1_res), f)
                 step_counter = 2
             else:
                 print(f"  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
@@ -3822,8 +4135,8 @@ def continuous_vocal_manifold_model_selection(
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
 
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
 
             best_current_score = best_cand_score
             best_current_se = best_cand_se
@@ -3831,8 +4144,8 @@ def continuous_vocal_manifold_model_selection(
         else:
             print("  REJECT. Selection Finished.")
             step_results['selected_feature'] = None
-            with open(os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl"), 'wb') as f:
-                pickle.dump(step_results, f)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
             break
 
         if len(current_model_features) == len(ranked_features):
@@ -3840,9 +4153,9 @@ def continuous_vocal_manifold_model_selection(
 
     print("\n--- Finalizing Results ---")
     try:
-        last_file_path = os.path.join(model_selection_dir, f"{prefix}{step_counter}.pkl")
-        if not os.path.exists(last_file_path):
-            last_file_path = os.path.join(model_selection_dir, f"{prefix}{step_counter - 1}.pkl")
+        last_file_path = model_selection_dir / f"{prefix}{step_counter}.pkl"
+        if not last_file_path.exists():
+            last_file_path = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
 
         with open(last_file_path, 'rb') as f:
             step_data = pickle.load(f)
@@ -3853,11 +4166,13 @@ def continuous_vocal_manifold_model_selection(
             'input_data_path': input_data_path
         }
 
+        for _k in RESERVED_METADATA_KEYS:
+            step_data.pop(_k, None)
         step_data.update(final_res)
         with open(last_file_path, 'wb') as f:
-            pickle.dump(step_data, f)
+            pickle.dump(_wrap_step(step_data), f)
 
-        print(f"Success. Final model configuration saved to {os.path.basename(last_file_path)}")
+        print(f"Success. Final model configuration saved to {Path(last_file_path).name}")
 
     except Exception as e:
         print(f"Final promotion failed: {e}")

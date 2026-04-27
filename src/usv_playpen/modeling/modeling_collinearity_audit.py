@@ -34,10 +34,10 @@ the extraction pipeline; the wrapper `run_predictor_audits` in
 `modeling_utils` enforces that policy.
 """
 
-import os
 import pickle
 import numpy as np
 from datetime import datetime
+from pathlib import Path
 from scipy.stats import spearmanr, rankdata
 
 def _build_event_summary_matrix(processed_beh_dict: dict,
@@ -276,7 +276,8 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
                                  save_path: str,
                                  source_pickle: str,
                                  concern_thresh: float = 0.7,
-                                 exclude_thresh: float = 0.85) -> dict:
+                                 exclude_thresh: float = 0.85,
+                                 input_metadata: dict = None) -> dict:
     """
     Computes pairwise predictor correlations and per-feature VIFs on the
     per-event-onset summary matrix and persists the result to disk.
@@ -327,6 +328,11 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
         See `_flagged_pairs`.
     exclude_thresh : float, default 0.85
         See `_flagged_pairs`.
+    input_metadata : dict, optional
+        Pre-built `_input_metadata` block from the calling pipeline.
+        When supplied, embedded under the reserved key
+        `_input_metadata` of the saved payload so this artifact is
+        independently provenance-complete.
 
     Returns
     -------
@@ -361,6 +367,8 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
             'source_pickle': source_pickle,
             'created': datetime.now().isoformat(timespec='seconds'),
         }
+        if input_metadata is not None:
+            payload['_input_metadata'] = dict(input_metadata)
     else:
         # Spearman matrix on (n_events, n_features). scipy returns a square
         # matrix when given a 2-D array.
@@ -401,6 +409,8 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
             'source_pickle': source_pickle,
             'created': datetime.now().isoformat(timespec='seconds'),
         }
+        if input_metadata is not None:
+            payload['_input_metadata'] = dict(input_metadata)
 
         # Stdout summary
         print("\n" + "=" * 72)
@@ -433,8 +443,8 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
             print(f"    ... and {len(flagged) - 15} more (see artifact).")
         print("=" * 72 + "\n")
 
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    with open(save_path, 'wb') as fh:
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    with Path(save_path).open('wb') as fh:
         pickle.dump(payload, fh)
     print(f"[audit] collinearity artifact written: {save_path}")
 
@@ -630,7 +640,8 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                                ibi_thresholds: dict,
                                save_path: str,
                                source_pickle: str,
-                               random_seed: int = 0) -> dict:
+                               random_seed: int = 0,
+                               input_metadata: dict = None) -> dict:
     """
     Computes ACF (lower bound) and event-locked predictive ρ (upper bound)
     timescales for every kept predictor, alongside the response-side IBI
@@ -690,6 +701,11 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         Basename of the paired modeling input pickle, for provenance.
     random_seed : int, default 0
         Seed for the within-session shift null.
+    input_metadata : dict, optional
+        Pre-built `_input_metadata` block from the calling pipeline.
+        When supplied, embedded under the reserved key
+        `_input_metadata` of the saved payload so this artifact is
+        independently provenance-complete.
 
     Returns
     -------
@@ -750,8 +766,10 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             'source_pickle': source_pickle,
             'created': datetime.now().isoformat(timespec='seconds'),
         }
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        with open(save_path, 'wb') as fh:
+        if input_metadata is not None:
+            payload['_input_metadata'] = dict(input_metadata)
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        with Path(save_path).open('wb') as fh:
             pickle.dump(payload, fh)
         return payload
 
@@ -924,6 +942,8 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         'source_pickle': source_pickle,
         'created': datetime.now().isoformat(timespec='seconds'),
     }
+    if input_metadata is not None:
+        payload['_input_metadata'] = dict(input_metadata)
 
     # Stdout headline
     finite_int = tau_int[np.isfinite(tau_int)]
@@ -948,8 +968,8 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         print("   OK")
     print("=" * 72 + "\n")
 
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    with open(save_path, 'wb') as fh:
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    with Path(save_path).open('wb') as fh:
         pickle.dump(payload, fh)
     print(f"[audit] timescale artifact written: {save_path}")
 

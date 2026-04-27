@@ -45,7 +45,11 @@
       "allo_yaw-nose",
       "nose-allo_yaw",
       "allo_yaw-TTI",
-      "TTI-allo_yaw"
+      "TTI-allo_yaw",
+      "allo_pitch-nose",
+      "nose-allo_pitch",
+      "allo_pitch-TTI",
+      "TTI-allo_pitch"
     ],
     "dyadic_engagement": ["orofacial-sei", "anogenital-sei"],
     "dyadic_pose_symmetric": false,

@@ -33,11 +33,10 @@ Computational & Structural Features:
 
 import argparse
 import pickle
-import os
-import pathlib
 import json
 import gc
 import traceback
+from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -52,6 +51,8 @@ from .modeling_usv_manifold_position import ContinuousModelingPipeline, Continuo
 from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import (raised_cosine, bsplines, identity,
                                       laplacian_pyramid, _normalizecols)
+from .modeling_metadata import (build_run_metadata, extract_metadata_blocks,
+                                inject_metadata, RESERVED_METADATA_KEYS)
 
 def get_basis_matrix_standardized(
         settings: dict,
@@ -131,7 +132,7 @@ def get_basis_matrix_standardized(
         basis_matrix = identity(width=w)
 
     # Atomic Lock: Only the first job in the array generates the verification plot
-    lock_file = pathlib.Path(output_dir) / ".basis_plotted"
+    lock_file = Path(output_dir) / ".basis_plotted"
 
     if not lock_file.exists() and basis_matrix is not None:
         try:
@@ -142,7 +143,7 @@ def get_basis_matrix_standardized(
             plt.title(f"Basis Verification: {basis_type}")
             plt.xlabel("Lags (frames)")
             plt.ylabel("Weight")
-            plt.savefig(pathlib.Path(output_dir) / "basis_verification.png", dpi=150)
+            plt.savefig(Path(output_dir) / "basis_verification.png", dpi=150)
             plt.close()
 
         except FileExistsError:
@@ -189,16 +190,18 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         print(f"FATAL: Settings load failed: {e}")
         return
 
-    # 2. Semantic Feature Mapping
+    # 2. Semantic Feature Mapping + upstream-metadata harvest
     try:
         with open(args.input_data, 'rb') as f:
-            # `pickle.load` deserializes the entire dict; we then keep only
-            # the sorted key list and immediately drop the rest so peak RSS
-            # falls back to the keys-only footprint before the JAX/GPU
-            # estimator allocates. This is *not* a true keys-only loader —
-            # pickle does not support that — but it does bound the resident
-            # working set during the per-feature mapping step.
-            all_features = sorted(list(pickle.load(f).keys()))
+            # `pickle.load` deserializes the entire dict; we keep the
+            # sorted *non-reserved* key list (so `_input_metadata` and
+            # any future reserved blocks are not mistaken for features)
+            # and stash the upstream `_input_metadata` block to copy
+            # verbatim into the per-feature pickle.
+            loaded = pickle.load(f)
+            input_metadata = loaded['_input_metadata'] if '_input_metadata' in loaded else None
+            all_features = sorted([k for k in loaded.keys() if k not in RESERVED_METADATA_KEYS])
+            del loaded
 
         if args.feature_idx >= len(all_features):
             print(f"FATAL: Index {args.feature_idx} out of bounds.")
@@ -206,6 +209,9 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
         feature_name = all_features[args.feature_idx]
         print(f"[{timestamp}] Mapped Index {args.feature_idx} -> Feature: {feature_name}")
+        if input_metadata is None:
+            print(f"[{timestamp}] WARNING: input pickle has no `_input_metadata` block "
+                  "(legacy artifact); per-feature output will lack upstream provenance.")
 
         # Explicitly free memory before starting pipeline initialization
         del all_features
@@ -216,7 +222,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         return
 
     # 3. Execution Routing
-    os.makedirs(args.output_dir, exist_ok=True)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     results = None
 
     try:
@@ -287,14 +293,42 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         traceback.print_exc()
         return
 
-    # 4. Atomic Result Serialization
+    # 4. Build run-level metadata
+    # `n_outer_folds` and `split_strategy` come straight from the model_params
+    # block — both are the values the runner actually consulted.
+    run_metadata = build_run_metadata(
+        modeling_settings=settings,
+        analysis_type=args.analysis_type,
+        null_strategy='x_history_shuffle',
+        n_outer_folds=int(settings['model_params']['split_num']),
+        split_strategy=settings['model_params']['split_strategy'],
+        settings_path=args.settings_file,
+    )
+
+    # 5. Atomic Result Serialization
     if results:
         safe_feat = feature_name.replace('.', '_')
-        out_name = f"univariate_{args.feature_idx}_{safe_feat}_{timestamp}.pkl"
-        out_path = os.path.join(args.output_dir, out_name)
+        # Unified per-feature filename: the analysis_tag matches the
+        # input pickle's tag so per-feature files group naturally per
+        # run. The `idx:04d` zero-pad keeps lexicographic sort aligned
+        # with numeric SLURM index.
+        if input_metadata is not None and 'analysis_tag' in input_metadata:
+            analysis_tag = input_metadata['analysis_tag']
+        else:
+            analysis_tag = args.analysis_type
+        out_name = f"univariate_{analysis_tag}_{args.feature_idx:04d}_{safe_feat}_{timestamp}.pkl"
+        out_path = Path(args.output_dir) / out_name
+
+        # Embed the upstream `_input_metadata` and the new
+        # `_run_metadata` so the per-feature artifact is independently
+        # provenance-complete.
+        blocks = {'_run_metadata': run_metadata}
+        if input_metadata is not None:
+            blocks['_input_metadata'] = input_metadata
+        results = inject_metadata(results, **blocks)
 
         try:
-            with open(out_path, 'wb') as f:
+            with out_path.open('wb') as f:
                 pickle.dump(results, f)
             print(f"[{datetime.now()}] Success. Results saved to: {out_path}")
         except Exception as e:

@@ -21,8 +21,7 @@ Key scientific capabilities:
 
 import json
 import numpy as np
-import os
-import pathlib
+from pathlib import Path
 import pickle
 from datetime import datetime
 from sklearn.metrics import (
@@ -35,6 +34,11 @@ from tqdm import tqdm
 from typing import Any
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .modeling_metadata import (
+    build_input_metadata, derive_experimental_condition,
+    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
+)
+from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -564,7 +568,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         """
 
         if modeling_settings_dict is None:
-            settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+            settings_path = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as f:
                     self.modeling_settings = json.load(f)
@@ -737,8 +741,10 @@ class MultinomialModelingPipeline(FeatureZoo):
             abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
-        target_mouse_sex = 'male' if targ_idx == 0 else 'female'
-        fname = f"modeling_multinomial_category_{target_mouse_sex}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
+        cohort_condition = derive_experimental_condition(self.modeling_settings)
+        analysis_tag = "multinomial"
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
         # Predictor diagnostics audit. Multinomial stores onsets as frame
         # indices keyed by category; convert to seconds-per-session for the
@@ -747,6 +753,69 @@ class MultinomialModelingPipeline(FeatureZoo):
         for sess_id, targets in multinomial_targets.items():
             fps_local = cam_fps_dict[sess_id]
             precomputed_events[sess_id] = (targets['onsets'].astype(np.float64) / fps_local)
+
+        # Class balance over the kept multinomial labels — used to
+        # report `categories_kept` and `class_counts` in the metadata.
+        all_labels = np.concatenate([m['labels'] for m in multinomial_targets.values()]) if multinomial_targets else np.empty(0, dtype=int)
+        unique_labels, counts = np.unique(all_labels, return_counts=True)
+        class_counts_md = {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, counts)}
+
+        gmm_idx_md = self.modeling_settings['model_params']['gmm_component_index']
+        ibi_thresholds_md = {}
+        gmm_params_md = self.modeling_settings['gmm_params']
+        for sex in ('male', 'female'):
+            params = gmm_params_md[sex]
+            if gmm_idx_md < len(params['means']):
+                ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
+                    params['means'][gmm_idx_md], params['sds'][gmm_idx_md],
+                    self.modeling_settings['model_params']['gmm_z_score'],
+                ))
+            else:
+                ibi_thresholds_md[sex] = float('nan')
+
+        first_sess_id = next(iter(processed_beh_data))
+        kept_columns_first_sess = list(processed_beh_data[first_sess_id].columns)
+        feature_zoo_kept_md = sorted({
+            c.split('.', 1)[-1] if '.' in c and not c.split('.')[-1].isdigit() else c
+            for c in kept_columns_first_sess
+        })
+        vocal_columns_md = sorted({
+            c for c in kept_columns_first_sess
+            if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
+        })
+
+        n_events_per_session_md = {
+            sid: {'usv': int(targets['onsets'].size)}
+            for sid, targets in multinomial_targets.items()
+        }
+
+        input_metadata = build_input_metadata(
+            modeling_settings=self.modeling_settings,
+            analysis_type='multinomial',
+            analysis_tag=analysis_tag,
+            pipeline_class=type(self).__name__,
+            target_idx=targ_idx,
+            predictor_idx=pred_idx,
+            n_sessions_used=len(processed_beh_data),
+            session_ids=sorted(processed_beh_data.keys()),
+            n_events_per_session=n_events_per_session_md,
+            feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
+            feature_zoo_kept=feature_zoo_kept_md,
+            dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
+            dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
+            noise_vocal_categories_excluded=list(noise_cats),
+            vocal_signal_columns_added=vocal_columns_md,
+            filter_history_seconds=float(filter_hist),
+            filter_history_frames=int(self.history_frames),
+            camera_sampling_rate_hz=derive_camera_fps_field(cam_fps_dict),
+            ibi_thresholds=ibi_thresholds_md,
+            analysis_specific={
+                'categories_kept': sorted(class_counts_md.keys()),
+                'class_counts': class_counts_md,
+                'usv_category_number': int(voc_settings['usv_category_number']),
+                'usv_category_column_name': column_name_cats,
+            },
+        )
 
         run_predictor_audits(
             processed_beh_dict=processed_beh_data,
@@ -761,6 +830,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
             precomputed_event_times=precomputed_events,
+            input_metadata=input_metadata,
         )
 
         # slice epochs and save to disk
@@ -844,14 +914,16 @@ class MultinomialModelingPipeline(FeatureZoo):
                 print(f"  Category {cat: <2}: {count: >6} USVs ({percentage: >5.2f}%)")
             print("=" * 60 + "\n")
 
-        save_dir = self.modeling_settings['io']['save_directory']
-        save_path = os.path.join(save_dir, fname)
+        save_dir = Path(self.modeling_settings['io']['save_directory'])
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / fname
 
-        os.makedirs(save_dir, exist_ok=True)
+        input_metadata['feature_zoo_kept'] = sorted(final_data.keys())
+        artifact = inject_metadata(final_data, _input_metadata=input_metadata)
 
         print(f"Saving extraction results to:\n{save_path} ...")
-        with open(save_path, 'wb') as f:
-            pickle.dump(final_data, f)
+        with save_path.open('wb') as f:
+            pickle.dump(artifact, f)
         print("[+] Save Complete.")
 
 
@@ -1006,11 +1078,18 @@ class MultinomialModelRunner:
         with open(pkl_path, 'rb') as f:
             raw_data = pickle.load(f)
 
+        # Strip metadata blocks before iterating features. Without this
+        # filter, the underscore-prefixed reserved keys (`_input_metadata`
+        # etc.) would be treated as feature names and the per-session
+        # array indexing below would raise.
+        from .modeling_metadata import RESERVED_METADATA_KEYS as _RES_KEYS
+        feature_keys = [k for k in raw_data.keys() if k not in _RES_KEYS]
+
         if feature_filter is None:
-            sorted_features = sorted(list(raw_data.keys()))
+            sorted_features = sorted(feature_keys)
         else:
             wanted = {feature_filter} if isinstance(feature_filter, str) else set(feature_filter)
-            sorted_features = sorted(feat for feat in raw_data.keys() if feat in wanted)
+            sorted_features = sorted(feat for feat in feature_keys if feat in wanted)
 
         data_blocks = {}
 

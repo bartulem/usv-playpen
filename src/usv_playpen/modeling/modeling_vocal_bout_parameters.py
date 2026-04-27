@@ -33,7 +33,7 @@ Key Scientific and Computational Components:
 
 from datetime import datetime
 import numpy as np
-import os
+from pathlib import Path
 import pickle
 import gc
 import time
@@ -46,6 +46,11 @@ from tqdm import tqdm
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
+from .modeling_metadata import (
+    build_input_metadata, derive_experimental_condition,
+    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
+)
+from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -259,8 +264,60 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
-        t_sex = 'male' if target_mouse_idx == 0 else 'female'
-        fname = f"modeling_bout_param_{target_variable}_{t_sex}_gmm{gmm_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{self.modeling_settings['model_params']['filter_history']}.pkl"
+        cohort_condition = derive_experimental_condition(self.modeling_settings)
+        analysis_tag = f"boutparam-{target_variable}"
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
+
+        ibi_thresholds_md = {}
+        gmm_params_md = self.modeling_settings['gmm_params']
+        for sex in ('male', 'female'):
+            params = gmm_params_md[sex]
+            if gmm_idx < len(params['means']):
+                ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
+                    params['means'][gmm_idx], params['sds'][gmm_idx],
+                    self.modeling_settings['model_params']['gmm_z_score'],
+                ))
+            else:
+                ibi_thresholds_md[sex] = float('nan')
+
+        first_sess_id = next(iter(processed_beh_feature_data_dict))
+        kept_columns_first_sess = list(processed_beh_feature_data_dict[first_sess_id].columns)
+        feature_zoo_kept_md = sorted({
+            c.split('.', 1)[-1] if '.' in c and not c.split('.')[-1].isdigit() else c
+            for c in kept_columns_first_sess
+        })
+        vocal_columns_md = sorted({
+            c for c in kept_columns_first_sess
+            if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
+        })
+
+        input_metadata = build_input_metadata(
+            modeling_settings=self.modeling_settings,
+            analysis_type='params',
+            analysis_tag=analysis_tag,
+            pipeline_class=type(self).__name__,
+            target_idx=target_mouse_idx,
+            predictor_idx=predictor_mouse_idx,
+            n_sessions_used=len(processed_beh_feature_data_dict),
+            session_ids=sorted(processed_beh_feature_data_dict.keys()),
+            n_events_per_session={},
+            feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
+            feature_zoo_kept=feature_zoo_kept_md,
+            dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
+            dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
+            noise_vocal_categories_excluded=list(voc_settings['usv_noise_categories']),
+            vocal_signal_columns_added=vocal_columns_md,
+            filter_history_seconds=float(self.modeling_settings['model_params']['filter_history']),
+            filter_history_frames=int(self.history_frames),
+            camera_sampling_rate_hz=derive_camera_fps_field(camera_fr_dict),
+            ibi_thresholds=ibi_thresholds_md,
+            analysis_specific={
+                'target_variable': target_variable,
+                'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
+                'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
+            },
+        )
 
         # Predictor diagnostics audit (collinearity + timescales). Diagnostic-
         # only: any failure inside the wrapper warns and continues.
@@ -276,6 +333,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             settings=self.modeling_settings,
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
+            input_metadata=input_metadata,
         )
 
         final_data_dict = {}
@@ -379,10 +437,25 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             print(f"      (This will cause the model to misalign behavioral predictors with USV targets!)")
         print("=" * 105 + "\n")
 
-        save_path = os.path.join(self.modeling_settings['io']['save_directory'], fname)
-        os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
-        with open(save_path, 'wb') as f:
-            pickle.dump(final_data_dict, f)
+        save_dir = Path(self.modeling_settings['io']['save_directory'])
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / fname
+
+        # Backfill per-session counts from the anchor feature's groups.
+        n_events_per_session = {}
+        if final_features:
+            anchor_feat = final_features[0]
+            grp = final_data_dict[anchor_feat]['groups']
+            for sess_id in np.unique(grp):
+                n_events_per_session[str(sess_id)] = {
+                    'bout_onsets': int(np.sum(grp == sess_id)),
+                }
+        input_metadata['n_events_per_session'] = n_events_per_session
+        input_metadata['feature_zoo_kept'] = sorted(final_data_dict.keys())
+
+        artifact = inject_metadata(final_data_dict, _input_metadata=input_metadata)
+        with save_path.open('wb') as f:
+            pickle.dump(artifact, f)
         print(f"[+] Saved: {save_path}")
 
     def create_data_splits(self, feature_data: dict, strategy_override: str = None):

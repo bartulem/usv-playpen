@@ -27,8 +27,7 @@ Key scientific capabilities:
 from datetime import datetime
 import json
 import numpy as np
-import os
-import pathlib
+from pathlib import Path
 import pickle
 import time
 from pygam import LogisticGAM, te
@@ -38,6 +37,11 @@ from sklearn.metrics import roc_auc_score, log_loss, f1_score, recall_score, bal
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .modeling_metadata import (
+    build_input_metadata, derive_experimental_condition,
+    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
+)
+from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -158,7 +162,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         """
 
         if modeling_settings_dict is None:
-            settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+            settings_path = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as f:
                     self.modeling_settings = json.load(f)
@@ -319,8 +323,66 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
         )
 
-        target_mouse_sex = 'male' if targ_idx == 0 else 'female'
-        fname = f"modeling_category_{target_category}_{target_mouse_sex}_{voc_mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_hist{filter_hist}s.pkl"
+        # Build the unified Level-1 filename — the analysis_tag includes
+        # the category being modeled, the experimental_condition pins
+        # the cohort, and the rest of the historical fields (voc_mode,
+        # hist) live in `_input_metadata`.
+        cohort_condition = derive_experimental_condition(self.modeling_settings)
+        analysis_tag = f"category-{target_category}"
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
+
+        # Build `_input_metadata` once. Per-session event counts are
+        # backfilled at the dump site (after epoch slicing).
+        gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
+        ibi_thresholds_md = {}
+        gmm_params = self.modeling_settings['gmm_params']
+        for sex in ('male', 'female'):
+            params = gmm_params[sex]
+            if gmm_idx < len(params['means']):
+                ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
+                    params['means'][gmm_idx], params['sds'][gmm_idx],
+                    self.modeling_settings['model_params']['gmm_z_score'],
+                ))
+            else:
+                ibi_thresholds_md[sex] = float('nan')
+
+        first_sess_id = next(iter(processed_beh_data))
+        kept_columns_first_sess = list(processed_beh_data[first_sess_id].columns)
+        feature_zoo_kept_md = sorted({
+            c.split('.', 1)[-1] if '.' in c and not c.split('.')[-1].isdigit() else c
+            for c in kept_columns_first_sess
+        })
+        vocal_columns_md = sorted({
+            c for c in kept_columns_first_sess
+            if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
+        })
+
+        input_metadata = build_input_metadata(
+            modeling_settings=self.modeling_settings,
+            analysis_type='category',
+            analysis_tag=analysis_tag,
+            pipeline_class=type(self).__name__,
+            target_idx=targ_idx,
+            predictor_idx=pred_idx,
+            n_sessions_used=len(processed_beh_data),
+            session_ids=sorted(processed_beh_data.keys()),
+            n_events_per_session={},
+            feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
+            feature_zoo_kept=feature_zoo_kept_md,
+            dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
+            dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
+            noise_vocal_categories_excluded=list(noise_cats),
+            vocal_signal_columns_added=vocal_columns_md,
+            filter_history_seconds=float(filter_hist),
+            filter_history_frames=int(self.history_frames),
+            camera_sampling_rate_hz=derive_camera_fps_field(cam_fps_dict),
+            ibi_thresholds=ibi_thresholds_md,
+            analysis_specific={
+                'target_category': int(target_category),
+                'category_self_exclude': list(category_self_exclude),
+            },
+        )
 
         # Predictor diagnostics audit (collinearity + timescales). Runs on
         # the harmonized, z-scored, but not-yet-sliced feature dict.
@@ -338,6 +400,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             settings=self.modeling_settings,
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
+            input_metadata=input_metadata,
         )
 
         print("Extracting epochs...")
@@ -411,10 +474,25 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         print(f"  > Grand total USVs (N):         {total_target + total_rest}")
         print("=" * 105 + "\n")
 
-        save_path = os.path.join(self.modeling_settings['io']['save_directory'], fname)
-        os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
-        with open(save_path, 'wb') as f:
-            pickle.dump(final_data, f)
+        save_dir = Path(self.modeling_settings['io']['save_directory'])
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / fname
+
+        # Backfill per-session counts from the anchor feature.
+        n_events_per_session = {}
+        if final_features:
+            anchor_feat = final_features[0]
+            for sess_id in final_data[anchor_feat]:
+                n_events_per_session[sess_id] = {
+                    'target': int(final_data[anchor_feat][sess_id]['target_feature_arr'].shape[0]),
+                    'other': int(final_data[anchor_feat][sess_id]['other_feature_arr'].shape[0]),
+                }
+        input_metadata['n_events_per_session'] = n_events_per_session
+        input_metadata['feature_zoo_kept'] = sorted(final_data.keys())
+
+        artifact = inject_metadata(final_data, _input_metadata=input_metadata)
+        with save_path.open('wb') as f:
+            pickle.dump(artifact, f)
         print(f"\n[+] Successfully saved category input data to:\n    {save_path}")
 
     def create_category_splits(self, feature_data: dict, strategy: str = 'actual'):

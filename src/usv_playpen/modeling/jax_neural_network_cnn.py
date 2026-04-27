@@ -1377,7 +1377,7 @@ class NeuralContinuousCNNRunner:
         print("\nConverting JAX device arrays to NumPy and saving Deep Storage...")
         numpy_storage = jax.device_get(deep_storage)
 
-        source_file = os.path.basename(data_blocks['source_pkl_path'])
+        source_file = pathlib.Path(data_blocks['source_pkl_path']).name
 
         # Explicit Multi-line parsing to avoid summarizing logic
         if "male_mute_partner" in source_file:
@@ -1390,11 +1390,11 @@ class NeuralContinuousCNNRunner:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"cnn_manifold_integrated_predictions_{sex_mod}_{timestamp}.pkl"
 
-        save_dir = self.modeling_settings['io']['save_directory']
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, filename)
+        save_dir = pathlib.Path(self.modeling_settings['io']['save_directory'])
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / filename
 
-        with open(save_path, 'wb') as f:
+        with save_path.open('wb') as f:
             pickle.dump(numpy_storage, f)
 
         print(f"Success. Deep Storage saved to: {save_path}")

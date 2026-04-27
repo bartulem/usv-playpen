@@ -11,8 +11,7 @@ classification using both Linear (sklearn) and Non-linear (PyGAM) engines.
 from datetime import datetime
 import json
 import numpy as np
-import os
-import pathlib
+from pathlib import Path
 import polars as pls
 from pygam import LogisticGAM, te
 import pickle
@@ -23,6 +22,11 @@ from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_bout_epochs
+from .modeling_metadata import (
+    build_input_metadata, derive_experimental_condition,
+    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
+)
+from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -92,7 +96,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         """
 
         if modeling_settings_dict is None:
-            settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+            settings_path = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
                 with open(settings_path, 'r') as settings_json_file:
                     self.modeling_settings = json.load(settings_json_file)
@@ -288,9 +292,79 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         )
         print("Z-scoring complete.")
 
-        target_mouse_sex = 'male' if target_mouse_idx == 0 else 'female'
         max_hist_sec = self.modeling_settings['model_params']['filter_history']
-        file_name_ = f"modeling_{self.modeling_settings['model_params']['model_target_vocal_type']}_gmm{self.modeling_settings['model_params']['gmm_component_index']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(txt_modeling_sessions)}sess_hist{max_hist_sec}s.pkl"
+        target_vocal_type = self.modeling_settings['model_params']['model_target_vocal_type']
+        gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
+
+        # Build the unified Level-1 filename — the analysis_tag identifies
+        # the pipeline, the experimental_condition identifies the cohort,
+        # and the rest of the historical fields (n_sessions, hist, gmm
+        # idx, target_vocal_type) live in `_input_metadata` rather than
+        # in the filename.
+        cohort_condition = derive_experimental_condition(self.modeling_settings)
+        analysis_tag = f"onsets-{target_vocal_type}"
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        file_name_ = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
+
+        # Build the `_input_metadata` block once. The collinearity /
+        # timescale audits embed it verbatim into their artifacts, the
+        # input pickle embeds it under the reserved key `_input_metadata`,
+        # and the dispatcher copies it through into every per-feature
+        # univariate pickle so each downstream artifact is independently
+        # provenance-complete.
+        ibi_thresholds_md = {}
+        gmm_params = self.modeling_settings['gmm_params']
+        for sex in ('male', 'female'):
+            params = gmm_params[sex]
+            if gmm_idx < len(params['means']):
+                ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
+                    params['means'][gmm_idx], params['sds'][gmm_idx],
+                    self.modeling_settings['model_params']['gmm_z_score'],
+                ))
+            else:
+                ibi_thresholds_md[sex] = float('nan')
+
+        # Pool the kept generic feature suffixes that survived
+        # `harmonize_session_columns` from one representative session;
+        # `revised_behavioral_predictors` only knows the bare suffix list
+        # (per-mouse expansion happens column-by-column at pool time).
+        first_sess_id = next(iter(processed_beh_feature_data_dict))
+        kept_columns_first_sess = list(processed_beh_feature_data_dict[first_sess_id].columns)
+        feature_zoo_kept_md = sorted({
+            c.split('.', 1)[-1] if '.' in c and not c.split('.')[-1].isdigit() else c
+            for c in kept_columns_first_sess
+        })
+
+        input_metadata = build_input_metadata(
+            modeling_settings=self.modeling_settings,
+            analysis_type='onset',
+            analysis_tag=analysis_tag,
+            pipeline_class=type(self).__name__,
+            target_idx=target_mouse_idx,
+            predictor_idx=predictor_mouse_idx,
+            n_sessions_used=len(processed_beh_feature_data_dict),
+            session_ids=sorted(processed_beh_feature_data_dict.keys()),
+            n_events_per_session={},  # populated below after epoch slicing
+            feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
+            feature_zoo_kept=feature_zoo_kept_md,
+            dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
+            dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
+            noise_vocal_categories_excluded=list(voc_settings['usv_noise_categories']),
+            vocal_signal_columns_added=sorted({
+                c for c in kept_columns_first_sess
+                if c.split('.', 1)[-1] in (voc_settings['usv_predictor_type'] or '')
+                or any(tok in c for tok in ('usv_rate', 'usv_cat_'))
+            }),
+            filter_history_seconds=float(max_hist_sec),
+            filter_history_frames=int(self.history_frames),
+            camera_sampling_rate_hz=derive_camera_fps_field(camera_fr_dict),
+            ibi_thresholds=ibi_thresholds_md,
+            analysis_specific={
+                'model_target_vocal_type': target_vocal_type,
+                'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
+                'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
+            },
+        )
 
         # Predictor diagnostics audit (collinearity + timescales). Runs on
         # the harmonized, z-scored, but not-yet-sliced feature dict so the
@@ -309,6 +383,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             settings=self.modeling_settings,
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=file_name_,
+            input_metadata=input_metadata,
         )
 
         print("Extracting epochs per session and renaming features...")
@@ -431,12 +506,34 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             print(f"  [!] ALERT: Dimensional mismatch in sessions: {set(mismatched_sessions)}")
         print("=" * 105 + "\n")
 
-        save_path = os.path.join(self.modeling_settings['io']['save_directory'], file_name_)
+        save_dir = Path(self.modeling_settings['io']['save_directory'])
+        save_path = save_dir / file_name_
+
+        # Backfill the per-session event counts that the audit could not
+        # see (it ran on the un-sliced feature dict). For each session we
+        # report `{'usv': n_usv, 'no_usv': n_no_usv}` for the anchor
+        # feature, which is invariant across features by the alignment
+        # check above.
+        n_events_per_session = {}
+        if final_covariate_names:
+            anchor_feat = final_covariate_names[0]
+            for sess_id in modeling_final_data_dict[anchor_feat]:
+                n_events_per_session[sess_id] = {
+                    'usv': int(modeling_final_data_dict[anchor_feat][sess_id]['usv_feature_arr'].shape[0]),
+                    'no_usv': int(modeling_final_data_dict[anchor_feat][sess_id]['no_usv_feature_arr'].shape[0]),
+                }
+        input_metadata['n_events_per_session'] = n_events_per_session
+        input_metadata['feature_zoo_kept'] = sorted(modeling_final_data_dict.keys())
+
+        # Wrap the final data dict in the metadata-injecting helper so
+        # the on-disk artifact carries `_input_metadata` alongside the
+        # feature data without colliding with any feature key.
+        artifact = inject_metadata(modeling_final_data_dict, _input_metadata=input_metadata)
 
         try:
-            os.makedirs(self.modeling_settings['io']['save_directory'], exist_ok=True)
-            with open(save_path, 'wb') as f:
-                pickle.dump(modeling_final_data_dict, f)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            with save_path.open('wb') as f:
+                pickle.dump(artifact, f)
             print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}")
         except Exception as e:
             print(f"\n[!] Error saving final pickle file: {e}")

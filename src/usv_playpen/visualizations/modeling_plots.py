@@ -68,6 +68,7 @@ from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
 
 from .auxiliary_plot_functions import create_colormap
+from ..modeling.modeling_metadata import load_selection_results
 
 
 _PKG_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -1433,37 +1434,36 @@ def plot_model_selection_results(
     COLOR_PRIM_DOT = "#000000"
     COLOR_SEC_DOT = MEAN_LINE_COLOR
 
-    file_pattern = pathlib.Path(selection_results_dir) / "*_step_*.pkl"
-    files = sorted(glob.glob(str(file_pattern)),
-                   key=lambda x: int(re.search(r'_step_(\d+)', x).group(1)))
+    # Load steps via the metadata-aware helper: prefers a consolidated
+    # `selection_*.pkl` artifact in the directory, falls back to legacy
+    # `*_step_*.pkl` glob. `display_name` keeps the substring-based sex
+    # inference below working in both modes.
+    selection_steps, display_name, _ = load_selection_results(selection_results_dir)
 
-    if not files:
-        print(f"No step files found in {selection_results_dir}")
+    if not selection_steps:
+        print(f"No step data found in {selection_results_dir}")
         return
 
-    fname_str = pathlib.Path(files[0]).name
-    if '_male_' in fname_str:
+    if '_male_' in display_name:
         self_color, other_color = male_color, female_color
-    elif '_female_' in fname_str:
+    elif '_female_' in display_name:
         self_color, other_color = female_color, male_color
     else:
         self_color, other_color = male_color, female_color
 
-    # --- 1. Determine Valid Files for Trajectory Plot ---
-    valid_files_for_plot = list(files)
-    if len(files) > 1:
-        with open(files[-1], 'rb') as f:
-            last_data = pickle.load(f)
+    # --- 1. Determine Valid Steps for Trajectory Plot ---
+    valid_steps_for_plot = list(selection_steps)
+    if len(selection_steps) > 1:
+        last_data = selection_steps[-1]
         if last_data.get('selected_feature') is None:
             print(f"Last step was a rejection. Excluding it from trajectory plots.")
-            valid_files_for_plot = files[:-1]
+            valid_steps_for_plot = selection_steps[:-1]
 
     # --- 2. Process Trajectory Data ---
     steps_data = []
-    print(f"Processing {len(valid_files_for_plot)} steps for trajectory...")
+    print(f"Processing {len(valid_steps_for_plot)} steps for trajectory...")
 
-    with open(valid_files_for_plot[0], 'rb') as f:
-        first_data = pickle.load(f)
+    first_data = valid_steps_for_plot[0]
     first_cands = first_data.get('candidates', first_data.get('candidates_summary', {}))
 
     primary_metric = 'll'
@@ -1483,10 +1483,7 @@ def plot_model_selection_results(
 
     print(f"Primary Metric Detected: {metric_label}")
 
-    for i, fpath in enumerate(valid_files_for_plot):
-        with open(fpath, 'rb') as f:
-            data = pickle.load(f)
-
+    for i, data in enumerate(valid_steps_for_plot):
         candidates = data.get('candidates', data.get('candidates_summary', {}))
         if not candidates: continue
 
@@ -1589,26 +1586,22 @@ def plot_model_selection_results(
     plt.show()
 
     # --- 4. Filter Grid Visualization ---
-    # Always load the LAST PHYSICAL FILE (even if it was a rejection) to try and find filter shapes
-    final_file_path = files[-1]
-
-    with open(final_file_path, 'rb') as f:
-        final_file_data = pickle.load(f)
-
-    raw_filter_data = final_file_data.get('filter_shapes', None)
+    # Always inspect the LAST step (even if it was a rejection) to try and
+    # find filter shapes; fall back to the second-to-last step when the
+    # rejection step lacks a fitted final model.
+    final_data = selection_steps[-1]
+    raw_filter_data = final_data.get('filter_shapes', None)
 
     if not raw_filter_data:
-        print(f"DEBUG: 'filter_shapes' not found in {final_file_path.name}")
-        if len(files) > 1:
-            prev_file = files[-2]
-            with open(prev_file, 'rb') as f:
-                prev_data = pickle.load(f)
+        print(f"DEBUG: 'filter_shapes' not found in last step (idx {len(selection_steps) - 1})")
+        if len(selection_steps) > 1:
+            prev_data = selection_steps[-2]
             if 'filter_shapes' in prev_data:
-                print(f"DEBUG: Found 'filter_shapes' in previous file {prev_file.name}")
+                print(f"DEBUG: Found 'filter_shapes' in previous step (idx {len(selection_steps) - 2})")
                 raw_filter_data = prev_data['filter_shapes']
 
     if not raw_filter_data:
-        print("Could not extract filter_shapes from final files. Skipping filter grid.")
+        print("Could not extract filter_shapes from final steps. Skipping filter grid.")
         return
 
     # Determine feature keys and structure type
@@ -2263,18 +2256,14 @@ def plot_multinomial_selection_trajectory(
     _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
     plt.rcParams.update(_rcp_override)
 
-    file_pattern = pathlib.Path(selection_results_dir) / "*_step_*.pkl"
-    files = sorted(glob.glob(str(file_pattern)),
-                   key=lambda x: int(re.search(r'_step_(\d+)', x).group(1)))
+    selection_steps, _, _ = load_selection_results(selection_results_dir)
 
-    if not files:
-        print(f"No multinomial step files found in {selection_results_dir}")
+    if not selection_steps:
+        print(f"No multinomial step data found in {selection_results_dir}")
         return
 
     steps_data = []
-    for fpath in files:
-        with open(fpath, 'rb') as f:
-            data = pickle.load(f)
+    for data in selection_steps:
         if data.get('selected_feature') is None: continue
 
         winner = data['selected_feature']
@@ -2468,20 +2457,16 @@ def plot_multinomial_multivariate_filters(
     _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
     plt.rcParams.update(_rcp_override)
 
-    file_pattern = pathlib.Path(selection_results_dir) / "*_step_*.pkl"
-    files = sorted(glob.glob(str(file_pattern)),
-                   key=lambda x: int(re.search(r'_step_(\d+)', x).group(1)))
+    selection_steps, _, _ = load_selection_results(selection_results_dir)
 
-    if not files:
-        print(f"No step files found in {selection_results_dir}")
+    if not selection_steps:
+        print(f"No step data found in {selection_results_dir}")
         return
 
     # --- BULLETPROOF DATA EXTRACTION ---
     # Find the last step that actually selected a feature (ignores the final rejection step)
     valid_data = None
-    for fpath in reversed(files):
-        with open(fpath, 'rb') as f:
-            data = pickle.load(f)
+    for data in reversed(selection_steps):
         if data.get('selected_feature') is not None:
             valid_data = data
             break
@@ -2647,28 +2632,23 @@ def plot_multinomial_selection_diagnosis(
     _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
     plt.rcParams.update(_rcp_override)
 
-    # 2. File Discovery and Selection
-    file_pattern = pathlib.Path(selection_results_dir) / "*_step_*.pkl"
-    files = sorted(glob.glob(str(file_pattern)),
-                   key=lambda x: int(re.search(r'_step_(\d+)', x).group(1)))
+    # 2. Step Discovery and Selection
+    selection_steps, _, _ = load_selection_results(selection_results_dir)
 
-    if len(files) < 2:
+    if len(selection_steps) < 2:
         print("Diagnosis requires at least two successful steps (Univariate vs Multivariate).")
         return
 
     # Load Step 0 (Univariate anchor)
-    with open(files[0], 'rb') as f:
-        step0_data = pickle.load(f)
+    step0_data = selection_steps[0]
 
     # Identify the final successful multivariate step
-    final_idx = len(files) - 1
-    with open(files[final_idx], 'rb') as f:
-        final_data = pickle.load(f)
+    final_idx = len(selection_steps) - 1
+    final_data = selection_steps[final_idx]
 
     if final_data.get('selected_feature') is None:
         final_idx -= 1
-        with open(files[final_idx], 'rb') as f:
-            final_data = pickle.load(f)
+        final_data = selection_steps[final_idx]
 
     # 3. Data Extraction Helper
     def get_tier_data(step_dict):

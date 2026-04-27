@@ -71,7 +71,7 @@ Block B (`load_behavioral_feature_data`) is intentionally NOT wrapped here —
 callers should import it directly from `load_input_files`.
 """
 
-import os
+from pathlib import Path
 import numpy as np
 import polars as pls
 from scipy.stats import pearsonr
@@ -554,7 +554,7 @@ def zero_fill_missing_feature_columns(processed_beh_dict: dict,
 
     partner_only = voc_settings['usv_predictor_partner_only']
     mute_partner = (session_list_file is not None
-                    and 'mute' in os.path.basename(session_list_file))
+                    and 'mute' in Path(session_list_file).name)
 
     for sess_id in processed_beh_dict:
         df = processed_beh_dict[sess_id]
@@ -1390,7 +1390,8 @@ def run_predictor_audits(processed_beh_dict: dict,
                          settings: dict,
                          save_dir: str,
                          pickle_basename: str,
-                         precomputed_event_times: dict = None) -> None:
+                         precomputed_event_times: dict = None,
+                         input_metadata: dict = None) -> None:
     """
     Runs the collinearity and timescale audits as a single non-fatal
     diagnostic step at modeling-input-pickle creation time.
@@ -1468,6 +1469,14 @@ def run_predictor_audits(processed_beh_dict: dict,
         `event_keys` extraction step. Use this when the calling pipeline
         stores its events in a non-standard shape (e.g. the multinomial
         pipeline's `events_by_category` dict).
+    input_metadata : dict, optional
+        The fully built `_input_metadata` block from the calling
+        pipeline. Forwarded verbatim to both audit functions, which
+        embed it inside their on-disk payloads under the reserved key
+        `_input_metadata`. This makes each audit artifact independently
+        provenance-complete (no need to consult the paired modeling
+        input pickle to learn which cohort / settings produced the
+        diagnostic).
     """
 
     diagnostics_cfg = settings['diagnostics'] if 'diagnostics' in settings else {}
@@ -1505,9 +1514,10 @@ def run_predictor_audits(processed_beh_dict: dict,
             if pooled:
                 event_times_per_session[sess_id] = np.sort(np.concatenate(pooled))
 
-    base_no_ext = os.path.splitext(pickle_basename)[0]
-    coll_path = os.path.join(save_dir, f"{base_no_ext}_collinearity.pkl")
-    ts_path = os.path.join(save_dir, f"{base_no_ext}_timescales.pkl")
+    base_no_ext = Path(pickle_basename).stem
+    save_dir_p = Path(save_dir)
+    coll_path = str(save_dir_p / f"{base_no_ext}_collinearity.pkl")
+    ts_path = str(save_dir_p / f"{base_no_ext}_timescales.pkl")
 
     if do_collinearity:
         try:
@@ -1521,6 +1531,7 @@ def run_predictor_audits(processed_beh_dict: dict,
                 camera_fps_dict=camera_fps_dict,
                 save_path=coll_path,
                 source_pickle=pickle_basename,
+                input_metadata=input_metadata,
             )
         except Exception as exc:
             print(f"[audit] collinearity audit failed (non-fatal): {exc}")
@@ -1560,6 +1571,7 @@ def run_predictor_audits(processed_beh_dict: dict,
                 save_path=ts_path,
                 source_pickle=pickle_basename,
                 random_seed=int(random_seed),
+                input_metadata=input_metadata,
             )
         except Exception as exc:
             print(f"[audit] timescale audit failed (non-fatal): {exc}")
