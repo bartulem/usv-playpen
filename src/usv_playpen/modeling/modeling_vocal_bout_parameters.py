@@ -175,7 +175,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             filter_history=self.modeling_settings['model_params']['filter_history'],
             proportion_smoothing_sd=smooth_sd,
             vocal_output_type=voc_type,
-            noise_vocal_categories=noise_cats
+            noise_vocal_categories=noise_cats,
+            category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
+            noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
         )
 
         processed_beh_feature_data_dict = {}

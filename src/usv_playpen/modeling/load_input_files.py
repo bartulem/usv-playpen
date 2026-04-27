@@ -224,7 +224,9 @@ def find_bout_epochs(root_directories: list = None,
                      gmm_z_score: float = 2.58,
                      gmm_params: dict = None,
                      vocal_output_type: str = None,
-                     noise_vocal_categories: list = None) -> dict:
+                     noise_vocal_categories: list = None,
+                     category_column: str = 'usv_category',
+                     noise_column: str = 'usv_supercategory') -> dict:
     """
     Loads USV information data from a .csv file and samples epochs based on prediction mode.
     (See 'find_usv_categories' for category-based sampling).
@@ -297,9 +299,10 @@ def find_bout_epochs(root_directories: list = None,
 
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
-        has_category = 'usv_category' in usv_summary_data.columns
-        if noise_vocal_categories and has_category:
-            usv_summary_data = usv_summary_data.filter(~pls.col('usv_category').is_in(list(noise_vocal_categories)))
+        has_category = category_column in usv_summary_data.columns
+        has_noise_col = noise_column in usv_summary_data.columns
+        if noise_vocal_categories and has_noise_col:
+            usv_summary_data = usv_summary_data.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
 
         if session_id not in mouse_ids_dict:
             print(f"Warning: No mouse names registered for {session_id}. Skipping.")
@@ -367,14 +370,14 @@ def find_bout_epochs(root_directories: list = None,
 
                 # B. Per-category logic
                 if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs_df.height > 0:
-                    unique_cats = mouse_usvs_df['usv_category'].unique().to_list()
+                    unique_cats = mouse_usvs_df[category_column].unique().to_list()
                     for cat_id in unique_cats:
                         try:
                             cat_int = int(cat_id)
                         except (ValueError, TypeError):
                             continue
 
-                        cat_df = mouse_usvs_df.filter(pls.col('usv_category') == cat_id)
+                        cat_df = mouse_usvs_df.filter(pls.col(category_column) == cat_id)
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'][f'usv_cat_{cat_int}'] = _generate_vocal_trace(
                             cat_df['start'].to_numpy(), cat_df['stop'].to_numpy(), session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
                         )
@@ -504,7 +507,8 @@ def find_usv_categories(root_directories: list = None,
                         vocal_output_type: str = None,
                         proportion_smoothing_sd: float = 1.0,
                         noise_vocal_categories: list = None,
-                        manifold_column_names: list = None) -> dict:
+                        manifold_column_names: list = None,
+                        noise_column: str = 'usv_supercategory') -> dict:
     """
     Parses USV data for either one-vs-rest (binary) or multinomial (all-category) analysis,
     as well as extracting continuous spatial targets (acoustic manifold coordinates) for
@@ -610,9 +614,13 @@ def find_usv_categories(root_directories: list = None,
             # Filter by mouse
             mouse_usvs = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
 
-            # Filter noise categories (global removal)
-            if noise_vocal_categories:
-                mouse_usvs = mouse_usvs.filter(~pls.col(category_column).is_in(list(noise_vocal_categories)))
+            # Filter noise categories (global removal). The noise filter
+            # uses `noise_column` rather than `category_column` so the
+            # cohort-stable noise scheme (typically `usv_supercategory`)
+            # can be combined with any experimental-category column
+            # (`category_column`) the caller wants to vary independently.
+            if noise_vocal_categories and noise_column in mouse_usvs.columns:
+                mouse_usvs = mouse_usvs.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
 
             # Filter history period (at start of session)
             mouse_usvs = mouse_usvs.filter(pls.col('start') > filter_history)
@@ -728,7 +736,9 @@ def find_variable_length_bouts(root_directories: list = None,
                                filter_history: float = 4.0,
                                proportion_smoothing_sd: float = 1.0,
                                vocal_output_type: str = None,
-                               noise_vocal_categories: list = None) -> dict:
+                               noise_vocal_categories: list = None,
+                               category_column: str = 'usv_category',
+                               noise_column: str = 'usv_supercategory') -> dict:
     """
     Identifies variable-length vocal bouts and generates continuous vocal density signals
     for regression analysis.
@@ -821,7 +831,8 @@ def find_variable_length_bouts(root_directories: list = None,
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
         has_mask = 'mask_number' in usv_summary_data.columns
-        has_category = 'usv_category' in usv_summary_data.columns
+        has_category = category_column in usv_summary_data.columns
+        has_noise_col = noise_column in usv_summary_data.columns
         if not has_mask:
             print(f"Warning: 'mask_number' missing in {session_id}. Complexity = 0.")
 
@@ -858,9 +869,10 @@ def find_variable_length_bouts(root_directories: list = None,
             # Filter for mouse and sort by start time
             mouse_usvs = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
 
-            # Remove noise categories
-            if noise_vocal_categories and has_category:
-                mouse_usvs = mouse_usvs.filter(~pls.col('usv_category').is_in(list(noise_vocal_categories)))
+            # Remove noise categories using `noise_column` (cohort-stable),
+            # not `category_column` (experimental, may change between runs).
+            if noise_vocal_categories and has_noise_col:
+                mouse_usvs = mouse_usvs.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
 
             # Generate continuous vocal signals based on specified output type
             if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
@@ -881,14 +893,14 @@ def find_variable_length_bouts(root_directories: list = None,
 
                 # B. Per-category logic
                 if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs.height > 0:
-                    unique_cats = mouse_usvs['usv_category'].unique().to_list()
+                    unique_cats = mouse_usvs[category_column].unique().to_list()
                     for cat_id in unique_cats:
                         try:
                             cat_int = int(cat_id)
                         except (ValueError, TypeError):
                             continue
 
-                        cat_df = mouse_usvs.filter(pls.col('usv_category') == cat_id)
+                        cat_df = mouse_usvs.filter(pls.col(category_column) == cat_id)
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'][f'usv_cat_{cat_int}'] = _generate_vocal_trace(
                             cat_df['start'].to_numpy(), cat_df['stop'].to_numpy(), session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
                         )

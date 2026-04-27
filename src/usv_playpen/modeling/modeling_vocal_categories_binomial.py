@@ -259,7 +259,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
-            noise_vocal_categories=noise_cats
+            noise_vocal_categories=noise_cats,
+            noise_column=voc_settings['usv_noise_column'],
         )
 
         processed_beh_data = {}

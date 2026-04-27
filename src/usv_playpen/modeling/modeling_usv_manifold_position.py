@@ -677,7 +677,8 @@ class ContinuousModelingPipeline(FeatureZoo):
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
             noise_vocal_categories=noise_cats,
-            manifold_column_names=manifold_cols
+            manifold_column_names=manifold_cols,
+            noise_column=voc_settings['usv_noise_column'],
         )
 
         print("Extracting continuous targets and computing Global Inverse Density Weights...")

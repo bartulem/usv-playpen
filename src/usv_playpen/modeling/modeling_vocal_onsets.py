@@ -199,7 +199,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             filter_history=self.modeling_settings['model_params']['filter_history'],
             prediction_mode=self.modeling_settings['model_params']['model_target_vocal_type'],
             usv_bout_time=self.modeling_settings['model_params']['usv_bout_time'],
-            min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor']
+            min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
+            category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
+            noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
         )
 
         predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']

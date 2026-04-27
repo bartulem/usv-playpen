@@ -62,6 +62,7 @@
     "usv_predictor_partner_only": true,
     "usv_predictor_smoothing_sd": 1,
     "usv_category_column_name": "usv_supercategory",
+    "usv_noise_column": "usv_supercategory",
     "usv_noise_categories": [0],
     "usv_category_number": 6,
     "usv_manifold_column_names": ["usv_umap1", "usv_umap2"]
