@@ -64,7 +64,7 @@ echo "das predict \"\$inference_file\" \"\$das_model_base\" --segment-thres \"\$
 
 ARRAY_ARGS_FILE="$WORK_DIR/job_list.txt"
 
-DIR_NUM=$(cat $ARRAY_ARGS_FILE | wc -l)
+DIR_NUM=$(grep -c "^" "$ARRAY_ARGS_FILE")
 NUM_JOBS=$((DIR_NUM*"$AUDIO_CH_NUM"))
 
 echo "Jobs: $NUM_JOBS"

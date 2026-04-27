@@ -81,7 +81,7 @@ EOF
 # -------------------------------------------------- #
 # ---------------- RUN JOB ARRAY ------------------- #
 
-NUM_ARRAY_JOBS=$(cat "$ARRAY_ARGS_FILE" | wc -l)
+NUM_ARRAY_JOBS=$(grep -c "^" "$ARRAY_ARGS_FILE")
 
 echo "Submitting $NUM_ARRAY_JOBS jobs."
 

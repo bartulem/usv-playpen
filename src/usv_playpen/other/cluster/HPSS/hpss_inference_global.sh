@@ -49,7 +49,7 @@ echo "rm -rf /tmp/numba_cache_\$SLURM_JOB_ID" >> "$JOB_SCRIPT"
 
 ARRAY_ARGS_FILE="$WORK_DIR/job_list.txt"
 
-DIR_NUM=$(cat $ARRAY_ARGS_FILE | wc -l)
+DIR_NUM=$(grep -c "^" "$ARRAY_ARGS_FILE")
 NUM_JOBS=$((DIR_NUM*"$AUDIO_CH_NUM"))
 
 echo "Jobs: $NUM_JOBS"
