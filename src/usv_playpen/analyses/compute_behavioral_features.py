@@ -9,7 +9,6 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 (18) Back pitch (19) Back pitch der (20) Back pitch 2der (21) Back yaw (22) Back yaw der (23) Back Yaw 2der
 (24) Body yaw (25) Body yaw der (26) Body yaw 2der (27) Tail curvature (28) Tail curvature der (29) Tail curvature 2der
 
-
 [B] SOCIAL FEATURES (DISTANCES & ANGLES)
 (0) Nose distance (1) Nose distance der (2) Nose distance 2der (3) TTI distance (4) TTI distance der (5) TTI distance 2der
 (6) Nose-TTI distance (7) Nose-TTI distance der (8) Nose-TTI distance 2der (9) TTI-Nose distance (10) TTI-Nose distance der (11) TTI-Nose distance 2der
@@ -244,9 +243,19 @@ def calculate_sei(
        1, and the score decays smoothly as the target moves off-axis in
        either channel. sigma_yaw_deg and sigma_pitch_deg control the
        acceptance cone width per channel and are tunable.
-    2. Sharpening: As distance (d) decreases, a dynamic exponent
-       (gamma = 1 + L/d) sharpens the gate, requiring higher angular
-       precision for high scores.
+    2. Sharpening: As distance (d) decreases, a dynamic *bounded*
+       exponent `gamma = 1 + tanh(L / d)` mildly sharpens the gate,
+       requiring slightly higher angular precision for high scores at
+       close range. The `tanh` saturates at 1 as `d -> 0`, so `gamma`
+       lives in `[1, 2]` and the gate cannot collapse: at infinite
+       distance gamma = 1 (no sharpening), at touching distance
+       gamma = 2 (gate squared). This replaces the legacy
+       `gamma = 1 + L/d` form, which grew unboundedly (gamma > 20 at
+       common close-engagement distances) and crushed `gaze_score`
+       to near-zero exactly when the SEI should have been highest —
+       the near-touching, sniffing frames. With the bounded form the
+       Gaussian gate keeps doing the angular-acceptance work and the
+       sharpening only contributes a soft second-order tightening.
     3. Social Weight (W): An exponential interpolator that balances
        speed and proximity:
        - At distance (d > L): Speed (V/V_max) is required to identify
@@ -334,8 +343,15 @@ def calculate_sei(
             v_max = np.nanpercentile(speed_arr, 99)
         v_norm = np.clip(speed_arr / (v_max + 1e-6), 0, 1)
 
-        # exponent increases as distance decreases (sharper focus)
-        gamma = 1 + (1 / (d_norm + 1e-6))
+        # Bounded exponent: `tanh(L/d_norm)` saturates at 1 as d_norm
+        # -> 0, so `gamma` lies in [1, 2] for all distances. The legacy
+        # form `gamma = 1 + 1/d_norm` was unbounded and produced
+        # `gamma > 20` at common close-engagement distances (e.g.,
+        # `d_norm = 0.05`, ~5% of a body length), which crushed the
+        # Gaussian gate to ~0 unless `(yaw, pitch) = (0, 0)` exactly —
+        # collapsing the SEI to zero precisely on the sniffing /
+        # nose-to-nose frames it was meant to score highest.
+        gamma = 1 + np.tanh(1 / (d_norm + 1e-6))
 
         # W_social: interpolator between speed-based pursuit and distance-based attention
         w_pursuit = (1 - np.exp(-d_norm)) * v_norm
