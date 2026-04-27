@@ -104,9 +104,17 @@ def zscore_different_sessions_together(data_dict: dict,
 
         base_ds = pls.concat(pooled_series_list, how='vertical')
 
-        # Calculate global mean and std, (Polars ignores nulls by default)
-        global_mean = base_ds.mean()
-        global_std = base_ds.std()
+        # Calculate global mean and std. Polars ignores nulls by
+        # default, but float NaN values propagate through aggregations
+        # (mean/std become NaN if any element is NaN). The bounds-clip
+        # branch converts NaN -> null implicitly via the failed
+        # comparison, but the abs() branch (used for `abs_features`
+        # such as `allo_roll`) preserves raw NaNs untouched. Coerce
+        # NaN -> null before pooling so a single NaN in any session
+        # does not poison the global statistics for that feature.
+        base_ds_for_stats = base_ds.fill_nan(None) if base_ds.dtype.is_float() else base_ds
+        global_mean = base_ds_for_stats.mean()
+        global_std = base_ds_for_stats.std()
 
         # Handle case of zero std (constant data)
         if global_std is None or global_std == 0:

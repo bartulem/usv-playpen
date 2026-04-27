@@ -145,8 +145,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             - `egocentric`: per-mouse scalar features kept for both target
               (self) and predictor (other) mice.
             - `dyadic_pose`: directional two-mouse pose features; when
-              `dyadic_pose_symmetric` is False, a directional allo_yaw/TTI rule
-              drops one symmetric half based on the predictor-mouse convention.
+              `dyadic_pose_symmetric` is False, a directional
+              allo_yaw/allo_pitch/TTI rule drops one symmetric half based on
+              the predictor-mouse convention.
             - `dyadic_engagement`: interaction features such as Social
               Engagement Index (SEI); the directional rule is never applied here.
             - Adds 1st/2nd derivatives if configured.

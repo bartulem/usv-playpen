@@ -208,10 +208,15 @@ def select_kinematic_columns(session_df_columns: list,
         `{male_id}-{female_id}.{feat_male}-{feat_female}`. When
         `kin_settings['dyadic_pose_symmetric']` is False, a directional rule
         is applied to drop one of the two symmetric halves based on the
-        predictor-mouse convention:
-          * `predictor_idx == 0`: drop if `feat_parts[0] == 'allo_yaw'` or
+        predictor-mouse convention. The convention is "drop the
+        predictor's view of allo angles, keep the predictor's view of
+        TTI", which folds the male/female-symmetric pair into a single
+        directional feature per dyadic-pose suffix:
+          * `predictor_idx == 0`: drop if `feat_parts[0]` in
+                                  (`'allo_yaw'`, `'allo_pitch'`) or
                                   `feat_parts[1] == 'TTI'`.
-          * `predictor_idx != 0`: drop if `feat_parts[1] == 'allo_yaw'` or
+          * `predictor_idx != 0`: drop if `feat_parts[1]` in
+                                  (`'allo_yaw'`, `'allo_pitch'`) or
                                   `feat_parts[0] == 'TTI'`.
         When `dyadic_pose_symmetric` is True, both halves are retained.
 
@@ -292,10 +297,10 @@ def select_kinematic_columns(session_df_columns: list,
                 feat_parts = base_feature.split('-')
                 if len(feat_parts) == 2:
                     if predictor_idx == 0:
-                        if feat_parts[0] == 'allo_yaw' or feat_parts[1] == 'TTI':
+                        if feat_parts[0] in ('allo_yaw', 'allo_pitch') or feat_parts[1] == 'TTI':
                             continue
                     else:
-                        if feat_parts[1] == 'allo_yaw' or feat_parts[0] == 'TTI':
+                        if feat_parts[1] in ('allo_yaw', 'allo_pitch') or feat_parts[0] == 'TTI':
                             continue
             columns_to_keep.append(feature)
             _maybe_add_derivatives(feature, base_feature)

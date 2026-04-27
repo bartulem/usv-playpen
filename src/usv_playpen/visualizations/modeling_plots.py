@@ -699,7 +699,9 @@ def plot_feature_ranking(
 
             if is_significant:
                 dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw"]
+                                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                                   "allo_pitch-nose", "nose-allo_pitch",
+                                   "allo_pitch-TTI", "TTI-allo_pitch"]
                 if any(x in feature_name for x in dyadic_keywords):
                     feat_color = DYADIC_COLOR
                 elif 'self' in feature_name:
@@ -861,7 +863,9 @@ def plot_significant_filters(
             continue
 
         dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                           "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw"]
+                           "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                           "allo_pitch-nose", "nose-allo_pitch",
+                           "allo_pitch-TTI", "TTI-allo_pitch"]
         if any(x in feature for x in dyadic_keywords):
             feat_color = DYADIC_COLOR
         elif 'self' in feature:
@@ -1080,7 +1084,9 @@ def plot_significant_filters_grid(
         all_y_values.extend(ci_upper_corrected)
 
         if any(x in beh_feature for x in ["nose-nose", "nose-TTI", "TTI-nose", "neck_elevation_diff",
-                                          "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw"]):
+                                          "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                                          "allo_pitch-nose", "nose-allo_pitch",
+                                          "allo_pitch-TTI", "TTI-allo_pitch"]):
             c = dyadic_color
         elif 'self' in beh_feature:
             c = self_color
@@ -1636,7 +1642,9 @@ def plot_model_selection_results(
     axes_grid = axes_grid.flatten()
 
     dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw"]
+                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                       "allo_pitch-nose", "nose-allo_pitch",
+                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
     for i, feature in enumerate(feature_keys):
         ax = axes_grid[i]

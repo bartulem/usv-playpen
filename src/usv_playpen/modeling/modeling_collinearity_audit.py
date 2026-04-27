@@ -924,24 +924,50 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         empirical_pcts = {'p50': float('nan'), 'p90': float('nan'), 'p99': float('nan')}
         n_total_events = 0
     else:
-        # ----- streaming predictive-ρ -----
-        # The legacy implementation built a single `(total_frames,
-        # n_features)` matrix and rank-transformed the whole thing
-        # before scoring. On large cohorts (~500 features × ~100
-        # sessions × ~10⁵ frames @ float32) that allocation is ~25 GB,
-        # plus another ~25 GB for the pre-ranked copy and a few GB for
-        # the null tensor — so on the actual workload the kernel was
-        # OOM-killed before the audit's try/except could fire.
+        # ----- FFT-based predictive-ρ -----
+        # We compute Spearman ρ between every feature's rank-vector and
+        # both the actual event indicator's ranks and `n_shuffles`
+        # within-session circular-shifted indicator ranks, at every lag
+        # in `lag_grid_frames`.
         #
-        # The refactor below streams feature-by-feature: only one
-        # `(total_frames,)` column and its ranks are resident at any
-        # given time; the binary event trace `Y` and its `n_shuffles`
-        # circular-shifted ranks are computed once outside the loop
-        # because they do not depend on which feature is being scored.
-        # Memory scales as `O(total_frames * (n_shuffles + 1))` instead
-        # of `O(total_frames * n_features)`, which is roughly a 50×
-        # reduction on this cohort while keeping the same numerical
-        # output.
+        # The naive implementation evaluates each (feature, shuffle,
+        # lag) triple as a separate centred dot product in a Python
+        # loop. With this cohort's scale (~500 features × ~100 sessions
+        # × ~10^5 frames × ~10^3 lags × 50 shuffles ≈ 4 × 10^14
+        # element-pair ops dispatched as ~4 × 10^7 small NumPy calls
+        # of ~10^7 elements each) the per-call bandwidth-limited
+        # overhead made the streaming Python loop infeasible —
+        # estimated ~10^4 hours wall-clock on the actual workload.
+        #
+        # The fundamental observation is that for fixed feature `f` and
+        # fixed Y variant `v`, the per-lag cross-correlation
+        #     xcorr_fv(k) = Σ_t x_centered[t] * y_v_centered[t + k]
+        # for all k = 0..L_max can be computed in `O(N log N)` via the
+        # cross-correlation theorem (FFT of the centred rank vectors,
+        # multiply, inverse FFT) instead of `O(N · L_max)` via per-lag
+        # dot products. With `N ≈ 10^7`, `L_max ≈ 1500`, that's a ~50×
+        # algorithmic speedup on top of pocketfft's native vectorised
+        # throughput.
+        #
+        # The Y FFT (one per shuffle variant) is amortised across all
+        # `n_features` features because it does not depend on which
+        # feature is being scored. Per-feature work is one rank-transform,
+        # one rfft, plus `n_shuffles + 1` complex-multiply-and-irfft
+        # passes — each a single bandwidth-limited operation on
+        # `O(n_pad)` elements rather than `n_lags × n_shuffles` separate
+        # passes.
+        #
+        # Numerical note: we use the global-mean / global-norm Pearson
+        # form (the standard ACF/CCF estimator) rather than the
+        # windowed-mean form used by the legacy code. For
+        # `L_max / N ≈ 10^-4` the per-lag means and variances are
+        # numerically indistinguishable from the global ones; the
+        # global form additionally avoids catastrophic cancellation in
+        # the rank-product subtraction (the windowed `Σ x·y - N·μ_x·μ_y`
+        # involved subtracting two ~10^14 quantities to recover a ~10^7
+        # difference, which loses ~6 digits of float32 precision; the
+        # centred form `Σ x_c · y_c` directly recovers the small
+        # difference).
         total_frames = sum(n for _, n in valid_sessions)
         ses_starts = []
         cursor = 0
@@ -950,7 +976,15 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             cursor += n_frames_sess
         ses_starts.append(cursor)
 
-        # Build the pooled binary event trace once, and rank it once.
+        # FFT pad length: must satisfy `n_pad >= total_frames + L_max`
+        # so the circular-correlation wrap-around does not contaminate
+        # any lag in `[0, L_max]`. We round up to the next power of two
+        # because pocketfft is fastest on power-of-two lengths.
+        n_pad = 1
+        while n_pad < total_frames + max_lag_frames + 1:
+            n_pad *= 2
+
+        # Build the pooled binary event trace once.
         Y_pooled = np.zeros(total_frames, dtype=np.float32)
         for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
             start = ses_starts[k]
@@ -958,33 +992,41 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             Y_pooled[start:start + n_frames_sess] = _binary_event_trace(
                 ev_times, n_frames_sess, camera_fps_dict[sess_id]
             )
-        Y_ranks = rankdata(Y_pooled).astype(np.float32)
 
-        # Pre-compute the `n_shuffles` within-session circular-shifted
-        # rank vectors. Caching them once is what lets the per-feature
-        # inner loop stay cheap; recomputing per feature would scale as
-        # `O(n_shuffles * n_features * total_frames * log total_frames)`
-        # and dominate.
+        # Pre-compute centred-rank FFTs for actual + every shuffle. The
+        # ρ formula collapses to `Σ x_c · y_c / (||x_c|| · ||y_c||)` so we
+        # store the per-variant `||y_c||` alongside the FFT.
         rng = np.random.default_rng(random_seed)
-        Y_shuffled_ranks_cache = np.zeros((n_shuffles, total_frames), dtype=np.float32)
-        for sh in range(n_shuffles):
-            Y_shuffled = np.empty_like(Y_pooled)
-            for k in range(len(valid_sessions)):
-                start = ses_starts[k]
-                end = ses_starts[k + 1]
-                length = end - start
-                shift = int(rng.integers(0, length))
-                Y_shuffled[start:end] = np.roll(Y_pooled[start:end], shift)
-            Y_shuffled_ranks_cache[sh] = rankdata(Y_shuffled).astype(np.float32)
+        n_variants = n_shuffles + 1   # index 0 = actual, 1..n_shuffles = shuffles
+        Y_ffts = []                    # length n_variants, each (n_pad // 2 + 1) complex64
+        Y_norms = np.zeros(n_variants, dtype=np.float64)
 
-        # Streaming feature loop. For each feature we build the pooled
-        # column, rank it, score it against actual `Y_ranks` and the
-        # cached null shuffles at every lag, then drop both before
-        # moving to the next feature.
+        for vi in range(n_variants):
+            if vi == 0:
+                Y_v = Y_pooled
+            else:
+                Y_v = np.empty_like(Y_pooled)
+                for k in range(len(valid_sessions)):
+                    start = ses_starts[k]
+                    end = ses_starts[k + 1]
+                    length = end - start
+                    shift = int(rng.integers(0, length))
+                    Y_v[start:end] = np.roll(Y_pooled[start:end], shift)
+
+            Y_r = rankdata(Y_v).astype(np.float32)
+            Y_c = Y_r - Y_r.mean()
+            Y_ffts.append(np.fft.rfft(Y_c, n=n_pad))
+            Y_norms[vi] = float(np.sqrt(np.sum(np.square(Y_c, dtype=np.float64))))
+            del Y_v, Y_r, Y_c
+
         rho_actual = np.zeros((n_features, len(lag_grid_frames)), dtype=np.float32)
         null_abs_max = np.zeros((n_shuffles, n_features, len(lag_grid_frames)),
                                 dtype=np.float32)
 
+        # Feature loop. Per feature: build pooled column, rank, centre,
+        # rfft, compute its norm, then `n_variants` complex-multiply +
+        # irfft passes for the cross-correlations and divide by the
+        # paired norms.
         for f_i, fname in enumerate(feature_names):
             x_col = np.zeros(total_frames, dtype=np.float32)
             for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
@@ -996,20 +1038,31 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 x_col[ses_starts[k]:ses_starts[k] + n_frames_sess] = arr
 
             x_ranks = rankdata(x_col).astype(np.float32)
-            x_ranks_2d = x_ranks[:, None]
+            x_centered = x_ranks - x_ranks.mean()
+            x_norm = float(np.sqrt(np.sum(np.square(x_centered, dtype=np.float64))))
+            x_fft = np.fft.rfft(x_centered, n=n_pad)
+            x_fft_conj = np.conj(x_fft)
 
-            for li, lag in enumerate(lag_grid_frames):
-                rho_actual[f_i, li] = _spearman_at_lag(
-                    x_ranks_2d, Y_ranks, int(lag)
-                )[0].astype(np.float32)
-                for sh in range(n_shuffles):
-                    null_abs_max[sh, f_i, li] = np.abs(
-                        _spearman_at_lag(
-                            x_ranks_2d, Y_shuffled_ranks_cache[sh], int(lag)
-                        )[0]
-                    ).astype(np.float32)
+            for vi in range(n_variants):
+                # Cross-correlation: xcorr(k) = Σ_t x_c[t] * y_c[t + k]
+                #                            = irfft(conj(X) * Y)[k]
+                # for k = 0..max_lag_frames; padding to `n_pad`
+                # eliminates circular wrap-around.
+                xcorr = np.fft.irfft(x_fft_conj * Y_ffts[vi], n=n_pad)
+                xcorr_lags = xcorr[:max_lag_frames + 1]
 
-            del x_col, x_ranks, x_ranks_2d
+                denom = x_norm * Y_norms[vi]
+                if denom > 0:
+                    rho_k = (xcorr_lags / denom).astype(np.float32)
+                else:
+                    rho_k = np.zeros(max_lag_frames + 1, dtype=np.float32)
+
+                if vi == 0:
+                    rho_actual[f_i, :] = rho_k
+                else:
+                    null_abs_max[vi - 1, f_i, :] = np.abs(rho_k)
+
+            del x_col, x_ranks, x_centered, x_fft, x_fft_conj
 
         rho_null_p95 = np.percentile(null_abs_max, 95, axis=0).astype(np.float32)
 
