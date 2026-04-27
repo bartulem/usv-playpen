@@ -58,7 +58,7 @@
   },
 
   "vocal_features": {
-    "usv_predictor_type": "presence_all",
+    "usv_predictor_type": "pooled_rate",
     "usv_predictor_partner_only": true,
     "usv_predictor_smoothing_sd": 1,
     "usv_category_column_name": "usv_supercategory",

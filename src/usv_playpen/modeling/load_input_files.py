@@ -266,10 +266,10 @@ def find_bout_epochs(root_directories: list = None,
         Typically loaded from modeling_settings['gmm_params'].
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
-        - 'binary_joined': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_rate').
-        - 'presence_categories': Individual smoothed density per category ('usv_cat_X').
-        - 'presence_all': Both 'usv_rate' and individual 'usv_cat_X' signals.
+        - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
+        - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
+        - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
+        - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
     noise_vocal_categories : list, optional
         List of USV categories to ignore (e.g., [0, 19] for noise/background).
 
@@ -356,17 +356,17 @@ def find_bout_epochs(root_directories: list = None,
             usv_data_dict[session_id][mouse_name]['usv_rate'] = usv_frame_rate
 
             # Generates continuous vocal signals based on specified output type
-            if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_categories', 'presence_all']:
+            if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
 
                 # A. Joined Aggregate logic
-                if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_all'] and mouse_usvs_df.height > 0:
-                    if vocal_output_type == 'binary_joined':
+                if vocal_output_type in ['pooled_binary', 'pooled_rate', 'all_rate'] and mouse_usvs_df.height > 0:
+                    if vocal_output_type == 'pooled_binary':
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_event'] = usv_frame_events
                     else:
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = usv_frame_rate
 
                 # B. Per-category logic
-                if vocal_output_type in ['presence_categories', 'presence_all'] and has_category and mouse_usvs_df.height > 0:
+                if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs_df.height > 0:
                     unique_cats = mouse_usvs_df['usv_category'].unique().to_list()
                     for cat_id in unique_cats:
                         try:
@@ -539,10 +539,10 @@ def find_usv_categories(root_directories: list = None,
         Minimum time (seconds) from the start of the session. Discards USVs before this.
     vocal_output_type : str, optional, default=None
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
-        - 'binary_joined': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_rate').
-        - 'presence_categories': Individual smoothed density per category ('usv_cat_X').
-        - 'presence_all': Both 'usv_rate' and individual 'usv_cat_X' signals.
+        - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
+        - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
+        - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
+        - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
     proportion_smoothing_sd : float, default 1.0
         Standard deviation for Gaussian smoothing (in frames).
     noise_vocal_categories : list, optional
@@ -641,14 +641,14 @@ def find_usv_categories(root_directories: list = None,
                 usv_data_dict[session_id][mouse_name]['events_by_category'][cat_int] = np.sort(cat_df['start'].to_numpy())
 
             # Extract continuous vocal signals based on specified output type
-            if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_categories', 'presence_all']:
+            if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
 
                 # A. Aggregate (all calls combined)
-                if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_all']:
+                if vocal_output_type in ['pooled_binary', 'pooled_rate', 'all_rate']:
                     starts_all = mouse_usvs['start'].to_numpy()
                     stops_all = mouse_usvs['stop'].to_numpy()
 
-                    if vocal_output_type == 'binary_joined':
+                    if vocal_output_type == 'pooled_binary':
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_event'] = _generate_vocal_trace(
                             starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=None
                         )
@@ -658,7 +658,7 @@ def find_usv_categories(root_directories: list = None,
                         )
 
                 # Per-category density
-                if vocal_output_type in ['presence_categories', 'presence_all']:
+                if vocal_output_type in ['categories_rate', 'all_rate']:
                     for cat_id in unique_cats:
                         try:
                             cat_int = int(cat_id)
@@ -783,10 +783,10 @@ def find_variable_length_bouts(root_directories: list = None,
         Standard deviation of the Gaussian kernel (in frames) used to smooth continuous signals.
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated:
-        - 'binary_joined': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'presence_joined': Aggregate smoothed density of all biological USVs ('usv_rate').
-        - 'presence_categories': Individual smoothed density per category ('usv_cat_X').
-        - 'presence_all': Both 'usv_rate' and individual 'usv_cat_X' signals.
+        - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
+        - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
+        - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
+        - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
     noise_vocal_categories : list, optional
         List of USV category integers to exclude (e.g., [0, 19]). When `None`,
         no category-based noise filtering is applied — pass an explicit list
@@ -863,14 +863,14 @@ def find_variable_length_bouts(root_directories: list = None,
                 mouse_usvs = mouse_usvs.filter(~pls.col('usv_category').is_in(list(noise_vocal_categories)))
 
             # Generate continuous vocal signals based on specified output type
-            if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_categories', 'presence_all']:
+            if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
 
                 # A. Joined Aggregate logic
-                if vocal_output_type in ['binary_joined', 'presence_joined', 'presence_all'] and mouse_usvs.height > 0:
+                if vocal_output_type in ['pooled_binary', 'pooled_rate', 'all_rate'] and mouse_usvs.height > 0:
                     starts_all = mouse_usvs['start'].to_numpy()
                     stops_all = mouse_usvs['stop'].to_numpy()
 
-                    if vocal_output_type == 'binary_joined':
+                    if vocal_output_type == 'pooled_binary':
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_event'] = _generate_vocal_trace(
                             starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=None
                         )
@@ -880,7 +880,7 @@ def find_variable_length_bouts(root_directories: list = None,
                         )
 
                 # B. Per-category logic
-                if vocal_output_type in ['presence_categories', 'presence_all'] and has_category and mouse_usvs.height > 0:
+                if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs.height > 0:
                     unique_cats = mouse_usvs['usv_category'].unique().to_list()
                     for cat_id in unique_cats:
                         try:

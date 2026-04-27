@@ -412,31 +412,65 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
         if input_metadata is not None:
             payload['_input_metadata'] = dict(input_metadata)
     else:
-        # Spearman matrix on (n_events, n_features). scipy returns a square
-        # matrix when given a 2-D array.
-        sp_full = spearmanr(X, axis=0).correlation
-        # `spearmanr` returns a 0-D scalar when n_features == 2; coerce.
-        sp_full = np.atleast_2d(np.asarray(sp_full))
-        if sp_full.shape != (n_features, n_features):
-            sp_full = np.corrcoef(np.apply_along_axis(rankdata, 0, X), rowvar=False)
+        # Drop zero-variance columns before the correlation / VIF /
+        # condition-number computations. A constant column produces
+        # division-by-zero in `np.corrcoef`'s
+        # `c /= stddev[:, None]` step (RuntimeWarning) and a
+        # `ConstantInputWarning` from `scipy.stats.spearmanr`, with
+        # the offending row/column then becoming NaN — which
+        # subsequently corrupts the condition number and VIF
+        # computations. Surface the dropped feature names explicitly
+        # and re-run the audit on the survivors only.
+        col_var = X.var(axis=0, ddof=0)
+        constant_mask = col_var == 0
+        n_constant = int(constant_mask.sum())
+        if n_constant > 0:
+            const_names = [feature_names[i] for i in np.where(constant_mask)[0]]
+            sample = ', '.join(const_names[:6])
+            more = f" (+ {n_constant - 6} more)" if n_constant > 6 else ''
+            print(f"[audit] collinearity: dropped {n_constant} zero-variance "
+                  f"feature(s) before correlation/VIF: {sample}{more}.")
+            keep_mask = ~constant_mask
+            X = X[:, keep_mask]
+            feature_names = [feature_names[i]
+                             for i in range(len(feature_names))
+                             if not constant_mask[i]]
+            n_features = X.shape[1]
 
-        pe_full = np.corrcoef(X, rowvar=False)
+        if n_features == 0:
+            print("[audit] collinearity: every feature is zero-variance — "
+                  "nothing left to audit.")
+            sp_full = np.empty((0, 0), dtype=np.float32)
+            pe_full = np.empty((0, 0), dtype=np.float32)
+            vif = np.empty((0,), dtype=np.float64)
+            cond_num = float('nan')
+            flagged = []
+        else:
+            # Spearman matrix on (n_events, n_features). scipy returns a square
+            # matrix when given a 2-D array.
+            sp_full = spearmanr(X, axis=0).correlation
+            # `spearmanr` returns a 0-D scalar when n_features == 2; coerce.
+            sp_full = np.atleast_2d(np.asarray(sp_full))
+            if sp_full.shape != (n_features, n_features):
+                sp_full = np.corrcoef(np.apply_along_axis(rankdata, 0, X), rowvar=False)
 
-        vif = _vif_from_design(X)
+            pe_full = np.corrcoef(X, rowvar=False)
 
-        # Condition number on the column-standardized design — comparable
-        # across runs regardless of feature scale.
-        col_std = X.std(axis=0, ddof=1)
-        col_std[col_std == 0] = 1.0
-        X_std = (X - X.mean(axis=0)) / col_std
-        try:
-            cond_num = float(np.linalg.cond(X_std))
-        except np.linalg.LinAlgError:
-            cond_num = float('inf')
+            vif = _vif_from_design(X)
 
-        flagged = _flagged_pairs(sp_full, feature_names,
-                                 concern_thresh=concern_thresh,
-                                 exclude_thresh=exclude_thresh)
+            # Condition number on the column-standardized design — comparable
+            # across runs regardless of feature scale.
+            col_std = X.std(axis=0, ddof=1)
+            col_std[col_std == 0] = 1.0
+            X_std = (X - X.mean(axis=0)) / col_std
+            try:
+                cond_num = float(np.linalg.cond(X_std))
+            except np.linalg.LinAlgError:
+                cond_num = float('inf')
+
+            flagged = _flagged_pairs(sp_full, feature_names,
+                                     concern_thresh=concern_thresh,
+                                     exclude_thresh=exclude_thresh)
 
         payload = {
             'features': feature_names,
