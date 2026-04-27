@@ -231,31 +231,28 @@ def calculate_sei(
 
     Mathematical Logic:
     -------------------
-    1. Orientation: A separable, axis-aligned Gaussian gate over the
-       observer's egocentric (yaw, pitch) error toward the target. The
-       inter-point vector (target - observer_head) is rotated into the
-       observer's anatomical head frame via `observer_head_root`, and
-       its yaw and pitch components in that frame are read off via
-       `get_egocentric_direction`. The gate is
-           gaze = exp(-yaw^2 / (2 * sigma_yaw^2))
-                * exp(-pitch^2 / (2 * sigma_pitch^2))
-       so that yaw=0,pitch=0 (target on the observer's gaze axis) gives
-       1, and the score decays smoothly as the target moves off-axis in
-       either channel. sigma_yaw_deg and sigma_pitch_deg control the
-       acceptance cone width per channel and are tunable.
-    2. Sharpening: As distance (d) decreases, a dynamic *bounded*
-       exponent `gamma = 1 + tanh(L / d)` mildly sharpens the gate,
-       requiring slightly higher angular precision for high scores at
-       close range. The `tanh` saturates at 1 as `d -> 0`, so `gamma`
-       lives in `[1, 2]` and the gate cannot collapse: at infinite
-       distance gamma = 1 (no sharpening), at touching distance
-       gamma = 2 (gate squared). This replaces the legacy
-       `gamma = 1 + L/d` form, which grew unboundedly (gamma > 20 at
-       common close-engagement distances) and crushed `gaze_score`
-       to near-zero exactly when the SEI should have been highest —
-       the near-touching, sniffing frames. With the bounded form the
-       Gaussian gate keeps doing the angular-acceptance work and the
-       sharpening only contributes a soft second-order tightening.
+    1. Orientation: 3D cosine similarity between the observer's
+       head-nose vector (`v_h = obs_nose - obs_head`) and the
+       observer-to-target vector (`v_t = target_point - obs_head`).
+       The cosine of the angle between these unit vectors is a single
+       scalar in `[-1, 1]` that captures the full 3D angular deviation
+       (yaw and pitch jointly, without double-charging either
+       channel). Positive values mean the target is in front of the
+       observer's gaze axis; negative values mean the target is behind.
+       The signed output is preserved through to the final SEI so
+       partner-behind frames score negative rather than collapsing to
+       a small positive number.
+    2. Sharpening: As distance (d) decreases, a dynamic exponent
+       `gamma = 1 + L/d` sharpens the gaze gate, requiring higher
+       angular precision for high scores at close range.
+       Mathematically `gamma` is unbounded as `d -> 0`, but for the
+       `cos`-based gate this is tolerable: `cos` plateaus near 1.0
+       around the 0-deg gaze axis, so frames with small angular error
+       (the ones we want to score highest) survive even very large
+       exponents (e.g. `cos(10°)^21 = 0.72`). A Gaussian gate on the
+       same exponents would decay too quickly near 0 and crush such
+       frames; do not swap `cos` for `exp(-theta^2 / (2 sigma^2))`
+       without revisiting `gamma`.
     3. Social Weight (W): An exponential interpolator that balances
        speed and proximity:
        - At distance (d > L): Speed (V/V_max) is required to identify
@@ -264,12 +261,18 @@ def calculate_sei(
          high during stationary investigation (sniffing), even if
          locomotor speed is zero.
 
-    Note: this version of the SEI replaces the legacy 3D cosine
-    similarity with the explicit (yaw, pitch) Gaussian gate. Output is
-    in [0, 1] (unsigned); the legacy SEI's negative values for
-    "facing-away" frames are absorbed into the smooth Gaussian decay
-    (gate becomes near-zero rather than negative when the target sits
-    far off the observer's gaze axis).
+    Note (history): v0.9.15 briefly replaced the 3D cosine gate with
+    a separable Gaussian gate over the explicit egocentric `(yaw,
+    pitch)` decomposition. The Gaussian gate decays from the start and
+    has no plateau near `theta = 0`, so it crushed even moderately
+    aligned engagement frames. v0.9.16 then bounded `gamma` to `[1, 2]`
+    in an attempt to compensate, which preserved the high tail but
+    left the bulk of the distribution near zero. v0.9.17 reverts to
+    the v0.9.14 cosine + unbounded-gamma + signed-output form, which
+    matches the empirical SEI distribution we previously verified
+    against scored video. The (yaw, pitch) features themselves are
+    still emitted separately as `*.allo_yaw-*` / `*.allo_pitch-*`
+    columns; only the SEI gate is reverted.
 
     Parameters:
     -----------
@@ -305,7 +308,11 @@ def calculate_sei(
     Returns:
     --------
     sei : np.ndarray
-        A (n_frames,) array of SEI values in [0, 1].
+        A (n_frames,) array of signed SEI values in `[-1, 1]`.
+        Negative values correspond to "partner-behind" frames where
+        the cosine of the gaze-target angle is negative; downstream
+        consumers that want a strictly non-negative engagement score
+        can clip with `np.clip(sei, 0.0, 1.0)`.
     """
 
     obs_head = tracks[:, observer_idx, idx_head, :]
@@ -321,44 +328,34 @@ def calculate_sei(
     d_raw = np.linalg.norm(target_point - obs_nose, axis=1)
     d_norm = d_raw / (body_length + 1e-6)
 
-    # egocentric (yaw, pitch) of the target as seen from the observer's head
-    yaw_deg, pitch_deg = get_egocentric_direction(
-        head_root=observer_head_root,
-        head_pivot=obs_head,
-        target_point=target_point,
-    )
-    yaw_rad = yaw_deg * np.pi / 180.0
-    pitch_rad = pitch_deg * np.pi / 180.0
-    sigma_yaw_rad = sigma_yaw_deg * np.pi / 180.0
-    sigma_pitch_rad = sigma_pitch_deg * np.pi / 180.0
+    # 3D gaze direction (head -> nose) and 3D target direction (head -> target).
+    v_h = obs_nose - obs_head
+    v_t = target_point - obs_head
 
     with np.errstate(divide='ignore', invalid='ignore'):
-        # separable Gaussian gate over the (yaw, pitch) error; in [0, 1],
-        # peaks at 1 when the target is exactly on the observer's gaze axis
-        gaze_score = np.exp(-(yaw_rad ** 2) / (2 * sigma_yaw_rad ** 2)) * np.exp(
-            -(pitch_rad ** 2) / (2 * sigma_pitch_rad ** 2)
-        )
+        # 3D cosine similarity captures yaw and pitch error jointly in
+        # one scalar; clipped to [-1, 1] to bound floating-point noise.
+        v_h_unit = v_h / (np.linalg.norm(v_h, axis=1, keepdims=True) + 1e-6)
+        v_t_unit = v_t / (np.linalg.norm(v_t, axis=1, keepdims=True) + 1e-6)
+
+        cos_theta = np.sum(v_h_unit * v_t_unit, axis=1)
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
 
         if v_max is None:
             v_max = np.nanpercentile(speed_arr, 99)
         v_norm = np.clip(speed_arr / (v_max + 1e-6), 0, 1)
 
-        # Bounded exponent: `tanh(L/d_norm)` saturates at 1 as d_norm
-        # -> 0, so `gamma` lies in [1, 2] for all distances. The legacy
-        # form `gamma = 1 + 1/d_norm` was unbounded and produced
-        # `gamma > 20` at common close-engagement distances (e.g.,
-        # `d_norm = 0.05`, ~5% of a body length), which crushed the
-        # Gaussian gate to ~0 unless `(yaw, pitch) = (0, 0)` exactly —
-        # collapsing the SEI to zero precisely on the sniffing /
-        # nose-to-nose frames it was meant to score highest.
-        gamma = 1 + np.tanh(1 / (d_norm + 1e-6))
+        # Unbounded sharpening: tolerable here because `cos` plateaus
+        # near 1.0 around the 0-deg gaze axis, so on-axis frames
+        # survive large exponents.
+        gamma = 1 + (1 / (d_norm + 1e-6))
 
         # W_social: interpolator between speed-based pursuit and distance-based attention
         w_pursuit = (1 - np.exp(-d_norm)) * v_norm
         w_proximity = np.exp(-d_norm)
         w_social = w_pursuit + w_proximity
 
-        sei = (gaze_score ** gamma) * w_social
+        sei = np.sign(cos_theta) * (np.abs(cos_theta) ** gamma) * w_social
 
     return sei
 
@@ -1166,12 +1163,12 @@ class FeatureZoo:
         "TTI-allo_pitch": [-90, 90],
         "TTI-allo_pitch_1st_der": [-480, 480],
         "TTI-allo_pitch_2nd_der": [-4500, 4500],
-        "orofacial-sei": [0, 1],
-        "orofacial-sei_1st_der": [-6, 6],
-        "orofacial-sei_2nd_der": [-36, 36],
-        "anogenital-sei": [0, 1],
-        "anogenital-sei_1st_der": [-6, 6],
-        "anogenital-sei_2nd_der": [-36, 36]
+        "orofacial-sei": [-1, 1],
+        "orofacial-sei_1st_der": [-12, 12],
+        "orofacial-sei_2nd_der": [-72, 72],
+        "anogenital-sei": [-1, 1],
+        "anogenital-sei_1st_der": [-12, 12],
+        "anogenital-sei_2nd_der": [-72, 72]
     }
 
     feature_labels = {
