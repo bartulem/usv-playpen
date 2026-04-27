@@ -30,6 +30,7 @@ from .modeling_utils import (
     pearson_r_safe,
     root_mean_squared_error,
     mean_absolute_error_1d,
+    bounded_test_proportion,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -244,7 +245,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     cv_folds = []
     if split_strategy == 'session':
         all_sessions_arr = np.array(all_sessions)
-        ss = ShuffleSplit(n_splits=n_splits_selection, test_size=max(test_prop, 1.0 / len(all_sessions)), random_state=random_seed)
+        ss = ShuffleSplit(n_splits=n_splits_selection, test_size=bounded_test_proportion(test_prop, len(all_sessions)), random_state=random_seed)
         for train_idx, test_idx in ss.split(all_sessions_arr):
             cv_folds.append({'train_sessions': all_sessions_arr[train_idx], 'test_sessions': all_sessions_arr[test_idx], 'type': 'session'})
     elif split_strategy == 'mixed':
@@ -270,6 +271,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     # would otherwise call `pool_session_arrays` O(n_steps * n_features * n_folds)
     # times, re-concatenating the same per-session arrays at every iteration.
     pooled_feature_cache = {}
+    _anchor_n_pos, _anchor_n_neg = None, None
     for _feat_name in ranked_features:
         _X_p, _X_n = pool_session_arrays(
             all_feature_data[_feat_name],
@@ -278,6 +280,21 @@ def bout_onset_model_selection(univariate_results_path: str,
             neg_key="no_usv_feature_arr",
             n_frames=pipeline.history_frames,
         )
+        if _anchor_n_pos is None:
+            _anchor_n_pos, _anchor_n_neg = _X_p.shape[0], _X_n.shape[0]
+        else:
+            # The 'mixed' fold loop builds train/test indices against the
+            # anchor's `(n_pos, n_neg)` and then applies them to every other
+            # feature's `X_full`. This requires every feature's pooled
+            # (positive, negative) sample counts to match the anchor's; if
+            # they ever drift (e.g., feature-specific NaN drops upstream)
+            # the indices silently land on wrong rows. Fail loudly here.
+            assert _X_p.shape[0] == _anchor_n_pos and _X_n.shape[0] == _anchor_n_neg, (
+                f"pooled_feature_cache misalignment: feature {_feat_name!r} has "
+                f"({_X_p.shape[0]}, {_X_n.shape[0]}) pos/neg samples but the "
+                f"anchor has ({_anchor_n_pos}, {_anchor_n_neg}). The 'mixed' "
+                "fold indices would silently misindex this feature."
+            )
         pooled_feature_cache[_feat_name] = {
             'X_pos': _X_p,
             'X_neg': _X_n,
@@ -626,10 +643,20 @@ def bout_onset_model_selection(univariate_results_path: str,
         if len(current_model_features) == len(ranked_features):
             break
 
-    print("\n--- Final Model Fit for Visualization (CV-based) ---")
+    print("\n--- Final Model Fit for Visualization ---")
     try:
-        # Use the pre-pooled anchor arrays rather than re-running
-        # pool_session_arrays here.
+        # Single global-pool refit on the balanced anchor sample. The earlier
+        # per-fold loop iterated `cv_folds` (a list of dicts in the bout-
+        # onset selector) and unpacked it as if it were `(tr_idx, te_idx)`
+        # tuples; the unpack always raised, the surrounding except printed
+        # `Final fit failed: ...`, and no filter shapes were ever written.
+        # Even with the unpack fixed, the fold indices would not be valid
+        # row indices into the balanced pool below (they refer either to
+        # session lists or to global mixed-pool indices). The downstream
+        # consumer only needs the per-feature partial-dependence vector, so
+        # one global-balanced fit is sufficient and the on-disk shape
+        # (`filter_shapes` is a list of dicts, one per "fold") is preserved
+        # by emitting a single entry.
         X_p = pooled_feature_cache[anchor_feature]['X_pos']
         X_n = pooled_feature_cache[anchor_feature]['X_neg']
 
@@ -647,43 +674,33 @@ def bout_onset_model_selection(univariate_results_path: str,
             X_list_final.append(np.concatenate((f_p[idx_p], f_n[idx_n])))
 
         last_file = os.path.join(model_selection_dir, fname)
-        final_fold_shapes = []
 
-        print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
+        X_gam_tr = get_unrolled_X_for_multivariate(X_list_final, history_frames)
+        y_gam_tr = np.repeat(y_final.astype(float), history_frames)
 
-        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+        gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+        for i in range(1, len(current_model_features)):
+            gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
 
-            X_list_tr = [x[tr_idx] for x in X_list_final]
-            y_tr = y_final[tr_idx]
+        gam_final = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
 
-            X_gam_tr = get_unrolled_X_for_multivariate(X_list_tr, history_frames)
-            y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
+        base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
+        for k in range(len(current_model_features)):
+            base_grid[:, k * 2 + 1] = time_indices
 
-            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-            for i in range(1, len(current_model_features)):
-                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+        base_prob = gam_final.predict_mu(base_grid)
 
-            gam_fold = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
+        fold_res = {}
+        for k, f_name in enumerate(current_model_features):
+            test_grid = base_grid.copy()
+            test_grid[:, k * 2] = 1.0
+            pred_feat = gam_final.predict_mu(test_grid)
+            fold_res[f_name] = (pred_feat - base_prob).flatten()
 
-            base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
+        final_fold_shapes = [fold_res]
 
-            for k in range(len(current_model_features)):
-                base_grid[:, k * 2 + 1] = time_indices
-
-            base_prob = gam_fold.predict_mu(base_grid)
-
-            fold_res = {}
-            for k, f_name in enumerate(current_model_features):
-                test_grid = base_grid.copy()
-                test_grid[:, k * 2] = 1.0
-
-                pred_feat = gam_fold.predict_mu(test_grid)
-                fold_res[f_name] = (pred_feat - base_prob).flatten()
-
-            final_fold_shapes.append(fold_res)
-
-            del gam_fold, X_gam_tr, y_gam_tr
-            gc.collect()
+        del gam_final, X_gam_tr, y_gam_tr
+        gc.collect()
 
         with open(last_file, 'rb') as f:
             data = pickle.load(f)
@@ -697,7 +714,7 @@ def bout_onset_model_selection(univariate_results_path: str,
 
         with open(last_file, 'wb') as f:
             pickle.dump(data, f)
-        print("Final model filters saved (CV-based).")
+        print("Final model filters saved.")
 
     except Exception as e:
         print(f"Final fit failed: {e}")
@@ -1025,7 +1042,7 @@ def vocal_category_model_selection(
     # of the inner loop at ~ (n_steps * n_features * n_folds) pool calls.
     pooled_category_cache = {}
     if split_strategy == 'session':
-        ss = ShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
+        ss = ShuffleSplit(n_splits=n_splits, test_size=bounded_test_proportion(test_prop, len(all_sessions_arr)), random_state=random_seed)
         cv_folds = list(ss.split(all_sessions_arr))
     elif split_strategy == 'mixed':
         for _feat_name in ranked_features:
@@ -1040,6 +1057,18 @@ def vocal_category_model_selection(
         ref_other = pooled_category_cache[ranked_features[0]]['other']
         n_targ_total = ref_targ.shape[0]
         n_other_total = ref_other.shape[0]
+
+        # The 'mixed' fold loop builds train/test indices against
+        # `(n_targ_total, n_other_total)` derived from the anchor and then
+        # applies them to every trial feature's cached arrays. If a feature
+        # ever has a different per-class sample count, the indices land on
+        # wrong rows. Fail loudly here.
+        for _feat_name, _entry in pooled_category_cache.items():
+            assert _entry['target'].shape[0] == n_targ_total and _entry['other'].shape[0] == n_other_total, (
+                f"pooled_category_cache misalignment: feature {_feat_name!r} has "
+                f"({_entry['target'].shape[0]}, {_entry['other'].shape[0]}) target/other "
+                f"samples but the anchor has ({n_targ_total}, {n_other_total})."
+            )
 
         y_dummy = np.hstack([np.ones(n_targ_total), np.zeros(n_other_total)])
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)

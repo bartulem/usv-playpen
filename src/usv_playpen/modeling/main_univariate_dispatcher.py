@@ -37,6 +37,7 @@ import os
 import pathlib
 import json
 import gc
+import traceback
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -191,7 +192,12 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
     # 2. Semantic Feature Mapping
     try:
         with open(args.input_data, 'rb') as f:
-            # We only load keys to save memory on the login/head node
+            # `pickle.load` deserializes the entire dict; we then keep only
+            # the sorted key list and immediately drop the rest so peak RSS
+            # falls back to the keys-only footprint before the JAX/GPU
+            # estimator allocates. This is *not* a true keys-only loader —
+            # pickle does not support that — but it does bound the resident
+            # working set during the per-feature mapping step.
             all_features = sorted(list(pickle.load(f).keys()))
 
         if args.feature_idx >= len(all_features):
@@ -278,6 +284,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
     except Exception as e:
         print(f"FATAL ERROR: Analysis failed for {feature_name}. Error: {e}")
+        traceback.print_exc()
         return
 
     # 4. Atomic Result Serialization

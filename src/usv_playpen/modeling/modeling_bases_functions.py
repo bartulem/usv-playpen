@@ -102,7 +102,7 @@ def _normalizecols(A: np.ndarray) -> np.ndarray:
     normalized_A : np.ndarray
         The array with columns normalized to unit length.
     """
-    B = A / np.tile(np.sqrt(sum(A ** 2, 0)), (np.size(A, 0), 1))
+    B = A / np.tile(np.sqrt(np.sum(A ** 2, axis=0)), (np.size(A, 0), 1))
     B = np.nan_to_num(B)  # To get rid of nans out of zero divisions
     return B
 

@@ -287,13 +287,21 @@ def find_bout_epochs(root_directories: list = None,
     for one_root_directory in root_directories:
         session_id = one_root_directory.split(os.sep)[-1]
         usv_data_dict[session_id] = {}
-        usv_summary_data = pls.read_csv(source=next(pathlib.Path(f"{one_root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None),
-                                        separator=csv_sep)
+
+        csv_path = next(pathlib.Path(f"{one_root_directory}{os.sep}audio{os.sep}").glob(f"**{os.sep}*_usv_summary.csv"), None)
+        if csv_path is None:
+            print(f"Warning: No USV summary found for {session_id}. Skipping.")
+            continue
+
+        usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
         has_category = 'usv_category' in usv_summary_data.columns
         if noise_vocal_categories and has_category:
             usv_summary_data = usv_summary_data.filter(~pls.col('usv_category').is_in(list(noise_vocal_categories)))
 
+        if session_id not in mouse_ids_dict:
+            print(f"Warning: No mouse names registered for {session_id}. Skipping.")
+            continue
         mouse_track_names = mouse_ids_dict[session_id]
 
         for i, mouse_name in enumerate(mouse_track_names):
@@ -315,13 +323,17 @@ def find_bout_epochs(root_directories: list = None,
 
             ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, gmm_z_score)
 
-            # Finds start and stop times of USVs for this particular mouse
-            mouse_usvs_df = usv_summary_data.filter(pls.col('emitter') == mouse_name)
+            # Finds start and stop times of USVs for this particular mouse.
+            # Sort by `start` so downstream IBI-gap and bout-indexing logic
+            # (which assumes monotonic starts/stops) is correct regardless of
+            # the upstream CSV row order — matches `find_usv_categories` and
+            # `find_variable_length_bouts`.
+            mouse_usvs_df = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
             usv_data_dict[session_id][mouse_name]['start'] = np.array(mouse_usvs_df['start'])
             usv_data_dict[session_id][mouse_name]['stop'] = np.array(mouse_usvs_df['stop'])
 
             # Get all USVs (this mouse + uncategorized) - this is important for clean epoch sampling
-            all_usvs_df = usv_summary_data.filter((pls.col('emitter').is_null()) | (pls.col('emitter') == mouse_name))
+            all_usvs_df = usv_summary_data.filter((pls.col('emitter').is_null()) | (pls.col('emitter') == mouse_name)).sort('start')
             usv_start_mouse_and_uncategorized = np.array(all_usvs_df['start'])
             usv_stop_mouse_and_uncategorized = np.array(all_usvs_df['stop'])
 
@@ -418,17 +430,21 @@ def find_bout_epochs(root_directories: list = None,
                                                            filter_history,
                                                            session_duration_sec)
 
-                # Get this mouse's USV starts
-                mouse_usv_starts = usv_data_dict[session_id][mouse_name]['start']
+                # No-USV epochs must be completely silent: include this
+                # mouse's USVs *and* uncategorized USVs in the future-window
+                # check. The previous version only counted the predictor
+                # mouse's USVs, which let partner / uncategorized
+                # vocalisations leak into the No-Bout class.
+                all_usv_starts = usv_start_mouse_and_uncategorized
 
                 neg_list = []
                 for t_onset in all_clean_onsets:
                     t_future_end = t_onset + usv_bout_time
 
-                    # Count USVs in the "future" window
+                    # Count USVs (any source) in the "future" window
                     usvs_in_future = np.sum(
-                        (mouse_usv_starts >= t_onset) &
-                        (mouse_usv_starts < t_future_end)
+                        (all_usv_starts >= t_onset) &
+                        (all_usv_starts < t_future_end)
                     )
 
                     # Only add if there are zero USVs in the future window
@@ -769,7 +785,9 @@ def find_variable_length_bouts(root_directories: list = None,
         - 'presence_categories': Individual smoothed density per category ('usv_cat_X').
         - 'presence_all': Both 'usv_rate' and individual 'usv_cat_X' signals.
     noise_vocal_categories : list, optional
-        List of USV category integers to exclude (e.g., [0, 19]). Defaults to [0, 19] if None.
+        List of USV category integers to exclude (e.g., [0, 19]). When `None`,
+        no category-based noise filtering is applied — pass an explicit list
+        if you want noise rows dropped before bout detection.
 
     Returns
     -------
