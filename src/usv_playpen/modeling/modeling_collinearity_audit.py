@@ -1012,17 +1012,62 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 ev_times, n_frames_sess, camera_fps_dict[sess_id]
             )
 
-        # Pre-compute centred-rank FFTs for actual + every shuffle. The
-        # ρ formula collapses to `Σ x_c · y_c / (||x_c|| · ||y_c||)` so we
-        # store the per-variant `||y_c||` alongside the FFT.
-        rng = np.random.default_rng(random_seed)
+        # Memory strategy: cache the X side (one rfft per feature) and
+        # stream the Y side (one rfft per variant, computed on the fly
+        # and discarded after every feature has been scored against it).
+        # Reversed memory: the legacy approach cached all `n_variants`
+        # Y_ffts up front, which at `(n_pad//2+1) * 8 B ≈ 134 MB` per
+        # variant blew up to ~134 GB at `n_shuffles=1000` and OOM-killed
+        # the kernel mid-precompute. Caching X scales as
+        # `n_features * 134 MB` (2-3 GB on this cohort) and stays flat
+        # in `n_shuffles`, so 1000+ shuffles fit comfortably in a few
+        # GB.
+        n_signal_lags = signal_lag_grid_frames.size   # 2 * max_lag_frames + 1
         n_variants = n_shuffles + 1   # index 0 = actual, 1..n_shuffles = shuffles
-        Y_ffts = []                    # length n_variants, each (n_pad // 2 + 1) complex64
-        Y_norms = np.zeros(n_variants, dtype=np.float64)
+        rho_signal = np.zeros((n_features, n_signal_lags), dtype=np.float32)
+        null_abs = np.zeros((n_shuffles, n_features, n_signal_lags), dtype=np.float32)
 
-        print(f"[audit]   Signal correlation: pre-computing {n_variants} "
-              f"Y-variant rank FFTs (1 actual + {n_shuffles} shuffles, "
-              f"n_pad={n_pad}, total_frames={total_frames})...")
+        # ----- Phase 1: cache X-side FFTs for every feature -----
+        n_freq = n_pad // 2 + 1
+        x_ffts_conj = np.empty((n_features, n_freq), dtype=np.complex64)
+        x_norms = np.empty(n_features, dtype=np.float64)
+
+        print(f"[audit]   Signal correlation: phase 1/2 — caching X-side rfft "
+              f"for {n_features} features (n_pad={n_pad}, "
+              f"total_frames={total_frames})...")
+        x_t0 = time.monotonic()
+        for f_i, fname in enumerate(feature_names):
+            x_col = np.zeros(total_frames, dtype=np.float32)
+            for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
+                per_feature = session_blocks[sess_id]
+                if fname not in per_feature:
+                    continue
+                arr = per_feature[fname]
+                arr = np.where(np.isfinite(arr), arr, 0.0)
+                x_col[ses_starts[k]:ses_starts[k] + n_frames_sess] = arr
+
+            x_ranks = rankdata(x_col).astype(np.float32)
+            x_centered = x_ranks - x_ranks.mean()
+            x_norms[f_i] = float(np.sqrt(np.sum(np.square(x_centered, dtype=np.float64))))
+            x_ffts_conj[f_i] = np.conj(np.fft.rfft(x_centered, n=n_pad)).astype(np.complex64)
+            del x_col, x_ranks, x_centered
+
+            if (f_i + 1) % 5 == 0 or (f_i + 1) == n_features:
+                elapsed = time.monotonic() - x_t0
+                rate = (f_i + 1) / elapsed if elapsed > 0 else 0.0
+                eta = (n_features - (f_i + 1)) / rate if rate > 0 else float('inf')
+                print(f"[audit]   Signal correlation: phase 1 — "
+                      f"feature {f_i + 1}/{n_features} "
+                      f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
+
+        # ----- Phase 2: stream Y variants, score every feature per variant -----
+        # Per variant: one rankdata + one rfft on Y, then `n_features`
+        # complex-multiply + irfft passes. Y memory is recycled each
+        # iteration; only the current variant is resident.
+        print(f"[audit]   Signal correlation: phase 2/2 — streaming "
+              f"{n_variants} Y-variants × {n_features} features × "
+              f"{n_signal_lags} lags...")
+        rng = np.random.default_rng(random_seed)
         y_t0 = time.monotonic()
         for vi in range(n_variants):
             if vi == 0:
@@ -1038,58 +1083,27 @@ def audit_predictor_timescales(processed_beh_dict: dict,
 
             Y_r = rankdata(Y_v).astype(np.float32)
             Y_c = Y_r - Y_r.mean()
-            Y_ffts.append(np.fft.rfft(Y_c, n=n_pad))
-            Y_norms[vi] = float(np.sqrt(np.sum(np.square(Y_c, dtype=np.float64))))
-            del Y_v, Y_r, Y_c
-            if (vi + 1) % 10 == 0 or (vi + 1) == n_variants:
-                elapsed = time.monotonic() - y_t0
-                rate = (vi + 1) / elapsed if elapsed > 0 else 0.0
-                eta = (n_variants - (vi + 1)) / rate if rate > 0 else float('inf')
-                print(f"[audit]   Signal correlation: Y-variant {vi + 1}/{n_variants} "
-                      f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
+            Y_norm = float(np.sqrt(np.sum(np.square(Y_c, dtype=np.float64))))
+            Y_fft = np.fft.rfft(Y_c, n=n_pad)
+            del Y_r, Y_c
+            if vi != 0:
+                del Y_v
 
-        n_signal_lags = signal_lag_grid_frames.size   # 2 * max_lag_frames + 1
-        rho_signal = np.zeros((n_features, n_signal_lags), dtype=np.float32)
-        null_abs = np.zeros((n_shuffles, n_features, n_signal_lags), dtype=np.float32)
-
-        # Feature loop. Per feature: build pooled column, rank, centre,
-        # rfft, compute its norm, then `n_variants` complex-multiply +
-        # irfft passes for the cross-correlations and divide by the
-        # paired norms.
-        print(f"[audit]   Signal correlation: scoring {n_features} features "
-              f"× {n_variants} Y-variants × {n_signal_lags} lags...")
-        feat_t0 = time.monotonic()
-        for f_i, fname in enumerate(feature_names):
-            x_col = np.zeros(total_frames, dtype=np.float32)
-            for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
-                per_feature = session_blocks[sess_id]
-                if fname not in per_feature:
-                    continue
-                arr = per_feature[fname]
-                arr = np.where(np.isfinite(arr), arr, 0.0)
-                x_col[ses_starts[k]:ses_starts[k] + n_frames_sess] = arr
-
-            x_ranks = rankdata(x_col).astype(np.float32)
-            x_centered = x_ranks - x_ranks.mean()
-            x_norm = float(np.sqrt(np.sum(np.square(x_centered, dtype=np.float64))))
-            x_fft = np.fft.rfft(x_centered, n=n_pad)
-            x_fft_conj = np.conj(x_fft)
-
-            for vi in range(n_variants):
-                # Cross-correlation: xcorr(k) = Σ_t x_c[t] * y_c[t + k]
-                #                            = irfft(conj(X) * Y)[k]
-                # Extract symmetric lag window [-L_max, +L_max]:
+            # Inner loop: cross-correlate every feature against this Y variant.
+            for f_i in range(n_features):
+                # xcorr(k) = irfft(conj(X) * Y)[k]; extract symmetric lag
+                # window [-L_max, +L_max]:
                 #   positive lags 0..L_max → xcorr[0 : L_max + 1]
                 #   negative lags -L_max..-1 → xcorr[n_pad - L_max : n_pad]
                 # `np.concatenate` orders the result -L_max .. +L_max,
                 # matching `signal_lag_grid_frames`.
-                xcorr = np.fft.irfft(x_fft_conj * Y_ffts[vi], n=n_pad)
+                xcorr = np.fft.irfft(x_ffts_conj[f_i] * Y_fft, n=n_pad)
                 xcorr_signal = np.concatenate([
                     xcorr[n_pad - max_lag_frames:],   # lags -L_max..-1
                     xcorr[:max_lag_frames + 1],        # lags 0..+L_max
                 ])
 
-                denom = x_norm * Y_norms[vi]
+                denom = x_norms[f_i] * Y_norm
                 if denom > 0:
                     rho_k = (xcorr_signal / denom).astype(np.float32)
                 else:
@@ -1100,14 +1114,21 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 else:
                     null_abs[vi - 1, f_i, :] = np.abs(rho_k)
 
-            del x_col, x_ranks, x_centered, x_fft, x_fft_conj
+            del Y_fft
 
-            if (f_i + 1) % 25 == 0 or (f_i + 1) == n_features:
-                elapsed = time.monotonic() - feat_t0
-                rate = (f_i + 1) / elapsed if elapsed > 0 else 0.0
-                eta = (n_features - (f_i + 1)) / rate if rate > 0 else float('inf')
-                print(f"[audit]   Signal correlation: feature {f_i + 1}/{n_features} "
+            if (vi + 1) % 25 == 0 or (vi + 1) == n_variants:
+                elapsed = time.monotonic() - y_t0
+                rate = (vi + 1) / elapsed if elapsed > 0 else 0.0
+                eta = (n_variants - (vi + 1)) / rate if rate > 0 else float('inf')
+                print(f"[audit]   Signal correlation: phase 2 — "
+                      f"variant {vi + 1}/{n_variants} "
                       f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
+
+        # Drop the X-side cache before reducing the null tensor — the
+        # 95th-percentile reduction allocates `(n_features, n_signal_lags)`
+        # of float32 (cheap), but freeing the X cache here keeps peak
+        # memory below the phase-2 working set.
+        del x_ffts_conj, x_norms, Y_pooled
 
         rho_signal_null_p95 = np.percentile(null_abs, 95, axis=0).astype(np.float32)
 
