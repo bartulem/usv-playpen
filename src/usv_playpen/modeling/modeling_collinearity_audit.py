@@ -13,14 +13,17 @@ the per-event history matrix:
    plus per-feature Variance Inflation Factors and the design-matrix
    condition number.
 
-2. `audit_predictor_timescales` — answers "is the configured
-   `filter_history` window long enough to capture all useful predictor
-   information?"  Reports two complementary summaries:
-     * Predictor autocorrelation (ACF) → lower bound on the window
-       (anything shorter throws away in-feature memory).
-     * Event-locked predictive Spearman ρ at varying lead-times → upper
-       bound on the window (anything longer no longer carries event-locked
-       signal above a within-session circular-shift null).
+2. `audit_predictor_timescales` — characterises how each predictor
+   relates to the binary USV train, in time. Reports two complementary
+   summaries:
+     * Predictor autocorrelation (ACF) → how long each feature holds
+       memory of itself; a structural property of the predictor.
+     * Signal correlation → temporal cross-correlation between every
+       predictor and the per-frame binary USV train, at lags spanning
+       `[-max_lag_seconds, +max_lag_seconds]`. Negative lags mean the
+       USV precedes the feature; positive lags mean the feature precedes
+       the USV. A within-session circular-shift null is computed
+       alongside as a per-lag noise floor.
    The response-side IBI thresholds and empirical IBI percentiles are
    bundled in for completeness.
 
@@ -720,29 +723,37 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                                random_seed: int = 0,
                                input_metadata: dict = None) -> dict:
     """
-    Computes ACF (lower bound) and event-locked predictive ρ (upper bound)
-    timescales for every kept predictor, alongside the response-side IBI
-    distribution, and persists the result to disk.
+    Computes per-feature ACF and signal correlation between every kept
+    predictor and the per-frame binary USV train, alongside the
+    response-side IBI distribution, and persists the result to disk.
 
-    The ACF profile answers "below what window length am I throwing away
-    a feature's own memory?"  The predictive-ρ profile answers "above what
-    window length is no kept feature still carrying event-locked signal
-    above the within-session shuffle null?"  Together they bracket the
-    defensible range for the configured `filter_history`.
+    The ACF profile characterises each feature's own memory (how long
+    its values stay correlated with themselves). The signal-correlation
+    profile characterises how that feature aligns in time with the
+    binary USV indicator, at lags from `-max_lag_seconds` to
+    `+max_lag_seconds`. Lag-sign convention:
 
-    Predictive-ρ implementation
-    ---------------------------
+        ρ_signal(k) = corr( feature[t], usv_indicator[t + k] )
+
+    so positive `k` ⇒ feature leads USV (behaviour precedes
+    vocalisation); negative `k` ⇒ USV leads feature (vocalisation
+    precedes behaviour).
+
+    Signal-correlation implementation
+    ---------------------------------
     For each feature `f` the kept session traces are concatenated into a
-    single rank-transformed array `X_f`, and the per-session binary event
-    indicator is concatenated into `Y`. Spearman ρ is then computed at
-    every lag Δ ∈ {0, 1, …, L_max_frames} via the centred-dot-product
-    shortcut on the pre-ranked arrays (one sort per feature, one per
-    shuffle). The within-session circular-shift null shifts each
-    session's `Y` by a uniformly drawn offset before re-pooling — this
-    preserves `Y`'s autocorrelation structure (so the null is not
-    degenerately tight) while destroying the temporal alignment with
-    `X`. `τ_predictive(f)` is the largest lag at which the actual ρ
-    magnitude exceeds the per-lag 95th percentile of |ρ| under the null.
+    single rank-transformed pooled array `X_f`, and the per-session
+    binary event indicator is similarly concatenated and rank-transformed
+    into `Y_v` (one variant per actual + per shuffle). Spearman ρ at every
+    lag `k ∈ [-L_max_frames, +L_max_frames]` is recovered in one rfft
+    + n_variants × irfft passes via the cross-correlation theorem, with
+    `n_pad` set to the next power of two ≥ `total_frames + L_max_frames`
+    so the lag window stays free of circular-wrap contamination. The
+    within-session circular-shift null shifts each session's `Y` by a
+    uniformly drawn offset before re-pooling — this preserves `Y`'s
+    event-clustering structure while destroying its alignment with `X`,
+    so the null reflects what `|ρ|` would be under random within-session
+    timing.
 
     Parameters
     ----------
@@ -758,19 +769,21 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         Mouse slot indices.
     configured_filter_history : float
         The `filter_history` value (in seconds) currently configured in
-        `modeling_settings.json`. Used only for the recommendation line
-        and the plot vertical-line annotation.
+        `modeling_settings.json`. Stored in the artifact for downstream
+        plot annotations only; not used to gate any computation here.
     camera_fps_dict : dict
         Mapping `session_id -> camera_sampling_rate_hz`.
     max_lag_seconds : float
-        Upper bound of the lag axis (in seconds).
+        Half-width of the signal-correlation lag axis (in seconds). The
+        signal lag grid spans `[-max_lag_seconds, +max_lag_seconds]`;
+        the ACF lag grid spans `[0, max_lag_seconds]`.
     n_shuffles : int
-        Number of within-session circular-shift shuffles used to build the
-        per-lag predictive-ρ null.
+        Number of within-session circular-shift shuffles used to build
+        the per-lag signal-correlation null.
     ibi_thresholds : dict
         Pre-computed `{'male': float, 'female': float}` IBI thresholds
-        from `_calculate_ibi_threshold`. Stored in the artifact for the
-        recommendation line; not recomputed here.
+        from `_calculate_ibi_threshold`. Stored in the artifact for
+        downstream consumers.
     save_path : str
         Absolute path to the artifact `.pkl`. Directory is created if
         missing.
@@ -825,17 +838,18 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         print("[audit] timescales: empty input — nothing to audit.")
         payload = {
             'features': feature_names,
-            'lags_frames': np.empty((0,), dtype=np.int32),
-            'lags_seconds': np.empty((0,), dtype=np.float32),
+            'acf_lags_frames': np.empty((0,), dtype=np.int32),
+            'acf_lags_seconds': np.empty((0,), dtype=np.float32),
             'acf_median': np.empty((0, 0), dtype=np.float32),
             'acf_p25': np.empty((0, 0), dtype=np.float32),
             'acf_p75': np.empty((0, 0), dtype=np.float32),
             'tau_acf_1_over_e': np.empty((0,), dtype=np.float32),
             'tau_acf_0_2': np.empty((0,), dtype=np.float32),
             'tau_acf_integrated': np.empty((0,), dtype=np.float32),
-            'rho_predictive': np.empty((0, 0), dtype=np.float32),
-            'rho_predictive_null_p95': np.empty((0, 0), dtype=np.float32),
-            'tau_predictive': np.empty((0,), dtype=np.float32),
+            'signal_lags_frames': np.empty((0,), dtype=np.int32),
+            'signal_lags_seconds': np.empty((0,), dtype=np.float32),
+            'rho_signal': np.empty((0, 0), dtype=np.float32),
+            'rho_signal_null_p95': np.empty((0, 0), dtype=np.float32),
             'ibi_thresholds': dict(ibi_thresholds),
             'ibi_empirical_pcts': {'p50': float('nan'), 'p90': float('nan'), 'p99': float('nan')},
             'configured_filter_history': float(configured_filter_history),
@@ -863,10 +877,14 @@ def audit_predictor_timescales(processed_beh_dict: dict,
               f"reporting the lag axis at {fps} fps. Per-session lag-in-seconds may differ.")
 
     max_lag_frames = int(np.ceil(max_lag_seconds * fps))
-    lag_grid_frames = np.arange(0, max_lag_frames + 1, dtype=np.int32)
-    lag_grid_seconds = lag_grid_frames.astype(np.float32) / fps
+    # ACF axis: positive lags only [0, L_max]
+    acf_lag_grid_frames = np.arange(0, max_lag_frames + 1, dtype=np.int32)
+    acf_lag_grid_seconds = acf_lag_grid_frames.astype(np.float32) / fps
+    # Signal-correlation axis: symmetric [-L_max, +L_max]
+    signal_lag_grid_frames = np.arange(-max_lag_frames, max_lag_frames + 1, dtype=np.int32)
+    signal_lag_grid_seconds = signal_lag_grid_frames.astype(np.float32) / fps
 
-    # ----------------- ACF (lower bound) -----------------
+    # ----------------- ACF -----------------
     print(f"[audit]   ACF: {n_features} features × {len(session_blocks)} sessions × "
           f"{max_lag_frames + 1} lags ({max_lag_seconds:.1f} s @ {fps:.1f} fps)")
 
@@ -906,8 +924,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     tau_int = np.array([_integrated_autocorr_time(acf_median[i])
                         for i in range(n_features)], dtype=np.float32) / fps
 
-    # ----------------- Predictive ρ (upper bound) -----------------
-    print(f"[audit]   Predictive ρ: pooling sessions, {n_shuffles} shuffles for null")
+    # ----------------- Signal correlation -----------------
+    print(f"[audit]   Signal correlation: pooling sessions, "
+          f"{n_shuffles} shuffles for null, lags ±{max_lag_seconds:.1f} s")
 
     # Determine session length per session by picking the first feature
     # we have data for; require an event_times entry for the session.
@@ -926,57 +945,48 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         valid_sessions.append((sess_id, n_frames_sess))
 
     if not valid_sessions:
-        print("[audit]   Predictive ρ: no valid sessions with events — skipping.")
-        rho_actual = np.full((n_features, len(lag_grid_frames)), np.nan, dtype=np.float32)
-        rho_null_p95 = np.full((n_features, len(lag_grid_frames)), np.nan, dtype=np.float32)
-        tau_pred = np.zeros(n_features, dtype=np.float32)
+        print("[audit]   Signal correlation: no valid sessions with events — skipping.")
+        rho_signal = np.full((n_features, signal_lag_grid_frames.size), np.nan, dtype=np.float32)
+        rho_signal_null_p95 = np.full((n_features, signal_lag_grid_frames.size), np.nan, dtype=np.float32)
         empirical_pcts = {'p50': float('nan'), 'p90': float('nan'), 'p99': float('nan')}
         n_total_events = 0
     else:
-        # ----- FFT-based predictive-ρ -----
+        # ----- FFT-based signal correlation -----
         # We compute Spearman ρ between every feature's rank-vector and
-        # both the actual event indicator's ranks and `n_shuffles`
-        # within-session circular-shifted indicator ranks, at every lag
-        # in `lag_grid_frames`.
+        # both the actual rank-transformed event indicator and
+        # `n_shuffles` within-session circular-shifted indicator ranks,
+        # at every lag k ∈ [-L_max_frames, +L_max_frames].
         #
-        # The naive implementation evaluates each (feature, shuffle,
-        # lag) triple as a separate centred dot product in a Python
-        # loop. With this cohort's scale (~500 features × ~100 sessions
-        # × ~10^5 frames × ~10^3 lags × 50 shuffles ≈ 4 × 10^14
-        # element-pair ops dispatched as ~4 × 10^7 small NumPy calls
-        # of ~10^7 elements each) the per-call bandwidth-limited
-        # overhead made the streaming Python loop infeasible —
-        # estimated ~10^4 hours wall-clock on the actual workload.
-        #
-        # The fundamental observation is that for fixed feature `f` and
-        # fixed Y variant `v`, the per-lag cross-correlation
+        # The cross-correlation theorem gives all lags in one rfft +
+        # one irfft per (feature × Y-variant) pair:
         #     xcorr_fv(k) = Σ_t x_centered[t] * y_v_centered[t + k]
-        # for all k = 0..L_max can be computed in `O(N log N)` via the
-        # cross-correlation theorem (FFT of the centred rank vectors,
-        # multiply, inverse FFT) instead of `O(N · L_max)` via per-lag
-        # dot products. With `N ≈ 10^7`, `L_max ≈ 1500`, that's a ~50×
-        # algorithmic speedup on top of pocketfft's native vectorised
-        # throughput.
+        #                 = irfft( conj(rfft(x_c)) * rfft(y_v_c) )[k]
+        # Sign convention: positive k ⇒ feature[t] vs y[t+k], i.e.
+        # feature leads y; negative k ⇒ y leads feature.
         #
-        # The Y FFT (one per shuffle variant) is amortised across all
+        # The Y FFT (one per Y-variant) is amortised across all
         # `n_features` features because it does not depend on which
         # feature is being scored. Per-feature work is one rank-transform,
         # one rfft, plus `n_shuffles + 1` complex-multiply-and-irfft
         # passes — each a single bandwidth-limited operation on
         # `O(n_pad)` elements rather than `n_lags × n_shuffles` separate
-        # passes.
+        # passes. With pocketfft's vectorised throughput this is fast
+        # enough to scale to the full cohort in tens of minutes.
         #
         # Numerical note: we use the global-mean / global-norm Pearson
-        # form (the standard ACF/CCF estimator) rather than the
-        # windowed-mean form used by the legacy code. For
-        # `L_max / N ≈ 10^-4` the per-lag means and variances are
-        # numerically indistinguishable from the global ones; the
-        # global form additionally avoids catastrophic cancellation in
-        # the rank-product subtraction (the windowed `Σ x·y - N·μ_x·μ_y`
-        # involved subtracting two ~10^14 quantities to recover a ~10^7
-        # difference, which loses ~6 digits of float32 precision; the
-        # centred form `Σ x_c · y_c` directly recovers the small
-        # difference).
+        # form (the standard CCF estimator). For `L_max / N ≈ 10^-4`
+        # the per-lag means and variances are numerically
+        # indistinguishable from the global ones; the global form
+        # additionally avoids catastrophic cancellation in the
+        # rank-product subtraction.
+        #
+        # Lag-axis extraction from the irfft output of length `n_pad`:
+        #     positive lags k = 0..L_max → xcorr[0:L_max+1]
+        #     negative lags k = -L_max..-1 → xcorr[n_pad - L_max : n_pad]
+        # We concatenate the two halves into a single (2*L_max+1,)
+        # array indexed by `signal_lag_grid_frames`. Padding to
+        # `n_pad >= total_frames + L_max + 1` keeps both halves free of
+        # circular-wrap contamination.
         total_frames = sum(n for _, n in valid_sessions)
         ses_starts = []
         cursor = 0
@@ -1010,7 +1020,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         Y_ffts = []                    # length n_variants, each (n_pad // 2 + 1) complex64
         Y_norms = np.zeros(n_variants, dtype=np.float64)
 
-        print(f"[audit]   Predictive ρ: pre-computing {n_variants} "
+        print(f"[audit]   Signal correlation: pre-computing {n_variants} "
               f"Y-variant rank FFTs (1 actual + {n_shuffles} shuffles, "
               f"n_pad={n_pad}, total_frames={total_frames})...")
         y_t0 = time.monotonic()
@@ -1035,19 +1045,19 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 elapsed = time.monotonic() - y_t0
                 rate = (vi + 1) / elapsed if elapsed > 0 else 0.0
                 eta = (n_variants - (vi + 1)) / rate if rate > 0 else float('inf')
-                print(f"[audit]   Predictive ρ: Y-variant {vi + 1}/{n_variants} "
+                print(f"[audit]   Signal correlation: Y-variant {vi + 1}/{n_variants} "
                       f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
 
-        rho_actual = np.zeros((n_features, len(lag_grid_frames)), dtype=np.float32)
-        null_abs_max = np.zeros((n_shuffles, n_features, len(lag_grid_frames)),
-                                dtype=np.float32)
+        n_signal_lags = signal_lag_grid_frames.size   # 2 * max_lag_frames + 1
+        rho_signal = np.zeros((n_features, n_signal_lags), dtype=np.float32)
+        null_abs = np.zeros((n_shuffles, n_features, n_signal_lags), dtype=np.float32)
 
         # Feature loop. Per feature: build pooled column, rank, centre,
         # rfft, compute its norm, then `n_variants` complex-multiply +
         # irfft passes for the cross-correlations and divide by the
         # paired norms.
-        print(f"[audit]   Predictive ρ: scoring {n_features} features "
-              f"× {n_variants} Y-variants × {max_lag_frames + 1} lags...")
+        print(f"[audit]   Signal correlation: scoring {n_features} features "
+              f"× {n_variants} Y-variants × {n_signal_lags} lags...")
         feat_t0 = time.monotonic()
         for f_i, fname in enumerate(feature_names):
             x_col = np.zeros(total_frames, dtype=np.float32)
@@ -1068,21 +1078,27 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             for vi in range(n_variants):
                 # Cross-correlation: xcorr(k) = Σ_t x_c[t] * y_c[t + k]
                 #                            = irfft(conj(X) * Y)[k]
-                # for k = 0..max_lag_frames; padding to `n_pad`
-                # eliminates circular wrap-around.
+                # Extract symmetric lag window [-L_max, +L_max]:
+                #   positive lags 0..L_max → xcorr[0 : L_max + 1]
+                #   negative lags -L_max..-1 → xcorr[n_pad - L_max : n_pad]
+                # `np.concatenate` orders the result -L_max .. +L_max,
+                # matching `signal_lag_grid_frames`.
                 xcorr = np.fft.irfft(x_fft_conj * Y_ffts[vi], n=n_pad)
-                xcorr_lags = xcorr[:max_lag_frames + 1]
+                xcorr_signal = np.concatenate([
+                    xcorr[n_pad - max_lag_frames:],   # lags -L_max..-1
+                    xcorr[:max_lag_frames + 1],        # lags 0..+L_max
+                ])
 
                 denom = x_norm * Y_norms[vi]
                 if denom > 0:
-                    rho_k = (xcorr_lags / denom).astype(np.float32)
+                    rho_k = (xcorr_signal / denom).astype(np.float32)
                 else:
-                    rho_k = np.zeros(max_lag_frames + 1, dtype=np.float32)
+                    rho_k = np.zeros(n_signal_lags, dtype=np.float32)
 
                 if vi == 0:
-                    rho_actual[f_i, :] = rho_k
+                    rho_signal[f_i, :] = rho_k
                 else:
-                    null_abs_max[vi - 1, f_i, :] = np.abs(rho_k)
+                    null_abs[vi - 1, f_i, :] = np.abs(rho_k)
 
             del x_col, x_ranks, x_centered, x_fft, x_fft_conj
 
@@ -1090,16 +1106,10 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 elapsed = time.monotonic() - feat_t0
                 rate = (f_i + 1) / elapsed if elapsed > 0 else 0.0
                 eta = (n_features - (f_i + 1)) / rate if rate > 0 else float('inf')
-                print(f"[audit]   Predictive ρ: feature {f_i + 1}/{n_features} "
+                print(f"[audit]   Signal correlation: feature {f_i + 1}/{n_features} "
                       f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
 
-        rho_null_p95 = np.percentile(null_abs_max, 95, axis=0).astype(np.float32)
-
-        tau_pred_frames = np.zeros(n_features, dtype=np.float32)
-        for f_i in range(n_features):
-            above = np.where(np.abs(rho_actual[f_i]) > rho_null_p95[f_i])[0]
-            tau_pred_frames[f_i] = float(above.max()) if above.size else 0.0
-        tau_pred = tau_pred_frames / fps
+        rho_signal_null_p95 = np.percentile(null_abs, 95, axis=0).astype(np.float32)
 
         # Empirical IBI percentiles from the pooled event onsets.
         all_ibis = []
@@ -1121,19 +1131,20 @@ def audit_predictor_timescales(processed_beh_dict: dict,
 
     payload = {
         'features': feature_names,
-        'lags_frames': lag_grid_frames,
-        'lags_seconds': lag_grid_seconds,
-        # ACF (lower bound)
+        # ACF (positive lags only)
+        'acf_lags_frames': acf_lag_grid_frames,
+        'acf_lags_seconds': acf_lag_grid_seconds,
         'acf_median': acf_median.astype(np.float32),
         'acf_p25': acf_p25.astype(np.float32),
         'acf_p75': acf_p75.astype(np.float32),
         'tau_acf_1_over_e': tau_1e,
         'tau_acf_0_2': tau_02,
         'tau_acf_integrated': tau_int,
-        # Predictive ρ (upper bound)
-        'rho_predictive': rho_actual,
-        'rho_predictive_null_p95': rho_null_p95,
-        'tau_predictive': tau_pred,
+        # Signal correlation (symmetric lags, ρ vs binary USV indicator)
+        'signal_lags_frames': signal_lag_grid_frames,
+        'signal_lags_seconds': signal_lag_grid_seconds,
+        'rho_signal': rho_signal,
+        'rho_signal_null_p95': rho_signal_null_p95,
         # Response side
         'ibi_thresholds': dict(ibi_thresholds),
         'ibi_empirical_pcts': empirical_pcts,
@@ -1149,25 +1160,42 @@ def audit_predictor_timescales(processed_beh_dict: dict,
 
     # Stdout headline
     finite_int = tau_int[np.isfinite(tau_int)]
-    finite_pred = tau_pred[np.isfinite(tau_pred)]
     max_int = float(np.max(finite_int)) if finite_int.size else float('nan')
     arg_int = feature_names[int(np.nanargmax(tau_int))] if finite_int.size else '-'
-    max_pred = float(np.max(finite_pred)) if finite_pred.size else float('nan')
-    arg_pred = feature_names[int(np.nanargmax(tau_pred))] if finite_pred.size else '-'
+
+    # Signal-correlation peak: per-feature argmax|ρ|, then global max.
+    signal_abs = np.abs(rho_signal) if rho_signal.size else np.empty((0, 0), dtype=np.float32)
+    if signal_abs.size:
+        peak_lag_idx_per_feature = signal_abs.argmax(axis=1)
+        peak_abs_per_feature = signal_abs.max(axis=1)
+        peak_signed_per_feature = np.array([
+            rho_signal[i, peak_lag_idx_per_feature[i]] for i in range(n_features)
+        ], dtype=np.float32)
+        global_max_idx = int(np.argmax(peak_abs_per_feature))
+        peak_feat = feature_names[global_max_idx]
+        peak_rho = float(peak_signed_per_feature[global_max_idx])
+        peak_lag_s = float(signal_lag_grid_seconds[peak_lag_idx_per_feature[global_max_idx]])
+        if peak_lag_s < 0:
+            direction = 'USV leads feature'
+        elif peak_lag_s > 0:
+            direction = 'feature leads USV'
+        else:
+            direction = 'simultaneous'
+    else:
+        peak_feat = '-'
+        peak_rho = float('nan')
+        peak_lag_s = float('nan')
+        direction = '-'
 
     print("\n" + "=" * 72)
     print(f"TIMESCALE AUDIT  ({len(session_blocks)} sessions × {n_features} features)")
     print("=" * 72)
-    print(f"  ACF lower bound  : max τ_int    = {max_int:5.2f} s   (feature: {arg_int})")
-    print(f"  Predictive upper : max τ_pred   = {max_pred:5.2f} s   (feature: {arg_pred})")
+    print(f"  ACF                : max τ_int = {max_int:5.2f} s   (feature: {arg_int})")
+    print(f"  Signal correlation : peak ρ = {peak_rho:+.4f} at lag = {peak_lag_s:+5.2f} s   "
+          f"(feature: {peak_feat}, {direction})")
     p90 = empirical_pcts['p90']
-    print(f"  Response (IBI 90th-pct)         = {p90:5.2f} s")
-    print(f"  Configured filter_history       = {configured_filter_history:5.2f} s", end='')
-    bounds = [b for b in (max_int, max_pred, p90) if np.isfinite(b)]
-    if bounds and configured_filter_history < max(bounds):
-        print("   ** WARNING: below at least one bound **")
-    else:
-        print("   OK")
+    print(f"  Response (IBI 90th-pct) = {p90:5.2f} s")
+    print(f"  Configured filter_history = {configured_filter_history:5.2f} s")
     print("=" * 72 + "\n")
 
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)

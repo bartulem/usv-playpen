@@ -4050,36 +4050,24 @@ def plot_timescale_audit(timescale_pkl_path: str,
     """
     Renders the timescale audit produced by
     `modeling.modeling_collinearity_audit.audit_predictor_timescales` as
-    a single three-panel diagnostic figure.
-
-    The figure brackets the defensible range for the configured
-    `filter_history` window using two complementary diagnostics:
+    a two-panel diagnostic figure (ACF + signal correlation).
 
     Panels
     ------
-    Top-left (ACF, lower bound)
+    Left (ACF)
         Per-feature autocorrelation curves: the median ACF across
         sessions (solid) with the inter-quartile range as a translucent
         envelope. The configured `filter_history` is drawn as a heavy
-        vertical reference line; per-feature `τ_int` markers are drawn as
-        tick marks on the x-axis. Useful to confirm that the configured
-        window is at least as long as the slowest predictor's memory.
+        vertical reference line. Captures how long each feature holds
+        memory of itself.
 
-    Top-right (Predictive ρ, upper bound)
-        Per-feature event-locked Spearman ρ vs. lag. The within-session
-        circular-shift 95th-percentile null envelope is shaded. Curves
-        that re-enter the noise band define the per-feature
-        `τ_predictive`; the largest such lag across features is the
-        principled upper bound for `filter_history`. Curves whose
-        `τ_predictive` exceeds the configured window are annotated
-        explicitly so under-sized windows are easy to spot.
-
-    Bottom (timescale summary)
-        Horizontal grouped bar chart per feature of `τ_int` (ACF lower
-        bound) and `τ_predictive` (predictive upper bound), sorted by
-        `τ_predictive` descending. Vertical reference lines at the
-        configured `filter_history` and the IBI 90th-percentile mark the
-        operational and response-side bounds respectively.
+    Right (Signal correlation)
+        Per-feature Spearman ρ vs. lag between every predictor and the
+        binary USV indicator, evaluated symmetrically over
+        `[-max_lag, +max_lag]`. Negative lags ⇒ USV precedes feature;
+        positive lags ⇒ feature precedes USV. The within-session
+        circular-shift 95th-percentile null envelope is shaded for
+        reference.
 
     Parameters
     ----------
@@ -4101,16 +4089,14 @@ def plot_timescale_audit(timescale_pkl_path: str,
         payload = pickle.load(fh)
 
     feature_names = payload['features']
-    lags_seconds = np.asarray(payload['lags_seconds'])
+    acf_lags_seconds = np.asarray(payload['acf_lags_seconds'])
     acf_med = np.asarray(payload['acf_median'])
     acf_p25 = np.asarray(payload['acf_p25'])
     acf_p75 = np.asarray(payload['acf_p75'])
-    tau_int = np.asarray(payload['tau_acf_integrated'])
-    rho_pred = np.asarray(payload['rho_predictive'])
-    rho_null = np.asarray(payload['rho_predictive_null_p95'])
-    tau_pred = np.asarray(payload['tau_predictive'])
+    signal_lags_seconds = np.asarray(payload['signal_lags_seconds'])
+    rho_signal = np.asarray(payload['rho_signal'])
+    rho_signal_null = np.asarray(payload['rho_signal_null_p95'])
     cfg_hist = float(payload['configured_filter_history'])
-    ibi_pcts = payload['ibi_empirical_pcts']
     source = payload['source_pickle']
 
     n_features = len(feature_names)
@@ -4118,81 +4104,46 @@ def plot_timescale_audit(timescale_pkl_path: str,
         print(f"[plot] timescale audit at {timescale_pkl_path} has no features — skipping.")
         return {'figure_path': '', 'n_features': 0, 'configured_filter_history': cfg_hist}
 
-    fig = plt.figure(figsize=(20, max(10, 0.25 * n_features + 8)))
-    gs = gridspec.GridSpec(2, 2, height_ratios=[1.0, max(1.0, 0.05 * n_features + 0.6)], hspace=0.35, wspace=0.25)
+    fig = plt.figure(figsize=(20, 8))
+    gs = gridspec.GridSpec(1, 2, wspace=0.22)
 
     # Stable per-feature colour mapping shared across panels.
     cmap = plt.get_cmap('tab20', max(n_features, 20))
     colors = [cmap(i % cmap.N) for i in range(n_features)]
 
-    # Panel A: ACF
+    # Panel A: ACF (positive lags only)
     axA = fig.add_subplot(gs[0, 0])
     for i, fname in enumerate(feature_names):
-        med = acf_med[i]
-        p25 = acf_p25[i]
-        p75 = acf_p75[i]
-        axA.fill_between(lags_seconds, p25, p75, color=colors[i], alpha=0.15, linewidth=0)
-        axA.plot(lags_seconds, med, color=colors[i], linewidth=1.0, label=fname)
+        axA.fill_between(acf_lags_seconds, acf_p25[i], acf_p75[i],
+                         color=colors[i], alpha=0.15, linewidth=0)
+        axA.plot(acf_lags_seconds, acf_med[i], color=colors[i],
+                 linewidth=1.0, label=fname)
     axA.axhline(0, color='black', linewidth=0.5)
     axA.axhline(1.0 / np.e, color='gray', linestyle=':', linewidth=0.7, label='1/e')
     axA.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.0,
                 label=f'filter_history = {cfg_hist:.1f}s')
-    axA.set_xlim(0, lags_seconds[-1] if lags_seconds.size else 1.0)
+    axA.set_xlim(0, acf_lags_seconds[-1] if acf_lags_seconds.size else 1.0)
     axA.set_ylim(-0.3, 1.05)
     axA.set_xlabel('Lag (s)')
     axA.set_ylabel('ACF (median ± IQR)')
-    axA.set_title('Predictor ACF (lower bound on filter_history)', fontsize=11)
+    axA.set_title('Predictor ACF', fontsize=11)
     axA.legend(fontsize=6, loc='upper right', ncol=2)
 
-    # Panel B: Predictive ρ
+    # Panel B: Signal correlation (symmetric lags)
     axB = fig.add_subplot(gs[0, 1])
     for i, fname in enumerate(feature_names):
-        actual = rho_pred[i]
-        null_env = rho_null[i]
-        axB.fill_between(lags_seconds, -null_env, null_env, color=colors[i],
-                         alpha=0.10, linewidth=0)
-        axB.plot(lags_seconds, actual, color=colors[i], linewidth=1.0, label=fname)
+        axB.fill_between(signal_lags_seconds, -rho_signal_null[i], rho_signal_null[i],
+                         color=colors[i], alpha=0.10, linewidth=0)
+        axB.plot(signal_lags_seconds, rho_signal[i], color=colors[i],
+                 linewidth=1.0, label=fname)
     axB.axhline(0, color='black', linewidth=0.5)
-    axB.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.0,
-                label=f'filter_history = {cfg_hist:.1f}s')
-    # Annotate features whose predictive horizon exceeds filter_history.
-    over = [(feature_names[i], tau_pred[i]) for i in range(n_features)
-            if np.isfinite(tau_pred[i]) and tau_pred[i] > cfg_hist]
-    if over:
-        msg = "τ_pred > filter_history:\n" + "\n".join(f"  {n}: {t:.2f}s" for n, t in over[:6])
-        axB.text(0.02, 0.98, msg, ha='left', va='top', transform=axB.transAxes,
-                 fontsize=7, color='#cc3333',
-                 bbox=dict(facecolor='white', edgecolor='#cc3333', boxstyle='round,pad=0.3'))
-    axB.set_xlim(0, lags_seconds[-1] if lags_seconds.size else 1.0)
-    axB.set_xlabel('Lag (s)')
-    axB.set_ylabel('Spearman ρ (event-locked) — shaded: |null| 95th pct')
-    axB.set_title('Predictive ρ (upper bound on filter_history)', fontsize=11)
+    axB.axvline(0, color='black', linewidth=0.6, linestyle='-')
+    if signal_lags_seconds.size:
+        axB.set_xlim(signal_lags_seconds[0], signal_lags_seconds[-1])
+    axB.set_xlabel('Lag (s)   (negative: USV leads feature   |   positive: feature leads USV)')
+    axB.set_ylabel('Spearman ρ vs. binary USV indicator   (shaded: |null| 95th pct)')
+    axB.set_title('Signal correlation', fontsize=11)
     axB.legend(fontsize=6, loc='upper right', ncol=2)
-
-    # Panel C: Per-feature timescale bars
-    axC = fig.add_subplot(gs[1, :])
-    sort_idx = np.argsort(np.where(np.isfinite(tau_pred), tau_pred, -np.inf))[::-1]
-    names_sorted = [feature_names[i] for i in sort_idx]
-    tau_int_sorted = tau_int[sort_idx]
-    tau_pred_sorted = tau_pred[sort_idx]
-    y_pos = np.arange(len(sort_idx))
-    bar_h = 0.4
-    axC.barh(y_pos - bar_h / 2, tau_pred_sorted, height=bar_h, color='#7755aa',
-             label='τ_predictive (upper bound)')
-    axC.barh(y_pos + bar_h / 2, tau_int_sorted, height=bar_h, color='#33aabb',
-             label='τ_int (lower bound)')
-    axC.set_yticks(y_pos)
-    axC.set_yticklabels(names_sorted, fontsize=8)
-    axC.invert_yaxis()
-    axC.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.2,
-                label=f'filter_history = {cfg_hist:.1f}s')
-    p90 = ibi_pcts['p90']
-    if np.isfinite(p90):
-        axC.axvline(p90, color='#cc3333', linestyle=':', linewidth=1.0,
-                    label=f'IBI 90th pct = {p90:.2f}s')
-    axC.set_xlabel('Timescale (s)')
-    axC.set_title('Per-feature timescale bracket vs. configured filter_history', fontsize=11)
-    axC.legend(fontsize=8, loc='lower right')
 
     fig.suptitle(f"Timescale audit  —  source: {source}", fontsize=13, y=0.995)
 

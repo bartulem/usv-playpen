@@ -40,18 +40,12 @@
     ],
     "dyadic_pose": [
       "nose-nose",
-      "nose-TTI",
-      "TTI-nose",
       "allo_yaw-nose",
       "nose-allo_yaw",
-      "allo_yaw-TTI",
-      "TTI-allo_yaw",
       "allo_pitch-nose",
-      "nose-allo_pitch",
-      "allo_pitch-TTI",
-      "TTI-allo_pitch"
+      "nose-allo_pitch"
     ],
-    "dyadic_engagement": ["orofacial-sei", "anogenital-sei"],
+    "dyadic_engagement": ["orofacial-sei"],
     "dyadic_pose_symmetric": false,
     "include_1st_derivatives": false,
     "include_2nd_derivatives": false
@@ -72,7 +66,7 @@
     "collinearity_audit": true,
     "timescale_audit": true,
     "timescale_max_lag_seconds": 10.0,
-    "timescale_n_shuffles": 50
+    "timescale_n_shuffles": 1000
   },
 
   "gmm_params": {
