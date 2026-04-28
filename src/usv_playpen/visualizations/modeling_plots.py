@@ -4046,7 +4046,8 @@ def plot_collinearity_audit(audit_pkl_path: str,
 
 def plot_timescale_audit(timescale_pkl_path: str,
                          save_dir: str = None,
-                         file_format: str = 'svg') -> dict:
+                         save_plot_bool: bool = True,
+                         plot_format: str = 'svg') -> dict:
     """
     Renders the timescale audit produced by
     `modeling.modeling_collinearity_audit.audit_predictor_timescales` as
@@ -4075,14 +4076,23 @@ def plot_timescale_audit(timescale_pkl_path: str,
         Path to the `_timescales.pkl` artifact.
     save_dir : str, optional
         Output directory for the figure. Defaults to the directory
-        containing the timescale pickle.
-    file_format : str, default 'svg'
-        Matplotlib `savefig` format.
+        containing the timescale pickle. Only consulted when
+        `save_plot_bool` is True.
+    save_plot_bool : bool, default True
+        When True (default), the figure is written to disk via
+        `_save_audit_figure` and closed. When False, the figure is
+        neither saved nor closed — the caller can display it inline
+        (notebook) or further customise it. `figure_path` in the
+        returned dict is `''` in that case.
+    plot_format : str, default 'svg'
+        Matplotlib `savefig` format. Only consulted when
+        `save_plot_bool` is True.
 
     Returns
     -------
     dict
         `{'figure_path': str, 'n_features': int, 'configured_filter_history': float}`.
+        `figure_path` is `''` when `save_plot_bool` is False.
     """
 
     with open(timescale_pkl_path, 'rb') as fh:
@@ -4115,9 +4125,14 @@ def plot_timescale_audit(timescale_pkl_path: str,
     axA = fig.add_subplot(gs[0, 0])
     for i, fname in enumerate(feature_names):
         axA.fill_between(acf_lags_seconds, acf_p25[i], acf_p75[i],
-                         color=colors[i], alpha=0.15, linewidth=0)
+                         color=colors[i], alpha=0.12, linewidth=0)
         axA.plot(acf_lags_seconds, acf_med[i], color=colors[i],
-                 linewidth=1.0, label=fname)
+                 linewidth=0.9, alpha=0.75, label=fname)
+    # Median across features — the unifying envelope.
+    if acf_med.size:
+        acf_aggregate = np.nanmedian(acf_med, axis=0)
+        axA.plot(acf_lags_seconds, acf_aggregate, color='black',
+                 linewidth=2.4, label='median across features', zorder=10)
     axA.axhline(0, color='black', linewidth=0.5)
     axA.axhline(1.0 / np.e, color='gray', linestyle=':', linewidth=0.7, label='1/e')
     axA.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.0,
@@ -4133,9 +4148,14 @@ def plot_timescale_audit(timescale_pkl_path: str,
     axB = fig.add_subplot(gs[0, 1])
     for i, fname in enumerate(feature_names):
         axB.fill_between(signal_lags_seconds, -rho_signal_null[i], rho_signal_null[i],
-                         color=colors[i], alpha=0.10, linewidth=0)
+                         color=colors[i], alpha=0.08, linewidth=0)
         axB.plot(signal_lags_seconds, rho_signal[i], color=colors[i],
-                 linewidth=1.0, label=fname)
+                 linewidth=0.9, alpha=0.75, label=fname)
+    # Median across features — the unifying envelope.
+    if rho_signal.size:
+        sig_aggregate = np.nanmedian(rho_signal, axis=0)
+        axB.plot(signal_lags_seconds, sig_aggregate, color='black',
+                 linewidth=2.4, label='median across features', zorder=10)
     axB.axhline(0, color='black', linewidth=0.5)
     axB.axvline(0, color='black', linewidth=0.6, linestyle='-')
     if signal_lags_seconds.size:
@@ -4147,12 +4167,160 @@ def plot_timescale_audit(timescale_pkl_path: str,
 
     fig.suptitle(f"Timescale audit  —  source: {source}", fontsize=13, y=0.995)
 
-    if save_dir is None:
-        save_dir = os.path.dirname(timescale_pkl_path)
-    base = os.path.splitext(os.path.basename(timescale_pkl_path))[0]
-    out_path = _save_audit_figure(fig, save_dir, base, file_format=file_format)
-    plt.close(fig)
-    print(f"[plot] timescale figure written: {out_path}")
+    if save_plot_bool:
+        if save_dir is None:
+            save_dir = os.path.dirname(timescale_pkl_path)
+        base = os.path.splitext(os.path.basename(timescale_pkl_path))[0]
+        out_path = _save_audit_figure(fig, save_dir, base, file_format=plot_format)
+        plt.close(fig)
+        print(f"[plot] timescale figure written: {out_path}")
+    else:
+        out_path = ''
+    return {
+        'figure_path': out_path,
+        'n_features': n_features,
+        'configured_filter_history': cfg_hist,
+    }
+
+
+def plot_timescale_audit_per_feature(timescale_pkl_path: str,
+                                     save_dir: str = None,
+                                     save_plot_bool: bool = True,
+                                     plot_format: str = 'svg') -> dict:
+    """
+    Renders the timescale audit as a small-multiples grid: one row per
+    feature, two columns (ACF on the left, signal correlation on the
+    right). Complements `plot_timescale_audit` (which overlays every
+    feature on a single pair of axes) by giving each feature its own
+    panel so the per-feature shape, peak location, and null margin are
+    legible without colour discrimination across 20+ overlapping curves.
+
+    Layout
+    ------
+    - One row per feature; left column shows ACF (median ± IQR across
+      sessions, positive lags only); right column shows the symmetric
+      signal correlation curve (ρ vs. binary USV indicator) with the
+      per-lag null 95th-percentile envelope shaded in grey.
+    - Y-axis scale of the signal-correlation column is shared across
+      all features so peak magnitudes are directly comparable. The ACF
+      column uses the standard `[-0.3, 1.05]` range used by
+      `plot_timescale_audit`.
+
+    Parameters
+    ----------
+    timescale_pkl_path : str
+        Path to the `_timescales.pkl` artifact produced by
+        `audit_predictor_timescales`.
+    save_dir : str, optional
+        Output directory. Defaults to the directory containing the
+        timescale pickle. Only consulted when `save_plot_bool` is True.
+    save_plot_bool : bool, default True
+        When True (default), the figure is written to disk via
+        `_save_audit_figure` and closed. When False, the figure is
+        neither saved nor closed — the caller can display it inline
+        (notebook) or further customise it. `figure_path` in the
+        returned dict is `''` in that case.
+    plot_format : str, default 'svg'
+        Matplotlib `savefig` format. Only consulted when
+        `save_plot_bool` is True.
+
+    Returns
+    -------
+    dict
+        `{'figure_path': str, 'n_features': int, 'configured_filter_history': float}`.
+        `figure_path` is `''` when `save_plot_bool` is False.
+    """
+
+    with open(timescale_pkl_path, 'rb') as fh:
+        payload = pickle.load(fh)
+
+    feature_names = payload['features']
+    acf_lags_seconds = np.asarray(payload['acf_lags_seconds'])
+    acf_med = np.asarray(payload['acf_median'])
+    acf_p25 = np.asarray(payload['acf_p25'])
+    acf_p75 = np.asarray(payload['acf_p75'])
+    signal_lags_seconds = np.asarray(payload['signal_lags_seconds'])
+    rho_signal = np.asarray(payload['rho_signal'])
+    rho_signal_null = np.asarray(payload['rho_signal_null_p95'])
+    cfg_hist = float(payload['configured_filter_history'])
+    source = payload['source_pickle']
+
+    n_features = len(feature_names)
+    if n_features == 0:
+        print(f"[plot] timescale audit at {timescale_pkl_path} has no features — skipping.")
+        return {'figure_path': '', 'n_features': 0, 'configured_filter_history': cfg_hist}
+
+    cmap = plt.get_cmap('tab20', max(n_features, 20))
+    colors = [cmap(i % cmap.N) for i in range(n_features)]
+
+    # Shared y-limits for the signal-correlation column so per-feature
+    # peak magnitudes are directly comparable across panels.
+    sig_max_abs = float(np.nanmax(np.abs(rho_signal))) if rho_signal.size else 0.005
+    sig_ymax = max(sig_max_abs * 1.10, 1e-3)
+
+    fig, axes = plt.subplots(
+        n_features, 2,
+        figsize=(14, 1.6 * n_features),
+        sharex=False, squeeze=False,
+    )
+
+    for i, fname in enumerate(feature_names):
+        col = colors[i]
+
+        # Column 1 — ACF
+        axA = axes[i, 0]
+        axA.fill_between(acf_lags_seconds, acf_p25[i], acf_p75[i],
+                         color=col, alpha=0.20, linewidth=0)
+        axA.plot(acf_lags_seconds, acf_med[i], color=col, linewidth=1.5)
+        axA.axhline(0, color='black', linewidth=0.5)
+        axA.axhline(1.0 / np.e, color='gray', linestyle=':', linewidth=0.6)
+        axA.axvline(cfg_hist, color='black', linestyle='--', linewidth=0.8)
+        axA.set_xlim(0, acf_lags_seconds[-1] if acf_lags_seconds.size else 1.0)
+        axA.set_ylim(-0.3, 1.05)
+        axA.set_ylabel(fname, fontsize=9, rotation=0, ha='right', va='center', labelpad=4)
+        axA.tick_params(labelsize=7)
+        if i == 0:
+            axA.set_title('ACF (median ± IQR)', fontsize=11)
+        if i == n_features - 1:
+            axA.set_xlabel('Lag (s)')
+        else:
+            axA.set_xticklabels([])
+
+        # Column 2 — Signal correlation
+        axB = axes[i, 1]
+        axB.fill_between(signal_lags_seconds, -rho_signal_null[i], rho_signal_null[i],
+                         color='gray', alpha=0.25, linewidth=0)
+        axB.plot(signal_lags_seconds, rho_signal[i], color=col, linewidth=1.5)
+        axB.axhline(0, color='black', linewidth=0.5)
+        axB.axvline(0, color='black', linewidth=0.6)
+        if signal_lags_seconds.size:
+            axB.set_xlim(signal_lags_seconds[0], signal_lags_seconds[-1])
+        axB.set_ylim(-sig_ymax, sig_ymax)
+        axB.tick_params(labelsize=7)
+        if i == 0:
+            axB.set_title('Signal correlation (ρ vs. binary USV — shaded: |null| 95th pct)',
+                          fontsize=11)
+        if i == n_features - 1:
+            axB.set_xlabel('Lag (s)   (neg: USV leads feature   |   pos: feature leads USV)')
+        else:
+            axB.set_xticklabels([])
+
+    fig.suptitle(f"Timescale audit — per-feature panels — source: {source}",
+                 fontsize=12, y=0.999)
+    fig.subplots_adjust(left=0.18, right=0.98,
+                        top=1.0 - 0.6 / max(n_features, 1),
+                        bottom=0.04, hspace=0.10, wspace=0.18)
+
+    if save_plot_bool:
+        if save_dir is None:
+            save_dir = os.path.dirname(timescale_pkl_path)
+        base = os.path.splitext(os.path.basename(timescale_pkl_path))[0]
+        out_path = _save_audit_figure(fig, save_dir, f"{base}_per-feature",
+                                      file_format=plot_format)
+        plt.close(fig)
+        print(f"[plot] per-feature timescale figure written: {out_path}")
+    else:
+        out_path = ''
     return {
         'figure_path': out_path,
         'n_features': n_features,
