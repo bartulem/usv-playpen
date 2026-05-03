@@ -1,5 +1,5 @@
 [![Python version](https://img.shields.io/badge/Python-3.13-blue)](https://img.shields.io/badge/Python-3.13-blue)
-[![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.7926971-blue)](https://doi.org/10.5281/zenodo.7926971)
 [![repo size](https://img.shields.io/github/repo-size/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/)
 [![Documentation Status](https://readthedocs.org/projects//usv-playpen/badge/?version=latest)](https://usv-playpen.readthedocs.io/en/latest/?badge=latest)
 [![tests](https://github.com/bartulem/usv-playpen/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bartulem/usv-playpen/actions/workflows/ci.yml)
