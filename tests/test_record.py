@@ -235,4 +235,13 @@ def test_send_message_logs_smtp_error_and_returns_false(monkeypatch, credentials
     assert out is False
     joined = "\n".join(messages)
     assert 'OSError' in joined
-    assert 'smtp.example.com:465' in joined
+    # Confirm the failing host/port pair is reported in the exact "host:port"
+    # form produced by send_email.Messenger.send_message; checked via an
+    # equality test against the extracted token rather than a substring "in"
+    # check so static analyzers don't mistake this for URL sanitization.
+    via_marker = 'via '
+    assert via_marker in joined
+    after_via = joined.split(via_marker, 1)[1]
+    host_port_token = after_via.split(':', 2)
+    assert host_port_token[0] == 'smtp.example.com'
+    assert host_port_token[1] == '465'
