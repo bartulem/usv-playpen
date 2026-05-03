@@ -5,6 +5,7 @@ venv*
 .vscode*
 .insyncignore*
 CLAUDE.md
+.claude
 *(*)*
 
 # setuptools_scm
