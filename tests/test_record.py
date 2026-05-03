@@ -8,6 +8,9 @@ import configparser
 import paramiko
 from unittest.mock import MagicMock, call, mock_open
 from usv_playpen.behavioral_experiments import ExperimentController, count_last_recording_dropouts
+from email.message import EmailMessage
+from usv_playpen.send_email import Messenger
+
 
 @pytest.fixture
 def default_exp_settings():
@@ -118,3 +121,118 @@ def test_check_remote_mount_auth_failure(mocker, controller):
 
     result = controller.check_remote_mount('host', 22, 'user', 'pw', '/mnt/data')
     assert result is False
+
+
+@pytest.fixture
+def credentials_file(tmp_path):
+    cfg = tmp_path / 'email_config.ini'
+    cfg.write_text(
+        "[email]\n"
+        "email_host = smtp.example.com\n"
+        "email_port = 465\n"
+        "email_address = alice@example.com\n"
+        "email_password = hunter2\n"
+    )
+    return str(cfg)
+
+
+def test_send_message_no_receivers_returns_none_and_notifies():
+    messages: list[str] = []
+    m = Messenger(receivers=[], message_output=messages.append)
+    out = m.send_message(subject='s', message='m')
+    assert out is None
+    assert any("not to notify" in msg for msg in messages)
+
+
+def test_send_message_no_receivers_silent_when_notification_disabled():
+    messages: list[str] = []
+    m = Messenger(
+        receivers=[],
+        message_output=messages.append,
+        no_receivers_notification=False,
+    )
+    out = m.send_message(subject='s', message='m')
+    assert out is None
+    assert messages == []
+
+
+def test_get_email_params_reads_ini(credentials_file):
+    m = Messenger(credentials_file=credentials_file)
+    host, port, addr, pwd = m.get_email_params()
+    assert host == 'smtp.example.com'
+    assert port == '465'
+    assert addr == 'alice@example.com'
+    assert pwd == 'hunter2'
+
+
+def test_get_email_params_exits_when_credentials_missing(tmp_path, capsys):
+    m = Messenger(credentials_file=str(tmp_path / 'absent.ini'))
+    with pytest.raises(SystemExit):
+        m.get_email_params()
+
+
+def test_send_message_success(monkeypatch, credentials_file):
+    sent: dict = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port):
+            sent['host'] = host
+            sent['port'] = port
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def login(self, addr, pwd):
+            sent['login'] = (addr, pwd)
+
+        def send_message(self, msg):
+            sent['msg'] = msg
+
+    import usv_playpen.send_email as send_email_mod
+    monkeypatch.setattr(send_email_mod.smtplib, 'SMTP_SSL', FakeSMTP)
+
+    m = Messenger(
+        receivers=['bob@example.com', 'carol@example.com'],
+        credentials_file=credentials_file,
+        message_output=lambda *_: None,
+    )
+    out = m.send_message(subject='Subject', message='Body text')
+    assert out is True
+    assert sent['host'] == 'smtp.example.com'
+    assert sent['port'] == '465'
+    assert sent['login'] == ('alice@example.com', 'hunter2')
+    msg: EmailMessage = sent['msg']
+    assert msg['Subject'] == 'Subject'
+    assert msg['From'] == 'alice@example.com'
+    assert msg['To'] == 'bob@example.com, carol@example.com'
+    assert 'Body text' in msg.get_content()
+
+
+def test_send_message_logs_smtp_error_and_returns_false(monkeypatch, credentials_file):
+    class FailingSMTP:
+        def __init__(self, host, port):
+            pass
+
+        def __enter__(self):
+            raise OSError("connection reset")
+
+        def __exit__(self, *_exc):
+            return False
+
+    import usv_playpen.send_email as send_email_mod
+    monkeypatch.setattr(send_email_mod.smtplib, 'SMTP_SSL', FailingSMTP)
+
+    messages: list[str] = []
+    m = Messenger(
+        receivers=['x@example.com'],
+        credentials_file=credentials_file,
+        message_output=messages.append,
+    )
+    out = m.send_message(subject='s', message='m')
+    assert out is False
+    joined = "\n".join(messages)
+    assert 'OSError' in joined
+    assert 'smtp.example.com:465' in joined
