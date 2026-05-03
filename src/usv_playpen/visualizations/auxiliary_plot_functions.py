@@ -20,14 +20,12 @@ def choose_animal_colors(
     Selects colors for male and female mice.
 
     Parameters
-    ----------
     exp_info_dict (dict)
         Information about the experiment.
     visualizations_parameter_dict (dict)
         Information about the male/female color scheme.
 
     Returns
-    -------
     mouse_colors (list)
         Chosen mouse colors in sequence.
     """
@@ -57,12 +55,9 @@ def luminance_equalizer(
 ) -> tuple | None:
     """
     Description
-    ----------
     This function equalizes input colors on luminance.
-    ----------
 
     Parameters
-    ----------
     color_start (tuple)
         RGB of spectrum start color.
     color_end (tuple)
@@ -73,13 +68,10 @@ def luminance_equalizer(
         Match luminance by 'max', 'min' or 'mean'; defaults to 'max'.
     saturation (bool / float)
         Change saturation of spectrum ends.
-    ----------
 
     Returns
-    ----------
     color_start, color_end (tuple)
         Modified start and end colors to match luminance.
-    ----------
     """
 
     # extract hue, luminance and saturation for start and end colors
@@ -136,12 +128,9 @@ def luminance_equalizer(
 def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
     """
     Description
-    ----------
     This function creates colormap(s) of choice.
-    ----------
 
     Parameters
-    ----------
     input_parameter_dict (dict)
         Contains the following set of parameters
         cm_length (int)
@@ -165,13 +154,10 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
             Saturation of color(s) at the end of spectrum; defaults to 1.
         cm_opacity (int / float)
             Opacity for colors in the new colormap; defaults to 1.
-    ----------
 
     Returns
-    ----------
     new_cm (matplotlib.colors.ListedColormap)
         A colormap object.
-    ----------
     """
 
     # load .json parameters

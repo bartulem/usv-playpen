@@ -16,16 +16,11 @@ from typing import Optional
 def find_base_path() -> str | None:
     """
     Description
-    ----------
     This function converts the CUP path between OSs.
-    ----------
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    -------
      base_path (str)
         OS-converted CUP path.
     """
@@ -45,17 +40,13 @@ def find_base_path() -> str | None:
 def configure_path(pa: str) -> str:
     """
     Description
-    ----------
     This function converts path names between OSs.
-    ----------
 
     Parameters
-    ----------
     pa (str)
         Original path.
 
     Returns
-    -------
      pa (str)
         OS-converted path.
     """
@@ -90,7 +81,6 @@ def wait_for_subprocesses(
 ) -> list[Optional[int]]:
     """
     Description
-    ----------
     Polls a collection of subprocess.Popen handles until every one has
     terminated or a timeout is reached. Replaces the previous 'while True:
     poll()' idiom that appeared across the codebase (behavioral_experiments,
@@ -100,10 +90,8 @@ def wait_for_subprocesses(
     On timeout, still-running subprocesses are terminated (SIGTERM) and given
     a short grace period before being killed (SIGKILL), so the parent process
     does not leave orphaned Popen handles.
-    ----------
 
     Parameters
-    ----------
     subps (Iterable[subprocess.Popen])
         The subprocess handles to wait on. Empty iterables are a no-op.
     max_seconds (float)
@@ -124,14 +112,11 @@ def wait_for_subprocesses(
         non-zero return code.
     raise_on_timeout (bool)
         If True, raises TimeoutError when the group exceeds max_seconds.
-    ----------
 
     Returns
-    -------
     return_codes (list[Optional[int]])
         The return code of each subprocess, in the same order as the input.
         Slots are None for subprocesses that had to be terminated on timeout.
-    -------
     """
 
     log = message_output or print
@@ -198,7 +183,6 @@ def first_match_or_raise(
 ) -> pathlib.Path:
     """
     Description
-    ----------
     Returns the alphabetically-first path matching a glob pattern under
     ``root``, or raises a FileNotFoundError with a clear, debuggable message
     naming both the pattern and the root that produced zero matches. Replaces
@@ -213,10 +197,8 @@ def first_match_or_raise(
     random). Every known caller was the post-refactor equivalent of
     'sorted(glob)[0]', so sorting is restored as the default — there is no
     opt-out because non-deterministic first-match is not a feature we want.
-    ----------
 
     Parameters
-    ----------
     root (pathlib.Path)
         The directory to search.
     pattern (str)
@@ -226,13 +208,10 @@ def first_match_or_raise(
     label (str, optional)
         Short context label to include in the error message (e.g.,
         'camera frame count JSON'). Defaults to the pattern itself.
-    ----------
 
     Returns
-    -------
     match (pathlib.Path)
         The alphabetically-first match.
-    -------
     """
 
     root = pathlib.Path(root)
@@ -258,17 +237,14 @@ def newest_match_or_raise(
 ) -> pathlib.Path:
     """
     Description
-    ----------
     Returns the single "largest" (newest, by default) path matching a glob
     pattern under ``root``, or raises FileNotFoundError with a clear, named
     message when the glob produces zero matches. Replaces the common
     'max(root.glob(...), key=lambda p: p.stat().st_ctime)' idiom, which
     raised a bare ValueError ("max() arg is an empty sequence") with no
     hint about which directory or pattern produced the empty result.
-    ----------
 
     Parameters
-    ----------
     root (pathlib.Path)
         The directory to search.
     pattern (str)
@@ -281,13 +257,10 @@ def newest_match_or_raise(
     label (str, optional)
         Short context label to include in the error message (e.g.,
         'most recent Avisoft .wav'). Defaults to the pattern itself.
-    ----------
 
     Returns
-    -------
     match (pathlib.Path)
         The maximum-key match.
-    -------
     """
 
     root = pathlib.Path(root)

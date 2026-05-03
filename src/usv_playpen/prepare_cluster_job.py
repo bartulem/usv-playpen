@@ -10,6 +10,8 @@ import pathlib
 import platform
 from collections.abc import Callable
 
+from .os_utils import configure_path
+
 
 class PrepareClusterJob:
     def __init__(self, input_parameter_dict: dict = None,
@@ -20,7 +22,6 @@ class PrepareClusterJob:
         Initializes the PrepareClusterJob class.
 
         Parameters
-        ----------
         root_directory (list of str)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -29,8 +30,6 @@ class PrepareClusterJob:
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -44,15 +43,12 @@ class PrepareClusterJob:
     def video_list_to_txt(self) -> None:
         """
         Description
-        ----------
         This method creates a text file (job_list.txt) with
         a list of videos to run SLEAP inference on.
 
         NB: You need the output text file to run SLEAP inference on the cluster!
-        ----------
 
         Parameters
-        ----------
         camera_names (list)
             Cameras used for recording video.
         inference_root_dir (str)
@@ -63,7 +59,6 @@ class PrepareClusterJob:
             Path to the centered instance model.
 
         Returns
-        -------
         job_list (.txt)
             List of sessions to run inference on.
         """
@@ -87,9 +82,9 @@ class PrepareClusterJob:
             else:
                 spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('Volumes', 'mnt/cup/labs')
 
-        pathlib.Path(self.input_parameter_dict['inference_root_dir']).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir'])).mkdir(parents=True, exist_ok=True)
 
-        with open(pathlib.Path(self.input_parameter_dict['inference_root_dir']) / 'job_list.txt', mode='w') as job_list_file:
+        with open(pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir'])) / 'job_list.txt', mode='w') as job_list_file:
             for root_dir in self.root_directory:
 
                 if platform.system() == 'Windows':

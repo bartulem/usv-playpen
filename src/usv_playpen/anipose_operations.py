@@ -18,7 +18,7 @@ import numpy as np
 import sleap_anipose
 from imgstore import new_for_filename
 
-from .os_utils import first_match_or_raise, wait_for_subprocesses
+from .os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
@@ -27,28 +27,22 @@ def find_mouse_names(root_directory: str = None,
                      metadata: dict | None = None) -> list:
     """
     Description
-    ----------
     This function finds the mouse names from the metadata.yaml file.
 
     NB: Since the video metadata file was not standardized for a while, the function
     check for either the old or the new version of the metadata.yaml file.
 
     NB: from v0.8.12 onwards,it uses the usv_playpen native metadata files.
-    ----------
 
     Parameters
-    ----------
     root_directory (str)
         The directory where of the session.
     metadata (dict | None)
         The metadata dictionary; defaults to None.
-    ----------
 
     Returns
-    ----------
     track_names (list)
         Mouse names (in the format of "cage_tail-stripe-num").
-    ----------
     """
 
     track_names = []
@@ -112,27 +106,21 @@ def extract_skeleton_nodes(
 ) -> list:
     """
     Description
-    ----------
     This function extracts names of skeleton nodes
     from the SLEAP .json file.
 
     NB: By default, the skeletons are read from the files
     located in the _config directory of the repo.
-    ----------
 
     Parameters
-    ----------
     skeleton_loc (str)
         The directory where skeletons can be found.
     skeleton_arena_bool (bool)
         If true, the function extracts the arena nodes; defaults to False.
-    ----------
 
     Returns
-    ----------
     skeleton_nodes (list)
         SLEAP skeleton node names.
-    ----------
     """
 
     with open(skeleton_loc) as json_file:
@@ -168,25 +156,19 @@ def redefine_cage_reference_nodes(
 ) -> np.ndarray:
     """
     Description
-    ----------
     This function extracts names of skeleton nodes
     from the SLEAP .json file.
 
-    ----------
 
     Parameters
-    ----------
     arena_input_data (np.ndarray)
         3D arena data.
     node_list_indices (list)
         Indices of the arena nodes.
-    ----------
 
     Returns
-    ----------
     (np.ndarray)
         3D arena data with the arena corners.
-    ----------
     """
 
     cage_corner_first = arena_input_data[0, 0, node_list_indices[0], :]
@@ -206,23 +188,17 @@ def redefine_cage_reference_nodes(
 def rotate_x(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
-    ----------
     This function rotates data around the X axis.
-    ----------
 
     Parameters
-    ----------
     data (np.ndarray)
         3D arena/mouse data.
     theta (float)
         Angle of rotation in radians.
-    ----------
 
     Returns
-    ----------
     (np.ndarray)
         Rotated data.
-    ----------
     """
 
     rotation_matrix = np.array(
@@ -238,23 +214,17 @@ def rotate_x(data: np.ndarray, theta: float) -> np.ndarray:
 def rotate_y(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
-    ----------
     This function rotates data around the Y axis.
-    ----------
 
     Parameters
-    ----------
     data (np.ndarray)
         3D arena/mouse data.
     theta (float)
         Angle of rotation in radians.
-    ----------
 
     Returns
-    ----------
     (np.ndarray)
         Rotated data.
-    ----------
     """
 
     rotation_matrix = np.array(
@@ -270,23 +240,17 @@ def rotate_y(data: np.ndarray, theta: float) -> np.ndarray:
 def rotate_z(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
-    ----------
     This function rotates data around the Z axis.
-    ----------
 
     Parameters
-    ----------
     data (np.ndarray)
         3D arena/mouse data.
     theta (float)
         Angle of rotation in radians.
-    ----------
 
     Returns
-    ----------
     (np.ndarray)
         Rotated data.
-    ----------
     """
 
     rotation_matrix = np.array(
@@ -310,7 +274,6 @@ class ConvertTo3D:
         Initializes the ConvertTo3D class.
 
         Parameters
-        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -319,8 +282,6 @@ class ConvertTo3D:
             Output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -346,19 +307,13 @@ class ConvertTo3D:
     def sleap_file_conversion(self) -> None:
         """
         Description
-        ----------
         This function runs the SLP to H5 conversion in parallel
         for all videos recorded.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         .h5 analysis files
-        ----------
         """
 
         self.message_output(
@@ -406,22 +361,16 @@ class ConvertTo3D:
     def conduct_anipose_calibration(self) -> None:
         """
         Description
-        ----------
         This method conducts the calibration routine for SLEAP Anipose.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         Calibration files:
             cboard.toml
             calibration.toml
             calibration.metadata.h5
             reprojection_histogram.png
-        ----------
         """
 
         self.message_output(
@@ -473,20 +422,14 @@ class ConvertTo3D:
     def conduct_anipose_triangulation(self) -> None:
         """
         Description
-        ----------
         This method runs the 3D triangulation routine for SLEAP Anipose.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         points3d (h5 file)
             3D triangulated point h5 file,
             shape: (N_FRAMES, N_ANIMALS, N_NODES, N_DIMENSIONS).
-        ----------
         """
 
         self.message_output(
@@ -494,7 +437,7 @@ class ConvertTo3D:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        calibration_dir_search = list(pathlib.Path(self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']).rglob('*_calibration.toml*'))
+        calibration_dir_search = list(pathlib.Path(configure_path(self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc'])).rglob('*_calibration.toml*'))
         if len(calibration_dir_search) == 0:
             self.message_output(
                 "Calibration directory not found. Please run calibration first and provide a correct path."
@@ -622,20 +565,14 @@ class ConvertTo3D:
     def translate_rotate_metric(self, **kwargs) -> None:
         """
         Description
-        ----------
         This method translates and rotates the 3D points file, and converts units to meters.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         translated_rotated_metric (h5 file)
             3D translated rotated and metric point h5 file,
             shape: (N_FRAMES, N_ANIMALS, N_NODES, N_DIMENSIONS).
-        ----------
         """
 
         self.message_output(
@@ -663,7 +600,7 @@ class ConvertTo3D:
 
         # load original arena data
         arena_data_original_h5 = first_match_or_raise(
-            root=pathlib.Path(self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc']),
+            root=pathlib.Path(configure_path(self.input_parameter_dict['translate_rotate_metric']['original_arena_file_loc'])),
             pattern='*_points3d.h5*',
             recursive=True,
             label="original arena points3d.h5",

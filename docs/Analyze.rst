@@ -193,6 +193,99 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "spatial_scale_cm": 32
     }
 
+Compute inter-vocalization-interval (inter-USV interval) distributions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+This analysis pools same-emitter inter-vocalization intervals (inter-USV intervals) across one or more cohorts and (optionally) sweeps a 1D Gaussian Mixture Model (GMM) on the log-transformed inter-USV intervals to identify behavioral regimes (e.g. "short" intra-bout intervals vs "long" inter-bout intervals). Unlike the other analyses on this page, this one is **not** driven by the *Root directories* GUI field — it is driven by one or more **session-list text files**, each containing one session root per line. This lets multi-cohort comparisons be assembled by simply pointing at additional list files (each session is tagged with the list file it came from for downstream grouping).
+
+By convention, ``track_names[0]`` in each session's tracking H5 is treated as the male and ``track_names[1]`` as the female. Each session-list path and each line within is run through ``configure_path`` so paths written for Linux/Mac/Windows resolve correctly on the host platform.
+
+Both interval definitions are computed on every run (no flag, no toggle):
+
+* **s2s** : ``start[i+1] - start[i]`` (literature standard)
+* **e2s** : ``start[i+1] - stop[i]`` (alternate; can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the dropped count reported per session per mode)
+
+Both definitions share the same per-session pass over the noise-filtered USV table, so emitting both costs essentially the same as emitting one and lets downstream code compare them (e.g. quantify how much overlap the ``e2s`` filter introduces) without re-running the analysis.
+
+Each run produces a single self-describing HDF5 archive in ``output_directory``:
+
+.. parsed-literal::
+
+    /path/to/output_directory
+    └── **usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5**
+
+The archive's structure (see :mod:`usv_playpen.analyses.usv_interval_archive` for the full schema):
+
+* Root ``/attrs`` -- every JSON parameter that drove the run, plus ``created_at_iso``, ``git_sha``, ``source_lists`` and ``n_sessions_loaded``, so a months-later reader is fully self-describing.
+* ``/<mode>/intervals`` -- tidy one-row-per-inter-USV interval table (``session_id``, ``source_list``, ``interval_type``, ``sex``, ``interval_s``, ``log_interval``, ``male_id``, ``female_id``).
+* ``/<mode>/drop_counts`` -- per-sex count of dropped non-positive intervals (only meaningful for ``e2s``).
+* ``/<mode>/gmm_fits`` (when ``fit_gmm`` is true) -- the full GMM / t-mixture sweep with all four ICs (``bic``, ``aic``, ``icl``, ``cv_neg_loglik``) and per-component parameters (``logmean_k``, ``logsd_k``, ``weight_k``, ``nu_k``) per ``(sex, n_comp, rep)`` row. This table doubles as the model-parameter store; downstream plot helpers pick the best-rep row to rebuild the fitted mixture without refitting.
+* ``/<mode>/bootstrap_lrt`` -- per-pair LRT summary with columns ``[sex, K_null, K_alt, lr_obs, null_mean, null_p95, null_max, p_value, B, n_subsample, model_class, alpha_used, K_selected_step_up]``. ``K_selected_step_up`` is constant within each sex and records the per-sex K chosen by the step-up rule.
+* ``/<mode>/bootstrap_lrt_null`` -- long-form bootstrap LR null draws, one row per ``(sex, K_null, K_alt, b)`` with the bootstrap statistic ``lr_b``. Used to re-render the null-distribution panel without re-running the test.
+* ``/<mode>/attrs`` -- ``alpha_effective`` (post-Bonferroni alpha if requested) plus the per-sex step-up-selected K (``K_selected_male``, ``K_selected_female``).
+
+The accompanying notebook (``analyses_notebooks/usv_interval_mixture_models_plots.ipynb``) reads the archive via the ``ivs.load_*_from_h5`` helpers and renders the bootstrap LRT null-distribution panel (with broken-axis support when ``LR_obs`` falls far above the null), the BIC and AIC sweeps with the LRT-selected K highlighted, the best-fit mixture with per-component triangles labelled by bold ``(a)``, ``(b)``, ... markers, a left-aligned text legend mapping each letter to its component median in seconds, an optional per-component pdf overlay, and a log-log Q-Q diagnostic embedded as an inset.
+
+The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section that should be modified manually (the GUI does not currently expose this analysis):
+
+* **session_lists** : list of paths to session-list text files (each line is one session root). The inter-USV interval notebook reads this list directly from JSON; do not duplicate paths in the notebook.
+* **output_directory** : directory in which to write the consolidated ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` archive (and where the notebook's ``find_latest_archive`` looks)
+* **noise_col_id** : name of the noise classification column in the USV summary CSV
+* **noise_categories** : integer label(s) in ``noise_col_id`` that mark a USV as noise
+* **fit_gmm** : whether to run the GMM sweep after inter-USV interval extraction
+* **n_components_min** / **n_components_max** : range of mixture sizes to sweep
+* **n_repeats** : number of EM-init repeats per ``(key, n_components)``
+* **max_modes_reported** : maximum number of mixture modes recorded per fit
+* **random_seed_base** : base seed; rep ``r`` uses ``random_seed_base + r``
+* **cv_n_folds** : Number of K-fold splits for cross-validated log-likelihood. Defaults to ``5``. KFold uses ``shuffle=True`` for partition independence.
+* **cv_n_init** : Number of EM restarts inside each fold's GMM fit during cross-validation. Defaults to ``5`` (smaller than the in-sample ``gmm_n_init`` because folds already average out EM noise).
+* **gmm_n_init** : Number of EM restarts per in-sample GMM fit. Defaults to ``10``. Higher values make EM more robust to local optima but cost compute.
+* **gmm_reg_covar** : Regularisation added to component covariances (``sklearn``'s ``reg_covar``). Defaults to ``1e-4`` (above the sklearn default of ``1e-6``) to prevent small components from collapsing to near-singular covariances on log-inter-USV interval data.
+* **tau** : Posterior threshold for the LEFT component when computing inter-component decision boundaries. ``0.5`` gives the standard Bayes boundary. Higher values move the boundary toward the left component, making the "short" regime more conservative.
+* **figures_directory** : Directory in which the inter-USV interval notebook saves rendered figures. Run through ``configure_path`` so a Linux-style path resolves on Mac / Windows hosts.
+* **bins_per_sex** : Object mapping ``"male"`` and ``"female"`` to integer histogram bin counts for the fit-plot panels. Females typically have far fewer samples and benefit from fewer bins (e.g. ``30``) so the histogram isn't fragmented into spurious troughs and peaks.
+* **plot_log_xlims** : Two-element list ``[low, high]`` (in log-seconds) clipping the x-axis of every inter-USV interval plot. Defaults to ``[-5.0, 5.0]`` (~6.7 ms to ~148 s).
+* **model_class** : Mixture model class. One of:
+
+  - ``"t"`` (default): Student-t mixture in log-space. One heavy-tailed t-component absorbs the long-pause tail, freeing the remaining components to track only the main-peak structure. Recommended for inter-USV interval bout-structure analysis. Per-component degrees of freedom (``nu``) are estimated jointly with the location and scale via the Peel & McLachlan (2000) EM algorithm.
+  - ``"gauss"``: log-Gaussian mixture (the original implementation, kept for back-compatibility). With heavy-tailed inter-USV interval distributions this typically requires several wide Gaussians to model the long pause tail, inflating the apparent component count. Use only when you specifically want the classical log-normal mixture.
+
+  Both classes share the same IC sweep (BIC / AIC / ICL / CV-LL) and selection rules; the ``gmm_fits`` table inside the HDF5 archive gains a ``model_class`` column tagging which class produced each row, so artifacts from either class remain interpretable.
+
+* **bootstrap_lrt_B** : Number of parametric bootstrap replicates per pairwise LRT (McLachlan 1987; McLachlan & Peel 2000 Ch. 6). Defaults to ``1000`` (smooth null distribution + meaningful 99th-percentile reference line); reduce to 100-200 only for fast-iteration debugging.
+* **bootstrap_lrt_n_subsample** : Subsample size used for both observed and bootstrap fits, so the LR statistic is on the same N scale across them. Defaults to ``15000``. The test is asymptotically valid for any sufficiently large value; smaller subsamples trade some power for a faster run.
+* **bootstrap_lrt_alpha** : Significance threshold for the step-up rule. Defaults to ``0.05``.
+* **bootstrap_lrt_bonferroni** : If ``true``, the per-pair alpha is divided by the number of consecutive K-pairs tested before applying the step-up rule. Defaults to ``false``.
+
+.. code-block:: json
+
+    "compute_inter_usv_interval_distributions": {
+        "session_lists": [
+          "/mnt/falkner/Bartul/modeling/input_files/courtship_behavioral_intact_partners_sessions_list.txt"
+        ],
+        "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
+        "noise_col_id": "usv_supercategory",
+        "noise_categories": [0],
+        "fit_gmm": true,
+        "n_components_min": 2,
+        "n_components_max": 5,
+        "n_repeats": 100,
+        "max_modes_reported": 3,
+        "random_seed_base": 0,
+        "cv_n_folds": 5,
+        "cv_n_init": 5,
+        "gmm_n_init": 10,
+        "gmm_reg_covar": 1e-4,
+        "tau": 0.5,
+        "figures_directory": "/mnt/falkner/Bartul/figures",
+        "bins_per_sex": {"male": 80, "female": 30},
+        "plot_log_xlims": [-5.0, 5.0],
+        "model_class": "t",
+        "bootstrap_lrt_B": 1000,
+        "bootstrap_lrt_n_subsample": 15000,
+        "bootstrap_lrt_alpha": 0.05,
+        "bootstrap_lrt_bonferroni": false
+    }
+
 Frequency shift audio segment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 For presentation purposes, one might want to play audio data of mouse USVs. Since these are beyond human audible range, the only way is to frequency-shift them several octaves down. To achieve this in the GUI, you need to list the root directories of interest, select *Frequency shift audio segment*, choose the start time and duration of the segment, click *Next* and then *Analyze*:

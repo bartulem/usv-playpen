@@ -2,6 +2,7 @@
   "analyses_booleans": {
     "compute_behavioral_features_bool": true,
     "compute_behavioral_tuning_bool": false,
+    "compute_inter_usv_interval_distributions_bool": false,
     "create_usv_playback_wav_bool": false,
     "create_naturalistic_usv_playback_wav_bool": false,
     "frequency_shift_audio_segment_bool": false
@@ -12,6 +13,33 @@
     "tail_points": ["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"],
     "back_root_points": ["Neck", "Trunk", "TTI"],
     "derivative_bins": 10
+  },
+  "compute_inter_usv_interval_distributions": {
+    "session_lists": [
+      "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
+    ],
+    "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
+    "figures_directory": "",
+    "noise_col_id": "vae_supercategory",
+    "noise_categories": [0],
+    "fit_gmm": true,
+    "n_components_min": 2,
+    "n_components_max": 6,
+    "n_repeats": 10,
+    "max_modes_reported": 3,
+    "random_seed_base": 0,
+    "cv_n_folds": 5,
+    "cv_n_init": 5,
+    "gmm_n_init": 10,
+    "gmm_reg_covar": 1e-4,
+    "tau": 0.5,
+    "bins_per_sex": { "male": 80, "female": 30 },
+    "plot_log_xlims": [-5.0, 5.0],
+    "model_class": "t",
+    "bootstrap_lrt_B": 1000,
+    "bootstrap_lrt_n_subsample": 15000,
+    "bootstrap_lrt_alpha": 0.05,
+    "bootstrap_lrt_bonferroni": false
   },
   "analyze_data": {
     "root_directories": []

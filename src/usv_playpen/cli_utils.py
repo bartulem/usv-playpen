@@ -51,25 +51,19 @@ class StringTuple(click.ParamType):
 def set_nested_key(d: dict, target_key: str, value: Any = None) -> bool:
     """
     Description
-    -----------
     Recursively finds a key in a nested dictionary and sets its value.
-    -----------
 
     Parameters
-    ----------
     d (dict)
         The dictionary to search within.
     target_key (str)
         The key to find.
     value (typing.Any)
         The new value to set for the target_key.
-    ----------
 
     Returns
-    ----------
     (bool)
         True if the key was found and updated, False otherwise.
-    ----------
     """
     # change key if it exists at the current level of the dictionary
     if target_key in d:
@@ -93,13 +87,10 @@ def modify_settings_json_for_cli(
 ) -> dict:
     """
     Description
-    -----------
     Modifies the `*_settings.json` file to include
     parameters provided via the command line interface.
-    -----------
 
     Parameters
-    ----------
     ctx (click.Context)
         Click context containing the parameters.
     parameters_lists (list)
@@ -109,13 +100,10 @@ def modify_settings_json_for_cli(
         Parameters provided via the command line interface.
     settings_dict (str)
         Settings dictionary file (analyses, processing or visualizations).
-    ----------
 
     Returns
-    ----------
     settings_parameter_dict (dict)
         The modified settings dictionary with the provided parameters.
-    ----------
     """
 
     with open(
@@ -142,7 +130,6 @@ def modify_settings_json_for_cli(
 def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     """
     Description
-    -----------
     Sets a value in a nested dictionary using a dot-separated path. The path
     is validated against the existing structure of ``d`` — if any intermediate
     key does not exist, is not itself a dict, or the leaf key is missing, a
@@ -151,10 +138,8 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     CLI override (e.g. 'video.general.delete-post-copy' with a hyphen) would
     otherwise silently create a new, useless key rather than updating the
     real one.
-    -----------
 
     Parameters
-    ----------
     d (dict)
         The dictionary to modify. Must contain the full target path already.
     path (str)
@@ -162,23 +147,18 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
         Empty strings and components starting/ending with a dot are rejected.
     value (Any)
         The value to set at the specified path.
-    ----------
 
     Returns
-    ----------
     (None)
         This function modifies the dictionary in place and does not return anything.
-    ----------
 
     Raises
-    ------
     ValueError
         If ``path`` is empty, contains empty components, or is not a string.
     KeyError
         If any component of the path does not correspond to an existing key
         in the dictionary, or an intermediate key exists but is not itself
         a dictionary.
-    ------
     """
 
     if not isinstance(path, str) or path == "":
@@ -222,27 +202,21 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
 def _convert_value(s: str) -> Any:
     """
     Description
-    -----------
     Converts a string to its appropriate type based on its content.
-    -----------
 
     Parameters
-    ----------
     s (str)
         The string to convert. It can be a boolean, integer, float, or string.
         - If the string is 'true' or 'false', it will be converted to a boolean.
         - If the string can be converted to an integer or float, it will be converted accordingly.
         - Otherwise, it will return the string with any surrounding quotes removed.
-    ----------
 
     Returns
-    ----------
     (Any)
         The converted value:
         - `True` or `False` for boolean strings.
         - An `int` or `float` for numeric strings.
         - A `str` with surrounding quotes removed for other strings.
-    ----------
     """
 
     s = s.strip()  # Remove leading/trailing whitespace
@@ -262,25 +236,19 @@ def _convert_value(s: str) -> Any:
 def override_toml_values(overrides: list, exp_settings_dict: dict) -> dict:
     """
     Description
-    -----------
     Overrides values in a settings dictionary based on a list of override strings.
-    -----------
 
     Parameters
-    ----------
     overrides (list)
         A list of strings in the format "key.path=value" where:
         - `key.path` is the dot-separated path to the value to be set.
     exp_settings_dict (dict)
         The dictionary to modify with the overrides.
         The keys are dot-separated paths to the values to be set.
-    ----------
 
     Returns
-    ----------
     exp_settings_dict (dict)
         The modified settings dictionary with the provided overrides applied.
-    ----------
     """
 
     for override_str in overrides:

@@ -22,26 +22,20 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
     """
     Description
-    ----------
     This method extracts core experimental metadata from a session directory, including
     mouse track names, recording frame rate, and experimental codes.
 
     It searches for the metric H5 tracking file within the provided
     directory and extracts identity strings for the animals involved. It is
     specifically designed for social interaction sessions (male-female).
-    ----------
 
     Parameters
-    ----------
     session_root (str)
         The absolute path to the session directory containing the .h5 tracking files.
-    ----------
 
     Returns
-    ----------
     metadata (dict)
         Contains 'male_id', 'female_id', 'frame_rate', 'experiment_code', and 'tracking_file'.
-    ----------
     """
 
     session_path = Path(session_root)
@@ -73,17 +67,14 @@ def load_and_filter_usv_data(
 ) -> pls.DataFrame:
     """
     Description
-    ----------
     This method loads USV summary CSV data using Polars and appends calculated frame
     indices based on the provided recording frame rate.
 
     The function filters the entire dataset to remove noise based on the provided
     noise column and a list of noise categories. The remaining valid vocalizations
     (male, female, and unassigned) are retained and returned.
-    ----------
 
     Parameters
-    ----------
     session_root (str)
         The absolute path to the session directory.
     frame_rate (float)
@@ -92,14 +83,11 @@ def load_and_filter_usv_data(
         The name of the column in the CSV that dictates the noise classification.
     noise_categories (list[int])
         A list of specific integer values in the noise column that identify a row as noise to be excluded.
-    ----------
 
     Returns
-    ----------
     usv_info (pls.DataFrame)
         Contains USV starts, durations, emitters, and a newly calculated 'frame_index',
         with all identified noise removed.
-    ----------
     """
 
     session_path = Path(session_root)
@@ -129,7 +117,6 @@ def extract_category_embedding_data(
 ) -> pls.DataFrame:
     """
     Description
-    ----------
     Extracts category labels and continuous embedding coordinates (e.g., UMAP)
     for all non-noise vocalizations across multiple sessions.
 
@@ -139,7 +126,6 @@ def extract_category_embedding_data(
     Rows with missing coordinate data are dropped to ensure clean downstream plotting.
 
     Parameters
-    ----------
     session_roots : list[str]
         A list of absolute paths pointing to the session directories to be analyzed.
     noise_col_id : str
@@ -155,7 +141,6 @@ def extract_category_embedding_data(
         coordinates (e.g., ('umap_x', 'umap_y')).
 
     Returns
-    ----------
     pls.DataFrame
         A concatenated Polars DataFrame containing the columns: 'sex', 'category',
         'dim1' (x-coordinate), and 'dim2' (y-coordinate). Returns an empty
@@ -206,26 +191,20 @@ def extract_category_embedding_data(
 def get_session_behavioral_features(session_root: str) -> pls.DataFrame:
     """
     Description
-    ----------
     This method loads the behavioral features CSV (e.g., distances, angles) for a
     specific session.
 
     This function specifically targets the file containing calculated
     metrics like 'nose-nose' distance and 'allo_yaw' angles. It adds
     a row index to serve as a 'frame_index' for joining with USV data.
-    ----------
 
     Parameters
-    ----------
     session_root (str)
         The absolute path to the session directory.
-    ----------
 
     Returns
-    ----------
     behavioral_features (pls.DataFrame)
         Contains all frame-by-frame behavioral metrics.
-    ----------
     """
 
     session_path = Path(session_root)
@@ -247,7 +226,6 @@ def merge_usv_and_behavioral_features(
 ) -> pls.DataFrame:
     """
     Description
-    ----------
     This method merges ultrasonic vocalization (USV) timing, assignment, and category data
     with frame-by-frame continuous behavioral features.
 
@@ -257,10 +235,8 @@ def merge_usv_and_behavioral_features(
     every individual vocalization is annotated with the physical distance,
     relative angles of the mice, and its acoustic category at the exact moment
     the call was emitted.
-    ----------
 
     Parameters
-    ----------
     usv_info (pls.DataFrame)
         A Polars DataFrame containing USV data, which must include 'frame_index',
         'emitter', 'duration', and the specified category columns.
@@ -278,15 +254,12 @@ def merge_usv_and_behavioral_features(
         allocentric yaw angle.
     usv_category_col (str)
         The name of the column containing the integer category/cluster ID.
-    ----------
 
     Returns
-    ----------
     usv_behavior (pls.DataFrame)
         A combined Polars DataFrame containing 'frame_index', 'emitter',
         'category', 'usv_duration', 'distance', 'mf_angle', and 'fm_angle'
         for every matched vocalization.
-    ----------
     """
 
     behavioral_subset = behavioral_features.select(
@@ -316,7 +289,6 @@ def build_master_usv_dataframe(
 ) -> tuple[pls.DataFrame, pls.DataFrame, int]:
     """
     Description
-    ----------
     This method is the primary data extraction and aggregation entry point for the
     USV summary statistics pipeline. It replaces the multiple per-analysis session
     loops previously scattered across the analysis notebook with a single,
@@ -336,10 +308,8 @@ def build_master_usv_dataframe(
     The returned 'background_df' has one row per video frame for sessions that
     have a behavioral features file, and provides the spatial occupancy baseline
     required for occupancy-normalised polar KDE plots.
-    ----------
 
     Parameters
-    ----------
     session_roots (list[str])
         A list of absolute paths pointing to the session directories to be analyzed.
     noise_col_id (str)
@@ -358,10 +328,8 @@ def build_master_usv_dataframe(
     fm_angle_suffix (str)
         The string suffix used to identify the female-to-male angle column in the
         behavioral features CSV (e.g., 'nose-allo_yaw').
-    ----------
 
     Returns
-    ----------
     usv_df (pls.DataFrame)
         A tidy Polars DataFrame with one row per non-noise vocalization across all
         sessions. Columns: 'session_id', 'date', 'hour', 'male_id', 'female_id',
@@ -374,7 +342,6 @@ def build_master_usv_dataframe(
         'mf_angle', 'fm_angle'. Used as the occupancy baseline in polar KDE plots.
     total_noise_filtered (int)
         The total number of rows removed across all sessions based on noise_categories.
-    ----------
     """
 
     all_usv_rows: list[pls.DataFrame] = []
@@ -492,17 +459,14 @@ def plot_assignment_stacked_bars(
 ) -> tuple[plt.Figure, plt.Axes, dict[str, Any]]:
     """
     Description
-    ----------
     This method generates a horizontal stacked bar chart showing either the total
     number of USVs or the relative proportion of USVs assigned to males, females,
     and the unassigned category per recording session.
 
     The sessions are automatically sorted on the y-axis by the total number of
     vocalizations to make distributions easier to read.
-    ----------
 
     Parameters
-    ----------
     assignment_df (pls.DataFrame)
         A Polars DataFrame containing the columns 'session', 'male', 'female',
         and 'unassigned', representing USV counts per category.
@@ -515,17 +479,14 @@ def plot_assignment_stacked_bars(
         Hex code for the female category color.
     unassigned_color (str)
         Hex code for the unassigned category color.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     ax (plt.Axes)
         The matplotlib Axes object containing the stacked bars.
     stats_dict (dict)
         Contains 'total_sessions', 'max_session_total', and 'mean_session_total'.
-    ----------
     """
 
     df_processed = assignment_df.with_columns(
@@ -585,16 +546,13 @@ def plot_assignment_summary_panel(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
-    ----------
     This method generates a comprehensive 3-panel figure summarizing USV assignments.
 
     Panel 1: A scatter plot showing variability in USV counts on a log scale.
     Panel 2: A horizontal Seaborn violin plot showing distributions and IQRs.
     Panel 3: An aggregated stacked bar chart showing the grand total and global proportions.
-    ----------
 
     Parameters
-    ----------
     assignment_df (pls.DataFrame)
         A Polars DataFrame containing the columns 'session', 'male', 'female',
         and 'unassigned', representing USV counts per category.
@@ -606,17 +564,14 @@ def plot_assignment_summary_panel(
         Hex code for the unassigned category color.
     jitter_strength (float)
         The standard deviation of the normal distribution used to jitter points on the x-axis.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object containing all three panels.
     axes (tuple)
         A tuple of the three matplotlib Axes objects (ax_scatter, ax_violin, ax_bar).
     stats_dict (dict)
         Contains global medians, IQRs, grand totals, and global proportions for each category.
-    ----------
     """
 
     colors = {'male': male_color, 'female': female_color, 'unassigned': unassigned_color}
@@ -742,14 +697,11 @@ def plot_animal_participation_stats(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
-    ----------
     This method visualizes individual animal participation by generating two side-by-side
     horizontal bar charts. The first panel displays the number of sessions each animal
     participated in, and the second displays their average USV vocal rate per session.
-    ----------
 
     Parameters
-    ----------
     animal_stats (dict)
         A nested dictionary containing animal IDs as keys and sub-dictionaries
         with 'session_count' and 'total_usvs' as values.
@@ -759,17 +711,14 @@ def plot_animal_participation_stats(
         Hex code for the bar color.
     text_color (str)
         Color for the bar label annotations.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     axes (tuple)
         A tuple of the two matplotlib Axes objects (ax_sessions, ax_rate).
     stats_dict (dict)
         Contains summary statistics regarding animal session counts and vocal rates.
-    ----------
     """
 
     df = pd.DataFrame.from_dict(animal_stats, orient='index')
@@ -833,7 +782,6 @@ def plot_polar_kde_distance_angle(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
-    ----------
     Generates a two-panel half-circle polar contour plot comparing raw USV spatial
     density to occupancy-normalized vocalization likelihood.
 
@@ -850,7 +798,6 @@ def plot_polar_kde_distance_angle(
     3. Utilizes a high number of contour levels (100) for smooth gradients.
 
     Parameters
-    ----------
     usv_distances : np.ndarray
         1D array of nose-to-nose distances (cm) during USV emission.
     usv_angles_deg : np.ndarray
@@ -874,7 +821,6 @@ def plot_polar_kde_distance_angle(
         is randomly subsampled to optimize performance.
 
     Returns
-    ----------
     fig : plt.Figure
         The generated matplotlib figure.
     axes : tuple[plt.Axes, plt.Axes]
@@ -983,17 +929,14 @@ def plot_behavior_duration_regressions(
 ) -> tuple[plt.Figure, np.ndarray, dict[str, Any]]:
     """
     Description
-    ----------
     This method generates a 2x2 grid of Seaborn regression plots assessing the
     relationship between behavioral features (distance, angle) and USV duration
     for both sexes.
 
     It calculates Pearson's r and p-values for each relationship, embedding the
     results directly onto the plot axes and returning them in the statistics dictionary.
-    ----------
 
     Parameters
-    ----------
     male_df (pd.DataFrame)
         A Pandas DataFrame containing 'distance', 'angle', and 'usv_duration' for males.
     female_df (pd.DataFrame)
@@ -1004,17 +947,14 @@ def plot_behavior_duration_regressions(
         Hex code for the female scatter points.
     line_color (str)
         Hex code for the regression lines.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     axes (np.ndarray)
         The 2x2 numpy array of matplotlib Axes objects.
     stats_dict (dict)
         Contains Pearson r and p-values for all four statistical comparisons.
-    ----------
     """
 
     fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 10))
@@ -1027,7 +967,6 @@ def plot_behavior_duration_regressions(
         '{prefix}_r' and '{prefix}_p', and annotates the axes with the statistics.
 
         Parameters
-        ----------
         data (pd.DataFrame)
             Source dataframe containing x_col and y_col.
         x_col (str)
@@ -1042,7 +981,6 @@ def plot_behavior_duration_regressions(
             Key prefix under which r and p are stored in stats_dict.
 
         Returns
-        -------
         (None)
             Side effects: mutates ax and stats_dict.
         """
@@ -1095,17 +1033,14 @@ def plot_distance_by_assignment_kde_anova(
 ) -> tuple[plt.Figure, plt.Axes, dict[str, Any]]:
     """
     Description
-    ----------
     This method generates an overlaid KDE plot comparing nose-to-nose distances
     between male, female, and unassigned USV categories.
 
     It computes a One-Way ANOVA, effect size (Omega-Squared), and Tukey's HSD
     post-hoc tests across the assignment categories, displaying a comprehensive
     statistical summary text box directly on the plot.
-    ----------
 
     Parameters
-    ----------
     df_plot (pd.DataFrame)
         A Pandas DataFrame containing the columns 'distance' and 'category'
         ('male', 'female', 'unassigned').
@@ -1117,10 +1052,8 @@ def plot_distance_by_assignment_kde_anova(
         Hex code for the female KDE density.
     unassigned_color (str)
         Hex code for the unassigned KDE density.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     ax (plt.Axes)
@@ -1128,7 +1061,6 @@ def plot_distance_by_assignment_kde_anova(
     stats_dict (dict)
         Contains ANOVA F-statistic, p-value, df, Omega-Squared, means, SEMs,
         and significant Tukey HSD pairs.
-    ----------
     """
 
     colors = {'male': male_color, 'female': female_color, 'unassigned': unassigned_color}
@@ -1223,17 +1155,14 @@ def plot_unassigned_proportion_vs_distance_jointplot(
 ) -> tuple[sns.JointGrid, dict[str, Any]]:
     """
     Description
-    ----------
     This method generates a Seaborn JointGrid mapping the correlation between
     the median nose-to-nose distance in a session and the overall proportion
     of unassigned USVs in that session.
 
     It computes Pearson's r and p-values and renders the statistics directly
     onto the central regression panel.
-    ----------
 
     Parameters
-    ----------
     df_combined (pd.DataFrame)
         A Pandas DataFrame containing 'median_distance' and 'unassigned_prop'
         for each session.
@@ -1243,15 +1172,12 @@ def plot_unassigned_proportion_vs_distance_jointplot(
         Hex code for the regression line and statistics text.
     hist_color (str)
         Hex code for the marginal histograms.
-    ----------
 
     Returns
-    ----------
     g (sns.JointGrid)
         The Seaborn JointGrid object containing the figure and axes.
     stats_dict (dict)
         Contains 'pearson_r' and 'pearson_p'.
-    ----------
     """
 
     stats_dict = {}
@@ -1294,17 +1220,14 @@ def plot_duration_histograms_by_sex(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
-    ----------
     This method generates stacked histograms displaying the distribution of
     individual USV durations for males and females.
 
     It computes the mean and median durations for each sex, plots them as
     vertical dashed and dotted lines over the histograms, and compiles these
     statistics into a dictionary for downstream analysis.
-    ----------
 
     Parameters
-    ----------
     plot_data (pd.DataFrame)
         A Pandas DataFrame containing at least two columns: 'sex' ('male'/'female')
         and 'duration_ms' (duration of the vocalization in milliseconds).
@@ -1316,17 +1239,14 @@ def plot_duration_histograms_by_sex(
         Hex code for the male histogram bars.
     female_color (str)
         Hex code for the female histogram bars.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     axes (tuple)
         A tuple of two matplotlib Axes objects (ax_male, ax_female).
     stats_dict (dict)
         Contains the calculated mean and median durations for males and females.
-    ----------
     """
 
     male_durations = plot_data[plot_data['sex'] == 'male']['duration_ms']
@@ -1386,17 +1306,14 @@ def plot_hourly_regressions(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
-    ----------
     This method generates a two-panel Seaborn regression plot (male top, female bottom)
     mapping the hour of the day against a specified continuous USV metric (e.g.,
     USV count per session or individual USV duration) to assess global vocal fatigue.
 
     It computes Pearson's r and p-values for both sexes to quantify the temporal
     trend, rendering the statistics in text boxes on the respective plots.
-    ----------
 
     Parameters
-    ----------
     df_raw (pd.DataFrame)
         A Pandas DataFrame containing at least 'hour', 'sex', and the target y_col.
     y_col (str)
@@ -1410,17 +1327,14 @@ def plot_hourly_regressions(
         Hex code for the female scatter points.
     line_color (str)
         Hex code for the regression line and text.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     axes (tuple)
         A tuple of two matplotlib Axes objects (ax_male, ax_female).
     stats_dict (dict)
         Contains Pearson r and p-values for male and female temporal regressions.
-    ----------
     """
 
     male_df = df_raw[df_raw['sex'] == 'male']
@@ -1436,7 +1350,6 @@ def plot_hourly_regressions(
         Skips annotation if fewer than two valid points remain.
 
         Parameters
-        ----------
         ax (plt.Axes)
             Axes onto which the r/p annotation is drawn.
         x_data (np.ndarray)
@@ -1447,7 +1360,6 @@ def plot_hourly_regressions(
             Key prefix under which r and p are stored in stats_dict.
 
         Returns
-        -------
         (None)
             Side effects: mutates ax and stats_dict.
         """
@@ -1512,17 +1424,14 @@ def plot_local_fatigue_binned_trends(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
-    ----------
     This method visualizes within-session temporal dynamics (local vocal fatigue)
     by plotting aggregated metrics across discrete time bins.
 
     It generates two vertically stacked line plots (male and female) displaying
     the mean values with shaded SEM bounds. The x-axis labels are dynamically
     calculated from the bin width to represent session minutes.
-    ----------
 
     Parameters
-    ----------
     binned_df (pd.DataFrame)
         A Pandas DataFrame containing aggregated bin data with columns: 'sex',
         'time_bin', and the specified mean and sem target columns.
@@ -1542,17 +1451,14 @@ def plot_local_fatigue_binned_trends(
         Hex code for the female lines and shaded regions.
     use_log_scale (bool)
         If True, applies a base-10 logarithmic scale to the Y-axes.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     axes (tuple)
         A tuple of two matplotlib Axes objects (ax_male, ax_female).
     stats_dict (dict)
         Contains global min/max boundaries for plotting or scaling purposes.
-    ----------
     """
 
     male_df = binned_df[binned_df['sex'] == 'male']
@@ -1620,7 +1526,6 @@ def plot_category_local_fatigue_heatmap(
 ) -> tuple[plt.Figure, np.ndarray, dict[str, Any]]:
     """
     Description
-    ----------
     Generates a two-panel figure (Male and Female) containing smoothed heatmaps
     visualizing the temporal decay (local fatigue) of specific USV categories
     over the course of a session.
@@ -1631,7 +1536,6 @@ def plot_category_local_fatigue_heatmap(
     the default colormap for high-contrast visualization of density.
 
     Parameters
-    ----------
     binned_df : pd.DataFrame
         A Pandas DataFrame containing the columns 'session_id', 'sex',
         'category', 'time_bin', and 'usv_count'. This should be the
@@ -1649,7 +1553,6 @@ def plot_category_local_fatigue_heatmap(
         The total size of the generated figure.
 
     Returns
-    ----------
     fig : plt.Figure
         The generated matplotlib figure.
     axes : np.ndarray
@@ -1743,7 +1646,6 @@ def plot_estrous_ratio_scatter(
 ) -> tuple[plt.Figure, plt.Axes, dict[str, dict[str, float]]]:
     """
     Description
-    ----------
     Generates a jittered scatter plot of the male-to-female USV ratio across
     estrous stages.
 
@@ -1751,10 +1653,8 @@ def plot_estrous_ratio_scatter(
     for the visualization of large dynamic ranges in vocal behavior. It includes
     robust NaN filtering to ensure that statistical summaries (mean/SEM) are
     calculated only from valid sessions.
-    ----------
 
     Parameters
-    ----------
     ratio_dict (dict)
         Dictionary mapping estrous stage characters to lists of session ratios.
     category_order (list[str])
@@ -1771,10 +1671,8 @@ def plot_estrous_ratio_scatter(
         Confidence level for CI bounds.
     use_log_scale (bool), default False
         If True, applies a standard base-10 logarithmic scale to the y-axis.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure), ax (plt.Axes), stats_dict (dict)
     """
 
@@ -1870,17 +1768,14 @@ def plot_estrous_usv_rates(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes], dict[str, dict[str, float]]]:
     """
     Description
-    ----------
     This method generates a side-by-side bar chart visualizing the average number
     of USVs emitted per session, split by sex and categorized by the female's
     estrous stage.
 
     It computes the mean USV rate by dividing total vocalizations by the total
     number of sessions recorded for each estrous stage.
-    ----------
 
     Parameters
-    ----------
     session_counts (dict)
         A dictionary mapping estrous stage characters to total session counts.
     male_usv_counts (dict)
@@ -1897,17 +1792,14 @@ def plot_estrous_usv_rates(
         Hex code for the female bar color.
     text_color (str)
         Hex code for the bar label annotations.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object.
     axes (tuple)
         A tuple containing two matplotlib Axes objects (ax_female, ax_male).
     stats_dict (dict)
         A dictionary detailing 'male_rate' and 'female_rate' per estrous stage.
-    ----------
     """
 
     male_rates = []
@@ -1961,24 +1853,19 @@ def plot_estrous_stage_pie_chart(
 ) -> tuple[plt.Figure, plt.Axes, dict[str, float]]:
     """
     Description
-    ----------
     Generates a donut-style pie chart of recording sessions across estrous stages.
     Slices are forced into a specific biological order (P -> E -> M -> D) and
     plotted clockwise starting from the top.
-    ----------
 
     Parameters
-    ----------
     session_counts (dict)
         Mapping of estrous stage characters to session counts.
     label_map (dict)
         Mapping of characters to full strings (e.g., {'p': 'Proestrus'}).
     slice_colors (list[str])
         Hex colors matching the biological order ['p', 'e', 'm', 'd'].
-    ----------
 
     Returns
-    ----------
     fig, ax, stats_dict
     """
 
@@ -2037,7 +1924,6 @@ def plot_category_prevalence_and_embedding(
 ):
     """
     Description
-    ----------
     Generates a 4x2 grid of subplots visualizing the acoustic repertoire and spatial
     embedding of USVs broken down by assignment (Male, Female, Unassigned), plus a
     global summary row.
@@ -2050,7 +1936,6 @@ def plot_category_prevalence_and_embedding(
     across ALL valid USVs and are overlaid prominently on top of every embedding plot.
 
     Parameters
-    ----------
     df_embedding : pls.DataFrame
         The Polars DataFrame output from `extract_category_embedding_data`.
     male_color : str
@@ -2070,7 +1955,6 @@ def plot_category_prevalence_and_embedding(
         global boundary lines and KDE maps, but increase computation time.
 
     Returns
-    ----------
     fig : matplotlib.figure.Figure
         The generated 4x2 matplotlib figure.
     axes : numpy.ndarray
@@ -2257,7 +2141,6 @@ def plot_category_global_fatigue_heatmap(
 ) -> tuple[plt.Figure, np.ndarray, dict[str, Any]]:
     """
     Description
-    ----------
     Generates a two-panel vertical grid (Top: Male, Bottom: Female) of heatmaps
     visualizing the temporal fatigue of USV categories using 2-hour bins.
 
@@ -2266,10 +2149,8 @@ def plot_category_global_fatigue_heatmap(
     empty time blocks to focus on the active recording period. It applies 1D
     Gaussian smoothing and row-wise normalization ($0.0$ to $1.0$) to highlight
     fatigue trends regardless of absolute vocalization counts.
-    ----------
 
     Parameters
-    ----------
     global_usv_df : pls.DataFrame
         Consolidated Polars DataFrame containing 'session_id', 'sex', 'category',
         'hour', and 'len' (vocal count).
@@ -2278,10 +2159,8 @@ def plot_category_global_fatigue_heatmap(
         time bins (X-axis).
     colormap : str
         Matplotlib colormap used to represent normalized vocal intensity.
-    ----------
 
     Returns
-    ----------
     fig : plt.Figure
         The matplotlib Figure object containing the two cleaned heatmap panels.
     axes : np.ndarray
@@ -2289,7 +2168,6 @@ def plot_category_global_fatigue_heatmap(
     stats_dict : dict
         Contains the processed, truncated, and smoothed pivot tables for
         both sexes.
-    ----------
     """
 
     # 1. 2-Hour Binning and Aggregation
@@ -2379,7 +2257,6 @@ def plot_category_estrous_rates_grid(
 ) -> tuple[plt.Figure, np.ndarray, dict[str, Any]]:
     """
     Description
-    ----------
     Generates a facet grid of subplots visualizing average USV rates across
     full estrous stage names using dual Y-axes to account for sexual dimorphism
     in vocalization volume.
@@ -2390,10 +2267,8 @@ def plot_category_estrous_rates_grid(
     estrous stages despite significant differences in absolute vocalization
     counts. Category IDs are displayed as integers, and X-axis labels use
     full biological stage names.
-    ----------
 
     Parameters
-    ----------
     estrous_data : dict
         A nested dictionary keyed by category ID containing session counts
         and raw USV counts per stage and sex.
@@ -2403,10 +2278,8 @@ def plot_category_estrous_rates_grid(
         Hex color code for the male vocal rate bars (left axis).
     female_color : str
         Hex color code for the female vocal rate bars (right axis).
-    ----------
 
     Returns
-    ----------
     fig : plt.Figure
         The matplotlib Figure object containing the facet grid with dual Y-axes.
     axes : np.ndarray
@@ -2414,7 +2287,6 @@ def plot_category_estrous_rates_grid(
     stats_dict : dict
         A dictionary mapping category IDs to their respective mean rates
         for males and females across all stages.
-    ----------
     """
 
     stage_label_map = {
@@ -2505,7 +2377,6 @@ def plot_category_estrous_ratio_grid(
 ) -> tuple[tuple[plt.Figure, plt.Figure], tuple[np.ndarray, np.ndarray], dict[str, Any]]:
     """
     Description
-    ----------
     Generates two distinct figure panels visualizing Male-to-Female USV ratios
     across estrous stages.
 
@@ -2517,10 +2388,8 @@ def plot_category_estrous_ratio_grid(
     Both figures utilize a log-scale Y-axis, stage-specific point coloring,
     and a high-contrast black statistical overlay (Mean + SEM). Sample size
     labels are removed for clarity.
-    ----------
 
     Parameters
-    ----------
     estrous_data : dict
         A nested dictionary keyed by category ID containing lists of
         session-wise ratios per stage.
@@ -2528,17 +2397,14 @@ def plot_category_estrous_ratio_grid(
         A list of characters representing the estrous stages in biological order.
     scatter_colors : list[str]
         A list of 4 hex color codes corresponding to the stages in valid_stages.
-    ----------
 
     Returns
-    ----------
     figs : tuple[plt.Figure, plt.Figure]
         A tuple containing (fig_categories, fig_stages).
     axes : tuple[np.ndarray, np.ndarray]
         A tuple containing the axes arrays for both figures.
     stats_dict : dict
         A nested dictionary containing Mean and SEM for every category-stage pair.
-    ----------
     """
 
     stage_label_map = {
@@ -2656,7 +2522,6 @@ def plot_category_polar_kde_grid(
 ) -> tuple[plt.Figure, np.ndarray, dict[str, Any]]:
     """
     Description
-    ----------
     Generates a grid of small-multiple half-circle polar plots showing the
     Occupancy-Normalized Likelihood of vocalizing at specific spatial
     locations for a specific sex, broken down by USV category.
@@ -2670,7 +2535,6 @@ def plot_category_polar_kde_grid(
     grid using 98th percentile clipping.
 
     Parameters
-    ----------
     global_behavior_metrics : dict
         Nested dictionary containing 'all_frames' tracking data and
         per-category USV coordinates.
@@ -2684,14 +2548,12 @@ def plot_category_polar_kde_grid(
         The matplotlib colormap for spatial density.
 
     Returns
-    ----------
     fig : plt.Figure
         The matplotlib Figure object containing the polar grid.
     axes : np.ndarray
         An array of polar Axes objects (one per category).
     stats_dict : dict
         Contains the global_vmax scaling factor and point counts per category.
-    ----------
     """
 
     # Parameter validation
@@ -2808,7 +2670,6 @@ def plot_estrous_category_kde_grid(
 ) -> tuple[plt.Figure, np.ndarray, dict[str, Any]]:
     """
     Description
-    ----------
     Generates a 2D facet grid of occupancy-normalised half-circle polar KDE plots
     showing spatial vocalization likelihood broken down simultaneously by USV
     acoustic category and female estrous stage.
@@ -2826,10 +2687,8 @@ def plot_estrous_category_kde_grid(
         usv_pls = usv_pls.with_columns(
             pls.col('experiment_code').str.slice(-1).alias('estrous_stage')
         )
-    ----------
 
     Parameters
-    ----------
     usv_pls (pls.DataFrame)
         The master USV DataFrame returned by build_master_usv_dataframe, with an
         'estrous_stage' column already attached.
@@ -2858,10 +2717,8 @@ def plot_estrous_category_kde_grid(
     max_kde_points (int), default 50000
         Maximum number of background frame points used for KDE calculation.
         Data exceeding this is randomly subsampled for performance.
-    ----------
 
     Returns
-    ----------
     fig (plt.Figure)
         The matplotlib Figure object containing the full grid.
     axes (np.ndarray)
@@ -2869,7 +2726,6 @@ def plot_estrous_category_kde_grid(
     stats_dict (dict)
         Contains 'global_vmax', 'sex_plotted', and 'n_points' — a nested dict
         mapping (category, stage) pairs to the number of USV points used.
-    ----------
     """
 
     valid_sexes = ['male', 'female']

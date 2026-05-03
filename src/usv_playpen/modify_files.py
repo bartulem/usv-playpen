@@ -45,7 +45,6 @@ class Operator:
         Initializes the Operator class.
 
         Parameters
-        ----------
         root_directory (str / list of str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -54,8 +53,6 @@ class Operator:
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -77,7 +74,6 @@ class Operator:
     def split_clusters_to_sessions(self) -> None:
         """
         Description
-        ----------
         This method converts every spike sample time into seconds,
         relative to tracking start and splits spikes back into
         individual sessions (if binary files were concatenated).
@@ -87,14 +83,10 @@ class Operator:
         e.g., the first one. The script will find EPHYS root directory,
         and split spikes from all probes into sessions based on the
         inputs in the changepoints JSON file.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
          spike times (np.ndarray)
             Arrays that contain spike times: seconds (row 0) and frames (row 1).;
             saved as .npy files in a separate directory.
@@ -212,7 +204,6 @@ class Operator:
     def concatenate_binary_files(self) -> None:
         """
         Description
-        ----------
         This method concatenates binary files from Neuropixels recordings into one
         .bin file (can be used from "ap" or "lf" files). It goes through all root
         directories and concatenates all binary files for any given probe, say "imec0",
@@ -223,14 +214,10 @@ class Operator:
         to conduct concatenation. The script operates by first
         locating all available probes in the root directories,
         and then concatenates all binary files for each probe.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         binary_files_info (.json)
             Dictionary w/ information about changepoints and binary file lengths.
         concatenated (.bin)
@@ -319,8 +306,11 @@ class Operator:
                                 else:
                                     concatenation_command += '{} '.format(one_file)
 
-            # save concatenated META file
+            # create save directory if one doesn't exist already
             concat_save_path = pathlib.Path(concat_save_dir[probe_idx])
+            concat_save_path.mkdir(parents=True, exist_ok=True)
+
+            # save concatenated META file
             concatenated_meta_file = concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.meta"
             if not concatenated_meta_file.is_file():
                 src_meta_file = first_match_or_raise(
@@ -342,9 +332,6 @@ class Operator:
                 concatenation_command += f'"{concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.bin"}"'
             else:
                 concatenation_command += f'> {concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.bin"}'
-
-            # create save directory if one doesn't exist already
-            pathlib.Path(concat_save_dir[probe_idx]).mkdir(parents=True, exist_ok=True)
 
             # save changepoint information in JSON file
             changepoints_json = concat_save_path / f'changepoints_info_{concat_save_path.name}.json'
@@ -381,21 +368,15 @@ class Operator:
     def multichannel_to_channel_audio(self) -> None:
         """
         Description
-        ----------
         This method splits multichannel audio file into single channel files and
         concatenates single channel files via Sox, since multichannel files where
         split due to a size limitation.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         wave_file (.wav files)
             Concatenated single channel wave files.
-        ----------
         """
 
         self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -478,18 +459,13 @@ class Operator:
     def hpss_audio(self) -> None:
         """
         Description
-        ----------
         This function performs the harmonic/percussive source separation (HPSS)
         on the provided audio (WAV) files. The harmonic component is then converted
         back to the time domain and saved as a new WAV file.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         harmonic_data_clipped (.wav file)
             Output audio file w/ only the harmonics component.
         """
@@ -544,7 +520,6 @@ class Operator:
     def filter_audio_files(self) -> None:
         """
         Description
-        ----------
         This method filters audio files via Sox.
 
         It applies a sinc kaiser-windowed low-pass, high-pass, band-pass, or band-reject filter
@@ -557,17 +532,12 @@ class Operator:
            sinc 3k-4k
            sinc 4k-3k
         create a high-pass, low-pass, band-pass, and band-reject filter respectively.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         wave_file (.wav file)
             Filtered wave file.
-        ----------
         """
 
         freq_lp = self.input_parameter_dict['filter_audio_files']['filter_freq_bounds'][0]
@@ -608,19 +578,13 @@ class Operator:
     def concatenate_audio_files(self) -> None:
         """
         Description
-        ----------
         This method concatenates audio files into a memmap array.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         memmap file
             Concatenated wave file (shape: n_channels X n_samples).
-        ----------
         """
 
         self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -659,19 +623,13 @@ class Operator:
     def concatenate_video_files(self) -> None:
         """
         Description
-        ----------
         This method concatenates video files via ffmpeg.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         concatenated_temp (.mp4 file)
             Concatenated video file.
-        ----------
         """
 
         self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -730,24 +688,18 @@ class Operator:
     def rectify_video_fps(self, conduct_concat: bool = True) -> None:
         """
         Description
-        ----------
         This method changes video sampling rate via ffmpeg.
-        ----------
 
         Parameters
-        ----------
         conduct_concat (bool)
             If True, concatenation was conducted prior to running this.
-        ----------
 
         Returns
-        ----------
         fps_corrected_video (.mp4 file)
             FPS modified video file.
         camera_frame_count_dict (.json file)
             Dictionary with camera frame counts,
             empirical capture rates and total video time.
-        ----------
         """
 
         self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")

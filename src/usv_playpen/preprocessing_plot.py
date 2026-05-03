@@ -30,15 +30,12 @@ class SummaryPlotter:
         Initializes the SummaryPlotter class.
 
         Parameters
-        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
            Processing parameters; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -56,27 +53,21 @@ class SummaryPlotter:
     ) -> None:
         """
         Description
-        ----------
         This method generates a plot summarizing the first data preprocessing stage,
         with session details (e.g., name, mice used, duration, etc.), variables
         measure with the phidget device (humidity, illumination, temperature) and
         the error estimates from predicting LED on start times with the Avisoft
         recorder data vs. the actual video frames these events appeared at.
-        ----------
 
         Parameters
-        ----------
         ipi_discrepancy_dict (dict)
            Contains arrays of A/V IPI discrepancies (in ms) and video ipi start frames.
         phidget_data_dictionary (dict)
             Contains lux, humidity and temperature data.
-        ----------
 
         Returns
-        ----------
         preprocessing_plot (fig)
             Figure summarizing the preprocessing of experimental data.
-        ----------
         """
 
         # get the total number of frames in the video

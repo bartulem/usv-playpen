@@ -19,6 +19,7 @@ from tqdm import tqdm
 from .assign_vocalizations_utils import (are_points_in_conf_set, get_arena_dimensions,
                                          get_conf_sets_6d, load_tracks_from_h5,
                                          load_usv_segments, to_float, write_to_h5)
+from .os_utils import configure_path, first_match_or_raise
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
@@ -28,23 +29,17 @@ class Vocalocator:
 
         """
         Description
-        ----------
         Initializes the Vocalocator class.
-        ----------
 
         Parameters
-        ----------
         root_directory (str)
             Root directory containing mouse tracking data.
         input_parameter_dict (dict)
            Processing parameters; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
-        ----------
 
         Returns
-        ----------
-        ----------
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -55,28 +50,46 @@ class Vocalocator:
     def prepare_for_vocalocator(self) -> None:
         """
         Description
-        ----------
         Prepares the root directory for vocalocator inference.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
-        ----------
         """
 
         self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        audio_file_path = next((pathlib.Path(self.root_directory) / 'audio').rglob('*_concatenated_audio_*.mmap'), None)
-        usv_segments_path = next((pathlib.Path(self.root_directory) / 'audio').glob('*_usv_summary.csv'), None)
-        track_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
-        arena_info_path = next((pathlib.Path(self.input_parameter_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc']) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
+        audio_file_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'audio',
+            pattern='*_concatenated_audio_*.mmap',
+            recursive=True,
+            label="concatenated audio mmap",
+        )
+        usv_segments_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'audio',
+            pattern='*_usv_summary.csv',
+            label="USV summary CSV",
+        )
+        track_file_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'video',
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="3D translated/rotated/metric track H5",
+        )
+        arena_info_path = first_match_or_raise(
+            root=pathlib.Path(configure_path(self.input_parameter_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'])) / 'video',
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="arena calibration translated/rotated/metric H5",
+        )
 
-        video_frame_count_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('*_camera_frame_count_dict.json'), None)
+        video_frame_count_file_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'video',
+            pattern='*_camera_frame_count_dict.json',
+            recursive=True,
+            label="camera frame count JSON",
+        )
         with open(video_frame_count_file_path, 'r') as frame_count_infile:
             video_frame_rate = json.load(frame_count_infile)['median_empirical_camera_sr']
 
@@ -139,7 +152,6 @@ class Vocalocator:
     def run_vocalocator(self) -> None:
         """
         Description
-        ----------
         Run vocalocator inference.
 
         NB: The assessment.h5 file contains:
@@ -153,27 +165,32 @@ class Vocalocator:
         scaled_locations (shape: (n_vocalizations, n_mice, n_nodes, n_dimensions)):
             Animal poses for each vocalization. They are copied directly from the 'locations' array in the
             dataset used by vocalocator.assess, but only contain the nodes listed in config.json.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
-        ----------
         """
 
         self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']
-        model_directory = self.input_parameter_dict['vocalocator']['vcl_model_directory']
+        model_directory = configure_path(self.input_parameter_dict['vocalocator']['vcl_model_directory'])
         model_config_path = str(pathlib.Path(model_directory) / 'config.json')
         data_file_path = str(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'dset.h5')
         output_file_path = str(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment.h5')
-        track_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
-        usv_summary_file_path = next((pathlib.Path(self.root_directory) / 'audio').rglob('*_usv_summary.csv'), None)
+        track_file_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'video',
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="3D translated/rotated/metric track H5",
+        )
+        usv_summary_file_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'audio',
+            pattern='*_usv_summary.csv',
+            recursive=True,
+            label="USV summary CSV",
+        )
 
         conda_exe = os.environ.get('CONDA_EXE', 'conda')
         clean_env = os.environ.copy()
@@ -257,27 +274,31 @@ class Vocalocator:
     def run_vocalocator_ssl(self) -> None:
         """
         Description
-        ----------
         Run vocalocator-ssl inference.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
-        ----------
         """
 
         self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         vcl_conda_name = self.input_parameter_dict['vocalocator']['vcl_conda_env_name']
-        model_directory = self.input_parameter_dict['vocalocator']['vcl_model_directory']
+        model_directory = configure_path(self.input_parameter_dict['vocalocator']['vcl_model_directory'])
         data_file_path = pathlib.Path(self.root_directory) / 'audio' / 'sound_localization'
-        track_file_path = next((pathlib.Path(self.root_directory) / 'video').rglob('[!speaker]*_points3d_translated_rotated_metric.h5'), None)
-        usv_summary_file_path = next((pathlib.Path(self.root_directory) / 'audio').rglob('*_usv_summary.csv'), None)
+        track_file_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'video',
+            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            recursive=True,
+            label="3D translated/rotated/metric track H5",
+        )
+        usv_summary_file_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory) / 'audio',
+            pattern='*_usv_summary.csv',
+            recursive=True,
+            label="USV summary CSV",
+        )
 
         try:
             # Locate the calibration file or raise an error if not found
@@ -319,7 +340,14 @@ class Vocalocator:
 
         # get assignments
         model_predictions_archive = np.load(file=pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'model_predictions.npz', allow_pickle=True)
-        assignment_array_id = next(k for k in model_predictions_archive.files if k.endswith('assignments'))
+        assignment_array_candidates = [k for k in model_predictions_archive.files if k.endswith('assignments')]
+        if not assignment_array_candidates:
+            msg = (
+                f"No '*assignments' array found in model_predictions.npz "
+                f"(archive keys: {list(model_predictions_archive.files)})."
+            )
+            raise KeyError(msg)
+        assignment_array_id = assignment_array_candidates[0]
         assignments = model_predictions_archive[assignment_array_id]
 
         # get assignment statistics

@@ -34,7 +34,6 @@ class AudioGenerator:
         Initializes the AudioGenerator class.
 
         Parameters
-        ----------
         exp_id (str)
             Base file server directory.
         root_directory (str)
@@ -47,8 +46,6 @@ class AudioGenerator:
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -59,7 +56,6 @@ class AudioGenerator:
     def create_naturalistic_usv_playback_wav(self) -> None:
         """
         Description
-        ----------
         Constructs naturalistic USV playback sequences by sampling inter-event
         intervals and sequence lengths from empirically derived distributions.
 
@@ -83,17 +79,12 @@ class AudioGenerator:
         (5) it goes back to (2) and repeats until exceeding total playback time
 
         NB: Run time for ~18 min .wav file is ~2 minutes.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         usv_playback (.wav file(s))
             Wave file(s) with naturalistic sequences of USVs.
-        ----------
         """
 
         _GMM_PARAMS = {
@@ -220,21 +211,16 @@ class AudioGenerator:
     def create_usv_playback_wav(self) -> None:
         """
         Description
-        ----------
         This method takes .wav files containing individual USVs and concatenates them
         together with a known IPI period between each USV.
 
         NB: Run time for 10k USVs (~19 min .wav file) is ~18 minutes.
-        ----------
 
         Parameters
-        ----------
         spock_cluster_bool (bool)
             If True, the code is run on Spock.
-        ----------
 
         Returns
-        ----------
         usv_playback (.wav file(s))
             Wave file(s) with concatenated USVs.
         """
@@ -292,7 +278,6 @@ class AudioGenerator:
     def frequency_shift_audio_segment(self) -> None:
         """
         Description
-        ----------
         This method takes a temporal sequence from an existing USV .wav recording and pitch
         shifts (e.g., shifting down by a tritone) the sequence to human audible range.
 
@@ -315,18 +300,13 @@ class AudioGenerator:
 
         NB, relevant term:
         octave: interval between one pitch and another with double its frequency (12 semitones)
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         audible_chirp (.wav file)
             Wave file with audible chirp data.
         NB: File is saved in the 'audio/frequency_shifted_audio_segments' directory.
-        ----------
         """
 
         self.message_output(f"Frequency shifting of audio segment by {abs(self.freq_shift_settings_dict['fs_octave_shift'])} octaves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")

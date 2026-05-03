@@ -39,23 +39,17 @@ class SmartDumper(yaml.Dumper):
     def represent_list(self, data):
         """
         Description
-        ----------
         Represents a Python list in YAML. Chooses flow style (inline) when
         every element is a scalar (str, number, or None); otherwise falls
         back to block style (one item per line).
-        ----------
 
         Parameters
-        ----------
         data (list)
             The list to serialize.
-        ----------
 
         Returns
-        -------
         yaml.nodes.SequenceNode
             A YAML sequence node emitted in flow or block style.
-        -------
         """
 
         is_simple_list = all(isinstance(item, (str, numbers.Number)) or item is None for item in data)
@@ -68,24 +62,18 @@ class SmartDumper(yaml.Dumper):
     def represent_str(self, data):
         """
         Description
-        ----------
         Represents a Python string in YAML. If the string looks like an integer,
         ISO date/datetime, or YAML 1.1 boolean literal (e.g., 'yes', 'off', '2024-01-01'),
         it is emitted with single quotes so consumers do not silently coerce it
         to a non-string type on load.
-        ----------
 
         Parameters
-        ----------
         data (str)
             The string value to serialize.
-        ----------
 
         Returns
-        -------
         yaml.nodes.ScalarNode
             A YAML scalar node, single-quoted when coercion would occur.
-        -------
         """
 
         if (
@@ -99,27 +87,21 @@ class SmartDumper(yaml.Dumper):
     def represent_numpy_scalar(self, data):
         """
         Description
-        ----------
         Represents a NumPy scalar (np.float64, np.int32, np.bool_, etc.) in
         YAML by first converting it to the equivalent native Python scalar via
         .item(). Without this, PyYAML falls back to the generic Python-object
         representer and emits tagged values like '!!python/object/apply:numpy
         .float64', which round-trip poorly across environments and break
         downstream consumers that expect plain scalars.
-        ----------
 
         Parameters
-        ----------
         data (numpy.generic)
             A NumPy scalar instance (any subclass of numpy.generic).
-        ----------
 
         Returns
-        -------
         yaml.nodes.Node
             A YAML node produced by the Dumper's representer for the
             corresponding native Python type (int, float, bool, or str).
-        -------
         """
 
         return self.represent_data(data.item())
@@ -137,15 +119,11 @@ def load_session_metadata(root_directory: str, logger: Callable = print) -> tupl
     Finds and loads the session-specific metadata.yaml file from a given directory.
 
     Parameters
-    ----------
     root_directory (str)
         The directory to search for the metadata file.
-    ----------
 
     Returns
-    -------
     Tuple containing (loaded_data, file_path), or (None, None) if not found.
-    -------
     """
 
     path = Path(root_directory)
@@ -167,16 +145,12 @@ def save_session_metadata(data: dict, filepath: Path, logger: Callable = print) 
     Saves the given data back to the specified metadata file path.
 
     Parameters
-    ----------
     data (dict)
         The metadata to save.
     filepath (Path)
         The path to the metadata file.
-    ----------
 
     Returns
-    -------
-    -------
     """
 
     try:

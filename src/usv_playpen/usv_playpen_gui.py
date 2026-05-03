@@ -107,12 +107,10 @@ class YamlHighlighter(QSyntaxHighlighter):
         rule that bolds and colors YAML keys (identifiers followed by ':').
 
         Parameters
-        ----------
         parent (QTextDocument or None)
             Parent document to attach the highlighter to; defaults to None.
 
         Returns
-        -------
         (None)
         """
 
@@ -132,12 +130,8 @@ class YamlHighlighter(QSyntaxHighlighter):
         This method is called by Qt for each line of text to apply formatting.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
         for pattern, format in self.highlighting_rules:
             match_iterator = pattern.globalMatch(text)
@@ -155,7 +149,6 @@ class ChemoDialog(QDialog):
         a subject from the metadata before OK becomes enabled.
 
         Parameters
-        ----------
         parent (QWidget or None)
             Parent widget (expected to be USVPlaypenWindow); defaults to None.
         subject (dict or None)
@@ -163,7 +156,6 @@ class ChemoDialog(QDialog):
             being added.
 
         Returns
-        -------
         (None)
         """
 
@@ -272,12 +264,8 @@ class ChemoDialog(QDialog):
         Fills the form widgets with existing intervention data.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
@@ -293,12 +281,8 @@ class ChemoDialog(QDialog):
         Deletes this intervention from the subject.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         reply = QMessageBox.question(self, 'Confirm Delete',
@@ -317,12 +301,8 @@ class ChemoDialog(QDialog):
         Gathers data from the mixed widgets, saves, and closes.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         selected_id = self.subject_combo.currentText()
@@ -357,7 +337,6 @@ class EphysDialog(QDialog):
         create mode the user must pick a subject before OK becomes enabled.
 
         Parameters
-        ----------
         parent (QWidget or None)
             Parent widget (expected to be USVPlaypenWindow); defaults to None.
         subject (dict or None)
@@ -365,7 +344,6 @@ class EphysDialog(QDialog):
             being added.
 
         Returns
-        -------
         (None)
         """
 
@@ -469,11 +447,8 @@ class EphysDialog(QDialog):
         and the 'probe_sn' list (rendered as a comma-separated string).
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -497,11 +472,8 @@ class EphysDialog(QDialog):
         repository on disk.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -525,11 +497,8 @@ class EphysDialog(QDialog):
         before closing the dialog.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -567,7 +536,6 @@ class LesionDialog(QDialog):
         enabled.
 
         Parameters
-        ----------
         parent (QWidget or None)
             Parent widget (expected to be USVPlaypenWindow); defaults to None.
         subject (dict or None)
@@ -575,7 +543,6 @@ class LesionDialog(QDialog):
             being added.
 
         Returns
-        -------
         (None)
         """
 
@@ -655,11 +622,8 @@ class LesionDialog(QDialog):
         self.subject.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -679,11 +643,8 @@ class LesionDialog(QDialog):
         repository on disk.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -704,11 +665,8 @@ class LesionDialog(QDialog):
         subject repository before closing the dialog.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -740,7 +698,6 @@ class OptoDialog(QDialog):
         the user must pick a subject before OK becomes enabled.
 
         Parameters
-        ----------
         parent (QWidget or None)
             Parent widget (expected to be USVPlaypenWindow); defaults to None.
         subject (dict or None)
@@ -748,7 +705,6 @@ class OptoDialog(QDialog):
             being added.
 
         Returns
-        -------
         (None)
         """
 
@@ -859,11 +815,8 @@ class OptoDialog(QDialog):
         data for self.subject.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -883,11 +836,8 @@ class OptoDialog(QDialog):
         repository on disk.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -908,11 +858,8 @@ class OptoDialog(QDialog):
         subject repository before closing the dialog.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         (None)
         """
 
@@ -938,7 +885,6 @@ def replace_name_in_path(experimenter_list: list = None,
     Replace the name in the path with the new experimenter name.
 
     Parameters
-    ----------
     experimenter_list (list)
         Path to be modified.
     recording_files_destinations (list)
@@ -947,7 +893,6 @@ def replace_name_in_path(experimenter_list: list = None,
         Experiment ID to be inserted.
 
     Returns
-    -------
     global_destination (str)
         Path with correct exp_id name inserted.
     """
@@ -972,13 +917,10 @@ class Main(QWidget):
         Initializes the Main class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to None.
 
         Returns
-        -------
-        -------
         """
         super().__init__(parent)
 
@@ -987,13 +929,10 @@ class Main(QWidget):
         Put background on GUI.
 
         Parameters
-        ----------
         event (QEvent)
             Event to be painted.
 
         Returns
-        -------
-        -------
         """
         paint_main = QPainter(self)
         paint_main.drawPixmap(self.rect(), QPixmap(f'{background_img}'))
@@ -1005,13 +944,10 @@ class Credentials(QWidget):
         Initializes the Record class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(Credentials, self).__init__(parent)
 
@@ -1021,13 +957,10 @@ class Record(QWidget):
         Initializes the Record class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(Record, self).__init__(parent)
 
@@ -1038,13 +971,10 @@ class AudioSettings(QWidget):
         Initializes the AudioSettings class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(AudioSettings, self).__init__(parent)
 
@@ -1055,13 +985,10 @@ class VideoSettings(QWidget):
         Initializes the VideoSettings class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(VideoSettings, self).__init__(parent)
 
@@ -1071,13 +998,10 @@ class ConductRecording(QWidget):
         Initializes the ConductRecording class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(ConductRecording, self).__init__(parent)
 
@@ -1087,13 +1011,10 @@ class ProcessSettings(QWidget):
         Initializes the ProcessSettings class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(ProcessSettings, self).__init__(parent)
 
@@ -1103,13 +1024,10 @@ class ConductProcess(QWidget):
         Initializes the ConductProcess class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(ConductProcess, self).__init__(parent)
 
@@ -1119,13 +1037,10 @@ class AnalysesSettings(QWidget):
         Initializes the AnalysesSettings class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(AnalysesSettings, self).__init__(parent)
 
@@ -1135,13 +1050,10 @@ class ConductAnalyses(QWidget):
         Initializes the ConductAnalyses class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(ConductAnalyses, self).__init__(parent)
 
@@ -1151,13 +1063,10 @@ class VisualizationsSettings(QWidget):
         Initializes the VisualizationsSettings class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(VisualizationsSettings, self).__init__(parent)
 
@@ -1167,13 +1076,10 @@ class ConductVisualizations(QWidget):
         Initializes the ConductVisualizations class.
 
         Parameters
-        ----------
         parent (QWidget)
             Parent widget; defaults to Main.
 
         Returns
-        -------
-        -------
         """
         super(ConductVisualizations, self).__init__(parent)
 
@@ -1187,12 +1093,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the USVPlaypenWindow class.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
         super().__init__()
 
@@ -1277,12 +1179,8 @@ class USVPlaypenWindow(QMainWindow):
         If the file doesn't exist or is corrupted, it starts with an empty list.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         try:
@@ -1301,12 +1199,8 @@ class USVPlaypenWindow(QMainWindow):
         Saves the current state of self.subject_repository to the JSON file.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         try:
@@ -1321,12 +1215,8 @@ class USVPlaypenWindow(QMainWindow):
         Live-updates the active subject's data whenever a form field is changed.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if self._is_clearing_form:
@@ -1363,12 +1253,8 @@ class USVPlaypenWindow(QMainWindow):
         current session, and refreshes the UI.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         subject_data = None
@@ -1418,12 +1304,8 @@ class USVPlaypenWindow(QMainWindow):
         or adds it if it's a new subject. Then, saves the repository to disk.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         subject_id = subject_data_to_save.get('subject_id')
@@ -1448,12 +1330,8 @@ class USVPlaypenWindow(QMainWindow):
         Clears all QLineEdit fields in the 'Add Subject' form.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self._is_clearing_form = True
@@ -1476,12 +1354,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Main window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.Main = Main(self)
@@ -1527,12 +1401,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Main window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.Credentials = Credentials(self)
@@ -1693,12 +1563,8 @@ class USVPlaypenWindow(QMainWindow):
         lists for each UI section to prevent redraw conflicts.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for button in self.remove_subject_buttons:
@@ -1771,12 +1637,8 @@ class USVPlaypenWindow(QMainWindow):
         Opens the correct dialog in 'edit mode' for the selected intervention.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         target_subject = next((s for s in self.metadata_settings['Subjects'] if s.get('subject_id') == subject_id), None)
@@ -1803,12 +1665,8 @@ class USVPlaypenWindow(QMainWindow):
         saves the file, and clears the fields.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         new_subject_id = self.subject_form_widgets['subject_id'].text().strip()
@@ -1845,12 +1703,8 @@ class USVPlaypenWindow(QMainWindow):
         Removes a subject from the metadata list by its index.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         subjects = self.metadata_settings.get('Subjects', [])
@@ -1865,12 +1719,8 @@ class USVPlaypenWindow(QMainWindow):
         current subjects in the metadata.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for button in self.remove_subject_buttons:
@@ -1908,16 +1758,12 @@ class USVPlaypenWindow(QMainWindow):
         dictionary based on the checkbox state.
 
         Parameters
-        ----------
         state (int)
             The new state of the checkbox (provided by the stateChanged signal).
         equipment_key (str)
             The key of the equipment from the .toml file (e.g., 'video.Loopbio').
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         yaml_key = equipment_key.replace('.', '_')
@@ -1940,12 +1786,8 @@ class USVPlaypenWindow(QMainWindow):
         Checks if required subject fields are filled and toggles the 'Add Subject' button.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         required_fields = ['subject_id', 'species', 'genotype_strain']
@@ -1967,12 +1809,8 @@ class USVPlaypenWindow(QMainWindow):
         Updates the metadata preview pane with the current state of self.metadata_settings.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if hasattr(self, 'metadata_preview_edit'):
@@ -1990,12 +1828,8 @@ class USVPlaypenWindow(QMainWindow):
         Saves the current state of the metadata UI to _metadata.yaml.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if not isinstance(self.centralWidget(), VideoSettings):
@@ -2038,12 +1872,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Record One window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.Record = Record(self)
@@ -2229,12 +2059,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Record Two window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
         self.VideoSettings = VideoSettings(self)
         self.setWindowTitle(f'{app_name} (Record > Audio and Video Settings)')
@@ -2387,12 +2213,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Record Three window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.remove_subject_buttons.clear()
@@ -2464,13 +2286,11 @@ class USVPlaypenWindow(QMainWindow):
             and persists the change by re-saving the session metadata YAML.
 
             Parameters
-            ----------
             index (int)
                 Newly selected combo-box index supplied by Qt (unused; the
                 current text is read directly from the widget).
 
             Returns
-            -------
             (None)
             """
 
@@ -2739,12 +2559,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Record Four window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.ConductRecording = ConductRecording(self)
@@ -2774,12 +2590,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Process One window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.ProcessSettings = ProcessSettings(self)
@@ -3512,12 +3324,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Process Two window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.ConductProcess = ConductProcess(self)
@@ -3550,12 +3358,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Analyze One window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
         self.AnalysesSettings = AnalysesSettings(self)
         self.setWindowTitle(f'{app_name} (Analyze data > Settings)')
@@ -3782,12 +3586,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Analyze Two window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.ConductAnalyses = ConductAnalyses(self)
@@ -3816,12 +3616,8 @@ class USVPlaypenWindow(QMainWindow):
         Transfers Analyses variables to analyses_settings dictionary.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if os.name == 'nt':
@@ -3885,12 +3681,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Visualize One window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.VisualizationsSettings = VisualizationsSettings(self)
@@ -4185,12 +3977,8 @@ class USVPlaypenWindow(QMainWindow):
         Initializes the usv-playpen Visualize Two window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.ConductVisualizations = ConductVisualizations(self)
@@ -4219,12 +4007,8 @@ class USVPlaypenWindow(QMainWindow):
         Transfers Visualize variables to visualizations_settings dictionary.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if os.name == 'nt':
@@ -4304,12 +4088,8 @@ class USVPlaypenWindow(QMainWindow):
         Transfers Processing variables to processing_settings dictionary.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'ch_receiving_input',
@@ -4484,12 +4264,8 @@ class USVPlaypenWindow(QMainWindow):
         Transfers Recording One settings to exp_settings dictionary.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if type(self.email_recipients) != str:
@@ -4550,12 +4326,8 @@ class USVPlaypenWindow(QMainWindow):
         Transfers Recording Two settings to exp_settings dictionary.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         video_dict_keys = ['expected_cameras', 'recording_codec']
@@ -4607,12 +4379,8 @@ class USVPlaypenWindow(QMainWindow):
         Update all variable dependent on exp_id (e.g., fileserver path).
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.config_dir_global = Path(__file__).parent / '_config'
@@ -4659,16 +4427,12 @@ class USVPlaypenWindow(QMainWindow):
         CPU priority combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.cpu_priority_cb_list)):
@@ -4683,16 +4447,12 @@ class USVPlaypenWindow(QMainWindow):
         USGH devices sampling rate (can be 250 kHz or 300 kHz).
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.usgh_sr_cb_list)):
@@ -4707,16 +4467,12 @@ class USVPlaypenWindow(QMainWindow):
         Specific monitoring camera serial number combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.specific_camera_serial_list)):
@@ -4731,16 +4487,12 @@ class USVPlaypenWindow(QMainWindow):
         Update frequency shift combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.frequency_shift_channel_id_list)):
@@ -4755,16 +4507,12 @@ class USVPlaypenWindow(QMainWindow):
         Frequency shift Avisoft device combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.frequency_shift_device_id_list)):
@@ -4780,16 +4528,12 @@ class USVPlaypenWindow(QMainWindow):
         Preferred sex of the mouse which produced USVs.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.preferred_mouse_sex_list)):
@@ -4804,16 +4548,12 @@ class USVPlaypenWindow(QMainWindow):
         Frequency shift audio directory combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.frequency_shift_audio_dir_list)):
@@ -4828,16 +4568,12 @@ class USVPlaypenWindow(QMainWindow):
         Spectrogram channel combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.spectrogram_ch_list)):
@@ -4852,16 +4588,12 @@ class USVPlaypenWindow(QMainWindow):
         View angle combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.view_angle_list)):
@@ -4876,16 +4608,12 @@ class USVPlaypenWindow(QMainWindow):
         Figure format combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.fig_format_list)):
@@ -4900,16 +4628,12 @@ class USVPlaypenWindow(QMainWindow):
         Plot theme combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.plot_theme_list)):
@@ -4924,16 +4648,12 @@ class USVPlaypenWindow(QMainWindow):
         Anipose transformation type combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if index == 0:
@@ -4948,16 +4668,12 @@ class USVPlaypenWindow(QMainWindow):
         Encoding preset combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.encoding_preset_list)):
@@ -4972,16 +4688,12 @@ class USVPlaypenWindow(QMainWindow):
         USV assignment vocalocator version.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.assign_type_list)):
@@ -4996,16 +4708,12 @@ class USVPlaypenWindow(QMainWindow):
         Experimenter name combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.exp_id_list)):
@@ -5018,16 +4726,12 @@ class USVPlaypenWindow(QMainWindow):
         Reads the state of a checkbox and updates the corresponding variable.
 
         Parameters
-        ----------
         checkbox_id (str)
             Name of the checkbox.
         variable_id (str)
             Name of the variable to be updated.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if self.__dict__[checkbox_id].isChecked():
@@ -5042,16 +4746,12 @@ class USVPlaypenWindow(QMainWindow):
         Creates checkbox for choosing cameras to record with.
 
         Parameters
-        ----------
         camera_id (str)
             Camera ID (e.g., 21372316).
         x_start (int)
             Starting x position for the camera settings.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.__dict__[f'{camera_id}_rec_checkbox'] = QCheckBox(self.VideoSettings, text=camera_id)
@@ -5070,16 +4770,12 @@ class USVPlaypenWindow(QMainWindow):
         Creates checkbox for file server destinations for recorded files.
 
         Parameters
-        ----------
         lab_id (str)
             Lab ID (e.g., Falkner).
         x_start (int)
             Starting x position for the camera settings.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.__dict__[f'{lab_id}_checkbox'] = QCheckBox(self.Record, text=f"{lab_id.capitalize()} (/cup/{lab_id}/{self.exp_id}/Data/)")
@@ -5098,16 +4794,12 @@ class USVPlaypenWindow(QMainWindow):
         Recording codec combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.recording_codec_list)):
@@ -5122,16 +4814,12 @@ class USVPlaypenWindow(QMainWindow):
         Processing PC of choice combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.loaded_processing_pc_list)):
@@ -5146,16 +4834,12 @@ class USVPlaypenWindow(QMainWindow):
         Analyses PC of choice combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.loaded_analyses_pc_list)):
@@ -5170,16 +4854,12 @@ class USVPlaypenWindow(QMainWindow):
         Visualizations PC of choice combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.loaded_visualizations_pc_list)):
@@ -5194,16 +4874,12 @@ class USVPlaypenWindow(QMainWindow):
         Audio device camera input combo box.
 
         Parameters
-        ----------
          index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         for idx in range(len(self.usgh_device_receiving_input_list)):
@@ -5218,16 +4894,12 @@ class USVPlaypenWindow(QMainWindow):
         Boolean (prior True) combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if index == 1:
@@ -5242,16 +4914,12 @@ class USVPlaypenWindow(QMainWindow):
         Boolean (prior False) combo box.
 
         Parameters
-        ----------
         index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if index == 1:
@@ -5264,16 +4932,12 @@ class USVPlaypenWindow(QMainWindow):
         Updates camera exposure time label.
 
         Parameters
-        ----------
         value (int)
             Exposure time (in μs, completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.__dict__[variable_id].setText(f'exp time ({str(value)} μs):')
@@ -5283,16 +4947,12 @@ class USVPlaypenWindow(QMainWindow):
         Updates camera digital gain label.
 
         Parameters
-        ----------
         value (int)
             Digital gain (in dB, completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.__dict__[variable_id].setText(f'digital gain ({str(value)} dB):')
@@ -5302,14 +4962,10 @@ class USVPlaypenWindow(QMainWindow):
         Updates camera sampling rate for recording sessions.
 
         Parameters
-        ----------
         value (int)
             Recording rate (in fps, completes automatically).
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.fr_label.setText(f'Recording ({str(value)} fps):')
@@ -5319,14 +4975,10 @@ class USVPlaypenWindow(QMainWindow):
         Updates camera sampling rate for calibration sessions.
 
         Parameters
-        ----------
         value (int)
             Recording rate (in fps, completes automatically).
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.cal_fr_label.setText(f'Calibration ({str(value)} fps):')
@@ -5336,18 +4988,14 @@ class USVPlaypenWindow(QMainWindow):
         Creates sliders for camera exposure time and digital gain.
 
         Parameters
-        ----------
         camera_id (str)
             Camera ID (e.g., 21372316).
         camera_color (str)
             Camera label color (e.g., green).
         y_start (int)
             Starting y position for the camera settings.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         specific_camera_label = QLabel(f'Camera {camera_id} ({camera_color})', self.VideoSettings)
@@ -5383,12 +5031,8 @@ class USVPlaypenWindow(QMainWindow):
         Creates buttons for the Main window.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map = {'Process': QPushButton(QIcon(process_icon), 'Process', self.Main),
@@ -5430,18 +5074,14 @@ class USVPlaypenWindow(QMainWindow):
         Creates buttons for Credentials window.
 
         Parameters
-        ----------
         class_option (str)
             Class option for the button.
         button_pos_y (int)
             Y position for the button.
         next_button_x_pos (int)
             X position for the next button.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map = {'Previous': QPushButton(QIcon(previous_icon), 'Previous', class_option),
@@ -5470,7 +5110,6 @@ class USVPlaypenWindow(QMainWindow):
         Creates buttons for Record windows.
 
         Parameters
-        ----------
         seq (int)
             Sequence number of the window.
         class_option (str)
@@ -5479,11 +5118,8 @@ class USVPlaypenWindow(QMainWindow):
             Y position for the button.
         next_button_x_pos (int)
             X position for the next button.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if seq == 0:
@@ -5541,7 +5177,6 @@ class USVPlaypenWindow(QMainWindow):
         Creates buttons for Process windows.
 
         Parameters
-        ----------
         seq (int)
             Sequence number of the window.
         class_option (str)
@@ -5550,11 +5185,8 @@ class USVPlaypenWindow(QMainWindow):
             Y position for the button.
         next_button_x_pos (int)
             X position for the next button.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if seq == 0:
@@ -5597,7 +5229,6 @@ class USVPlaypenWindow(QMainWindow):
         Creates buttons for Analyses windows.
 
         Parameters
-        ----------
         seq (int)
             Sequence number of the window.
         class_option (str)
@@ -5606,11 +5237,8 @@ class USVPlaypenWindow(QMainWindow):
             Y position for the button.
         next_button_x_pos (int)
             X position for the next button.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if seq == 0:
@@ -5653,7 +5281,6 @@ class USVPlaypenWindow(QMainWindow):
         Creates buttons for Visualize windows.
 
         Parameters
-        ----------
         seq (int)
             Sequence number of the window.
         class_option (str)
@@ -5662,11 +5289,8 @@ class USVPlaypenWindow(QMainWindow):
             Y position for the button.
         next_button_x_pos (int)
             X position for the next button.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         if seq == 0:
@@ -5708,12 +5332,8 @@ class USVPlaypenWindow(QMainWindow):
         - Motif credentials file.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         # hide credentials directory
@@ -5756,12 +5376,8 @@ class USVPlaypenWindow(QMainWindow):
         Runs visualizations.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.run_visualizations.visualize_data()
@@ -5771,12 +5387,8 @@ class USVPlaypenWindow(QMainWindow):
         Runs analyses.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.run_analyses.analyze_data()
@@ -5786,12 +5398,8 @@ class USVPlaypenWindow(QMainWindow):
         Runs processing.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.run_processing.prepare_data_for_analyses()
@@ -5801,12 +5409,8 @@ class USVPlaypenWindow(QMainWindow):
         Runs calibration.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.run_exp.conduct_tracking_calibration()
@@ -5816,12 +5420,8 @@ class USVPlaypenWindow(QMainWindow):
         Runs recording.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         updated_metadata = self.run_exp.conduct_behavioral_recording()
@@ -5835,12 +5435,8 @@ class USVPlaypenWindow(QMainWindow):
         Enables visualize buttons.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Previous'].setEnabled(True)
@@ -5852,12 +5448,8 @@ class USVPlaypenWindow(QMainWindow):
         Disables visualize buttons.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Previous'].setEnabled(False)
@@ -5869,12 +5461,8 @@ class USVPlaypenWindow(QMainWindow):
         Enables analyze buttons.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Previous'].setEnabled(True)
@@ -5886,12 +5474,8 @@ class USVPlaypenWindow(QMainWindow):
         Disables analyze buttons.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Previous'].setEnabled(False)
@@ -5903,12 +5487,8 @@ class USVPlaypenWindow(QMainWindow):
         Enables process buttons.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Previous'].setEnabled(True)
@@ -5920,12 +5500,8 @@ class USVPlaypenWindow(QMainWindow):
         Disables process buttons.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Previous'].setEnabled(False)
@@ -5937,12 +5513,8 @@ class USVPlaypenWindow(QMainWindow):
         Enables buttons after calibration.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Main'].setEnabled(True)
@@ -5953,12 +5525,8 @@ class USVPlaypenWindow(QMainWindow):
         Enables buttons after recording.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Main'].setEnabled(True)
@@ -5968,12 +5536,8 @@ class USVPlaypenWindow(QMainWindow):
         Disables all buttons.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.button_map['Previous'].setEnabled(False)
@@ -5990,18 +5554,14 @@ class USVPlaypenWindow(QMainWindow):
         Updates a value in a nested dictionary using a sequence of keys.
 
         Parameters
-        ----------
         base_dict (dict)
             Dictonary to be updated.
         keys_path (tuple)
             Sequence of keys leading to the target value.
         text (str)
             New value to set.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         # Windows/Linux path normalization
@@ -6027,18 +5587,14 @@ class USVPlaypenWindow(QMainWindow):
         Opens a directory dialog and updates a QLineEdit.
 
         Parameters
-        ----------
         target_line_ediT (QLineEdit)
             QLineEdit to be updated with the selected directory.
         dialog_title (str)
             Title of the dialog window.
         start_dir (str)
             Starting directory for the dialog.
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         initial_path = start_dir or target_line_edit.text()
@@ -6065,7 +5621,6 @@ class USVPlaypenWindow(QMainWindow):
         and update a target QLineEdit widget.
 
         Parameters
-        ----------
         target_line_edit (QLineEdit)
             The line edit widget to update with the selected file path.
         dialog_title (str)
@@ -6077,8 +5632,6 @@ class USVPlaypenWindow(QMainWindow):
             directory of the file currently in the line edit.
 
         Returns
-        -------
-        -------
         """
 
         if start_dir:
@@ -6105,12 +5658,8 @@ class USVPlaypenWindow(QMainWindow):
         Places GUI in the top-left corner of screen.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         top_left_point = QGuiApplication.primaryScreen().availableGeometry().topLeft()
@@ -6121,12 +5670,8 @@ class USVPlaypenWindow(QMainWindow):
         Creates messages displayed during recording.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.txt_edit.appendPlainText(s)
@@ -6136,12 +5681,8 @@ class USVPlaypenWindow(QMainWindow):
         Creates messages displayed during analyses.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.txt_edit_analyze.appendPlainText(s)
@@ -6151,12 +5692,8 @@ class USVPlaypenWindow(QMainWindow):
         Creates messages displayed during visualizations.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.txt_edit_visualize.appendPlainText(s)
@@ -6166,12 +5703,8 @@ class USVPlaypenWindow(QMainWindow):
         Creates messages displayed during processing.
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
-        -------
         """
 
         self.txt_edit_process.appendPlainText(s)
@@ -6182,11 +5715,9 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
     Initialize the main GUI window and return the object.
 
     Parameters
-    ----------
     no_splash: Whether to display the splash screen or not.
 
     Returns
-    -------
     The intialized GUI windows.
     """
 
@@ -6275,12 +5806,8 @@ def main() -> None:
     Creates GUI application.
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    -------
-    -------
     """
 
     app, window = initialize_main_window()

@@ -21,16 +21,13 @@ def run_playback_files(num_seq,
                        audio_playback_gain):
     """
     Description
-    ----------
     Pseudo-randomly selects WAV files from a directory and plays them back
     through the configured ALSA device at 192 kHz. A TTL pulse is driven
     low on the given Raspberry Pi GPIO pin for the duration of each
     playback, then raised high; playback is spaced with a 10 second gap.
     Intended to be run on the USV playback Raspberry Pi.
-    ----------
 
     Parameters
-    ----------
     num_seq (int)
         Number of playback iterations to run.
     io_pin_id (int)
@@ -39,12 +36,9 @@ def run_playback_files(num_seq,
         Directory containing the WAV files to sample from.
     audio_playback_gain (float or int)
         Linear gain applied by 'play' via the -v flag.
-    ----------
 
     Returns
-    -------
     (None)
-    -------
     """
 
     # setup Raspberry Pi GPIO pin
