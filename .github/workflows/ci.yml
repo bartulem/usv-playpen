@@ -1,4 +1,4 @@
-name: CI
+name: tests
 
 on:
   workflow_dispatch:
@@ -44,8 +44,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10"]
-        runs-on: [ubuntu-latest, windows-latest, macos-latest]
+        # pyproject.toml requires Python >=3.11,<3.14. Pin to 3.13 for the
+        # default CI run; expand to ["3.11", "3.12", "3.13"] if you want to
+        # exercise every supported interpreter.
+        python-version: ["3.13"]
+        # Windows is intentionally excluded: the recording-side dependencies
+        # (Avisoft, motifapi, imgstore wheels) are not all available on
+        # Windows wheels for non-recording use. Linux + macOS cover the
+        # processing / analysis / visualization branches that the test suite
+        # actually exercises.
+        runs-on: [ubuntu-latest, macos-latest]
 
     env:
       QT_QPA_PLATFORM: offscreen
@@ -88,5 +96,9 @@ jobs:
 
       - name: Upload coverage report
         uses: codecov/codecov-action@v6
+        # Don't fail the whole job if Codecov is unreachable or the token
+        # isn't configured -- the test pass/fail signal is what drives the
+        # README badge and that should not depend on Codecov availability.
+        continue-on-error: true
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
