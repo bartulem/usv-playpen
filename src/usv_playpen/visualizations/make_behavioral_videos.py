@@ -40,12 +40,10 @@ def read_ttl_events(input_array: np.ndarray) -> tuple:
     Return TTL ON and OFF in the least significant bit array.
 
     Parameters
-    ----------
     input_arr (np.ndarray)
         A (n_samples) shape ndarray of audio data.
 
     Returns
-    -------
      off_to_on, on_to_off (tuple)
         Samples when the TTL pulse starts and ends.
     """
@@ -65,7 +63,6 @@ def filter_spikes_for_raster(input_arr: np.ndarray,
     Return spike times relative to current frame.
 
     Parameters
-    ----------
     input_arr (np.ndarray)
         A (n_spikes) shape ndarray of spike train.
     ra_st_fr (int)
@@ -76,7 +73,6 @@ def filter_spikes_for_raster(input_arr: np.ndarray,
         Current frame 0 in raster.
 
     Returns
-    -------
     input_arr (np.ndarray)
         Spike times relative to current frame.
     """
@@ -93,7 +89,6 @@ def find_region_by_channel(cluster_id: str,
     Returns name and color of particular brain region.
 
     Parameters
-    ----------
     cluster_id (str)
         Cluster ID.
     brain_area_dict (dict)
@@ -106,7 +101,6 @@ def find_region_by_channel(cluster_id: str,
         If True, returns only area.
 
     Returns
-    -------
     brain_region, brain_color, (brain_region, brain_color)  (str | tuple)
         Brain region and/or color.
     """
@@ -131,12 +125,10 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
     NB: Audio is loaded from mmap file!
 
     Parameters
-    ----------
     root_directory (str)
         Root directory.
 
     Returns
-    -------
     audio_data, sampling_rate (tuple (np.ndarray, int))
        Audio data and audio sampling rate.
     """
@@ -188,12 +180,9 @@ def plot_mouse_data(data: np.ndarray,
 
     """
     Description
-    ----------
     Plots mouse 3D data.
-    ----------
 
     Parameters
-    ----------
     Contains the following set of parameters
         data (np.ndarray)
             A (n_frames, n_mice, n_nodes, n_dim) shape ndarray of 3D mouse data.
@@ -245,11 +234,8 @@ def plot_mouse_data(data: np.ndarray,
             Y-axis limit.
         zlim_ (int / float)
             Z-axis limit.
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     for mouse_idx in range(data.shape[1]):
@@ -300,12 +286,9 @@ def plot_speaker_data(speaker_data: np.ndarray,
                       speaker_alpha: int|float) -> None:
     """
     Description
-    ----------
     Plots speaker object as a sphere.
-    ----------
 
     Parameters
-    ----------
     Contains the following set of parameters
         speaker_data (np.ndarray)
             A (n_frames, 1, 1, n_dim) shape ndarray of the 3D speaker point.
@@ -317,11 +300,8 @@ def plot_speaker_data(speaker_data: np.ndarray,
             Speaker color.
         speaker_alpha (int / float)
             Speaker opacity.
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     plot_axes.scatter(speaker_data[frame_number, 0, 0, 0],
@@ -350,12 +330,9 @@ def plot_spectrogram(plot_axes: plt.Axes,
                      plot_usv_segments_bool: bool = False) -> None:
     """
     Description
-    ----------
     Plots a spectrogram.
-    ----------
 
     Parameters
-    ----------
     Contains the following set of parameters
         plot_axes (ax)
             Axes object for plotting.
@@ -393,11 +370,8 @@ def plot_spectrogram(plot_axes: plt.Axes,
             USVs segments colored by mouse identity.
         usv_segments_ypos (int / float)
             Y-position of USV segments.
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     img = librosa.display.specshow(data=spectrogram_amplitude[:, spec_start:spec_end],
@@ -467,12 +441,9 @@ def plot_raster(plot_axes: plt.Axes,
                 brain_area_color_scheme: dict) -> None:
     """
     Description
-    ----------
     Makes a raster plot.
-    ----------
 
     Parameters
-    ----------
     Contains the following set of parameters
         plot_axes (ax)
             Axes object for plotting.
@@ -500,11 +471,8 @@ def plot_raster(plot_axes: plt.Axes,
             Colors for plotting raster events.
         brain_area_color_scheme (dict)
             Brain area color scheme.
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     plot_axes.spines['bottom'].set_color(color_mode_preferences['tick_color'])
@@ -580,12 +548,9 @@ def plot_behavioral_features(plot_axes: plt.Axes,
                              remove_axes_bool: bool = False) -> None:
     """
     Description
-    ----------
     Plots behavioral feature dynamics.
-    ----------
 
     Parameters
-    ----------
     Contains the following set of parameters
         plot_axes (ax)
             Full axes object for plotting.
@@ -631,11 +596,8 @@ def plot_behavioral_features(plot_axes: plt.Axes,
             List of animal colors.
         remove_axes_bool (bool)
             Boolean for removing axes.
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     for feature_idx, feature_name in enumerate(beh_features_to_plot):
@@ -794,12 +756,9 @@ def plot_arena_corners_mics(data: np.ndarray,
                             inactive_mic_bool: bool = False) -> None:
     """
     Description
-    ----------
     This function plots arena coordinates w/ microphones.
-    ----------
 
     Parameters
-    ----------
     Contains the following set of parameters
         data (np.ndarray)
             Input data w/ 3D arena and mic points.
@@ -860,11 +819,8 @@ def plot_arena_corners_mics(data: np.ndarray,
         text_fontsize (int)
             Font size for text.
 
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     if active_mic_bool:
@@ -979,12 +935,9 @@ def create_spike_sound_file(audio_duration: int|float,
                             unit_id: str) -> None:
     """
     Description
-    ----------
     Creates a WAV file with spiking sounds.
-    ----------
 
     Parameters
-    ----------
     audio_duration (int / float)
         Duration of audio file.
     spike_array (np.ndarray)
@@ -1001,13 +954,10 @@ def create_spike_sound_file(audio_duration: int|float,
         Tracking acquisition rate.
     unit_id (str)
         Unit ID.
-    ----------
 
     Returns
-    ----------
     spike_sound (.wav)
         File containing relevant spike sounds.
-    ----------
     """
 
     spike_sound_sr, spike_sound = wavfile.read(pathlib.Path(__file__).parent.parent / '_config/spike.wav')
@@ -1038,12 +988,9 @@ class Create3DVideo:
 
         """
         Description
-        ----------
         Initializes the Create3DVideo class.
-        ----------
 
         Parameters
-        ----------
         exp_id (str)
             Experiment ID (needed for figure naming).
         root_directory (str)
@@ -1056,11 +1003,8 @@ class Create3DVideo:
             Visualization params; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
-        ----------
 
         Returns
-        ----------
-        ----------
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -1149,19 +1093,13 @@ class Create3DVideo:
     def load_beh_features_file(self) -> pls.DataFrame:
         """
         Description
-        ----------
         Loads the CSV file containing 3D behavioral features.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         beh_feature_data (DataFrame)
             Table (N_frames X N_features) containing 3D behavioral features.
-        ----------
         """
 
         # load behavioral feature data
@@ -1178,19 +1116,13 @@ class Create3DVideo:
     def load_h5_file(self) -> tuple:
         """
         Description
-        ----------
         Loads the HDF5 file containing 3D tracked points.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         arena, mouse (np.ndarray)
             Numpy arrays containing 3D tracked point data for arena and animals.
-        ----------
         """
 
         h5_file_arena = first_match_or_raise(
@@ -1242,19 +1174,13 @@ class Create3DVideo:
     def visualize_in_video(self) -> None:
         """
         Description
-        ----------
         Plots/animates 3D tracked mice.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         plot, figure, video (.svg | .mp4)
             Visualization of mouse (social) behavior in 3D.
-        ----------
         """
 
         self.message_output(f"Creating data visualization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -1366,7 +1292,14 @@ class Create3DVideo:
                 data_start_index = re.search(f"Data{os.sep}{pathlib.Path(self.root_directory).name}", self.root_directory, re.IGNORECASE).start()
                 ephys_directory = self.root_directory[:data_start_index] + 'EPHYS'
 
-                with open(next(pathlib.Path(ephys_directory).glob('neuropixels_sites_to_anatomy_converter.json')), 'r') as anatomy_converter_json:
+                with open(
+                    first_match_or_raise(
+                        root=pathlib.Path(ephys_directory),
+                        pattern='neuropixels_sites_to_anatomy_converter.json',
+                        label="neuropixels-to-anatomy converter JSON",
+                    ),
+                    'r',
+                ) as anatomy_converter_json:
                     neuropixels_sites_to_anatomy_converter = json.load(anatomy_converter_json)
 
                 # find cluster data files and sort them in ascending order (0 channel first)
@@ -1480,7 +1413,11 @@ class Create3DVideo:
 
                 # find USV onset and offset times for epoch of interest
                 if self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
-                    usv_summary_file = next((pathlib.Path(self.root_directory) / 'audio').glob('*_usv_summary.csv'))
+                    usv_summary_file = first_match_or_raise(
+                        root=pathlib.Path(self.root_directory) / 'audio',
+                        pattern='*_usv_summary.csv',
+                        label="USV summary CSV",
+                    )
                     usv_summary_df = pls.read_csv(str(usv_summary_file))
                     usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
                                                            (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
@@ -1742,12 +1679,10 @@ class Create3DVideo:
                 accompanying time-series panels for the current frame index.
 
                 Parameters
-                ----------
                 frame_num (int)
                     Frame index relative to frame_start (0-based).
 
                 Returns
-                -------
                 (None)
                     The function is used for its side effects on the current
                     matplotlib figure.

@@ -81,8 +81,9 @@ test = [
 ]
 dev = [
   { include-group = "test" },
-  "jupyterlab",
+  "jupyterlab>=4.5.7",
   "ipykernel",
+  "marimo",
   "pre-commit>=4.5.1",
 ]
 docs = [
@@ -123,6 +124,7 @@ generate-beh-features = "usv_playpen.analyze_data:generate_beh_features_cli"
 generate-usv-playback = "usv_playpen.analyze_data:generate_usv_playback_cli"
 generate-naturalistic-usv-playback = "usv_playpen.analyze_data:generate_naturalistic_usv_playback_cli"
 generate-rm = "usv_playpen.analyze_data:generate_rm_files_cli"
+generate-usv-interval-distributions = "usv_playpen.analyze_data:generate_usv_interval_distributions_cli"
 generate-rm-figs = "usv_playpen.visualize_data:generate_rm_figures_cli"
 generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
 

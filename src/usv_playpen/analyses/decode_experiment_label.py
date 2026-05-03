@@ -44,12 +44,10 @@ def extract_information(experiment_code: str | None = None) -> dict | None | Non
 
 
     Parameters
-    ----------
     experiment_code (str)
         Code that describes the experiment, defaults to None.
 
     Returns
-    -------
     output_dict (dict)
         Contains information about the experiment:
         experiment type, mouse number, mouse sex, mouse housing and mouse estrus.

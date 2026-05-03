@@ -34,13 +34,10 @@ def generate_ratemaps(
 ):
     """
     Description
-    ----------
     This function computes occupancy stats
     and spike counts for a given feature array.
-    ----------
 
     Parameters
-    ----------
     feature_arr (np.ndarray)
         A (n_frames) shape ndarray containing behavioral feature data.
     spike_arr (np.ndarray)
@@ -57,10 +54,8 @@ def generate_ratemaps(
         Camera frame rate.
     space_bool (bool)
         Boolean indicating if feature is spatial.
-    ----------
 
     Returns
-    ----------
     ratemap (np.ndarray)
         A (n_bins, 2) shape ndarray containing spike counts and occupancy (in seconds)
         for each feature bin (first column spike counts, second column occ).
@@ -70,7 +65,6 @@ def generate_ratemaps(
         A (n_bins) shape ndarray containing bin centers for given feature.
     bin_edges (np.ndarray)
         A (n_bins) shape ndarray containing bin edges for given feature.
-    ----------
     """
 
     if space_bool:
@@ -144,17 +138,14 @@ def shuffle_spikes(
 ) -> np.ndarray:
     """
     Description
-    ----------
     This function takes in an array containing spike times (converted
     to frames) and shuffles these timepoints by a random amount in
     each shuffle.
 
     Nb: This shuffling method takes spike times that exceed tracking
     end time and wraps them around to the beginning of the recording.
-    ----------
 
     Parameters
-    ----------
     spike_array (np.ndarray)
          A (n_spikes) shape ndarray containing spike event frames.
     total_fr_num (int)
@@ -165,13 +156,10 @@ def shuffle_spikes(
         Maximum number of frames to shuffle spikes by.
     n_shuffles (int)
         Number of shuffles to perform.
-    ----------
 
     Returns
-    ----------
     shuffled_spike_arr (np.ndarray)
         A (n_shuffles, n_frames) shape ndarray containing shuffled spike event frames.
-    ----------
     """
 
     shuffled_spike_arr = np.tile(spike_array, reps=(n_shuffles, 1))
@@ -193,7 +181,6 @@ class NeuronalTuning(FeatureZoo):
         Initializes the NeuronalTuning class.
 
         Parameters
-        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         tuning_parameters_dict (dict)
@@ -202,8 +189,6 @@ class NeuronalTuning(FeatureZoo):
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         FeatureZoo.__init__(self)
@@ -216,17 +201,12 @@ class NeuronalTuning(FeatureZoo):
     def calculate_neuronal_tuning_curves(self) -> None:
         """
         Description
-        ----------
         This method calculates neuronal tuning curves for 3D behavioral features.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
 
         Returns
-        -------
         neuronal_tuning_curves : .pkl
             Pickle file containing all ratemaps and shuffled data.
         """

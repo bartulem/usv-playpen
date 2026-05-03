@@ -30,7 +30,6 @@ class Visualizer:
         Initializes the Visualizer class.
 
         Parameters
-        ----------
         root_directories (list)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -39,8 +38,6 @@ class Visualizer:
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         if input_parameter_dict is None or root_directories is None:
@@ -54,19 +51,13 @@ class Visualizer:
     def visualize_data(self) -> None:
         """
         Description
-        ----------
         This method performs the following analyses:
         (1) create behavioral tuning curve figures
         (2) visualizes (plot or video) 3D tracking, vocalization and neural data
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
-        ----------
         """
 
         Messenger(message_output=self.message_output,
@@ -190,17 +181,11 @@ class Visualizer:
 def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_audio_file, **kwargs) -> None:
     """
     Description
-    ----------
     A command-line tool to plot/animate 3D tracked mice.
-    ----------
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     parameters_lists = ['brain_areas', 'other', 'raster_special_units', 'beh_features_to_plot', 'special_beh_features',
@@ -229,17 +214,11 @@ def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_
 def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
-    ----------
     A command-line tool to generate behavioral tuning curve figures.
-    ----------
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]

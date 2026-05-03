@@ -26,7 +26,6 @@ class Messenger:
         Initializes the Messenger class.
 
         Parameters
-        ----------
         receivers (list)
             Root directories for data; defaults to None.
         exp_settings_dict (dict)
@@ -39,8 +38,6 @@ class Messenger:
             Path to credentials file.
 
         Returns
-        -------
-        -------
         """
 
         self.credentials_file = credentials_file or ''
@@ -52,19 +49,13 @@ class Messenger:
     def get_email_params(self) -> tuple:
         """
         Description
-        ----------
         This method gets the lab e-mail address and password to send a message.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         email_host (str), email_port (str), email_address (str), email_password (str)
             Lab e-mail address and password.
-        ----------
         """
 
         config = configparser.ConfigParser()
@@ -80,7 +71,6 @@ class Messenger:
     def send_message(self, subject: str | None = None, message: str | None = None) -> bool | None:
         """
         Description
-        ----------
         This method sends e-mails about 165B PC usage.
 
         Failure reporting:
@@ -91,22 +81,17 @@ class Messenger:
           in any log that mirrors it. This distinguishes a real delivery
           failure from the 'no receivers configured' no-op, which returns None.
         * Returns None when the receiver list is empty (no-op).
-        ----------
 
         Parameters
-        ----------
         subject (str)
             E-mail subject field.
         message (str)
             Text to send.
-        ----------
 
         Returns
-        ----------
         outcome (bool or None)
             True on successful handoff, False on delivery error, None when
             there are no receivers configured.
-        ----------
         """
 
         if len(self.receivers) > 0:

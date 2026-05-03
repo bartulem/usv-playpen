@@ -7,7 +7,6 @@ This page explains how to use the data recording functionalities in the *usv-pla
 Before starting the GUI, make sure you activated the virtual environment in the **administrator Powershell**.
 
 Calibrate (introduction)
-------------------------
 In *usv-playpen*, camera calibration has a two-fold purpose: (1) learning the spatial relationship between the used cameras, (2) capturing positions of microphones and arena corners.
 
 In order to reconstruct mouse body key-points in 3D, the spatial relationship between the cameras must first be determined.
@@ -27,7 +26,6 @@ A brief introduction on the uses of ChArUco boards can be found `here <https://d
    <br>
 
 Calibrate (preparation)
------------------------
 
 Create a ChArUco board
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -92,7 +90,6 @@ they are pointing roughly into the center of the arena. Finally, check camera av
    <br>
 
 Calibrate (execution)
----------------------
 In the GUI main window, select an experimenter name from the dropdown menu and click *Record*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_0.png
@@ -159,7 +156,6 @@ When Calibration is complete, you can leave the board on the floor and click the
 
 
 Calibrate (assessment)
-----------------------
 To assess the quality of the calibration, you first click the *Process* button on the GUI main display:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/calibration_step_4.png
@@ -193,7 +189,6 @@ When Calibration is done, if you navigate to, *e.g.*, F:/Bartul/Data/20250430_14
    <br>
 
 Record (general settings)
--------------------------
 Firstly, you want to remove the retro-reflective markers, install the screen doors, and secure four corners with custom covers. Check that IR-reflectors are all connected, and the overhead light is turned to warm light and that its intensity is low. If necessary, also clean the surface of the floor the animals walk on. When ready for recording, USGH devices will have their green light on and the yellow light blinking. In the Motif web interface, you should see all cameras connected.
 
 In the GUI main window, select an experimenter name from the dropdown menu and click *Record*:
@@ -233,7 +228,6 @@ In the example below, one would be doing a 20 minute audio and video recording w
    <br>
 
 Record (audio and video settings)
----------------------------------
 
 In the *Audio Settings* section, you can set certain parameters for the audio recording. Avisoft Recorder USGH has a relatively complex set of options and using the default ones is probably best because they provide the best stability, Should you wish to change other parameters, you can do this manually in the *behavioral_experiments_settings.toml* file, located in the *_config* directory. Otherwise, in the GUI you can choose to modify the following four:
 
@@ -263,7 +257,6 @@ In the example below, one would be using all 5 cameras, a "hq" codec and a 150 f
    <br>
 
 Metadata
---------
 
 The experiment metadata is saved in a YAML file with the following basic structure:
 
@@ -445,7 +438,6 @@ Clicking *Next* saves all your settings to the */_config/behavioral_experiments_
 The process starts with modifying the audio config file and enabling a CoolTerm process (the window will be minimized!). After this, the Avisoft Recorder should start within 10 seconds, and if it is working - a video recording will be initiated and ethernet will be disconnected during the chosen duration. You can monitor the video recording on another computer. When the time is up, video recording will stop, followed by audio recording, followed by CoolTerm. Ethernet will be reconnected and a file transfer procedure initiated. You will be notified when the file transfer procedure for the primary file server is completed.
 
 Record (common issues)
-----------------------
 Audio PC restart (signaled by a lock screen, as sleep is disabled) can inadvertently **change identities of the main and secondary USGH device**. It is therefore good practice to check whether this had occurred before recording. When you locate the USGH devices, the main one will be labeled with "M", but both device will be receiving digital inputs on channels 2 (SYNC signal) and 4 (Triggerbox signal). If you start data acquisition in the Avisoft Recorder, it will be hard to tell whether a device switch had occurred, given that the inputs observe the same pattern across devices. A quick way to check this is to pull one of the digital imputs from the "M" device out and check whether the digital input disappeared from the presumed "M" device (channels 1-12), or the presumed "S" device (channels 13-24). If the former is the case, everything is functioning as it should. If the latter is the case, one needs to disconnect all six USB cables (3 from device "M", 3 from device "S") connecting to the audio PC. The approach then is to first connect the three "M" cables, and then after a brief pause (10-20 s) to reconnect the other three. One should keep checking the order of devices until the problem is resolved.  It is also important to check the the file server(s) is/are mounted to the PC.
 
 When audio recordings are initiated, the GUI will wait ten seconds and then check whether the *rec_usgh.exe* process is running and if it is not frozen or crashed, it will initiate the video recording.

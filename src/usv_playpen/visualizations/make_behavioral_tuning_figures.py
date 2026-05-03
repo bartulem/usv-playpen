@@ -35,7 +35,6 @@ class RatemapFigureMaker(FeatureZoo):
         Initializes the RatemapFigureMaker class.
 
         Parameters
-        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         visualizations_parameter_dict (dict)
@@ -44,8 +43,6 @@ class RatemapFigureMaker(FeatureZoo):
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         FeatureZoo.__init__(self)
@@ -58,16 +55,11 @@ class RatemapFigureMaker(FeatureZoo):
     def neuronal_tuning_figures(self) -> None:
         """
         Description
-        ----------
         This method plots tuning curves for 3D behavioral features.
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         neuronal_tuning_curves (.pdf file)
             Figure w/ tuning curves for individual behavioral features.
         """

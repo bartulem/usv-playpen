@@ -8,7 +8,6 @@ Record
 ^^^^^^
 
 ``conduct-calibration``
------------------------
 ``conduct-calibration`` is the command-line interface for performing a tracking camera calibration.
 
 .. code-block:: text
@@ -23,7 +22,6 @@ Record
                             --set video.general.calibration_frame_rate=20
 
 ``conduct-recording``
----------------------
 ``conduct-recording`` is the command-line interface for conducting a recording session.
 
 .. code-block:: text
@@ -41,7 +39,6 @@ Process
 ^^^^^^^
 
 ``concatenate-ephys-files``
----------------------------
 ``concatenate-ephys-files`` is the command-line interface for concatenating ephys binary files across multiple sessions.
 
 .. code-block:: text
@@ -55,7 +52,6 @@ Process
       -h, --help            Show this help message and exit.
 
 ``split-clusters``
-------------------
 ``split-clusters`` is the command-line interface for splitting curated ephys clusters into individual session files.
 
 .. code-block:: text
@@ -72,7 +68,6 @@ Process
       --kilosort-version    Version of Kilosort used for spike sorting.
 
 ``concatenate-video-files``
----------------------------
 ``concatenate-video-files`` is the command-line interface for concatenating video files.
 
 .. code-block:: text
@@ -92,7 +87,6 @@ Process
       --output-name         Name of the concatenated file.
 
 ``rectify-video-fps``
--------------------------
 ``rectify-video-fps`` iis the command-line interface for re-encoding videos to a correct frame rate.
 
 .. code-block:: text
@@ -119,7 +113,6 @@ Process
                             Indicate if prior concatenation was performed
 
 ``multichannel-to-single-ch``
------------------------------
 ``multichannel-to-single-ch`` is the command-line interface for splitting multichannel audio files into single-channel files.
 
 .. code-block:: text
@@ -133,7 +126,6 @@ Process
       -h, --help            Show this help message and exit.
 
 ``crop-wav-files``
-------------------
 ``crop-wav-files`` is the command-line interface for cropping audio WAV files to match video length.
 
 .. code-block:: text
@@ -150,7 +142,6 @@ Process
       --trigger-channel     USGH channel receiving triggerbox input.
 
 ``av-sync-check``
------------------
 ``av-sync-check`` is the command-line interface for checking audio-video synchronization and generating a summary figure.
 
 .. code-block:: text
@@ -185,7 +176,6 @@ Process
       --ms-tolerance        Divergence tolerance (in ms).
 
 ``ev-sync-check``
------------------
 ``ev-sync-check`` is the command-line interface for validating ephys-video synchronization.
 
 .. code-block:: text
@@ -202,7 +192,6 @@ Process
       --tolerance           Divergence tolerance (in ms).
 
 ``hpss-audio``
---------------
 ``hpss-audio`` is the command-line interface for performing Harmonic-Percussive Source Separation (HPSS) on audio files.
 
 .. code-block:: text
@@ -222,7 +211,6 @@ Process
       --margin              HPSS margin (harmonic, percussive).
 
 ``bp-filter-audio``
--------------------
 ``bp-filter-audio`` is the command-line interface for band-pass filtering audio files.
 
 .. code-block:: text
@@ -240,7 +228,6 @@ Process
       --freq-bounds         Frequency bounds for the band-pass filter (Hz).
 
 ``concatenate-audio-files``
----------------------------
 ``concatenate-audio-files`` is the command-line interface for vertically stacking audio files into a single memmap file.
 
 .. code-block:: text
@@ -257,7 +244,6 @@ Process
       --dirs                Directory/ies to search for files to concatenate.
 
 ``sleap-to-h5``
----------------
 ``sleap-to-h5`` is the command-line interface for converting SLEAP (.slp) files to HDF5 (.h5) files.
 
 .. code-block:: text
@@ -272,7 +258,6 @@ Process
       --venv-path           SLEAP VENV path.
 
 ``anipose-calibrate``
----------------------
 ``anipose-calibrate`` is the command-line interface for conducting Anipose camera calibration.
 
 .. code-block:: text
@@ -297,7 +282,6 @@ Process
       --img-dims            Image dimensions (width, height) in pixels.
 
 ``anipose-triangulate``
------------------------
 ``anipose-triangulate`` is the command-line interface for conducting Anipose 3D triangulation.
 
 .. code-block:: text
@@ -338,7 +322,6 @@ Process
       --n-deriv-smooth           Number of derivatives to use for smoothing.
 
 ``anipose-trm``
----------------
 ``anipose-trm`` is the command-line interface for translating, rotating, and scaling 3D point data.
 
 .. code-block:: text
@@ -361,7 +344,6 @@ Process
       --ref-len             Length of the static reference object.
 
 ``das-infer``
--------------
 ``das-infer`` is the command-line interface for running Deep Audio Segmenter (DAS) inference on audio files.
 
 .. code-block:: text
@@ -384,7 +366,6 @@ Process
       --fill-gap            Gap duration to fill between segments (s).
 
 ``das-summarize``
------------------
 ``das-summarize`` is the command-line interface for summarizing DAS inference findings.
 
 .. code-block:: text
@@ -404,7 +385,6 @@ Process
       --var-cutoff          Maximum noise variance cutoff.
 
 ``prepare-vcl-assign``
-----------------------
 ``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using Vocalocator.
 
 .. code-block:: text
@@ -420,7 +400,6 @@ Process
 
 
 ``vcl-assign``
---------------
 ``vcl-assign`` is the command-line interface for assigning vocalizations to specific animals using Vocalocator.
 
 .. code-block:: text
@@ -441,7 +420,6 @@ Analyze
 ^^^^^^^
 
 ``generate-beh-features``
--------------------------
 ``generate-beh-features`` is the command-line interface for calculating 3D behavioral features.
 
 .. code-block:: text
@@ -464,7 +442,6 @@ Analyze
 
 
 ``generate-usv-playback``
--------------------------
 ``generate-usv-playback`` is the command-line interface for generating artificial USV playback files.
 
 .. code-block:: text
@@ -486,7 +463,6 @@ Analyze
         --playback-snippets-dir      Directory of USV playback snippets.
 
 ``generate-naturalistic-usv-playback``
---------------------------------------
 ``generate-naturalistic-usv-playback`` is the command-line interface for generating naturalistic USV playback files.
 
 .. code-block:: text
@@ -512,8 +488,74 @@ Analyze
         --usv-seq-length-dist                         Distribution of USV sequence lengths (time (s) : probability (sums to 1).
         --inter-usv-interval-dist                     Distribution of inter-USV intervals (time (s) : probability (sums to 1).
 
+``generate-usv-interval-distributions``
+``generate-usv-interval-distributions`` is the command-line interface for computing inter-vocalization-interval (inter-USV interval) distributions across one or more session-list text files and (optionally) sweeping a 1D Gaussian Mixture Model on the pooled log-inter-USV intervals.
+
+By convention, ``track_names[0]`` is treated as the male and ``track_names[1]`` as the female. Each session-list text file contains one session root directory per line; paths are run through ``configure_path`` so Mac/Linux/Windows entries resolve correctly on the host platform. ``--session-list`` may be passed multiple times to merge multiple cohorts.
+
+Both interval definitions are computed unconditionally on every run: ``s2s`` = ``start[i+1] - start[i]`` (literature standard), and ``e2s`` = ``start[i+1] - stop[i]`` (alternate; can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the drop count reported per session per mode). Both definitions share the same per-session pass over the noise-filtered USV table, so there is no compute saving from omitting one.
+
+For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arrays plus per-session metadata), ``ivi_master_<mode>.csv`` (tidy one-row-per-inter-USV interval table), and (when ``--fit-gmm``) ``gmm_fits_results_<mode>.csv`` with per-component log-means, log-stds, weights, mixture modes, and adjacent-component decision boundaries to ``--output-directory``.
+
+.. code-block:: text
+
+    usage: generate-usv-interval-distributions [-h] [--session-list PATH...] [--output-directory PATH]
+                            [--noise-col-id TEXT] [--noise-categories INTEGER...]
+                            [--fit-gmm | --no-fit-gmm]
+                            [--n-components-min INTEGER] [--n-components-max INTEGER]
+                            [--n-repeats INTEGER] [--max-modes-reported INTEGER]
+                            [--random-seed-base INTEGER]
+                            [--cv-n-folds INTEGER] [--cv-n-init INTEGER]
+                            [--gmm-n-init INTEGER] [--gmm-reg-covar FLOAT]
+                            [--tau FLOAT] [--figures-directory PATH]
+                            [--model-class {gauss,t}]
+                            [--bootstrap-lrt-B INTEGER]
+                            [--bootstrap-lrt-n-subsample INTEGER]
+                            [--bootstrap-lrt-alpha FLOAT]
+                            [--bootstrap-lrt-bonferroni | --no-bootstrap-lrt-bonferroni]
+
+    optional arguments:
+      -h, --help                  Show this help message and exit.
+      --session-list              Path to a text file containing session root
+                                  directories (one per line). Repeatable.
+      --output-directory          Directory in which to write inter-USV interval master pickles,
+                                  tidy CSVs and GMM sweep CSVs.
+      --noise-col-id              Name of the noise classification column in the
+                                  USV summary CSV.
+      --noise-categories          Integer label(s) in noise_col_id that mark a
+                                  USV as noise.
+      --fit-gmm / --no-fit-gmm    Whether to run the GMM sweep after inter-USV interval extraction.
+      --n-components-min          Minimum number of GMM components.
+      --n-components-max          Maximum number of GMM components.
+      --n-repeats                 Number of EM-init repeats per (key, n_components).
+      --max-modes-reported        Maximum number of mixture modes recorded per fit.
+      --random-seed-base          Base seed; rep r uses random_seed_base + r.
+      --cv-n-folds                Number of K-fold splits for CV log-likelihood.
+                                  Default 5.
+      --cv-n-init                 EM restarts per fold during CV. Default 5.
+      --gmm-n-init                EM restarts per in-sample GMM fit. Default 10.
+      --gmm-reg-covar             Covariance regularisation passed to sklearn's
+                                  GaussianMixture. Default 1e-4.
+      --tau                       Posterior threshold for the LEFT component
+                                  when computing inter-component decision
+                                  boundaries. Default 0.5 (standard Bayes
+                                  boundary).
+      --figures-directory         Directory the inter-USV interval notebook uses to save
+                                  rendered figures.
+      --model-class               Mixture class. 't' = Student-t mixture
+                                  (default; one heavy-tailed component
+                                  absorbs the long-pause tail). 'gauss' =
+                                  log-Gaussian mixture (classical).
+      --bootstrap-lrt-B           Number of parametric bootstrap replicates
+                                  per pairwise LRT. Default 50.
+      --bootstrap-lrt-n-subsample Subsample size for both observed and
+                                  bootstrap fits. Default 15000.
+      --bootstrap-lrt-alpha       Significance threshold for the step-up
+                                  rule. Default 0.05.
+      --bootstrap-lrt-bonferroni  Divide alpha by the number of pairwise
+                                  tests before applying the step-up rule.
+
 ``generate-rm``
----------------
 ``generate-rm`` is the command-line interface for calculating neural-behavioral tuning curves.
 
 .. code-block:: text
@@ -537,7 +579,6 @@ Visualize
 ^^^^^^^^^
 
 ``generate-rm-figs``
---------------------
 ``generate-rm-figs`` is the command-line interface for making neural-behavioral tuning curve figures.
 
 .. code-block:: text
@@ -554,7 +595,6 @@ Visualize
 
 
 ``generate-viz``
-----------------
 ``generate-viz`` is the command-line interface for making plots/animations of 3D tracked mice.
 
 .. code-block:: text

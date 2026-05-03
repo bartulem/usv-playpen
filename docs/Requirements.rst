@@ -6,7 +6,6 @@ Requirements
 This page explains how to set up your equipment and PCs before using the *usv-playpen* GUI for behavioral recordings.
 
 Hardware Requirements
----------------------
 Audio recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -96,7 +95,6 @@ Other essentials
 
 
 Software Requirements
----------------------
 
 Audio PC essentials
 ^^^^^^^^^^^^^^^^^^^

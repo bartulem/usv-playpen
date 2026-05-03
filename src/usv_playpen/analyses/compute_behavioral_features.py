@@ -2,7 +2,7 @@
 @author: bartulem
 Computes behavioral features for files containing 3D tracked mouse body points.
 
-[A] INDIVIDUAL FEATURES
+[A] INDinter-USV intervalDUAL FEATURES
 (0) Head position (X,Y,Z) (1) Speed (2) Acceleration (3) Neck elevation (4) Neck elevation der (5) Neck elevation 2der
 (6) Head roll (7) Head roll der (8) Head roll 2der (9) Head pitch (10) Head pitch der (11) Head pitch 2der
 (12) Head yaw (13) Head yaw der (14) Head yaw 2der (15) Ego head yaw (16) Ego head yaw der (17) Ego head yaw 2der
@@ -69,13 +69,10 @@ def generate_feature_distributions(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
-    ----------
     This function computes occupancy
     histograms for a given feature array.
-    ----------
 
     Parameters
-    ----------
     feature_arr (np.ndarray)
         A (n_frames) shape ndarray containing behavioral feature data.
     min_val (int / float)
@@ -88,10 +85,8 @@ def generate_feature_distributions(
         Camera frame rate.
     space_bool (bool)
         Boolean indicating if feature is spatial.
-    ----------
 
     Returns
-    ----------
     occ_array (np.ndarray)
         A (num_bins) or (num_bins, num_bins) shape ndarray
         of occupancy (in seconds) for each feature.
@@ -99,7 +94,6 @@ def generate_feature_distributions(
         A (num_bins) shape ndarray of bin centers for given feature.
     bin_edges (np.ndarray)
         A (num_bins) shape ndarray of bin edges for given feature.
-    ----------
     """
 
     if space_bool:
@@ -163,7 +157,6 @@ def calculate_derivatives(
     physical angular accelerations are not periodic.
 
     Parameters
-    ----------
     input_arr (np.ndarray)
          A (n_frames, n_features) shape ndarray containing feature data to compute derivatives on.
     diff_bins : int
@@ -174,7 +167,6 @@ def calculate_derivatives(
         Capture frame rate of the cameras; defaults to None (fps).
 
     Returns
-    -------
     first_der, second_der (tuple (np.ndarray, np.ndarray))
         A tuple of 2 (n_frames, n_features) shape np.ndarray
         w/ first and second derivatives for selected features.
@@ -230,7 +222,6 @@ def calculate_sei(
     pursuit' at a distance and 'attention-based focus' up close.
 
     Mathematical Logic:
-    -------------------
     1. Orientation: 3D cosine similarity between the observer's
        head-nose vector (`v_h = obs_nose - obs_head`) and the
        observer-to-target vector (`v_t = target_point - obs_head`).
@@ -275,7 +266,6 @@ def calculate_sei(
     columns; only the SEI gate is reverted.
 
     Parameters:
-    -----------
     tracks : np.ndarray
         3D tracking data of shape (n_frames, n_animals, n_bodypoints, 3).
     speed_arr : np.ndarray
@@ -306,7 +296,6 @@ def calculate_sei(
         gate. Defaults to 45.0.
 
     Returns:
-    --------
     sei : np.ndarray
         A (n_frames,) array of signed SEI values in `[-1, 1]`.
         Negative values correspond to "partner-behind" frames where
@@ -398,12 +387,10 @@ def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     weighted by how anisotropic the segment lengths are within a frame.
 
     Parameters
-    ----------
     input_arr (np.ndarray)
          A (n_frames, n_nodes, 3) shape ndarray to compute tail curvature on.
 
     Returns
-    -------
     average_tail_curvature (np.ndarray)
          A (n_frames, 1) shape ndarray containing the average tail curvature.
     """
@@ -431,7 +418,7 @@ def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     mean_segment_length = np.nanmean(segment_lengths, axis=1)
     avg_curvature = avg_curvature * mean_segment_length
 
-    return np.reshape(avg_curvature, newshape=(avg_curvature.shape[0], 1))
+    return np.reshape(avg_curvature, shape=(avg_curvature.shape[0], 1))
 
 
 def get_egocentric_direction(
@@ -486,7 +473,6 @@ def get_egocentric_direction(
     propagate NaN to the outputs.
 
     Parameters
-    ----------
     head_root (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of observer head rotation
         matrices, with rows (h_x, h_y, h_z) expressing the observer's
@@ -506,7 +492,6 @@ def get_egocentric_direction(
         Defaults to 0.001.
 
     Returns
-    -------
     yaw_deg (np.ndarray)
         A (n_frames,) shape ndarray of signed yaw angles in
         (-180, 180] degrees.
@@ -564,7 +549,6 @@ def calculate_speed(
     the output has the same length as the input along the time axis.
 
     Parameters
-    ----------
     tracked_points_array (np.ndarray)
          A (n_frames, n_nodes, n_dimensions)
          shape ndarray of tracked points.
@@ -574,7 +558,6 @@ def calculate_speed(
         Time window to perform smoothing over; defaults to None (s).
 
     Returns
-    -------
     speeds (np.ndarray)
         A (n_frames) shape ndarray of centroid speed data.
     """
@@ -655,7 +638,6 @@ def get_head_root(
     rather than silently producing degenerate frames.
 
     Parameters
-    ----------
     data_arr (np.ndarray)
         A (n_frames, n_head_points, 3) shape ndarray of head point data.
         The point order along axis 1 must be [Head, Ear_R, Ear_L, Nose]
@@ -675,7 +657,6 @@ def get_head_root(
         Defaults to 0.001.
 
     Returns
-    -------
     global_heads_rot (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of head rotation matrices.
         For each valid frame, the rows are (h_x, h_y, h_z) with h_x
@@ -761,7 +742,6 @@ def get_back_root(
       used to compute world-frame back pitch/yaw via `get_back_angles`.
 
     Parameters
-    ----------
     point_data_3d (np.ndarray)
          A (n_frames, n_mice, n_nodes, 3) shape ndarray of tracked points.
     mouse_id (int)
@@ -777,7 +757,6 @@ def get_back_root(
          distance between points (in meters).
 
     Returns
-    -------
     back_roots (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of rotation matrices.
     """
@@ -885,19 +864,17 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
     NaN entries in the input are propagated to the output.
 
     Parameters
-    ----------
     rot_matrix (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of rotation matrices.
 
     Returns
-    -------
     desired_euler_angles (np.ndarray)
         A (n_frames, 3) shape ndarray of Euler angles
         (in units of degrees); column are in order:
         roll, pitch, yaw.
     """
 
-    rot_matrix_reshaped = np.reshape(rot_matrix, newshape=(rot_matrix.shape[0], 9)).copy()
+    rot_matrix_reshaped = np.reshape(rot_matrix, shape=(rot_matrix.shape[0], 9)).copy()
 
     temp = np.sqrt(
         (rot_matrix_reshaped[:, 8] * rot_matrix_reshaped[:, 8])
@@ -957,13 +934,11 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
         yaw: angle between the back and the z-axis
 
     Parameters
-    ----------
     back_directions (np.ndarray)
         A (n_frames, 3) shape ndarray of back direction data
         Array of back direction data.
 
     Returns
-    -------
     back_euler_angles (np.ndarray)
         A (n_frames, 2) shape ndarray of
         back pitch and back yaw angles (in that order).
@@ -979,12 +954,10 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
         to avoid gimbal-style flipping; yaw (argument_ang[2]) is unconstrained.
 
         Parameters
-        ----------
         argument_ang (array-like of float)
             A length-3 vector (pitch, roll, yaw) in radians.
 
         Returns
-        -------
         (tuple)
             (new_vector, rotator) — rotated back_directions as a
             (n_frames, 3) np.ndarray and the corresponding (3, 3)
@@ -1027,12 +1000,10 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
         the unsigned angle between that mean direction and the x-axis.
 
         Parameters
-        ----------
         argument_ang (array-like of float)
             A length-2 vector (roll, yaw) in radians.
 
         Returns
-        -------
         (float)
             Absolute angle (radians) between the mean rotated back direction
             and the x-axis. Minimized to find the canonical back frame.
@@ -1269,7 +1240,6 @@ class FeatureZoo:
         compatibility but are not used here.
 
         Parameters
-        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         neuronal_tuning_figures_dict (dict)
@@ -1278,8 +1248,6 @@ class FeatureZoo:
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -1317,7 +1285,6 @@ class FeatureZoo:
         `feature_dict`.
 
         Parameters
-        ----------
         feature_dict (dict)
             Mapping from feature column name to a dict with keys
             "occ_array", "bin_centers", and "bin_edges" (as produced by
@@ -1333,7 +1300,6 @@ class FeatureZoo:
             Path for the output PDF.
 
         Returns
-        -------
         behavioral_feature_distributions (.pdf file)
            Plot of all feature histograms.
         """
@@ -1618,11 +1584,8 @@ class FeatureZoo:
         `app_context_bool` (set automatically by `__init__`).
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        -------
         behavioral_features_csv (.csv file)
            Data sheet w/ behavioral features.
         """

@@ -17,8 +17,10 @@ from click.core import ParameterSource
 
 from .analyses.compute_behavioral_features import FeatureZoo
 from .analyses.compute_behavioral_tuning_curves import NeuronalTuning
+from .analyses.compute_inter_usv_interval_distributions import InterUSVIntervalCalculator
 from .analyses.generate_audio_files import AudioGenerator
 from .cli_utils import modify_settings_json_for_cli
+from .os_utils import configure_path
 from .send_email import Messenger
 
 warnings.simplefilter('ignore')
@@ -34,7 +36,6 @@ class Analyst:
         Initializes the Analyst class.
 
         Parameters
-        ----------
         root_directories (list)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -43,8 +44,6 @@ class Analyst:
             Defines output messages; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         if input_parameter_dict is None or root_directories is None:
@@ -58,31 +57,30 @@ class Analyst:
     def analyze_data(self) -> None:
         """
         Description
-        ----------
         This method performs the following analyses:
         (1) computes behavioral features and plots their distributions
         (2) computes behavioral tuning curves
         (3) generates playback WAV files
         (4) frequency shifts audio segments
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
-        ----------
         """
 
         Messenger(message_output=self.message_output,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
-                  credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
+                  credentials_file=pathlib.Path(configure_path(self.input_parameter_dict['credentials_directory'])) / 'email_config.ini',
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is busy, do NOT attempt to remote in!",
                                                        message=f"Data analyses in progress, started at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
                                                                f"and run by @{self.input_parameter_dict['send_email']['experimenter']}. "
                                                                f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+
+        # # # compute inter-vocalization-interval distributions across one or more session lists
+        if self.input_parameter_dict['analyses_booleans']['compute_inter_usv_interval_distributions_bool']:
+            InterUSVIntervalCalculator(input_parameter_dict=self.input_parameter_dict,
+                          message_output=self.message_output).save_inter_usv_interval_distributions_to_file()
 
         # # # create USV playback WAV files
         if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool'] or self.input_parameter_dict['analyses_booleans']['create_naturalistic_usv_playback_wav_bool']:
@@ -127,7 +125,7 @@ class Analyst:
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
-                  credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
+                  credentials_file=pathlib.Path(configure_path(self.input_parameter_dict['credentials_directory'])) / 'email_config.ini',
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, analyses have been completed",
                                                        message=f"Data analyses have been completed at "
                                                                f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
@@ -147,17 +145,11 @@ class Analyst:
 def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
     Description
-    ----------
     A command-line tool to generate USV playback WAV files.
-    ----------
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -182,17 +174,11 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
     Description
-    ----------
     A command-line tool to generate USV playback WAV files.
-    ----------
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     for key, value in kwargs.items():
@@ -222,17 +208,11 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
-    ----------
     A command-line tool to calculate behavioral tuning curves.
-    ----------
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -254,17 +234,11 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
 def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
-    ----------
     A command-line tool to compute 3D behavioral features.
-    ----------
 
     Parameters
-    ----------
-    ----------
 
     Returns
-    ----------
-    ----------
     """
 
     parameters_lists = ['head_points', 'tail_points', 'back_root_points']
@@ -278,3 +252,49 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
     FeatureZoo(root_directory=root_directory,
                behavioral_parameters_dict=analyses_settings_parameter_dict['compute_behavioral_features'],
                message_output=print).save_behavioral_features_to_file()
+
+@click.command(name='generate-usv-interval-distributions')
+@click.option('--session-list', 'session_lists', type=click.Path(exists=True, file_okay=True, dir_okay=False), multiple=True, required=False, help='Path to a text file containing session root directories (one per line). Repeatable.')
+@click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Directory in which to write the consolidated usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5 archive.')
+@click.option('--noise-col-id', 'noise_col_id', type=str, default=None, required=False, help='Name of the noise classification column in the USV summary CSV.')
+@click.option('--noise-categories', 'noise_categories', multiple=True, type=int, default=None, required=False, help='Integer label(s) in noise_col_id that mark a USV as noise.')
+@click.option('--fit-gmm/--no-fit-gmm', 'fit_gmm', default=None, required=False, help='Whether to run the GMM sweep after inter-USV interval extraction.')
+@click.option('--n-components-min', 'n_components_min', type=int, default=None, required=False, help='Minimum number of GMM components.')
+@click.option('--n-components-max', 'n_components_max', type=int, default=None, required=False, help='Maximum number of GMM components.')
+@click.option('--n-repeats', 'n_repeats', type=int, default=None, required=False, help='Number of EM-init repeats per (key, n_components).')
+@click.option('--max-modes-reported', 'max_modes_reported', type=int, default=None, required=False, help='Maximum number of mixture modes recorded per fit.')
+@click.option('--random-seed-base', 'random_seed_base', type=int, default=None, required=False, help='Base seed; rep r uses random_seed_base + r.')
+@click.option('--cv-n-folds', 'cv_n_folds', type=int, default=None, required=False, help='Number of K-fold splits used by cross-validated log-likelihood.')
+@click.option('--cv-n-init', 'cv_n_init', type=int, default=None, required=False, help='Number of EM restarts per fold during cross-validation.')
+@click.option('--gmm-n-init', 'gmm_n_init', type=int, default=None, required=False, help='Number of EM restarts per in-sample GMM fit.')
+@click.option('--gmm-reg-covar', 'gmm_reg_covar', type=float, default=None, required=False, help='Regularisation added to GMM covariances (sklearn reg_covar).')
+@click.option('--tau', 'tau', type=float, default=None, required=False, help='Posterior threshold for the LEFT component when computing inter-component decision boundaries; 0.5 = standard Bayes boundary.')
+@click.option('--figures-directory', 'figures_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Directory where the inter-USV interval notebook saves figures (used by downstream plotting; not consumed by the analysis CLI itself).')
+@click.option('--model-class', 'model_class', type=click.Choice(['gauss', 't'], case_sensitive=False), default=None, required=False, help='Mixture model class: "gauss" (log-Gaussian mixture, classical) or "t" (Student-t mixture in log-space, recommended for inter-USV interval bout structure because one heavy-tailed t-component absorbs the long-pause tail without inflating the component count).')
+@click.option('--bootstrap-lrt-B', 'bootstrap_lrt_B', type=int, default=None, required=False, help='Number of bootstrap replicates per pairwise LRT (McLachlan 1987). Defaults to JSON value (1000); reduce to ~100-200 only for fast-iteration debugging.')
+@click.option('--bootstrap-lrt-n-subsample', 'bootstrap_lrt_n_subsample', type=int, default=None, required=False, help='Subsample size used for both observed and bootstrap fits in the LRT, so the LR statistic is on the same N scale. Defaults to JSON value (15000).')
+@click.option('--bootstrap-lrt-alpha', 'bootstrap_lrt_alpha', type=float, default=None, required=False, help='Significance threshold for the step-up LRT decision rule. Defaults to JSON value (0.05).')
+@click.option('--bootstrap-lrt-bonferroni/--no-bootstrap-lrt-bonferroni', 'bootstrap_lrt_bonferroni', default=None, required=False, help='If set, divide alpha by the number of pairwise tests (per key) before applying the step-up rule.')
+@click.pass_context
+def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
+    """
+    Description
+    A command-line tool to compute inter-vocalization-interval (inter-USV interval)
+    distributions across one or more session lists, and (optionally)
+    sweep a 1D GMM on the pooled log-inter-USV intervals.
+
+    Parameters
+
+    Returns
+    """
+
+    parameters_lists = ['session_lists', 'noise_categories']
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                    parameters_lists=parameters_lists,
+                                                                    provided_params=provided_params,
+                                                                    settings_dict='analyses_settings')
+    InterUSVIntervalCalculator(input_parameter_dict=analyses_settings_parameter_dict,
+                  message_output=print).save_inter_usv_interval_distributions_to_file()

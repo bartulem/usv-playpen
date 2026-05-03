@@ -20,15 +20,12 @@ class Gatherer:
         Initializes the Gatherer class.
 
         Parameters
-        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
            Processing parameters; defaults to None.
 
         Returns
-        -------
-        -------
         """
 
         if root_directory is None or input_parameter_dict is None:
@@ -47,24 +44,18 @@ class Gatherer:
     def prepare_data_for_analyses(self) -> dict:
         """
         Description
-        ----------
         This method extracts phidget-measured atmospheric data:
         (1) the amount of illumination (lux)
         (2) temperature (degrees Celsius)
         (3) humidity (%)
 
         NB: Phidgets' sampling rate is ~1 Hz!
-        ----------
 
         Parameters
-        ----------
-        ----------
 
         Returns
-        ----------
         phidget_data_dictionary (dict)
             Contains lux, humidity and temperature data.
-        ----------
         """
 
         # find subdirectory with phidget data
