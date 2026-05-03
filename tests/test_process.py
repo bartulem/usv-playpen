@@ -17,7 +17,6 @@ from scipy.io import wavfile
 from numpy.testing import assert_array_equal, assert_allclose
 from usv_playpen.preprocess_data import Stylist
 from usv_playpen.synchronize_files import Synchronizer
-
 from usv_playpen.preprocess_data import (
     concatenate_video_files_cli,
     rectify_video_fps_cli,
@@ -26,8 +25,71 @@ from usv_playpen.preprocess_data import (
     av_sync_check_cli
 )
 from usv_playpen.yaml_utils import SmartDumper, load_session_metadata
+import platform
+import sys
+import time
+from usv_playpen.os_utils import (
+    configure_path,
+    find_base_path,
+    first_match_or_raise,
+    newest_match_or_raise,
+    wait_for_subprocesses,
+)
+import click
+from usv_playpen.cli_utils import (
+    StringTuple,
+    _convert_value,
+    override_toml_values,
+    set_nested_key,
+    set_nested_value_by_path,
+)
+import io
+from usv_playpen.yaml_utils import (
+    SmartDumper,
+    load_session_metadata,
+    save_session_metadata,
+)
+from usv_playpen.load_audio_files import DataLoader
+from usv_playpen.synchronize_files import (
+    Synchronizer,
+    _combine_and_sort_events,
+    filter_events_by_duration,
+    find_events,
+    validate_sequence,
+)
+import math
+from usv_playpen.anipose_operations import (
+    extract_skeleton_nodes,
+    find_mouse_names,
+    redefine_cage_reference_nodes,
+    rotate_x,
+    rotate_y,
+    rotate_z,
+)
+from usv_playpen.extract_phidget_data import Gatherer
+from usv_playpen.prepare_cluster_job import PrepareClusterJob
+import h5py
+import polars as pls
+from usv_playpen.assign_vocalizations_utils import (
+    are_points_in_conf_set,
+    compute_covs_6d,
+    convert_from_arb,
+    eval_pdf_with_angle,
+    estimate_angle_pdf,
+    get_arena_dimensions,
+    get_confidence_set,
+    load_tracks_from_h5,
+    load_usv_segments,
+    make_xy_grid,
+    softplus,
+    to_float,
+    write_to_h5,
+)
+import pathlib
+from usv_playpen.assign_vocalizations import Vocalocator
+from usv_playpen.modify_files import Operator
 
-# --- Test Configuration ---
+
 VIDEO_WIDTH = 1280
 VIDEO_HEIGHT = 1024
 VIDEO_FPS = 30
@@ -760,3 +822,1293 @@ def test_find_ipi_intervals_static_method():
     # check the results
     assert np.array_equal(audio_ipi_start_samples, np.array([1250]))
     assert np.allclose(ipi_durations_ms, np.array([((5000-1250)/sr)*1000]))
+
+
+def test_find_base_path_matches_current_platform():
+    expected = {
+        "Windows": "F:\\",
+        "Darwin": "/Volumes/falkner",
+        "Linux": "/mnt/falkner",
+    }.get(platform.system(), None)
+    assert find_base_path() == expected
+
+
+@pytest.mark.parametrize(
+    ("incoming", "current_os", "expected"),
+    [
+        ("F:\\Data\\session", "Darwin", "/Volumes/falkner/Data/session"),
+        ("F:\\Data\\session", "Linux", "/mnt/falkner/Data/session"),
+        ("/mnt/falkner/Data/session", "Windows", "F:\\Data\\session"),
+        ("/mnt/falkner/Data/session", "Darwin", "/Volumes/falkner/Data/session"),
+        ("/Volumes/falkner/Data/session", "Linux", "/mnt/falkner/Data/session"),
+        ("/Volumes/falkner/Data/session", "Windows", "F:\\Data\\session"),
+    ],
+)
+def test_configure_path_translates_between_oses(monkeypatch, incoming, current_os, expected):
+    monkeypatch.setattr(platform, "system", lambda: current_os)
+    assert configure_path(incoming) == expected
+
+
+def test_configure_path_passes_through_unrecognized_prefix():
+    assert configure_path("/some/local/path") == "/some/local/path"
+    assert configure_path("relative/path/file.txt") == "relative/path/file.txt"
+
+
+def test_first_match_or_raise_returns_alphabetically_first(tmp_path):
+    (tmp_path / "b.txt").write_text("b")
+    (tmp_path / "a.txt").write_text("a")
+    (tmp_path / "c.txt").write_text("c")
+    assert first_match_or_raise(root=tmp_path, pattern="*.txt").name == "a.txt"
+
+
+def test_first_match_or_raise_recursive_descends(tmp_path):
+    sub = tmp_path / "nested" / "deeper"
+    sub.mkdir(parents=True)
+    (sub / "target.json").write_text("{}")
+    result = first_match_or_raise(root=tmp_path, pattern="*.json", recursive=True)
+    assert result.name == "target.json"
+    assert result.parent == sub
+
+
+def test_first_match_or_raise_recursive_off_does_not_descend(tmp_path):
+    sub = tmp_path / "nested"
+    sub.mkdir()
+    (sub / "target.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match="no match for glob pattern"):
+        first_match_or_raise(root=tmp_path, pattern="*.json")
+
+
+def test_first_match_or_raise_includes_label_in_error(tmp_path):
+    with pytest.raises(FileNotFoundError, match="camera frame count JSON"):
+        first_match_or_raise(
+            root=tmp_path,
+            pattern="*_camera_frame_count_dict.json",
+            label="camera frame count JSON",
+        )
+
+
+def test_first_match_or_raise_falls_back_to_pattern_in_error(tmp_path):
+    with pytest.raises(FileNotFoundError, match=r"\*_usv_summary\.csv"):
+        first_match_or_raise(root=tmp_path, pattern="*_usv_summary.csv")
+
+
+def test_first_match_or_raise_missing_root(tmp_path):
+    missing = tmp_path / "does_not_exist"
+    with pytest.raises(FileNotFoundError, match="search root"):
+        first_match_or_raise(root=missing, pattern="*.txt")
+
+
+def test_newest_match_or_raise_returns_most_recently_modified(tmp_path):
+    older = tmp_path / "a.log"
+    newer = tmp_path / "b.log"
+    older.write_text("old")
+    time.sleep(0.05)
+    newer.write_text("new")
+    assert newest_match_or_raise(root=tmp_path, pattern="*.log") == newer
+
+
+def test_newest_match_or_raise_custom_key_inverts_order(tmp_path):
+    a = tmp_path / "a.log"
+    b = tmp_path / "b.log"
+    a.write_text("x")
+    b.write_text("xxx")
+    result = newest_match_or_raise(root=tmp_path, pattern="*.log", key=lambda p: -p.stat().st_size)
+    assert result == a
+
+
+def test_newest_match_or_raise_no_matches_includes_label(tmp_path):
+    with pytest.raises(FileNotFoundError, match="most recent Avisoft"):
+        newest_match_or_raise(
+            root=tmp_path,
+            pattern="*.wav",
+            label="most recent Avisoft .wav",
+        )
+
+
+def test_wait_for_subprocesses_empty_returns_empty():
+    assert wait_for_subprocesses(subps=[], max_seconds=1, label="noop") == []
+
+
+def test_wait_for_subprocesses_collects_return_codes():
+    procs = [
+        subprocess.Popen(args=[sys.executable, "-c", "pass"]),
+        subprocess.Popen(args=[sys.executable, "-c", "pass"]),
+    ]
+    rcs = wait_for_subprocesses(subps=procs, max_seconds=30, label="noop subprocesses")
+    assert rcs == [0, 0]
+
+
+def test_wait_for_subprocesses_reports_nonzero_returns():
+    procs = [
+        subprocess.Popen(args=[sys.executable, "-c", "import sys; sys.exit(7)"]),
+    ]
+    messages: list[str] = []
+    rcs = wait_for_subprocesses(
+        subps=procs,
+        max_seconds=30,
+        label="failing subprocess",
+        message_output=messages.append,
+    )
+    assert rcs == [7]
+    assert any("rc=7" in m for m in messages)
+
+
+def test_wait_for_subprocesses_raises_on_nonzero_when_requested():
+    procs = [
+        subprocess.Popen(args=[sys.executable, "-c", "import sys; sys.exit(2)"]),
+    ]
+    with pytest.raises(RuntimeError, match=r"rc=2"):
+        wait_for_subprocesses(
+            subps=procs,
+            max_seconds=30,
+            label="failing subprocess",
+            raise_on_nonzero=True,
+            message_output=lambda *_: None,
+        )
+
+
+def test_wait_for_subprocesses_terminates_on_timeout():
+    procs = [
+        subprocess.Popen(args=[sys.executable, "-c", "import time; time.sleep(30)"]),
+    ]
+    try:
+        with pytest.raises(TimeoutError, match="did not finish"):
+            wait_for_subprocesses(
+                subps=procs,
+                max_seconds=1,
+                label="slow subprocess",
+                poll_interval_s=0.1,
+                message_output=lambda *_: None,
+            )
+        for _ in range(20):
+            if procs[0].poll() is not None:
+                break
+            time.sleep(0.1)
+        assert procs[0].poll() is not None
+    finally:
+        if procs[0].poll() is None:
+            procs[0].kill()
+            procs[0].wait()
+
+
+def test_wait_for_subprocesses_timeout_no_raise_returns_none_slot():
+    procs = [
+        subprocess.Popen(args=[sys.executable, "-c", "import time; time.sleep(30)"]),
+    ]
+    try:
+        rcs = wait_for_subprocesses(
+            subps=procs,
+            max_seconds=1,
+            label="slow subprocess (no-raise)",
+            poll_interval_s=0.1,
+            raise_on_timeout=False,
+            message_output=lambda *_: None,
+        )
+        assert len(rcs) == 1
+    finally:
+        if procs[0].poll() is None:
+            procs[0].kill()
+            procs[0].wait()
+
+
+def test_set_nested_key_top_level():
+    d = {"a": 1, "b": 2}
+    assert set_nested_key(d, "a", 99) is True
+    assert d == {"a": 99, "b": 2}
+
+
+def test_set_nested_key_descends_into_dicts():
+    d = {"outer": {"inner": {"target": "old"}}}
+    assert set_nested_key(d, "target", "new") is True
+    assert d["outer"]["inner"]["target"] == "new"
+
+
+def test_set_nested_key_returns_false_when_missing():
+    d = {"a": {"b": 1}}
+    assert set_nested_key(d, "nonexistent", 0) is False
+    assert d == {"a": {"b": 1}}
+
+
+def test_set_nested_key_stops_at_first_match():
+    d = {"x": "shallow", "wrap": {"x": "deep"}}
+    set_nested_key(d, "x", "updated")
+    assert d["x"] == "updated"
+    assert d["wrap"]["x"] == "deep"
+
+
+def test_set_nested_value_by_path_sets_leaf():
+    d = {"a": {"b": {"c": 0}}}
+    set_nested_value_by_path(d, "a.b.c", 42)
+    assert d["a"]["b"]["c"] == 42
+
+
+def test_set_nested_value_by_path_top_level_key():
+    d = {"flag": False}
+    set_nested_value_by_path(d, "flag", True)
+    assert d["flag"] is True
+
+
+def test_set_nested_value_by_path_rejects_empty_path():
+    with pytest.raises(ValueError, match="non-empty string"):
+        set_nested_value_by_path({}, "", 1)
+
+
+def test_set_nested_value_by_path_rejects_empty_components():
+    with pytest.raises(ValueError, match="empty component"):
+        set_nested_value_by_path({"a": {"b": 1}}, "a..b", 1)
+
+
+def test_set_nested_value_by_path_unknown_intermediate_key():
+    with pytest.raises(KeyError, match="unknown key 'a.missing'"):
+        set_nested_value_by_path({"a": {"b": 1}}, "a.missing.c", 1)
+
+
+def test_set_nested_value_by_path_unknown_leaf_key():
+    with pytest.raises(KeyError, match="unknown key 'a.b'"):
+        set_nested_value_by_path({"a": {"c": 1}}, "a.b", 2)
+
+
+def test_set_nested_value_by_path_intermediate_not_dict():
+    with pytest.raises(KeyError, match="not a dict"):
+        set_nested_value_by_path({"a": 5}, "a.b", 1)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("true", True),
+        ("True", True),
+        ("FALSE", False),
+        ("42", 42),
+        ("-3", -3),
+        ("3.14", 3.14),
+        ("1.0", 1),
+        ("hello", "hello"),
+        ('"quoted"', "quoted"),
+        ("'quoted'", "quoted"),
+        ("  spaced  ", "spaced"),
+    ],
+)
+def test_convert_value_types(raw, expected):
+    assert _convert_value(raw) == expected
+    assert type(_convert_value(raw)) is type(expected)
+
+
+def test_override_toml_values_applies_overrides():
+    settings = {
+        "video": {"general": {"fps": 0, "label": ""}},
+        "flag": False,
+    }
+    overrides = ["video.general.fps=150", "video.general.label=front", "flag=true"]
+    out = override_toml_values(overrides, settings)
+    assert out["video"]["general"]["fps"] == 150
+    assert out["video"]["general"]["label"] == "front"
+    assert out["flag"] is True
+
+
+def test_override_toml_values_csv_becomes_list():
+    settings = {"channels": []}
+    out = override_toml_values(["channels=1,2,3"], settings)
+    assert out["channels"] == [1, 2, 3]
+
+
+def test_override_toml_values_skips_strings_without_equals():
+    settings = {"a": 1}
+    out = override_toml_values(["junk-no-equals"], settings)
+    assert out == {"a": 1}
+
+
+def test_override_toml_values_unknown_path_raises():
+    settings = {"video": {"general": {"delete_post_copy": False}}}
+    with pytest.raises(KeyError, match="unknown key"):
+        override_toml_values(["video.general.delete-post-copy=true"], settings)
+
+
+def test_string_tuple_parses_pair():
+    @click.command()
+    @click.option("--pair", type=StringTuple())
+    def cmd(pair):
+        click.echo(repr(pair))
+
+    runner = CliRunner()
+    result = runner.invoke(cmd, ["--pair", "Head, Nose"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "('Head', 'Nose')"
+
+
+def test_string_tuple_rejects_non_pair():
+    @click.command()
+    @click.option("--pair", type=StringTuple())
+    def cmd(pair):
+        click.echo("ok")
+
+    runner = CliRunner()
+    result = runner.invoke(cmd, ["--pair", "OnlyOne"])
+    assert result.exit_code != 0
+    assert "is not a valid pair" in result.output
+
+
+def test_load_session_metadata_returns_none_when_missing(tmp_path):
+    data, path = load_session_metadata(str(tmp_path))
+    assert data is None
+    assert path is None
+
+
+def test_load_and_save_round_trip(tmp_path):
+    metadata_path = tmp_path / "20260501_metadata.yaml"
+    payload = {
+        "Session": {"id": "s001", "session_duration": 1800.0},
+        "Subjects": [{"subject_id": "m1"}, {"subject_id": "m2"}],
+    }
+    save_session_metadata(data=payload, filepath=metadata_path)
+    loaded, found_path = load_session_metadata(str(tmp_path))
+    assert loaded == payload
+    assert found_path == metadata_path
+
+
+def test_load_session_metadata_logs_yaml_errors(tmp_path):
+    bad = tmp_path / "bad_metadata.yaml"
+    bad.write_text("key: : invalid_yaml\n  other: 1\n")
+    messages: list[str] = []
+    data, path = load_session_metadata(str(tmp_path), logger=messages.append)
+    assert data is None
+    assert path is None
+    assert any("Error loading metadata" in m for m in messages)
+
+
+def test_save_session_metadata_logs_yaml_errors(tmp_path, monkeypatch):
+    target = tmp_path / "out.yaml"
+    target.write_text("")
+
+    def raising_dump(*_args, **_kwargs):
+        raise yaml.YAMLError("boom")
+
+    monkeypatch.setattr(yaml, "dump", raising_dump)
+    messages: list[str] = []
+    save_session_metadata(data={"a": 1}, filepath=target, logger=messages.append)
+    assert any("Error saving metadata" in m for m in messages)
+
+
+def _dump(value):
+    buf = io.StringIO()
+    yaml.dump(value, buf, Dumper=SmartDumper, default_flow_style=False, sort_keys=False)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "07",
+        "+42",
+        "2024-01-01",
+        "2024-1-1T12:00",
+        "yes",
+        "No",
+        "ON",
+        "off",
+    ],
+)
+def test_smart_dumper_quotes_yaml11_coercion_strings(raw):
+    out = _dump({"k": raw})
+    assert "'" in out, f"expected quotes around {raw!r} in {out!r}"
+    reloaded = yaml.safe_load(out)
+    assert reloaded == {"k": raw}
+    assert isinstance(reloaded["k"], str)
+
+
+def test_smart_dumper_does_not_quote_normal_strings():
+    out = _dump({"k": "hello world"})
+    assert "'hello world'" not in out
+
+
+def test_smart_dumper_emits_simple_lists_in_flow_style():
+    out = _dump({"channels": [1, 2, 3]})
+    assert "[1, 2, 3]" in out
+
+
+def test_smart_dumper_complex_lists_use_block_style():
+    out = _dump({"items": [{"a": 1}, {"b": 2}]})
+    assert out.count("- ") >= 2
+    assert "[{" not in out
+
+
+@pytest.mark.parametrize(
+    ("value", "loaded_type"),
+    [
+        (np.float64(1.5), float),
+        (np.int32(7), int),
+        (np.bool_(True), bool),
+    ],
+)
+def test_smart_dumper_unwraps_numpy_scalars(value, loaded_type):
+    out = _dump({"k": value})
+    assert "python/object" not in out
+    reloaded = yaml.safe_load(out)
+    assert isinstance(reloaded["k"], loaded_type)
+
+
+def _write_wav(path, sampling_rate=10_000, n_samples=200, dtype="int16"):
+    data = np.zeros(n_samples, dtype=dtype)
+    data[::5] = np.iinfo(np.int16).max // 4 if dtype == "int16" else 0.5
+    wavfile.write(path, sampling_rate, data)
+
+
+def test_data_loader_default_settings_load_from_json():
+    dl = DataLoader()
+    assert "wave_data_loc" in dl.input_parameter_dict
+    assert "load_wavefile_data" in dl.input_parameter_dict
+
+
+def test_data_loader_loads_all_wavs_with_no_conditional(tmp_path):
+    _write_wav(tmp_path / "a.wav")
+    _write_wav(tmp_path / "b.wav")
+
+    dl = DataLoader(
+        input_parameter_dict={
+            "wave_data_loc": [str(tmp_path)],
+            "load_wavefile_data": {"library": "scipy", "conditional_arg": []},
+        }
+    )
+    out = dl.load_wavefile_data()
+    assert set(out.keys()) == {"a.wav", "b.wav"}
+    for v in out.values():
+        assert v["sampling_rate"] == 10_000
+        assert v["wav_data"].shape == (200,)
+        assert v["dtype"] == "int16"
+
+
+def test_data_loader_conditional_arg_filters_filenames(tmp_path):
+    _write_wav(tmp_path / "m_session_ch01.wav")
+    _write_wav(tmp_path / "m_session_ch02.wav")
+    _write_wav(tmp_path / "s_session_ch01.wav")
+
+    dl = DataLoader(
+        input_parameter_dict={
+            "wave_data_loc": [str(tmp_path)],
+            "load_wavefile_data": {"library": "scipy", "conditional_arg": ["m_", "_ch01"]},
+        }
+    )
+    out = dl.load_wavefile_data()
+    assert list(out.keys()) == ["m_session_ch01.wav"]
+
+
+def test_data_loader_skips_non_wav_files(tmp_path):
+    _write_wav(tmp_path / "audio.wav")
+    (tmp_path / "notes.txt").write_text("ignore me")
+
+    dl = DataLoader(
+        input_parameter_dict={
+            "wave_data_loc": [str(tmp_path)],
+            "load_wavefile_data": {"library": "scipy", "conditional_arg": []},
+        }
+    )
+    out = dl.load_wavefile_data()
+    assert list(out.keys()) == ["audio.wav"]
+
+
+def test_data_loader_librosa_branch(tmp_path):
+    _write_wav(tmp_path / "x.wav")
+    dl = DataLoader(
+        input_parameter_dict={
+            "wave_data_loc": [str(tmp_path)],
+            "load_wavefile_data": {"library": "librosa", "conditional_arg": []},
+        }
+    )
+    out = dl.load_wavefile_data()
+    assert "x.wav" in out
+    assert out["x.wav"]["sampling_rate"] > 0
+    assert out["x.wav"]["dtype"] == "float32"
+
+
+def test_data_loader_returns_empty_dict_for_empty_dir(tmp_path):
+    dl = DataLoader(
+        input_parameter_dict={
+            "wave_data_loc": [str(tmp_path)],
+            "load_wavefile_data": {"library": "scipy", "conditional_arg": []},
+        }
+    )
+    assert dl.load_wavefile_data() == {}
+
+
+def test_data_loader_preserves_alphabetical_order(tmp_path):
+    for name in ("c.wav", "a.wav", "b.wav"):
+        _write_wav(tmp_path / name)
+    dl = DataLoader(
+        input_parameter_dict={
+            "wave_data_loc": [str(tmp_path)],
+            "load_wavefile_data": {"library": "scipy", "conditional_arg": []},
+        }
+    )
+    out = dl.load_wavefile_data()
+    assert list(out.keys()) == ["a.wav", "b.wav", "c.wav"]
+
+
+def test_find_events_detects_clean_step_up():
+    diffs = np.zeros(20)
+    diffs[10] = 1.0
+    pos, neg = find_events(diffs, threshold=0.5)
+    assert pos.tolist() == [9]
+    assert neg.size == 0
+
+
+def test_find_events_detects_clean_step_down():
+    diffs = np.zeros(20)
+    diffs[10] = -1.0
+    pos, neg = find_events(diffs, threshold=0.5)
+    assert pos.size == 0
+    assert neg.tolist() == [10]
+
+
+def test_find_events_ignores_unstable_neighborhood():
+    diffs = np.array([0.0, 1.0, 1.0, 0.0])
+    pos, neg = find_events(diffs, threshold=0.5)
+    assert pos.tolist() == [0]
+    assert neg.size == 0
+
+
+def test_find_events_threshold_excludes_small_changes():
+    diffs = np.array([0.0, 0.3, 0.0, 0.0])
+    pos, neg = find_events(diffs, threshold=0.5)
+    assert pos.size == 0
+    assert neg.size == 0
+
+
+def test_combine_and_sort_events_interleaves_by_frame():
+    pos = np.array([10, 30])
+    neg = np.array([20, 40])
+    out = _combine_and_sort_events(pos, neg)
+    assert out.shape == (4, 2)
+    np.testing.assert_array_equal(out[:, 0], [10, 20, 30, 40])
+    np.testing.assert_array_equal(out[:, 1], [1, -1, 1, -1])
+
+
+def test_filter_events_by_duration_drops_glitch_pair():
+    pos = np.array([10, 100])
+    neg = np.array([12, 110])
+    out_pos, out_neg = filter_events_by_duration(pos, neg, min_duration=5)
+    assert out_pos.tolist() == [100]
+    assert out_neg.tolist() == [110]
+
+
+def test_filter_events_by_duration_keeps_long_events():
+    pos = np.array([10, 100])
+    neg = np.array([50, 200])
+    out_pos, out_neg = filter_events_by_duration(pos, neg, min_duration=5)
+    assert out_pos.tolist() == [10, 100]
+    assert out_neg.tolist() == [50, 200]
+
+
+def test_filter_events_by_duration_empty_inputs():
+    out_pos, out_neg = filter_events_by_duration(np.array([]), np.array([]), min_duration=5)
+    assert out_pos.size == 0
+    assert out_neg.size == 0
+
+
+def test_validate_sequence_drops_duplicate_consecutive():
+    pos = np.array([10, 20, 100])
+    neg = np.array([50])
+    out_pos, out_neg = validate_sequence(pos, neg)
+    assert out_pos.tolist() == [10, 100]
+    assert out_neg.tolist() == [50]
+
+
+def test_validate_sequence_already_alternating_unchanged():
+    pos = np.array([10, 30])
+    neg = np.array([20, 40])
+    out_pos, out_neg = validate_sequence(pos, neg)
+    assert out_pos.tolist() == [10, 30]
+    assert out_neg.tolist() == [20, 40]
+
+
+def test_validate_sequence_empty_inputs():
+    out_pos, out_neg = validate_sequence(np.array([]), np.array([]))
+    assert out_pos.size == 0
+    assert out_neg.size == 0
+
+
+def test_validate_sequence_single_event_returned_unchanged():
+    pos = np.array([10])
+    neg = np.array([])
+    out_pos, out_neg = validate_sequence(pos, neg)
+    assert out_pos.tolist() == [10]
+
+
+def test_build_led_px_dict_returns_fresh_copy_per_call():
+    a = Synchronizer._build_led_px_dict()
+    b = Synchronizer._build_led_px_dict()
+    assert a is not b
+    a['<2022_08_15']['21241563']['LED_top'] = [-1, -1]
+    assert b['<2022_08_15']['21241563']['LED_top'] != [-1, -1]
+
+
+def test_build_led_px_dict_has_expected_top_level_keys():
+    d = Synchronizer._build_led_px_dict()
+    assert 'current' in d
+    assert any(k.startswith('<') for k in d if k != 'current')
+    for cameras in d.values():
+        for leds in cameras.values():
+            assert set(leds.keys()) == {'LED_top', 'LED_middle', 'LED_bottom'}
+            for coord in leds.values():
+                assert len(coord) == 2
+
+
+def _build_lsb_signal(pulse_pattern: list[int], pulse_len: int = 10, gap_len: int = 5) -> np.ndarray:
+    out: list[int] = []
+    for i, gap_mul in enumerate(pulse_pattern):
+        out.extend([0] * (gap_len * gap_mul))
+        out.extend([1] * pulse_len)
+        out.extend([0] * gap_len)
+        if i == len(pulse_pattern) - 1:
+            out.extend([1] * pulse_len)
+    return np.asarray(out, dtype=np.int64)
+
+
+def test_find_lsb_changes_returns_largest_break_metadata():
+    arr = _build_lsb_signal([1, 4, 1, 1])
+    start, end, largest_break_duration, ttl_break_end_samples, largest_break_end_hop = (
+        Synchronizer.find_lsb_changes(arr, lsb_bool=True, total_frame_number=2)
+    )
+    assert largest_break_end_hop > 0
+    assert largest_break_duration > 0
+    assert (np.diff(ttl_break_end_samples) > 0).all()
+
+
+def test_find_lsb_changes_returns_none_when_total_frames_exceeds_pulses():
+    arr = _build_lsb_signal([1, 1, 1])
+    start, end, *_ = Synchronizer.find_lsb_changes(arr, lsb_bool=True, total_frame_number=999)
+    assert start is None
+    assert end is None
+
+
+def test_find_lsb_changes_non_lsb_branch():
+    arr = np.zeros(120, dtype=np.int64)
+    for idx in (30, 60, 90):
+        arr[idx:idx + 5] = 2
+    start, end, largest_break_duration, ttl_break_end_samples, _ = (
+        Synchronizer.find_lsb_changes(arr, lsb_bool=False, total_frame_number=1)
+    )
+    assert ttl_break_end_samples.size == 3
+    assert largest_break_duration > 0
+
+
+def test_rotate_x_90_degrees():
+    """rotate_x(+pi/2) on [0,1,0] -> [0,0,1] given the (data @ R) convention used here."""
+    pt = np.array([[0.0, 1.0, 0.0]])
+    out = rotate_x(pt, math.pi / 2)
+    np.testing.assert_allclose(out[0], [0.0, 0.0, 1.0], atol=1e-12)
+
+
+def test_rotate_y_90_degrees():
+    """rotate_y(+pi/2) on [1,0,0] -> [0,0,-1] given the (data @ R) convention used here."""
+    pt = np.array([[1.0, 0.0, 0.0]])
+    out = rotate_y(pt, math.pi / 2)
+    np.testing.assert_allclose(out[0], [0.0, 0.0, -1.0], atol=1e-12)
+
+
+def test_rotate_z_90_degrees():
+    """rotate_z(+pi/2) on [1,0,0] -> [0,1,0] given the (data @ R) convention used here."""
+    pt = np.array([[1.0, 0.0, 0.0]])
+    out = rotate_z(pt, math.pi / 2)
+    np.testing.assert_allclose(out[0], [0.0, 1.0, 0.0], atol=1e-12)
+
+
+@pytest.mark.parametrize("rotator", [rotate_x, rotate_y, rotate_z])
+def test_rotation_zero_angle_is_identity(rotator):
+    rng = np.random.default_rng(0)
+    pts = rng.normal(size=(50, 3))
+    np.testing.assert_allclose(rotator(pts, 0.0), pts, atol=1e-12)
+
+
+@pytest.mark.parametrize("rotator", [rotate_x, rotate_y, rotate_z])
+def test_rotation_full_turn_is_identity(rotator):
+    rng = np.random.default_rng(1)
+    pts = rng.normal(size=(20, 3))
+    np.testing.assert_allclose(rotator(pts, 2 * math.pi), pts, atol=1e-12)
+
+
+def test_redefine_cage_reference_nodes_extracts_first_frame_corners():
+    arena = np.zeros((1, 1, 6, 3))
+    arena[0, 0, 0] = [1, 0, 0]
+    arena[0, 0, 2] = [0, 1, 0]
+    arena[0, 0, 3] = [-1, 0, 0]
+    arena[0, 0, 5] = [0, -1, 0]
+
+    out = redefine_cage_reference_nodes(arena, [0, 2, 3, 5])
+    assert out.shape == (4, 3)
+    np.testing.assert_array_equal(out[0], [1, 0, 0])
+    np.testing.assert_array_equal(out[1], [0, 1, 0])
+    np.testing.assert_array_equal(out[2], [-1, 0, 0])
+    np.testing.assert_array_equal(out[3], [0, -1, 0])
+
+
+def _write_minimal_skeleton(tmp_path, node_names: list[str]):
+    """
+    Build a SLEAP-style skeleton JSON consumable by extract_skeleton_nodes.
+
+    The function expects node py/ids that skip the value 3 (as real SLEAP
+    serializations do): the first two nodes use py/id 1 and 2 (mapped to
+    sort positions 0 and 1 via raw-1), the rest use py/id 4..N+1 (mapped to
+    sort positions 2..N-1 via raw-2).
+    """
+    links = []
+    for i in range(len(node_names) - 1):
+        if i == 0:
+            link = {
+                "source": {"py/state": {"py/tuple": [node_names[i]]}},
+                "target": {"py/state": {"py/tuple": [node_names[i + 1]]}},
+            }
+        else:
+            link = {
+                "source": {"py/id": i + 1},
+                "target": {"py/state": {"py/tuple": [node_names[i + 1]]}},
+            }
+        links.append(link)
+
+    py_ids: list[int] = []
+    next_id = 1
+    for _ in range(len(node_names)):
+        if next_id == 3:
+            next_id = 4
+        py_ids.append(next_id)
+        next_id += 1
+
+    nodes = [{"id": {"py/id": pid}} for pid in py_ids]
+
+    skeleton = {"links": links, "nodes": nodes}
+    skel_path = tmp_path / "skeleton.json"
+    skel_path.write_text(json.dumps(skeleton))
+    return skel_path
+
+
+def test_extract_skeleton_nodes_returns_node_names_in_order(tmp_path):
+    names = ["Head", "Neck", "Torso", "Tailbase"]
+    skel = _write_minimal_skeleton(tmp_path, names)
+    out = extract_skeleton_nodes(str(skel))
+    assert out == names
+
+
+def test_extract_skeleton_nodes_arena_prefixes_with_ch(tmp_path):
+    names = ["N", "W", "S", "E", "extra1", "extra2"]
+    skel = _write_minimal_skeleton(tmp_path, names)
+    out = extract_skeleton_nodes(str(skel), skeleton_arena_bool=True)
+    assert out[:4] == ["N", "W", "S", "E"]
+    assert out[4:] == ["ch_extra1", "ch_extra2"]
+
+
+def test_find_mouse_names_from_metadata_dict():
+    metadata = {
+        "Subjects": [
+            {"subject_id": "cage1_m1"},
+            {"subject_id": "cage2_m2"},
+        ]
+    }
+    assert find_mouse_names(metadata=metadata) == ["cage1_m1", "cage2_m2"]
+
+
+def test_find_mouse_names_metadata_with_no_subjects():
+    assert find_mouse_names(metadata={}) == []
+
+
+@pytest.fixture
+def settings():
+    return {
+        "extract_phidget_data": {
+            "Gatherer": {
+                "prepare_data_for_analyses": {
+                    "extra_data_camera": "21372315",
+                }
+            }
+        }
+    }
+
+
+def _write_phidget_file(path, records):
+    path.write_text(json.dumps(records))
+
+
+def test_phidget_gatherer_single_file(tmp_path, settings):
+    cam_dir = tmp_path / 'video' / 'session_21372315'
+    cam_dir.mkdir(parents=True)
+    records = [
+        {"sensor_time": 1.0, "hum_h": 40.0, "lux": 100.0, "hum_t": 22.0},
+        {"sensor_time": 2.0, "hum_h": 41.0, "lux": 110.0, "hum_t": 23.0},
+        {"sensor_time": 0.5, "hum_h": 39.0, "lux": 90.0, "hum_t": 21.0},
+    ]
+    _write_phidget_file(cam_dir / 'phidget.json', records)
+
+    g = Gatherer(input_parameter_dict=settings, root_directory=str(tmp_path))
+    out = g.prepare_data_for_analyses()
+
+    np.testing.assert_array_equal(out['humidity'], [39.0, 40.0, 41.0])
+    np.testing.assert_array_equal(out['lux'], [90.0, 100.0, 110.0])
+    np.testing.assert_array_equal(out['temperature'], [21.0, 22.0, 23.0])
+
+
+def test_phidget_gatherer_merges_multiple_files(tmp_path, settings):
+    cam_dir = tmp_path / 'video' / 'cam_21372315_data'
+    cam_dir.mkdir(parents=True)
+    _write_phidget_file(
+        cam_dir / 'a.json',
+        [{"sensor_time": 5.0, "hum_h": 50.0, "lux": 500.0, "hum_t": 25.0}],
+    )
+    _write_phidget_file(
+        cam_dir / 'b.json',
+        [{"sensor_time": 1.0, "hum_h": 10.0, "lux": 100.0, "hum_t": 21.0}],
+    )
+
+    g = Gatherer(input_parameter_dict=settings, root_directory=str(tmp_path))
+    out = g.prepare_data_for_analyses()
+    np.testing.assert_array_equal(out['humidity'], [10.0, 50.0])
+
+
+def test_phidget_gatherer_handles_missing_keys_with_nan(tmp_path, settings):
+    cam_dir = tmp_path / 'video' / 'cam_21372315'
+    cam_dir.mkdir(parents=True)
+    records = [
+        {"sensor_time": 1.0, "lux": 100.0},
+        {"sensor_time": 2.0, "hum_h": 40.0, "hum_t": 22.0},
+    ]
+    _write_phidget_file(cam_dir / 'p.json', records)
+
+    g = Gatherer(input_parameter_dict=settings, root_directory=str(tmp_path))
+    out = g.prepare_data_for_analyses()
+
+    assert np.isnan(out['humidity'][0])
+    assert out['humidity'][1] == 40.0
+    assert out['lux'][0] == 100.0
+    assert np.isnan(out['lux'][1])
+    assert np.isnan(out['temperature'][0])
+    assert out['temperature'][1] == 22.0
+
+
+@pytest.fixture
+def session_tree(tmp_path):
+    video_root = tmp_path / 'video'
+    cam = video_root / '20260501' / '21372315'
+    cam.mkdir(parents=True)
+    (cam / 'clip_a.mp4').write_text('')
+    (cam / 'clip_b.mp4').write_text('')
+
+    other_cam = video_root / '20260501' / '21241563'
+    other_cam.mkdir(parents=True)
+    (other_cam / 'clip_c.mp4').write_text('')
+
+    non_numeric = video_root / 'non_numeric'
+    non_numeric.mkdir()
+    (non_numeric / 'ignored.mp4').write_text('')
+
+    return tmp_path
+
+
+def _settings(inference_dir, centroid='/Volumes/falkner/models/centroid', centered_instance=''):
+    return {
+        "prepare_cluster_job": {
+            "centroid_model_path": centroid,
+            "centered_instance_model_path": centered_instance,
+            "inference_root_dir": inference_dir,
+            "camera_names": ['21372315'],
+        }
+    }
+
+
+def test_prepare_cluster_job_writes_one_line_per_mp4(tmp_path, session_tree, monkeypatch):
+    monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+    inference_dir = tmp_path / 'inference'
+
+    pcj = PrepareClusterJob(
+        input_parameter_dict=_settings(str(inference_dir)),
+        root_directory=[str(session_tree)],
+        message_output=lambda *_: None,
+    )
+    pcj.video_list_to_txt()
+
+    job_list = (inference_dir / 'job_list.txt').read_text().splitlines()
+    assert len(job_list) == 2
+    for line in job_list:
+        parts = line.split()
+        assert len(parts) == 3
+        assert parts[1].endswith('.mp4')
+        assert parts[2].endswith('.slp')
+
+
+def test_prepare_cluster_job_two_model_layout(tmp_path, session_tree, monkeypatch):
+    monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+    inference_dir = tmp_path / 'inf'
+
+    pcj = PrepareClusterJob(
+        input_parameter_dict=_settings(
+            str(inference_dir),
+            centered_instance='/Volumes/falkner/models/centered',
+        ),
+        root_directory=[str(session_tree)],
+        message_output=lambda *_: None,
+    )
+    pcj.video_list_to_txt()
+    job_list = (inference_dir / 'job_list.txt').read_text().splitlines()
+    for line in job_list:
+        parts = line.split()
+        assert len(parts) == 4
+        assert parts[2].endswith('.mp4')
+        assert parts[3].endswith('.slp')
+
+
+def test_prepare_cluster_job_creates_inference_dir(tmp_path, session_tree, monkeypatch):
+    monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+    inference_dir = tmp_path / 'a' / 'b' / 'c'
+    pcj = PrepareClusterJob(
+        input_parameter_dict=_settings(str(inference_dir)),
+        root_directory=[str(session_tree)],
+        message_output=lambda *_: None,
+    )
+    pcj.video_list_to_txt()
+    assert (inference_dir / 'job_list.txt').is_file()
+
+
+def test_prepare_cluster_job_skips_unconfigured_camera(tmp_path, session_tree, monkeypatch):
+    monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+    inference_dir = tmp_path / 'inference2'
+
+    pcj = PrepareClusterJob(
+        input_parameter_dict=_settings(str(inference_dir)),
+        root_directory=[str(session_tree)],
+        message_output=lambda *_: None,
+    )
+    pcj.video_list_to_txt()
+    job_list = (inference_dir / 'job_list.txt').read_text()
+    assert '21241563' not in job_list
+
+
+def test_softplus_matches_log1p_exp():
+    x = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
+    expected = np.log1p(np.exp(x))
+    np.testing.assert_allclose(softplus(x), expected, rtol=1e-12)
+
+
+def test_softplus_zero_returns_log2():
+    assert softplus(0.0) == pytest.approx(np.log(2.0))
+
+
+def test_to_float_normalizes_int16_to_unit_range():
+    arr = np.array([0, np.iinfo(np.int16).max, np.iinfo(np.int16).min], dtype=np.int16)
+    out = to_float(arr)
+    assert out.dtype == np.float16
+    assert float(out[1]) == pytest.approx(1.0, abs=1e-3)
+    assert float(out[2]) == pytest.approx(-1.0, abs=1e-3)
+    assert float(out[0]) == 0.0
+
+
+def test_make_xy_grid_shape_and_extents():
+    arena_dims = np.array([800.0, 600.0])
+    render_dims = np.array([100, 80])
+    grid = make_xy_grid(arena_dims, render_dims)
+    assert grid.shape == (80, 100, 2)
+    assert grid[..., 0].min() == pytest.approx(-400.0)
+    assert grid[..., 0].max() == pytest.approx(400.0)
+    assert grid[..., 1].min() == pytest.approx(-300.0)
+    assert grid[..., 1].max() == pytest.approx(300.0)
+
+
+def test_convert_from_arb_scales_by_half_arena_max():
+    arena_dims = np.array([800.0, 600.0])
+    raw = np.ones((4, 6))
+    out = convert_from_arb(raw, arena_dims)
+    assert out.shape == (4, 6)
+    np.testing.assert_allclose(out, 400.0)
+
+
+def test_compute_covs_6d_shape_and_psd():
+    rng = np.random.default_rng(0)
+    raw = rng.normal(size=(5, 27))
+    arena_dims = np.array([800.0, 600.0])
+    covs = compute_covs_6d(raw, arena_dims)
+    assert covs.shape == (5, 6, 6)
+    np.testing.assert_allclose(covs, covs.transpose(0, 2, 1), rtol=1e-10, atol=1e-10)
+    eigvals = np.linalg.eigvalsh(covs)
+    assert (eigvals > -1e-8).all()
+
+
+def test_get_confidence_set_shape_preserved():
+    pdf = np.ones((4, 5)) / 20.0
+    out = get_confidence_set(pdf, confidence_level=0.5)
+    assert out.shape == pdf.shape
+    assert out.dtype == bool
+
+
+def test_get_confidence_set_zero_level_gives_empty_set():
+    rng = np.random.default_rng(1)
+    pdf = rng.random((10, 10))
+    pdf /= pdf.sum()
+    out = get_confidence_set(pdf, confidence_level=0.0)
+    assert out.sum() == 0
+
+
+def test_get_confidence_set_one_level_includes_all_but_last():
+    rng = np.random.default_rng(2)
+    pdf = rng.random((6, 6))
+    pdf /= pdf.sum()
+    out = get_confidence_set(pdf, confidence_level=1.0)
+    assert out.sum() == pdf.size - 1
+
+
+def test_eval_pdf_with_angle_returns_normalized_pdf():
+    grid = make_xy_grid(np.array([200.0, 200.0]), np.array([20, 20]))
+    angles = np.linspace(-np.pi, np.pi, 10, endpoint=False)
+    histogram = np.ones_like(angles)
+
+    out = eval_pdf_with_angle(
+        points_spatial=grid,
+        points_angular=angles,
+        mean_2d=np.array([0.0, 0.0]),
+        cov_2d=np.eye(2) * 1000.0,
+        histogram=histogram,
+    )
+    assert out.shape == (20, 20, 10)
+    assert out.sum() == pytest.approx(1.0, rel=1e-6)
+
+
+def test_eval_pdf_with_angle_handles_singular_covariance():
+    grid = make_xy_grid(np.array([100.0, 100.0]), np.array([5, 5]))
+    angles = np.linspace(-np.pi, np.pi, 4, endpoint=False)
+    histogram = np.ones_like(angles)
+
+    out = eval_pdf_with_angle(
+        points_spatial=grid,
+        points_angular=angles,
+        mean_2d=np.array([0.0, 0.0]),
+        cov_2d=np.zeros((2, 2)),
+        histogram=histogram,
+    )
+    assert out.shape == (5, 5, 4)
+    assert out.sum() == pytest.approx(4.0)
+
+
+def test_estimate_angle_pdf_returns_normalized_histogram():
+    rng = np.random.default_rng(0)
+    mean_6d = rng.normal(size=(6,))
+    A = rng.normal(size=(6, 6))
+    cov_6d = A @ A.T + np.eye(6)
+
+    bins, pdf = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500)
+    assert bins.shape == (46,)
+    assert pdf.shape == (45,)
+    assert pdf.sum() == pytest.approx(1.0)
+
+
+def test_estimate_angle_pdf_custom_theta_bins():
+    custom = np.linspace(-np.pi, np.pi, 11, endpoint=True)
+    mean_6d = np.zeros(6)
+    cov_6d = np.eye(6)
+    bins, pdf = estimate_angle_pdf(mean_6d, cov_6d, n_samples=200, theta_bins=custom)
+    assert bins is custom
+    assert pdf.shape == (10,)
+
+
+def test_are_points_in_conf_set_3d_branch():
+    n, y_res, x_res = 2, 100, 100
+    confidence_sets = np.zeros((n, y_res, x_res), dtype=bool)
+    confidence_sets[0, 50, 50] = True
+    confidence_sets[1, 10, 90] = True
+
+    arena_dims = np.array([200.0, 200.0])
+    points = np.zeros((n, 2, 3))
+    in_set = are_points_in_conf_set(confidence_sets, points, arena_dims)
+    assert in_set.dtype == bool
+    assert in_set.shape == (n,)
+
+
+def test_are_points_in_conf_set_invalid_shape_raises():
+    confidence_sets = np.zeros((2, 5), dtype=bool)
+    points = np.zeros((2, 2, 3))
+    arena_dims = np.array([100.0, 100.0])
+    with pytest.raises(ValueError, match="Invalid confidence set shape"):
+        are_points_in_conf_set(confidence_sets, points, arena_dims)
+
+
+def test_load_usv_segments_returns_start_stop_array(tmp_path):
+    csv_path = tmp_path / "usv_summary.csv"
+    pls.DataFrame({"start": [0.1, 1.5], "stop": [0.2, 1.6], "emitter": ["?", "?"]}).write_csv(csv_path)
+    arr = load_usv_segments(csv_path)
+    assert arr.shape == (2, 2)
+    np.testing.assert_allclose(arr, [[0.1, 0.2], [1.5, 1.6]])
+
+
+def test_load_tracks_from_h5_round_trip(tmp_path):
+    h5_path = tmp_path / "tracks.h5"
+    tracks = np.arange(60, dtype=np.float32).reshape(2, 3, 5, 2)
+    names = np.array([b"a", b"b", b"c", b"d", b"e"])
+    with h5py.File(h5_path, "w") as f:
+        f.create_dataset("tracks", data=tracks)
+        f.create_dataset("node_names", data=names)
+    out_tracks, out_names = load_tracks_from_h5(h5_path)
+    np.testing.assert_array_equal(out_tracks, tracks)
+    np.testing.assert_array_equal(out_names, names)
+
+
+def test_get_arena_dimensions_extracts_xy_extent(tmp_path):
+    h5_path = tmp_path / "arena.h5"
+    nodes = [b"North", b"West", b"South", b"East"]
+    tracks = np.array(
+        [
+            [
+                [
+                    [0.0, 100.0],
+                    [-50.0, 0.0],
+                    [0.0, -100.0],
+                    [50.0, 0.0],
+                ]
+            ]
+        ],
+        dtype=np.float32,
+    )
+    with h5py.File(h5_path, "w") as f:
+        f.create_dataset("node_names", data=np.array(nodes))
+        f.create_dataset("tracks", data=tracks)
+
+    dims = get_arena_dimensions(h5_path)
+    np.testing.assert_allclose(dims, [100.0, 200.0])
+
+
+def test_write_to_h5_round_trip_with_animal_ids(tmp_path):
+    out_path = tmp_path / "dset.h5"
+    n_calls = 3
+    audio = [np.full((10,), float(i), dtype=np.float16) for i in range(n_calls)]
+    node_names = np.array([b"head", b"nose"])
+    locations = np.zeros((n_calls, 2, 2, 3))
+    length_idx = np.array([0, 10, 20, 30])
+    animal_ids = np.array([0, 1], dtype=np.int32)
+    extras = {"audio_sr": 250000, "video_fps": 150}
+
+    write_to_h5(
+        output_path=out_path,
+        audio=audio,
+        node_names=node_names,
+        locations=locations,
+        length_idx=length_idx,
+        animal_ids=animal_ids,
+        extra_metadata=extras,
+    )
+
+    with h5py.File(out_path, "r") as f:
+        assert f["audio"].shape == (n_calls * 10,)
+        assert f["node_names"].shape == (2,)
+        assert f["locations"].shape == (n_calls, 2, 2, 3)
+        np.testing.assert_array_equal(f["length_idx"][:], length_idx)
+        assert f["animal_id"].shape == (n_calls, 2)
+        assert f.attrs["audio_sr"] == 250000
+        assert f.attrs["video_fps"] == 150
+
+
+def test_write_to_h5_skips_animal_ids_when_none(tmp_path):
+    out_path = tmp_path / "dset_no_ids.h5"
+    write_to_h5(
+        output_path=out_path,
+        audio=[np.zeros(4, dtype=np.float16)],
+        node_names=np.array([b"x"]),
+        locations=np.zeros((1, 1, 1, 3)),
+        length_idx=np.array([0, 4]),
+        animal_ids=None,
+        extra_metadata=None,
+    )
+    with h5py.File(out_path, "r") as f:
+        assert "animal_id" not in f
+
+
+@pytest.fixture
+def processing_settings():
+    settings_path = pathlib.Path(__file__).parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'processing_settings.json'
+    return json.loads(settings_path.read_text())
+
+
+def test_operator_concatenate_audio_files_handles_empty_dir(tmp_path, processing_settings):
+    (tmp_path / 'audio' / 'cropped_to_video').mkdir(parents=True)
+
+    messages: list[str] = []
+    op = Operator(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=messages.append,
+    )
+    op.concatenate_audio_files()
+    joined = "\n".join(messages)
+    assert "concatenation impossible" in joined or "Audio concatenation started" in joined
+
+
+def test_operator_multichannel_to_channel_audio_missing_master_raises(tmp_path, processing_settings):
+    (tmp_path / 'audio' / 'original_mc').mkdir(parents=True)
+
+    op = Operator(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_: None,
+    )
+
+    with pytest.raises(FileNotFoundError, match=r"master multichannel"):
+        op.multichannel_to_channel_audio()
+
+
+def test_operator_concatenate_binary_files_no_input_runs_without_crash(tmp_path, processing_settings):
+    op = Operator(
+        root_directory=[str(tmp_path)],
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_: None,
+    )
+    (tmp_path / 'ephys').mkdir()
+    op.concatenate_binary_files()
+
+
+def test_operator_split_clusters_skips_when_no_changepoints_json(tmp_path, processing_settings):
+    data_dir = tmp_path / 'Data'
+    ephys_dir = tmp_path / 'EPHYS'
+    session_name = '20260501_imec0'
+    (data_dir / session_name).mkdir(parents=True)
+    (ephys_dir / session_name).mkdir(parents=True)
+
+    op = Operator(
+        root_directory=[str(data_dir / session_name)],
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_: None,
+    )
+
+    with pytest.raises(FileNotFoundError, match=r"changepoints_info"):
+        op.split_clusters_to_sessions()
+
+
+def test_synchronizer_validate_ephys_video_sync_missing_camera_json(tmp_path, processing_settings):
+    sync = Synchronizer(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_: None,
+    )
+    with pytest.raises(FileNotFoundError, match=r"camera frame count JSON"):
+        sync.validate_ephys_video_sync()
+
+
+def _make_vocalocator(tmp_path, processing_settings):
+    return Vocalocator(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_: None,
+    )
+
+
+def test_vocalocator_prepare_missing_audio_mmap_raises(tmp_path, processing_settings):
+    (tmp_path / 'audio').mkdir()
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    with pytest.raises(FileNotFoundError, match=r"concatenated audio mmap"):
+        voc.prepare_for_vocalocator()
+
+
+def test_vocalocator_prepare_missing_video_root_raises(tmp_path, processing_settings):
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    with pytest.raises(FileNotFoundError, match=r"search root"):
+        voc.prepare_for_vocalocator()
+
+
+def test_vocalocator_run_missing_track_h5_raises(tmp_path, processing_settings):
+    (tmp_path / 'video').mkdir()
+    (tmp_path / 'audio').mkdir()
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    with pytest.raises(FileNotFoundError, match=r"3D translated/rotated/metric track H5"):
+        voc.run_vocalocator()

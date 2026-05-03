@@ -12,7 +12,8 @@ def app(qtbot):
     return window
 
 def test_main_window_initialization(app):
-    assert app.windowTitle() == f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0]}"
+    expected_version = metadata.version('usv-playpen').split('.dev')[0].split('.post')[0]
+    assert app.windowTitle() == f"USV Playpen v{expected_version}"
     assert app.exp_id_cb.currentText() == "Bartul"
 
 def test_navigation_to_record_window(app, qtbot):
