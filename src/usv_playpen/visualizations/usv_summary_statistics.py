@@ -444,7 +444,18 @@ def build_master_usv_dataframe(
 
         all_usv_rows.append(usv_processed)
 
-    usv_df = pls.concat(all_usv_rows) if all_usv_rows else pls.DataFrame()
+    if not all_usv_rows:
+        msg = (
+            f"build_master_usv_dataframe loaded 0 sessions out of {len(session_roots)} "
+            f"provided in session_roots. Every session was skipped due to missing tracking "
+            f"files, missing USV summary CSVs, or missing required category columns. "
+            f"Check that the session paths are valid for the current OS (configure_path may "
+            f"need to be applied to entries read from a sessions list) and that the "
+            f"'{usv_category_col}' column exists in the USV summary CSVs."
+        )
+        raise RuntimeError(msg)
+
+    usv_df = pls.concat(all_usv_rows)
     background_df = pls.concat(all_bg_rows) if all_bg_rows else pls.DataFrame()
 
     return usv_df, background_df, total_noise_filtered
