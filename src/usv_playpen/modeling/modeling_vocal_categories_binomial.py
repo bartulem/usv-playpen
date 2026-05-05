@@ -317,11 +317,20 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         )
 
         print("Z-scoring features across sessions...")
+        # See `zscore_different_sessions_together` for the rationale
+        # behind the abs / smooth-abs split: features whose signed
+        # distribution is spread out (allo angles) tolerate plain
+        # `|x|`; features whose signed distribution is sharply
+        # peaked at zero (e.g. ego_yaw, back_yaw) need
+        # `sqrt(x² + ε²)` to avoid the IRLS conditioning collapse
+        # that pygam suffers when the data piles up at the kink.
+        smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {}),
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            smooth_abs_features=smooth_abs_features,
         )
 
         # Build the unified Level-1 filename — the analysis_tag includes
@@ -329,7 +338,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # the cohort, and the rest of the historical fields (voc_mode,
         # hist) live in `_input_metadata`.
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = f"category-{target_category}"
+        analysis_tag = f"category_{target_category}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 

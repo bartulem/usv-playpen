@@ -502,7 +502,12 @@ def _tune_manifold_regularization(X_train: np.ndarray,
 
     key_fn = (lambda kv: kv[1]) if higher_is_better else (lambda kv: -kv[1])
     argmax_pair, argmax_score = max(valid_pairs, key=key_fn)
-    argmax_se = grid_ses.get(argmax_pair, 0.0)
+    # `grid_ses` is populated alongside `grid_scores` for every
+    # (lam_sm, lam_l2) pair the inner-CV loop visits, so any pair
+    # appearing in `valid_pairs` is also a key in `grid_ses` —
+    # direct lookup is safe (the `not np.isfinite` guard below
+    # still handles the NaN-SE case for single-fold pairs).
+    argmax_se = grid_ses[argmax_pair]
     if not np.isfinite(argmax_se):
         argmax_se = 0.0
 
@@ -784,11 +789,17 @@ class ContinuousModelingPipeline(FeatureZoo):
 
         feature_bounds = self.feature_boundaries if hasattr(self, 'feature_boundaries') else {}
 
+        # See `zscore_different_sessions_together` for the abs vs
+        # smooth-abs split. ego_yaw / back_yaw (sharp peak at zero)
+        # need `sqrt(x² + ε²)` to keep pygam IRLS conditioning
+        # tractable; allo angles tolerate plain `|x|`.
+        smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=feature_bounds,
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            smooth_abs_features=smooth_abs_features,
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
@@ -1669,7 +1680,11 @@ class ContinuousModelRunner:
                     results[strategy]['folds']['selected_l2_reg'], dtype=float
                 )
                 grid_audits = results[strategy]['folds']['hyperparam_grid_audit']
-                one_se_fired = [bool(a.get('one_se_applied')) for a in grid_audits]
+                # `one_se_applied` is always set by the audit
+                # builder (`_empty_audit` initialises it to False;
+                # the regular path overwrites it with a bool). Use
+                # direct lookup.
+                one_se_fired = [bool(a['one_se_applied']) for a in grid_audits]
                 one_se_count = int(sum(one_se_fired))
                 one_se_total = len(one_se_fired)
                 valid_sm = lam_sm_vals[np.isfinite(lam_sm_vals) & (lam_sm_vals > 0)]

@@ -558,7 +558,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                 metrics['confusion_matrix'].append(safe_confusion_matrix(
                     y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
                 ))
-                gam_diffs = gam.logs_.get('diffs', [])
+                gam_diffs = gam.logs_['diffs']
                 metrics['n_iter'].append(float(len(gam_diffs)))
                 metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
                 metrics['fit_time'].append(fit_time)
@@ -710,7 +710,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                     metrics['confusion_matrix'].append(safe_confusion_matrix(
                         y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
                     ))
-                    gam_diffs = gam.logs_.get('diffs', [])
+                    gam_diffs = gam.logs_['diffs']
                     metrics['n_iter'].append(float(len(gam_diffs)))
                     metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
                     metrics['fit_time'].append(fit_time)
@@ -1376,7 +1376,7 @@ def vocal_category_model_selection(
                     y_proba_tiled = gam.predict_proba(X_te_gam)
                     y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
                     y_pred = (y_proba >= 0.5).astype(int)
-                    gam_diffs = gam.logs_.get('diffs', [])
+                    gam_diffs = gam.logs_['diffs']
                     fold_n_iter = float(len(gam_diffs))
                     fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 
@@ -1531,7 +1531,7 @@ def vocal_category_model_selection(
                         y_proba_tiled = gam.predict_proba(X_te_gam)
                         y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
                         y_pred = (y_proba >= 0.5).astype(int)
-                        gam_diffs = gam.logs_.get('diffs', [])
+                        gam_diffs = gam.logs_['diffs']
                         fold_n_iter = float(len(gam_diffs))
                         fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 
@@ -2119,7 +2119,7 @@ def bout_parameter_model_selection(
                     # which would otherwise over-estimate E[y|X] whenever the per-frame eta have any spread.
                     eta_te = np.log(gam.predict_mu(X_te_unrolled)).reshape(len(y_te), history_frames)
                     y_pred = np.exp(np.mean(eta_te, axis=1))
-                    gam_diffs = gam.logs_.get('diffs', [])
+                    gam_diffs = gam.logs_['diffs']
                     fold_n_iter = float(len(gam_diffs))
                     fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 
@@ -2257,7 +2257,7 @@ def bout_parameter_model_selection(
                         # Aggregate the H per-frame predictions on the linear-predictor scale (see anchor fit).
                         eta_te = np.log(gam.predict_mu(X_te_gam)).reshape(len(y_te), history_frames)
                         y_pred = np.exp(np.mean(eta_te, axis=1))
-                        gam_diffs = gam.logs_.get('diffs', [])
+                        gam_diffs = gam.logs_['diffs']
                         fold_n_iter = float(len(gam_diffs))
                         fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
 

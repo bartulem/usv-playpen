@@ -591,7 +591,15 @@ def find_usv_categories(root_directories: list = None,
         if category_column not in usv_summary_data.columns:
             raise ValueError(f"Column '{category_column}' missing in {csv_path}.")
 
-        mouse_track_names = mouse_ids_dict.get(session_id, [])
+        # Strict membership check + direct lookup (no `.get()`
+        # default). A session listed in the input directory but not
+        # registered in `mouse_ids_dict` is a project-config bug
+        # rather than a recoverable runtime case — skip with a
+        # warning so it surfaces.
+        if session_id not in mouse_ids_dict:
+            print(f"Warning: No mouse names registered for {session_id}. Skipping.")
+            continue
+        mouse_track_names = mouse_ids_dict[session_id]
         session_fps = camera_fps_dict[session_id]
 
         if session_id not in features_dict:
@@ -836,7 +844,15 @@ def find_variable_length_bouts(root_directories: list = None,
         if not has_mask:
             print(f"Warning: 'mask_number' missing in {session_id}. Complexity = 0.")
 
-        mouse_track_names = mouse_ids_dict.get(session_id, [])
+        # Strict membership check + direct lookup (no `.get()`
+        # default). A session listed in the input directory but not
+        # registered in `mouse_ids_dict` is a project-config bug
+        # rather than a recoverable runtime case — skip with a
+        # warning so it surfaces.
+        if session_id not in mouse_ids_dict:
+            print(f"Warning: No mouse names registered for {session_id}. Skipping.")
+            continue
+        mouse_track_names = mouse_ids_dict[session_id]
         session_fps = camera_fps_dict[session_id]
         session_duration_frames = features_dict[session_id].shape[0]
 

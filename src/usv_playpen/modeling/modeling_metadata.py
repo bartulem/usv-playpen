@@ -385,10 +385,11 @@ def build_input_metadata(modeling_settings: dict,
         `'params'`, `'multinomial'`, `'continuous'`. Used by the
         dispatcher to route to the right runner.
     analysis_tag : str
-        Filename-friendly analysis identifier — e.g. `'onsets'`,
-        `'category-vocalization-2'`, `'boutparam-mean_mask_complexity'`,
+        Filename-friendly analysis identifier — e.g. `'onsets_bout'`,
+        `'category_2'`, `'boutparam_mean_mask_complexity'`,
         `'multinomial'`, `'manifold'`. Used to build the Level-1 / -2 /
-        -3 filenames.
+        -3 filenames; tokens within the tag are joined by underscores
+        (no dashes), matching the rest of the pipeline filename.
     pipeline_class : str
         Class name of the pipeline that wrote this artifact (e.g.
         `'VocalOnsetModelingPipeline'`).

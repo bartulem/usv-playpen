@@ -39,7 +39,6 @@ the continuous acoustic UMAP manifold.
 """
 
 import cmasher as cmr
-import glob
 import json
 import math
 import matplotlib.pyplot as plt
@@ -47,6 +46,7 @@ import matplotlib.font_manager as fm
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
 import matplotlib.mlab as mlab
+import matplotlib.transforms as mtransforms
 from matplotlib.colors import ListedColormap
 from matplotlib.path import Path
 from matplotlib.patches import Patch, Rectangle, ConnectionPatch
@@ -82,6 +82,16 @@ DYADIC_COLOR = "#000000"
 NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
+
+# Timescale-audit palette overrides: zero / axis lines stay black, so
+# social/dyadic gets a neutral slate (distinct from the axis lines and
+# from the male/female sex colors). SEI features are coloured as a
+# pastel version of the observer's sex (= the predictor / partner),
+# obtained by blending the observer's hex colour with white.
+TIMESCALE_SOCIAL_COLOR = "#5A6470"
+TIMESCALE_AXIS_COLOR = "#000000"   # zero / spine reference lines (was 'black')
+TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'gray')
+_PASTEL_BLEND_WITH_WHITE = 0.55
 
 # Initialize custom colormaps (for males and females)
 female_cmap = create_colormap(input_parameter_dict={
@@ -3833,6 +3843,361 @@ class DeepResultsVisualizer:
 # `modeling.modeling_collinearity_audit`.
 # ---------------------------------------------------------------------------
 
+def _pastel_hex(hex_color: str, blend: float = _PASTEL_BLEND_WITH_WHITE) -> str:
+    """
+    Return a pastel version of a `#RRGGBB` colour by blending with white.
+
+    `blend = 0.0` returns the input unchanged; `blend = 1.0` returns pure
+    white; `blend = 0.55` (the default) is a comfortably washed-out
+    pastel that keeps the hue identifiable while reducing saturation.
+    """
+
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    r2 = int(round(r * (1.0 - blend) + 255 * blend))
+    g2 = int(round(g * (1.0 - blend) + 255 * blend))
+    b2 = int(round(b * (1.0 - blend) + 255 * blend))
+    return f"#{r2:02X}{g2:02X}{b2:02X}"
+
+
+def _classify_predictor_feature(fname: str) -> int:
+    """
+    Classify a generic-keyed predictor feature into one of four
+    presentation groups for the timescale-audit plots.
+
+    Returns
+    -------
+    int
+        0 → self.* (target-mouse egocentric features),
+        1 → SEI features (`orofacial-sei`, `anogenital-sei`, including
+            their `_1st_der` / `_2nd_der` derivatives),
+        2 → other.* (predictor-mouse egocentric features),
+        3 → social/dyadic kinematics (e.g. nose-nose, allo_yaw-nose).
+    """
+
+    if fname.startswith('self.'):
+        return 0
+    # SEI base columns end with `-sei`; derivative columns append
+    # `_1st_der` or `_2nd_der`. Strip those tails before testing so
+    # that e.g. `orofacial-sei_1st_der` lands in the SEI group rather
+    # than the social/dyadic catch-all.
+    base = fname
+    for der_suffix in ('_1st_der', '_2nd_der'):
+        if base.endswith(der_suffix):
+            base = base[:-len(der_suffix)]
+            break
+    if base.endswith('-sei'):
+        return 1
+    if fname.startswith('other.'):
+        return 2
+    if '-' in fname:
+        return 3
+    # Default catch-all (e.g. an unprefixed pooled vocal signal):
+    # treat as a social/dyadic feature for plot purposes.
+    return 3
+
+
+def _order_and_color_predictor_features(feature_names, source_pickle: str):
+    """
+    Stable-sort `feature_names` into the canonical timescale-audit
+    group order (self → SEI → other → social/dyadic) and emit a
+    parallel list of per-feature colours.
+
+    Colour scheme
+    -------------
+    - self.*       → male/female colour of the focal/target mouse.
+    - SEI          → same colour as `self.*` (full saturation). The
+                     audit's column-selection rule
+                     (`select_kinematic_columns` in
+                     `modeling.modeling_utils`) keeps the
+                     `{target}-{predictor}.{feature}` orientation of
+                     each SEI column, so the kept SEI is the focal
+                     mouse observing the partner — i.e. it *is* the
+                     focal's engagement signal. Shared colour with the
+                     self group; SEI block sits immediately after
+                     self in the row order, and each row carries its
+                     own y-axis label, so the groups are
+                     distinguishable without a hue / saturation
+                     difference.
+    - other.*      → male/female colour of the partner mouse.
+    - social/dyadic → `TIMESCALE_SOCIAL_COLOR` (a neutral slate that is
+                      distinct from the axis lines, which stay black).
+
+    The target/focal sex is inferred from the source-pickle filename
+    (`_male_` / `_female_` token), mirroring the convention used
+    elsewhere in this module.
+
+    Parameters
+    ----------
+    feature_names : list of str
+        Generic-keyed predictor feature names.
+    source_pickle : str
+        The artifact's `source_pickle` field (modeling pickle basename).
+
+    Returns
+    -------
+    tuple
+        `(order, ordered_colors)` where `order` is a list of indices
+        into `feature_names` giving the new presentation order, and
+        `ordered_colors` is a list of hex colour strings of the same
+        length as `feature_names`, indexed in the new order.
+    """
+
+    # `_male_` / `_female_` token in the cohort filename identifies
+    # the *target / focal / self* sex, matching the convention used
+    # elsewhere in this module (see `plot_feature_ranking`). With the
+    # `select_kinematic_columns` rule keeping the
+    # `{target}-{predictor}.{feature}` SEI orientation, the focal is
+    # the observer in the kept SEI columns, so SEI features are drawn
+    # in the same target colour as `self.*` at full saturation. The
+    # two groups are distinguished by their position in the row order
+    # and by the per-row y-axis labels, not by hue or saturation.
+    fname_low = (source_pickle or '').lower()
+    if '_female_' in fname_low:
+        # target / focal = female; SEI observer = female.
+        self_col, other_col = female_color, male_color
+    else:
+        # `_male_` token (or no token, default): target / focal = male;
+        # SEI observer = male.
+        self_col, other_col = male_color, female_color
+    sei_col = self_col
+    color_by_group = {
+        0: self_col,
+        1: sei_col,
+        2: other_col,
+        3: TIMESCALE_SOCIAL_COLOR,
+    }
+
+    groups = [_classify_predictor_feature(f) for f in feature_names]
+    order = sorted(range(len(feature_names)),
+                   key=lambda i: (groups[i], feature_names[i]))
+    ordered_colors = [color_by_group[groups[i]] for i in order]
+    return order, ordered_colors
+
+
+def _rolling_mean_1d(arr, window: int):
+    """
+    Centred rolling-average smoothing of a 1-D array.
+
+    Uses reflection at the boundaries (no zero-padding bias) so the
+    edge bins remain comparable to interior bins. Returns the input
+    unchanged when `window <= 1`.
+
+    Parameters
+    ----------
+    arr : array-like
+        1-D array to smooth. NaN values propagate within the window.
+    window : int
+        Window size in bins. Even windows are bumped up to the next
+        odd integer so the smoothing remains centred.
+
+    Returns
+    -------
+    np.ndarray
+        Smoothed array, same length as input.
+    """
+
+    arr = np.asarray(arr, dtype=np.float64)
+    if window is None or window <= 1 or arr.size == 0:
+        return arr.astype(np.float32, copy=False)
+    # Round odd-up so the window is symmetric around each output bin.
+    w = int(window) | 1
+    if w >= arr.size:
+        return np.full(arr.shape, np.nanmean(arr), dtype=np.float32)
+    half = w // 2
+    # Reflect-pad to avoid zero-bias at the boundaries.
+    pad = np.concatenate([arr[half:0:-1], arr, arr[-2:-half - 2:-1]])
+    kernel = np.ones(w, dtype=np.float64) / w
+    smoothed = np.convolve(pad, kernel, mode='valid')
+    return smoothed[:arr.size].astype(np.float32, copy=False)
+
+
+def _require_timescale_payload(payload, timescale_pkl_path: str) -> None:
+    """
+    Validate that the pickle at `timescale_pkl_path` is a timescale-
+    audit artifact (as produced by
+    `audit_predictor_timescales`). Raises a clear `ValueError` if it
+    is missing the canonical fields, hinting that the user might have
+    pointed at the modeling input pickle instead of the
+    `_timescales.pkl` companion artifact.
+    """
+
+    required = ('features', 'acf_lags_seconds', 'acf_median', 'rho_signal',
+                'signal_lags_seconds', 'acf_null_mean', 'acf_null_p99_5',
+                'rho_signal_null_mean', 'rho_signal_null_p99_5')
+    missing = [k for k in required if k not in payload]
+    if missing:
+        raise ValueError(
+            f"`{timescale_pkl_path}` does not look like a timescale-audit "
+            f"pickle (missing keys: {missing}). The timescale audit writes "
+            f"its companion artifact alongside the modeling input pickle "
+            f"with the suffix `_timescales.pkl` — make sure the path you "
+            f"passed ends with that suffix and not, for example, the "
+            f"modeling input pickle itself."
+        )
+
+
+def _last_bin_of_consecutive_run(above_mask, run_length: int):
+    """
+    Locate the *latest* index `k` such that all of
+    `above_mask[k - run_length + 1 : k + 1]` are True.
+
+    Used by the timescale-audit plot to mark the lag at which the
+    feature's ACF leaves a sustained run above the shuffled-feature
+    null band — i.e. the last lag of the longest-still-present block of
+    `run_length` consecutive bins above the band.
+
+    Parameters
+    ----------
+    above_mask : array-like of bool
+        Boolean mask, e.g. `acf_median[f] > acf_null_p99_5[f]`.
+    run_length : int
+        Required run length in bins (e.g. 15 bins ≈ 100 ms at 150 fps).
+
+    Returns
+    -------
+    int or None
+        The latest valid run-end index, or `None` when no qualifying run
+        exists.
+    """
+
+    arr = np.asarray(above_mask, dtype=bool)
+    n = arr.size
+    if run_length <= 0 or n < run_length:
+        return None
+    # Scan from the back so the first hit is the latest run-end.
+    for k in range(n - 1, run_length - 2, -1):
+        if arr[k - run_length + 1:k + 1].all():
+            return int(k)
+    return None
+
+
+def _signal_outer_run_marker(rho,
+                             null_lo,
+                             null_hi,
+                             min_run_bins: int,
+                             idx_floor: int,
+                             idx_max: int):
+    """
+    Locate the cross-correlation right-side significance marker.
+
+    Algorithm: longest sign-consistent outside-null run on the
+    positive lag axis.
+
+      1. Identify every contiguous run of bins on the lag axis where
+         `rho` is sign-consistently outside the null band — either
+         all entries are strictly above `null_hi` (positive run) or
+         all are strictly below `null_lo` (negative run). Mixed
+         (above/below alternating) regions do not form a single
+         run; they break into multiple separate same-sign runs.
+      2. Discard runs whose last bin is below `idx_floor` (so
+         sub-floor-only runs cannot anchor a marker — the floor
+         exists precisely to suppress very-near-zero noise).
+      3. Discard runs shorter than `min_run_bins` (the noise-
+         fragment threshold; e.g. ~30 bins ≈ 200 ms at 150 fps).
+      4. Among the surviving runs, pick the **longest**. Tie-break:
+         the run whose end index is smaller (closer to lag 0). This
+         is rare but well-defined.
+      5. The marker sits at the **end** (largest lag) of that run.
+         The marker's sign is the run's direction (+1 above-null,
+         −1 below-null).
+      6. If no surviving run exists, return `None` (no marker drawn
+         on the panel).
+      7. If the longest qualifying run extends to the right edge of
+         the search window (`end == idx_max`), `exceeds_window` is
+         set True so the plot can annotate the lag with a `+` to
+         indicate the horizon was not yet reached at `+max_lag`.
+
+    Why "longest run, ≥ threshold" rather than "first crossing":
+    earlier versions of this routine anchored on the closest-to-zero
+    in-null crossing and required the immediately-preceding bins to
+    be sign-consistent outside null. That picked up tiny near-floor
+    fragments as "the marker" while ignoring the dominant sustained
+    run further out (e.g. on `self.back_yaw` with a 17-bin
+    fragment at +0.68 s eclipsing the 213-bin / 1.4-s real run at
+    +0.7 → +2.14 s). The longest-run rule directly mirrors what a
+    reader's eye picks out — the most prominent sustained
+    deviation from null — and the threshold suppresses noise-only
+    features (e.g. `other.usv_rate`, whose largest fragment is
+    only ~28 bins / 0.19 s) without depending on lucky crossing
+    geometry.
+
+    Parameters
+    ----------
+    rho : array-like
+        Per-lag actual correlation curve (1-D).
+    null_lo, null_hi : array-like
+        Per-lag lower / upper null envelope, same length as `rho`.
+    min_run_bins : int
+        Minimum sustained-run length in bins. Runs shorter than
+        this are dropped before the longest-run pick. Set above
+        the typical noise-fragment scale; converted from
+        `signal_min_run_seconds` × fps at the call site.
+    idx_floor : int
+        Smallest lag index that may host the run's end. Runs whose
+        last bin is below `idx_floor` are dropped (so very-near-zero
+        excursions cannot anchor a marker). Runs may **start**
+        below `idx_floor` provided they extend at or above it —
+        the floor only constrains the right edge.
+    idx_max : int
+        Largest lag index considered (typically `n_lags − 1`,
+        corresponding to `+max_lag_seconds`).
+
+    Returns
+    -------
+    tuple or None
+        `(marker_idx, sign, exceeds_window)` where
+        `sign ∈ {+1, −1}` and `exceeds_window` is True when the
+        run extends to `idx_max`. `None` when no qualifying run
+        exists in the search range.
+    """
+
+    rho = np.asarray(rho)
+    null_lo = np.asarray(null_lo)
+    null_hi = np.asarray(null_hi)
+
+    if min_run_bins <= 0:
+        return None
+    if idx_floor < 0 or idx_max >= rho.size or idx_max < idx_floor:
+        return None
+
+    above = rho > null_hi
+    below = rho < null_lo
+
+    # Find all contiguous True-runs in `mask` via padded-diff trick.
+    # Returns list of `(start_idx, end_idx_inclusive, length)`.
+    def _runs(mask):
+        m = np.asarray(mask, dtype=bool)
+        if not m.any():
+            return []
+        padded = np.concatenate([[False], m, [False]])
+        d = np.diff(padded.astype(np.int8))
+        starts = np.where(d == 1)[0]
+        ends = np.where(d == -1)[0] - 1  # inclusive
+        return list(zip(starts.tolist(), ends.tolist(),
+                        (ends - starts + 1).tolist()))
+
+    candidates = []
+    for sign_val, mask in ((+1, above), (-1, below)):
+        for s, e, L in _runs(mask):
+            if e < idx_floor:
+                continue  # entire run sub-floor
+            if e > idx_max:
+                continue  # past search window (defensive)
+            if L < min_run_bins:
+                continue
+            candidates.append((L, e, sign_val))
+
+    if not candidates:
+        return None
+
+    # Longest run wins. Tie-break: smaller end index (closer to lag 0).
+    candidates.sort(key=lambda c: (-c[0], c[1]))
+    _, end_idx, sign_val = candidates[0]
+    return (int(end_idx), int(sign_val), bool(end_idx == idx_max))
+
+
 def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = 'svg') -> str:
     """
     Writes an audit figure to disk in the requested format and returns the
@@ -3865,307 +4230,728 @@ def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = 'svg
 
 def plot_collinearity_audit(audit_pkl_path: str,
                             save_dir: str = None,
-                            file_format: str = 'svg',
-                            top_n_pairs: int = 25) -> dict:
+                            save_plot_bool: bool = True,
+                            plot_format: str = 'svg',
+                            cmap: str = 'RdBu_r',
+                            outline_threshold: float = 0.7,
+                            outline_color: str = '#000000') -> dict:
     """
     Renders the collinearity audit produced by
-    `modeling.modeling_collinearity_audit.audit_predictor_collinearity` as
-    a single three-panel diagnostic figure.
+    `modeling.modeling_collinearity_audit.audit_predictor_collinearity`
+    as a two-panel diagnostic figure that mirrors the timescale-audit
+    plots in feature ordering and colour coding.
 
-    The figure summarises whether the kept predictor set is sufficiently
-    decorrelated for stable forward stepwise selection. It is intended to
-    accompany the modeling input pickle and to be visually inspected
-    before committing to a particular feature shortlist.
+    The figure tells the reader, at a glance, whether the kept
+    predictor set is sufficiently decorrelated for stable forward
+    stepwise selection. It is meant to be inspected side-by-side with
+    `plot_timescale_audit_per_feature` and `plot_timescale_audit`:
+    the row order, the per-feature group colour, and the
+    single-legend-bottom-right convention are deliberately aligned
+    across all three so that a feature can be cross-referenced by
+    position and hue without re-reading axis labels.
 
-    Panels
+    Layout
     ------
-    Left
-        Spearman ρ heatmap, with rows / columns reordered by hierarchical
-        clustering on the absolute correlation distance so that blocks of
-        mutually correlated features cluster visually. Cells whose
-        absolute value exceeds the artifact's `concern_threshold` are
-        annotated with their numeric value. Diverging blue/red colormap,
-        symmetric around zero.
-    Middle
-        VIF bar chart, sorted descending, with horizontal reference lines
-        at VIF = 5 (concern) and VIF = 10 (serious). Bars exceeding 10
-        are highlighted in red.
-    Right
-        Top-N flagged pairs (where N = `top_n_pairs`) as horizontal bars
-        of `|ρ|`, color-coded by tier (`exclude` vs. `concern`). Each bar
-        labelled with the two feature names and the signed ρ value.
+    Left panel — Spearman ρ heatmap (group-ordered)
+        Rows / columns ordered by feature group (self → SEI →
+        other → social/dyadic) using
+        `_order_and_color_predictor_features`, the same routine
+        the timescale plots use; within each group, features are
+        alphabetised. Hairline black separator lines on both axes
+        delimit group boundaries so the within-group vs. cross-
+        group block structure is explicit. Tick labels are bold
+        and coloured per feature group (matching the per-feature
+        timescale panels); the axis tick *marks* are suppressed
+        because the colour-coded labels are sufficient. Diverging
+        symmetric colormap (default `'RdBu_r'`, exposed via the
+        `cmap` parameter so the caller can plug in any other
+        diverging colormap — sequential maps would misrepresent
+        the sign of ρ and should not be used). Off-diagonal cells
+        whose `|ρ|` exceeds `outline_threshold` receive a thick
+        outline in `outline_color` and are annotated with their
+        signed ρ value. The diagonal is unannotated (ρ_ii = 1 by
+        construction).
 
-    The panel widths are scaled to keep a square heatmap on the left, a
-    proportional VIF chart in the middle, and a long-and-narrow pair list
-    on the right.
+    Right panel — VIF horizontal bars (group-coloured)
+        Per-feature variance inflation factors, sorted descending,
+        with bar fill and y-tick label colours matching the
+        feature's group colour from the heatmap. Mean (solid) and
+        median (dashed) reference lines, with a ▲ pointer + bold
+        numeric annotation at the cohort mean — the same
+        convention used by `plot_timescale_audit` so the two
+        cohort summaries read identically. The x-axis upper edge
+        is the next decade (multiple of 10) above the largest
+        finite VIF, so the bars use the available width without
+        a fixed cap. Only the first (`0`) and last
+        (`{cap_x:g}`) x-tick labels are drawn — the intermediate
+        decade tick marks remain visible but unlabelled. Infinite
+        VIFs (perfect linear dependence) are drawn at the right
+        edge and annotated as ``inf``.
 
     Parameters
     ----------
     audit_pkl_path : str
-        Path to the `_collinearity.pkl` artifact produced at extraction
-        time. The artifact's `source_pickle` field is used in the figure
-        title for provenance.
+        Path to the `_collinearity.pkl` artifact produced at
+        extraction time (see `audit_predictor_collinearity`).
     save_dir : str, optional
         Output directory for the figure. Defaults to the directory
-        containing the audit pickle.
-    file_format : str, default 'svg'
-        Matplotlib `savefig` format. SVG is the project default for
-        publication-quality output.
-    top_n_pairs : int, default 25
-        Maximum number of flagged pairs to render in the right-hand
-        panel. The artifact's `flagged_pairs` list is already sorted by
-        descending |ρ|.
+        containing the audit pickle. Only consulted when
+        `save_plot_bool` is True.
+    save_plot_bool : bool, default True
+        When True, the figure is written to disk via
+        `_save_audit_figure` and closed. When False, the figure is
+        neither saved nor closed (suitable for inline display in
+        a notebook), matching the timescale-plot convention.
+    plot_format : str, default 'svg'
+        Matplotlib `savefig` format. SVG is the project default
+        for publication-quality output. Only consulted when
+        `save_plot_bool` is True.
+    cmap : str, default 'RdBu_r'
+        Matplotlib colormap name for the Spearman ρ heatmap. Must
+        be a *diverging* colormap because the colour scale is
+        symmetric on `[-1, 1]` — sequential maps would conflate
+        sign information.
+    outline_threshold : float, default 0.7
+        Minimum `|ρ|` for an off-diagonal cell to receive a thick
+        outline + numeric annotation. The artifact's own
+        `concern_threshold` / `exclude_threshold` are not
+        consulted here; this single, plot-level threshold keeps
+        the heatmap readable when it is the diagnostic the
+        figure is meant to flag.
+    outline_color : str, default '#000000'
+        Hex colour used both for the cell outline and for the
+        in-cell numeric ρ annotation. Pick a colour that contrasts
+        with the chosen `cmap` so the outline reads against the
+        cell fill.
 
     Returns
     -------
     dict
-        `{'figure_path': str, 'n_features': int, 'n_flagged': int}` —
-        useful for callers that want to reference the artifact
-        downstream.
+        `{'figure_path': str, 'n_features': int, 'n_flagged': int,
+        'condition_number': float, 'mean_vif': float,
+        'median_vif': float}`. `figure_path` is `''` when
+        `save_plot_bool` is False; `mean_vif` / `median_vif` are
+        computed over the finite VIF values only and are NaN if
+        no feature has a finite VIF.
     """
 
     with open(audit_pkl_path, 'rb') as fh:
         payload = pickle.load(fh)
 
-    feature_names = payload['features']
+    feature_names = list(payload['features'])
     rho = np.asarray(payload['spearman_rho'])
     vif = np.asarray(payload['vif'])
     flagged = payload['flagged_pairs']
-    concern_thr = payload['concern_threshold']
-    exclude_thr = payload['exclude_threshold']
-    n_events = payload['n_events']
-    cond_num = payload['condition_number']
+    n_events = int(payload['n_events'])
+    cond_num = float(payload['condition_number'])
     source = payload['source_pickle']
 
     n_features = len(feature_names)
     if n_features == 0:
         print(f"[plot] collinearity audit at {audit_pkl_path} has no features — skipping.")
-        return {'figure_path': '', 'n_features': 0, 'n_flagged': 0}
+        return {
+            'figure_path': '',
+            'n_features': 0,
+            'n_flagged': 0,
+            'condition_number': cond_num,
+            'mean_vif': float('nan'),
+            'median_vif': float('nan'),
+        }
 
-    # Hierarchical-clustering reorder via SciPy linkage on |ρ|-distance.
-    from scipy.cluster.hierarchy import linkage, leaves_list
-    from scipy.spatial.distance import squareform
-    dist = 1.0 - np.abs(rho)
-    np.fill_diagonal(dist, 0.0)
-    dist = (dist + dist.T) / 2.0
-    try:
-        order = leaves_list(linkage(squareform(dist, checks=False), method='average'))
-    except ValueError:
-        order = np.arange(n_features)
-    rho_ord = rho[np.ix_(order, order)]
+    # Group-based ordering: self → SEI → other → social-dyadic. Same
+    # routine and palette as the per-feature timescale plot, so the
+    # heatmap row order and the timescale panel row order match
+    # one-for-one.
+    order, ordered_colors = _order_and_color_predictor_features(
+        feature_names, source
+    )
     names_ord = [feature_names[i] for i in order]
+    colors_ord = list(ordered_colors)
+    rho_ord = rho[np.ix_(order, order)]
 
-    fig = plt.figure(figsize=(20, max(8, 0.25 * n_features + 4)))
-    gs = gridspec.GridSpec(1, 3, width_ratios=[2.4, 1.2, 1.4], wspace=0.35)
+    # Group-boundary indices: where the classifier flips from one
+    # group to the next in `names_ord`. Used to draw hairline
+    # separator lines between groups on both heatmap axes.
+    groups_ord = [_classify_predictor_feature(n) for n in names_ord]
+    group_breaks = [k for k in range(1, n_features)
+                    if groups_ord[k] != groups_ord[k - 1]]
 
-    # Panel 1: Spearman ρ heatmap
+    fig_height = max(0.32 * n_features + 2.4, 4.5)
+    fig = plt.figure(figsize=(13.0, fig_height))
+    gs = gridspec.GridSpec(1, 2, width_ratios=[1.4, 1.0], wspace=0.45,
+                           top=0.94, bottom=0.18, left=0.18, right=0.97)
     ax1 = fig.add_subplot(gs[0, 0])
-    im = ax1.imshow(rho_ord, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
+    ax2 = fig.add_subplot(gs[0, 1])
+
+    # --- Left panel: ρ heatmap -----------------------------------------
+    im = ax1.imshow(rho_ord, cmap=cmap, vmin=-1.0, vmax=1.0, aspect='equal')
     ax1.set_xticks(np.arange(n_features))
     ax1.set_yticks(np.arange(n_features))
-    ax1.set_xticklabels(names_ord, rotation=90, fontsize=7)
-    ax1.set_yticklabels(names_ord, fontsize=7)
-    ax1.set_title(f"Spearman ρ (clustered)\n{n_events} events × {n_features} features", fontsize=11)
-    cb = fig.colorbar(im, ax=ax1, fraction=0.04, pad=0.02)
-    cb.set_label('ρ', rotation=0, labelpad=8)
-    # Annotate cells above concern threshold
+    # Bold tick labels — same fontsize as before, but bold weight so
+    # the per-group colour reads cleanly even on the lighter SEI /
+    # social hues.
+    ax1.set_xticklabels(names_ord, rotation=90, fontsize=7,
+                        fontweight='bold')
+    ax1.set_yticklabels(names_ord, fontsize=7, fontweight='bold')
+    for tick_label, c in zip(ax1.get_xticklabels(), colors_ord):
+        tick_label.set_color(c)
+    for tick_label, c in zip(ax1.get_yticklabels(), colors_ord):
+        tick_label.set_color(c)
+    ax1.tick_params(axis='both', which='both', length=0)
+
+    # Group separator lines: a hairline black line between each pair
+    # of groups on both axes. Positioned at `b - 0.5` so the line
+    # falls exactly between the last cell of the previous group and
+    # the first cell of the next group.
+    for b in group_breaks:
+        ax1.axvline(b - 0.5, color=TIMESCALE_AXIS_COLOR,
+                    linewidth=0.3, zorder=4)
+        ax1.axhline(b - 0.5, color=TIMESCALE_AXIS_COLOR,
+                    linewidth=0.3, zorder=4)
+
+    # Single-tier outline + numeric annotation on cells with
+    # |ρ| > outline_threshold. The diagonal is skipped (ρ_ii = 1 by
+    # construction).
     for i in range(n_features):
         for j in range(n_features):
             if i == j:
                 continue
             r = rho_ord[i, j]
-            if abs(r) >= concern_thr:
-                ax1.text(j, i, f"{r:.2f}", ha='center', va='center',
-                         fontsize=5,
-                         color='white' if abs(r) > 0.6 else 'black')
+            if not np.isfinite(r):
+                continue
+            absr = abs(r)
+            if absr >= outline_threshold:
+                ax1.add_patch(Rectangle(
+                    (j - 0.5, i - 0.5), 1.0, 1.0,
+                    fill=False, edgecolor=outline_color,
+                    linewidth=1.5, zorder=5,
+                ))
+                ax1.text(j, i, f"{r:+.2f}", ha='center', va='center',
+                         fontsize=5, color=outline_color, zorder=6)
 
-    # Panel 2: VIF bar chart
-    ax2 = fig.add_subplot(gs[0, 1])
-    sort_idx = np.argsort(-np.where(np.isfinite(vif), vif, -np.inf))
+    cb = fig.colorbar(im, ax=ax1, fraction=0.04, pad=0.02)
+    cb.set_label('Spearman ρ', fontsize=9)
+    # Major ticks at canonical [-1, -0.5, 0, 0.5, 1]; minor ticks
+    # disabled — the colorbar is purely a legend, not a precise
+    # scale, so intermediate gradations only add visual noise.
+    cb.set_ticks([-1.0, -0.5, 0.0, 0.5, 1.0])
+    cb.minorticks_off()
+    cb.ax.tick_params(labelsize=7)
+    ax1.set_title(
+        f"Pairwise correlations  ({n_events} events × {n_features} features)",
+        fontsize=10,
+    )
+
+    # --- Right panel: VIF horizontal bars -----------------------------
+    color_by_name = {name: c for name, c in zip(names_ord, colors_ord)}
+    finite_mask = np.isfinite(vif)
+    finite_vif = np.where(finite_mask, vif, np.nan)
+    # Sort descending by VIF; +inf gets pushed to the top via the
+    # masking trick (`-inf` for the negative-sort, sorted ascending).
+    sort_idx = np.argsort(-np.where(finite_mask, vif, -np.inf))
     vif_sorted = vif[sort_idx]
-    names_sorted_v = [feature_names[i] for i in sort_idx]
-    colors = ['#cc3333' if (np.isfinite(v) and v > 10)
-              else '#dd9933' if (np.isfinite(v) and v > 5)
-              else '#3377bb' for v in vif_sorted]
-    # Cap displayed VIF for readability; annotate inf separately.
-    vif_display = np.where(np.isfinite(vif_sorted),
-                           np.minimum(vif_sorted, 50.0),
-                           50.0)
+    names_sorted = [feature_names[i] for i in sort_idx]
+    colors_sorted = [color_by_name[n] for n in names_sorted]
+
+    finite_max = float(np.nanmax(finite_vif)) if finite_mask.any() else 5.0
+    # X-axis upper edge: the next decade (multiple of 10) above the
+    # largest finite VIF, with a floor of 10 so even very-low-VIF
+    # cohorts get a visible scale. No artificial cap — if every
+    # feature is finite and small, the chart is tight; if a
+    # feature is enormous, the decade-rounding grows to fit.
+    cap_x = max(10.0, float(np.ceil(finite_max / 10.0) * 10.0))
+    vif_display = np.where(finite_mask[sort_idx],
+                           np.minimum(vif_sorted, cap_x),
+                           cap_x)
+
     y_pos = np.arange(n_features)[::-1]
-    ax2.barh(y_pos, vif_display, color=colors, edgecolor='none')
+    ax2.barh(y_pos, vif_display, color=colors_sorted,
+             edgecolor=TIMESCALE_AXIS_COLOR, linewidth=0.5,
+             height=1.0, zorder=2)
+    # Annotate `inf` bars at their (capped) right edge so the
+    # singular-design feature stays visually distinct from a
+    # merely-large-but-finite VIF at the same display length.
     for k, v in enumerate(vif_sorted):
         if not np.isfinite(v):
-            ax2.text(50.0, y_pos[k], '  inf', va='center', fontsize=6, color='#cc3333')
+            ax2.text(cap_x * 0.99, y_pos[k], 'inf',
+                     va='center', ha='right', fontsize=7,
+                     color=TIMESCALE_AXIS_COLOR, fontweight='bold',
+                     zorder=4)
     ax2.set_yticks(y_pos)
-    ax2.set_yticklabels(names_sorted_v, fontsize=7)
-    ax2.axvline(5, color='#dd9933', linestyle=':', linewidth=1, label='VIF = 5')
-    ax2.axvline(10, color='#cc3333', linestyle=':', linewidth=1, label='VIF = 10')
-    ax2.set_xlabel('VIF (capped at 50)', fontsize=9)
-    ax2.set_title(f"Variance Inflation\ncond(X) = {cond_num:.1f}", fontsize=11)
-    ax2.legend(fontsize=7, loc='lower right')
+    ax2.set_yticklabels(names_sorted, fontsize=8, fontweight='bold')
+    for tick_label, c in zip(ax2.get_yticklabels(), colors_sorted):
+        tick_label.set_color(c)
+    ax2.tick_params(axis='y', length=0)
 
-    # Panel 3: Flagged pairs
-    ax3 = fig.add_subplot(gs[0, 2])
-    pairs = flagged[:top_n_pairs]
-    if pairs:
-        labels = [f"{f1}  ↔  {f2}" for f1, f2, _, _ in pairs]
-        rhos = [r for *_, r, _ in pairs]
-        tiers = [t for *_, t in pairs]
-        bar_colors = ['#cc3333' if t == 'exclude' else '#dd9933' for t in tiers]
-        y_pos = np.arange(len(pairs))[::-1]
-        ax3.barh(y_pos, [abs(r) for r in rhos], color=bar_colors, edgecolor='none')
-        for k, (label, r) in enumerate(zip(labels, rhos)):
-            ax3.text(abs(r) + 0.01, y_pos[k], f"{r:+.2f}", va='center', fontsize=6)
-        ax3.set_yticks(y_pos)
-        ax3.set_yticklabels(labels, fontsize=6)
-        ax3.set_xlim(0, 1.05)
-        ax3.axvline(concern_thr, color='#dd9933', linestyle=':', linewidth=1)
-        ax3.axvline(exclude_thr, color='#cc3333', linestyle=':', linewidth=1)
-        ax3.set_xlabel('|ρ|', fontsize=9)
-        ax3.set_title(
-            f"Flagged pairs (top {len(pairs)} of {len(flagged)})\n"
-            f"red: |ρ| > {exclude_thr}, orange: > {concern_thr}",
-            fontsize=11,
-        )
+    if finite_mask.any():
+        mean_vif = float(np.nanmean(finite_vif))
+        median_vif = float(np.nanmedian(finite_vif))
     else:
-        ax3.text(0.5, 0.5, "No pairs above\nconcern threshold",
-                 ha='center', va='center', fontsize=12, transform=ax3.transAxes)
-        ax3.set_xticks([]); ax3.set_yticks([])
-        ax3.set_title("Flagged pairs", fontsize=11)
+        mean_vif = float('nan')
+        median_vif = float('nan')
 
-    fig.suptitle(f"Collinearity audit  —  source: {source}", fontsize=13, y=1.02)
+    # Cohort mean / median lines (matching the timescale-cohort plot
+    # style: solid mean, dashed median, both in axis colour). No
+    # canonical-threshold reference lines — the cohort references
+    # are the only ones drawn on this panel.
+    if np.isfinite(mean_vif):
+        ax2.axvline(mean_vif, color=TIMESCALE_AXIS_COLOR,
+                    linestyle='-', linewidth=1.0, zorder=4)
+    if np.isfinite(median_vif):
+        ax2.axvline(median_vif, color=TIMESCALE_AXIS_COLOR,
+                    linestyle='--', linewidth=1.0, zorder=4)
 
-    if save_dir is None:
-        save_dir = os.path.dirname(audit_pkl_path)
-    base = os.path.splitext(os.path.basename(audit_pkl_path))[0]
-    out_path = _save_audit_figure(fig, save_dir, base, file_format=file_format)
-    plt.close(fig)
-    print(f"[plot] collinearity figure written: {out_path}")
-    return {'figure_path': out_path, 'n_features': n_features, 'n_flagged': len(flagged)}
+    # ▲ pointer + bold mean numeric annotation just below the x-axis
+    # spine, exactly the convention `plot_timescale_audit` uses for
+    # its cohort mean.
+    x_data_y_axes = mtransforms.blended_transform_factory(
+        ax2.transData, ax2.transAxes
+    )
+    if np.isfinite(mean_vif):
+        ax2.plot(mean_vif, 0, marker='^', color=TIMESCALE_AXIS_COLOR,
+                 markersize=7, linestyle='None', zorder=6,
+                 clip_on=False, transform=x_data_y_axes)
+        ax2.text(mean_vif, -0.015, f'{mean_vif:.2f}',
+                 ha='center', va='top', fontweight='bold',
+                 fontsize=8, color=TIMESCALE_AXIS_COLOR,
+                 transform=x_data_y_axes, clip_on=False)
+
+    ax2.set_xlim(0.0, cap_x)
+    ax2.set_ylim(-0.5, n_features - 0.5)
+    # Tick marks at every decade from 0 to `cap_x`; only the first
+    # (`0`) and last (`cap_x`) tick labels are drawn — the
+    # intermediate ticks remain as visual reference but uncluttered
+    # by labels (mirroring the timescale-cohort plot's tick style).
+    xticks = list(range(0, int(cap_x) + 1, 10))
+    xticklabels = ['' for _ in xticks]
+    xticklabels[0] = '0'
+    xticklabels[-1] = str(int(cap_x))
+    ax2.set_xticks(xticks)
+    ax2.set_xticklabels(xticklabels)
+    # With most x-tick labels blank, the x-axis label can sit close
+    # to the spine (matplotlib default labelpad). The bold mean
+    # numeric annotation already lives just below the spine; the
+    # default ~4-pt labelpad places the axis label below the
+    # annotation without colliding with it.
+    ax2.set_xlabel('Variance Inflation Factor (VIF)')
+    ax2.set_title(
+        f'Variance Inflation\n'
+        f'cond(X̃) = {cond_num:.1f}',
+        fontsize=10,
+    )
+    ax2.tick_params(axis='x', labelsize=8)
+
+    # Single mean / median legend in the lower-right of the right
+    # panel — same placement and style as the cohort timescale plot
+    # so the two figures read consistently when stacked.
+    legend_handles = [
+        Line2D([0], [0], color=TIMESCALE_AXIS_COLOR, linestyle='-',
+               linewidth=1.0, label='mean'),
+        Line2D([0], [0], color=TIMESCALE_AXIS_COLOR, linestyle='--',
+               linewidth=1.0, label='median'),
+    ]
+    ax2.legend(handles=legend_handles, loc='lower right',
+               ncol=1, fontsize=9, frameon=False)
+
+    # No figure-level suptitle: the `source_pickle` filename — which
+    # already carries the cohort + timestamp — is the figure's
+    # provenance, and the saved figure inherits that filename via
+    # `_save_audit_figure`.
+
+    if save_plot_bool:
+        if save_dir is None:
+            save_dir = os.path.dirname(audit_pkl_path)
+        base = os.path.splitext(os.path.basename(audit_pkl_path))[0]
+        out_path = _save_audit_figure(fig, save_dir, base,
+                                      file_format=plot_format)
+        plt.close(fig)
+        print(f"[plot] collinearity figure written: {out_path}")
+    else:
+        out_path = ''
+
+    return {
+        'figure_path': out_path,
+        'n_features': n_features,
+        'n_flagged': len(flagged),
+        'condition_number': cond_num,
+        'mean_vif': mean_vif,
+        'median_vif': median_vif,
+    }
+
+
+def _compute_timescale_horizons(payload: dict,
+                                signal_smooth_window: int = 0,
+                                acf_run_length: int = 15) -> tuple:
+    """
+    Per-feature ACF and cross-correlation horizons (single-number
+    summaries derived from the per-feature triangle markers).
+
+    For each feature, replicates the marker-finding logic used by
+    `plot_timescale_audit_per_feature`:
+
+    - **ACF horizon** = the latest lag at which `acf_run_length`
+      consecutive bins are above the upper ACF null envelope
+      (`acf_null_p99_5`). Computed via
+      `_last_bin_of_consecutive_run`.
+    - **XC horizon** = the lag at the largest-lag end of the
+      pre-cross outside-null run on the positive lag axis, after
+      applying the lag floor `signal_floor_seconds`. Computed via
+      `_signal_outer_run_marker`. The exceeds-window flag is
+      preserved so the caller can render `+max_lag` markers
+      distinctively if desired.
+
+    Features without a qualifying marker are excluded from the
+    returned mapping (the caller decides whether to skip them or
+    represent them otherwise).
+
+    Returns
+    -------
+    tuple
+        `(acf_horizons, xc_horizons)` where each is a dict
+        `{feature_name: lag_seconds}`. The XC dict additionally
+        records the exceeds-window flag in
+        `xc_exceeds[feature_name]`.
+    """
+
+    feature_names = list(payload['features'])
+    acf_lags_seconds = np.asarray(payload['acf_lags_seconds'])
+    acf_med = np.asarray(payload['acf_median'])
+    acf_null_hi = np.asarray(payload['acf_null_p99_5'])
+    signal_lags_seconds = np.asarray(payload['signal_lags_seconds'])
+    rho_signal = np.asarray(payload['rho_signal'])
+    rho_signal_null_lo = np.asarray(payload['rho_signal_null_p0_5'])
+    rho_signal_null_hi = np.asarray(payload['rho_signal_null_p99_5'])
+    signal_floor_seconds = (
+        float(payload['signal_floor_seconds'])
+        if 'signal_floor_seconds' in payload else 0.5
+    )
+    # Minimum sustained-run length (seconds) for the cross-correlation
+    # marker. Falls back to 0.2 s for older artifacts that pre-date
+    # the field (matches the ~30-bin default at 150 fps that
+    # suppresses noise-fragment cohorts while preserving real
+    # multi-hundred-bin runs).
+    signal_min_run_seconds = (
+        float(payload['signal_min_run_seconds'])
+        if 'signal_min_run_seconds' in payload else 0.2
+    )
+    # Convert seconds → bins via the lag-axis spacing. `np.ceil` so a
+    # threshold of e.g. 0.2 s on a 150-fps grid gives 30 bins
+    # (slightly above 0.2 s = 30/150 = 0.2 s exactly), never less.
+    if signal_lags_seconds.size > 1:
+        delta_t = float(signal_lags_seconds[1] - signal_lags_seconds[0])
+        sig_min_run_bins = int(np.ceil(signal_min_run_seconds / delta_t))
+    else:
+        sig_min_run_bins = 1
+
+    acf_horizons = {}
+    xc_horizons = {}
+    xc_exceeds = {}
+
+    n_features = len(feature_names)
+    for i in range(n_features):
+        fname = feature_names[i]
+
+        # ACF marker (still uses the immediately-preceding-run rule
+        # — the ACF panel's marker semantics are unchanged).
+        if acf_med.size and i < acf_med.shape[0]:
+            above_mask = acf_med[i] > acf_null_hi[i]
+            mark_idx = _last_bin_of_consecutive_run(above_mask, acf_run_length)
+            if mark_idx is not None:
+                acf_horizons[fname] = float(acf_lags_seconds[mark_idx])
+
+        # XC marker (longest sign-consistent run ≥ `sig_min_run_bins`).
+        if signal_lags_seconds.size and i < rho_signal.shape[0]:
+            mean_curve = _rolling_mean_1d(rho_signal[i], signal_smooth_window)
+            sig_idx_floor = int(np.searchsorted(
+                signal_lags_seconds, signal_floor_seconds, side='left'
+            ))
+            sig_idx_max = signal_lags_seconds.size - 1
+            sig_hit = _signal_outer_run_marker(
+                mean_curve,
+                rho_signal_null_lo[i],
+                rho_signal_null_hi[i],
+                sig_min_run_bins,
+                sig_idx_floor,
+                sig_idx_max,
+            )
+            if sig_hit is not None:
+                sig_idx, _sig_sign, sig_exceeds_flag = sig_hit
+                xc_horizons[fname] = float(signal_lags_seconds[sig_idx])
+                xc_exceeds[fname] = bool(sig_exceeds_flag)
+
+    return acf_horizons, xc_horizons, xc_exceeds
 
 
 def plot_timescale_audit(timescale_pkl_path: str,
                          save_dir: str = None,
                          save_plot_bool: bool = True,
-                         plot_format: str = 'svg') -> dict:
+                         plot_format: str = 'svg',
+                         signal_smooth_window: int = 0) -> dict:
     """
-    Renders the timescale audit produced by
-    `modeling.modeling_collinearity_audit.audit_predictor_timescales` as
-    a two-panel diagnostic figure (ACF + signal correlation).
+    Cohort-level summary companion to `plot_timescale_audit_per_feature`.
 
-    Panels
-    ------
-    Left (ACF)
-        Per-feature autocorrelation curves: the median ACF across
-        sessions (solid) with the inter-quartile range as a translucent
-        envelope. The configured `filter_history` is drawn as a heavy
-        vertical reference line. Captures how long each feature holds
-        memory of itself.
+    Two horizontal-bar panels, one per measure, summarising the
+    triangle-marker positions from the per-feature plot as a single
+    number per feature:
 
-    Right (Signal correlation)
-        Per-feature Spearman ρ vs. lag between every predictor and the
-        binary USV indicator, evaluated symmetrically over
-        `[-max_lag, +max_lag]`. Negative lags ⇒ USV precedes feature;
-        positive lags ⇒ feature precedes USV. The within-session
-        circular-shift 95th-percentile null envelope is shaded for
-        reference.
+    - **Left panel ("Auto-correlation")**: bar length = the lag at
+      which the ACF leaves a sustained run above its upper null.
+      One bar per feature with an ACF marker.
+    - **Right panel ("Cross-correlation")**: bar length = the
+      positive-side significance horizon (largest-lag end of the
+      pre-cross outside-null run, with the lag-floor
+      `signal_floor_seconds` applied). One bar per feature with a
+      qualifying XC marker.
+
+    Each panel is sorted independently descending by value (longest
+    horizon at top) so the cohort distribution is legible at a
+    glance. Bars touch (no inter-bar gap), each with a thin black
+    outline. Bar colour is the per-feature group colour
+    (`_order_and_color_predictor_features`), matching the per-feature
+    panel; rows can be cross-referenced by colour. The y-tick
+    labels are coloured to match each row's bar, and the y-tick
+    *marks* are suppressed (the colour-coded labels are sufficient).
+
+    Both panels share an x-axis range `[0, ceil(max_horizon / 2) * 2]`
+    so they're directly comparable; tick marks are placed every 2 s,
+    but only the first and last ticks receive labels — leaving room
+    below the axis for the bold mean annotation and the x-axis
+    label.
+
+    Cohort references on each panel:
+
+    - Solid black vertical line at the **mean** horizon.
+    - Dashed black vertical line at the **median** horizon.
+    - Just below the x-axis spine at the mean's x-position: a small
+      `▲` pointer plus the bold mean value (`{value} s`) so the
+      cohort mean is explicitly numeric on the axis.
+    - The x-axis label `Lag (s)` sits further below, beneath the
+      mean annotation (via `labelpad`).
+
+    A single legend in the lower-right corner of the right panel
+    identifies the mean (solid) and median (dashed) line styles for
+    both panels — the styles are shared, so one legend suffices.
+
+    Features without a qualifying marker for a panel are **skipped**
+    (no row drawn, not counted toward mean / median). This is
+    deliberate: a "no horizon" entry doesn't belong in a horizon
+    distribution. Features in the cross-correlation panel whose
+    significance horizon exceeds the lag window are clipped at
+    `+max_lag`; the cohort under the configurations we ship doesn't
+    hit this case, but it is handled correctly if it does.
+
+    The sign of the cross-correlation marker (▽ vs. △) is
+    intentionally not encoded here — this figure is a *time*
+    summary, not a strength-or-direction summary.
 
     Parameters
     ----------
     timescale_pkl_path : str
         Path to the `_timescales.pkl` artifact.
     save_dir : str, optional
-        Output directory for the figure. Defaults to the directory
-        containing the timescale pickle. Only consulted when
-        `save_plot_bool` is True.
+        Output directory. Defaults to the directory containing the
+        timescale pickle. Only consulted when `save_plot_bool` is
+        True.
     save_plot_bool : bool, default True
         When True (default), the figure is written to disk via
         `_save_audit_figure` and closed. When False, the figure is
-        neither saved nor closed — the caller can display it inline
-        (notebook) or further customise it. `figure_path` in the
-        returned dict is `''` in that case.
+        neither saved nor closed.
     plot_format : str, default 'svg'
         Matplotlib `savefig` format. Only consulted when
         `save_plot_bool` is True.
+    signal_smooth_window : int, default 0
+        Rolling-average window size (in lag bins) applied to the
+        cross-correlation mean curve before computing the XC marker.
+        Forwarded to `_compute_timescale_horizons`. Same default as
+        the per-feature plot.
 
     Returns
     -------
     dict
-        `{'figure_path': str, 'n_features': int, 'configured_filter_history': float}`.
-        `figure_path` is `''` when `save_plot_bool` is False.
+        `{'figure_path': str, 'n_features_acf': int, 'n_features_xc': int,
+        'mean_acf_horizon_s': float, 'median_acf_horizon_s': float,
+        'mean_xc_horizon_s': float, 'median_xc_horizon_s': float,
+        'configured_filter_history': float}`.
+        Mean / median entries are NaN when the corresponding panel is
+        empty. `figure_path` is `''` when `save_plot_bool` is False.
     """
 
     with open(timescale_pkl_path, 'rb') as fh:
         payload = pickle.load(fh)
+    _require_timescale_payload(payload, timescale_pkl_path)
 
-    feature_names = payload['features']
-    acf_lags_seconds = np.asarray(payload['acf_lags_seconds'])
-    acf_med = np.asarray(payload['acf_median'])
-    acf_p25 = np.asarray(payload['acf_p25'])
-    acf_p75 = np.asarray(payload['acf_p75'])
-    signal_lags_seconds = np.asarray(payload['signal_lags_seconds'])
-    rho_signal = np.asarray(payload['rho_signal'])
-    rho_signal_null = np.asarray(payload['rho_signal_null_p95'])
+    feature_names = list(payload['features'])
     cfg_hist = float(payload['configured_filter_history'])
     source = payload['source_pickle']
+    n_features_total = len(feature_names)
 
-    n_features = len(feature_names)
-    if n_features == 0:
-        print(f"[plot] timescale audit at {timescale_pkl_path} has no features — skipping.")
-        return {'figure_path': '', 'n_features': 0, 'configured_filter_history': cfg_hist}
+    acf_horizons, xc_horizons, xc_exceeds = _compute_timescale_horizons(
+        payload, signal_smooth_window=signal_smooth_window
+    )
 
-    fig = plt.figure(figsize=(20, 8))
-    gs = gridspec.GridSpec(1, 2, wspace=0.22)
+    # Per-feature group colour, matching the per-feature panel exactly.
+    order, ordered_colors = _order_and_color_predictor_features(
+        feature_names, source
+    )
+    color_by_name = {}
+    for new_i, orig_i in enumerate(order):
+        color_by_name[feature_names[orig_i]] = ordered_colors[new_i]
 
-    # Stable per-feature colour mapping shared across panels.
-    cmap = plt.get_cmap('tab20', max(n_features, 20))
-    colors = [cmap(i % cmap.N) for i in range(n_features)]
+    # Sort each panel's features descending by horizon (longest at the
+    # top of the bar plot — `barh` with descending y-positions).
+    acf_items = sorted(acf_horizons.items(), key=lambda kv: -kv[1])
+    xc_items = sorted(xc_horizons.items(), key=lambda kv: -kv[1])
 
-    # Panel A: ACF (positive lags only)
+    n_acf = len(acf_items)
+    n_xc = len(xc_items)
+
+    if n_acf == 0 and n_xc == 0:
+        print(f"[plot] timescale audit at {timescale_pkl_path}: no features "
+              f"with markers in either panel — skipping.")
+        return {
+            'figure_path': '',
+            'n_features_acf': 0,
+            'n_features_xc': 0,
+            'mean_acf_horizon_s': float('nan'),
+            'median_acf_horizon_s': float('nan'),
+            'mean_xc_horizon_s': float('nan'),
+            'median_xc_horizon_s': float('nan'),
+            'configured_filter_history': cfg_hist,
+        }
+
+    # Shared x-axis range across both panels so the two are directly
+    # comparable. The right edge is `int(np.ceil(joint_max))` — no
+    # additional rounding. Tick marks are placed at every whole
+    # number from 0 to `x_max_int` inclusive; only the first ("0")
+    # and last (right edge) tick labels are drawn, the others are
+    # tick marks without labels — leaving room below the axis for
+    # the bold mean annotation and for the x-axis label further
+    # down.
+    all_horizon_vals = (
+        [v for _, v in acf_items] + [v for _, v in xc_items]
+    )
+    if all_horizon_vals:
+        x_max_data = float(max(all_horizon_vals))
+    else:
+        x_max_data = 1.0
+    x_max_int = max(int(np.ceil(x_max_data)), 1)
+    shared_xticks = list(range(0, x_max_int + 1))
+    shared_xticklabels = ['' for _ in shared_xticks]
+    shared_xticklabels[0] = '0'
+    shared_xticklabels[-1] = str(x_max_int)
+
+    # Figure size: vertical scaling proportional to the larger of the
+    # two row counts, with a minimum so very small cohorts still look
+    # reasonable. Width split evenly between the two panels.
+    n_rows_max = max(n_acf, n_xc, 1)
+    fig_height = max(0.32 * n_rows_max + 1.8, 3.5)
+    fig = plt.figure(figsize=(11.0, fig_height))
+    gs = gridspec.GridSpec(1, 2, wspace=0.55,
+                           top=0.93, bottom=0.18, left=0.18, right=0.97)
     axA = fig.add_subplot(gs[0, 0])
-    for i, fname in enumerate(feature_names):
-        axA.fill_between(acf_lags_seconds, acf_p25[i], acf_p75[i],
-                         color=colors[i], alpha=0.12, linewidth=0)
-        axA.plot(acf_lags_seconds, acf_med[i], color=colors[i],
-                 linewidth=0.9, alpha=0.75, label=fname)
-    # Median across features — the unifying envelope.
-    if acf_med.size:
-        acf_aggregate = np.nanmedian(acf_med, axis=0)
-        axA.plot(acf_lags_seconds, acf_aggregate, color='black',
-                 linewidth=2.4, label='median across features', zorder=10)
-    axA.axhline(0, color='black', linewidth=0.5)
-    axA.axhline(1.0 / np.e, color='gray', linestyle=':', linewidth=0.7, label='1/e')
-    axA.axvline(cfg_hist, color='black', linestyle='--', linewidth=1.0,
-                label=f'filter_history = {cfg_hist:.1f}s')
-    axA.set_xlim(0, acf_lags_seconds[-1] if acf_lags_seconds.size else 1.0)
-    axA.set_ylim(-0.3, 1.05)
-    axA.set_xlabel('Lag (s)')
-    axA.set_ylabel('ACF (median ± IQR)')
-    axA.set_title('Predictor ACF', fontsize=11)
-    axA.legend(fontsize=6, loc='upper right', ncol=2)
-
-    # Panel B: Signal correlation (symmetric lags)
     axB = fig.add_subplot(gs[0, 1])
-    for i, fname in enumerate(feature_names):
-        axB.fill_between(signal_lags_seconds, -rho_signal_null[i], rho_signal_null[i],
-                         color=colors[i], alpha=0.08, linewidth=0)
-        axB.plot(signal_lags_seconds, rho_signal[i], color=colors[i],
-                 linewidth=0.9, alpha=0.75, label=fname)
-    # Median across features — the unifying envelope.
-    if rho_signal.size:
-        sig_aggregate = np.nanmedian(rho_signal, axis=0)
-        axB.plot(signal_lags_seconds, sig_aggregate, color='black',
-                 linewidth=2.4, label='median across features', zorder=10)
-    axB.axhline(0, color='black', linewidth=0.5)
-    axB.axvline(0, color='black', linewidth=0.6, linestyle='-')
-    if signal_lags_seconds.size:
-        axB.set_xlim(signal_lags_seconds[0], signal_lags_seconds[-1])
-    axB.set_xlabel('Lag (s)   (negative: USV leads feature   |   positive: feature leads USV)')
-    axB.set_ylabel('Spearman ρ vs. binary USV indicator   (shaded: |null| 95th pct)')
-    axB.set_title('Signal correlation', fontsize=11)
-    axB.legend(fontsize=6, loc='upper right', ncol=2)
 
-    fig.suptitle(f"Timescale audit  —  source: {source}", fontsize=13, y=0.995)
+    def _render_panel(ax, items, panel_title, x_axis_label):
+        if not items:
+            ax.set_title(panel_title, fontsize=11)
+            ax.set_xlabel(x_axis_label, labelpad=18)
+            ax.text(0.5, 0.5, 'no features with marker',
+                    ha='center', va='center', transform=ax.transAxes,
+                    fontsize=9, color=TIMESCALE_NULL_COLOR)
+            ax.set_yticks([])
+            ax.set_xlim(0, x_max_int)
+            ax.set_xticks(shared_xticks)
+            ax.set_xticklabels(shared_xticklabels)
+            return float('nan'), float('nan')
+
+        names = [n for n, _ in items]
+        vals = np.asarray([v for _, v in items], dtype=np.float64)
+        cols = [color_by_name[n] for n in names]
+        # Top-of-axis = largest. With `barh(y, width)` and y_pos
+        # descending from len-1 at top to 0 at bottom, names[0]
+        # (largest) sits at top.
+        y_pos = np.arange(len(items))[::-1]
+
+        # `height=1.0` so adjacent bars touch with no inter-bar gap.
+        ax.barh(y_pos, vals, color=cols,
+                edgecolor=TIMESCALE_AXIS_COLOR, linewidth=0.5,
+                height=1.0, zorder=2)
+        # Y-axis: feature names coloured to match each row's bar
+        # colour (so the row → feature mapping is doubly encoded by
+        # the bar fill and the label hue), and tick marks suppressed
+        # because the colored labels alone are sufficient.
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(names, fontsize=9, fontweight='bold')
+        for tick_label, fname in zip(ax.get_yticklabels(), names):
+            tick_label.set_color(color_by_name[fname])
+        ax.tick_params(axis='y', length=0)
+
+        mean_val = float(np.mean(vals))
+        median_val = float(np.median(vals))
+
+        # Solid line at mean, dashed line at median.
+        ax.axvline(mean_val, color=TIMESCALE_AXIS_COLOR,
+                   linestyle='-', linewidth=1.0, zorder=4)
+        ax.axvline(median_val, color=TIMESCALE_AXIS_COLOR,
+                   linestyle='--', linewidth=1.0, zorder=4)
+
+        # ▲ pointer + bold value text on the x-axis at the mean.
+        # Blended transform so x is in data coords (lag seconds) and
+        # y is in axes fraction (pinned to the axis line). `clip_on`
+        # is set False so the marker / text can extend slightly
+        # below the panel.
+        x_data_y_axes = mtransforms.blended_transform_factory(
+            ax.transData, ax.transAxes
+        )
+        ax.plot(mean_val, 0, marker='^', color=TIMESCALE_AXIS_COLOR,
+                markersize=7, linestyle='None', zorder=6,
+                clip_on=False, transform=x_data_y_axes)
+        # Mean numeric annotation sits just under the axis spine
+        # (most tick labels are blank, so vertical space is tight
+        # but uncluttered). The x-axis label goes further down via
+        # `labelpad`.
+        ax.text(mean_val, -0.015, f'{mean_val:.2f} s',
+                ha='center', va='top', fontweight='bold',
+                fontsize=8, color=TIMESCALE_AXIS_COLOR,
+                transform=x_data_y_axes, clip_on=False)
+
+        # Shared x-range and sparse tick labelling (only first and
+        # last tick get a label).
+        ax.set_xlim(0, x_max_int)
+        ax.set_xticks(shared_xticks)
+        ax.set_xticklabels(shared_xticklabels)
+        ax.set_ylim(-0.5, len(items) - 0.5)
+        # `labelpad` pushes the x-axis label below the bold mean
+        # annotation drawn above it.
+        ax.set_xlabel(x_axis_label)
+        ax.set_title(panel_title, fontsize=11)
+        ax.tick_params(axis='x', labelsize=8)
+        ax.tick_params(axis='y', which='both', length=0)
+
+        return mean_val, median_val
+
+    mean_acf, median_acf = _render_panel(
+        axA, acf_items,
+        panel_title='Auto-correlation horizon',
+        x_axis_label='Lag (s)',
+    )
+    mean_xc, median_xc = _render_panel(
+        axB, xc_items,
+        panel_title='Cross-correlation horizon (behavior leads)',
+        x_axis_label='Lag (s)',
+    )
+
+    # Mean / median legend, drawn on the right subplot in the lower-
+    # right corner with one entry per row (vertical stack). Single
+    # legend serves both panels because the line styles are shared.
+    legend_handles = [
+        Line2D([0], [0], color=TIMESCALE_AXIS_COLOR, linestyle='-',
+               linewidth=1.0, label='mean'),
+        Line2D([0], [0], color=TIMESCALE_AXIS_COLOR, linestyle='--',
+               linewidth=1.0, label='median'),
+    ]
+    axB.legend(handles=legend_handles, loc='lower right',
+               ncol=1, fontsize=9, frameon=False)
 
     if save_plot_bool:
         if save_dir is None:
@@ -4178,7 +4964,13 @@ def plot_timescale_audit(timescale_pkl_path: str,
         out_path = ''
     return {
         'figure_path': out_path,
-        'n_features': n_features,
+        'n_features_acf': n_acf,
+        'n_features_xc': n_xc,
+        'n_features_total': n_features_total,
+        'mean_acf_horizon_s': mean_acf,
+        'median_acf_horizon_s': median_acf,
+        'mean_xc_horizon_s': mean_xc,
+        'median_xc_horizon_s': median_xc,
         'configured_filter_history': cfg_hist,
     }
 
@@ -4186,7 +4978,8 @@ def plot_timescale_audit(timescale_pkl_path: str,
 def plot_timescale_audit_per_feature(timescale_pkl_path: str,
                                      save_dir: str = None,
                                      save_plot_bool: bool = True,
-                                     plot_format: str = 'svg') -> dict:
+                                     plot_format: str = 'svg',
+                                     signal_smooth_window: int = 0) -> dict:
     """
     Renders the timescale audit as a small-multiples grid: one row per
     feature, two columns (ACF on the left, signal correlation on the
@@ -4197,14 +4990,55 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
 
     Layout
     ------
-    - One row per feature; left column shows ACF (median ± IQR across
-      sessions, positive lags only); right column shows the symmetric
-      signal correlation curve (ρ vs. binary USV indicator) with the
-      per-lag null 95th-percentile envelope shaded in grey.
-    - Y-axis scale of the signal-correlation column is shared across
-      all features so peak magnitudes are directly comparable. The ACF
-      column uses the standard `[-0.3, 1.05]` range used by
-      `plot_timescale_audit`.
+    - One row per feature, two columns. Each subplot is titled with
+      the feature name in the feature's group colour.
+    - Left column: ACF (median ± IQR across sessions, positive lags).
+      A grey band shows the shuffled-feature null at 0.5 / 99.5
+      percentiles, with a thin dashed line on the upper boundary so
+      the threshold is visible even when the band collapses to
+      near-zero. A downward triangle marks the latest lag at which
+      15 consecutive bins (≈ 100 ms at 150 fps) are still above the
+      upper null band, with the lag time annotated above (bold,
+      "{value} s"). Y-limits are `[0, 1.05]`.
+    - Right column: symmetric signal-correlation curve (ρ vs. binary
+      bout-onset indicator). The actual curve is the per-session
+      mean (negative lag = bout leads feature; positive lag =
+      feature leads bout); the SEM-across-sessions is drawn as a
+      filled band around it. The circular-shift null is on the
+      cohort-mean scale (shuffles paired by index across sessions,
+      cohort-mean per shuffle, 0.5/99.5 percentiles across the
+      `n_shuffles` cohort-mean curves) and is shown as a grey filled
+      band plus a pair of thin dashed grey lines at the upper /
+      lower envelope. The dashed lines guarantee the null threshold
+      stays visible even when the band collapses below pixel
+      resolution because the actual peak is large (e.g. nose-nose
+      at ρ ≈ 0.3 with cohort-mean null at ±0.001). A triangle
+      marker on the *positive lag axis* indicates the cross-
+      correlation right-side significance horizon, defined as the
+      end (largest lag) of the **longest sign-consistent
+      outside-null run** on the positive lag axis. Above-null and
+      below-null runs are tracked separately and compete for
+      "longest"; the winner's direction sets the marker shape (▽
+      for above-null, △ for below-null). Two filters apply before
+      the longest-run pick: runs whose last bin is below
+      `signal_floor_seconds` are excluded (so very-near-zero noise
+      cannot anchor a marker), and runs shorter than
+      `signal_min_run_seconds` (in seconds, converted to bins via
+      the lag-axis spacing) are excluded as scattered fragments.
+      Reading: "the largest sustained excursion of the curve away
+      from the shuffled distribution ends at this lag." When the
+      longest qualifying run extends to `+max_lag`, the marker
+      lands at the right edge of the panel and the lag annotation
+      gets a trailing `+`. Same min-x text clamp as the ACF marker
+      prevents the label from overrunning the y-axis when the
+      marker is close to lag 0; right-edge alignment when the
+      marker is close to `+max_lag`. Lag annotation is bold,
+      formatted as "{value} s" (or "{value} s+" in the
+      exceeds-window case). Y-limits are auto-fit to whatever
+      artists are drawn — the actual cohort-mean curve, the SEM
+      band, and the null envelope — so each feature's panel uses
+      its natural asymmetric range rather than
+      mirroring around zero.
 
     Parameters
     ----------
@@ -4223,6 +5057,12 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
     plot_format : str, default 'svg'
         Matplotlib `savefig` format. Only consulted when
         `save_plot_bool` is True.
+    signal_smooth_window : int, default 0
+        Rolling-average window size (in lag bins) applied to the
+        signal-correlation mean curve and SEM band at plot time only —
+        the artifact remains raw. `0` or `1` disables smoothing.
+        `10` ≈ 67 ms at 150 fps. Even windows are bumped odd-up so
+        the smoothing stays centred.
 
     Returns
     -------
@@ -4233,6 +5073,7 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
 
     with open(timescale_pkl_path, 'rb') as fh:
         payload = pickle.load(fh)
+    _require_timescale_payload(payload, timescale_pkl_path)
 
     feature_names = payload['features']
     acf_lags_seconds = np.asarray(payload['acf_lags_seconds'])
@@ -4241,75 +5082,323 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
     acf_p75 = np.asarray(payload['acf_p75'])
     signal_lags_seconds = np.asarray(payload['signal_lags_seconds'])
     rho_signal = np.asarray(payload['rho_signal'])
-    rho_signal_null = np.asarray(payload['rho_signal_null_p95'])
     cfg_hist = float(payload['configured_filter_history'])
+    # Lag floor (in seconds) for the cross-correlation right-side
+    # significance marker — runs whose last bin is below this floor
+    # are excluded. Falls back to a 0.5 s default when older
+    # artifacts (pre-floor) are read.
+    signal_floor_seconds = float(payload['signal_floor_seconds']) \
+        if 'signal_floor_seconds' in payload else 0.5
+    # Minimum sustained-run length (seconds) for the cross-correlation
+    # marker. The marker is placed at the end of the longest
+    # sign-consistent outside-null run on the positive lag axis whose
+    # length is at least this many seconds. Falls back to 0.2 s for
+    # older artifacts that pre-date the field.
+    signal_min_run_seconds = float(payload['signal_min_run_seconds']) \
+        if 'signal_min_run_seconds' in payload else 0.2
     source = payload['source_pickle']
+
+    # ACF circular-shift null (per-feature, per-lag): mean curve and
+    # 0.5/99.5 percentile band, computed by random circular shifts in
+    # `[shuffle_min_seconds, shuffle_max_seconds]` per session.
+    acf_null_mean = np.asarray(payload['acf_null_mean'])
+    acf_null_lo = np.asarray(payload['acf_null_p0_5'])
+    acf_null_hi = np.asarray(payload['acf_null_p99_5'])
+
+    # Per-session SEM around the actual cross-correlation curve.
+    rho_signal_sem = np.asarray(payload['rho_signal_per_session_sem'])
+
+    # Cross-correlation circular-shift null (per-feature, per-lag):
+    # mean curve and 0.5/99.5 percentile band.
+    rho_signal_null_mean = np.asarray(payload['rho_signal_null_mean'])
+    rho_signal_null_lo = np.asarray(payload['rho_signal_null_p0_5'])
+    rho_signal_null_hi = np.asarray(payload['rho_signal_null_p99_5'])
 
     n_features = len(feature_names)
     if n_features == 0:
         print(f"[plot] timescale audit at {timescale_pkl_path} has no features — skipping.")
         return {'figure_path': '', 'n_features': 0, 'configured_filter_history': cfg_hist}
 
-    cmap = plt.get_cmap('tab20', max(n_features, 20))
-    colors = [cmap(i % cmap.N) for i in range(n_features)]
+    # Group + colour features: self → SEI → other → social-dyadic.
+    order, ordered_colors = _order_and_color_predictor_features(
+        feature_names, source
+    )
 
-    # Shared y-limits for the signal-correlation column so per-feature
-    # peak magnitudes are directly comparable across panels.
-    sig_max_abs = float(np.nanmax(np.abs(rho_signal))) if rho_signal.size else 0.005
-    sig_ymax = max(sig_max_abs * 1.10, 1e-3)
+    # Run-length used for the ACF "leaves the band" marker. 15 bins
+    # ≈ 100 ms at 150 fps — request from the user.
+    acf_run_length = 15
 
+    # Compact layout: each subplot is near-square with the horizontal
+    # dimension slightly larger than the vertical. Two columns ×
+    # ~2.1 in wide each gives ~4.2 in total figure width; row height
+    # 1.85 in.
     fig, axes = plt.subplots(
         n_features, 2,
-        figsize=(14, 1.6 * n_features),
+        figsize=(4.2, 1.85 * n_features),
         sharex=False, squeeze=False,
     )
 
-    for i, fname in enumerate(feature_names):
-        col = colors[i]
+    # Marker size (in matplotlib points) used by both the ACF and
+    # cross-correlation triangle markers. Hoisted out of the
+    # per-feature loop so the cross-correlation block can reuse it
+    # even when the ACF run-out branch did not draw a marker for
+    # this feature.
+    marker_size = 7
+
+    for new_i, orig_i in enumerate(order):
+        fname = feature_names[orig_i]
+        col = ordered_colors[new_i]
 
         # Column 1 — ACF
-        axA = axes[i, 0]
-        axA.fill_between(acf_lags_seconds, acf_p25[i], acf_p75[i],
+        axA = axes[new_i, 0]
+        # Circular-shift ACF null: shaded band between 0.5 and 99.5
+        # percentiles. No mean line — it sits very close to zero and
+        # is visually redundant with the band centre.
+        axA.fill_between(acf_lags_seconds,
+                         acf_null_lo[orig_i], acf_null_hi[orig_i],
+                         color=TIMESCALE_NULL_COLOR, alpha=0.30, linewidth=0)
+        # Upper-boundary dashed line for the ACF null, mirroring the
+        # cross-correlation null envelope. The lower boundary sits
+        # very close to zero (ACF is non-negative in practice) so a
+        # second line there is visually redundant.
+        axA.plot(acf_lags_seconds, acf_null_hi[orig_i],
+                 color=TIMESCALE_NULL_COLOR, linewidth=0.6, linestyle='--', alpha=0.85)
+        axA.fill_between(acf_lags_seconds, acf_p25[orig_i], acf_p75[orig_i],
                          color=col, alpha=0.20, linewidth=0)
-        axA.plot(acf_lags_seconds, acf_med[i], color=col, linewidth=1.5)
-        axA.axhline(0, color='black', linewidth=0.5)
-        axA.axhline(1.0 / np.e, color='gray', linestyle=':', linewidth=0.6)
-        axA.axvline(cfg_hist, color='black', linestyle='--', linewidth=0.8)
+        axA.plot(acf_lags_seconds, acf_med[orig_i], color=col, linewidth=1.5)
+
+        # Mark the latest lag at which `acf_run_length` consecutive
+        # bins are still above the upper null band — the practical
+        # decorrelation horizon. Annotate the lag in seconds above
+        # the marker. The down-triangle is offset upward by half its
+        # height so the apex (bottom tip) lands on the ACF curve
+        # rather than the centroid passing through the curve. The
+        # text annotation has a minimum y in data units so it
+        # doesn't collide with the x-axis when the curve is near
+        # zero (e.g. fast-decorrelating features like
+        # `other.usv_rate`), and a minimum x (as a fraction of the
+        # x-axis span) so the centred label doesn't overrun the
+        # y-axis when the marker lag is small (e.g. ~0.2 s on a
+        # 10 s axis).
+        above_mask = acf_med[orig_i] > acf_null_hi[orig_i]
+        mark_idx = _last_bin_of_consecutive_run(above_mask, acf_run_length)
+        if mark_idx is not None:
+            lag_s = float(acf_lags_seconds[mark_idx])
+            y_at = float(acf_med[orig_i, mark_idx])
+            # Shift the down-triangle up by half its height (in points)
+            # so its apex lands on the curve rather than the centroid.
+            tip_transform = mtransforms.offset_copy(
+                axA.transData, fig=fig, x=0, y=marker_size / 2.0, units='points'
+            )
+            # Black outline (`#000000`) on the filled triangle so the
+            # marker reads cleanly against any per-feature fill colour.
+            axA.plot(lag_s, y_at, marker='v', color=col,
+                     markersize=marker_size, linestyle='None', zorder=5,
+                     markeredgecolor='#000000', markeredgewidth=0.6,
+                     transform=tip_transform)
+            # Text anchor: hold a minimum data-y so the label clears
+            # the x-axis when y_at is small. To keep the label clear
+            # of the y-axis when lag_s is small, switch the
+            # horizontal alignment from `center` to `left` once the
+            # marker enters the leftmost band of the panel — and
+            # additionally clamp the text x to a minimum data-x so
+            # the left edge of the label sits a comfortable distance
+            # right of the y-axis spine. The marker itself still
+            # draws at the actual (lag_s, y_at).
+            text_y_anchor = max(y_at, 0.08)
+            x_axis_max = float(acf_lags_seconds[-1]) if acf_lags_seconds.size else 1.0
+            min_text_x = 0.04 * x_axis_max
+            left_align_threshold = 0.18 * x_axis_max
+            if lag_s < left_align_threshold:
+                text_ha = 'left'
+                text_x_anchor = max(lag_s, min_text_x)
+            else:
+                text_ha = 'center'
+                text_x_anchor = lag_s
+            axA.annotate(f'{lag_s:.2f} s',
+                         xy=(text_x_anchor, text_y_anchor),
+                         xytext=(0, 12), textcoords='offset points',
+                         ha=text_ha, va='bottom',
+                         color=col, fontsize=7, fontweight='bold',
+                         annotation_clip=False)
+
         axA.set_xlim(0, acf_lags_seconds[-1] if acf_lags_seconds.size else 1.0)
-        axA.set_ylim(-0.3, 1.05)
-        axA.set_ylabel(fname, fontsize=9, rotation=0, ha='right', va='center', labelpad=4)
+        axA.set_ylim(0.0, 1.05)
+        axA.set_ylabel('autocorrelation (ρ)', fontsize=8)
+        axA.set_title(fname, fontsize=9, color=col, pad=3, fontweight='bold')
         axA.tick_params(labelsize=7)
-        if i == 0:
-            axA.set_title('ACF (median ± IQR)', fontsize=11)
-        if i == n_features - 1:
+        if new_i == n_features - 1:
             axA.set_xlabel('Lag (s)')
         else:
             axA.set_xticklabels([])
 
-        # Column 2 — Signal correlation
-        axB = axes[i, 1]
-        axB.fill_between(signal_lags_seconds, -rho_signal_null[i], rho_signal_null[i],
-                         color='gray', alpha=0.25, linewidth=0)
-        axB.plot(signal_lags_seconds, rho_signal[i], color=col, linewidth=1.5)
-        axB.axhline(0, color='black', linewidth=0.5)
-        axB.axvline(0, color='black', linewidth=0.6)
+        # Column 2 — Signal correlation. Per-session mean (line) ±
+        # SEM (filled band), with the circular-shift null mean +
+        # 0.5/99.5 percentile band underneath. Y-limits are per-plot
+        # so each feature's full peak structure is visible regardless
+        # of cross-feature magnitude differences.
+        axB = axes[new_i, 1]
+        # Null band first, so the actual curve and SEM draw over it.
+        # The cohort-mean null is `~σ_session/√n_sessions` wide — for
+        # high-ρ features (e.g. nose-nose with peak ρ ≈ 0.3) this is
+        # ~0.3% of the y-axis and the fill collapses below pixel
+        # resolution. Overlay thin dashed lines at the upper / lower
+        # null envelope so the threshold is always visible regardless
+        # of the per-feature y-scale; the fill carries the per-lag
+        # shape when the band is comparable scale to the actual curve.
+        axB.fill_between(signal_lags_seconds,
+                         rho_signal_null_lo[orig_i], rho_signal_null_hi[orig_i],
+                         color=TIMESCALE_NULL_COLOR, alpha=0.25, linewidth=0)
+        axB.plot(signal_lags_seconds, rho_signal_null_hi[orig_i],
+                 color=TIMESCALE_NULL_COLOR, linewidth=0.6, linestyle='--', alpha=0.85)
+        axB.plot(signal_lags_seconds, rho_signal_null_lo[orig_i],
+                 color=TIMESCALE_NULL_COLOR, linewidth=0.6, linestyle='--', alpha=0.85)
+        # Optional rolling-average smoothing for plotting only — the
+        # artifact stays raw. Applied symmetrically to mean and SEM so
+        # the band stays consistent with the (smoothed) curve.
+        mean_curve_plot = _rolling_mean_1d(rho_signal[orig_i], signal_smooth_window)
+        sem_curve_plot = _rolling_mean_1d(rho_signal_sem[orig_i], signal_smooth_window)
+        axB.fill_between(signal_lags_seconds,
+                         mean_curve_plot - sem_curve_plot,
+                         mean_curve_plot + sem_curve_plot,
+                         color=col, alpha=0.25, linewidth=0)
+        axB.plot(signal_lags_seconds, mean_curve_plot, color=col, linewidth=1.5)
+        axB.axhline(0, color=TIMESCALE_AXIS_COLOR, linewidth=0.5)
+        axB.axvline(0, color=TIMESCALE_AXIS_COLOR, linewidth=0.6)
         if signal_lags_seconds.size:
             axB.set_xlim(signal_lags_seconds[0], signal_lags_seconds[-1])
-        axB.set_ylim(-sig_ymax, sig_ymax)
+
+        # Cross-correlation right-side significance marker.
+        #
+        # Algorithm: longest sign-consistent outside-null run on the
+        # positive lag axis (above-null and below-null are tracked
+        # as separate runs). Runs whose last bin is below
+        # `signal_floor_seconds` are excluded; runs shorter than
+        # `signal_min_run_seconds` × fps are excluded as
+        # noise-fragments. Among the remainder, the longest run is
+        # selected; ties broken toward smaller end-index (closer to
+        # lag 0). The marker sits at the **end** (largest lag) of
+        # that run, with sign matching the run direction (▽ for
+        # above-null, △ for below-null).
+        #
+        # Reading: "the largest sustained excursion of the curve
+        # away from the shuffled distribution ends at this lag —
+        # past this lag, no run that long persists."
+        #
+        # `signal_floor_seconds` suppresses very-near-zero noise;
+        # `signal_min_run_seconds` suppresses scattered short
+        # excursions (e.g. ~28-bin fragments on `other.usv_rate`)
+        # while preserving multi-hundred-bin real runs.
+        #
+        # Edge case: when the longest qualifying run extends all the
+        # way to `+max_lag`, the marker is drawn at the right edge
+        # of the panel and the lag annotation gets a trailing `+`
+        # to indicate the horizon exceeds the configured window.
+        if signal_lags_seconds.size > 0:
+            sig_max_lag_s = float(signal_lags_seconds[-1])
+            sig_idx_floor = int(np.searchsorted(
+                signal_lags_seconds, signal_floor_seconds, side='left'
+            ))
+            sig_idx_max = signal_lags_seconds.size - 1
+            # Convert the seconds-valued threshold to bins via the
+            # lag-axis spacing. `np.ceil` so 0.2 s on a 150-fps grid
+            # gives 30 bins (= 0.2 s exactly), never less.
+            if signal_lags_seconds.size > 1:
+                _delta_t = float(signal_lags_seconds[1] - signal_lags_seconds[0])
+                sig_min_run_bins = int(np.ceil(signal_min_run_seconds / _delta_t))
+            else:
+                sig_min_run_bins = 1
+            sig_hit = _signal_outer_run_marker(
+                mean_curve_plot,
+                rho_signal_null_lo[orig_i],
+                rho_signal_null_hi[orig_i],
+                sig_min_run_bins,
+                sig_idx_floor,
+                sig_idx_max,
+            )
+        else:
+            sig_hit = None
+            sig_max_lag_s = 1.0
+
+        if sig_hit is not None:
+            sig_idx, sig_sign, sig_exceeds = sig_hit
+            sig_lag_s = float(signal_lags_seconds[sig_idx])
+            sig_y_at = float(mean_curve_plot[sig_idx])
+            sig_marker = 'v' if sig_sign > 0 else '^'
+            # Tip-offset trick (analogous to the ACF marker): for a
+            # ▽ apex pointing down to land on the curve we shift the
+            # marker UP by half its height; for △ apex pointing up,
+            # shift DOWN.
+            sig_offset_pts = (marker_size / 2.0) * (1.0 if sig_sign > 0 else -1.0)
+            sig_tip_transform = mtransforms.offset_copy(
+                axB.transData, fig=fig, x=0, y=sig_offset_pts, units='points'
+            )
+            # Black outline (`#000000`) on the filled triangle so the
+            # marker reads cleanly against any per-feature fill colour
+            # and the apex is visually clear against the curve.
+            axB.plot(sig_lag_s, sig_y_at, marker=sig_marker, color=col,
+                     markersize=marker_size, linestyle='None', zorder=5,
+                     markeredgecolor='#000000', markeredgewidth=0.6,
+                     transform=sig_tip_transform)
+            # Text x-anchor: same min-x clamp + left/center alignment
+            # switch as the ACF marker so the centred label doesn't
+            # overrun the y-axis when sig_lag_s is small. When the
+            # marker sits at +max_lag (exceeds-window case) we right-
+            # align the label so it doesn't run off the right edge.
+            sig_min_text_x = 0.04 * sig_max_lag_s
+            sig_left_align_threshold = 0.18 * sig_max_lag_s
+            sig_right_align_threshold = 0.82 * sig_max_lag_s
+            if sig_lag_s < sig_left_align_threshold:
+                sig_text_ha = 'left'
+                sig_text_x_anchor = max(sig_lag_s, sig_min_text_x)
+            elif sig_lag_s > sig_right_align_threshold:
+                sig_text_ha = 'right'
+                sig_text_x_anchor = sig_lag_s
+            else:
+                sig_text_ha = 'center'
+                sig_text_x_anchor = sig_lag_s
+            # Text vertical placement: above the marker for positive
+            # separation (▽ sits above the curve), below for negative
+            # separation (△ sits below). `va` matches so the text edge
+            # nearest the curve lines up against the marker body.
+            sig_text_y_offset = 12 if sig_sign > 0 else -12
+            sig_text_va = 'bottom' if sig_sign > 0 else 'top'
+            sig_label = f'{sig_lag_s:.2f} s+' if sig_exceeds else f'{sig_lag_s:.2f} s'
+            axB.annotate(sig_label,
+                         xy=(sig_text_x_anchor, sig_y_at),
+                         xytext=(0, sig_text_y_offset),
+                         textcoords='offset points',
+                         ha=sig_text_ha, va=sig_text_va,
+                         color=col, fontsize=7, fontweight='bold',
+                         annotation_clip=False)
+
+        # No explicit y-limit — matplotlib auto-fits to the union of
+        # all artists drawn (mean curve, SEM band, null fill, null
+        # envelope dashed lines). Lets each feature's curve be shown
+        # at its natural asymmetric range rather than padding the
+        # opposite side to a symmetric mirror of the peak. (Was
+        # previously `set_ylim(-feat_ymax, feat_ymax)`.)
         axB.tick_params(labelsize=7)
-        if i == 0:
-            axB.set_title('Signal correlation (ρ vs. binary USV — shaded: |null| 95th pct)',
-                          fontsize=11)
-        if i == n_features - 1:
-            axB.set_xlabel('Lag (s)   (neg: USV leads feature   |   pos: feature leads USV)')
+        # Push the right-column y-tick labels to the outer (right)
+        # edge so they don't overlap the left column's plot area in
+        # the narrower figure.
+        axB.yaxis.tick_right()
+        axB.yaxis.set_label_position('right')
+        axB.set_ylabel('cross-correlation (ρ)', fontsize=8)
+        axB.set_title(fname, fontsize=9, color=col, pad=3, fontweight='bold')
+        if new_i == n_features - 1:
+            axB.set_xlabel('bout leads --- Lag (s) --- feature leads')
         else:
             axB.set_xticklabels([])
 
-    fig.suptitle(f"Timescale audit — per-feature panels — source: {source}",
-                 fontsize=12, y=0.999)
-    fig.subplots_adjust(left=0.18, right=0.98,
-                        top=1.0 - 0.6 / max(n_features, 1),
-                        bottom=0.04, hspace=0.10, wspace=0.18)
+    # Tighter left margin (vertical y-labels), a touch of right margin
+    # for the moved-to-the-right column-2 y-ticks, and a bit of extra
+    # vertical space between rows so per-row titles don't collide
+    # with the row above. No figure-level suptitle — the per-row
+    # bold feature-name titles carry the identity, and the source
+    # filename is on the saved file path.
+    fig.subplots_adjust(left=0.08, right=0.92, top=0.98,
+                        bottom=0.04, hspace=0.45, wspace=0.22)
 
     if save_plot_bool:
         if save_dir is None:

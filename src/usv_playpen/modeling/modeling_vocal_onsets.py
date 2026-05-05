@@ -288,11 +288,23 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         print(f"Final feature suffixes selected: {revised_behavioral_predictors}")
 
         print("Z-scoring features across sessions...")
+        # `abs_features` (plain `|x|` fold) is for features whose
+        # signed distribution is spread out across the range — the
+        # kink at zero introduced by `|x|` carries little data mass
+        # and pygam's penalised B-spline fits cleanly. The
+        # `smooth_abs_features` dict (settings-driven) is for
+        # features whose signed distribution is sharply peaked at
+        # zero (e.g. `ego_yaw`, `back_yaw`); those need
+        # `sqrt(x² + ε²)` instead, otherwise the bulk of mass sits
+        # on the kink and IRLS conditioning collapses. See
+        # `zscore_different_sessions_together` for the full story.
+        smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {}),
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            smooth_abs_features=smooth_abs_features,
         )
         print("Z-scoring complete.")
 
@@ -306,7 +318,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # idx, target_vocal_type) live in `_input_metadata` rather than
         # in the filename.
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = f"onsets-{target_vocal_type}"
+        analysis_tag = f"onsets_{target_vocal_type}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name_ = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -388,6 +400,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=file_name_,
             input_metadata=input_metadata,
+            balance_event_keys=False,
         )
 
         print("Extracting epochs per session and renaming features...")
@@ -1210,10 +1223,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     ).fit(X_train_gam, y_train_tiled)
                     fit_time = float(time.perf_counter() - fit_start)
 
-                    diffs = gam_actual.logs_.get('diffs', [])
+                    diffs = gam_actual.logs_['diffs']
+                    # `gam.logs_` is a `defaultdict(list)` initialized
+                    # by pygam in `fit()`, so direct subscript access
+                    # returns `[]` for missing keys without `KeyError`.
+                    # Use `... if seq else 0.0` for the empty-list
+                    # case rather than `.get(..., [0.0])`.
+                    deviance_log = gam_actual.logs_['deviance']
                     print(f"      Completed in {len(diffs)} iters | "
                           f"Final Δ: {diffs[-1] if diffs else 0.0:.2e} (Tol: {tol_val:.2e}) | "
-                          f"Deviance: {gam_actual.logs_.get('deviance', [0.0])[-1]:.2f}")
+                          f"Deviance: {deviance_log[-1] if deviance_log else 0.0:.2f}")
 
                     y_proba_tiled = gam_actual.predict_proba(X_test_gam)
                     y_proba_mean_epoch = np.mean(y_proba_tiled.reshape(X_test.shape), axis=1)
@@ -1290,7 +1309,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     results['null']['confusion_matrix'][split_idx] = safe_confusion_matrix(
                         y_test_int_null, y_pred_shuffled_mean, labels=np.array([0, 1])
                     )
-                    null_diffs = gam_shuffled.logs_.get('diffs', [])
+                    null_diffs = gam_shuffled.logs_['diffs']
                     results['null']['n_iter'][split_idx] = float(len(null_diffs))
                     results['null']['converged'][split_idx] = float(bool(null_diffs and null_diffs[-1] < tol_val))
                     results['null']['fit_time'][split_idx] = fit_time

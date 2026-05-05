@@ -48,35 +48,42 @@
     "dyadic_engagement": ["orofacial-sei"],
     "dyadic_pose_symmetric": false,
     "include_1st_derivatives": false,
-    "include_2nd_derivatives": false
+    "include_2nd_derivatives": false,
+    "smooth_abs_features": {
+      "ego_yaw": 1.0,
+      "back_yaw": 0.5
+    }
   },
 
   "vocal_features": {
     "usv_predictor_type": "pooled_rate",
     "usv_predictor_partner_only": true,
     "usv_predictor_smoothing_sd": 1,
-    "usv_category_column_name": "usv_supercategory",
-    "usv_noise_column": "usv_supercategory",
+    "usv_category_column_name": "vae_supercategory",
+    "usv_noise_column": "vae_supercategory",
     "usv_noise_categories": [0],
     "usv_category_number": 6,
-    "usv_manifold_column_names": ["usv_umap1", "usv_umap2"]
+    "usv_manifold_column_names": ["vae_umap1", "vae_umap2"]
   },
 
   "diagnostics": {
     "collinearity_audit": true,
     "timescale_audit": true,
     "timescale_max_lag_seconds": 10.0,
-    "timescale_n_shuffles": 1000
+    "timescale_n_shuffles": 1000,
+    "timescale_shuffle_range": [20, 60],
+    "timescale_signal_floor_seconds": 0.5,
+    "timescale_signal_min_run_seconds": 0.2
   },
 
   "gmm_params": {
     "male": {
-      "means": [-2.77722, -1.60209, -0.52512],
-      "sds": [0.26468, 0.75324, 2.224]
+      "means": [-2.76955, -1.73685, -0.99831, 2.03705],
+      "sds": [0.24298, 0.20695, 0.92012, 1.1465]
     },
     "female": {
-      "means": [-1.50576, 1.62977],
-      "sds": [1.23229, 1.3938]
+      "means": [-2.94055, -0.1212, 3.17175],
+      "sds": [0.7343, 1.30491, 0.78553]
     }
   },
 

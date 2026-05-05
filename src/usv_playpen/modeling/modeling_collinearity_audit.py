@@ -19,11 +19,11 @@ the per-event history matrix:
      * Predictor autocorrelation (ACF) → how long each feature holds
        memory of itself; a structural property of the predictor.
      * Signal correlation → temporal cross-correlation between every
-       predictor and the per-frame binary USV train, at lags spanning
-       `[-max_lag_seconds, +max_lag_seconds]`. Negative lags mean the
-       USV precedes the feature; positive lags mean the feature precedes
-       the USV. A within-session circular-shift null is computed
-       alongside as a per-lag noise floor.
+       predictor and the per-frame binary bout-onset trace, at lags
+       spanning `[-max_lag_seconds, +max_lag_seconds]`. Negative lags
+       mean the bout precedes the feature; positive lags mean the
+       feature precedes the bout. A within-session circular-shift
+       null is computed alongside as a per-lag noise floor.
    The response-side IBI thresholds and empirical IBI percentiles are
    bundled in for completeness.
 
@@ -661,6 +661,54 @@ def _binary_event_trace(event_times: np.ndarray, n_frames: int, fps: float) -> n
     return trace
 
 
+def _binary_vocalizing_trace(starts: np.ndarray,
+                             stops: np.ndarray,
+                             n_frames: int,
+                             fps: float) -> np.ndarray:
+    """
+    Renders per-USV start/stop intervals into a binary "is-vocalizing"
+    trace at the camera frame rate. Every frame falling inside a USV
+    interval `[start, stop)` is set to `1.0`; all other frames are
+    `0.0`. Sub-frame USVs (where `stop` and `start` round to the same
+    integer frame) still produce one `1.0` so the USV is not silently
+    dropped.
+
+    Parameters
+    ----------
+    starts : np.ndarray
+        Per-USV start times in seconds.
+    stops : np.ndarray
+        Per-USV stop times in seconds. Must be the same length as
+        `starts`, with `stops[i] >= starts[i]`.
+    n_frames : int
+        Length of the output trace (in frames).
+    fps : float
+        Camera sampling rate.
+
+    Returns
+    -------
+    np.ndarray
+        `float32` binary trace of shape `(n_frames,)`. `1.0` whenever a
+        USV is occurring, `0.0` during silence.
+    """
+
+    trace = np.zeros(n_frames, dtype=np.float32)
+    if starts is None or stops is None or len(starts) == 0:
+        return trace
+    starts = np.asarray(starts, dtype=np.float64)
+    stops = np.asarray(stops, dtype=np.float64)
+    s_idx = np.clip(np.floor(starts * fps).astype(int), 0, n_frames)
+    e_idx = np.clip(np.ceil(stops * fps).astype(int), 0, n_frames)
+    for s, e in zip(s_idx, e_idx):
+        if e > s:
+            trace[s:e] = 1.0
+        elif s < n_frames:
+            # Sub-frame USV: at minimum mark one frame so the event
+            # is not silently lost.
+            trace[s] = 1.0
+    return trace
+
+
 def _spearman_at_lag(X_ranks: np.ndarray,
                      Y_ranks: np.ndarray,
                      lag: int) -> np.ndarray:
@@ -721,48 +769,93 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                                save_path: str,
                                source_pickle: str,
                                random_seed: int = 0,
-                               input_metadata: dict = None) -> dict:
+                               input_metadata: dict = None,
+                               shuffle_range_seconds: tuple = (20.0, 60.0),
+                               event_intervals_per_session: dict = None,
+                               bout_onset_times_per_session: dict = None,
+                               signal_floor_seconds: float = 0.5,
+                               signal_min_run_seconds: float = 0.2) -> dict:
     """
     Computes per-feature ACF and signal correlation between every kept
-    predictor and the per-frame binary USV train, alongside the
-    response-side IBI distribution, and persists the result to disk.
+    predictor and the per-frame binary bout-onset trace, alongside
+    the response-side IBI distribution, and persists the result to disk.
+
+    Binary `Y` definition
+    ---------------------
+    `Y(t) = 1` at every frame index that is the start of a vocal bout
+    (single-frame impulse, sparse), and `Y(t) = 0` everywhere else.
+    Bout-onset times come from `bout_onset_times_per_session` — for
+    the `vocal_onsets` pipeline in `bout` mode these are
+    `usv_data_dict[sess][target]['positive_events']`, the same set
+    of events the model is trained to predict. Built via
+    `_binary_event_trace`, which marks the integer frame index of
+    each onset (one `1.0` per bout, no within-bout duty cycle).
+
+    The previous "is-vocalizing" definition (`1` throughout every
+    `[start, stop)`) is preserved as `_binary_vocalizing_trace` for
+    is-occurring-now analyses but is not currently wired in. The
+    pooled `positive_events ∪ negative_events` definition was
+    explicitly removed because it mixed bout-start frames with
+    silence-sample frames into a single `1.0` marker, which is not
+    a valid vocal indicator.
+
+    Bout-onset Y is sharper than is-vocalizing Y for the audit's
+    primary question ("how far back does feature history inform an
+    upcoming bout?") because: (1) each bout contributes one clean
+    sample of `x` at lag `k` rather than a duration-blurred window,
+    so lag-specific peaks survive; and (2) bout onsets have narrow
+    autocorrelation at the lag scales we care about (±10 s),
+    keeping the circular-shift null tight.
 
     The ACF profile characterises each feature's own memory (how long
     its values stay correlated with themselves). The signal-correlation
-    profile characterises how that feature aligns in time with the
-    binary USV indicator, at lags from `-max_lag_seconds` to
-    `+max_lag_seconds`. Lag-sign convention:
+    profile characterises how that feature aligns in time with `Y`, at
+    lags from `-max_lag_seconds` to `+max_lag_seconds`. Lag-sign
+    convention:
 
-        ρ_signal(k) = corr( feature[t], usv_indicator[t + k] )
+        ρ_signal(k) = corr( feature[t], Y[t + k] )
 
-    so positive `k` ⇒ feature leads USV (behaviour precedes
-    vocalisation); negative `k` ⇒ USV leads feature (vocalisation
+    so positive `k` ⇒ feature leads bout (behaviour precedes
+    vocalisation); negative `k` ⇒ bout leads feature (vocalisation
     precedes behaviour).
 
     Signal-correlation implementation
     ---------------------------------
-    For each feature `f` the kept session traces are concatenated into a
-    single rank-transformed pooled array `X_f`, and the per-session
-    binary event indicator is similarly concatenated and rank-transformed
-    into `Y_v` (one variant per actual + per shuffle). Spearman ρ at every
-    lag `k ∈ [-L_max_frames, +L_max_frames]` is recovered in one rfft
-    + n_variants × irfft passes via the cross-correlation theorem, with
-    `n_pad` set to the next power of two ≥ `total_frames + L_max_frames`
-    so the lag window stays free of circular-wrap contamination. The
-    within-session circular-shift null shifts each session's `Y` by a
-    uniformly drawn offset before re-pooling — this preserves `Y`'s
-    event-clustering structure while destroying its alignment with `X`,
-    so the null reflects what `|ρ|` would be under random within-session
-    timing.
+    For each (session × feature) pair the FFT cross-correlation curve
+    is computed once at `n_pad_sess` lags. Two views of that single
+    curve are then read off: the symmetric `[-L_max, +L_max]` window
+    (the per-session actual ρ_session(k)) and `n_shuffles` per-session
+    null windows centred at random shifts `S ∈ [shuffle_min,
+    shuffle_max]` seconds.
+
+    The per-session actuals are then averaged across sessions (mean +
+    SEM): the plotted line is `mean_s ρ_session(k)` and the SEM band
+    is `std_s ρ_session(k) / √n_sessions`.
+
+    The null is reported on the *same* cohort-mean scale: shuffles
+    are paired by index across sessions (valid because shifts within
+    each session are i.i.d.), the cohort mean of `ρ_session(k)` is
+    computed for each shuffle index, and the resulting `n_shuffles`
+    cohort-mean curves are reduced to per-feature, per-lag mean and
+    0.5 / 99.5 percentile envelopes. Width of the null band is
+    therefore ~`σ_session/√n_sessions` — comparable to the SEM band
+    on the actual line — rather than the much wider per-session
+    spread the previous (`(session × shuffle)`-pooled) implementation
+    reported. With `S` chosen well past the slowest feature's
+    autocorrelation timescale, the sampled null lags lie in the tail
+    where true ρ ≈ 0, giving a Bartlett-style honest null that
+    preserves the autocorrelation structure of both `x` and `y`.
 
     Parameters
     ----------
     processed_beh_dict : dict
         Mapping `session_id -> polars.DataFrame` after z-scoring.
     event_times_per_session : dict
-        Mapping `session_id -> np.ndarray` of pooled event onset times
-        (seconds). Used both to derive `Y` and to anchor the ACF window
-        to the same set of sessions the model will be trained on.
+        Mapping `session_id -> np.ndarray`. Only used here for the
+        `_input_metadata` provenance (so the artifact records the same
+        event-keys the collinearity audit ran against). Not consulted
+        for `Y` construction or for IBI percentiles, which both go
+        through `event_intervals_per_session` exclusively.
     mouse_names_dict : dict
         Mapping `session_id -> list[mouse_name]`.
     target_idx, predictor_idx : int
@@ -843,17 +936,26 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             'acf_median': np.empty((0, 0), dtype=np.float32),
             'acf_p25': np.empty((0, 0), dtype=np.float32),
             'acf_p75': np.empty((0, 0), dtype=np.float32),
+            'acf_null_mean': np.empty((0, 0), dtype=np.float32),
+            'acf_null_p0_5': np.empty((0, 0), dtype=np.float32),
+            'acf_null_p99_5': np.empty((0, 0), dtype=np.float32),
             'tau_acf_1_over_e': np.empty((0,), dtype=np.float32),
             'tau_acf_0_2': np.empty((0,), dtype=np.float32),
             'tau_acf_integrated': np.empty((0,), dtype=np.float32),
             'signal_lags_frames': np.empty((0,), dtype=np.int32),
             'signal_lags_seconds': np.empty((0,), dtype=np.float32),
             'rho_signal': np.empty((0, 0), dtype=np.float32),
-            'rho_signal_null_p95': np.empty((0, 0), dtype=np.float32),
+            'rho_signal_per_session_mean': np.empty((0, 0), dtype=np.float32),
+            'rho_signal_per_session_sem': np.empty((0, 0), dtype=np.float32),
+            'rho_signal_null_mean': np.empty((0, 0), dtype=np.float32),
+            'rho_signal_null_p0_5': np.empty((0, 0), dtype=np.float32),
+            'rho_signal_null_p99_5': np.empty((0, 0), dtype=np.float32),
             'ibi_thresholds': dict(ibi_thresholds),
             'ibi_empirical_pcts': {'p50': float('nan'), 'p90': float('nan'), 'p99': float('nan')},
             'configured_filter_history': float(configured_filter_history),
-            'n_events': 0, 'n_sessions': 0,
+            'signal_floor_seconds': float(signal_floor_seconds),
+            'signal_min_run_seconds': float(signal_min_run_seconds),
+            'n_events': 0, 'n_bouts': 0, 'n_usvs': 0, 'n_sessions': 0,
             'source_pickle': source_pickle,
             'created': datetime.now().isoformat(timespec='seconds'),
         }
@@ -867,7 +969,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     # All sessions are recorded at the same fps in this project; pull the
     # canonical value and warn loudly if heterogeneity ever appears. The
     # reported `lags_seconds` axis uses a single fps; `_per_session_acf`
-    # and `_binary_event_trace` still use each session's own fps
+    # and `_binary_vocalizing_trace` still use each session's own fps
     # internally, but a mixed-fps run would render the artifact's
     # `lags_seconds` axis ambiguous. Treat as a known limitation.
     fps_values = {camera_fps_dict[s] for s in session_blocks if s in camera_fps_dict}
@@ -884,20 +986,45 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     signal_lag_grid_frames = np.arange(-max_lag_frames, max_lag_frames + 1, dtype=np.int32)
     signal_lag_grid_seconds = signal_lag_grid_frames.astype(np.float32) / fps
 
-    # ----------------- ACF -----------------
-    print(f"[audit]   ACF: {n_features} features × {len(session_blocks)} sessions × "
+    # Shift-bound conversion (used by both nulls). The user-facing
+    # range is in seconds; convert here once. Both bounds are positive,
+    # `shuffle_min_frames < shuffle_max_frames`, and large enough that
+    # `ACF_x(S) ≈ 0` for the slowest feature in the cohort.
+    shuffle_min_seconds, shuffle_max_seconds = (
+        float(shuffle_range_seconds[0]),
+        float(shuffle_range_seconds[1]),
+    )
+    shuffle_min_frames = int(np.floor(shuffle_min_seconds * fps))
+    shuffle_max_frames = int(np.floor(shuffle_max_seconds * fps))
+
+    # ----------------- ACF + circular-shift null -----------------
+    # The circular-shift null preserves the autocorrelation structure
+    # of `x` (we shift, we don't permute) while breaking the alignment
+    # at lag 0. Because `xcorr(x, x_shifted_by_S)[k] = ACF(k + S)`, we
+    # can pre-compute one extended-length ACF per (session, feature)
+    # and read off null samples by indexing. With shifts drawn from
+    # `[shuffle_min_seconds, shuffle_max_seconds]` (≈ 20–60 s, well
+    # past the slowest feature's τ_int), every sampled value lies in
+    # the ACF's "tail" where the true autocorrelation has decayed,
+    # giving a Bartlett-style honest null reflecting the actual
+    # estimator variance under the data's spectral properties.
+    n_sess_total = len(session_blocks)
+    print(f"[audit]   ACF: {n_features} features × {n_sess_total} sessions × "
           f"{max_lag_frames + 1} lags ({max_lag_seconds:.1f} s @ {fps:.1f} fps)")
 
-    acf_stack = np.full((n_features, len(session_blocks), max_lag_frames + 1),
-                        np.nan, dtype=np.float32)
-    n_sess_total = len(session_blocks)
+    acf_extended_max_lag = max_lag_frames + shuffle_max_frames
+    acf_long_stack = np.full(
+        (n_features, n_sess_total, acf_extended_max_lag + 1),
+        np.nan, dtype=np.float32,
+    )
     acf_t0 = time.monotonic()
     for s_i, (sess_id, per_feature) in enumerate(session_blocks.items()):
         for f_i, fname in enumerate(feature_names):
             if fname not in per_feature:
                 continue
-            acf_stack[f_i, s_i, :] = _per_session_acf(per_feature[fname],
-                                                     max_lag_frames).astype(np.float32)
+            acf_long_stack[f_i, s_i, :] = _per_session_acf(
+                per_feature[fname], acf_extended_max_lag
+            ).astype(np.float32)
         if (s_i + 1) % 10 == 0 or (s_i + 1) == n_sess_total:
             elapsed = time.monotonic() - acf_t0
             rate = (s_i + 1) / elapsed if elapsed > 0 else 0.0
@@ -905,12 +1032,10 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             print(f"[audit]   ACF: session {s_i + 1}/{n_sess_total} "
                   f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
 
-    # `np.nanmedian` / `np.nanpercentile` emit a "All-NaN slice
-    # encountered" warning whenever a (feature, lag) cell is NaN for
-    # every session — common for features that fail to compute on
-    # constant traces or that the loader stripped from some sessions.
-    # The NaNs propagate cleanly through the rest of the audit; the
-    # warning is just stdout noise.
+    # Display ACF (lags 0..L) is just the leading slice of the long
+    # ACF. Median / IQR across sessions give the central / spread
+    # bands shown on the plot.
+    acf_stack = acf_long_stack[:, :, :max_lag_frames + 1]
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)
         acf_median = np.nanmedian(acf_stack, axis=1)
@@ -924,220 +1049,312 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     tau_int = np.array([_integrated_autocorr_time(acf_median[i])
                         for i in range(n_features)], dtype=np.float32) / fps
 
+    # Circular-shift ACF null: stream by feature, draw `n_shuffles`
+    # random shifts per session in [shuffle_min_frames, shuffle_max_frames],
+    # collect `acf_long_stack[f, s, S : S+L+1]` for each, pool into a
+    # `(n_sess × n_shuffles, L+1)` matrix, reduce to per-lag mean +
+    # 0.5 / 99.5 percentile per feature.
+    print(f"[audit]   ACF null: {n_shuffles} circular shifts × {n_sess_total} "
+          f"sessions per feature, S ∈ [{shuffle_min_seconds:.1f}, "
+          f"{shuffle_max_seconds:.1f}] s ({shuffle_min_frames}–{shuffle_max_frames} frames)...")
+    acf_null_mean = np.full((n_features, max_lag_frames + 1), np.nan, dtype=np.float32)
+    acf_null_p0_5 = np.full((n_features, max_lag_frames + 1), np.nan, dtype=np.float32)
+    acf_null_p99_5 = np.full((n_features, max_lag_frames + 1), np.nan, dtype=np.float32)
+    rng_acf = np.random.default_rng(random_seed + 1)
+    acf_null_t0 = time.monotonic()
+    for f_i in range(n_features):
+        pool = np.empty((n_sess_total * n_shuffles, max_lag_frames + 1),
+                        dtype=np.float32)
+        pool_idx = 0
+        for s_i in range(n_sess_total):
+            if not np.isfinite(acf_long_stack[f_i, s_i, 0]):
+                continue
+            shifts = rng_acf.integers(shuffle_min_frames, shuffle_max_frames + 1,
+                                      size=n_shuffles)
+            for S in shifts:
+                pool[pool_idx, :] = acf_long_stack[f_i, s_i, int(S):int(S) + max_lag_frames + 1]
+                pool_idx += 1
+        if pool_idx > 0:
+            pool = pool[:pool_idx]
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                acf_null_mean[f_i, :] = np.mean(pool, axis=0)
+                acf_null_p0_5[f_i, :] = np.percentile(pool, 0.5, axis=0)
+                acf_null_p99_5[f_i, :] = np.percentile(pool, 99.5, axis=0)
+        del pool
+        if (f_i + 1) % 5 == 0 or (f_i + 1) == n_features:
+            elapsed = time.monotonic() - acf_null_t0
+            rate = (f_i + 1) / elapsed if elapsed > 0 else 0.0
+            eta = (n_features - (f_i + 1)) / rate if rate > 0 else float('inf')
+            print(f"[audit]   ACF null: feature {f_i + 1}/{n_features} "
+                  f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
+    del acf_long_stack
+
     # ----------------- Signal correlation -----------------
     print(f"[audit]   Signal correlation: pooling sessions, "
           f"{n_shuffles} shuffles for null, lags ±{max_lag_seconds:.1f} s")
 
     # Determine session length per session by picking the first feature
-    # we have data for; require an event_times entry for the session.
-    # Sessions without an event-times entry are excluded (the predictive-ρ
-    # null shuffles per-session indicators, so each session needs at
-    # least one event); sessions where a feature is absent receive a
-    # zero-filled column further below so per-feature column shapes are
-    # preserved.
+    # we have data for; require a bout-onset times entry for the
+    # session — that is the audit's sole source of `Y`. Sessions
+    # without bout onsets are excluded (no bouts means no signal
+    # correlation to compute and no within-session shuffle null to
+    # draw). The `event_intervals_per_session` dict is also required,
+    # but only for the IBI-percentile reporting (it is the inter-USV
+    # gap source, not a `Y` source).
+    if bout_onset_times_per_session is None:
+        raise ValueError(
+            "audit_predictor_timescales requires `bout_onset_times_per_session`. "
+            "The binary `Y(t) = bout-onset-at-frame-t` trace is built "
+            "exclusively from per-session bout-onset arrays "
+            "(typically `usv_data_dict[sess][target]['positive_events']` "
+            "from the vocal_onsets pipeline in `bout` mode)."
+        )
+    if event_intervals_per_session is None:
+        raise ValueError(
+            "audit_predictor_timescales requires `event_intervals_per_session` "
+            "for the IBI-percentile report block (per-USV `[start, stop)` "
+            "arrays — used to compute inter-USV gaps that are directly "
+            "comparable to the GMM-derived `ibi_threshold`)."
+        )
     valid_sessions = []
     for sess_id, per_feature in session_blocks.items():
-        if sess_id not in event_times_per_session:
+        if sess_id not in bout_onset_times_per_session:
             continue
         if not per_feature:
             continue
         n_frames_sess = next(iter(per_feature.values())).size
         valid_sessions.append((sess_id, n_frames_sess))
 
+    n_signal_lags = signal_lag_grid_frames.size
     if not valid_sessions:
-        print("[audit]   Signal correlation: no valid sessions with events — skipping.")
-        rho_signal = np.full((n_features, signal_lag_grid_frames.size), np.nan, dtype=np.float32)
-        rho_signal_null_p95 = np.full((n_features, signal_lag_grid_frames.size), np.nan, dtype=np.float32)
+        print("[audit]   Signal correlation: no valid sessions with bout onsets — skipping.")
+        rho_signal_per_session_mean = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_per_session_sem = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_null_mean = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_null_p0_5 = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_null_p99_5 = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
         empirical_pcts = {'p50': float('nan'), 'p90': float('nan'), 'p99': float('nan')}
-        n_total_events = 0
+        n_total_bouts = 0
+        n_total_usvs = 0
     else:
-        # ----- FFT-based signal correlation -----
-        # We compute Spearman ρ between every feature's rank-vector and
-        # both the actual rank-transformed event indicator and
-        # `n_shuffles` within-session circular-shifted indicator ranks,
-        # at every lag k ∈ [-L_max_frames, +L_max_frames].
+        # ----- Per-session signal correlation (actual + circular-shift null) -----
+        # For every (session × feature) pair we compute a single
+        # FFT-based cross-correlation at all positive true lags
+        # `[0, n_pad_sess − 1]` once. Two views of that single curve
+        # are then read off:
         #
-        # The cross-correlation theorem gives all lags in one rfft +
-        # one irfft per (feature × Y-variant) pair:
-        #     xcorr_fv(k) = Σ_t x_centered[t] * y_v_centered[t + k]
-        #                 = irfft( conj(rfft(x_c)) * rfft(y_v_c) )[k]
-        # Sign convention: positive k ⇒ feature[t] vs y[t+k], i.e.
-        # feature leads y; negative k ⇒ y leads feature.
+        #   - actual : symmetric lag window `[−L_max, +L_max]` —
+        #              this is the per-session ρ_session(k) curve
+        #              that gets averaged across sessions for the
+        #              displayed mean and SEM band.
+        #   - null   : per-shuffle window `[S − L_max, S + L_max]`
+        #              for `S ∈ [shuffle_min_frames, shuffle_max_frames]`
+        #              uniformly. Equivalent to circularly shifting
+        #              the binary bout-onset trace by S and re-cross-
+        #              correlating, but obtained for free by indexing
+        #              the same precomputed curve. With S ≫ τ_xy the
+        #              sampled lags lie in the tail where the true
+        #              ρ_xy ≈ 0, giving an honest null that preserves
+        #              the autocorrelation structure of both x and y.
         #
-        # The Y FFT (one per Y-variant) is amortised across all
-        # `n_features` features because it does not depend on which
-        # feature is being scored. Per-feature work is one rank-transform,
-        # one rfft, plus `n_shuffles + 1` complex-multiply-and-irfft
-        # passes — each a single bandwidth-limited operation on
-        # `O(n_pad)` elements rather than `n_lags × n_shuffles` separate
-        # passes. With pocketfft's vectorised throughput this is fast
-        # enough to scale to the full cohort in tens of minutes.
-        #
-        # Numerical note: we use the global-mean / global-norm Pearson
-        # form (the standard CCF estimator). For `L_max / N ≈ 10^-4`
-        # the per-lag means and variances are numerically
-        # indistinguishable from the global ones; the global form
-        # additionally avoids catastrophic cancellation in the
-        # rank-product subtraction.
-        #
-        # Lag-axis extraction from the irfft output of length `n_pad`:
-        #     positive lags k = 0..L_max → xcorr[0:L_max+1]
-        #     negative lags k = -L_max..-1 → xcorr[n_pad - L_max : n_pad]
-        # We concatenate the two halves into a single (2*L_max+1,)
-        # array indexed by `signal_lag_grid_frames`. Padding to
-        # `n_pad >= total_frames + L_max + 1` keeps both halves free of
-        # circular-wrap contamination.
-        total_frames = sum(n for _, n in valid_sessions)
-        ses_starts = []
-        cursor = 0
-        for _, n_frames_sess in valid_sessions:
-            ses_starts.append(cursor)
-            cursor += n_frames_sess
-        ses_starts.append(cursor)
+        # Aggregation is per feature (streaming): collect per-session
+        # per-shuffle null curves into a 3-D `(n_sessions, n_shuffles,
+        # n_lags)` array, take cohort-mean per shuffle (`nanmean` over
+        # the session axis) to get `n_shuffles` cohort-mean null
+        # curves, then per-feature, per-lag mean and 0.5 / 99.5
+        # percentiles across those cohort-mean curves. The null band
+        # is therefore on the same cohort-mean scale as the plotted
+        # line, with width ~`σ_session/√n_sessions`.
+        rho_signal_per_session_mean = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_per_session_sem = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_null_mean = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_null_p0_5 = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
+        rho_signal_null_p99_5 = np.full((n_features, n_signal_lags), np.nan, dtype=np.float32)
 
-        # FFT pad length: must satisfy `n_pad >= total_frames + L_max`
-        # so the circular-correlation wrap-around does not contaminate
-        # any lag in `[0, L_max]`. We round up to the next power of two
-        # because pocketfft is fastest on power-of-two lengths.
-        n_pad = 1
-        while n_pad < total_frames + max_lag_frames + 1:
-            n_pad *= 2
+        n_valid = len(valid_sessions)
 
-        # Build the pooled binary event trace once.
-        Y_pooled = np.zeros(total_frames, dtype=np.float32)
-        for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
-            start = ses_starts[k]
-            ev_times = event_times_per_session[sess_id]
-            Y_pooled[start:start + n_frames_sess] = _binary_event_trace(
-                ev_times, n_frames_sess, camera_fps_dict[sess_id]
+        # Pre-cache per-session Y FFTs and norms (one per session,
+        # reused across features). Per-session pad length must hold
+        # both the actual symmetric window and the longest null
+        # window, i.e. `n_frames_sess + max_lag_frames + shuffle_max_frames`.
+        print(f"[audit]   Signal correlation: phase 1/2 — caching per-session "
+              f"binary-USV FFTs ({n_valid} sessions)...")
+        y_t0 = time.monotonic()
+        per_sess_n_pad = []
+        per_sess_y_fft = []
+        per_sess_y_norm = []
+        for s_i, (sess_id, n_frames_sess) in enumerate(valid_sessions):
+            n_pad_sess = 1
+            while n_pad_sess < n_frames_sess + max_lag_frames + shuffle_max_frames + 1:
+                n_pad_sess *= 2
+            # Build the per-session bout-onset trace: a single `1.0`
+            # at the integer frame index of each bout's first USV,
+            # zero everywhere else. `valid_sessions` is already gated
+            # on having bout onsets so no fallback is needed.
+            _bout_times = bout_onset_times_per_session[sess_id]
+            Y_sess = _binary_event_trace(
+                _bout_times, n_frames_sess, camera_fps_dict[sess_id]
+            )
+            Y_sess_r = rankdata(Y_sess).astype(np.float32)
+            Y_sess_c = Y_sess_r - Y_sess_r.mean()
+            y_norm = float(np.sqrt(np.sum(np.square(Y_sess_c, dtype=np.float64))))
+            y_fft = np.fft.rfft(Y_sess_c, n=n_pad_sess).astype(np.complex64)
+            per_sess_n_pad.append(n_pad_sess)
+            per_sess_y_fft.append(y_fft)
+            per_sess_y_norm.append(y_norm)
+            del Y_sess, Y_sess_r, Y_sess_c
+            if (s_i + 1) % 25 == 0 or (s_i + 1) == n_valid:
+                elapsed = time.monotonic() - y_t0
+                rate = (s_i + 1) / elapsed if elapsed > 0 else 0.0
+                eta = (n_valid - (s_i + 1)) / rate if rate > 0 else float('inf')
+                print(f"[audit]   Signal correlation: phase 1 — "
+                      f"session {s_i + 1}/{n_valid} "
+                      f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
+
+        # Per-feature streaming: compute per-session full cross-
+        # correlation, sample actual + null windows, reduce, free.
+        print(f"[audit]   Signal correlation: phase 2/2 — per-feature "
+              f"per-session cross-correlation + {n_shuffles} circular-shift "
+              f"shuffles per session, S ∈ [{shuffle_min_seconds:.1f}, "
+              f"{shuffle_max_seconds:.1f}] s...")
+        rng_xc = np.random.default_rng(random_seed)
+        feat_t0 = time.monotonic()
+        for f_i, fname in enumerate(feature_names):
+            rho_per_sess = np.full((n_valid, n_signal_lags), np.nan, dtype=np.float32)
+            # Null storage is now 3-D: (session, shuffle, lag). Pre-fill
+            # with NaN so sessions that fail the `denom > 0` check (or
+            # are missing the feature) leave their slab as NaN rather
+            # than uninitialized memory. The downstream cohort-mean
+            # null then averages across the session axis with `nanmean`,
+            # which handles the gaps correctly. Memory footprint is the
+            # same as the previous flat `(n_sessions × n_shuffles, n_lags)`
+            # pool.
+            null_per_sess_shuffle = np.full(
+                (n_valid, n_shuffles, n_signal_lags), np.nan, dtype=np.float32
             )
 
-        # Memory strategy: cache the X side (one rfft per feature) and
-        # stream the Y side (one rfft per variant, computed on the fly
-        # and discarded after every feature has been scored against it).
-        # Reversed memory: the legacy approach cached all `n_variants`
-        # Y_ffts up front, which at `(n_pad//2+1) * 8 B ≈ 134 MB` per
-        # variant blew up to ~134 GB at `n_shuffles=1000` and OOM-killed
-        # the kernel mid-precompute. Caching X scales as
-        # `n_features * 134 MB` (2-3 GB on this cohort) and stays flat
-        # in `n_shuffles`, so 1000+ shuffles fit comfortably in a few
-        # GB.
-        n_signal_lags = signal_lag_grid_frames.size   # 2 * max_lag_frames + 1
-        n_variants = n_shuffles + 1   # index 0 = actual, 1..n_shuffles = shuffles
-        rho_signal = np.zeros((n_features, n_signal_lags), dtype=np.float32)
-        null_abs = np.zeros((n_shuffles, n_features, n_signal_lags), dtype=np.float32)
-
-        # ----- Phase 1: cache X-side FFTs for every feature -----
-        n_freq = n_pad // 2 + 1
-        x_ffts_conj = np.empty((n_features, n_freq), dtype=np.complex64)
-        x_norms = np.empty(n_features, dtype=np.float64)
-
-        print(f"[audit]   Signal correlation: phase 1/2 — caching X-side rfft "
-              f"for {n_features} features (n_pad={n_pad}, "
-              f"total_frames={total_frames})...")
-        x_t0 = time.monotonic()
-        for f_i, fname in enumerate(feature_names):
-            x_col = np.zeros(total_frames, dtype=np.float32)
-            for k, (sess_id, n_frames_sess) in enumerate(valid_sessions):
+            for s_i, (sess_id, n_frames_sess) in enumerate(valid_sessions):
                 per_feature = session_blocks[sess_id]
                 if fname not in per_feature:
                     continue
-                arr = per_feature[fname]
-                arr = np.where(np.isfinite(arr), arr, 0.0)
-                x_col[ses_starts[k]:ses_starts[k] + n_frames_sess] = arr
 
-            x_ranks = rankdata(x_col).astype(np.float32)
-            x_centered = x_ranks - x_ranks.mean()
-            x_norms[f_i] = float(np.sqrt(np.sum(np.square(x_centered, dtype=np.float64))))
-            x_ffts_conj[f_i] = np.conj(np.fft.rfft(x_centered, n=n_pad)).astype(np.complex64)
-            del x_col, x_ranks, x_centered
+                n_pad_sess = per_sess_n_pad[s_i]
+                y_fft = per_sess_y_fft[s_i]
+                y_norm = per_sess_y_norm[s_i]
+
+                x_sess = per_feature[fname]
+                x_sess = np.where(np.isfinite(x_sess), x_sess, 0.0).astype(np.float32)
+                x_sess_r = rankdata(x_sess).astype(np.float32)
+                x_sess_c = x_sess_r - x_sess_r.mean()
+                x_norm = float(np.sqrt(np.sum(np.square(x_sess_c, dtype=np.float64))))
+                x_fft_conj = np.conj(np.fft.rfft(x_sess_c, n=n_pad_sess))
+
+                xcorr_full = np.fft.irfft(x_fft_conj * y_fft, n=n_pad_sess)
+                denom = x_norm * y_norm
+                # Always advance the RNG by `n_shuffles` draws even when
+                # the session is skipped, so that downstream sessions
+                # see the same shift sequence regardless of which
+                # earlier sessions happened to fail. This keeps results
+                # deterministic w.r.t. `random_seed` independent of the
+                # set of valid sessions.
+                shifts = rng_xc.integers(shuffle_min_frames, shuffle_max_frames + 1,
+                                         size=n_shuffles)
+                if denom <= 0:
+                    # Slab stays NaN; nothing to write.
+                    continue
+
+                # Actual: symmetric lag window [-L_max, +L_max] read
+                # from the standard FFT lag layout (positive lags at
+                # the front, negative lags wrapped to the back).
+                xcorr_actual_raw = np.concatenate([
+                    xcorr_full[n_pad_sess - max_lag_frames:],
+                    xcorr_full[:max_lag_frames + 1],
+                ])
+                rho_per_sess[s_i, :] = (xcorr_actual_raw / denom).astype(np.float32)
+
+                # Null: n_shuffles random shifts per session. Each shift
+                # S samples a contiguous window centred at lag S.
+                # `null_per_sess_shuffle[s_i, j, :]` holds the j-th
+                # shuffle's lag window for this session.
+                for j, S in enumerate(shifts):
+                    S_int = int(S)
+                    null_per_sess_shuffle[s_i, j, :] = (
+                        xcorr_full[S_int - max_lag_frames:S_int + max_lag_frames + 1]
+                        / denom
+                    ).astype(np.float32)
+
+                del x_sess, x_sess_r, x_sess_c, x_fft_conj, xcorr_full
+
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                rho_signal_per_session_mean[f_i, :] = np.nanmean(rho_per_sess, axis=0).astype(np.float32)
+                rho_per_sess_std = np.nanstd(rho_per_sess, axis=0, ddof=1).astype(np.float32)
+                n_valid_per_lag = np.sum(np.isfinite(rho_per_sess), axis=0)
+                rho_signal_per_session_sem[f_i, :] = (
+                    rho_per_sess_std / np.sqrt(np.maximum(n_valid_per_lag, 1))
+                ).astype(np.float32)
+
+                # Cohort-mean null: pair shuffles by index across
+                # sessions (valid since within each session the shifts
+                # are i.i.d. uniform draws), average across sessions
+                # for each shuffle index, then take percentiles across
+                # the resulting `n_shuffles` cohort-mean curves. This
+                # makes the null band match the scale of the plotted
+                # cohort-mean ρ — about `1/√n_sessions` narrower than
+                # the per-session null pool the previous implementation
+                # reported.
+                if np.any(np.isfinite(null_per_sess_shuffle)):
+                    null_cohort_means = np.nanmean(null_per_sess_shuffle, axis=0)
+                    rho_signal_null_mean[f_i, :] = np.nanmean(
+                        null_cohort_means, axis=0
+                    ).astype(np.float32)
+                    rho_signal_null_p0_5[f_i, :] = np.nanpercentile(
+                        null_cohort_means, 0.5, axis=0
+                    ).astype(np.float32)
+                    rho_signal_null_p99_5[f_i, :] = np.nanpercentile(
+                        null_cohort_means, 99.5, axis=0
+                    ).astype(np.float32)
+                    del null_cohort_means
+            del rho_per_sess, rho_per_sess_std, n_valid_per_lag, null_per_sess_shuffle
 
             if (f_i + 1) % 5 == 0 or (f_i + 1) == n_features:
-                elapsed = time.monotonic() - x_t0
+                elapsed = time.monotonic() - feat_t0
                 rate = (f_i + 1) / elapsed if elapsed > 0 else 0.0
                 eta = (n_features - (f_i + 1)) / rate if rate > 0 else float('inf')
-                print(f"[audit]   Signal correlation: phase 1 — "
+                print(f"[audit]   Signal correlation: phase 2 — "
                       f"feature {f_i + 1}/{n_features} "
                       f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
 
-        # ----- Phase 2: stream Y variants, score every feature per variant -----
-        # Per variant: one rankdata + one rfft on Y, then `n_features`
-        # complex-multiply + irfft passes. Y memory is recycled each
-        # iteration; only the current variant is resident.
-        print(f"[audit]   Signal correlation: phase 2/2 — streaming "
-              f"{n_variants} Y-variants × {n_features} features × "
-              f"{n_signal_lags} lags...")
-        rng = np.random.default_rng(random_seed)
-        y_t0 = time.monotonic()
-        for vi in range(n_variants):
-            if vi == 0:
-                Y_v = Y_pooled
-            else:
-                Y_v = np.empty_like(Y_pooled)
-                for k in range(len(valid_sessions)):
-                    start = ses_starts[k]
-                    end = ses_starts[k + 1]
-                    length = end - start
-                    shift = int(rng.integers(0, length))
-                    Y_v[start:end] = np.roll(Y_pooled[start:end], shift)
+        del per_sess_n_pad, per_sess_y_fft, per_sess_y_norm
 
-            Y_r = rankdata(Y_v).astype(np.float32)
-            Y_c = Y_r - Y_r.mean()
-            Y_norm = float(np.sqrt(np.sum(np.square(Y_c, dtype=np.float64))))
-            Y_fft = np.fft.rfft(Y_c, n=n_pad)
-            del Y_r, Y_c
-            if vi != 0:
-                del Y_v
-
-            # Inner loop: cross-correlate every feature against this Y variant.
-            for f_i in range(n_features):
-                # xcorr(k) = irfft(conj(X) * Y)[k]; extract symmetric lag
-                # window [-L_max, +L_max]:
-                #   positive lags 0..L_max → xcorr[0 : L_max + 1]
-                #   negative lags -L_max..-1 → xcorr[n_pad - L_max : n_pad]
-                # `np.concatenate` orders the result -L_max .. +L_max,
-                # matching `signal_lag_grid_frames`.
-                xcorr = np.fft.irfft(x_ffts_conj[f_i] * Y_fft, n=n_pad)
-                xcorr_signal = np.concatenate([
-                    xcorr[n_pad - max_lag_frames:],   # lags -L_max..-1
-                    xcorr[:max_lag_frames + 1],        # lags 0..+L_max
-                ])
-
-                denom = x_norms[f_i] * Y_norm
-                if denom > 0:
-                    rho_k = (xcorr_signal / denom).astype(np.float32)
-                else:
-                    rho_k = np.zeros(n_signal_lags, dtype=np.float32)
-
-                if vi == 0:
-                    rho_signal[f_i, :] = rho_k
-                else:
-                    null_abs[vi - 1, f_i, :] = np.abs(rho_k)
-
-            del Y_fft
-
-            if (vi + 1) % 25 == 0 or (vi + 1) == n_variants:
-                elapsed = time.monotonic() - y_t0
-                rate = (vi + 1) / elapsed if elapsed > 0 else 0.0
-                eta = (n_variants - (vi + 1)) / rate if rate > 0 else float('inf')
-                print(f"[audit]   Signal correlation: phase 2 — "
-                      f"variant {vi + 1}/{n_variants} "
-                      f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
-
-        # Drop the X-side cache before reducing the null tensor — the
-        # 95th-percentile reduction allocates `(n_features, n_signal_lags)`
-        # of float32 (cheap), but freeing the X cache here keeps peak
-        # memory below the phase-2 working set.
-        del x_ffts_conj, x_norms, Y_pooled
-
-        rho_signal_null_p95 = np.percentile(null_abs, 95, axis=0).astype(np.float32)
-
-        # Empirical IBI percentiles from the pooled event onsets.
+        # Empirical IBI percentiles, computed as inter-USV gaps using
+        # the same definition the loader applies against the
+        # GMM-derived `ibi_threshold`: `gap_i = start[i+1] - stop[i]`.
+        # Per-USV starts and stops come straight from
+        # `event_intervals_per_session[sess]`.
+        # `n_total_usvs` counts every per-USV start; `n_total_bouts`
+        # counts the bout onsets in `bout_onset_times_per_session`
+        # (the audit's `Y`-event count).
         all_ibis = []
+        n_total_usvs = 0
+        n_total_bouts = 0
         for sess_id, _ in valid_sessions:
-            ev = np.sort(np.asarray(event_times_per_session[sess_id]))
-            if ev.size > 1:
-                all_ibis.append(np.diff(ev))
+            starts, stops = event_intervals_per_session[sess_id]
+            starts = np.asarray(starts, dtype=np.float64)
+            stops = np.asarray(stops, dtype=np.float64)
+            order = np.argsort(starts)
+            starts = starts[order]
+            stops = stops[order]
+            n_total_usvs += int(starts.size)
+            if starts.size > 1:
+                gaps = starts[1:] - stops[:-1]
+                gaps = gaps[np.isfinite(gaps)]
+                if gaps.size > 0:
+                    all_ibis.append(gaps)
+            n_total_bouts += int(np.asarray(
+                bout_onset_times_per_session[sess_id]
+            ).size)
         if all_ibis:
             ibis = np.concatenate(all_ibis)
             empirical_pcts = {
@@ -1147,31 +1364,53 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             }
         else:
             empirical_pcts = {'p50': float('nan'), 'p90': float('nan'), 'p99': float('nan')}
-        n_total_events = int(sum(np.asarray(event_times_per_session[s]).size
-                                  for s, _ in valid_sessions))
 
     payload = {
         'features': feature_names,
-        # ACF (positive lags only)
+        # ACF (positive lags only). `acf_null_*` are the per-feature,
+        # per-lag mean and 0.5/99.5 percentiles of the circular-shift
+        # null (shifts in [shuffle_min, shuffle_max] seconds, n_shuffles
+        # per session, pooled across (session, shuffle)).
         'acf_lags_frames': acf_lag_grid_frames,
         'acf_lags_seconds': acf_lag_grid_seconds,
         'acf_median': acf_median.astype(np.float32),
         'acf_p25': acf_p25.astype(np.float32),
         'acf_p75': acf_p75.astype(np.float32),
+        'acf_null_mean': acf_null_mean,
+        'acf_null_p0_5': acf_null_p0_5,
+        'acf_null_p99_5': acf_null_p99_5,
         'tau_acf_1_over_e': tau_1e,
         'tau_acf_0_2': tau_02,
         'tau_acf_integrated': tau_int,
-        # Signal correlation (symmetric lags, ρ vs binary USV indicator)
+        # Signal correlation (symmetric lags, ρ vs bout-onset indicator).
+        # `rho_signal` is the per-session mean across the cohort;
+        # `rho_signal_per_session_sem` is the SEM around that mean.
+        # `rho_signal_null_*` are the per-feature, per-lag mean and
+        # 0.5/99.5 percentiles of the circular-shift null on the
+        # cohort-mean scale (shuffles paired by index across sessions,
+        # cohort-mean computed per shuffle, percentiles across the
+        # n_shuffles cohort-mean curves) — matches the SEM scale of
+        # the line.
         'signal_lags_frames': signal_lag_grid_frames,
         'signal_lags_seconds': signal_lag_grid_seconds,
-        'rho_signal': rho_signal,
-        'rho_signal_null_p95': rho_signal_null_p95,
+        'rho_signal': rho_signal_per_session_mean,
+        'rho_signal_per_session_mean': rho_signal_per_session_mean,
+        'rho_signal_per_session_sem': rho_signal_per_session_sem,
+        'rho_signal_null_mean': rho_signal_null_mean,
+        'rho_signal_null_p0_5': rho_signal_null_p0_5,
+        'rho_signal_null_p99_5': rho_signal_null_p99_5,
         # Response side
         'ibi_thresholds': dict(ibi_thresholds),
         'ibi_empirical_pcts': empirical_pcts,
-        # Context
+        # Context. `n_events` is retained as an alias for `n_bouts`
+        # (the audit's `Y` event count) so older readers don't break;
+        # `n_usvs` is the underlying per-USV count for reference.
         'configured_filter_history': float(configured_filter_history),
-        'n_events': int(n_total_events),
+        'signal_floor_seconds': float(signal_floor_seconds),
+        'signal_min_run_seconds': float(signal_min_run_seconds),
+        'n_events': int(n_total_bouts),
+        'n_bouts': int(n_total_bouts),
+        'n_usvs': int(n_total_usvs),
         'n_sessions': len(session_blocks),
         'source_pickle': source_pickle,
         'created': datetime.now().isoformat(timespec='seconds'),
@@ -1185,21 +1424,29 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     arg_int = feature_names[int(np.nanargmax(tau_int))] if finite_int.size else '-'
 
     # Signal-correlation peak: per-feature argmax|ρ|, then global max.
-    signal_abs = np.abs(rho_signal) if rho_signal.size else np.empty((0, 0), dtype=np.float32)
-    if signal_abs.size:
-        peak_lag_idx_per_feature = signal_abs.argmax(axis=1)
-        peak_abs_per_feature = signal_abs.max(axis=1)
+    rho_for_peak = (
+        rho_signal_per_session_mean
+        if rho_signal_per_session_mean.size
+        else np.empty((0, 0), dtype=np.float32)
+    )
+    signal_abs = np.abs(rho_for_peak)
+    if signal_abs.size and np.any(np.isfinite(signal_abs)):
+        # Use nan-aware argmax / max so all-NaN rows don't crash the headline.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            peak_lag_idx_per_feature = np.nanargmax(signal_abs, axis=1)
+            peak_abs_per_feature = np.nanmax(signal_abs, axis=1)
         peak_signed_per_feature = np.array([
-            rho_signal[i, peak_lag_idx_per_feature[i]] for i in range(n_features)
+            rho_for_peak[i, peak_lag_idx_per_feature[i]] for i in range(n_features)
         ], dtype=np.float32)
         global_max_idx = int(np.argmax(peak_abs_per_feature))
         peak_feat = feature_names[global_max_idx]
         peak_rho = float(peak_signed_per_feature[global_max_idx])
         peak_lag_s = float(signal_lag_grid_seconds[peak_lag_idx_per_feature[global_max_idx]])
         if peak_lag_s < 0:
-            direction = 'USV leads feature'
+            direction = 'bout leads feature'
         elif peak_lag_s > 0:
-            direction = 'feature leads USV'
+            direction = 'feature leads bout'
         else:
             direction = 'simultaneous'
     else:
@@ -1209,7 +1456,8 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         direction = '-'
 
     print("\n" + "=" * 72)
-    print(f"TIMESCALE AUDIT  ({len(session_blocks)} sessions × {n_features} features)")
+    print(f"TIMESCALE AUDIT  ({len(session_blocks)} sessions × {n_features} features, "
+          f"{n_total_bouts} bouts / {n_total_usvs} USVs)")
     print("=" * 72)
     print(f"  ACF                : max τ_int = {max_int:5.2f} s   (feature: {arg_int})")
     print(f"  Signal correlation : peak ρ = {peak_rho:+.4f} at lag = {peak_lag_s:+5.2f} s   "

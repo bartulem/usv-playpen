@@ -259,15 +259,21 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         else:
             feature_bounds = {}
 
+        # See `zscore_different_sessions_together` for the abs vs
+        # smooth-abs split. ego_yaw / back_yaw (sharp peak at zero)
+        # need `sqrt(x² + ε²)` to keep pygam IRLS conditioning
+        # tractable; allo angles tolerate plain `|x|`.
+        smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
             feature_bounds=feature_bounds,
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw']
+            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            smooth_abs_features=smooth_abs_features,
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = f"boutparam-{target_variable}"
+        analysis_tag = f"boutparam_{target_variable}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -683,7 +689,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 gam.fit(X_tr_gam, y_tr_tiled)
                 fit_time = float(time.perf_counter() - fit_start)
 
-                gam_diffs = gam.logs_.get('diffs', [])
+                gam_diffs = gam.logs_['diffs']
                 n_iter_actual = int(len(gam_diffs))
                 converged_actual = bool(gam_diffs and gam_diffs[-1] < tol_val)
 
@@ -768,7 +774,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 gam_null.fit(X_tr_gam, y_tr_shuff_tiled)
                 fit_time_null = float(time.perf_counter() - fit_start)
 
-                null_diffs = gam_null.logs_.get('diffs', [])
+                null_diffs = gam_null.logs_['diffs']
                 n_iter_null = int(len(null_diffs))
                 converged_null = bool(null_diffs and null_diffs[-1] < tol_val)
 

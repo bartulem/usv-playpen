@@ -225,13 +225,19 @@ def select_kinematic_columns(session_df_columns: list,
         `{tracker_id}-{tracked_id}.{feature}` (e.g. Social Engagement Index
         suffixes such as `orofacial-sei`). Because the first mouse in the
         dyad prefix is the observer (actor), this bucket keeps only the
-        orientation where the observer is the *predictor* mouse — i.e.
-        `{predictor_name}-{target_name}.{feature}`. The reverse
-        `{target_name}-{predictor_name}.{feature}` orientation is dropped.
-        This preserves the "partner's engagement toward subject" reading,
-        which is consistent with the partner-only vocal predictor scheme,
-        and avoids the column-name collision that would otherwise occur
-        when the downstream dyad-rename step strips the `{m1-m2}.` prefix.
+        orientation where the observer is the *target* mouse — i.e.
+        `{target_name}-{predictor_name}.{feature}`. The reverse
+        `{predictor_name}-{target_name}.{feature}` orientation is dropped.
+        This preserves the "subject's (focal target's) engagement toward
+        partner" reading, which is the direction expected to track the
+        focal mouse's vocal output (e.g. the focal vocalizes when it is
+        oriented toward and close to the partner). The
+        previously-kept partner→subject direction was dropped because it
+        measures the partner's gaze, which can decouple from the focal's
+        gaze and produce sign-inverted correlations during chase /
+        anogenital-sniffing geometries (where the partner is facing
+        away while the focal is closely tracking it). The column-name
+        collision concern is moot because only one direction is kept.
 
     Derivatives
     -----------
@@ -305,7 +311,7 @@ def select_kinematic_columns(session_df_columns: list,
             columns_to_keep.append(feature)
             _maybe_add_derivatives(feature, base_feature)
 
-    engagement_dyad_prefix = f"{predictor_name}-{target_name}"
+    engagement_dyad_prefix = f"{target_name}-{predictor_name}"
     for base_feature in dyadic_engagement:
         matching = [c for c in session_df_columns if c.split('.')[-1] == base_feature]
         for feature in matching:
@@ -447,7 +453,18 @@ def identify_empty_event_sessions(usv_data_dict: dict,
             sessions_to_remove.append(session_id)
             continue
 
-        events = usv_data_dict[session_id][target_name].get(event_key, [])
+        # Explicit membership check + strict lookup, no `.get()`
+        # default. A missing `event_key` here means the loader
+        # wrote a different event-key set for this session (e.g.
+        # different prediction-mode), in which case we want the
+        # same "skip session" behavior as a present-but-empty
+        # event list — record it and move on.
+        if event_key not in usv_data_dict[session_id][target_name]:
+            print(f"Skipping {warn_label} {session_id}: no `{event_key}` events for {target_name}.")
+            sessions_to_remove.append(session_id)
+            continue
+
+        events = usv_data_dict[session_id][target_name][event_key]
         if len(events) == 0:
             print(f"Skipping {warn_label} {session_id}: 0 valid events for {target_name} ({event_key}).")
             sessions_to_remove.append(session_id)
@@ -719,7 +736,8 @@ def harmonize_session_columns(processed_beh_dict: dict,
 def zscore_features_across_sessions(processed_beh_dict: dict,
                                     suffixes: list,
                                     feature_bounds: dict,
-                                    abs_features: list | None = None) -> dict:
+                                    abs_features: list | None = None,
+                                    smooth_abs_features: dict | None = None) -> dict:
     """
     Z-scores every session's feature columns using pooled cross-session statistics.
 
@@ -739,8 +757,27 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         Optional per-feature clipping bounds (may be empty).
     abs_features : list of str, optional
         Feature names whose values should be folded to their absolute
-        magnitude prior to z-scoring (forwarded to
-        `zscore_different_sessions_together`).
+        magnitude prior to z-scoring via plain `|x|`. Forwarded
+        directly to `zscore_different_sessions_together`. Use for
+        features whose signed distribution is spread out across the
+        range; the kink at zero introduced by `|x|` is then carrying
+        little data mass and pygam's penalised B-spline can fit
+        cleanly. See `zscore_different_sessions_together` for the
+        full rationale.
+    smooth_abs_features : dict of {str: float}, optional
+        Mapping `{feature_suffix: epsilon}` for features that need
+        the *smooth* magnitude fold `sqrt(x² + ε²)` instead of plain
+        `|x|`. Use for features whose signed distribution is sharply
+        peaked at zero (e.g. `ego_yaw`, `back_yaw` — head/back held
+        aligned with body most of the time): plain `|x|` would pile
+        the bulk of mass right on the kink, where pygam's IRLS
+        cannot reconcile the corner with its smoothness penalty and
+        grinds toward `max_iter` without converging. Smooth-abs
+        replaces the kink with a finite-curvature bowl while
+        leaving values `|x| ≫ ε` essentially unchanged. Recommended
+        ε is small relative to measurement noise: ε = 1.0° for
+        ego_yaw (range ±180°), ε = 0.5° for back_yaw (range ±36°).
+        Forwarded to `zscore_different_sessions_together`.
 
     Returns
     -------
@@ -752,7 +789,8 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         data_dict=processed_beh_dict,
         feature_lst=suffixes,
         feature_bounds=feature_bounds,
-        abs_features=abs_features
+        abs_features=abs_features,
+        smooth_abs_features=smooth_abs_features,
     )
 
 
@@ -1396,7 +1434,8 @@ def run_predictor_audits(processed_beh_dict: dict,
                          save_dir: str,
                          pickle_basename: str,
                          precomputed_event_times: dict = None,
-                         input_metadata: dict = None) -> None:
+                         input_metadata: dict = None,
+                         balance_event_keys: bool = False) -> None:
     """
     Runs the collinearity and timescale audits as a single non-fatal
     diagnostic step at modeling-input-pickle creation time.
@@ -1482,6 +1521,26 @@ def run_predictor_audits(processed_beh_dict: dict,
         provenance-complete (no need to consult the paired modeling
         input pickle to learn which cohort / settings produced the
         diagnostic).
+    balance_event_keys : bool, default False
+        When True (and `event_keys` resolves to two-or-more non-empty
+        per-mouse arrays for a session), the wrapper subsamples each
+        non-smallest array down to the smallest's size *per session*,
+        without replacement, before concatenating. The resulting
+        `event_times_per_session` then has equal counts across the
+        listed event classes — matching the balanced design that
+        binary-classification pipelines (e.g. the bout-onset GAM)
+        actually train on. Subsampling is deterministic via a NumPy
+        `default_rng` seeded with `settings['model_params']['random_seed']`
+        (or `0` when that field is None). When False (default), the
+        wrapper concatenates every per-key array verbatim, which is
+        appropriate for pipelines whose event classes have
+        independent semantics (e.g. the binomial Category pipeline's
+        `target_events` / `other_events`, which describe two
+        different mice rather than two outcome classes for the same
+        decision). The timescale audit's binary `Y` trace and the
+        empirical IBI block are unaffected — they read
+        `positive_events` / `start` / `stop` directly, not the
+        balanced pool.
     """
 
     diagnostics_cfg = settings['diagnostics'] if 'diagnostics' in settings else {}
@@ -1495,10 +1554,22 @@ def run_predictor_audits(processed_beh_dict: dict,
     # The audit treats every listed key as a "model row" so the summary
     # matrix and the binary event indicator span every epoch the model
     # will ever see. Callers with non-standard event storage can pass
-    # `precomputed_event_times` to bypass this loop.
+    # `precomputed_event_times` to bypass this loop. When
+    # `balance_event_keys` is True, each non-smallest per-key array is
+    # subsampled down to the smallest's size *per session* before
+    # concatenation, so the audit sees the balanced design the
+    # downstream classifier actually trains on (avoids majority-class
+    # domination of the audit's correlations / VIFs / cond(X̃)).
     if precomputed_event_times is not None:
         event_times_per_session = precomputed_event_times
     else:
+        # Seeded RNG for reproducible balanced subsampling. Created
+        # lazily inside the loop only when actually needed; the seed
+        # comes from the same `random_seed` field every other
+        # stochastic step in the modeling pipeline reads, with `0` as
+        # the fallback (matching the timescale audit's convention
+        # below).
+        balance_rng = None
         event_times_per_session = {}
         for sess_id, track_names in mouse_names_dict.items():
             if sess_id not in usv_data_dict:
@@ -1508,16 +1579,85 @@ def run_predictor_audits(processed_beh_dict: dict,
                 continue
             per_mouse = usv_data_dict[sess_id][target_name]
 
-            pooled = []
+            per_key_arrays = []
             for key in event_keys:
                 arr = per_mouse[key] if key in per_mouse else None
                 if arr is None:
                     continue
-                arr = np.asarray(arr)
+                arr = np.asarray(arr).ravel()
                 if arr.size > 0:
-                    pooled.append(arr.ravel())
-            if pooled:
-                event_times_per_session[sess_id] = np.sort(np.concatenate(pooled))
+                    per_key_arrays.append(arr)
+            if not per_key_arrays:
+                continue
+
+            if balance_event_keys and len(per_key_arrays) >= 2:
+                if balance_rng is None:
+                    seed_raw = settings['model_params']['random_seed']
+                    balance_rng = np.random.default_rng(
+                        int(seed_raw) if seed_raw is not None else 0
+                    )
+                min_n = min(a.size for a in per_key_arrays)
+                balanced = []
+                for a in per_key_arrays:
+                    if a.size > min_n:
+                        pick = balance_rng.choice(a.size, size=min_n,
+                                                  replace=False)
+                        balanced.append(a[pick])
+                    else:
+                        balanced.append(a)
+                per_key_arrays = balanced
+
+            event_times_per_session[sess_id] = np.sort(
+                np.concatenate(per_key_arrays)
+            )
+
+    # Per-USV start/stop arrays for the timescale audit's empirical
+    # IBI-percentile reporting. Read directly from the loader's
+    # `usv_data_dict[sess][target]['start' | 'stop']` arrays. The audit
+    # computes inter-USV gaps (`gap_i = start[i+1] − stop[i]`) for the
+    # IBI percentile block; the GMM-derived `ibi_threshold` is on the
+    # same gaps so the percentiles are directly comparable to the
+    # threshold.
+    event_intervals_per_session = {}
+    for sess_id, track_names in mouse_names_dict.items():
+        if sess_id not in usv_data_dict:
+            continue
+        target_name = track_names[target_idx]
+        if target_name not in usv_data_dict[sess_id]:
+            continue
+        per_mouse = usv_data_dict[sess_id][target_name]
+        if 'start' not in per_mouse or 'stop' not in per_mouse:
+            continue
+        starts = np.asarray(per_mouse['start'])
+        stops = np.asarray(per_mouse['stop'])
+        if starts.size == 0 or stops.size == 0:
+            continue
+        event_intervals_per_session[sess_id] = (starts, stops)
+
+    # Bout-onset times for the timescale audit's binary `Y` trace.
+    # The vocal_onsets pipeline in `bout` mode (model_target_vocal_type
+    # == 'bout') writes the filtered bout-onset times to
+    # `usv_data_dict[sess][target]['positive_events']`. Reuse those
+    # directly so the audit's `Y` is exactly the set of bout onsets
+    # the model is trained to predict — no duplicate bout-detection
+    # logic in the audit. Other prediction modes (`individual`,
+    # `state`) write different semantics into `positive_events`; in
+    # those modes the audit's headline lag will not be a pure
+    # bout-onset answer, which is documented inside the audit.
+    bout_onset_times_per_session = {}
+    for sess_id, track_names in mouse_names_dict.items():
+        if sess_id not in usv_data_dict:
+            continue
+        target_name = track_names[target_idx]
+        if target_name not in usv_data_dict[sess_id]:
+            continue
+        per_mouse = usv_data_dict[sess_id][target_name]
+        if 'positive_events' not in per_mouse:
+            continue
+        bout_starts = np.asarray(per_mouse['positive_events'])
+        if bout_starts.size == 0:
+            continue
+        bout_onset_times_per_session[sess_id] = np.sort(bout_starts.ravel())
 
     base_no_ext = Path(pickle_basename).stem
     save_dir_p = Path(save_dir)
@@ -1559,7 +1699,54 @@ def run_predictor_audits(processed_beh_dict: dict,
                     ibi_thresholds[sex] = float('nan')
 
             max_lag = float(diagnostics_cfg['timescale_max_lag_seconds']) if 'timescale_max_lag_seconds' in diagnostics_cfg else 10.0
-            n_shuffles = int(diagnostics_cfg['timescale_n_shuffles']) if 'timescale_n_shuffles' in diagnostics_cfg else 50
+            n_shuffles = int(diagnostics_cfg['timescale_n_shuffles']) if 'timescale_n_shuffles' in diagnostics_cfg else 1000
+            shuffle_range_raw = diagnostics_cfg['timescale_shuffle_range'] if 'timescale_shuffle_range' in diagnostics_cfg else [20.0, 60.0]
+            if not (isinstance(shuffle_range_raw, (list, tuple)) and len(shuffle_range_raw) == 2):
+                raise ValueError(
+                    f"`diagnostics.timescale_shuffle_range` must be a 2-element list of "
+                    f"positive numbers (got {shuffle_range_raw!r})."
+                )
+            shuffle_range_seconds = (float(shuffle_range_raw[0]), float(shuffle_range_raw[1]))
+            if not (0 < shuffle_range_seconds[0] < shuffle_range_seconds[1]):
+                raise ValueError(
+                    f"`diagnostics.timescale_shuffle_range` must satisfy "
+                    f"0 < min < max (got {shuffle_range_seconds!r})."
+                )
+            # Lag floor for the cross-correlation right-side significance
+            # marker. Crossings at lags below this floor are ignored when
+            # locating the outer-run marker; this prevents the very-near-zero
+            # null dips (e.g. `other.speed`) from anchoring the marker too
+            # close to lag 0.
+            signal_floor_seconds = (
+                float(diagnostics_cfg['timescale_signal_floor_seconds'])
+                if 'timescale_signal_floor_seconds' in diagnostics_cfg
+                else 0.5
+            )
+            if signal_floor_seconds < 0:
+                raise ValueError(
+                    f"`diagnostics.timescale_signal_floor_seconds` must be "
+                    f"non-negative (got {signal_floor_seconds!r})."
+                )
+            # Minimum sustained-run length for the cross-correlation
+            # right-side significance marker. The marker is placed at
+            # the end of the *longest* sign-consistent run on the
+            # positive lag axis whose length is at least this many
+            # seconds. Set above the typical noise-fragment scale
+            # (~0.1 s for a few-bin run) so that scattered short
+            # excursions (e.g. `other.usv_rate` with ~28-bin
+            # fragments) are not promoted to markers, while
+            # preserving real sustained runs (≥ 213 bins / 1.4 s on
+            # `self.back_yaw`, 636 bins / 4.2 s on `self.ego_yaw`).
+            signal_min_run_seconds = (
+                float(diagnostics_cfg['timescale_signal_min_run_seconds'])
+                if 'timescale_signal_min_run_seconds' in diagnostics_cfg
+                else 0.2
+            )
+            if signal_min_run_seconds <= 0:
+                raise ValueError(
+                    f"`diagnostics.timescale_signal_min_run_seconds` must be "
+                    f"strictly positive (got {signal_min_run_seconds!r})."
+                )
             random_seed = settings['model_params']['random_seed'] if settings['model_params']['random_seed'] is not None else 0
 
             audit_predictor_timescales(
@@ -1577,6 +1764,11 @@ def run_predictor_audits(processed_beh_dict: dict,
                 source_pickle=pickle_basename,
                 random_seed=int(random_seed),
                 input_metadata=input_metadata,
+                shuffle_range_seconds=shuffle_range_seconds,
+                event_intervals_per_session=event_intervals_per_session,
+                bout_onset_times_per_session=bout_onset_times_per_session,
+                signal_floor_seconds=signal_floor_seconds,
+                signal_min_run_seconds=signal_min_run_seconds,
             )
         except Exception as exc:
             print(f"[audit] timescale audit failed (non-fatal): {exc}")
