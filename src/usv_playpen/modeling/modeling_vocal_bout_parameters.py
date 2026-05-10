@@ -56,9 +56,8 @@ from .modeling_utils import (
     resolve_mouse_roles,
     select_kinematic_columns,
     build_vocal_signal_columns,
-    collect_predictor_suffixes,
     identify_empty_event_sessions,
-    zero_fill_missing_feature_columns,
+    harmonize_session_columns,
     zscore_features_across_sessions,
     run_predictor_audits,
     unroll_history_matrix,
@@ -238,18 +237,21 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             processed_beh_feature_data_dict[sess_id] = current_df
 
-        revised_behavioral_predictors = collect_predictor_suffixes(processed_beh_feature_data_dict)
-
         print("Standardizing columns ...")
-        processed_beh_feature_data_dict = zero_fill_missing_feature_columns(
+        # `harmonize_session_columns` performs the dyad-rename
+        # (`{m1-m2}.{suffix}` -> `{suffix}`) in addition to zero-filling
+        # missing ego/dyadic/USV columns with project-wide existence
+        # gating. The dyad-rename is required *before* the predictor
+        # diagnostics audit so that dyadic columns share a stable
+        # cross-session key — otherwise every dyadic feature looks
+        # unique-to-one-session-and-pair and the audit reports a
+        # `(target_id-partner_id).suffix` row per pair instead of a
+        # single pooled `suffix` row.
+        processed_beh_feature_data_dict, revised_behavioral_predictors = harmonize_session_columns(
             processed_beh_dict=processed_beh_feature_data_dict,
             mouse_names_dict=mouse_track_names_dict,
             target_idx=target_mouse_idx,
             predictor_idx=predictor_mouse_idx,
-            suffixes=revised_behavioral_predictors,
-            voc_settings=voc_settings,
-            session_list_file=self.modeling_settings['io']['session_list_file'],
-            skip_dyadic_suffixes=True
         )
 
         # Explicit lookup — feature_boundaries is an optional attribute set by
@@ -329,6 +331,12 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         # Predictor diagnostics audit (collinearity + timescales). Diagnostic-
         # only: any failure inside the wrapper warns and continues.
+        # `bout_onset_event_key='bout_onsets'` because this pipeline
+        # stores per-target bout onsets under `'bout_onsets'` (not
+        # `'positive_events'`, which is the vocal-onsets pipeline's
+        # key) — without this override the timescale audit's `Y(t)`
+        # trace would be empty and every cross-correlation row would
+        # collapse to NaN.
         run_predictor_audits(
             processed_beh_dict=processed_beh_feature_data_dict,
             usv_data_dict=bout_data_dict,
@@ -342,6 +350,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
             input_metadata=input_metadata,
+            bout_onset_event_key='bout_onsets',
         )
 
         final_data_dict = {}

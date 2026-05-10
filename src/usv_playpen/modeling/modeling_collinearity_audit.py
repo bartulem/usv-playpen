@@ -777,19 +777,38 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                                signal_min_run_seconds: float = 0.2) -> dict:
     """
     Computes per-feature ACF and signal correlation between every kept
-    predictor and the per-frame binary bout-onset trace, alongside
-    the response-side IBI distribution, and persists the result to disk.
+    predictor and the per-frame binary model-event-onset trace,
+    alongside the response-side IBI distribution, and persists the
+    result to disk.
 
     Binary `Y` definition
     ---------------------
-    `Y(t) = 1` at every frame index that is the start of a vocal bout
-    (single-frame impulse, sparse), and `Y(t) = 0` everywhere else.
-    Bout-onset times come from `bout_onset_times_per_session` — for
-    the `vocal_onsets` pipeline in `bout` mode these are
-    `usv_data_dict[sess][target]['positive_events']`, the same set
-    of events the model is trained to predict. Built via
-    `_binary_event_trace`, which marks the integer frame index of
-    each onset (one `1.0` per bout, no within-bout duty cycle).
+    `Y(t) = 1` at every frame index that is the start of a model
+    event (single-frame impulse, sparse), and `Y(t) = 0` everywhere
+    else. Model-event times come from `bout_onset_times_per_session`,
+    whose granularity is set by the calling pipeline:
+
+      - **Bout-level pipelines** — vocal_onsets in `bout` mode and
+        bout-parameters — use bout starts (`usv_data_dict[sess][target]
+        ['positive_events']` and `[...]['bout_onsets']` respectively),
+        because each bout corresponds to one model prediction.
+      - **Per-USV pipelines** — the binomial / multinomial Category
+        pipelines and the continuous manifold pipeline — use per-USV
+        starts (one impulse at every USV onset), because each
+        individual USV corresponds to one model prediction. Within
+        a bout that holds three USVs the bout-level `Y` would mark
+        only the first; the per-USV `Y` marks all three, so the
+        cross-correlation reflects the timing of features relative
+        to every event the model actually sees.
+
+    The kwarg names (`bout_onset_event_key`,
+    `precomputed_bout_onset_times`, `bout_onset_times_per_session`)
+    retain the historical "bout-onset" wording from when the audit
+    was first written; treat them as the **generalized model-event
+    impulse source**, with the per-pipeline granularity documented
+    above. Built via `_binary_event_trace`, which marks the integer
+    frame index of each onset (one `1.0` per event, no within-event
+    duty cycle).
 
     The previous "is-vocalizing" definition (`1` throughout every
     `[start, stop)`) is preserved as `_binary_vocalizing_trace` for
@@ -799,11 +818,11 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     silence-sample frames into a single `1.0` marker, which is not
     a valid vocal indicator.
 
-    Bout-onset Y is sharper than is-vocalizing Y for the audit's
+    Event-onset Y is sharper than is-vocalizing Y for the audit's
     primary question ("how far back does feature history inform an
-    upcoming bout?") because: (1) each bout contributes one clean
+    upcoming event?") because: (1) each event contributes one clean
     sample of `x` at lag `k` rather than a duration-blurred window,
-    so lag-specific peaks survive; and (2) bout onsets have narrow
+    so lag-specific peaks survive; and (2) event onsets have narrow
     autocorrelation at the lag scales we care about (±10 s),
     keeping the circular-shift null tight.
 
@@ -1332,26 +1351,34 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         # the same definition the loader applies against the
         # GMM-derived `ibi_threshold`: `gap_i = start[i+1] - stop[i]`.
         # Per-USV starts and stops come straight from
-        # `event_intervals_per_session[sess]`.
-        # `n_total_usvs` counts every per-USV start; `n_total_bouts`
-        # counts the bout onsets in `bout_onset_times_per_session`
-        # (the audit's `Y`-event count).
+        # `event_intervals_per_session[sess]` *when available*. Pipelines
+        # whose data dict carries bout onsets but no per-USV
+        # `[start, stop)` arrays (e.g. the bout-parameters pipeline,
+        # whose `bout_data_dict[sess][target]` exposes `bout_onsets`
+        # but no `start` / `stop`) supply an empty
+        # `event_intervals_per_session` dict. For those sessions we
+        # skip the IBI gap computation (the percentiles end up NaN
+        # for the cohort) but still count bouts from
+        # `bout_onset_times_per_session`, which is the audit's `Y`-
+        # event source and is populated for every session in
+        # `valid_sessions`.
         all_ibis = []
         n_total_usvs = 0
         n_total_bouts = 0
         for sess_id, _ in valid_sessions:
-            starts, stops = event_intervals_per_session[sess_id]
-            starts = np.asarray(starts, dtype=np.float64)
-            stops = np.asarray(stops, dtype=np.float64)
-            order = np.argsort(starts)
-            starts = starts[order]
-            stops = stops[order]
-            n_total_usvs += int(starts.size)
-            if starts.size > 1:
-                gaps = starts[1:] - stops[:-1]
-                gaps = gaps[np.isfinite(gaps)]
-                if gaps.size > 0:
-                    all_ibis.append(gaps)
+            if sess_id in event_intervals_per_session:
+                starts, stops = event_intervals_per_session[sess_id]
+                starts = np.asarray(starts, dtype=np.float64)
+                stops = np.asarray(stops, dtype=np.float64)
+                order = np.argsort(starts)
+                starts = starts[order]
+                stops = stops[order]
+                n_total_usvs += int(starts.size)
+                if starts.size > 1:
+                    gaps = starts[1:] - stops[:-1]
+                    gaps = gaps[np.isfinite(gaps)]
+                    if gaps.size > 0:
+                        all_ibis.append(gaps)
             n_total_bouts += int(np.asarray(
                 bout_onset_times_per_session[sess_id]
             ).size)

@@ -398,6 +398,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # the harmonized, z-scored, but not-yet-sliced feature dict.
         # Diagnostic-only: any failure inside the wrapper warns and
         # continues.
+        # `bout_onset_event_key='target_events'` because this pipeline
+        # stores per-target USV onsets under `'target_events'` (not
+        # `'positive_events'`, the vocal-onsets pipeline's key) — the
+        # timescale audit's `Y(t)` trace is the impulse signal at
+        # those onsets, i.e. "when does the target mouse vocalize
+        # relative to its features".
         run_predictor_audits(
             processed_beh_dict=processed_beh_data,
             usv_data_dict=usv_data_dict,
@@ -411,6 +417,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
             input_metadata=input_metadata,
+            bout_onset_event_key='target_events',
         )
 
         print("Extracting epochs...")

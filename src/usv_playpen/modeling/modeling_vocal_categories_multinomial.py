@@ -829,6 +829,13 @@ class MultinomialModelingPipeline(FeatureZoo):
             },
         )
 
+        # Multinomial stores onsets in the nested `events_by_category`
+        # dict, which the wrapper's flat string-key lookup cannot
+        # consume. We pass the same per-session pooled onset times
+        # used to populate `event_times_per_session` as the
+        # bout-onset source for the timescale audit's `Y(t)` trace —
+        # i.e. "when does the target mouse vocalize (across any
+        # category) relative to its features".
         run_predictor_audits(
             processed_beh_dict=processed_beh_data,
             usv_data_dict=usv_data_dict,
@@ -842,6 +849,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
             precomputed_event_times=precomputed_events,
+            precomputed_bout_onset_times=precomputed_events,
             input_metadata=input_metadata,
         )
 
