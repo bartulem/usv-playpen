@@ -4082,8 +4082,10 @@ def _signal_outer_run_marker(rho,
     """
     Locate the cross-correlation right-side significance marker.
 
-    Algorithm: longest sign-consistent outside-null run on the
-    positive lag axis.
+    Algorithm: **first** (earliest-starting) sign-consistent
+    outside-null run on the symmetric lag axis whose end falls
+    within the positive-lag search range, anchored at the run's
+    largest-lag end.
 
       1. Identify every contiguous run of bins on the lag axis where
          `rho` is sign-consistently outside the null band — either
@@ -4093,35 +4095,40 @@ def _signal_outer_run_marker(rho,
          run; they break into multiple separate same-sign runs.
       2. Discard runs whose last bin is below `idx_floor` (so
          sub-floor-only runs cannot anchor a marker — the floor
-         exists precisely to suppress very-near-zero noise).
+         exists precisely to suppress very-near-zero noise on the
+         right side).
       3. Discard runs shorter than `min_run_bins` (the noise-
          fragment threshold; e.g. ~30 bins ≈ 200 ms at 150 fps).
-      4. Among the surviving runs, pick the **longest**. Tie-break:
-         the run whose end index is smaller (closer to lag 0). This
-         is rare but well-defined.
+      4. Among the surviving runs, pick the run with the **smallest
+         start index** (earliest lag at which the run begins). Runs
+         may start at negative lags; what counts is the order on the
+         lag axis, not whether the run sits in positive territory.
+         Tie-break: smaller end index.
       5. The marker sits at the **end** (largest lag) of that run.
          The marker's sign is the run's direction (+1 above-null,
          −1 below-null).
       6. If no surviving run exists, return `None` (no marker drawn
          on the panel).
-      7. If the longest qualifying run extends to the right edge of
-         the search window (`end == idx_max`), `exceeds_window` is
-         set True so the plot can annotate the lag with a `+` to
-         indicate the horizon was not yet reached at `+max_lag`.
+      7. If the picked run extends to the right edge of the search
+         window (`end == idx_max`), `exceeds_window` is set True so
+         the plot can annotate the lag with a `+` to indicate the
+         horizon was not yet reached at `+max_lag`.
 
-    Why "longest run, ≥ threshold" rather than "first crossing":
-    earlier versions of this routine anchored on the closest-to-zero
-    in-null crossing and required the immediately-preceding bins to
-    be sign-consistent outside null. That picked up tiny near-floor
-    fragments as "the marker" while ignoring the dominant sustained
-    run further out (e.g. on `self.back_yaw` with a 17-bin
-    fragment at +0.68 s eclipsing the 213-bin / 1.4-s real run at
-    +0.7 → +2.14 s). The longest-run rule directly mirrors what a
-    reader's eye picks out — the most prominent sustained
-    deviation from null — and the threshold suppresses noise-only
-    features (e.g. `other.usv_rate`, whose largest fragment is
-    only ~28 bins / 0.19 s) without depending on lucky crossing
-    geometry.
+    Why "first run" rather than "longest run":
+    on cohort-mean ρ curves with a strong central peak the symmetric
+    lag axis often contains two qualifying runs — an early "main"
+    run that begins on the negative-lag side and ends just past the
+    central peak (the visible cross-correlation feature), and a
+    secondary late re-emergence on the right edge of the window.
+    Length-based tiebreaks flip between these two whenever the late
+    re-emergence is even marginally longer than the main run,
+    producing markers that pin to `+max_lag` for one feature and to
+    the visible crossing for another. Anchoring on the earliest-
+    starting run pins the marker to the main run consistently:
+    the sustained departure that begins first on the lag axis is
+    what a reader's eye reads as "the" cross-correlation event,
+    regardless of whether a later, only slightly longer fragment
+    happens to extend to the window edge.
 
     Parameters
     ----------
@@ -4131,7 +4138,7 @@ def _signal_outer_run_marker(rho,
         Per-lag lower / upper null envelope, same length as `rho`.
     min_run_bins : int
         Minimum sustained-run length in bins. Runs shorter than
-        this are dropped before the longest-run pick. Set above
+        this are dropped before the first-run pick. Set above
         the typical noise-fragment scale; converted from
         `signal_min_run_seconds` × fps at the call site.
     idx_floor : int
@@ -4187,13 +4194,13 @@ def _signal_outer_run_marker(rho,
                 continue  # past search window (defensive)
             if L < min_run_bins:
                 continue
-            candidates.append((L, e, sign_val))
+            candidates.append((s, e, sign_val))
 
     if not candidates:
         return None
 
-    # Longest run wins. Tie-break: smaller end index (closer to lag 0).
-    candidates.sort(key=lambda c: (-c[0], c[1]))
+    # Earliest-starting run wins. Tie-break: smaller end index.
+    candidates.sort(key=lambda c: (c[0], c[1]))
     _, end_idx, sign_val = candidates[0]
     return (int(end_idx), int(sign_val), bool(end_idx == idx_max))
 
@@ -4594,10 +4601,10 @@ def _compute_timescale_horizons(payload: dict,
       (`acf_null_p99_5`). Computed via
       `_last_bin_of_consecutive_run`.
     - **XC horizon** = the lag at the largest-lag end of the
-      pre-cross outside-null run on the positive lag axis, after
-      applying the lag floor `signal_floor_seconds`. Computed via
-      `_signal_outer_run_marker`. The exceeds-window flag is
-      preserved so the caller can render `+max_lag` markers
+      earliest-starting sustained outside-null run on the symmetric
+      lag axis, after applying the lag floor `signal_floor_seconds`.
+      Computed via `_signal_outer_run_marker`. The exceeds-window
+      flag is preserved so the caller can render `+max_lag` markers
       distinctively if desired.
 
     Features without a qualifying marker are excluded from the
@@ -4659,7 +4666,7 @@ def _compute_timescale_horizons(payload: dict,
             if mark_idx is not None:
                 acf_horizons[fname] = float(acf_lags_seconds[mark_idx])
 
-        # XC marker (longest sign-consistent run ≥ `sig_min_run_bins`).
+        # XC marker (earliest sign-consistent run ≥ `sig_min_run_bins`).
         if signal_lags_seconds.size and i < rho_signal.shape[0]:
             mean_curve = _rolling_mean_1d(rho_signal[i], signal_smooth_window)
             sig_idx_floor = int(np.searchsorted(
@@ -5015,18 +5022,18 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
       at ρ ≈ 0.3 with cohort-mean null at ±0.001). A triangle
       marker on the *positive lag axis* indicates the cross-
       correlation right-side significance horizon, defined as the
-      end (largest lag) of the **longest sign-consistent
-      outside-null run** on the positive lag axis. Above-null and
-      below-null runs are tracked separately and compete for
-      "longest"; the winner's direction sets the marker shape (▽
-      for above-null, △ for below-null). Two filters apply before
-      the longest-run pick: runs whose last bin is below
-      `signal_floor_seconds` are excluded (so very-near-zero noise
-      cannot anchor a marker), and runs shorter than
-      `signal_min_run_seconds` (in seconds, converted to bins via
-      the lag-axis spacing) are excluded as scattered fragments.
-      Reading: "the largest sustained excursion of the curve away
-      from the shuffled distribution ends at this lag." When the
+      end (largest lag) of the **earliest-starting sign-consistent
+      outside-null run** on the symmetric lag axis. Above-null and
+      below-null runs are tracked separately; the picked run's
+      direction sets the marker shape (▽ for above-null, △ for
+      below-null). Two filters apply before the first-run pick:
+      runs whose last bin is below `signal_floor_seconds` are
+      excluded (so very-near-zero noise cannot anchor a marker),
+      and runs shorter than `signal_min_run_seconds` (in seconds,
+      converted to bins via the lag-axis spacing) are excluded as
+      scattered fragments. Reading: "the first sustained departure
+      of the curve from the shuffled distribution ends — and the
+      curve re-enters the null envelope — at this lag." When the
       longest qualifying run extends to `+max_lag`, the marker
       lands at the right edge of the panel and the lag annotation
       gets a trailing `+`. Same min-x text clamp as the ACF marker
@@ -5270,30 +5277,30 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
 
         # Cross-correlation right-side significance marker.
         #
-        # Algorithm: longest sign-consistent outside-null run on the
-        # positive lag axis (above-null and below-null are tracked
-        # as separate runs). Runs whose last bin is below
-        # `signal_floor_seconds` are excluded; runs shorter than
-        # `signal_min_run_seconds` × fps are excluded as
-        # noise-fragments. Among the remainder, the longest run is
-        # selected; ties broken toward smaller end-index (closer to
-        # lag 0). The marker sits at the **end** (largest lag) of
-        # that run, with sign matching the run direction (▽ for
+        # Algorithm: earliest-starting sign-consistent outside-null
+        # run on the symmetric lag axis (above-null and below-null
+        # are tracked as separate runs). Runs whose last bin is
+        # below `signal_floor_seconds` are excluded; runs shorter
+        # than `signal_min_run_seconds` × fps are excluded as
+        # noise-fragments. Among the remainder, the run with the
+        # smallest start lag is selected (ties broken toward smaller
+        # end index). The marker sits at the **end** (largest lag)
+        # of that run, with sign matching the run direction (▽ for
         # above-null, △ for below-null).
         #
-        # Reading: "the largest sustained excursion of the curve
-        # away from the shuffled distribution ends at this lag —
-        # past this lag, no run that long persists."
+        # Reading: "the first sustained departure of the curve
+        # from the shuffled distribution ends — and the curve
+        # re-enters the null envelope — at this lag."
         #
         # `signal_floor_seconds` suppresses very-near-zero noise;
         # `signal_min_run_seconds` suppresses scattered short
         # excursions (e.g. ~28-bin fragments on `other.usv_rate`)
         # while preserving multi-hundred-bin real runs.
         #
-        # Edge case: when the longest qualifying run extends all the
-        # way to `+max_lag`, the marker is drawn at the right edge
-        # of the panel and the lag annotation gets a trailing `+`
-        # to indicate the horizon exceeds the configured window.
+        # Edge case: when the picked run extends all the way to
+        # `+max_lag`, the marker is drawn at the right edge of the
+        # panel and the lag annotation gets a trailing `+` to
+        # indicate the horizon exceeds the configured window.
         if signal_lags_seconds.size > 0:
             sig_max_lag_s = float(signal_lags_seconds[-1])
             sig_idx_floor = int(np.searchsorted(
