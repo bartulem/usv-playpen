@@ -104,9 +104,11 @@ def test_get_connection_params(mocker, tmp_path, controller):
 
 
 def test_check_remote_mount_success(mocker, controller):
-    """Simulates a successful remote mount check, and asserts that the
-    paramiko-advisory mitigation (disable ssh-rsa SHA-1 pubkey algorithm) is
-    applied on every connect."""
+    """Simulates a successful remote mount check, and asserts the two
+    paramiko hardening measures applied on every connect:
+      - ssh-rsa (SHA-1) pubkey algorithm disabled (paramiko advisory)
+      - RejectPolicy + load_system_host_keys (CodeQL py/paramiko-missing
+        -host-key-validation)."""
 
     # mock the entire paramiko SSHClient
     mock_ssh_client = MagicMock()
@@ -120,10 +122,42 @@ def test_check_remote_mount_success(mocker, controller):
 
     result = controller.check_remote_mount('host', 22, 'user', 'pw', '/mnt/data')
 
+    # connect kwargs include the disabled_algorithms mitigation
     mock_ssh_client.connect.assert_called_with(
         hostname='host', port=22, username='user', password='pw', timeout=10,
         disabled_algorithms={'pubkeys': ['ssh-rsa']},
     )
+    # known_hosts loaded before connect
+    mock_ssh_client.load_system_host_keys.assert_called_once()
+    # And RejectPolicy is set as the missing-host-key handler — never
+    # AutoAddPolicy, which would silently trust an unknown / spoofed host.
+    set_policy_call = mock_ssh_client.set_missing_host_key_policy.call_args
+    policy_arg = set_policy_call.args[0]
+    assert isinstance(policy_arg, paramiko.RejectPolicy)
+    assert result is True
+
+
+def test_check_remote_mount_handles_missing_known_hosts(mocker, controller):
+    """If ~/.ssh/known_hosts is missing, load_system_host_keys raises
+    FileNotFoundError. The function must still set RejectPolicy and proceed
+    with the connect (which will then fail loudly if the host isn't
+    pre-trusted, rather than silently auto-adding the key)."""
+    mock_ssh_client = MagicMock()
+    mock_ssh_client.load_system_host_keys.side_effect = FileNotFoundError("no known_hosts")
+    mocker.patch('paramiko.SSHClient', return_value=mock_ssh_client)
+
+    mock_stdout, mock_stderr = MagicMock(), MagicMock()
+    mock_stdout.read.return_value = b'True'
+    mock_stderr.read.return_value = b''
+    mock_ssh_client.exec_command.return_value = (MagicMock(), mock_stdout, mock_stderr)
+
+    result = controller.check_remote_mount('h', 22, 'u', 'p', '/m')
+
+    # The FileNotFoundError must be swallowed; RejectPolicy still applied.
+    set_policy_call = mock_ssh_client.set_missing_host_key_policy.call_args
+    assert isinstance(set_policy_call.args[0], paramiko.RejectPolicy)
+    # And the connect was still attempted
+    assert mock_ssh_client.connect.called
     assert result is True
 
 

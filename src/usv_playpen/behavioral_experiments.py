@@ -534,7 +534,27 @@ class ExperimentController:
         """
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        # Trust only host keys already known to the local user (i.e.
+        # populated by a prior interactive `ssh user@host` to this
+        # machine, which records the host's public key in
+        # `~/.ssh/known_hosts`). With `RejectPolicy`, any unknown or
+        # mismatched host key raises `paramiko.SSHException`, which the
+        # existing handler below converts to a logged failure -- safer
+        # than `AutoAddPolicy`, which silently trusts a presented key
+        # the very first time and would accept a man-in-the-middle on
+        # the lab subnet. Operationally, every Falkner-lab user has
+        # already SSH'd to the Motif PCs to set up their session, so
+        # known_hosts is in place by the time this code runs.
+        try:
+            client.load_system_host_keys()
+        except (FileNotFoundError, IOError):
+            # Missing/unreadable known_hosts: don't crash here; the
+            # RejectPolicy below will reject the unknown host with a
+            # clear `SSHException`, and the user can fix it by SSHing
+            # to the host once interactively.
+            pass
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         try:
             # Disable the legacy 'ssh-rsa' (SHA-1) public-key algorithm during
