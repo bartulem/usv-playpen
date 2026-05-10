@@ -104,7 +104,9 @@ def test_get_connection_params(mocker, tmp_path, controller):
 
 
 def test_check_remote_mount_success(mocker, controller):
-    """Simulates a successful remote mount check."""
+    """Simulates a successful remote mount check, and asserts that the
+    paramiko-advisory mitigation (disable ssh-rsa SHA-1 pubkey algorithm) is
+    applied on every connect."""
 
     # mock the entire paramiko SSHClient
     mock_ssh_client = MagicMock()
@@ -118,7 +120,10 @@ def test_check_remote_mount_success(mocker, controller):
 
     result = controller.check_remote_mount('host', 22, 'user', 'pw', '/mnt/data')
 
-    mock_ssh_client.connect.assert_called_with(hostname='host', port=22, username='user', password='pw', timeout=10)
+    mock_ssh_client.connect.assert_called_with(
+        hostname='host', port=22, username='user', password='pw', timeout=10,
+        disabled_algorithms={'pubkeys': ['ssh-rsa']},
+    )
     assert result is True
 
 

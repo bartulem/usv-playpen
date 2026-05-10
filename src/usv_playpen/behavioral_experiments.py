@@ -537,7 +537,20 @@ class ExperimentController:
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         try:
-            client.connect(hostname=hostname, port=port, username=username, password=password, timeout=10)
+            # Disable the legacy 'ssh-rsa' (SHA-1) public-key algorithm during
+            # negotiation; force rsa-sha2-256 / rsa-sha2-512 instead.
+            #
+            # Mitigates the GHSA paramiko advisory ("rsakey.py allows the
+            # SHA-1 algorithm", affected versions <= 4.0.0, no patched
+            # version available upstream as of this writing). All Princeton
+            # Falkner-lab SSH targets we connect to run modern OpenSSH and
+            # support SHA-2 RSA, so this restriction does not break any
+            # working connection.
+            client.connect(
+                hostname=hostname, port=port, username=username,
+                password=password, timeout=10,
+                disabled_algorithms={"pubkeys": ["ssh-rsa"]},
+            )
 
             command = f"python3 -c \"import os; print(os.path.ismount('{mount_path}'))\""
 
