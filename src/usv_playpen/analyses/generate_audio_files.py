@@ -31,9 +31,12 @@ class AudioGenerator:
 
     def __init__(self, **kwargs):
         """
+        Description
+        -----------
         Initializes the AudioGenerator class.
 
         Parameters
+        ----------
         exp_id (str)
             Base file server directory.
         root_directory (str)
@@ -46,6 +49,8 @@ class AudioGenerator:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -56,6 +61,7 @@ class AudioGenerator:
     def create_naturalistic_usv_playback_wav(self) -> None:
         """
         Description
+        -----------
         Constructs naturalistic USV playback sequences by sampling inter-event
         intervals and sequence lengths from empirically derived distributions.
 
@@ -81,8 +87,10 @@ class AudioGenerator:
         NB: Run time for ~18 min .wav file is ~2 minutes.
 
         Parameters
+        ----------
 
         Returns
+        -------
         usv_playback (.wav file(s))
             Wave file(s) with naturalistic sequences of USVs.
         """
@@ -211,16 +219,19 @@ class AudioGenerator:
     def create_usv_playback_wav(self) -> None:
         """
         Description
+        -----------
         This method takes .wav files containing individual USVs and concatenates them
         together with a known IPI period between each USV.
 
         NB: Run time for 10k USVs (~19 min .wav file) is ~18 minutes.
 
         Parameters
+        ----------
         spock_cluster_bool (bool)
             If True, the code is run on Spock.
 
         Returns
+        -------
         usv_playback (.wav file(s))
             Wave file(s) with concatenated USVs.
         """
@@ -278,6 +289,7 @@ class AudioGenerator:
     def frequency_shift_audio_segment(self) -> None:
         """
         Description
+        -----------
         This method takes a temporal sequence from an existing USV .wav recording and pitch
         shifts (e.g., shifting down by a tritone) the sequence to human audible range.
 
@@ -302,8 +314,10 @@ class AudioGenerator:
         octave: interval between one pitch and another with double its frequency (12 semitones)
 
         Parameters
+        ----------
 
         Returns
+        -------
         audible_chirp (.wav file)
             Wave file with audible chirp data.
         NB: File is saved in the 'audio/frequency_shifted_audio_segments' directory.
@@ -323,69 +337,69 @@ class AudioGenerator:
         volume_adjustment = self.freq_shift_settings_dict['fs_volume_adjustment']
 
         audio_file_loc = list((Path(self.root_directory) / 'audio' / audio_dir).glob(f"*{device_id}_*_ch{channel_id:02d}_*.wav"))
+
+        if len(audio_file_loc) != 1:
+            self.message_output(f"Requested audio file not found. Please try again.")
+            return
+
         output_dir = Path(self.root_directory) / 'audio' / 'frequency_shifted_audio_segments'
         output_dir.mkdir(parents=True, exist_ok=True)
         output_file_name = f"{audio_file_loc[0].name}_start={seq_start}s_duration={seq_duration}s_octave_shift={octave_shift}"
 
-        if len(audio_file_loc) == 1:
+        # load audio sequence with Librosa
+        original_audio, original_sr = librosa.load(
+            audio_file_loc[0],
+            sr=int(wav_sampling_rate * 1e3),
+            offset=seq_start,
+            duration=seq_duration
+        )
 
-            # load audio sequence with Librosa
-            original_audio, original_sr = librosa.load(
-                audio_file_loc[0],
-                sr=int(wav_sampling_rate * 1e3),
-                offset=seq_start,
-                duration=seq_duration
-            )
+        # calculate the new sample rate for resampling (changes pitch AND speed)
+        new_sr = int(original_sr * (2.0 ** octave_shift))
 
-            # calculate the new sample rate for resampling (changes pitch AND speed)
-            new_sr = int(original_sr * (2.0 ** octave_shift))
+        # intermediate filenames for the processing pipeline
+        temp_resampled_file = output_dir / f"{output_file_name}_temp_resampled.wav"
+        temp_audible_file = output_dir / f"{output_file_name}_temp_audible.wav"
+        temp_denoised_file = output_dir / f"{output_file_name}_temp_denoised.wav"
+        final_output_file = output_dir / f"{output_file_name}_audible_denoised_tempo_adjusted.wav"
 
-            # intermediate filenames for the processing pipeline
-            temp_resampled_file = output_dir / f"{output_file_name}_temp_resampled.wav"
-            temp_audible_file = output_dir / f"{output_file_name}_temp_audible.wav"
-            temp_denoised_file = output_dir / f"{output_file_name}_temp_denoised.wav"
-            final_output_file = output_dir / f"{output_file_name}_audible_denoised_tempo_adjusted.wav"
+        # export the resampled audio (this is the pitch/speed shift)
+        sf.write(temp_resampled_file, original_audio, new_sr)
 
-            # export the resampled audio (this is the pitch/speed shift)
-            sf.write(temp_resampled_file, original_audio, new_sr)
+        # perform volume adjustment with SoX (if needed)
+        if volume_adjustment:
+            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
+                             cwd=output_dir,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT,
+                             shell=self.shell_usage_bool).wait()
 
-            # perform volume adjustment with SoX (if needed)
-            if volume_adjustment:
-                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
-                                 cwd=output_dir,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.STDOUT,
-                                 shell=self.shell_usage_bool).wait()
-
-                processed_audio, _ = librosa.load(temp_audible_file, sr=new_sr)
-            else:
-                processed_audio, _ = librosa.load(temp_resampled_file, sr=new_sr)
-
-            # perform noise reduction
-            reduced_noise = nr.reduce_noise(y=processed_audio, sr=new_sr, stationary=True, n_std_thresh_stationary=3)
-            sf.write(temp_denoised_file, reduced_noise, new_sr)
-
-            # correct the tempo back to the original duration using SoX
-            tempo_adjustment_factor = original_sr / new_sr
-
-            if 'filtered' not in audio_dir:
-                upper_cutoff_freq = int(np.ceil(25000 / (2 ** abs(octave_shift))))
-                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
-                                 cwd=output_dir,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.STDOUT,
-                                 shell=self.shell_usage_bool).wait()
-            else:
-                subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''',
-                                 cwd=output_dir,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.STDOUT,
-                                 shell=self.shell_usage_bool).wait()
-
-            temp_resampled_file.unlink()
-            if volume_adjustment:
-                temp_audible_file.unlink()
-            temp_denoised_file.unlink()
-
+            processed_audio, _ = librosa.load(temp_audible_file, sr=new_sr)
         else:
-            self.message_output(f"Requested audio file not found. Please try again.")
+            processed_audio, _ = librosa.load(temp_resampled_file, sr=new_sr)
+
+        # perform noise reduction
+        reduced_noise = nr.reduce_noise(y=processed_audio, sr=new_sr, stationary=True, n_std_thresh_stationary=3)
+        sf.write(temp_denoised_file, reduced_noise, new_sr)
+
+        # correct the tempo back to the original duration using SoX
+        tempo_adjustment_factor = original_sr / new_sr
+
+        if 'filtered' not in audio_dir:
+            upper_cutoff_freq = int(np.ceil(25000 / (2 ** abs(octave_shift))))
+            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
+                             cwd=output_dir,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT,
+                             shell=self.shell_usage_bool).wait()
+        else:
+            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''',
+                             cwd=output_dir,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT,
+                             shell=self.shell_usage_bool).wait()
+
+        temp_resampled_file.unlink()
+        if volume_adjustment:
+            temp_audible_file.unlink()
+        temp_denoised_file.unlink()
