@@ -116,8 +116,8 @@ def compute_inverse_density_weights(Y: np.ndarray,
 
 def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          Y: np.ndarray,
+                                         n_clusters: int,
                                          split_strategy: str = 'session',
-                                         n_clusters: int = 15,
                                          test_prop: float = 0.2,
                                          n_splits: int = 100,
                                          tolerance: float = 0.05,
@@ -145,8 +145,11 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
           are never split between train and test. (Uses tolerance-based search).
         - 'mixed': Completely randomized frame-level splitting. Ignores session IDs
           and perfectly stratifies based solely on geographic density.
-    n_clusters : int, default 15
-        Number of geographic micro-neighborhoods to define via K-Means.
+    n_clusters : int
+        Number of geographic micro-neighborhoods to define via K-Means
+        (typically `settings['model_params']['spatial_cluster_num']`).
+        Required — no default — so callers cannot silently inherit a
+        stale literal if the project's cluster cardinality changes.
     test_prop : float, default 0.2
         Proportion of the dataset (or sessions) to assign to the test set.
     n_splits : int, default 100
@@ -178,12 +181,26 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_seed, n_init='auto')
     proxy_labels = kmeans.fit_predict(Y)
 
+    # Cohort-wide cluster-coverage invariant. By K-Means construction
+    # every requested cluster should receive at least one point; this
+    # check surfaces degenerate inputs (e.g. fewer distinct points
+    # than `n_clusters`, or a near-constant `Y` that collapses
+    # several centres) as a hard error rather than silently shipping
+    # folds with a missing cluster slot. Enforced uniformly for both
+    # `'session'` and `'mixed'` so switching strategies cannot
+    # quietly weaken the contract.
+    observed_n_clusters = int(np.unique(proxy_labels).size)
+    if observed_n_clusters != n_clusters:
+        raise ValueError(
+            f"K-Means produced {observed_n_clusters} non-empty clusters but "
+            f"n_clusters={n_clusters}. The input `Y` may be degenerate "
+            f"(too few distinct points, or near-constant)."
+        )
+
     if split_strategy == 'mixed':
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
         cv_folds = list(sss.split(np.zeros(len(Y)), proxy_labels))
-        return cv_folds
-
-    elif split_strategy == 'session':
+    else:
         unique_sessions = np.unique(groups)
         n_test_sessions = int(len(unique_sessions) * test_prop)
 
@@ -235,7 +252,26 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                     "Rare geographic clusters may be highly isolated in too few sessions."
                 )
 
-        return cv_folds
+    # Per-fold cluster-coverage invariant. The `'session'` rejection
+    # sampler already enforces this via its in-loop gate; the
+    # `'mixed'` branch relies on sklearn's `StratifiedShuffleSplit`
+    # semantics. Re-checking explicitly here makes the guarantee
+    # symmetric across strategies and surfaces any pathological
+    # fold (e.g. a tiny rare cluster that sklearn happened to
+    # allocate entirely to one side) as a hard error rather than a
+    # silent empty-cluster slot in the per-fold spatial-distribution
+    # statistics.
+    for i, (tr_idx, te_idx) in enumerate(cv_folds):
+        tr_n = int(np.unique(proxy_labels[tr_idx]).size)
+        te_n = int(np.unique(proxy_labels[te_idx]).size)
+        if tr_n != n_clusters or te_n != n_clusters:
+            raise RuntimeError(
+                f"Fold {i}: train carries {tr_n} clusters, test carries "
+                f"{te_n} clusters — expected {n_clusters} on both sides "
+                f"(strategy='{split_strategy}')."
+            )
+
+    return cv_folds
 
 
 def _log_spaced_grid(center: float, decades_each_side: int) -> np.ndarray:

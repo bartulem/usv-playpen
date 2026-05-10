@@ -60,12 +60,12 @@ from ..analyses.compute_behavioral_features import FeatureZoo
 def get_stratified_group_splits_stable(
         groups: np.ndarray,
         y: np.ndarray,
+        n_categories: int,
         split_strategy: str = 'session',
         test_prop: float = 0.2,
         n_splits: int = 100,
         tolerance: float = 0.05,
         random_seed: int = 0,
-        n_categories: int = 6,
         max_total_attempts: int = 50000,
         widen_step: float = 0.02,
         widen_every: int = 1000
@@ -110,8 +110,12 @@ def get_stratified_group_splits_stable(
         test fold and the global data (only used by 'session').
     random_seed : int, default=0
         Seed for reproducibility.
-    n_categories : int, default=6
-        Expected number of USV categories.
+    n_categories : int
+        Theoretical number of USV categories the multinomial model has
+        a class slot for (typically
+        `settings['vocal_features']['usv_category_number']`). Required —
+        no default — so callers cannot silently inherit a stale literal
+        if the project's category cardinality ever changes.
     max_total_attempts : int, default=50000
         Hard ceiling on rejection-sampling attempts before raising.
     widen_step : float, default=0.02
@@ -132,66 +136,107 @@ def get_stratified_group_splits_stable(
     if split_strategy not in ['session', 'mixed']:
         raise ValueError("split_strategy must be 'session' or 'mixed'.")
 
-    # MIXED STRATEGY: Ignores sessions, perfectly stratifies the 6 categories
+    # Cohort-wide class-coverage invariant. The pooled `y` must
+    # cover every theoretical class the multinomial model has a
+    # slot for. A cohort that is silently missing a category is
+    # almost always a cohort-construction or noise-filter error;
+    # surface it here rather than building folds whose downstream
+    # classifier carries an empty class slot. Enforced uniformly
+    # for both `'session'` and `'mixed'` so switching strategies
+    # cannot quietly weaken the contract.
+    observed_n_classes = int(np.unique(y).size)
+    if observed_n_classes != n_categories:
+        raise ValueError(
+            f"Pooled y carries {observed_n_classes} distinct classes but "
+            f"n_categories={n_categories}. The cohort is missing "
+            f"{n_categories - observed_n_classes} theoretical class(es) — "
+            f"check `vocal_features.usv_category_number` against the data, "
+            f"or revisit the cohort's session list."
+        )
+
     if split_strategy == 'mixed':
+        # MIXED STRATEGY: ignores sessions, perfectly stratifies the
+        # `n_categories` labels at the configured test proportion via
+        # sklearn's `StratifiedShuffleSplit`. Every class with at
+        # least 2 samples is preserved proportionally in both folds.
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
         cv_folds = list(sss.split(np.zeros(len(y)), y))
         fold_tolerances = [0.0] * len(cv_folds)
-        return cv_folds, fold_tolerances
+    else:
+        # SESSION STRATEGY: strict cross-session prediction. Sessions
+        # are the atomic sampling unit; sklearn's stratifier does not
+        # apply, so the per-fold class-coverage and class-distribution
+        # invariants are enforced manually via rejection sampling.
+        unique_sessions = np.unique(groups)
+        n_test_sessions = int(len(unique_sessions) * test_prop)
 
-    # SESSION STRATEGY: Strict cross-session prediction (your original logic)
-    unique_sessions = np.unique(groups)
-    n_test_sessions = int(len(unique_sessions) * test_prop)
+        # Calculate global distribution for fairness check
+        _, global_counts = np.unique(y, return_counts=True)
+        global_dist = global_counts / len(y)
 
-    # Calculate global distribution for fairness check
-    _, global_counts = np.unique(y, return_counts=True)
-    global_dist = global_counts / len(y)
+        cv_folds = []
+        fold_tolerances = []
+        rng = np.random.RandomState(random_seed)
 
-    cv_folds = []
-    fold_tolerances = []
-    rng = np.random.RandomState(random_seed)
+        attempts = 0
+        current_tolerance = tolerance
 
-    attempts = 0
-    current_tolerance = tolerance
+        while len(cv_folds) < n_splits:
+            attempts += 1
 
-    while len(cv_folds) < n_splits:
-        attempts += 1
+            # partition sessions randomly
+            shuffled = rng.permutation(unique_sessions)
+            te_sess = shuffled[:n_test_sessions]
+            tr_sess = shuffled[n_test_sessions:]
 
-        # partition sessions randomly
-        shuffled = rng.permutation(unique_sessions)
-        te_sess = shuffled[:n_test_sessions]
-        tr_sess = shuffled[n_test_sessions:]
+            tr_idx = np.where(np.isin(groups, tr_sess))[0]
+            te_idx = np.where(np.isin(groups, te_sess))[0]
 
-        tr_idx = np.where(np.isin(groups, tr_sess))[0]
-        te_idx = np.where(np.isin(groups, te_sess))[0]
+            # all classes must be in both sets
+            tr_classes = np.unique(y[tr_idx])
+            te_classes = np.unique(y[te_idx])
 
-        # all classes must be in both sets
-        tr_classes = np.unique(y[tr_idx])
-        te_classes = np.unique(y[te_idx])
+            if len(tr_classes) == n_categories and len(te_classes) == n_categories:
+                # check distribution deviation
+                _, te_counts = np.unique(y[te_idx], return_counts=True)
+                te_dist = te_counts / len(te_idx)
+                dist_error = np.max(np.abs(te_dist - global_dist))
 
-        if len(tr_classes) == n_categories and len(te_classes) == n_categories:
-            # check distribution deviation
-            _, te_counts = np.unique(y[te_idx], return_counts=True)
-            te_dist = te_counts / len(te_idx)
-            dist_error = np.max(np.abs(te_dist - global_dist))
+                if dist_error < current_tolerance:
+                    cv_folds.append((tr_idx, te_idx))
+                    fold_tolerances.append(float(current_tolerance))
 
-            if dist_error < current_tolerance:
-                cv_folds.append((tr_idx, te_idx))
-                fold_tolerances.append(float(current_tolerance))
+            # widen the net every `widen_every` failures
+            if attempts % widen_every == 0:
+                current_tolerance += widen_step
+                print(
+                    f"[session-splits] widening tolerance -> {current_tolerance:.3f} "
+                    f"after {attempts} attempts ({len(cv_folds)}/{n_splits} folds accepted)."
+                )
 
-        # widen the net every `widen_every` failures
-        if attempts % widen_every == 0:
-            current_tolerance += widen_step
-            print(
-                f"[session-splits] widening tolerance -> {current_tolerance:.3f} "
-                f"after {attempts} attempts ({len(cv_folds)}/{n_splits} folds accepted)."
-            )
+            # prevent infinite loops
+            if attempts > max_total_attempts:
+                raise RuntimeError(
+                    f"Failed to find {n_splits} valid splits after {attempts} attempts. "
+                    "The rare categories may be concentrated in too few sessions."
+                )
 
-        # prevent infinite loops
-        if attempts > max_total_attempts:
+    # Per-fold class-coverage invariant. The `'session'` rejection
+    # sampler already enforces this via its in-loop gate; the
+    # `'mixed'` branch relies on sklearn's `StratifiedShuffleSplit`
+    # semantics. Re-checking explicitly here makes the guarantee
+    # symmetric across strategies and surfaces any pathological
+    # fold (e.g. a tiny rare class that sklearn happened to
+    # allocate entirely to one side) as a hard error rather than a
+    # silent empty-class-slot for the downstream classifier.
+    for i, (tr_idx, te_idx) in enumerate(cv_folds):
+        tr_n = int(np.unique(y[tr_idx]).size)
+        te_n = int(np.unique(y[te_idx]).size)
+        if tr_n != n_categories or te_n != n_categories:
             raise RuntimeError(
-                f"Failed to find {n_splits} valid splits after {attempts} attempts. "
-                "The rare categories may be concentrated in too few sessions."
+                f"Fold {i}: train carries {tr_n} classes, test carries "
+                f"{te_n} classes — expected {n_categories} on both sides "
+                f"(strategy='{split_strategy}')."
             )
 
     return cv_folds, fold_tolerances

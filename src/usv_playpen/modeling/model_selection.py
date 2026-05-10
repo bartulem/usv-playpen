@@ -2636,22 +2636,25 @@ def multinomial_vocal_category_model_selection(
     random_seed = settings['model_params']['random_seed']
     balance_train = hp['balance_train_bool']
 
-    if split_strategy == 'session':
-        cv_folds, _ = get_stratified_group_splits_stable(
-            groups=groups_global,
-            y=y_global,
-            test_prop=test_prop,
-            n_splits=n_splits,
-            random_seed=random_seed,
-            max_total_attempts=model_ops['session_split_max_attempts'],
-            widen_step=model_ops['session_split_widen_step'],
-            widen_every=model_ops['session_split_widen_every']
-        )
-    elif split_strategy == 'mixed':
-        sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
-        cv_folds = list(sss.split(binned_data[ranked_features[0]], y_global))
-    else:
-        raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
+    # Both `'session'` and `'mixed'` go through the shared splitter so
+    # the cohort-wide and per-fold class-coverage guards apply
+    # uniformly. `n_categories` is read from settings rather than
+    # falling back to the splitter's default — the previous
+    # branch-specific code had `'session'` defaulting to 6 and
+    # `'mixed'` bypassing the helper entirely, which silently went
+    # stale if the project's category cardinality changed.
+    cv_folds, _ = get_stratified_group_splits_stable(
+        groups=groups_global,
+        y=y_global,
+        split_strategy=split_strategy,
+        test_prop=test_prop,
+        n_splits=n_splits,
+        random_seed=random_seed,
+        n_categories=int(settings['vocal_features']['usv_category_number']),
+        max_total_attempts=model_ops['session_split_max_attempts'],
+        widen_step=model_ops['session_split_widen_step'],
+        widen_every=model_ops['session_split_widen_every'],
+    )
 
     # When balance_train_bool is active the learned-model paths (anchor,
     # forward-selection trials) down-sample each training fold per-class and
