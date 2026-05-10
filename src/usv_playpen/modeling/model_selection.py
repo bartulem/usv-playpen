@@ -40,6 +40,7 @@ from .modeling_vocal_categories_multinomial import (
     MultinomialModelingPipeline,
     MultinomialModelRunner,
 )
+from .manifold_metric import resolve_manifold_metric
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable,
     _log_spaced_grid,
@@ -3598,6 +3599,11 @@ def continuous_vocal_manifold_model_selection(
             f"fixed l2_reg={hp['l2_reg_fixed']})"
         )
 
+    # Manifold-metric configuration. On `metric='torus'` the K-means
+    # behind the spatial splitter operates on the canonical 4-D
+    # embedding so cluster boundaries respect the wrap.
+    manifold_metric, manifold_period = resolve_manifold_metric(settings)
+
     cv_folds = get_stratified_spatial_splits_stable(
         groups=groups_global,
         Y=y_global,
@@ -3609,6 +3615,8 @@ def continuous_vocal_manifold_model_selection(
         max_total_attempts=model_ops['session_split_max_attempts'],
         widen_step=model_ops['session_split_widen_step'],
         widen_every=model_ops['session_split_widen_every'],
+        metric=manifold_metric,
+        period=manifold_period,
     )
 
     current_model_features = []

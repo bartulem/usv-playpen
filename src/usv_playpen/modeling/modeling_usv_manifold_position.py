@@ -47,7 +47,6 @@ import json
 import numpy as np
 from pathlib import Path
 import pickle
-import re
 from datetime import datetime
 from scipy.stats import gaussian_kde, wilcoxon
 from sklearn.cluster import KMeans
@@ -71,18 +70,40 @@ from .modeling_utils import (
     run_predictor_audits,
 )
 from .jax_bivariate_regression import SmoothBivariateRegression
+from .manifold_metric import (
+    signed_diff,
+    circular_mean,
+    total_dispersion,
+    torus_embed,
+    resolve_manifold_metric,
+)
 from ..analyses.compute_behavioral_features import FeatureZoo
 
 
 def compute_inverse_density_weights(Y: np.ndarray,
                                     clip_percentile: float = 95.0,
-                                    epsilon: float = 1e-5) -> np.ndarray:
+                                    epsilon: float = 1e-5,
+                                    metric: str = 'euclidean',
+                                    period: float = 1.0) -> np.ndarray:
     """
     Computes inverse density sample weights using Gaussian Kernel Density Estimation (KDE).
 
     This neutralizes the topographical bias of the UMAP space. Rare "satellite"
     vocalizations receive mathematically higher weights than syllables in the
     dense manifold core, ensuring the optimizer treats all geographic regions equally.
+
+    Torus support
+    -------------
+    On `metric='torus'`, scipy's flat-space `gaussian_kde` would
+    under-estimate density near the wrap boundary (a point at
+    `(0.99, 0.5)` should pick up neighbours from `(0.01, 0.5)`, but
+    flat KDE treats them as period units apart). The fix is the
+    standard "lattice replication" trick: tile the points across a
+    3x3 grid of period-shifts, fit KDE on the replicated set, and
+    evaluate at the original points only. The kernel-sum at every
+    original point now correctly accounts for the across-the-wrap
+    neighbours, and the density gets multiplied by 9 (a global
+    constant that cancels in the unit-mean normalisation below).
 
     Parameters
     ----------
@@ -93,6 +114,11 @@ def compute_inverse_density_weights(Y: np.ndarray,
         outliers from mathematically dominating the loss landscape.
     epsilon : float, default 1e-5
         Small constant added to the denominator to prevent division by zero.
+    metric : str, default 'euclidean'
+        `'euclidean'` (flat KDE, legacy behaviour) or `'torus'` (3x3
+        lattice-replication KDE).
+    period : float, default 1.0
+        Per-axis wrap period; ignored when `metric='euclidean'`.
 
     Returns
     -------
@@ -101,7 +127,17 @@ def compute_inverse_density_weights(Y: np.ndarray,
         of the weights is exactly 1.0, preserving the global scale of the loss.
     """
 
-    kde = gaussian_kde(Y.T)
+    if metric == 'torus':
+        Y_arr = np.asarray(Y, dtype=np.float64)
+        # 3x3 lattice replication: shift by (-P, 0, +P) on each axis.
+        shifts = np.array(
+            [(dx, dy) for dx in (-period, 0.0, period) for dy in (-period, 0.0, period)],
+            dtype=np.float64,
+        )
+        Y_replicated = np.concatenate([Y_arr + s for s in shifts], axis=0)
+        kde = gaussian_kde(Y_replicated.T)
+    else:
+        kde = gaussian_kde(Y.T)
     densities = kde(Y.T)
 
     raw_weights = 1.0 / (densities + epsilon)
@@ -124,7 +160,9 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          random_seed: int = 0,
                                          max_total_attempts: int = 50000,
                                          widen_step: float = 0.02,
-                                         widen_every: int = 1000) -> List[Tuple[np.ndarray, np.ndarray]]:
+                                         widen_every: int = 1000,
+                                         metric: str = 'euclidean',
+                                         period: float = 1.0) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
     Generates deterministic folds ensuring spatial geographic fairness across the UMAP manifold.
 
@@ -178,8 +216,19 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
     if split_strategy not in ['session', 'mixed']:
         raise ValueError(f"Invalid split_strategy: '{split_strategy}'. Must be 'session' or 'mixed'.")
 
+    # On `metric='torus'` KMeans runs on the canonical 4-D torus
+    # embedding `(cos(2pi x/P), sin(2pi x/P), cos(2pi y/P), sin(2pi y/P))`,
+    # so a cluster centroid sitting near the wrap boundary picks up
+    # neighbours from both sides of the period. The returned
+    # `proxy_labels` index back into the original (un-embedded) `Y`
+    # because KMeans assigns each input row a label, regardless of the
+    # input's dimensionality. On `metric='euclidean'` the embedding is
+    # skipped and behaviour matches the original flat-space splitter.
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_seed, n_init='auto')
-    proxy_labels = kmeans.fit_predict(Y)
+    if metric == 'torus':
+        proxy_labels = kmeans.fit_predict(torus_embed(Y, period))
+    else:
+        proxy_labels = kmeans.fit_predict(Y)
 
     # Cohort-wide cluster-coverage invariant. By K-Means construction
     # every requested cluster should receive at least one point; this
@@ -331,7 +380,9 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   random_state: int,
                                   verbose: bool,
                                   use_lax_loop: bool,
-                                  regressor_cls) -> tuple:
+                                  regressor_cls,
+                                  metric: str,
+                                  period: float) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly by inner cross-validation on
     the supplied training fold, with an optional 1-SE rule biased toward
@@ -472,6 +523,8 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         # cluster-balanced without a second layer of session-holdout logic.
         split_strategy='mixed',
         random_seed=random_state + 7919,
+        metric=metric,
+        period=period,
     )
 
     grid_scores = {}
@@ -494,6 +547,8 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         random_state=random_state + inner_idx,
                         verbose=False,
                         _use_lax_loop=use_lax_loop,
+                        metric=metric,
+                        period=period,
                     )
                     model.fit(X_train[in_tr], Y_train[in_tr], sample_weight=w_train[in_tr])
                     metrics = model.evaluate_metrics(
@@ -770,7 +825,14 @@ class ContinuousModelingPipeline(FeatureZoo):
             raise ValueError("No valid continuous targets extracted. Check UMAP data.")
 
         global_Y_matrix = np.vstack(all_valid_Y_list)
-        global_weights = compute_inverse_density_weights(global_Y_matrix)
+        # Manifold-metric configuration. On torus the KDE uses the 3x3
+        # lattice-replication trick so points near the wrap boundary
+        # pick up across-the-edge neighbours.
+        _kde_metric = str(voc_settings['usv_manifold_metric'])
+        _kde_period = float(voc_settings['usv_manifold_period'])
+        global_weights = compute_inverse_density_weights(
+            global_Y_matrix, metric=_kde_metric, period=_kde_period,
+        )
 
         ptr = 0
         for sess_id in continuous_targets_dict.keys():
@@ -903,6 +965,8 @@ class ContinuousModelingPipeline(FeatureZoo):
             ibi_thresholds=ibi_thresholds_md,
             analysis_specific={
                 'usv_manifold_column_names': list(manifold_cols),
+                'manifold_metric': str(voc_settings['usv_manifold_metric']),
+                'manifold_period': float(voc_settings['usv_manifold_period']),
             },
         )
 
@@ -1356,6 +1420,13 @@ class ContinuousModelRunner:
         n_splits = cv_settings['split_num']
         split_strategy = cv_settings['split_strategy']
 
+        # Manifold-metric configuration. Threaded through every site that
+        # compares predictions to ground truth (spatial splitter,
+        # regressor, inner-CV tuner, null-baseline metrics) so a single
+        # settings flip produces consistent torus / euclidean behaviour
+        # end-to-end.
+        manifold_metric, manifold_period = resolve_manifold_metric(self.modeling_settings)
+
         print("Generating deterministic, spatially-stratified folds...")
         folds = get_stratified_spatial_splits_stable(
             groups=groups,
@@ -1368,6 +1439,8 @@ class ContinuousModelRunner:
             max_total_attempts=cv_settings['session_split_max_attempts'],
             widen_step=cv_settings['session_split_widen_step'],
             widen_every=cv_settings['session_split_widen_every'],
+            metric=manifold_metric,
+            period=manifold_period,
         )
 
         # Canonical set of metric keys emitted by `evaluate_metrics`. Used
@@ -1511,24 +1584,37 @@ class ContinuousModelRunner:
                     # Spatial-centroid baseline: predict the KDE-weighted
                     # training centroid for every test trial — the
                     # absolute floor before any kinematic signal enters.
-                    mu = np.average(Y_train, axis=0, weights=w_train)
+                    # On torus the centroid is the per-axis circular mean
+                    # (so two clusters straddling the wrap boundary
+                    # return a centroid in the actual cluster, not on
+                    # the antipode) and every distance / dispersion is
+                    # built from wrap-aware signed differences. R^2's
+                    # numerator and denominator are both wrap-aware
+                    # variances, keeping the score interpretable across
+                    # the boundary.
+                    w_cov = w_train / (np.sum(w_train) + 1e-12)
+                    mu = circular_mean(Y_train, metric=manifold_metric, period=manifold_period, weights=w_cov)
                     y_pred_xy = np.tile(mu.astype(np.float32), (len(Y_test), 1))
 
-                    dx = Y_test[:, 0] - mu[0]
-                    dy = Y_test[:, 1] - mu[1]
+                    residual = signed_diff(Y_test, mu[None, :], metric=manifold_metric, period=manifold_period)
+                    dx = residual[:, 0]
+                    dy = residual[:, 1]
                     euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
-                    sse = np.sum(dx ** 2 + dy ** 2)
-                    ss_tot_x = np.sum((Y_test[:, 0] - np.mean(Y_test[:, 0])) ** 2)
-                    ss_tot_y = np.sum((Y_test[:, 1] - np.mean(Y_test[:, 1])) ** 2)
-                    denom = ss_tot_x + ss_tot_y
+                    sse = float(np.sum(dx ** 2 + dy ** 2))
+
+                    # Denominator of `r2_spatial`: total wrap-aware
+                    # dispersion of `Y_test` around its own centroid.
+                    denom = total_dispersion(
+                        Y_test, metric=manifold_metric, period=manifold_period,
+                    )
 
                     # Mahalanobis MAE using the KDE-weighted training
-                    # covariance, matching the regressor's convention.
-                    w_cov = w_train / (np.sum(w_train) + 1e-12)
-                    diff_tr = Y_train - mu
+                    # covariance. Built from wrap-aware residuals around
+                    # the (metric-aware) centroid so the metric is
+                    # internally consistent with the rest of the bundle.
+                    diff_tr = signed_diff(Y_train, mu[None, :], metric=manifold_metric, period=manifold_period)
                     cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
                     cov_inv = np.linalg.pinv(cov_tr)
-                    residual = np.stack([dx, dy], axis=1)
                     quad = np.einsum('ij,jk,ik->i', residual, cov_inv, residual)
                     mahalanobis_mae = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
 
@@ -1602,6 +1688,8 @@ class ContinuousModelRunner:
                             verbose=verbose,
                             use_lax_loop=use_lax_loop,
                             regressor_cls=SmoothBivariateRegression,
+                            metric=manifold_metric,
+                            period=manifold_period,
                         )
                         fold_tuned_flag = True
                     else:
@@ -1629,6 +1717,8 @@ class ContinuousModelRunner:
                         random_state=random_seed + fold_idx,
                         verbose=verbose,
                         _use_lax_loop=use_lax_loop,
+                        metric=manifold_metric,
+                        period=manifold_period,
                     )
                     model.fit(X_train, Y_train, sample_weight=w_train)
                     metrics = model.evaluate_metrics(X_test, Y_test, weights=w_test)

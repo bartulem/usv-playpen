@@ -69,6 +69,7 @@ from scipy.interpolate import interp1d
 
 from .auxiliary_plot_functions import create_colormap
 from ..modeling.modeling_metadata import load_selection_results
+from ..modeling.manifold_metric import pairwise_distance
 
 
 _PKG_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -2862,6 +2863,18 @@ class DeepResultsVisualizer:
         self.n_bins = self.metadata['n_time_bins']
         self.save_dir = self.metadata.get('save_dir', './plots')
 
+        # Manifold-metric provenance. Recent CNN runs save the
+        # `(metric, period)` pair into `data['metadata']`; legacy
+        # pickles predate this and default to flat-space euclidean
+        # so the visualisations remain back-compatible without any
+        # caller-side awareness. The plots that compute distances
+        # between predictions and ground truth (`spatial_precision_grid`,
+        # `error_landscape`, `regional_saliency_inset`) read these
+        # via `signed_diff` so torus pickles render with wrap-aware
+        # error magnitudes.
+        self.manifold_metric = self.metadata.get('manifold_metric', 'euclidean')
+        self.manifold_period = float(self.metadata.get('manifold_period', 1.0))
+
         if modeling_settings is None:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
@@ -3351,7 +3364,15 @@ class DeepResultsVisualizer:
             if density >= min_samples:
                 selected_patches.append({'center': (cx, cy), 'density': density, 'indices': indices})
             else:
-                dist_to_center = np.sqrt(np.sum((Y_true - [cx, cy]) ** 2, axis=1))
+                # Wrap-aware nearest-neighbour to the K-means centre.
+                # On torus this picks up neighbours from across the
+                # wrap boundary so a centre near the period edge isn't
+                # silently snapped to a far-side point.
+                center_arr = np.asarray([[cx, cy]], dtype=Y_true.dtype)
+                dist_to_center = pairwise_distance(
+                    Y_true, center_arr,
+                    metric=self.manifold_metric, period=self.manifold_period,
+                )
                 nearest_idx = np.argmin(dist_to_center)
                 nx, ny = Y_true[nearest_idx]
 
@@ -3401,7 +3422,13 @@ class DeepResultsVisualizer:
 
             peak_idx = np.unravel_index(np.argmax(zi_grid), zi_grid.shape)
             peak_coord = (xi_grid[peak_idx], yi_grid[peak_idx])
-            dist = np.sqrt((peak_coord[0] - cx) ** 2 + (peak_coord[1] - cy) ** 2)
+            # Wrap-aware bias score so panels near the wrap boundary
+            # report the actual on-manifold distance rather than the
+            # `period - epsilon` long-way-around alternative.
+            dist = float(pairwise_distance(
+                np.asarray([peak_coord]), np.asarray([[cx, cy]]),
+                metric=self.manifold_metric, period=self.manifold_period,
+            )[0])
 
             if plot_type.lower() == 'contour':
                 z_flat_sorted = np.sort(zi_grid.flatten())[::-1]
@@ -3499,8 +3526,16 @@ class DeepResultsVisualizer:
         Y_pred_null = np.vstack([np.array(f['Y_pred_null_model_free']) for f in cv_folds])
 
         # Calculate Euclidean errors point-by-point
-        errors_act = np.sqrt(np.sum((Y_true - Y_pred_act) ** 2, axis=1))
-        errors_null = np.sqrt(np.sum((Y_true - Y_pred_null) ** 2, axis=1))
+        # Wrap-aware per-sample error magnitudes — euclidean on flat
+        # manifolds, shortest-wrap on torus.
+        errors_act = pairwise_distance(
+            Y_true, Y_pred_act,
+            metric=self.manifold_metric, period=self.manifold_period,
+        )
+        errors_null = pairwise_distance(
+            Y_true, Y_pred_null,
+            metric=self.manifold_metric, period=self.manifold_period,
+        )
 
         # Delta E: Positive means the Model is better (lower error) than the Null
         error_diff = errors_null - errors_act
@@ -3674,8 +3709,16 @@ class DeepResultsVisualizer:
             print(f"Warning: Region '{region_key}' contains only {len(r_idx)} samples. Skipping.")
             return
 
-        err_actual = np.linalg.norm(Y_te[r_idx] - Y_pred[r_idx], axis=1)
-        err_null = np.linalg.norm(Y_te[r_idx] - Y_pred_null[r_idx], axis=1)
+        # Wrap-aware per-trial error magnitudes for the in-region
+        # subset; matches the metric used by the model's loss / R^2.
+        err_actual = pairwise_distance(
+            Y_te[r_idx], Y_pred[r_idx],
+            metric=self.manifold_metric, period=self.manifold_period,
+        )
+        err_null = pairwise_distance(
+            Y_te[r_idx], Y_pred_null[r_idx],
+            metric=self.manifold_metric, period=self.manifold_period,
+        )
 
         # --- 4. SALIENCY EXTRACTION ---
         if 'saliency_maps' in self.data and region_key in self.data['saliency_maps']:
@@ -5022,18 +5065,18 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
       at ρ ≈ 0.3 with cohort-mean null at ±0.001). A triangle
       marker on the *positive lag axis* indicates the cross-
       correlation right-side significance horizon, defined as the
-      end (largest lag) of the **earliest-starting sign-consistent
-      outside-null run** on the symmetric lag axis. Above-null and
-      below-null runs are tracked separately; the picked run's
-      direction sets the marker shape (▽ for above-null, △ for
-      below-null). Two filters apply before the first-run pick:
-      runs whose last bin is below `signal_floor_seconds` are
-      excluded (so very-near-zero noise cannot anchor a marker),
-      and runs shorter than `signal_min_run_seconds` (in seconds,
-      converted to bins via the lag-axis spacing) are excluded as
-      scattered fragments. Reading: "the first sustained departure
-      of the curve from the shuffled distribution ends — and the
-      curve re-enters the null envelope — at this lag." When the
+      end (largest lag) of the **longest sign-consistent
+      outside-null run** on the positive lag axis. Above-null and
+      below-null runs are tracked separately and compete for
+      "longest"; the winner's direction sets the marker shape (▽
+      for above-null, △ for below-null). Two filters apply before
+      the longest-run pick: runs whose last bin is below
+      `signal_floor_seconds` are excluded (so very-near-zero noise
+      cannot anchor a marker), and runs shorter than
+      `signal_min_run_seconds` (in seconds, converted to bins via
+      the lag-axis spacing) are excluded as scattered fragments.
+      Reading: "the largest sustained excursion of the curve away
+      from the shuffled distribution ends at this lag." When the
       longest qualifying run extends to `+max_lag`, the marker
       lands at the right edge of the panel and the lag annotation
       gets a trailing `+`. Same min-x text clamp as the ACF marker

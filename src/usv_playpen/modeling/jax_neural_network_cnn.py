@@ -44,9 +44,16 @@ import pickle
 from datetime import datetime
 from functools import partial
 from matplotlib.path import Path
-from sklearn.cluster import KMeans
-from sklearn.model_selection import StratifiedShuffleSplit
 from typing import Dict, Any, List, Tuple
+
+from .manifold_metric import (
+    pairwise_distance,
+    signed_diff_jax,
+    resolve_manifold_metric,
+)
+from .modeling_usv_manifold_position import (
+    get_stratified_spatial_splits_stable as _manifold_spatial_splits,
+)
 
 
 class HashableDict(dict):
@@ -696,11 +703,17 @@ class NeuralContinuousCNNRunner:
         self.split_strategy = self.modeling_settings['model_params']['split_strategy']
         self.random_seed = self.modeling_settings['model_params']['random_seed']
 
+        # Manifold-metric configuration. Threaded through the spatial
+        # splitter, the training loss / RMSE evaluations, and the
+        # region-saliency centroid distance — so a settings flip from
+        # `'euclidean'` to `'torus'` produces consistent wrap-aware
+        # behaviour across training and post-hoc analyses.
+        self.manifold_metric, self.manifold_period = resolve_manifold_metric(self.modeling_settings)
+
         # Hyperparameter block read directly as a dict
         self.hp = HashableDict(self.modeling_settings['hyperparameters']['deep_learning']['cnn_continuous'])
 
-    @staticmethod
-    def get_stratified_spatial_splits_stable(groups: np.ndarray,
+    def get_stratified_spatial_splits_stable(self, groups: np.ndarray,
                                              Y: np.ndarray,
                                              split_strategy: str = 'session',
                                              n_clusters: int = 15,
@@ -709,104 +722,59 @@ class NeuralContinuousCNNRunner:
                                              tolerance: float = 0.05,
                                              random_seed: int = 0) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
-        Generates deterministic geographic folds using K-Means spatial proxies.
+        Thin delegator to the canonical splitter in
+        `modeling_usv_manifold_position.get_stratified_spatial_splits_stable`.
 
-        Because continuous 2D coordinates cannot be stratified using traditional
-        1D binning, this function uses K-Means clustering to divide the acoustic
-        manifold into distinct micro-neighborhoods (proxy labels). It then splits
-        the dataset to guarantee these neighborhoods are uniformly distributed
-        across the training and test sets.
+        The CNN runner used to carry its own near-identical copy of the
+        K-means stratifier; the standalone helper now owns the
+        Mode-A-and-B coverage guards, the metric-aware K-means embedding,
+        and the precomputed `session_to_rows` indexing path. Delegating
+        keeps a single source of truth for fold construction so any
+        future fix propagates to both pipelines automatically. The
+        method-on-self surface is preserved for backwards compatibility
+        with existing call sites.
 
         Parameters
         ----------
         groups : np.ndarray
-            Array of session IDs, used exclusively when split_strategy='session'
-            to prevent data leakage.
+            Array of session IDs.
         Y : np.ndarray
-            Array of shape (N, 2) containing continuous UMAP coordinates.
+            Array of shape `(N, 2)` containing continuous UMAP coordinates.
         split_strategy : str, default 'session'
-            Determines the data leakage constraint:
-            - 'session': Randomizes entire sessions. Employs a tolerance-based
-              search loop to find specific combinations of sessions that satisfy
-              the global spatial distribution.
-            - 'mixed': Ignores session boundaries and perfectly stratifies at the
-              epoch level using StratifiedShuffleSplit.
+            `'session'` (whole-session holdout) or `'mixed'` (epoch-level
+            stratified shuffling).
         n_clusters : int, default 15
-            Number of geographic micro-neighborhoods to define via K-Means.
+            Number of K-means proxy clusters.
         test_prop : float, default 0.2
-            Proportion of the dataset (or sessions) to assign to the test set.
+            Test-fold proportion (sessions for `'session'`, samples for
+            `'mixed'`).
         n_splits : int, default 100
-            Number of independent fold iterations to generate.
+            Number of independent fold iterations.
         tolerance : float, default 0.05
-            Initial allowable difference in spatial distribution between the global
-            data and the generated test splits (used only for 'session' strategy).
+            Initial spatial-distribution tolerance for the rejection
+            sampler (only consulted when `split_strategy='session'`).
         random_seed : int, default 0
-            Fixed seed for absolute reproducibility of the K-Means and split generation.
+            Fixed seed for K-means and the per-iteration shuffle.
 
         Returns
         -------
         cv_folds : list of tuples
-            A list of length `n_splits`, where each tuple contains (train_indices, test_indices).
-
-        Raises
-        ------
-        ValueError
-            If an unknown split_strategy is provided.
-        RuntimeError
-            If the tolerance loop exceeds 50,000 attempts to find balanced session splits.
+            A list of length `n_splits`, where each tuple contains
+            `(train_indices, test_indices)`.
         """
-        if split_strategy not in ['session', 'mixed']:
-            raise ValueError(f"Invalid split_strategy: '{split_strategy}'. Must be 'session' or 'mixed'.")
 
-        kmeans = KMeans(n_clusters=n_clusters, random_state=random_seed, n_init='auto')
-        proxy_labels = kmeans.fit_predict(Y)
-
-        if split_strategy == 'mixed':
-            sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
-            return list(sss.split(np.zeros(len(Y)), proxy_labels))
-
-        elif split_strategy == 'session':
-            unique_sessions = np.unique(groups)
-            n_test_sessions = int(len(unique_sessions) * test_prop)
-
-            _, global_counts = np.unique(proxy_labels, return_counts=True)
-            global_dist = global_counts / len(proxy_labels)
-
-            cv_folds = []
-            rng = np.random.RandomState(random_seed)
-
-            attempts = 0
-            current_tolerance = tolerance
-            max_total_attempts = 50000
-
-            while len(cv_folds) < n_splits:
-                attempts += 1
-                shuffled = rng.permutation(unique_sessions)
-                te_sess = shuffled[:n_test_sessions]
-                tr_sess = shuffled[n_test_sessions:]
-
-                tr_idx = np.where(np.isin(groups, tr_sess))[0]
-                te_idx = np.where(np.isin(groups, te_sess))[0]
-
-                tr_clusters = np.unique(proxy_labels[tr_idx])
-                te_clusters = np.unique(proxy_labels[te_idx])
-
-                if len(tr_clusters) == n_clusters and len(te_clusters) == n_clusters:
-                    _, te_counts = np.unique(proxy_labels[te_idx], return_counts=True)
-                    te_dist = te_counts / len(te_idx)
-                    dist_error = np.max(np.abs(te_dist - global_dist))
-
-                    if dist_error < current_tolerance:
-                        cv_folds.append((tr_idx, te_idx))
-
-                if attempts % 1000 == 0:
-                    current_tolerance += 0.02
-
-                if attempts > max_total_attempts:
-                    raise RuntimeError(
-                        f"Failed to find {n_splits} valid spatial splits after {attempts} attempts."
-                    )
-            return cv_folds
+        return _manifold_spatial_splits(
+            groups=groups,
+            Y=Y,
+            n_clusters=n_clusters,
+            split_strategy=split_strategy,
+            test_prop=test_prop,
+            n_splits=n_splits,
+            tolerance=tolerance,
+            random_seed=random_seed,
+            metric=self.manifold_metric,
+            period=self.manifold_period,
+        )
 
     def load_multivariate_data_blocks(self, pkl_path: str) -> Dict[str, Any]:
         """
@@ -941,14 +909,23 @@ class NeuralContinuousCNNRunner:
 
         print(f"   > Extracting drivers for centroid {polygon_centroid}...")
 
-        # 1. Define the differentiable region objective
+        # 1. Define the differentiable region objective. The negative
+        #    distance is the wrap-aware Euclidean norm of the signed
+        #    diff between the prediction and the polygon centroid; on
+        #    `metric='euclidean'` this reduces to the original
+        #    flat-space distance, on torus the diff folds into the
+        #    shortest-path representation before squaring.
+        polygon_centroid_jax = jnp.asarray(polygon_centroid)
+
         def region_scalar_fn(x_single):
             preds, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
                                    Y_center, Y_scale, self.hp, is_training=False)
 
-            # Negative distance to the polygon centroid
-            dist_to_centroid = jnp.sqrt((preds[0, 0] - polygon_centroid[0]) ** 2 +
-                                        (preds[0, 1] - polygon_centroid[1]) ** 2)
+            diff = signed_diff_jax(
+                preds[0], polygon_centroid_jax,
+                metric=self.manifold_metric, period=self.manifold_period,
+            )
+            dist_to_centroid = jnp.sqrt(jnp.sum(diff ** 2))
             return -dist_to_centroid
 
         # 2. Define the global baseline objective
@@ -1065,7 +1042,12 @@ class NeuralContinuousCNNRunner:
                 'hyperparameters': self.hp,
                 'features_list': features,
                 'n_time_bins': n_bins,
-                'split_strategy': self.split_strategy
+                'split_strategy': self.split_strategy,
+                # Manifold-metric provenance — downstream
+                # visualisation code reads these to compute wrap-aware
+                # distances on the saved Y_pred / Y_true arrays.
+                'manifold_metric': self.manifold_metric,
+                'manifold_period': self.manifold_period,
             },
             'cross_validation': [],
             'feature_importance': {}
@@ -1130,7 +1112,10 @@ class NeuralContinuousCNNRunner:
                     draw_indices = rng.choice(len(Y_tr), size=len(Y_te), replace=True)
                     Y_pred = Y_tr[draw_indices]
 
-                    err = float(np.mean(np.sqrt(np.sum((Y_pred - Y_te) ** 2, axis=-1))))
+                    err = float(np.mean(pairwise_distance(
+                        Y_te, Y_pred,
+                        metric=self.manifold_metric, period=self.manifold_period,
+                    )))
                     fold_results['Y_pred_null_model_free'] = Y_pred
                     fold_results['error_null_model_free'] = err
                     print(f"  > [Model-free prior] Euclidean Err: {err:.4f}")
@@ -1175,10 +1160,18 @@ class NeuralContinuousCNNRunner:
                             rng_key=drop_key, is_training=True
                         )
 
+                        # Wrap-aware residual on torus, plain `yt - preds`
+                        # on euclidean. Captured at trace time so the JIT
+                        # graph specialises on the metric tag.
+                        residual = signed_diff_jax(
+                            yt, preds,
+                            metric=self.manifold_metric, period=self.manifold_period,
+                        )
+
                         # Evaluate strictly based on the dictionary configuration
                         if self.hp['loss_function'] == 'huber':
                             delta = self.hp['huber_delta']
-                            abs_diff = jnp.abs(preds - yt)
+                            abs_diff = jnp.abs(residual)
 
                             # Piecewise Huber: 0.5 * x^2 for small errors, linear for outliers
                             huber_elements = jnp.where(
@@ -1189,7 +1182,7 @@ class NeuralContinuousCNNRunner:
                             loss = jnp.mean(jnp.sum(huber_elements, axis=-1))
                         else:
                             # Standard Mean Squared Error
-                            loss = jnp.mean(jnp.sum((preds - yt) ** 2, axis=-1))
+                            loss = jnp.mean(jnp.sum(residual ** 2, axis=-1))
 
                         return loss, new_state
 
@@ -1240,7 +1233,10 @@ class NeuralContinuousCNNRunner:
 
                     if epoch % 5 == 0:
                         Y_pred_te = evaluate_batched(params, state, jnp.array(X_te))
-                        err = float(jnp.mean(jnp.sqrt(jnp.sum((Y_pred_te - Y_te) ** 2, axis=-1))))
+                        err = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
+                            jnp.array(Y_te), Y_pred_te,
+                            metric=self.manifold_metric, period=self.manifold_period,
+                        ) ** 2, axis=-1))))
 
                         if err < best_err - 0.001:
                             best_err = err
@@ -1299,7 +1295,10 @@ class NeuralContinuousCNNRunner:
                 X_perm[:, f_idx, :] = X_perm[perm_idx, f_idx, :]
 
                 Y_pred_perm = evaluate_batched(best_params, best_state, jnp.array(X_perm))
-                err_perm = float(jnp.mean(jnp.sqrt(jnp.sum((Y_pred_perm - Y_te_final) ** 2, axis=-1))))
+                err_perm = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
+                    jnp.array(Y_te_final), Y_pred_perm,
+                    metric=self.manifold_metric, period=self.manifold_period,
+                ) ** 2, axis=-1))))
 
                 delta_e = err_perm - base_err
                 feat_scores.append(delta_e)

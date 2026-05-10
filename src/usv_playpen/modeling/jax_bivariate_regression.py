@@ -83,6 +83,15 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from typing import Tuple, Any, Optional
 
+from .manifold_metric import (
+    signed_diff,
+    signed_diff_jax,
+    circular_mean,
+    total_dispersion,
+    torus_embed,
+    _validate_metric_period,
+)
+
 
 def _bivariate_loss_static(
         params,
@@ -95,6 +104,8 @@ def _bivariate_loss_static(
         lam_l2,
         huber_delta,
         smoothness_derivative_order: int,
+        metric: str,
+        period: float,
 ):
     """
     Module-level mirror of `SmoothBivariateRegression._loss_fn`.
@@ -105,12 +116,17 @@ def _bivariate_loss_static(
     closure capture out of the JIT cache key — multiple estimator
     instances sharing the same input shapes hit the same compiled
     graph instead of forcing a re-trace per instance.
+
+    The residual is computed via `signed_diff_jax` so torus targets are
+    folded into the shortest-wrap representation before squaring; on
+    `metric='euclidean'` this reduces to the plain `Y_true - Y_pred`
+    difference.
     """
 
     W, b = params
 
     Y_pred = jnp.dot(X, W) + b
-    residuals = Y_true - Y_pred
+    residuals = signed_diff_jax(Y_true, Y_pred, metric=metric, period=period)
     norms = jnp.sqrt(jnp.sum(residuals ** 2, axis=1) + 1e-12)
     quad = jnp.minimum(norms, huber_delta)
     lin = norms - quad
@@ -126,7 +142,8 @@ def _bivariate_loss_static(
     return weighted_loss + l2_loss + smooth_loss
 
 
-@partial(jax.jit, static_argnames=('n_feats', 'n_time', 'smoothness_derivative_order'))
+@partial(jax.jit, static_argnames=('n_feats', 'n_time', 'smoothness_derivative_order',
+                                   'metric'))
 def _bivariate_train_loop_jit(
         params_init,
         opt_state_init,
@@ -142,6 +159,8 @@ def _bivariate_train_loop_jit(
         n_feats: int,
         n_time: int,
         smoothness_derivative_order: int,
+        metric: str,
+        period: float,
 ):
     """
     Full descent fused into a single `jax.lax.while_loop` inside one
@@ -176,6 +195,7 @@ def _bivariate_train_loop_jit(
             n_feats, n_time,
             lambda_smooth, l2_reg, huber_delta,
             smoothness_derivative_order,
+            metric, period,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
@@ -332,12 +352,15 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             tol: float = 1e-4,
             random_state: int = 0,
             verbose: bool = False,
-            _use_lax_loop: bool = False
+            _use_lax_loop: bool = False,
+            metric: str = 'euclidean',
+            period: float = 1.0,
     ):
         if smoothness_derivative_order not in (1, 2):
             raise ValueError(
                 f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
             )
+        _validate_metric_period(metric, period)
         self.n_features = n_features
         self.n_time_bins = n_time_bins
         self.lambda_smooth = lambda_smooth
@@ -349,6 +372,15 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         self.tol = tol
         self.random_state = random_state
         self.verbose = verbose
+        # Manifold-metric configuration. `metric='euclidean'` reproduces
+        # the legacy flat-space behaviour (training loss is plain Huber
+        # on `Y_true - Y_pred`, kdtree is built on `Y_train`, centroid
+        # is the arithmetic mean). `metric='torus'` plumbs wrap-aware
+        # signed differences through the loss, builds the kdtree on the
+        # canonical 4-D torus embedding, and uses circular means /
+        # wrap-aware covariances for `train_mean_` / `train_cov_inv_`.
+        self.metric = metric
+        self.period = float(period)
         # Opt-in fused training loop. When True, the full descent is
         # wrapped in a single `jax.lax.while_loop` inside a `@jax.jit`
         # closure — eliminates per-iteration Python dispatch at the cost
@@ -398,7 +430,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         return W, b
 
     @staticmethod
-    @partial(jax.jit, static_argnums=(4, 5, 9))
+    @partial(jax.jit, static_argnums=(4, 5, 9, 10))
     def _loss_fn(
             params: Tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
@@ -410,6 +442,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             lam_l2: float,
             huber_delta: float,
             smoothness_derivative_order: int,
+            metric: str,
+            period: float,
     ) -> jnp.ndarray:
         """
         Computes the total optimisation loss: density-weighted Huber + L2 +
@@ -471,8 +505,12 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         # Huber loss on the Euclidean residual (not per-axis): a 1-unit miss
         # along either coordinate is treated identically, and the quadratic
-        # region is ||r|| <= huber_delta.
-        residuals = Y_true - Y_pred
+        # region is ||r|| <= huber_delta. On a torus manifold the residual
+        # is wrapped into the shortest-path representation
+        # (`signed_diff_jax`) before squaring, so points on opposite sides
+        # of the wrap boundary are scored by their `period - |raw_diff|`
+        # distance rather than the (much larger) `|raw_diff|`.
+        residuals = signed_diff_jax(Y_true, Y_pred, metric=metric, period=period)
         norms = jnp.sqrt(jnp.sum(residuals ** 2, axis=1) + 1e-12)
         quad = jnp.minimum(norms, huber_delta)
         lin = norms - quad
@@ -562,6 +600,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
                 n_feats, n_time,
                 self.lambda_smooth, self.l2_reg, self.huber_delta,
                 self.smoothness_derivative_order,
+                self.metric, self.period,
             )
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
@@ -617,6 +656,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
                 int(self.n_features),
                 int(self.n_time_bins),
                 int(self.smoothness_derivative_order),
+                self.metric,
+                jnp.asarray(self.period, dtype=jnp.float32),
             )
             completed_iter = int(completed_iter_j)
             converged = bool(converged_j)
@@ -634,19 +675,33 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # compared against. The inverse-density-weighted covariance of
         # `Y_train` powers the Mahalanobis metric — a standardized distance
         # that removes the axis-scale arbitrariness of the UMAP embedding.
+        # On `metric='torus'` the kdtree is built on the canonical
+        # 4-D torus embedding `(cos, sin, cos, sin)` so a 1-NN query
+        # respects wraparound: a raw prediction at `(0.99, 0.5)` snaps
+        # to a training point at `(0.01, 0.5)` rather than to a far-away
+        # point that happens to be closer in flat-space Euclidean.
         Y_train_np = np.asarray(y, dtype=np.float64)
         self.Y_train_ = Y_train_np
         try:
-            self._train_kdtree = cKDTree(Y_train_np)
+            if self.metric == 'torus':
+                self._train_kdtree = cKDTree(torus_embed(Y_train_np, self.period))
+            else:
+                self._train_kdtree = cKDTree(Y_train_np)
         except Exception:
             self._train_kdtree = None
 
         # Re-normalise the already-unit-mean sample weights to unit sum so
         # the weighted mean / covariance correspond to the density-weighted
         # empirical distribution of the training manifold.
+        # On `metric='torus'` the centroid is the per-axis circular mean
+        # and the covariance is built from the wrap-aware signed
+        # residuals around that centroid; the resulting Mahalanobis
+        # metric is the same dimensionless "spread-units off" measure
+        # as in the flat-space case but computed under the torus
+        # geometry so it does not blow up near the wrap boundary.
         w_cov = sample_weight / (np.sum(sample_weight) + 1e-12)
-        mu_train = np.sum(w_cov[:, None] * Y_train_np, axis=0)
-        diff = Y_train_np - mu_train
+        mu_train = circular_mean(Y_train_np, metric=self.metric, period=self.period, weights=w_cov)
+        diff = signed_diff(Y_train_np, mu_train[None, :], metric=self.metric, period=self.period)
         cov = (w_cov[:, None] * diff).T @ diff
         # Pinv guards against singular covariance in degenerate folds
         # (e.g. very small test splits on a rare satellite cluster).
@@ -693,7 +748,16 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         raw = np.dot(X, self.coef_) + self.intercept_
 
         if snap and getattr(self, '_train_kdtree', None) is not None:
-            _, idx = self._train_kdtree.query(raw, k=1)
+            # On torus the kdtree was built on the 4-D embedding, so the
+            # query point must be embedded before the 1-NN lookup. The
+            # returned index points back into the original (un-embedded)
+            # `Y_train_`, so the snapped prediction is automatically in
+            # native UMAP coordinates.
+            if self.metric == 'torus':
+                query = torus_embed(raw, self.period)
+            else:
+                query = raw
+            _, idx = self._train_kdtree.query(query, k=1)
             return self.Y_train_[idx]
         return raw
 
@@ -765,10 +829,15 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # which is the fair-comparison mode for every metric below. The
         # raw linear prediction is recomputed separately so we can expose
         # `euclidean_mae_raw` as a diagnostic without paying two kd-tree
-        # queries.
+        # queries. On torus the kdtree was built on the 4-D embedding so
+        # the raw prediction must be embedded before the lookup; the
+        # returned index points back into the original `Y_train_`.
         Y_pred_raw = self.predict(X, snap=False)
         if getattr(self, '_train_kdtree', None) is not None:
-            _, nn_idx = self._train_kdtree.query(Y_pred_raw, k=1)
+            if self.metric == 'torus':
+                _, nn_idx = self._train_kdtree.query(torus_embed(Y_pred_raw, self.period), k=1)
+            else:
+                _, nn_idx = self._train_kdtree.query(Y_pred_raw, k=1)
             Y_pred = self.Y_train_[nn_idx]
         else:
             Y_pred = Y_pred_raw
@@ -776,8 +845,16 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         if weights is None:
             weights = np.ones(Y_true.shape[0])
 
-        dx = Y_true[:, 0] - Y_pred[:, 0]
-        dy = Y_true[:, 1] - Y_pred[:, 1]
+        # Wrap-aware signed differences. On `metric='euclidean'` this is
+        # `Y_true - Y_pred` element-wise; on torus each component is
+        # folded into `(-period/2, period/2]` so an axis-distance of
+        # `period - epsilon` is reported as `epsilon`. Every euclidean-
+        # named metric below derives from these wrapped residuals — the
+        # naming is preserved for backwards compatibility, the semantic
+        # is the metric the manifold actually has.
+        residual_xy = signed_diff(Y_true, Y_pred, metric=self.metric, period=self.period)
+        dx = residual_xy[:, 0]
+        dy = residual_xy[:, 1]
 
         euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
         euclidean_mae = float(np.mean(euclidean_dist))
@@ -786,20 +863,20 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             np.sum(weights * euclidean_dist) / (np.sum(weights) + 1e-12)
         )
 
-        # Raw (unsnapped) Euclidean MAE — how far off the manifold the
-        # unconstrained linear map lands on average.
-        dx_raw = Y_true[:, 0] - Y_pred_raw[:, 0]
-        dy_raw = Y_true[:, 1] - Y_pred_raw[:, 1]
-        euclidean_mae_raw = float(np.mean(np.sqrt(dx_raw ** 2 + dy_raw ** 2)))
+        # Raw (unsnapped) MAE — how far off the manifold the
+        # unconstrained linear map lands on average. Same wrap rule.
+        residual_xy_raw = signed_diff(Y_true, Y_pred_raw, metric=self.metric, period=self.period)
+        euclidean_mae_raw = float(np.mean(np.sqrt(np.sum(residual_xy_raw ** 2, axis=1))))
 
-        # Mahalanobis MAE using the inverse-density-weighted training
-        # covariance. Interprets "how many spread-units off" rather than
-        # "how many raw UMAP units off", removing the arbitrariness of the
-        # UMAP embedding's axis scales.
+        # Mahalanobis MAE using the (metric-aware) inverse-density-weighted
+        # training covariance. Interprets "how many spread-units off"
+        # rather than "how many raw UMAP units off", removing the
+        # arbitrariness of the UMAP embedding's axis scales. On torus
+        # both the residual and the covariance were built from
+        # wrap-aware signed differences (see `fit`), so the metric is
+        # internally consistent with the rest of the bundle.
         if getattr(self, 'train_cov_inv_', None) is not None:
-            residual = np.stack([dx, dy], axis=1)
-            # r @ Cov^-1 @ r.T for every row, extracted as the diagonal.
-            quad = np.einsum('ij,jk,ik->i', residual, self.train_cov_inv_, residual)
+            quad = np.einsum('ij,jk,ik->i', residual_xy, self.train_cov_inv_, residual_xy)
             # Numerical noise in near-singular covariances can push tiny
             # residuals slightly negative; clip before the sqrt.
             mahalanobis_mae = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
@@ -812,7 +889,12 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # Pearson inlined as a centred-dot-product / norm-product so we
         # skip scipy's argument validation on every fold. NaN-safe when a
         # fold happens to produce a constant prediction (e.g., an exotic
-        # feature with near-zero variance).
+        # feature with near-zero variance). On torus, per-axis correlation
+        # is computed on the raw values (not unwrapped) — small bias near
+        # the wrap boundary, but standard pearson/spearman have no
+        # principled circular generalisation that returns a single
+        # comparable scalar; the headline R^2 below is the principled
+        # joint-axis figure.
         def _pearson_np(a, b):
             a_c = a - a.mean()
             b_c = b - b.mean()
@@ -833,10 +915,14 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         spearman_x = _spearman(Y_true[:, 0], Y_pred[:, 0])
         spearman_y = _spearman(Y_true[:, 1], Y_pred[:, 1])
 
-        ss_res = np.sum(dx ** 2 + dy ** 2)
-        ss_tot_x = np.sum((Y_true[:, 0] - np.mean(Y_true[:, 0])) ** 2)
-        ss_tot_y = np.sum((Y_true[:, 1] - np.mean(Y_true[:, 1])) ** 2)
-        denom = ss_tot_x + ss_tot_y
+        # `r2_spatial` numerator: sum of squared wrap-aware residuals.
+        # Denominator: total wrap-aware dispersion of `Y_true` around
+        # its own (metric-aware) centroid. Computing both terms under
+        # the same metric keeps R^2 interpretable on a torus —
+        # using `np.var(Y_true)` against a wrap-aware SSE would give
+        # nonsense near the boundary.
+        ss_res = float(np.sum(dx ** 2 + dy ** 2))
+        denom = total_dispersion(Y_true, metric=self.metric, period=self.period)
         r2_spatial = float(1.0 - (ss_res / denom)) if denom > 0 else 0.0
 
         return {
