@@ -1777,6 +1777,9 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         f.create_dataset("track_names", data=np.array([b"m1"]))
         f.create_dataset("recording_frame_rate", data=np.float64(fps))
         f.create_dataset("experimental_code", data=b"e99")
+        # `tracks` leading axis = frame count; the vocal compute reads
+        # `tracks.shape[0]` to derive session duration in seconds.
+        f.create_dataset("tracks", data=np.zeros((n_frames, 1, 1, 3), dtype=float))
 
     # Audio sync JSON
     duration_s = float(n_frames / fps)
