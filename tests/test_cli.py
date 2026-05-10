@@ -9,7 +9,8 @@ from click.testing import CliRunner
 from usv_playpen.analyze_data import (
     generate_beh_features_cli,
     generate_usv_playback_cli,
-    generate_rm_files_cli
+    generate_rm_files_cli,
+    detect_interesting_tuning_neurons_cli,
 )
 from usv_playpen.preprocess_data import (
     concatenate_video_files_cli,
@@ -127,7 +128,7 @@ def test_generate_rm_figures_cli_success(runner, mocker, tmp_path):
     Tests the 'generate-rm-figs' (rate map figures) command.
     """
 
-    mock_ratemap_maker = mocker.patch('usv_playpen.visualize_data.RatemapFigureMaker')
+    mock_maker = mocker.patch('usv_playpen.visualize_data.NeuronalTuningFigureMaker')
     mocker.patch(
         'usv_playpen.visualize_data.modify_settings_json_for_cli',
         return_value={'neuronal_tuning_figures': {}}
@@ -135,13 +136,12 @@ def test_generate_rm_figures_cli_success(runner, mocker, tmp_path):
 
     result = runner.invoke(generate_rm_figures_cli, [
         '--root-directory', str(tmp_path),
-        '--smoothing-sd', '1.5'
     ])
 
     assert result.exit_code == 0, f"CLI failed: {result.output}"
     assert result.exception is None, f"Exception occurred: {result.output}"
-    mock_ratemap_maker.assert_called_once()
-    mock_ratemap_maker.return_value.neuronal_tuning_figures.assert_called_once()
+    mock_maker.assert_called_once()
+    mock_maker.return_value.make_neuronal_tuning_figures.assert_called_once()
 
 def test_concatenate_video_cli_success(runner, mocker, tmp_path):
     """
@@ -241,3 +241,92 @@ def test_cli_fails_with_missing_required_directory(runner):
 
     assert result.exit_code != 0, f"CLI should fail but succeeded: {result.output}"
     assert "Missing option '--root-directory'" in result.output, f"Expected error not found: {result.output}"
+
+
+# ---------------------------------------------------------------------------
+# detect-interesting CLI
+# ---------------------------------------------------------------------------
+
+
+def test_detect_interesting_cli_no_pkls(runner, tmp_path, mocker):
+    """
+    CLI exits cleanly when the session root has no tuning_curves directory.
+    """
+    mocker.patch(
+        "usv_playpen.analyze_data.modify_settings_json_for_cli",
+        return_value={
+            "detect_interesting_tuning_neurons": {
+                "z_threshold": 3.0, "min_consecutive_bins": 3,
+                "vmi_alpha": 0.01, "vmi_min_bouts": 10,
+                "spatial_info_bps_threshold": 0.5,
+            }
+        },
+    )
+    result = runner.invoke(
+        detect_interesting_tuning_neurons_cli,
+        ["--root-directory", str(tmp_path)],
+    )
+    assert result.exit_code == 0
+    assert result.exception is None
+
+
+def test_detect_interesting_cli_overrides_thresholds(runner, tmp_path, mocker):
+    """
+    CLI threshold flags propagate into the detect_interesting_clusters call.
+    """
+    mock_detect = mocker.patch(
+        "usv_playpen.analyze_data.detect_interesting_clusters"
+    )
+    mocker.patch(
+        "usv_playpen.analyze_data.modify_settings_json_for_cli",
+        return_value={
+            "detect_interesting_tuning_neurons": {
+                "z_threshold": 5.0, "min_consecutive_bins": 4,
+                "vmi_alpha": 0.005, "vmi_min_bouts": 15,
+                "spatial_info_bps_threshold": 1.0,
+            }
+        },
+    )
+    result = runner.invoke(
+        detect_interesting_tuning_neurons_cli,
+        [
+            "--root-directory", str(tmp_path),
+            "--z-threshold", "5.0",
+            "--min-consecutive-bins", "4",
+            "--vmi-alpha", "0.005",
+            "--vmi-min-bouts", "15",
+            "--spatial-info-bps-threshold", "1.0",
+        ],
+    )
+    assert result.exit_code == 0
+    mock_detect.assert_called_once()
+    kwargs = mock_detect.call_args.kwargs
+    assert kwargs["z_threshold"] == 5.0
+    assert kwargs["min_consecutive_bins"] == 4
+    assert kwargs["vmi_alpha"] == 0.005
+    assert kwargs["vmi_min_bouts"] == 15
+    assert kwargs["spatial_info_bps_threshold"] == 1.0
+
+
+def test_detect_interesting_cli_missing_root_required(runner):
+    """
+    CLI requires --root-directory; invocation without it errors out.
+    """
+    result = runner.invoke(detect_interesting_tuning_neurons_cli, [])
+    assert result.exit_code != 0
+
+
+def test_detect_interesting_cli_help_contains_thresholds(runner):
+    """
+    --help mentions every threshold flag, so users discover the surface.
+    """
+    result = runner.invoke(detect_interesting_tuning_neurons_cli, ["--help"])
+    assert result.exit_code == 0
+    for flag in (
+        "--z-threshold",
+        "--min-consecutive-bins",
+        "--vmi-alpha",
+        "--vmi-min-bouts",
+        "--spatial-info-bps-threshold",
+    ):
+        assert flag in result.output
