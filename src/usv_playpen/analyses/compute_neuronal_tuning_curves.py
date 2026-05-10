@@ -1275,10 +1275,12 @@ class NeuronalTuning(FeatureZoo):
         """
         Description
         -----------
-        Locate `*_usv_summary.csv`, the tracking H5, and the audio sync
-        JSON; filter the USV summary to non-noise rows and read sex
-        assignment from h5 track_names. Returns None if any of the three
-        files is missing or the filtered USV table is empty.
+        Locate `*_usv_summary.csv` and the tracking H5; filter the USV
+        summary to non-noise rows, read sex assignment from h5
+        `track_names`, and derive session duration from the H5 as
+        `tracks.shape[0] / recording_frame_rate` (same time base the
+        spikes are aligned to). Returns None if either required file
+        is missing or the filtered USV table is empty.
 
         Parameters
         ----------
@@ -1325,23 +1327,18 @@ class NeuronalTuning(FeatureZoo):
             )
         except (StopIteration, FileNotFoundError):
             return None
+        # Session duration is derived from the tracking H5: the leading
+        # axis of `tracks` is the frame count, divided by the camera
+        # frame rate gives seconds. This is the SAME time base the
+        # spike data is aligned to (and that the behavioral compute
+        # uses), so circular shuffles wrap modulo the right interval.
         with h5py.File(h5_path, mode="r") as f:
             track_names = [t.decode("utf-8").strip() for t in f["track_names"]]
+            n_frames = int(f["tracks"].shape[0])
+            recording_fr = float(f["recording_frame_rate"][()])
+        duration_seconds = float(n_frames) / recording_fr
         male = track_names[0] if len(track_names) >= 1 else None
         female = track_names[1] if len(track_names) >= 2 else None
-
-        try:
-            sync_path = first_match_or_raise(
-                root=root,
-                pattern="audio_triggerbox_sync_info.json",
-                recursive=True,
-                label="audio triggerbox sync info JSON",
-            )
-        except (StopIteration, FileNotFoundError):
-            return None
-        with sync_path.open() as fh:
-            sync_doc = json.load(fh)
-        duration_seconds = float(sync_doc["m"]["duration_seconds"])
 
         return {
             "usv_df": df,
