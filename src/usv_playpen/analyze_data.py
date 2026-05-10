@@ -16,8 +16,9 @@ import click
 from click.core import ParameterSource
 
 from .analyses.compute_behavioral_features import FeatureZoo
-from .analyses.compute_behavioral_tuning_curves import NeuronalTuning
+from .analyses.compute_neuronal_tuning_curves import NeuronalTuning
 from .analyses.compute_inter_usv_interval_distributions import InterUSVIntervalCalculator
+from .analyses.detect_interesting_tuning_neurons import detect_interesting_clusters
 from .analyses.generate_audio_files import AudioGenerator
 from .cli_utils import modify_settings_json_for_cli
 from .os_utils import configure_path
@@ -33,9 +34,12 @@ class Analyst:
                  message_output: Callable | None = None) -> None:
 
         """
+        Description
+        -----------
         Initializes the Analyst class.
 
         Parameters
+        ----------
         root_directories (list)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -44,6 +48,8 @@ class Analyst:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         if input_parameter_dict is None or root_directories is None:
@@ -57,15 +63,19 @@ class Analyst:
     def analyze_data(self) -> None:
         """
         Description
+        -----------
         This method performs the following analyses:
         (1) computes behavioral features and plots their distributions
-        (2) computes behavioral tuning curves
+        (2) computes per-cluster neuronal tuning curves (behavioral + vocal)
         (3) generates playback WAV files
         (4) frequency shifts audio segments
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         Messenger(message_output=self.message_output,
@@ -104,8 +114,8 @@ class Analyst:
                                behavioral_parameters_dict=self.input_parameter_dict['compute_behavioral_features'],
                                message_output=self.message_output).save_behavioral_features_to_file()
 
-                # # # compute behavioral tuning curves
-                if self.input_parameter_dict['analyses_booleans']['compute_behavioral_tuning_bool']:
+                # # # compute neuronal tuning curves (behavioral and vocal in a single pass)
+                if self.input_parameter_dict['analyses_booleans']['compute_neuronal_tuning_bool']:
                     NeuronalTuning(root_directory=one_directory,
                                    tuning_parameters_dict=self.input_parameter_dict['calculate_neuronal_tuning_curves'],
                                    message_output=self.message_output).calculate_neuronal_tuning_curves()
@@ -145,11 +155,15 @@ class Analyst:
 def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to generate USV playback WAV files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -174,19 +188,23 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to generate USV playback WAV files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     for key, value in kwargs.items():
         if isinstance(value, str) and value.strip().startswith('{'):
             try:
                 ctx.params[key] = json.loads(value)
-            except json.JSONDecodeError:
-                raise click.BadParameter(message=f"Option '--{key.replace('_', '-')}' has invalid JSON.", param_hint=key)
+            except json.JSONDecodeError as exc:
+                raise click.BadParameter(message=f"Option '--{key.replace('_', '-')}' has invalid JSON.", param_hint=key) from exc
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == click.core.ParameterSource.COMMANDLINE]
 
@@ -204,15 +222,34 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.option('--total-bin-num', 'total_bin_num', type=int, default=None, required=False, help='Total number of bins for 1D tuning curves.')
 @click.option('--n-spatial-bins', 'n_spatial_bins', type=int, default=None, required=False, help='Number of spatial bins.')
 @click.option('--spatial-scale-cm', 'spatial_scale_cm', type=int, default=None, required=False, help='Spatial extent of the arena (in cm).')
+@click.option('--peth-window-seconds', 'peth_window_seconds', nargs=2, type=float, default=None, required=False, help='Pre-USV PETH window [start stop] (in s).')
+@click.option('--peth-bin-seconds', 'peth_bin_seconds', type=float, default=None, required=False, help='PETH bin width (in s).')
+@click.option('--bout-quiet-seconds', 'bout_quiet_seconds', type=float, default=None, required=False, help='Inter-bout silence required to define a new bout (in s).')
+@click.option('--n-usv-min-self', 'n_usv_min_self', type=int, default=None, required=False, help='Minimum self-side USV count to compute self plots.')
+@click.option('--n-usv-min-partner', 'n_usv_min_partner', type=int, default=None, required=False, help='Minimum partner-side USV count to compute partner plots.')
+@click.option('--n-usv-min-category', 'n_usv_min_category', type=int, default=None, required=False, help='Minimum per-category USV count to retain that category.')
+@click.option('--include-partner-tuning/--no-include-partner-tuning', 'include_partner_vocalization_tuning_bool', default=None, required=False, help='If set, also compute partner-side vocal tuning when partner threshold is met.')
+@click.option('--behavioral-min-occupancy-seconds', 'behavioral_min_occupancy_seconds', type=float, default=None, required=False, help='Minimum behavioral occupancy per bin (in s) for that bin to be rendered in the 1D feature line plots; persisted into behavioral_metadata of each cluster pkl.')
+@click.option('--smoothing-sd', 'smoothing_sd', type=float, default=None, required=False, help='Standard deviation (in bins) of the Gaussian smoothing applied to ratemaps and shuffle distributions; 0 disables smoothing.')
 @click.pass_context
 def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
-    A command-line tool to calculate behavioral tuning curves.
+    -----------
+    A command-line tool to compute neuronal tuning curves: behavioral
+    (spike-vs-3D-feature ratemaps) and vocal (Q1 pre-USV PETH, Q2 within-USV
+    continuous-property tuning, Q3 within-USV categorical, Q3 per-category
+    PETH). Each subset is produced if its corresponding input is present in
+    the session: behavioral runs when the `*_behavioral_features.csv` is
+    present, vocal runs when the `*_usv_summary.csv` is present. Sessions
+    missing both inputs return cleanly without producing any tuning files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -224,6 +261,52 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
                    tuning_parameters_dict=analyses_settings_parameter_dict['calculate_neuronal_tuning_curves'],
                    message_output=print).calculate_neuronal_tuning_curves()
 
+
+@click.command(name='detect-interesting')
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path; the per-cluster tuning pkls live at <root>/ephys/tuning_curves/.')
+@click.option('--z-threshold', 'z_threshold', type=float, default=None, required=False, help='Magnitude threshold on per-direction peak Z (excitation / suppression) for usv_peth, usv_property_tuning, usv_category_peth, behavioral, and the categorical-tuning best-Z gate.')
+@click.option('--min-consecutive-bins', 'min_consecutive_bins', type=int, default=None, required=False, help='Minimum number of consecutive bins above (or below) the shuffle band required to flag a direction.')
+@click.option('--vmi-alpha', 'vmi_alpha', type=float, default=None, required=False, help='Wilcoxon p-value threshold for VMI significance.')
+@click.option('--vmi-min-bouts', 'vmi_min_bouts', type=int, default=None, required=False, help='Minimum bout count required to consider VMI meaningful.')
+@click.option('--spatial-info-bps-threshold', 'spatial_info_bps_threshold', type=float, default=None, required=False, help='Skaggs spatial information rate (bits/spike) threshold for the spatial flag.')
+@click.pass_context
+def detect_interesting_tuning_neurons_cli(ctx, root_directory, **kwargs) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to triage neuronal tuning data: scan every
+    `*_tuning_curves_data.pkl` under `<root>/ephys/tuning_curves/`,
+    apply the configured thresholds to each cluster's pre-computed
+    `triage_stats` block, and emit one timestamped JSON summary
+    (`interesting_neurons_<YYYYMMDD>_<HHMMSS>.json`) listing flagged
+    clusters by modality / direction / role and by cluster. Pkls
+    without a `triage_stats` block (older runs) are skipped silently
+    and counted in the JSON.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                    provided_params=provided_params,
+                                                                    settings_dict='analyses_settings')
+    cfg = analyses_settings_parameter_dict['detect_interesting_tuning_neurons']
+    detect_interesting_clusters(
+        root_directory=root_directory,
+        z_threshold=float(cfg['z_threshold']),
+        min_consecutive_bins=int(cfg['min_consecutive_bins']),
+        vmi_alpha=float(cfg['vmi_alpha']),
+        vmi_min_bouts=int(cfg['vmi_min_bouts']),
+        spatial_info_bps_threshold=float(cfg['spatial_info_bps_threshold']),
+        message_output=print,
+    )
+
+
 @click.command(name='generate-beh-features')
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
 @click.option('--head-points', 'head_points', nargs=4, type=str, default=None, required=False, help='Skeleton head nodes.')
@@ -234,11 +317,15 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
 def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to compute 3D behavioral features.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['head_points', 'tail_points', 'back_root_points']
@@ -279,13 +366,17 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
 def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to compute inter-vocalization-interval (inter-USV interval)
     distributions across one or more session lists, and (optionally)
     sweep a 1D GMM on the pooled log-inter-USV intervals.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['session_lists', 'noise_categories']

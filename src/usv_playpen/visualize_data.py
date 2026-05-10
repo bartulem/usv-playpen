@@ -16,8 +16,8 @@ from click.core import ParameterSource
 
 from .cli_utils import modify_settings_json_for_cli
 from .send_email import Messenger
-from .visualizations.make_behavioral_tuning_figures import RatemapFigureMaker
 from .visualizations.make_behavioral_videos import Create3DVideo
+from .visualizations.make_neuronal_tuning_figures import NeuronalTuningFigureMaker
 
 
 class Visualizer:
@@ -27,9 +27,12 @@ class Visualizer:
                  message_output: Callable | None = None) -> None:
 
         """
+        Description
+        -----------
         Initializes the Visualizer class.
 
         Parameters
+        ----------
         root_directories (list)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -38,6 +41,8 @@ class Visualizer:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         if input_parameter_dict is None or root_directories is None:
@@ -51,13 +56,17 @@ class Visualizer:
     def visualize_data(self) -> None:
         """
         Description
+        -----------
         This method performs the following analyses:
-        (1) create behavioral tuning curve figures
+        (1) creates per-cluster combined neuronal tuning figures (behavioral + vocal)
         (2) visualizes (plot or video) 3D tracking, vocalization and neural data
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         Messenger(message_output=self.message_output,
@@ -74,11 +83,11 @@ class Visualizer:
                 self.message_output(f"Visualizing data in {one_directory} started at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-                # # # # plot behavioral tuning curves
-                if self.input_parameter_dict['visualize_booleans']['make_behavioral_tuning_figures_bool']:
-                    RatemapFigureMaker(root_directory=one_directory,
-                                       visualizations_parameter_dict=self.input_parameter_dict,
-                                       message_output=self.message_output).neuronal_tuning_figures()
+                # # # # plot per-cluster combined neuronal tuning figures (behavioral + vocal)
+                if self.input_parameter_dict['visualize_booleans']['make_neuronal_tuning_figures_bool']:
+                    NeuronalTuningFigureMaker(root_directory=one_directory,
+                                              visualizations_parameter_dict=self.input_parameter_dict,
+                                              message_output=self.message_output).make_neuronal_tuning_figures()
 
                 # # # # make behavioral videos
                 if self.input_parameter_dict['visualize_booleans']['make_behavioral_videos_bool']:
@@ -181,11 +190,15 @@ class Visualizer:
 def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_audio_file, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to plot/animate 3D tracked mice.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['brain_areas', 'other', 'raster_special_units', 'beh_features_to_plot', 'special_beh_features',
@@ -208,17 +221,25 @@ def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_
 
 @click.command(name='generate-rm-figs')
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
-@click.option('--smoothing-sd', 'smoothing_sd', type=float, default=None, required=False, help='Standard deviation of smoothing (in bins).')
-@click.option('--occ-threshold', 'occ_threshold', type=float, default=None, required=False, help='Minimum acceptable occupancy (in s).')
 @click.pass_context
 def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
-    A command-line tool to generate behavioral tuning curve figures.
+    -----------
+    A command-line tool to render the per-cluster combined neuronal tuning
+    figures. Each output bundles the behavioral feature pages (one per
+    temporal offset, per plot-feature group) and the vocal pages (Page 1
+    raster + Q1 PETH + Q2 grid; Page 2 Q3-within watersheds + Q3 per-category
+    PETH grid). Behavioral and vocal sections are emitted only when the
+    cluster pkl carries the corresponding payload; pkls with neither are
+    skipped silently.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -226,6 +247,6 @@ def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
     visualizations_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
                                                                           provided_params=provided_params,
                                                                           settings_dict='visualizations_settings')
-    RatemapFigureMaker(root_directory=root_directory,
-                       visualizations_parameter_dict=visualizations_settings_parameter_dict,
-                       message_output=print).neuronal_tuning_figures()
+    NeuronalTuningFigureMaker(root_directory=root_directory,
+                              visualizations_parameter_dict=visualizations_settings_parameter_dict,
+                              message_output=print).make_neuronal_tuning_figures()

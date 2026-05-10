@@ -34,13 +34,11 @@ The *Root directories* field enables you to list the directories containing the 
     F:\\Bartul\\Data\\20250430_165730
     F:\\Bartul\\Data\\20250430_182145
 
-Plot 3D behavioral tuning curves
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Once the *Compute 3D feature tuning curves* function from the *Analyze* section has completed, you have the ability to plot its results. The series of provided plots visualize the relationship between firing rate and each measured feature.
-These tuning curves are denote by a line spanning the graph horizontally, usually in color (depending on the sex of the animal) or in black for social features.
-The 99% CI of the shuffled distribution is shown as a shaded area around the tuning curve.
+Plot neuronal tuning figures
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Once the *Compute neuronal tuning curves* function from the *Analyze* section has completed, you have the ability to plot its results. Output is one combined multi-page document per cluster: a behavioral page per temporal offset and per plot-feature group (``individual.<mouse>`` and ``social``) followed by the vocal pages — Page 1 (bout raster + pooled pre-USV ``usv_peth`` on top, ``usv_property_tuning`` continuous-property grid below) and Page 2 (``usv_category_tuning`` watersheds + ``usv_category_peth`` per-category PETH grid). 1D ratemaps are drawn as a line spanning the plot, colored by the per-mouse palette (or the social color for social features). The 99% CI of the shuffled distribution is shown as a shaded band around the line.
 
-To obtain this visualization, you need to list the root directories of interest, select the *Plot 3D behavioral tuning curves* option in the GUI and click *Next* and then *Visualize*:
+To obtain this visualization, list the root directories of interest, select *Plot neuronal tuning figures* in the GUI and click *Next* and then *Visualize*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_1.png
    :align: center
@@ -50,7 +48,7 @@ To obtain this visualization, you need to list the root directories of interest,
 
    <br>
 
-Running this function results in the population of the *tuning_curves* subdirectory with *pdf files* containing tuning curves of each neuron for each feature:
+Running this function results in the population of the *tuning_curves* subdirectory with one combined output per cluster (PDF by default; configurable in the GUI / settings):
 
 .. parsed-literal::
 
@@ -59,12 +57,14 @@ Running this function results in the population of the *tuning_curves* subdirect
     │   │   ...
     │   ├── ephys
     │   │   ├── tuning_curves
-    │   │   │   ├── **imec0_cl0000_ch361_good_tuning_curves_data.pdf**
+    │   │   │   ├── **imec0_cl0000_ch361_good_neuronal_tuning.pdf**
     │   │   │   ...
     │   ├── sync
     │   │   ...
     │   └── video
     │       ...
+
+For non-PDF formats, each page is written to a separate file with a ``_p{N}_{label}`` suffix (e.g. ``..._p1_behavioral_beh_offset=0s_individual.<mouse>.png``, ``..._p3_vocal_a_male.png``). PDF emits a single multi-page file.
 
 An example of such tuning curves for one particular unit is shown below:
 
@@ -116,16 +116,16 @@ An example of such tuning curves for one particular unit is shown below:
 
    <br>
 
-The */usv-playpen/_parameter_settings/visualization_settings.json* file contains a section fully modifiable in the GUI, and it consists of the following parameters:
+The */usv-playpen/_parameter_settings/visualizations_settings.json* file holds the rendering-only knobs (compute-side knobs such as ``smoothing_sd`` and ``behavioral_min_occupancy_seconds`` live in *analyses_settings.json* under ``calculate_neuronal_tuning_curves`` — see the *Analyze* page):
 
-* **smoothing_sd** : standard deviation of the Gaussian kernel used for smoothing the tuning curves (unit is in number of bins)
-* **occ_threshold** : minimum occupancy threshold for a bin to be considered in the tuning curve calculation (in s)
+* **fig_format** : output file format for the per-cluster figures; ``pdf`` produces a single multi-page document, while ``png`` / ``jpg`` / ``svg`` write one file per page
+* **ratemap_cmap** : matplotlib colormap used for the 2D spatial ratemap and the ``usv_category_tuning`` firing-rate watershed (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``)
 
 .. code-block:: json
 
     "neuronal_tuning_figures": {
-        "smoothing_sd": 1.0,
-        "occ_threshold": 1.0
+        "fig_format": "pdf",
+        "ratemap_cmap": "inferno"
     }
 
 Visualize 3D behavior (figure/video)

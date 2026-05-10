@@ -1,6 +1,6 @@
 QWidget {
   background-color: white;
-  color: #000000;
+  color: #1F1F1F;
 }
 QLabel {
   padding-top: 3px;
@@ -26,7 +26,7 @@ QPushButton {
   padding: 5px 10px;
   margin: 1px;
   background-color: #f58025;
-  color: #000000;
+  color: #1F1F1F;
   font-weight: bold;
   min-width: 68px;
   min-height: 18px;

@@ -27,8 +27,6 @@ GUI are platform-independent.
 
 ## Prerequisites
 
-- [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio
-  recording PC)
 - [git](https://git-scm.com/download/) (if on Windows, add PATH to USER
   VARIABLES)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) (if on Windows,

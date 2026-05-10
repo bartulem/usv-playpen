@@ -391,7 +391,6 @@ It is worth noting that you can also manually modify the equipment settings in t
     device_model = 'Arduino Uno R3'
     device_sn = '55736303931351408130'
     device_br = 9600
-    device_port = 'COM5'
     device_sketch_name = 'generate_sync_pulses.ino'
     device_pc_name = 'PNI-DRMDK74'
     device_pc_model = 'Dell Precision 3680'

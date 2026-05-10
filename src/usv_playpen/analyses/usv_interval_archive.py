@@ -41,6 +41,7 @@ from typing import Any
 import h5py
 import numpy as np
 import polars as pls
+from sklearn.mixture import GaussianMixture
 
 from ..os_utils import configure_path
 from .gmm_utils import TMixture
@@ -52,6 +53,7 @@ from .gmm_utils import TMixture
 def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
     """
     Description
+    -----------
     Writes a polars DataFrame as a single compound HDF5 dataset under
     ``group[name]``. Column dtypes are mapped to numpy / fixed-width
     string types; empty frames are preserved by writing a zero-length
@@ -60,6 +62,7 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
     right columns.
 
     Parameters
+    ----------
     group (h5py.Group)
         Destination group.
     name (str)
@@ -68,6 +71,8 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
         DataFrame to serialise. May be empty.
 
     Returns
+    -------
+    None
     """
 
     schema = {col: str(dtype) for col, dtype in df.schema.items()}
@@ -115,15 +120,18 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
 def _h5_to_polars(ds: h5py.Dataset) -> pls.DataFrame:
     """
     Description
+    -----------
     Reverse of :func:`_polars_to_h5`: rebuilds a polars DataFrame from
     a compound dataset, restoring the original schema recorded in the
     ``schema_json`` attribute.
 
     Parameters
+    ----------
     ds (h5py.Dataset)
         Source dataset previously written by :func:`_polars_to_h5`.
 
     Returns
+    -------
     df (pls.DataFrame)
         Reconstructed DataFrame; empty if the original was empty.
     """
@@ -164,16 +172,19 @@ def _h5_to_polars(ds: h5py.Dataset) -> pls.DataFrame:
 def _try_git_sha(repo_root: Path) -> str:
     """
     Description
+    -----------
     Best-effort short git SHA at ``repo_root``; returns the literal
     string ``"unknown"`` when the directory is not a git checkout, the
     ``git`` binary is absent, or any other invocation error occurs.
     Pure provenance metadata; no functional consequences if it fails.
 
     Parameters
+    ----------
     repo_root (pathlib.Path)
         Directory to interrogate.
 
     Returns
+    -------
     sha (str)
         Short SHA, or ``"unknown"``.
     """
@@ -201,6 +212,7 @@ def write_ivi_h5(
 ) -> Path:
     """
     Description
+    -----------
     Writes a single inter-USV interval-analysis HDF5 file consolidating every artifact
     that was previously distributed across five CSVs per mode.
 
@@ -211,6 +223,7 @@ def write_ivi_h5(
     created.
 
     Parameters
+    ----------
     h5_path (str | Path)
         Output file path. The parent directory is created if missing.
         The path is run through :func:`configure_path` for cross-OS
@@ -230,6 +243,7 @@ def write_ivi_h5(
         ``None`` and are then not written.
 
     Returns
+    -------
     out_path (pathlib.Path)
         Resolved path of the written file.
     """
@@ -265,16 +279,19 @@ def write_ivi_h5(
 def _attr_value(v: Any) -> Any:
     """
     Description
+    -----------
     Coerces a Python value into something h5py can store as an
     attribute. Lists / dicts are JSON-encoded; ``None`` becomes the
     literal string ``"null"`` (h5py does not accept Python ``None``
     as an attribute value). Scalars and numpy scalars pass through.
 
     Parameters
+    ----------
     v (Any)
         Value to coerce.
 
     Returns
+    -------
     coerced (Any)
         h5py-storable representation of ``v``.
     """
@@ -296,6 +313,7 @@ def _attr_value(v: Any) -> Any:
 def read_usv_interval_h5(h5_path: str | Path) -> dict:
     """
     Description
+    -----------
     Reads an HDF5 archive previously written by :func:`write_ivi_h5`
     and returns its contents as a structured dict::
 
@@ -319,10 +337,12 @@ def read_usv_interval_h5(h5_path: str | Path) -> dict:
     know which attributes were structured.
 
     Parameters
+    ----------
     h5_path (str | Path)
         Path to the HDF5 file.
 
     Returns
+    -------
     archive (dict)
         Nested dict described above.
     """
@@ -360,15 +380,18 @@ def read_usv_interval_h5(h5_path: str | Path) -> dict:
 def _decode_attr(v: Any) -> Any:
     """
     Description
+    -----------
     Reverse of :func:`_attr_value`: tries to JSON-decode string
     attributes; passes through scalars unchanged. The literal string
     ``"null"`` is restored to Python ``None``.
 
     Parameters
+    ----------
     v (Any)
         Raw attribute value as returned by h5py.
 
     Returns
+    -------
     decoded (Any)
         Python-native value.
     """
@@ -405,6 +428,7 @@ def reconstruct_best_model(
 ):
     """
     Description
+    -----------
     Picks the lowest-IC rep at ``(sex, K)`` from a sweep DataFrame and
     rebuilds the fitted mixture model from the per-component parameters
     archived in that row, without re-running EM. Returns a
@@ -425,6 +449,7 @@ def reconstruct_best_model(
     order) so the returned ``gmm_order`` is simply ``arange(K)``.
 
     Parameters
+    ----------
     gmm_fits (pls.DataFrame)
         Sweep DataFrame as written to ``gmm_fits``. Must contain the
         per-component columns ``logmean_k``, ``logsd_k``, ``weight_k``
@@ -441,6 +466,7 @@ def reconstruct_best_model(
         ``"bic"`` when CV values are NaN (e.g. tiny samples).
 
     Returns
+    -------
     model (GaussianMixture | TMixture)
         Reconstructed mixture; ``score_samples`` etc. work directly.
     gmm_order (np.ndarray)
@@ -479,10 +505,6 @@ def reconstruct_best_model(
     covs = (logsds ** 2)
 
     if model_class == "gauss":
-        # Lazy import: keeps sklearn off the import-time critical path
-        # for callers that only ever load t-mixture archives.
-        from sklearn.mixture import GaussianMixture
-
         gmm = GaussianMixture(n_components=K, covariance_type="full")
         gmm.weights_ = weights
         gmm.means_ = means.reshape(K, 1)
@@ -514,16 +536,19 @@ def reconstruct_best_model(
 def detect_repo_root_for_provenance(start: Path | str) -> Path:
     """
     Description
+    -----------
     Walks upward from ``start`` looking for a ``.git`` directory; falls
     back to ``start`` itself when no enclosing repo is found. Used by
     the writer to populate the ``git_sha`` provenance attribute without
     requiring callers to know where the repository root lives.
 
     Parameters
+    ----------
     start (pathlib.Path | str)
         Directory to start the upward search from.
 
     Returns
+    -------
     repo_root (pathlib.Path)
         The first ancestor containing ``.git``; otherwise ``start``.
     """
@@ -538,15 +563,18 @@ def detect_repo_root_for_provenance(start: Path | str) -> Path:
 def git_sha_for_provenance(start: Path | str) -> str:
     """
     Description
+    -----------
     Convenience wrapper combining :func:`detect_repo_root_for_provenance`
     and :func:`_try_git_sha` so callers can read a single short SHA
     string with one call.
 
     Parameters
+    ----------
     start (pathlib.Path | str)
         Any directory inside (or near) the repo to identify.
 
     Returns
+    -------
     sha (str)
         Short SHA or ``"unknown"``.
     """

@@ -39,6 +39,7 @@ def fit_log_gmm(
 ) -> tuple[GaussianMixture, np.ndarray]:
     """
     Description
+    -----------
     Fits a 1D Gaussian Mixture Model to ``log(x)`` with multi-start EM.
 
     Multi-start (``n_init=10``) initialisation substantially reduces the
@@ -49,6 +50,7 @@ def fit_log_gmm(
     into near-singular covariances on log-space data.
 
     Parameters
+    ----------
     x (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval values
         (in seconds). Must contain no zero or negative entries.
@@ -64,6 +66,7 @@ def fit_log_gmm(
         Regularisation added to component covariances; defaults to 1e-4.
 
     Returns
+    -------
     gmm (GaussianMixture)
         The fitted sklearn ``GaussianMixture`` instance (full covariance,
         in log-space).
@@ -94,13 +97,14 @@ def plot_gmm_fit(
     xlims: tuple | None = None,
     path: str | None = None,
     color: str = 'steelblue',
-    edge_color: str = '#000000',
+    edge_color: str = '#202020',
     histtype: str = 'stepfilled',
     show_components: bool = False,
     legend: bool = True,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
     Description
+    -----------
     Plots the histogram of ``x`` (assumed to already be in log-space)
     against the fitted GMM mixture density. Optionally overlays the
     posterior-weighted per-component densities. If ``xlims`` is given the
@@ -109,6 +113,7 @@ def plot_gmm_fit(
     rendered histogram always integrates to 1 within the visible range.
 
     Parameters
+    ----------
     model (GaussianMixture)
         The fitted GMM (in log-space).
     x (np.ndarray)
@@ -125,7 +130,7 @@ def plot_gmm_fit(
     color (str)
         Histogram fill colour; defaults to 'steelblue'.
     edge_color (str)
-        Histogram edge colour; defaults to '#000000'.
+        Histogram edge colour; defaults to '#202020'.
     histtype (str)
         Matplotlib histogram type; defaults to 'stepfilled'.
     show_components (bool)
@@ -135,6 +140,7 @@ def plot_gmm_fit(
         If True, render the matplotlib legend; defaults to True.
 
     Returns
+    -------
     f (plt.Figure)
         The created figure.
     ax (plt.Axes)
@@ -178,6 +184,7 @@ def plot_gmm_fit(
 def gmm_boundaries_logspace(gmm: GaussianMixture, tau: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
+    -----------
     Computes decision boundaries between adjacent components of a 1D GMM
     fit in log-space. Returns the boundaries in log-space and seconds.
 
@@ -204,6 +211,7 @@ def gmm_boundaries_logspace(gmm: GaussianMixture, tau: float = 0.5) -> tuple[np.
     receiving a meaningless vertex value.
 
     Parameters
+    ----------
     gmm (GaussianMixture)
         A fitted 1D GMM in log-space.
     tau (float)
@@ -212,6 +220,7 @@ def gmm_boundaries_logspace(gmm: GaussianMixture, tau: float = 0.5) -> tuple[np.
         0.5.
 
     Returns
+    -------
     boundaries_log (np.ndarray)
         A (n_components - 1,) shape ndarray of boundaries in log-space
         (NaN where the boundary does not exist at the requested
@@ -263,20 +272,23 @@ def gmm_boundaries_logspace(gmm: GaussianMixture, tau: float = 0.5) -> tuple[np.
     return xs, np.exp(xs)  # (log-space, seconds)
 
 
-# --- Analytic CDF of a 1D Gaussian Mixture (in log-space) ---
+# Analytic CDF of a 1D Gaussian Mixture (in log-space)
 def gmm_cdf_logspace(x: np.ndarray | float, gmm: GaussianMixture) -> np.ndarray:
     """
     Description
+    -----------
     Evaluates the analytic CDF of a fitted 1D GMM at ``x`` (in log-space).
     The CDF is the weighted sum of component Gaussian CDFs.
 
     Parameters
+    ----------
     x (np.ndarray or float)
         Scalar or array of log-space values at which to evaluate the CDF.
     gmm (GaussianMixture)
         A fitted 1D GMM in log-space.
 
     Returns
+    -------
     cdfs (np.ndarray)
         CDF evaluated elementwise at ``x``.
     """
@@ -295,18 +307,21 @@ def gmm_cdf_logspace(x: np.ndarray | float, gmm: GaussianMixture) -> np.ndarray:
 def gmm_quantile_logspace(q: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     """
     Description
+    -----------
     Inverts the GMM CDF at probabilities ``q`` using Brent's method, so
     quantiles can be obtained without Monte-Carlo simulation. The
     bracket is chosen wide enough to contain all components' tails:
     ``[mu_min - 8 * sigma_max, mu_max + 8 * sigma_max]``.
 
     Parameters
+    ----------
     q (np.ndarray)
         A (n_quantiles,) shape ndarray of probabilities in (0, 1).
     gmm (GaussianMixture)
         A fitted 1D GMM in log-space.
 
     Returns
+    -------
     quantiles_log (np.ndarray)
         A (n_quantiles,) shape ndarray of log-space quantiles.
     """
@@ -323,7 +338,7 @@ def gmm_quantile_logspace(q: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     return out
 
 
-# --- Q-Q plot (empirical vs model) using the analytic inverse CDF ---
+# Q-Q plot (empirical vs model) using the analytic inverse CDF
 def qqplot_gmm(
     log_data: np.ndarray,
     gmm: GaussianMixture,
@@ -332,6 +347,7 @@ def qqplot_gmm(
 ) -> None:
     """
     Description
+    -----------
     Saves a Q-Q plot of empirical quantiles (in seconds) against model
     quantiles (in seconds) on log-log axes. Model quantiles are obtained
     by inverting the analytic GMM CDF, so the plot has no Monte-Carlo
@@ -339,6 +355,7 @@ def qqplot_gmm(
     fit and where simulated empirical quantiles are noisiest.
 
     Parameters
+    ----------
     log_data (np.ndarray)
         A (n_samples,) shape ndarray of log-space samples.
     gmm (GaussianMixture)
@@ -350,6 +367,8 @@ def qqplot_gmm(
         0.99; defaults to 200.
 
     Returns
+    -------
+    None
     """
 
     log_data = np.asarray(log_data).ravel()
@@ -374,15 +393,18 @@ def qqplot_gmm(
 def _extract_params(gmm: GaussianMixture):
     """
     Description
+    -----------
     Extracts weights, means, full covariance matrices and precision
     matrices from a fitted ``GaussianMixture`` regardless of its
     ``covariance_type`` setting.
 
     Parameters
+    ----------
     gmm (GaussianMixture)
         A fitted GaussianMixture instance.
 
     Returns
+    -------
     w (np.ndarray)
         A (K,) shape ndarray of mixture weights.
     M (np.ndarray)
@@ -415,10 +437,12 @@ def _extract_params(gmm: GaussianMixture):
 def _log_gauss(x: np.ndarray, mu: np.ndarray, Sig: np.ndarray, Prec: np.ndarray) -> np.ndarray:
     """
     Description
+    -----------
     Evaluates the multivariate Gaussian log-density of ``x`` given mean
     ``mu``, covariance ``Sig`` and precision ``Prec``.
 
     Parameters
+    ----------
     x (np.ndarray)
         A (..., d) shape ndarray of evaluation points.
     mu (np.ndarray)
@@ -429,6 +453,7 @@ def _log_gauss(x: np.ndarray, mu: np.ndarray, Sig: np.ndarray, Prec: np.ndarray)
         A (d, d) shape ndarray of precision (inverse covariance).
 
     Returns
+    -------
     log_density (np.ndarray)
         A (...,) shape ndarray of log-densities.
     """
@@ -444,6 +469,7 @@ def _log_gauss(x: np.ndarray, mu: np.ndarray, Sig: np.ndarray, Prec: np.ndarray)
 def _alpha(x: np.ndarray, w: np.ndarray, M: np.ndarray, Sig: np.ndarray, Prec: np.ndarray) -> np.ndarray:
     """
     Description
+    -----------
     Computes the (unnormalised) responsibilities
     ``alpha_k(x) = w_k N(x | mu_k, Sig_k)`` for each mixture component
     at point ``x``. Numerical stability is preserved by subtracting the
@@ -451,6 +477,7 @@ def _alpha(x: np.ndarray, w: np.ndarray, M: np.ndarray, Sig: np.ndarray, Prec: n
     not matter for the fixed-point iteration.
 
     Parameters
+    ----------
     x (np.ndarray)
         A (d,) shape ndarray (single point) at which to evaluate the
         responsibilities.
@@ -464,6 +491,7 @@ def _alpha(x: np.ndarray, w: np.ndarray, M: np.ndarray, Sig: np.ndarray, Prec: n
         A (K, d, d) shape ndarray of component precisions.
 
     Returns
+    -------
     a (np.ndarray)
         A (K,) shape ndarray of unnormalised responsibilities.
     """
@@ -486,6 +514,7 @@ def gmm_modes(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
+    -----------
     Returns the unique modes of a fitted GMM and the mixture density
     evaluated at each mode, sorted by descending density.
 
@@ -511,6 +540,7 @@ def gmm_modes(
     ~0.1% in seconds, well below any meaningful biological scale).
 
     Parameters
+    ----------
     gmm (GaussianMixture)
         A fitted GaussianMixture instance.
     seeds (np.ndarray)
@@ -530,6 +560,7 @@ def gmm_modes(
         Number of grid points used in the 1D branch; defaults to 4096.
 
     Returns
+    -------
     unique_modes (np.ndarray)
         A (n_modes, d) shape ndarray of mode locations.
     densities (np.ndarray)
@@ -652,6 +683,7 @@ def report_gmm_stats(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
+    -----------
     Returns the per-component log-space means and standard deviations
     (aligned to ``gmm_order``, ascending in mean) and the mixture-level
     modes with their densities (independently sorted in ascending mode
@@ -666,6 +698,7 @@ def report_gmm_stats(
     can interpret them correctly.
 
     Parameters
+    ----------
     gmm (GaussianMixture)
         A fitted GMM in log-space.
     gmm_order (np.ndarray)
@@ -673,6 +706,7 @@ def report_gmm_stats(
         :func:`fit_log_gmm`).
 
     Returns
+    -------
     means (np.ndarray)
         A (K,) shape ndarray of component log-space means, ascending.
     sds (np.ndarray)
@@ -704,6 +738,7 @@ def summarize_best_gmm(
 ) -> dict:
     """
     Description
+    -----------
     Convenience wrapper that bundles per-component means/SDs (log and
     seconds), mixture modes (log and seconds), and inter-component
     boundaries (log and seconds) into a single dictionary, ready for
@@ -715,6 +750,7 @@ def summarize_best_gmm(
     so callers do not have to remember the conversion.
 
     Parameters
+    ----------
     gmm (GaussianMixture)
         A fitted 1D GMM in log-space.
     gmm_order (np.ndarray)
@@ -724,6 +760,7 @@ def summarize_best_gmm(
         :func:`gmm_boundaries_logspace`; defaults to 0.5.
 
     Returns
+    -------
     summary (dict)
         Keys: ``'logmeans'``, ``'logsds'``, ``'medians_sec'``,
         ``'means_sec'``, ``'weights'``, ``'modes_log'``,
@@ -753,6 +790,7 @@ def summarize_best_gmm(
 def gmm_icl(gmm: GaussianMixture, log_x: np.ndarray) -> float:
     """
     Description
+    -----------
     Integrated Classification Likelihood (ICL) of a fitted GMM at the
     log-space samples ``log_x``. ICL was introduced by Biernacki, Celeux
     & Govaert (2000) specifically because BIC selects the number of
@@ -774,6 +812,7 @@ def gmm_icl(gmm: GaussianMixture, log_x: np.ndarray) -> float:
     improve the density fit by overlapping existing ones.
 
     Parameters
+    ----------
     gmm (GaussianMixture)
         A fitted GMM in log-space.
     log_x (np.ndarray)
@@ -781,6 +820,7 @@ def gmm_icl(gmm: GaussianMixture, log_x: np.ndarray) -> float:
         already reshaped to a 2D column vector for 1D fits).
 
     Returns
+    -------
     icl (float)
         ICL value (lower is better).
     """
@@ -804,6 +844,7 @@ def gmm_cv_neg_loglik(
 ) -> float:
     """
     Description
+    -----------
     K-fold cross-validated negative log-likelihood of a 1D log-GMM at
     ``n_components``, returned in **deviance-like units** so it sits
     on the same scale as BIC / AIC / ICL (lower = better, threshold
@@ -831,6 +872,7 @@ def gmm_cv_neg_loglik(
     average out EM noise.
 
     Parameters
+    ----------
     intervals_sec (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval
         values (in seconds).
@@ -848,6 +890,7 @@ def gmm_cv_neg_loglik(
         1e-4.
 
     Returns
+    -------
     cv_neg_loglik (float)
         Cross-validated deviance-equivalent: ``-2 * sum_i loglik(x_i)``
         evaluated on the fold in which sample ``i`` is held out.
@@ -887,6 +930,7 @@ def gmm_cv_neg_loglik(
 def select_best_n_components(df_results: pls.DataFrame, ic_col: str = 'bic') -> dict:
     """
     Description
+    -----------
     Picks the best ``n_components`` per ``key`` group from a tidy BIC
     sweep DataFrame using the *minimum* information criterion across
     repeats — best init wins. Averaging over repeats blurs "this
@@ -896,12 +940,14 @@ def select_best_n_components(df_results: pls.DataFrame, ic_col: str = 'bic') -> 
     The DataFrame must have columns ``['key', 'n_comp', ic_col, 'rep']``.
 
     Parameters
+    ----------
     df_results (pls.DataFrame)
         Tidy results from a BIC sweep.
     ic_col (str)
         Name of the information criterion column; defaults to 'bic'.
 
     Returns
+    -------
     best (dict)
         Mapping ``key -> {'n_comp': int, 'rep': int, ic_col: float}``
         for the (n_comp, rep) pair with the lowest IC value within
@@ -953,10 +999,12 @@ def select_best_n_components(df_results: pls.DataFrame, ic_col: str = 'bic') -> 
 def _t_logpdf_1d(x: np.ndarray, mu: float, sigma2: float, nu: float) -> np.ndarray:
     """
     Description
+    -----------
     log-pdf of a 1D Student-t distribution with mean ``mu``, scale
     ``sigma2``, and degrees of freedom ``nu``, evaluated at ``x``.
 
     Parameters
+    ----------
     x (np.ndarray)
         Evaluation points.
     mu (float)
@@ -967,6 +1015,7 @@ def _t_logpdf_1d(x: np.ndarray, mu: float, sigma2: float, nu: float) -> np.ndarr
         Degrees of freedom (>= 2.001 in our EM).
 
     Returns
+    -------
     log_pdf (np.ndarray)
         Elementwise log-density.
     """
@@ -983,6 +1032,7 @@ def _t_logpdf_1d(x: np.ndarray, mu: float, sigma2: float, nu: float) -> np.ndarr
 def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) -> float:
     """
     Description
+    -----------
     Solves the 1D Peel & McLachlan equation for the degrees-of-freedom
     update of one t-component, given current responsibilities and
     latent weights. Brent's method on a wide bracket; falls back to a
@@ -991,6 +1041,7 @@ def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) ->
     Gaussian and ``nu`` is unidentifiable above ~50).
 
     Parameters
+    ----------
     z_k (np.ndarray)
         Responsibilities for component k, shape (N,).
     u_k (np.ndarray)
@@ -1001,6 +1052,7 @@ def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) ->
         Effective sample size for component k (sum of z_k).
 
     Returns
+    -------
     nu_new (float)
         Updated degrees of freedom in [2.001, 200].
     """
@@ -1009,6 +1061,25 @@ def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) ->
     avg = np.sum(z_k * (np.log(u_k) - u_k)) / n_k
 
     def f(nu):
+        """
+        Description
+        -----------
+        Score equation for the EM update of a Student-t component's
+        degrees-of-freedom (νₖ). Root corresponds to the ML estimate
+        for the new ν given the current responsibilities and latent
+        scale variables.
+
+        Parameters
+        ----------
+        nu (float)
+            Candidate degrees-of-freedom value.
+
+        Returns
+        -------
+        score (float)
+            Value of the score equation; root via Brent's method gives
+            the updated νₖ.
+        """
         return -digamma(nu / 2.0) + np.log(nu / 2.0) + 1.0 + psi_old + avg
 
     try:
@@ -1020,6 +1091,7 @@ def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) ->
 class TMixture:
     """
     Description
+    -----------
     Lightweight 1D Student-t mixture model with a sklearn-compatible
     method surface (``score_samples``, ``score``, ``predict_proba``,
     ``bic``, ``aic``, plus the public attributes ``means_``,
@@ -1039,6 +1111,30 @@ class TMixture:
         covariances: np.ndarray,
         nus: np.ndarray,
     ):
+        """
+        Description
+        -----------
+        Construct a `TMixture` directly from fitted parameter arrays.
+        Shapes are reshaped to match `sklearn.mixture.GaussianMixture`'s
+        1D conventions (`means_` (K, 1), `covariances_` (K, 1, 1)) so
+        downstream BIC / AIC / scoring code can stay agnostic.
+
+        Parameters
+        ----------
+        weights (np.ndarray, shape (K,))
+            Component mixing weights; should sum to 1.
+        means (np.ndarray, shape (K,) or (K, 1))
+            Per-component means.
+        covariances (np.ndarray, shape (K,) or (K, 1, 1))
+            Per-component variances (1D Student-t scale parameters).
+        nus (np.ndarray, shape (K,))
+            Per-component degrees-of-freedom.
+
+        Returns
+        -------
+        None
+        """
+
         self.weights_ = np.asarray(weights, dtype=float).ravel()
         # Match GaussianMixture's shape conventions for 1D / d=1 fits:
         # means_ shape (K, 1); covariances_ shape (K, 1, 1).
@@ -1052,14 +1148,17 @@ class TMixture:
     def _log_w_pdf(self, log_x: np.ndarray) -> np.ndarray:
         """
         Description
+        -----------
         Per-component log(w_k) + log p_k(x), shape ``(K, N)``. Internal
         helper used by every other public method.
 
         Parameters
+        ----------
         log_x (np.ndarray)
             Evaluation points, shape ``(N,)`` or ``(N, 1)``.
 
         Returns
+        -------
         log_w_pdf (np.ndarray)
             A (K, N) shape array.
         """
@@ -1076,14 +1175,17 @@ class TMixture:
     def score_samples(self, log_x: np.ndarray) -> np.ndarray:
         """
         Description
+        -----------
         Per-sample log-likelihood under the mixture, matching
         ``sklearn.mixture.GaussianMixture.score_samples``.
 
         Parameters
+        ----------
         log_x (np.ndarray)
             Evaluation points, shape ``(N,)`` or ``(N, 1)``.
 
         Returns
+        -------
         log_lik (np.ndarray)
             Shape ``(N,)``.
         """
@@ -1093,14 +1195,17 @@ class TMixture:
     def score(self, log_x: np.ndarray) -> float:
         """
         Description
+        -----------
         Mean log-likelihood per sample, matching
         ``GaussianMixture.score``.
 
         Parameters
+        ----------
         log_x (np.ndarray)
             Evaluation points.
 
         Returns
+        -------
         mean_log_lik (float)
             Mean of ``score_samples(log_x)``.
         """
@@ -1110,15 +1215,18 @@ class TMixture:
     def predict_proba(self, log_x: np.ndarray) -> np.ndarray:
         """
         Description
+        -----------
         Posterior responsibilities ``z_ik = P(component k | x_i)``,
         shape ``(N, K)`` to match
         ``GaussianMixture.predict_proba``.
 
         Parameters
+        ----------
         log_x (np.ndarray)
             Evaluation points.
 
         Returns
+        -------
         z (np.ndarray)
             A (N, K) shape ndarray.
         """
@@ -1130,11 +1238,16 @@ class TMixture:
     def _n_params(self) -> int:
         """
         Description
+        -----------
         Number of free parameters: per component (mu, sigma2, nu, w),
         minus 1 because the weights sum to 1 (one weight is determined
         by the others). Used by :meth:`bic` and :meth:`aic`.
 
+        Parameters
+        ----------
+
         Returns
+        -------
         n_params (int)
             ``4K - 1`` for a K-component 1D mixture.
         """
@@ -1144,14 +1257,17 @@ class TMixture:
     def bic(self, log_x: np.ndarray) -> float:
         """
         Description
+        -----------
         Bayesian Information Criterion, matching
         ``GaussianMixture.bic``: ``-2 * loglik + n_params * log(N)``.
 
         Parameters
+        ----------
         log_x (np.ndarray)
             Evaluation points.
 
         Returns
+        -------
         bic (float)
             Lower is better.
         """
@@ -1164,14 +1280,17 @@ class TMixture:
     def aic(self, log_x: np.ndarray) -> float:
         """
         Description
+        -----------
         Akaike Information Criterion, matching
         ``GaussianMixture.aic``: ``-2 * loglik + 2 * n_params``.
 
         Parameters
+        ----------
         log_x (np.ndarray)
             Evaluation points.
 
         Returns
+        -------
         aic (float)
             Lower is better.
         """
@@ -1192,6 +1311,7 @@ def fit_log_t_mixture(
 ) -> tuple[TMixture, np.ndarray]:
     """
     Description
+    -----------
     Fits a 1D Student-t mixture to ``log(x)`` via the Peel & McLachlan
     (2000) EM algorithm. Best-of-``n_init`` random KMeans initialisations
     is kept (matches the multi-start convention of
@@ -1206,6 +1326,7 @@ def fit_log_t_mixture(
     several near-Gaussian peak-components.
 
     Parameters
+    ----------
     x (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval
         values (in seconds).
@@ -1226,6 +1347,7 @@ def fit_log_t_mixture(
         defaults to 1e-4 (matches :func:`fit_log_gmm`).
 
     Returns
+    -------
     model (TMixture)
         The best-of-``n_init`` fitted t-mixture.
     order (np.ndarray)
@@ -1250,9 +1372,7 @@ def fit_log_t_mixture(
         w = w / w.sum()
 
         prev_ll = -np.inf
-        last_iter = 0
         for it in range(max_iter):
-            last_iter = it
             log_w_pdf = np.array([
                 np.log(w[k]) + _t_logpdf_1d(log_x, mu[k], sigma2[k], nu[k])
                 for k in range(n_components)
@@ -1295,6 +1415,7 @@ def fit_log_t_mixture(
 def t_mixture_icl(model: TMixture, log_x: np.ndarray) -> float:
     """
     Description
+    -----------
     Integrated Classification Likelihood for a fitted Student-t
     mixture, defined identically to :func:`gmm_icl`:
     ``ICL = BIC + 2 * H(z)`` where ``H(z) = -sum_i sum_k z_ik log z_ik``.
@@ -1307,12 +1428,14 @@ def t_mixture_icl(model: TMixture, log_x: np.ndarray) -> float:
     BIC elbow, not as the sole selector.
 
     Parameters
+    ----------
     model (TMixture)
         A fitted t-mixture.
     log_x (np.ndarray)
         Evaluation points, shape ``(N,)`` or ``(N, 1)``.
 
     Returns
+    -------
     icl (float)
         ICL value.
     """
@@ -1334,6 +1457,7 @@ def t_mixture_cv_neg_loglik(
 ) -> float:
     """
     Description
+    -----------
     K-fold cross-validated negative log-likelihood for the Student-t
     mixture, deviance-scaled (``-2 * sum_held_out_loglik``) so it sits
     on the same scale as BIC / AIC / ICL: lower is better, the
@@ -1348,6 +1472,7 @@ def t_mixture_cv_neg_loglik(
     implementation.
 
     Parameters
+    ----------
     intervals_sec (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive intervals.
     n_components (int)
@@ -1364,6 +1489,7 @@ def t_mixture_cv_neg_loglik(
         Component variance floor, defaults to 1e-4.
 
     Returns
+    -------
     cv_neg_loglik (float)
         ``-2 * sum_i loglik(x_i)`` evaluated on the fold in which
         ``x_i`` is held out. ``np.inf`` if any fold has fewer training
@@ -1401,6 +1527,7 @@ def report_t_mixture_stats(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
+    -----------
     Per-component summary for a fitted Student-t mixture in
     log-space, ordered by ``order`` (typically ascending log-mean):
     log-means, log-scales (sqrt of sigma2), degrees of freedom,
@@ -1413,6 +1540,7 @@ def report_t_mixture_stats(
     placing component-peak triangles on the rendered fit.
 
     Parameters
+    ----------
     model (TMixture)
         A fitted t-mixture.
     order (np.ndarray)
@@ -1420,6 +1548,7 @@ def report_t_mixture_stats(
         ascending log-mean).
 
     Returns
+    -------
     logmeans (np.ndarray)
         Per-component log-means, shape ``(K,)``.
     logscales (np.ndarray)
@@ -1443,17 +1572,20 @@ def report_t_mixture_stats(
 def t_mixture_cdf_logspace(x: np.ndarray | float, model: TMixture) -> np.ndarray:
     """
     Description
+    -----------
     Analytic CDF of a fitted Student-t mixture, evaluated at ``x`` in
     log-space. The mixture CDF is the weighted sum of per-component
     Student-t CDFs.
 
     Parameters
+    ----------
     x (np.ndarray or float)
         Log-space evaluation points.
     model (TMixture)
         Fitted t-mixture.
 
     Returns
+    -------
     cdfs (np.ndarray)
         Elementwise CDF values.
     """
@@ -1471,6 +1603,7 @@ def t_mixture_cdf_logspace(x: np.ndarray | float, model: TMixture) -> np.ndarray
 def t_mixture_quantile_logspace(q: np.ndarray, model: TMixture) -> np.ndarray:
     """
     Description
+    -----------
     Inverts the t-mixture CDF at probabilities ``q`` via Brent's
     method. Bracket spans 8 sigma either side of the most extreme
     component mean (sigma being the per-component scale, since t
@@ -1481,12 +1614,14 @@ def t_mixture_quantile_logspace(q: np.ndarray, model: TMixture) -> np.ndarray:
     :func:`gmm_quantile_logspace` for the Gaussian case.
 
     Parameters
+    ----------
     q (np.ndarray)
         Probabilities in (0, 1).
     model (TMixture)
         Fitted t-mixture.
 
     Returns
+    -------
     quantiles_log (np.ndarray)
         Log-space quantiles.
     """
@@ -1509,6 +1644,7 @@ def summarize_best_t_mixture(
 ) -> dict:
     """
     Description
+    -----------
     Convenience wrapper around :func:`report_t_mixture_stats` that
     returns the per-component summary in a notebook-friendly dict.
     Mirrors :func:`summarize_best_gmm` so notebook code can dispatch
@@ -1522,12 +1658,14 @@ def summarize_best_t_mixture(
     mixture_pdf(mu_k))`` for each component.
 
     Parameters
+    ----------
     model (TMixture)
         A fitted Student-t mixture.
     order (np.ndarray)
         Indices that sort components in ascending log-mean.
 
     Returns
+    -------
     summary (dict)
         Keys: ``'logmeans'``, ``'logsds'`` (= log-space scales, named
         for parity with ``summarize_best_gmm``), ``'medians_sec'``
@@ -1588,6 +1726,7 @@ def summarize_best_t_mixture(
 def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
     """
     Description
+    -----------
     Draws ``N`` 1D samples from a fitted mixture in log-space.
     Dispatches on model type (``TMixture`` vs sklearn's
     ``GaussianMixture``); both are sampled by first drawing a
@@ -1599,6 +1738,7 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
     and allows reproducible bootstrap runs.
 
     Parameters
+    ----------
     model
         A fitted ``TMixture`` or ``sklearn.mixture.GaussianMixture``.
     N (int)
@@ -1607,6 +1747,7 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
         Random number generator.
 
     Returns
+    -------
     log_samples (np.ndarray)
         A (N,) shape ndarray of samples in log-space.
     """
@@ -1645,6 +1786,7 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
 def _lr_statistic(model_null, model_alt, log_x: np.ndarray) -> float:
     """
     Description
+    -----------
     Computes the likelihood-ratio test statistic
     ``LR = -2 * (logL_null - logL_alt)``.
 
@@ -1655,6 +1797,7 @@ def _lr_statistic(model_null, model_alt, log_x: np.ndarray) -> float:
     polymorphic ``score_samples``.
 
     Parameters
+    ----------
     model_null
         Fitted mixture under H0.
     model_alt
@@ -1663,6 +1806,7 @@ def _lr_statistic(model_null, model_alt, log_x: np.ndarray) -> float:
         Log-space sample points.
 
     Returns
+    -------
     lr (float)
         ``-2 * (logL_null - logL_alt)``. Higher = more evidence for
         H1.
@@ -1689,6 +1833,7 @@ def bootstrap_lrt(
 ) -> dict:
     """
     Description
+    -----------
     Parametric bootstrap likelihood-ratio test for ``H0: K = K_null``
     vs ``H1: K = K_alt`` (with ``K_alt > K_null``). Returns the
     observed LR statistic, the bootstrap null distribution, and the
@@ -1713,6 +1858,7 @@ def bootstrap_lrt(
     the fit / sampling functions but the procedure is identical.
 
     Parameters
+    ----------
     intervals_sec (np.ndarray)
         A (n_samples,) ndarray of strictly positive interval values
         in seconds.
@@ -1744,6 +1890,7 @@ def bootstrap_lrt(
         progress is silent.
 
     Returns
+    -------
     result (dict)
         Keys: ``'K_null'``, ``'K_alt'``, ``'B'``, ``'n_subsample'``,
         ``'lr_obs'``, ``'lr_null'`` (length-B array),
@@ -1810,6 +1957,7 @@ def select_n_components_step_up_lrt(
 ) -> int:
     """
     Description
+    -----------
     Step-up sequential selection from a dict of pairwise LRT
     results: walks from low K to high K, stopping at the first
     ``(K, K+1)`` test whose p-value fails to reject H0 (i.e. K+1
@@ -1820,6 +1968,7 @@ def select_n_components_step_up_lrt(
     If no tests are present, raises ValueError.
 
     Parameters
+    ----------
     pair_results (dict)
         Mapping ``(K_null, K_alt) -> result_dict``, where
         ``result_dict`` has key ``'p_value'``. Typically produced by
@@ -1829,6 +1978,7 @@ def select_n_components_step_up_lrt(
         Significance level for rejecting H0; defaults to 0.05.
 
     Returns
+    -------
     K_selected (int)
         The selected number of components.
     """

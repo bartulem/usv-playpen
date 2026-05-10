@@ -1,7 +1,7 @@
 {
   "analyses_booleans": {
     "compute_behavioral_features_bool": true,
-    "compute_behavioral_tuning_bool": false,
+    "compute_neuronal_tuning_bool": false,
     "compute_inter_usv_interval_distributions_bool": false,
     "create_usv_playback_wav_bool": false,
     "create_naturalistic_usv_playback_wav_bool": false,
@@ -19,7 +19,7 @@
       "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
     ],
     "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
-    "figures_directory": "",
+    "figures_directory": "/mnt/falkner/Bartul/figures",
     "noise_col_id": "vae_supercategory",
     "noise_categories": [0],
     "fit_gmm": true,
@@ -86,6 +86,28 @@
     "n_shuffles": 1000,
     "total_bin_num": 36,
     "n_spatial_bins": 196,
-    "spatial_scale_cm": 32
+    "spatial_scale_cm": 32,
+    "shuffle_seconds_range": [20, 60],
+    "peth_window_seconds": [-2, 0],
+    "peth_bin_seconds": 0.05,
+    "bout_quiet_seconds": 2.0,
+    "vocal_require_clean_post_anchor": true,
+    "vocal_require_clean_prior_anchor": false,
+    "n_usv_min_self": 100,
+    "n_usv_min_partner": 30,
+    "n_usv_min_category": 20,
+    "behavioral_min_occupancy_seconds": 1.0,
+    "usv_property_min_occupancy_seconds": 0.25,
+    "include_partner_vocalization_tuning_bool": false,
+    "shuffle_chunk_size": 50,
+    "smoothing_sd": 1.0,
+    "circular_features": ["allo_yaw", "body_dir"]
+  },
+  "detect_interesting_tuning_neurons": {
+    "z_threshold": 3.0,
+    "min_consecutive_bins": 3,
+    "vmi_alpha": 0.01,
+    "vmi_min_bouts": 10,
+    "spatial_info_bps_threshold": 0.5
   }
 }

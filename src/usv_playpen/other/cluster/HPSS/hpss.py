@@ -20,11 +20,13 @@ def hpss_func(
 ) -> None:
     """
     Description
+    -----------
     This function performs the harmonic/percussive source separation (HPSS)
     on the provided audio (WAV) files. The harmonic component is then converted
     back to the time domain and saved as a new WAV file.
 
     Parameters
+    ----------
     cup_recording_directory : str
         Personal file server subdirectory name, e.g. "Bartul".
     recording_identifier : str
@@ -33,6 +35,7 @@ def hpss_func(
          Index of the WAV file to be processed.
 
     Returns
+    -------
     harmonic_data_clipped : WAV file
         Output audio file w/ only the harmonics component.
     """

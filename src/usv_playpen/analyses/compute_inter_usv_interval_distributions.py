@@ -51,6 +51,7 @@ from .usv_interval_archive import git_sha_for_provenance, write_ivi_h5
 def _read_session_lists(session_lists: list[str], message_output) -> list[str]:
     """
     Description
+    -----------
     Reads one or more session-list text files (one session root per
     line, blank lines ignored) and returns the de-duplicated union of
     sessions, preserving first-seen order. Each path is run through
@@ -58,12 +59,14 @@ def _read_session_lists(session_lists: list[str], message_output) -> list[str]:
     resolve correctly on the host platform.
 
     Parameters
+    ----------
     session_lists (list[str])
         List of text file paths, each containing session roots.
     message_output (callable)
         Logging callable (typically ``print``).
 
     Returns
+    -------
     sessions (list[str])
         De-duplicated, order-preserving list of session root paths
         (after platform conversion).
@@ -95,16 +98,19 @@ def _read_session_lists(session_lists: list[str], message_output) -> list[str]:
 def _session_source_map(session_lists: list[str]) -> dict[str, str]:
     """
     Description
+    -----------
     Builds a session-root -> source-file-name mapping so the master
     DataFrame can carry a ``source_list`` column for multi-cohort
     comparisons. The first list a session appears in wins (mirroring
     the de-duplication policy in :func:`_read_session_lists`).
 
     Parameters
+    ----------
     session_lists (list[str])
         List of text file paths.
 
     Returns
+    -------
     mapping (dict)
         Mapping of resolved session root path -> stem of the text file
         it came from.
@@ -134,6 +140,7 @@ def compute_session_usv_intervals(
 ) -> dict:
     """
     Description
+    -----------
     Computes inter-vocalization intervals for one session under one
     interval-definition mode.
 
@@ -148,6 +155,7 @@ def compute_session_usv_intervals(
     in ``e2s`` mode for overlapping calls) are counted and reported.
 
     Parameters
+    ----------
     session_root (str)
         Absolute path to the session directory.
     interval_type (str)
@@ -159,6 +167,7 @@ def compute_session_usv_intervals(
         noise to be excluded.
 
     Returns
+    -------
     out (dict)
         Keys: ``'male'``, ``'female'`` (np.ndarray of intervals in
         seconds), ``'n_dropped_male'``, ``'n_dropped_female'`` (int),
@@ -292,6 +301,7 @@ def fit_gmm_sweep(
 ) -> pls.DataFrame:
     """
     Description
+    -----------
     Sweeps GMMs of size ``n_components_min`` through ``n_components_max``
     on each pooled inter-USV interval array (typically
     ``{'male': ..., 'female': ...}``), repeating each fit ``n_repeats``
@@ -310,6 +320,7 @@ def fit_gmm_sweep(
     for the Student-t path, where boundaries lack a closed form).
 
     Parameters
+    ----------
     intervals_by_key (dict)
         Mapping ``key -> np.ndarray`` of strictly positive intervals
         (``key`` typically ``'male'`` / ``'female'``).
@@ -340,6 +351,7 @@ def fit_gmm_sweep(
         (:class:`gmm_utils.TMixture`).
 
     Returns
+    -------
     df_results (pls.DataFrame)
         One row per ``(key, n_comp, rep)`` with: ``bic``, ``aic``,
         ``icl``, ``cv_neg_loglik`` (constant across reps for a given
@@ -509,12 +521,14 @@ class InterUSVIntervalCalculator:
     def __init__(self, **kwargs):
         """
         Description
+        -----------
         Initialises the InterUSVIntervalCalculator. All keyword arguments are
         captured into ``self.__dict__`` verbatim so the instance
         exposes every supplied kwarg as an attribute (no whitelisting),
         matching the convention used by :class:`FeatureZoo`.
 
         Parameters
+        ----------
         input_parameter_dict (dict)
             Full ``analyses_settings`` dictionary; the
             ``compute_inter_usv_interval_distributions`` block is read from it.
@@ -522,6 +536,8 @@ class InterUSVIntervalCalculator:
             Logging callable (typically ``print``).
 
         Returns
+        -------
+        None
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -530,6 +546,7 @@ class InterUSVIntervalCalculator:
     def save_inter_usv_interval_distributions_to_file(self) -> None:
         """
         Description
+        -----------
         Reads the configured session lists, computes per-session inter-USV intervals
         in each requested ``interval_type``, pools them into a master
         DataFrame, and writes a single self-describing HDF5 archive
@@ -568,8 +585,11 @@ class InterUSVIntervalCalculator:
           step-up selected K (``K_selected_male``, ``K_selected_female``).
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         cfg = self.input_parameter_dict['compute_inter_usv_interval_distributions']
