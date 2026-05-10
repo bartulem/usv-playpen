@@ -30,16 +30,18 @@ from .cli_utils import override_toml_values
 from .os_utils import configure_path, newest_match_or_raise, wait_for_subprocesses
 from .send_email import Messenger
 from .time_utils import is_gui_context, smart_wait
-from .yaml_utils import SmartDumper
+from .yaml_utils import SmartDumper, sync_equipment_dynamic_fields
 
 
 def count_last_recording_dropouts(log_file_path: str,
                                   log_file_ch : str) -> int | None:
     """
     Description
+    -----------
     Reads a log file, identifies the last recording session, and counts the number of dropouts.
 
     Parameters
+    ----------
     log_file_path (str)
         The directory of the log file (typically Avisoft basedirectory).
     log_file_ch (str)
@@ -47,6 +49,7 @@ def count_last_recording_dropouts(log_file_path: str,
         This is used to construct the full path to the log file.
 
     Returns
+    -------
     (int | None)
        The number of dropouts in the last recording, or 0 if no recording is found,
        or None if the chX.log file cannot be found.
@@ -83,9 +86,12 @@ class ExperimentController:
                  message_output: Callable | None = None) -> None:
 
         """
+        Description
+        -----------
         Initializes the ExperimentController class.
 
         Parameters
+        ----------
         exp_settings_dict (dict)
             Experiment settings; defaults to None.
         email_receivers (list)
@@ -96,6 +102,8 @@ class ExperimentController:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         self.api = None
@@ -112,12 +120,16 @@ class ExperimentController:
     def check_ethernet_connection(self) -> None:
         """
         Description
+        -----------
         Checks if the specified Ethernet adapter is connected;
         if not, it re-enables the connection.
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         ethernet_name = self.exp_settings_dict['ethernet_network']
@@ -184,6 +196,7 @@ class ExperimentController:
                                     max_wait_s: int = 12) -> bool:
         """
         Description
+        -----------
         Verifies that Avisoft Recorder is actually producing audio to disk
         shortly after launch. Instead of relying on Windows' 'STATUS eq Not
         Responding' tasklist heuristic (which tracks UI-thread responsiveness
@@ -206,6 +219,7 @@ class ExperimentController:
            polling window.
 
         Parameters
+        ----------
         warmup_s (int)
             Seconds to wait after Avisoft launch before the first size snapshot.
         poll_interval_s (int)
@@ -214,6 +228,7 @@ class ExperimentController:
             Total budget, in seconds, for the verification window after warmup.
 
         Returns
+        -------
         is_recording (bool)
             True if every watched chN directory has produced byte-level progress
             within the window; False otherwise.
@@ -234,10 +249,23 @@ class ExperimentController:
 
         def newest_wav(ch_dir: pathlib.Path):
             """
+            Description
+            -----------
             Returns the (path, size) of the newest .wav file in ch_dir, or
             (None, 0) if the directory is missing or contains no .wav files.
             Stat errors (file vanished mid-glob, permission denied) are
             treated the same as 'no file'.
+
+            Parameters
+            ----------
+            ch_dir (pathlib.Path)
+                Channel directory to scan for `*.wav` files.
+
+            Returns
+            -------
+            (pathlib.Path | None, int)
+                `(newest_path, st_size)` of the newest .wav file by
+                ctime, or `(None, 0)` when none exists / on stat error.
             """
             if not ch_dir.is_dir():
                 return None, 0
@@ -286,31 +314,44 @@ class ExperimentController:
     def purge_cup_connections_on_windows(self) -> None:
         """
         Description
-        Tears down every existing SMB connection to the CUP file server on the
-        local Windows machine. This is used both as a standalone pre-recording
-        cleanup step (to guarantee a clean mount state before a session starts)
-        and as the first phase of the post-recording remount routine.
+        -----------
+        Tears down every existing SMB connection AND every stored credential
+        for the CUP file server on the local Windows machine. This is used
+        both as a standalone pre-recording cleanup step (to guarantee a
+        clean mount state before a session starts) and as the first phase
+        of the post-recording remount routine.
 
-        After Ethernet disconnect/reconnect cycles, or when the machine has
-        previously been used by a different university account, Windows SMB
-        sessions to \\cup can become stale. The mapped drive letters (e.g., F:,
-        M:) may remain in the registry as zombies with expired credentials, and
-        cached Kerberos tickets may still hold credentials from a prior user.
-        Mounting on top of those stale entries fails with System error 1219
-        ("Multiple connections to a server or shared resource by the same user,
-        using more than one user name, are not allowed.").
+        After Ethernet disconnect/reconnect cycles, or when the Windows
+        account has previously been used by a different university account,
+        Windows SMB sessions to \\cup can become stale. Three independent
+        caches need clearing:
 
-        This method:
-        1. Deletes every known drive-letter and UNC mapping to \\cup\\falkner
-           and \\cup\\murthy (regardless of which the current user needs).
-        2. Deletes the server-level session to \\cup itself.
-        3. Purges cached Kerberos tickets via 'klist purge'.
-        4. Sleeps briefly so Windows fully tears the SMB sessions down.
+        1. The active SMB session (``net use ... /delete``). Stale active
+           sessions cause System error 1219 ("Multiple connections to a
+           server ... using more than one user name").
+        2. The Kerberos ticket cache (``klist purge``). Stale tickets from
+           a prior user can cause Windows to silently authenticate as them
+           on the next mount.
+        3. The Credential Manager / Vault entry (``cmdkey /delete:cup``).
+           When the previous mount used ``/persistent:yes``, Windows stores
+           the user/password under ``Domain:target=cup``. The next
+           ``net use ... /user:bob@princeton.edu /password:...`` call can
+           silently route through this stored credential (under the prior
+           user's identity) and fail with System error 1326 ("Logon
+           failure: unknown user name or bad password") even when the
+           ``/user:`` and ``/password:`` arguments are correct.
+
+           ``klist purge`` and ``net use /delete`` do NOT touch this third
+           cache. Without ``cmdkey /delete:cup``, switching Princeton
+           identities on a shared lab machine reliably reproduces the 1326
+           failure.
 
         Parameters
+        ----------
         None
 
         Returns
+        -------
         None
         """
 
@@ -335,12 +376,21 @@ class ExperimentController:
         subprocess.run(["klist", "purge"], shell=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+        # Clear the persistent Credential Manager entry for \\cup. Without
+        # this, /persistent:yes from a previous session leaves a
+        # "Domain:target=cup" entry tied to the previous user's identity,
+        # which Windows can prefer over the /user: argument we pass on the
+        # next mount, producing System error 1326 even with correct creds.
+        subprocess.run(["cmdkey", "/delete:cup"], shell=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
         # Brief pause so Windows fully tears down the SMB sessions
         smart_wait(app_context_bool=self.app_context_bool, seconds=3)
 
     def remount_cup_drives_on_windows(self) -> None:
         """
         Description
+        -----------
         Checks if the specified Ethernet adapter is connected. If not, it re-enables
         the connection. It then verifies the status of required network drives (CUP)
         and remounts them with fresh credentials if they are stale or missing.
@@ -350,16 +400,20 @@ class ExperimentController:
         expired credentials. This method:
         1. Verifies Ethernet connectivity.
         2. Waits for the SMB/network subsystem to stabilize.
-        3. Purges ALL existing connections to \\cup to prevent System error 1219
+        3. Purges ALL existing connections AND stored credentials for \\cup
+           (see :meth:`purge_cup_connections_on_windows` for the three caches
+           cleared) to prevent both System error 1219 and System error 1326
            when switching between users with different credentials.
         4. Probes each needed drive with a short timeout to detect stale sessions.
         5. Remounts with fresh credentials.
         6. Verifies the new mount is accessible, with retries.
 
         Parameters
+        ----------
         None
 
         Returns
+        -------
         None
         """
 
@@ -377,9 +431,9 @@ class ExperimentController:
         self.message_output("[**Local mount check**] Waiting for network services to stabilize...")
         smart_wait(app_context_bool=self.app_context_bool, seconds=5)
 
-        # Purge every existing connection to \\cup before mounting so we do not
-        # collide with stale sessions from a previous user or a prior Ethernet
-        # cycle (System error 1219 otherwise).
+        # Purge every existing connection AND stored credential for \\cup
+        # before mounting so we do not collide with stale sessions from a
+        # previous user or a prior Ethernet cycle.
         self.purge_cup_connections_on_windows()
 
         # Mount only the drives the current user needs
@@ -457,9 +511,11 @@ class ExperimentController:
                            mount_path: str) -> bool:
         """
         Description
+        -----------
         Connects to a remote host via SSH and checks if a path is a valid mount point.
 
         Parameters
+        ----------
         hostname (str)
             The IP address or hostname of the remote machine.
         port (int)
@@ -472,6 +528,7 @@ class ExperimentController:
             The absolute path of the mount point to check.
 
         Returns
+        -------
         (bool)
             True if the path is a mount point, False otherwise.
         """
@@ -516,11 +573,14 @@ class ExperimentController:
     def get_cpu_affinity_mask(self) -> str:
         """
         Description
+        -----------
         This method gets the CPU affinity mask for the Avisoft software.
 
         Parameters
+        ----------
 
         Returns
+        -------
         (str)
             CPU affinity mask.
         """
@@ -533,11 +593,14 @@ class ExperimentController:
     def get_cup_mount_params(self) -> tuple:
         """
         Description
+        -----------
         This method gets the username and password for cup mounting.
 
         Parameters
+        ----------
 
         Returns
+        -------
         username (str), password (str)
             Username and password for cup mounting.
         """
@@ -554,11 +617,14 @@ class ExperimentController:
     def get_connection_params(self) -> tuple:
         """
         Description
+        -----------
         This method gets the IP address and API key to run Motif remotely.
 
         Parameters
+        ----------
 
         Returns
+        -------
         master_ip_address (str), api_key (str), second_ip_address (str),
         ssh_port (str), ssh_username (str), ssh_password (str)
             IP address of the main PC, API key to run Motif remotely, IP address of the second PC,
@@ -579,13 +645,16 @@ class ExperimentController:
     def get_custom_dir_names(self, now: float) -> tuple:
         """
         Description
+        -----------
         This method creates directories where recording files are copied.
 
         Parameters
+        ----------
         now (float)
             Contains year, month, day, hour, minute, second, and microsecond.
 
         Returns
+        -------
         start_hour_min_sec (str), total_dir_name_linux (str), total_dir_name_windows (str), sub_dir_name (str)
             Start time of recording, directory location in Linux and Window coordinates, and name of session directory
         """
@@ -609,13 +678,17 @@ class ExperimentController:
     def check_camera_vitals(self, camera_fr: int | float) -> None:
         """
         Description
+        -----------
         This method checks whether Motif is operational.
 
         Parameters
+        ----------
         camera_fr (int / float)
             Camera sampling rate; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         ip_address, second_ip_address, ssh_port, ssh_username, ssh_password, api_key  = self.get_connection_params()
@@ -683,11 +756,15 @@ class ExperimentController:
     def conduct_tracking_calibration(self) -> None:
         """
         Description
+        -----------
         This method conducts tracking calibration.
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         self.message_output(f"Video calibration started at {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}")
@@ -706,11 +783,15 @@ class ExperimentController:
     def modify_audio_file(self) -> None:
         """
         Description
+        -----------
         This method modifies the Avisoft config file.
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         changes = 0
@@ -855,6 +936,7 @@ class ExperimentController:
     def conduct_behavioral_recording(self) -> dict:
         """
         Description
+        -----------
         This method checks whether the system is ready for recording and if so,
         conducts a recording with the designated parameters and moves the recorded
         files to the network drive (see below for details).
@@ -863,8 +945,10 @@ class ExperimentController:
         have been installed and/or configured for recording.
 
         Parameters
+        ----------
 
         Returns
+        -------
         updated_metadata (dict)
             Updated metadata after recording.
 
@@ -894,11 +978,40 @@ class ExperimentController:
         self.purge_cup_connections_on_windows()
 
         # start capturing sync LEDS
-        if not (pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc').is_file():
+        coolterm_config_dst = pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc'
+        if not coolterm_config_dst.is_file():
             shutil.copy(src=pathlib.Path(__file__).parent / '_config' / 'coolterm_config.stc',
-                        dst=pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc')
+                        dst=coolterm_config_dst)
 
-        coolterm_config_path = str(pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc')
+        # Keep the destination .stc 'Port = ...' line in sync with the
+        # user-configured Arduino sync port (GUI / --set arduino_sync_port=...).
+        # Only the Port line is rewritten; every other line is preserved
+        # verbatim so locally-tweaked CoolTerm settings are not clobbered.
+        desired_sync_port = self.exp_settings_dict['arduino_sync_port']
+        with open(coolterm_config_dst, 'r') as stc_in:
+            stc_lines = stc_in.readlines()
+        rewrote_port = False
+        for line_idx, stc_line in enumerate(stc_lines):
+            if stc_line.lstrip().startswith('Port'):
+                stc_lines[line_idx] = f'Port = {desired_sync_port}\n'
+                rewrote_port = True
+                break
+        if not rewrote_port:
+            stc_lines.insert(0, f'Port = {desired_sync_port}\n')
+        with open(coolterm_config_dst, 'w') as stc_out:
+            stc_out.writelines(stc_lines)
+
+        # Reconcile every dynamic Equipment field in the in-memory session
+        # metadata against the live toml just before the per-session yaml
+        # is written. Covers Arduino sync port, USGH sample rate, video
+        # frame rates / codec, and the camera-derived sensor fields --
+        # critical for the --set CLI path (which bypasses the GUI's
+        # textChanged handlers entirely) and as a final safety net for the
+        # GUI path. The helper preserves canonical YAML key order.
+        if self.metadata_settings:
+            sync_equipment_dynamic_fields(self.metadata_settings, self.exp_settings_dict)
+
+        coolterm_config_path = str(coolterm_config_dst)
 
         subprocess.Popen(
             args=['powershell', '-Command', f"Start-Process -FilePath '{coolterm_config_path}' -WindowStyle Minimized"],
@@ -1253,11 +1366,15 @@ class ExperimentController:
 def conduct_calibration_cli( overrides):
     """
     Description
+    -----------
     A command-line tool to perform a tracking camera calibration.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     with open((pathlib.Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
@@ -1273,11 +1390,15 @@ def conduct_calibration_cli( overrides):
 def conduct_recording_cli(overrides):
     """
     Description
+    -----------
     A command-line tool to conduct a behavioral recording session.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     with open((pathlib.Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
