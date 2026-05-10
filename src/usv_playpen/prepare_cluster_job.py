@@ -19,9 +19,12 @@ class PrepareClusterJob:
                  message_output: Callable | None = None) -> None:
 
         """
+        Description
+        -----------
         Initializes the PrepareClusterJob class.
 
         Parameters
+        ----------
         root_directory (list of str)
             Root directories for data; defaults to None.
         input_parameter_dict (dict)
@@ -30,6 +33,8 @@ class PrepareClusterJob:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -43,12 +48,14 @@ class PrepareClusterJob:
     def video_list_to_txt(self) -> None:
         """
         Description
+        -----------
         This method creates a text file (job_list.txt) with
         a list of videos to run SLEAP inference on.
 
         NB: You need the output text file to run SLEAP inference on the cluster!
 
         Parameters
+        ----------
         camera_names (list)
             Cameras used for recording video.
         inference_root_dir (str)
@@ -59,6 +66,7 @@ class PrepareClusterJob:
             Path to the centered instance model.
 
         Returns
+        -------
         job_list (.txt)
             List of sessions to run inference on.
         """

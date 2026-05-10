@@ -18,15 +18,18 @@ from tqdm import tqdm
 def softplus(x):
     """
     Description
+    -----------
     Numerically stable softplus activation: f(x) = log(1 + exp(x)).
     Used to convert unbounded real-valued outputs into strictly positive values
     (e.g., variances) without introducing NaNs for large negative inputs.
 
     Parameters
+    ----------
     x (np.ndarray or float)
         Input value(s) of arbitrary shape.
 
     Returns
+    -------
     (np.ndarray or float)
         Element-wise softplus of the input, same shape as x.
     """
@@ -37,13 +40,16 @@ def softplus(x):
 def get_arena_dimensions(arena_dims_path: pathlib.Path) -> np.ndarray:
     """
     Description
+    -----------
     Prepares the root directory for vocalocator inference.
 
     Parameters
+    ----------
     arena_dims_path (pathlib.Path)
         Path to the 3D arena tracking file.
 
     Returns
+    -------
     arena_dims (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
     """
@@ -66,14 +72,17 @@ def get_arena_dimensions(arena_dims_path: pathlib.Path) -> np.ndarray:
 def load_usv_segments(segment_file: pathlib.Path) -> np.ndarray:
     """
     Description
+    -----------
     Loads start/stop of each USV from CSV file
     and transfers it into a Numpy array.
 
     Parameters
+    ----------
     segment_file (pathlib.Path)
         Path to the USV summary CSV file.
 
     Returns
+    -------
     usv_segments (np.ndarray)
         A (USV_NUM, 2) shape ndarray containing start and stop of each USV.
     """
@@ -91,13 +100,16 @@ def load_tracks_from_h5(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
+    -----------
     Loads tracks and node names from 3D tracking file
 
     Parameters
+    ----------
     h5_file_path (pathlib.Path)
         Path to the 3D tracking file.
 
     Returns
+    -------
     (tuple[np.ndarray, np.ndarray])
         Mouse tracks and node names.
     """
@@ -111,13 +123,16 @@ def load_tracks_from_h5(
 def to_float(input_array: np.ndarray) -> np.ndarray:
     """
     Description
+    -----------
     Converts the input array to float16.
 
     Parameters
+    ----------
     input_array (np.ndarray)
         Input array to be converted to float16.
 
     Returns
+    -------
     (np.ndarray)
         Array converted to float16.
     """
@@ -138,9 +153,11 @@ def write_to_h5(
 ) -> None:
     """
     Description
+    -----------
     Writes audio data, node names, locations, and length indices to an HDF5 file.
 
     Parameters
+    ----------
     output_path (pathlib.Path)
         Path to the output HDF5 file.
     audio (list[tuple[np.ndarray]])
@@ -159,6 +176,8 @@ def write_to_h5(
         Additional metadata to be stored in the HDF5 file.
 
     Returns
+    -------
+    None
     """
 
     with h5py.File(output_path, mode="w") as f:
@@ -187,10 +206,12 @@ def eval_pdf_with_angle(
 ) -> np.ndarray:
     """
     Description
+    -----------
     Evaluate the multivariate normal PDF at points. Assumes the points
     and the mean are in the same coordinate system.
 
     Parameters
+    ----------
     points_spatial (np.ndarray)
         Points in spatial coordinates. Shape: (*n_points, 2)
     points_angular (np.ndarray)
@@ -207,6 +228,7 @@ def eval_pdf_with_angle(
         Histogram of the angular distribution. Shape: (n_bins,)
 
     Returns
+    -------
     (np.ndarray)
         Evaluated PDF at the given points.
     """
@@ -242,15 +264,18 @@ def eval_pdf_with_angle(
 def compute_covs_6d(raw_outputs: np.ndarray, arena_dims: np.ndarray) -> np.ndarray:
     """
     Description
+    -----------
     Computes the covariance matrix from the raw output of the model.
 
     Parameters
+    ----------
     raw_outputs (np.ndarray)
         Raw output from the model. Shape: (B, num_outputs)
     arena_dims (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
 
     Returns
+    -------
     (np.ndarray)
         Covariance matrix in mm^2. Shape: (B, 6, 6)
     """
@@ -276,9 +301,11 @@ def estimate_angle_pdf(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
+    -----------
     Estimate the angle PDF from the 6d covariance matrix.
 
     Parameters
+    ----------
     pred_6d_mean (np.ndarray)
         Mean of the 6d Gaussian distribution. Shape: (6,)
     pred_6d_cov (np.ndarray)
@@ -289,6 +316,7 @@ def estimate_angle_pdf(
         Bins for the angle histogram. If None, defaults to 46 bins from -pi to pi.
 
     Returns
+    -------
     (tuple[np.ndarray, np.ndarray])
         Tuple containing the angle bins and the estimated PDF.
     """
@@ -313,16 +341,19 @@ def get_confidence_set(
 ) -> np.ndarray:
     """
     Description
+    -----------
     Get the confidence set for the given PDF. Makes no assumptions about
     the location of the origin in the arena.
 
     Parameters
+    ----------
     pdf (np.ndarray)
         Probability density function. Shape: (y_res, x_res, angle_res)
     confidence_level (float)
         Confidence level for the confidence set. Should be between 0 and 1.
 
     Returns
+    -------
     (np.ndarray)
         Boolean array of the same shape as pdf, indicating the confidence set.
     """
@@ -344,16 +375,19 @@ def make_xy_grid(
 ) -> np.ndarray:
     """
     Description
+    -----------
     Generates a grid of points for evaluating a PMF.
     Places origin in the bottom left corner of the arena
 
     Parameters
+    ----------
     arena_dims (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
     render_dims (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the render.
 
     Returns
+    -------
     (np.ndarray)
         A grid of points for evaluating a PMF. Shape: (y_res, x_res, 2)
     """
@@ -374,15 +408,18 @@ def convert_from_arb(
 ) -> np.ndarray:
     """
     Description
+    -----------
     Converts the output from the model to a more interpretable format.
 
     Parameters
+    ----------
     output (np.ndarray)
         Output from the model. Shape: (B, 6)
     arena_dims (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
 
     Returns
+    -------
     (np.ndarray)
         Converted output. Shape: (B, 6)
     """
@@ -401,9 +438,11 @@ def get_conf_sets_6d(
 ) -> tuple:
     """
     Description
+    -----------
     Computes confidence sets and optionally PDFs from raw output.
 
     Parameters
+    ----------
     raw_output (np.ndarray)
         Raw output from the model.
     arena_dims_mm (np.ndarray)
@@ -414,6 +453,7 @@ def get_conf_sets_6d(
         Whether to return PDFs or not.
 
     Returns
+    -------
     (tuple)
         Contains confidence sets and optionally PDFs.
     """
@@ -426,17 +466,21 @@ def get_conf_sets_6d(
 
     def routine(mean_6d, cov_6d):
         """
+        Description
+        -----------
         Per-vocalization worker that builds the joint spatial/angular PDF
         from a 6D mean and covariance, then extracts 95% confidence sets
         with and without the angular marginal.
 
         Parameters
+        ----------
         mean_6d (np.ndarray)
             A (6,) shape vector: (x, y, cos_yaw, sin_yaw, cos_roll, sin_roll).
         cov_6d (np.ndarray)
             A (6, 6) covariance matrix for mean_6d.
 
         Returns
+        -------
         (tuple)
             (conf_set, conf_set_no_angle, total_pdf) where
             conf_set / conf_set_no_angle are boolean masks over the spatial grid
@@ -481,10 +525,12 @@ def are_points_in_conf_set(
 ) -> np.ndarray:
     """
     Description
+    -----------
     Given an array of confidence sets and points, computes whether each point
     is inside the respective confidence set.
 
     Parameters
+    ----------
     confidence_sets (np.ndarray)
         Confidence sets. Shape: (n, y_res, x_res)
     points (np.ndarray)
@@ -493,6 +539,7 @@ def are_points_in_conf_set(
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
 
     Returns
+    -------
     (np.ndarray)
         Boolean array of shape (n)
     """

@@ -34,6 +34,7 @@ Record
                             can be used multiple times. For example:
                             --set video_session_duration=20
                             --set audio.general.fftlength=512
+                            --set arduino_sync_port=COM7
 
 Process
 ^^^^^^^
@@ -556,42 +557,94 @@ For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arr
                                   tests before applying the step-up rule.
 
 ``generate-rm``
-``generate-rm`` is the command-line interface for calculating neural-behavioral tuning curves.
+``generate-rm`` is the command-line interface for calculating per-cluster neuronal tuning curves (behavioral + vocal in one pass). Behavioral tuning runs when the session's ``*_behavioral_features.csv`` exists; vocal tuning runs when the ``*_usv_summary.csv`` and synced spike data exist. Sessions missing both inputs return cleanly without producing any tuning files.
 
 .. code-block:: text
 
     usage: generate-rm [-h] --root-directory PATH [--temporal-offsets INTEGER...]
                        [--n-shuffles INTEGER] [--total-bin-num INTEGER]
                        [--n-spatial-bins INTEGER] [--spatial-scale-cm INTEGER]
+                       [--peth-window-seconds FLOAT FLOAT] [--peth-bin-seconds FLOAT]
+                       [--bout-quiet-seconds FLOAT]
+                       [--n-usv-min-self INTEGER] [--n-usv-min-partner INTEGER]
+                       [--n-usv-min-category INTEGER]
+                       [--include-partner-tuning | --no-include-partner-tuning]
+                       [--behavioral-min-occupancy-seconds FLOAT]
+                       [--smoothing-sd FLOAT]
 
     required arguments:
-      --root-directory      Session root directory path.
+      --root-directory                       Session root directory path.
 
     optional arguments:
-      -h, --help            Show this help message and exit.
-      --temporal-offsets    Spike-behavior offset(s) to consider (in s).
-      --n-shuffles          Number of shuffles.
-      --total-bin-num       Total number of bins for 1D tuning curves.
-      --n-spatial-bins      Number of spatial bins.
-      --spatial-scale-cm    Spatial extent of the arena (in cm).
+      -h, --help                             Show this help message and exit.
+      --temporal-offsets                     Spike-behavior offset(s) to consider (in s).
+      --n-shuffles                           Number of shuffles.
+      --total-bin-num                        Total number of bins for 1D tuning curves.
+      --n-spatial-bins                       Number of spatial bins.
+      --spatial-scale-cm                     Spatial extent of the arena (in cm).
+      --peth-window-seconds                  Pre-USV PETH window [start stop] (in s).
+      --peth-bin-seconds                     PETH bin width (in s).
+      --bout-quiet-seconds                   Inter-bout silence required to define a new bout (in s).
+      --n-usv-min-self                       Minimum self-side USV count to compute self plots.
+      --n-usv-min-partner                    Minimum partner-side USV count to compute partner plots.
+      --n-usv-min-category                   Minimum per-category USV count to retain that category.
+      --include-partner-tuning /
+        --no-include-partner-tuning          Also compute partner-side vocal tuning when partner threshold is met.
+      --behavioral-min-occupancy-seconds     Minimum behavioral occupancy per bin (in s) for that bin
+                                             to be rendered in the 1D feature line plots; persisted
+                                             into ``behavioral_metadata`` of each cluster pkl.
+      --smoothing-sd                         Standard deviation (in bins) of the Gaussian smoothing
+                                             applied to ratemaps and shuffle distributions; ``0`` disables.
+
+.. _generate-detect-interesting:
+
+``detect-interesting``
+``detect-interesting`` is the command-line interface for triaging neuronal tuning data: it scans every ``*_tuning_curves_data.pkl`` under ``<root>/ephys/tuning_curves/``, applies the configured thresholds to each cluster's pre-computed ``triage_stats`` block, and writes one timestamped JSON summary (``interesting_neurons_<YYYYMMDD>_<HHMMSS>.json``) listing flagged clusters by modality / direction / role and by cluster. The triage statistics themselves are produced by ``generate-rm`` — this CLI is a pure pkl-to-JSON pass and never reloads spike or USV data, so thresholds can be swept without recomputing tuning. Pkls without a ``triage_stats`` block (older runs) are skipped silently and counted in the JSON.
+
+.. code-block:: text
+
+    usage: detect-interesting [-h] --root-directory PATH
+                              [--z-threshold FLOAT]
+                              [--min-consecutive-bins INTEGER]
+                              [--vmi-alpha FLOAT]
+                              [--vmi-min-bouts INTEGER]
+                              [--spatial-info-bps-threshold FLOAT]
+
+    required arguments:
+      --root-directory                Session root directory path; tuning pkls
+                                      live at <root>/ephys/tuning_curves/.
+
+    optional arguments:
+      -h, --help                      Show this help message and exit.
+      --z-threshold                   Magnitude threshold on per-direction peak Z
+                                      for usv_peth, usv_property_tuning,
+                                      usv_category_peth, behavioral, and the
+                                      categorical-tuning best-Z gate.
+      --min-consecutive-bins          Minimum number of consecutive bins above
+                                      (or below) the shuffle band required to
+                                      flag a direction.
+      --vmi-alpha                     Wilcoxon p-value threshold for VMI
+                                      significance.
+      --vmi-min-bouts                 Minimum bout count required to consider VMI
+                                      meaningful.
+      --spatial-info-bps-threshold    Skaggs spatial information rate (bits/spike)
+                                      threshold for the spatial flag.
 
 Visualize
 ^^^^^^^^^
 
 ``generate-rm-figs``
-``generate-rm-figs`` is the command-line interface for making neural-behavioral tuning curve figures.
+``generate-rm-figs`` is the command-line interface for rendering the per-cluster neuronal tuning figures from existing pkls. Each cluster gets one combined output (behavioral pages + vocal Page 1 / Page 2). The output file format and ratemap colormap are read from ``visualizations_settings.json`` under ``neuronal_tuning_figures``; compute-time knobs (``smoothing_sd``, ``behavioral_min_occupancy_seconds``) live on the analyses side and are read from each pkl's ``behavioral_metadata`` block at render time.
 
 .. code-block:: text
 
-    usage: generate-rm-figs [-h] --root-directory PATH [--smoothing-sd FLOAT]
-                            [--occ-threshold FLOAT]
+    usage: generate-rm-figs [-h] --root-directory PATH
+
     required arguments:
       --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --smoothing-sd        Standard deviation of smoothing (in bins).
-      --occ-threshold       Minimum acceptable occupancy (in s).
 
 
 ``generate-viz``

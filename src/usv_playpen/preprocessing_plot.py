@@ -27,15 +27,20 @@ class SummaryPlotter:
         self, input_parameter_dict: dict = None, root_directory: str = None, message_output: Callable | None = None
     ) -> None:
         """
+        Description
+        -----------
         Initializes the SummaryPlotter class.
 
         Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
            Processing parameters; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -53,6 +58,7 @@ class SummaryPlotter:
     ) -> None:
         """
         Description
+        -----------
         This method generates a plot summarizing the first data preprocessing stage,
         with session details (e.g., name, mice used, duration, etc.), variables
         measure with the phidget device (humidity, illumination, temperature) and
@@ -60,12 +66,14 @@ class SummaryPlotter:
         recorder data vs. the actual video frames these events appeared at.
 
         Parameters
+        ----------
         ipi_discrepancy_dict (dict)
            Contains arrays of A/V IPI discrepancies (in ms) and video ipi start frames.
         phidget_data_dictionary (dict)
             Contains lux, humidity and temperature data.
 
         Returns
+        -------
         preprocessing_plot (fig)
             Figure summarizing the preprocessing of experimental data.
         """
@@ -196,8 +204,18 @@ class SummaryPlotter:
                         subjects_list = metadata.get('Subjects', [])
 
                         def _pad_two(raw_list):
-                            """Return a length-2 list, padding missing entries with '-' so
+                            """
+                            Description
+                            -----------
+                            Return a length-2 list, padding missing entries with '-' so
                             downstream `list[0]` / `list[1]` indexing never raises IndexError
+
+                            Parameters
+                            ----------
+
+
+                            Returns
+                            -------
                             when the session metadata lists fewer than two subjects."""
                             padded = list(raw_list) + ['-', '-']
                             return padded[:2]
@@ -304,7 +322,7 @@ class SummaryPlotter:
                 plot_statistics_dict[device_id]["plot_x_max"],
             )
 
-            ax[0, device_num].axvline(x=0, ls="-.", lw=1.2, c="#000000")
+            ax[0, device_num].axvline(x=0, ls="-.", lw=1.2, c="#202020")
             ax[0, device_num].axvline(
                 x=plot_statistics_dict[device_id]["error_median"],
                 ls="-",

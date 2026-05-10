@@ -52,6 +52,7 @@ def build_master_usv_interval_dataframe(
 ) -> tuple[pls.DataFrame, dict]:
     """
     Description
+    -----------
     Reads one or more session-list text files and computes per-session
     same-emitter inter-USV intervals in **both** definitions (``s2s`` and ``e2s``) for
     every session. Returns a single tidy Polars DataFrame with one row
@@ -75,6 +76,7 @@ def build_master_usv_interval_dataframe(
     :func:`save_notebook_archive_to_h5`.
 
     Parameters
+    ----------
     session_lists (list[str])
         List of text file paths, each containing session roots (one
         per line).
@@ -88,6 +90,7 @@ def build_master_usv_interval_dataframe(
         Logging callable; defaults to :func:`print`.
 
     Returns
+    -------
     usv_interval_df (pls.DataFrame)
         Tidy DataFrame, one row per inter-USV interval per ``interval_type``.
     summary (dict)
@@ -180,10 +183,11 @@ def plot_log_usv_interval_histograms(
     female_color: str,
     figsize: tuple = (5, 5),
     xlims: tuple = (-5.0, 5.0),
-    edge_color: str = "#000000",
+    edge_color: str = "#202020",
 ) -> tuple[plt.Figure, plt.Axes, dict]:
     """
     Description
+    -----------
     Histograms of ``log_interval`` for males and females overlaid on a
     single axis, normalised to integrate to 1 within each sex. Useful
     as a sanity check before any GMM fitting.
@@ -195,6 +199,7 @@ def plot_log_usv_interval_histograms(
     in the histograms).
 
     Parameters
+    ----------
     usv_interval_df (pls.DataFrame)
         Tidy DataFrame from :func:`build_master_usv_interval_dataframe`.
     bins (int)
@@ -210,9 +215,10 @@ def plot_log_usv_interval_histograms(
         (-5.0, 5.0).
     edge_color (str)
         Colour for the step-filled histogram edges; defaults to
-        '#000000'.
+        '#202020'.
 
     Returns
+    -------
     f (plt.Figure)
         The created figure.
     ax (plt.Axes)
@@ -258,6 +264,7 @@ def run_bic_sweep(
 ) -> pls.DataFrame:
     """
     Description
+    -----------
     Convenience wrapper around :func:`compute_inter_usv_interval_distributions.fit_gmm_sweep`
     that takes a tidy inter-USV interval DataFrame and returns the same tidy results
     table.
@@ -267,6 +274,7 @@ def run_bic_sweep(
     hand.
 
     Parameters
+    ----------
     usv_interval_df (pls.DataFrame)
         Tidy inter-USV interval DataFrame from :func:`build_master_usv_interval_dataframe`.
     n_components_min (int)
@@ -284,6 +292,7 @@ def run_bic_sweep(
         :func:`fit_gmm_sweep`.
 
     Returns
+    -------
     df_results (pls.DataFrame)
         Tidy GMM / t-mixture sweep results.
     """
@@ -312,6 +321,7 @@ def plot_ic_curves(
 ) -> tuple[plt.Figure, tuple, dict]:
     """
     Description
+    -----------
     Plots the *minimum* information criterion across repeats vs.
     ``n_components`` for each sex on **twin y-axes**: males on the
     left axis, females on the right. The two sexes typically have
@@ -333,6 +343,7 @@ def plot_ic_curves(
     goes with which scale.
 
     Parameters
+    ----------
     df_results (pls.DataFrame)
         Tidy results from :func:`run_bic_sweep`. Must contain a
         column named ``ic_col``.
@@ -351,6 +362,7 @@ def plot_ic_curves(
         highlight).
 
     Returns
+    -------
     f (plt.Figure)
         The created figure.
     axes (tuple)
@@ -366,7 +378,7 @@ def plot_ic_curves(
     axis_for = {"male": ax_left, "female": ax_right}
     color_for = {"male": male_color, "female": female_color}
     stats: dict = {}
-    edge_color = "#000000"
+    edge_color = "#202020"
 
     for sex in ("male", "female"):
         if sex not in df_results['sex'].unique().to_list():
@@ -437,7 +449,7 @@ def plot_best_fit_with_annotations(
     bins: int = 80,
     xlims: tuple = (-5.0, 5.0),
     tau: float = 0.5,
-    edge_color: str = "#000000",
+    edge_color: str = "#202020",
     qq_inset_bbox: tuple | None = (0.62, 0.40, 0.34, 0.34),
     qq_n_q: int = 200,
     legend_corner: str = "upper right",
@@ -447,6 +459,7 @@ def plot_best_fit_with_annotations(
 ) -> tuple[plt.Figure, plt.Axes, dict]:
     """
     Description
+    -----------
     Wraps :func:`gmm_utils.plot_gmm_fit` and overlays a downward
     triangle on the mixture density curve at the location of each
     fitted component mean ``mu_k`` (each component's own peak in
@@ -464,6 +477,7 @@ def plot_best_fit_with_annotations(
     chosen ``legend_corner``.
 
     Parameters
+    ----------
     intervals_sec (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval
         values (in seconds).
@@ -485,7 +499,7 @@ def plot_best_fit_with_annotations(
         summary dict; no longer drawn on the plot). Defaults to 0.5.
     edge_color (str)
         Histogram edge colour and triangle outline; defaults to
-        '#000000'.
+        '#202020'.
     qq_inset_bbox (tuple | None)
         Four-tuple ``(x, y, w, h)`` in axes fractions of the host
         axes specifying the Q-Q inset position. ``None`` disables
@@ -516,6 +530,7 @@ def plot_best_fit_with_annotations(
         is preserved underneath. Defaults to False.
 
     Returns
+    -------
     f (plt.Figure)
         The created figure.
     ax (plt.Axes)
@@ -675,12 +690,13 @@ def _draw_text_legend(
     legend_str: str,
     *,
     corner: str = "upper right",
-    color: str = "#000000",
+    color: str = "#202020",
     fontsize: int = 12,
     pad_axes_frac: float = 0.02,
 ):
     """
     Description
+    -----------
     Anchors a single multi-line ``Text`` object to one of the four
     corners of ``ax`` with internal left-alignment, so each line's
     leading character (``(a) =``, ``(b) =``, ...) sits at the same
@@ -691,6 +707,7 @@ def _draw_text_legend(
     auto-inset-below-legend layout path).
 
     Parameters
+    ----------
     ax (plt.Axes)
         Destination axes.
     legend_str (str)
@@ -706,6 +723,7 @@ def _draw_text_legend(
         Padding from the axes edge in axes fractions.
 
     Returns
+    -------
     text (matplotlib.text.Text)
         The rendered text handle.
     """
@@ -757,6 +775,7 @@ def _draw_mixture_components(
 ) -> None:
     """
     Description
+    -----------
     Overlays the **shape** of each fitted mixture component on the
     host axes, scaled so its peak lies exactly on the black
     mixture-sum curve drawn by :func:`gmm_utils.plot_gmm_fit`. Each
@@ -779,6 +798,7 @@ def _draw_mixture_components(
     (ascending log-mean), so component ``(a)`` is the leftmost peak.
 
     Parameters
+    ----------
     ax (plt.Axes)
         Destination axes (the main best-fit panel).
     gmm (GaussianMixture | TMixture)
@@ -797,6 +817,8 @@ def _draw_mixture_components(
         Line width for the component curves. Defaults to 1.5.
 
     Returns
+    -------
+    None
     """
 
     xx = np.linspace(xlims[0], xlims[1], n_grid).reshape(-1, 1)
@@ -831,12 +853,13 @@ def _draw_qq_into_axes(
     intervals_sec: np.ndarray,
     gmm,
     dot_color: str,
-    line_color: str = "#000000",
+    line_color: str = "#202020",
     n_q: int = 200,
     inset: bool = False,
 ) -> float:
     """
     Description
+    -----------
     Renders a log-log Q-Q plot of empirical quantiles (in seconds)
     against model quantiles into the supplied axes; returns the
     log-space Pearson correlation as a goodness-of-fit summary.
@@ -844,6 +867,7 @@ def _draw_qq_into_axes(
     :func:`plot_best_fit_with_annotations`.
 
     Parameters
+    ----------
     ax (plt.Axes)
         Destination axes (a fresh figure axes for the standalone
         plot, or the inset axes for the embedded variant).
@@ -863,6 +887,7 @@ def _draw_qq_into_axes(
         font, no axis labels). Defaults to False.
 
     Returns
+    -------
     pearson_r (float)
         Log-space Pearson correlation between empirical and model
         quantiles.
@@ -914,11 +939,12 @@ def plot_qq(
     dot_color: str,
     figsize: tuple = (5, 5),
     n_q: int = 200,
-    line_color: str = "#000000",
+    line_color: str = "#202020",
     ax: plt.Axes | None = None,
 ) -> tuple[plt.Figure, plt.Axes, dict]:
     """
     Description
+    -----------
     Q-Q plot of empirical quantiles (in seconds) against model
     quantiles obtained by inverting the analytic GMM CDF (no
     Monte-Carlo noise). The reference y=x line is drawn in
@@ -931,6 +957,7 @@ def plot_qq(
     ``figsize`` is created.
 
     Parameters
+    ----------
     intervals_sec (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval
         values.
@@ -943,12 +970,13 @@ def plot_qq(
     n_q (int)
         Number of quantile probabilities; defaults to 200.
     line_color (str)
-        Colour for the reference y=x diagonal; defaults to '#000000'.
+        Colour for the reference y=x diagonal; defaults to '#202020'.
     ax (plt.Axes | None)
         Pre-existing axes to draw into; defaults to None (new
         figure).
 
     Returns
+    -------
     f (plt.Figure)
         The figure containing the Q-Q axes.
     ax (plt.Axes)
@@ -990,6 +1018,7 @@ def run_bootstrap_lrt_sweep(
 ) -> dict:
     """
     Description
+    -----------
     Runs the parametric bootstrap likelihood-ratio test for every
     consecutive pair ``(K, K+1)`` in the range
     ``[n_components_min, n_components_max]``, separately for each
@@ -1001,6 +1030,7 @@ def run_bootstrap_lrt_sweep(
     :func:`save_notebook_archive_to_h5`.
 
     Parameters
+    ----------
     intervals_by_key (dict)
         Mapping ``sex -> np.ndarray`` of strictly positive intervals
         (``sex`` typically ``'male'`` or ``'female'``).
@@ -1027,6 +1057,7 @@ def run_bootstrap_lrt_sweep(
         Logging callable.
 
     Returns
+    -------
     sweep (dict)
         Mapping ``key -> {(K_null, K_alt) -> result_dict}``, where
         each ``result_dict`` is the return value of
@@ -1070,11 +1101,13 @@ def select_n_components_from_lrt_sweep(
 ) -> dict:
     """
     Description
+    -----------
     Applies the step-up rule per key to a bootstrap-LRT sweep
     produced by :func:`run_bootstrap_lrt_sweep`. Optionally applies
     a Bonferroni correction across the number of tests per key.
 
     Parameters
+    ----------
     sweep (dict)
         Output of :func:`run_bootstrap_lrt_sweep`.
     alpha (float)
@@ -1083,6 +1116,7 @@ def select_n_components_from_lrt_sweep(
         If True, divide alpha by the number of pairs per key.
 
     Returns
+    -------
     selected (dict)
         Mapping ``key -> int K_selected``.
     """
@@ -1102,6 +1136,7 @@ def plot_bootstrap_lrt_panel(
 ) -> tuple[plt.Figure, np.ndarray]:
     """
     Description
+    -----------
     Renders one row per sex (male / female), one column per consecutive
     K-pair, showing the bootstrap null distribution of the LR
     statistic with the observed LR marked in red and the 99th-
@@ -1121,6 +1156,7 @@ def plot_bootstrap_lrt_panel(
     bulk.
 
     Parameters
+    ----------
     sweep (dict)
         Output of :func:`run_bootstrap_lrt_sweep`.
     figsize_per_panel (tuple)
@@ -1133,6 +1169,7 @@ def plot_bootstrap_lrt_panel(
         150% of the null's full width).
 
     Returns
+    -------
     f (plt.Figure)
         The created figure.
     axes (np.ndarray)
@@ -1213,12 +1250,12 @@ def plot_bootstrap_lrt_panel(
                 ax.hist(
                     lr_null,
                     bins=50,
-                    color="#a0a0a0", edgecolor="#000000",
+                    color="#a0a0a0", edgecolor="#202020",
                     histtype="stepfilled",
                 )
                 ax.axvline(lr_obs, color="#cc0000", lw=2,
                            label=f"LR_obs = {lr_obs:.1f}")
-                ax.axvline(null_p99, color="#000000", linestyle=":", lw=1,
+                ax.axvline(null_p99, color="#202020", linestyle=":", lw=1,
                            label=f"null 99% = {null_p99:.1f}")
                 ax.set_title(f"{key}: K={K_n} vs K={K_a}\np = {res['p_value']:.3f}")
                 ax.set_xlabel("LR statistic")
@@ -1244,6 +1281,7 @@ def _draw_lrt_cell_pair(
 ) -> None:
     """
     Description
+    -----------
     Renders a single broken-axis LRT cell across the supplied left /
     right axes. The left axes shows the null histogram and the 99%
     reference line if it falls within the null's range; the right
@@ -1254,6 +1292,7 @@ def _draw_lrt_cell_pair(
     Internal helper for :func:`plot_bootstrap_lrt_panel`.
 
     Parameters
+    ----------
     ax_l (plt.Axes)
         Left axes (covers null bulk).
     ax_r (plt.Axes)
@@ -1266,6 +1305,8 @@ def _draw_lrt_cell_pair(
         99th percentile of the null distribution.
 
     Returns
+    -------
+    None
     """
 
     null_min = float(lr_null.min()) if lr_null.size else 0.0
@@ -1283,15 +1324,15 @@ def _draw_lrt_cell_pair(
     ax_l.hist(
         lr_null,
         bins=50,
-        color="#a0a0a0", edgecolor="#000000",
+        color="#a0a0a0", edgecolor="#202020",
         histtype="stepfilled",
     )
     # 99% reference line: drawn on whichever side it falls on
     if null_p99 <= left_hi:
-        ax_l.axvline(null_p99, color="#000000", linestyle=":", lw=1,
+        ax_l.axvline(null_p99, color="#202020", linestyle=":", lw=1,
                      label=f"null 99% = {null_p99:.1f}")
     elif right_lo <= null_p99 <= right_hi:
-        ax_r.axvline(null_p99, color="#000000", linestyle=":", lw=1,
+        ax_r.axvline(null_p99, color="#202020", linestyle=":", lw=1,
                      label=f"null 99% = {null_p99:.1f}")
     # observed LR on the right axes
     ax_r.axvline(lr_obs, color="#cc0000", lw=2,
@@ -1324,8 +1365,8 @@ def _draw_lrt_cell_pair(
         "marker": slash_marker,
         "markersize": 10,
         "linestyle": "none",
-        "color": "#000000",
-        "mec": "#000000",
+        "color": "#202020",
+        "mec": "#202020",
         "mew": 1,
         "clip_on": False,
     }
@@ -1351,6 +1392,7 @@ def save_notebook_archive_to_h5(
 ) -> Path:
     """
     Description
+    -----------
     Consolidates the notebook's in-memory inter-USV interval compute outputs into a
     single ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` archive in the same
     layout the CLI (:class:`InterUSVIntervalCalculator`) writes. Lets the notebook
@@ -1363,6 +1405,7 @@ def save_notebook_archive_to_h5(
     omitted.
 
     Parameters
+    ----------
     output_directory (str)
         Directory in which to write the archive. Run through
         :func:`configure_path`; created if missing.
@@ -1397,6 +1440,7 @@ def save_notebook_archive_to_h5(
         Logging callable; receives one summary line.
 
     Returns
+    -------
     h5_path (pathlib.Path)
         Resolved path of the written archive.
     """
@@ -1525,16 +1569,19 @@ def save_notebook_archive_to_h5(
 def find_latest_archive(output_directory: str) -> Path:
     """
     Description
+    -----------
     Locates the most-recent ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` in
     ``output_directory``. Filenames are sorted lexicographically;
     because the timestamp is a fixed-width zero-padded string, this is
     equivalent to chronological order.
 
     Parameters
+    ----------
     output_directory (str)
         Directory to scan; passed through :func:`configure_path`.
 
     Returns
+    -------
     h5_path (pathlib.Path)
         Path of the newest archive.
     """
@@ -1565,6 +1612,7 @@ def load_lrt_sweep_from_h5(
 ) -> dict:
     """
     Description
+    -----------
     Re-hydrates the in-memory ``sweep`` dict (the same shape produced
     by :func:`run_bootstrap_lrt_sweep`) from the two tables stored
     inside the inter-USV interval HDF5 archive: ``/<mode>/bootstrap_lrt`` for the
@@ -1572,6 +1620,7 @@ def load_lrt_sweep_from_h5(
     long-form null distributions used in :func:`plot_bootstrap_lrt_panel`.
 
     Parameters
+    ----------
     h5_path (str)
         Path to the ``usv_interval_analysis_<ts>.h5`` archive (passed through
         :func:`configure_path`).
@@ -1579,6 +1628,7 @@ def load_lrt_sweep_from_h5(
         Mode label, ``'s2s'`` or ``'e2s'``.
 
     Returns
+    -------
     sweep (dict)
         Mapping ``sex -> {(K_null, K_alt) -> result_dict}`` with
         every key the compute path wrote, including ``'lr_null'``
@@ -1641,6 +1691,7 @@ def selected_K_from_h5(
 ) -> dict:
     """
     Description
+    -----------
     Reads the per-sex step-up selected K from the mode group's
     ``/<mode>/attrs`` (``K_selected_male`` / ``K_selected_female``)
     in an inter-USV interval HDF5 archive and returns it as a ``{sex: K}`` dict ready
@@ -1652,12 +1703,14 @@ def selected_K_from_h5(
     (older archives).
 
     Parameters
+    ----------
     h5_path (str)
         Path to the inter-USV interval archive.
     interval_type (str)
         Mode label.
 
     Returns
+    -------
     selected (dict)
         Mapping ``sex -> int K_selected``.
     """
@@ -1700,18 +1753,21 @@ def load_intervals_from_h5(
 ) -> pls.DataFrame:
     """
     Description
+    -----------
     Convenience loader for the tidy per-interval table archived inside
     an inter-USV interval HDF5 file. Returns a polars DataFrame with the same schema
     as the in-memory frame from :func:`build_master_usv_interval_dataframe`,
     pre-filtered to a single ``interval_type``.
 
     Parameters
+    ----------
     h5_path (str)
         Path to the inter-USV interval archive.
     interval_type (str)
         Mode label.
 
     Returns
+    -------
     df (pls.DataFrame)
         One row per inter-USV interval for the given interval_type.
     """
@@ -1735,17 +1791,20 @@ def load_gmm_fits_from_h5(
 ) -> pls.DataFrame:
     """
     Description
+    -----------
     Convenience loader for the GMM / t-mixture sweep table archived
     inside an inter-USV interval HDF5 file. Returns a polars DataFrame ready to pass
     to :func:`plot_ic_curves`.
 
     Parameters
+    ----------
     h5_path (str)
         Path to the inter-USV interval archive.
     interval_type (str)
         Mode label.
 
     Returns
+    -------
     df (pls.DataFrame)
         Tidy GMM/t-mixture sweep results, including the per-component
         parameter columns (``logmean_k`` / ``logsd_k`` / ``weight_k``
@@ -1785,6 +1844,7 @@ def load_best_fit_from_h5(
 ):
     """
     Description
+    -----------
     Reconstructs the best-rep fitted mixture for ``(sex, K)`` from the
     archived sweep, without re-running EM. Returns a
     ``(model, gmm_order)`` pair shaped exactly like the live compute
@@ -1797,6 +1857,7 @@ def load_best_fit_from_h5(
     returned ``gmm_order`` is therefore ``np.arange(K)``.
 
     Parameters
+    ----------
     h5_path (str)
         Path to the inter-USV interval archive.
     interval_type (str)
@@ -1810,6 +1871,7 @@ def load_best_fit_from_h5(
         ``(sex, K)``; defaults to ``'cv_neg_loglik'``.
 
     Returns
+    -------
     model (GaussianMixture | TMixture)
         Reconstructed mixture; ``score_samples`` etc. work directly.
     gmm_order (np.ndarray)

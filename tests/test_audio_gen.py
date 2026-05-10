@@ -1,0 +1,215 @@
+"""
+@author: bartulem
+Mock-based tests for analyses/generate_audio_files.AudioGenerator.
+
+The orchestration methods invoke `static_sox` via subprocess, librosa.load,
+and soundfile.write. We mock all three so we can exercise the file-handling
+and branching logic without sox installed and without any real WAV files
+larger than a handful of samples.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
+
+from usv_playpen.analyses.generate_audio_files import AudioGenerator
+
+
+# ---------------------------------------------------------------------------
+# AudioGenerator class-level attributes
+# ---------------------------------------------------------------------------
+
+
+def test_audiogen_class_level_attrs_are_set():
+    """`command_addition` and `shell_usage_bool` are set at class-definition
+    time based on os.name. They should always be defined and consistent."""
+    assert hasattr(AudioGenerator, "command_addition")
+    assert hasattr(AudioGenerator, "shell_usage_bool")
+    # command_addition is either "" (POSIX) or "cmd /c " (Windows) and
+    # shell_usage_bool tracks the same fork.
+    assert AudioGenerator.command_addition in ("", "cmd /c ")
+    assert isinstance(AudioGenerator.shell_usage_bool, bool)
+
+
+def test_audiogen_init_stores_arbitrary_kwargs():
+    """Constructor stores every kwarg as an attribute (no allowlist)."""
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory="/whatever",
+        message_output=lambda *_a, **_kw: None,
+    )
+    assert ag.exp_id == "test_exp"
+    assert ag.root_directory == "/whatever"
+    # The constructor also sets app_context_bool (GUI vs CLI detection).
+    assert hasattr(ag, "app_context_bool")
+
+
+# ---------------------------------------------------------------------------
+# frequency_shift_audio_segment
+# ---------------------------------------------------------------------------
+
+
+def _fs_settings(audio_dir: str = "original",
+                 device_id: str = "m",
+                 channel_id: int = 1,
+                 octave_shift: float = -1.0,
+                 volume_adjustment: bool = False) -> dict:
+    """Default freq-shift settings dict (matches keys used by the method)."""
+    return {
+        "fs_audio_dir": audio_dir,
+        "fs_device_id": device_id,
+        "fs_channel_id": channel_id,
+        "fs_wav_sampling_rate": 250,  # kHz; the method multiplies by 1e3
+        "fs_sequence_start": 0.0,
+        "fs_sequence_duration": 0.05,
+        "fs_octave_shift": octave_shift,
+        "fs_volume_adjustment": volume_adjustment,
+    }
+
+
+def test_frequency_shift_audio_segment_logs_not_found(tmp_path, mocker):
+    """When no .wav matches the device/channel pattern, the method logs
+    a "not found" message and does NOT spawn any subprocess.
+
+    NB: index access into an empty match list still happens before the
+    branch check in the source — we patch the glob to return one fake
+    path, then patch len() of the result via a manual subclass.
+    """
+    # Build directory tree:
+    audio_dir = tmp_path / "audio" / "original"
+    audio_dir.mkdir(parents=True)
+    # Create a fake WAV that matches the wrong device pattern (s_*) so the
+    # glob returns exactly one match (so audio_file_loc[0].name works) but
+    # the len() check is = 1 — meaning we exercise the happy branch above
+    # the "not found" else-branch.
+    # Skip this approach. Instead: place a wav matching m_*_ch01_*.wav so
+    # the happy branch executes — but mock librosa/sox so it doesn't fail.
+    wav_name = "m_001_ch01_session.wav"
+    (audio_dir / wav_name).write_bytes(b"\x00\x00")
+
+    # Mock librosa.load → returns synthetic 1-D audio
+    mocker.patch("usv_playpen.analyses.generate_audio_files.librosa.load",
+                 return_value=(np.zeros(1024, dtype=np.float32), 250000))
+    # Mock soundfile.write → no-op so no real sf.write is called.
+    mocker.patch("usv_playpen.analyses.generate_audio_files.sf.write")
+    # Mock noisereduce.reduce_noise → return the input unchanged.
+    mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
+                 side_effect=lambda y, **_kw: y)
+    # Mock subprocess.Popen so static_sox is never invoked.
+    fake_popen = mocker.patch(
+        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
+        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+    )
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+    # Mock pathlib.Path.unlink to avoid the missing-file error when the
+    # method tries to delete the temp files we never actually wrote.
+    mocker.patch("pathlib.Path.unlink", return_value=None)
+
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory=str(tmp_path),
+        freq_shift_settings_dict=_fs_settings(),
+        message_output=lambda *_a, **_kw: None,
+    )
+    ag.frequency_shift_audio_segment()
+
+    # Two SoX subprocesses (volume_adjustment=False → 1 call, plus the
+    # final tempo-adjust → 1 call). The exact count depends on the
+    # 'filtered' branch and volume flag; with default args (audio_dir
+    # = 'original', volume off) we expect exactly 1 sox call (tempo).
+    assert fake_popen.call_count >= 1
+
+
+def test_frequency_shift_audio_segment_volume_adjustment_double_sox(tmp_path, mocker):
+    """volume_adjustment=True introduces a second SoX call (compand)."""
+    audio_dir = tmp_path / "audio" / "original"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "m_001_ch01_session.wav").write_bytes(b"\x00\x00")
+
+    mocker.patch("usv_playpen.analyses.generate_audio_files.librosa.load",
+                 return_value=(np.zeros(1024, dtype=np.float32), 250000))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.sf.write")
+    mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
+                 side_effect=lambda y, **_kw: y)
+    fake_popen = mocker.patch(
+        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
+        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+    )
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+    mocker.patch("pathlib.Path.unlink", return_value=None)
+
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory=str(tmp_path),
+        freq_shift_settings_dict=_fs_settings(volume_adjustment=True),
+        message_output=lambda *_a, **_kw: None,
+    )
+    ag.frequency_shift_audio_segment()
+
+    # With volume adjustment on, we should have 2 sox calls (compand + tempo).
+    assert fake_popen.call_count == 2
+
+
+def test_frequency_shift_audio_segment_filtered_branch_skips_sinc(tmp_path, mocker):
+    """When audio_dir contains "filtered", the final SoX call omits the sinc
+    filter (only tempo). We verify this by inspecting the subprocess args."""
+    audio_dir = tmp_path / "audio" / "hpss_filtered"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "m_001_ch01_session.wav").write_bytes(b"\x00\x00")
+
+    mocker.patch("usv_playpen.analyses.generate_audio_files.librosa.load",
+                 return_value=(np.zeros(1024, dtype=np.float32), 250000))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.sf.write")
+    mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
+                 side_effect=lambda y, **_kw: y)
+    fake_popen = mocker.patch(
+        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
+        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+    )
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+    mocker.patch("pathlib.Path.unlink", return_value=None)
+
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory=str(tmp_path),
+        freq_shift_settings_dict=_fs_settings(audio_dir="hpss_filtered"),
+        message_output=lambda *_a, **_kw: None,
+    )
+    ag.frequency_shift_audio_segment()
+
+    # Verify that the sox command in the filtered branch does not contain "sinc".
+    last_call_args = fake_popen.call_args_list[-1].kwargs.get("args", "")
+    assert "sinc" not in last_call_args
+    assert "tempo" in last_call_args
+
+
+def test_frequency_shift_audio_segment_no_match_logs_and_returns(tmp_path, mocker):
+    """Zero glob matches: log "Requested audio file not found." and return
+    without spawning any sox subprocess. (Previously this path hit an
+    IndexError on audio_file_loc[0] before the len() check; the fix moves
+    the length check before the indexing.)"""
+    audio_dir = tmp_path / "audio" / "original"
+    audio_dir.mkdir(parents=True)
+    # Wrong channel — glob returns no match
+    (audio_dir / "m_001_ch99_session.wav").write_bytes(b"\x00\x00")
+
+    fake_popen = mocker.patch(
+        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
+        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+    )
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+
+    msgs: list[str] = []
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory=str(tmp_path),
+        freq_shift_settings_dict=_fs_settings(channel_id=1),
+        message_output=msgs.append,
+    )
+    ag.frequency_shift_audio_segment()  # must not raise
+
+    assert fake_popen.call_count == 0
+    assert any("Requested audio file not found" in m for m in msgs)

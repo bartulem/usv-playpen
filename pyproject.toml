@@ -124,6 +124,7 @@ generate-beh-features = "usv_playpen.analyze_data:generate_beh_features_cli"
 generate-usv-playback = "usv_playpen.analyze_data:generate_usv_playback_cli"
 generate-naturalistic-usv-playback = "usv_playpen.analyze_data:generate_naturalistic_usv_playback_cli"
 generate-rm = "usv_playpen.analyze_data:generate_rm_files_cli"
+detect-interesting = "usv_playpen.analyze_data:detect_interesting_tuning_neurons_cli"
 generate-usv-interval-distributions = "usv_playpen.analyze_data:generate_usv_interval_distributions_cli"
 generate-rm-figs = "usv_playpen.visualize_data:generate_rm_figures_cli"
 generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
@@ -226,6 +227,16 @@ messages_control.disable = [
   "missing-module-docstring",
   "missing-function-docstring",
   "wrong-import-position",
+]
+
+[tool.uv]
+# Pin transitive dependencies to versions that resolve known security
+# vulnerabilities. Constraints narrow the resolver's acceptable version
+# range without making mistune a direct dependency of usv-playpen.
+#   - mistune>=3.2.1 fixes a ReDoS in LINK_TITLE_RE (GHSA, Dependabot #32);
+#     mistune is pulled in transitively via jupyterlab -> nbconvert.
+constraint-dependencies = [
+    "mistune>=3.2.1",
 ]
 
 [tool.uv.sources]

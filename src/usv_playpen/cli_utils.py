@@ -22,8 +22,29 @@ class StringTuple(click.ParamType):
 
     def convert(self, value, param, ctx):
         """
-        This method performs the conversion. It's called by click for each
-        value provided to the option.
+        Description
+        -----------
+        Click parameter-type converter. Called by click for each value
+        passed to a CLI option using this type. Converts the user's
+        comma-separated input into the canonical typed structure that
+        the consuming command expects.
+
+        Parameters
+        ----------
+        value (str)
+            Raw input string from the command line.
+        param (click.Parameter)
+            The click parameter object that owns this conversion
+            (used by click's failure machinery).
+        ctx (click.Context | None)
+            The active click context (also passed through on failure).
+
+        Returns
+        -------
+        converted
+            The successfully converted value. Calls `self.fail(...)` on
+            invalid input, which raises a `click.BadParameter` and never
+            returns.
         """
         try:
             # Split the input string by the comma
@@ -51,9 +72,11 @@ class StringTuple(click.ParamType):
 def set_nested_key(d: dict, target_key: str, value: Any = None) -> bool:
     """
     Description
+    -----------
     Recursively finds a key in a nested dictionary and sets its value.
 
     Parameters
+    ----------
     d (dict)
         The dictionary to search within.
     target_key (str)
@@ -62,6 +85,7 @@ def set_nested_key(d: dict, target_key: str, value: Any = None) -> bool:
         The new value to set for the target_key.
 
     Returns
+    -------
     (bool)
         True if the key was found and updated, False otherwise.
     """
@@ -87,10 +111,12 @@ def modify_settings_json_for_cli(
 ) -> dict:
     """
     Description
+    -----------
     Modifies the `*_settings.json` file to include
     parameters provided via the command line interface.
 
     Parameters
+    ----------
     ctx (click.Context)
         Click context containing the parameters.
     parameters_lists (list)
@@ -102,6 +128,7 @@ def modify_settings_json_for_cli(
         Settings dictionary file (analyses, processing or visualizations).
 
     Returns
+    -------
     settings_parameter_dict (dict)
         The modified settings dictionary with the provided parameters.
     """
@@ -130,6 +157,7 @@ def modify_settings_json_for_cli(
 def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     """
     Description
+    -----------
     Sets a value in a nested dictionary using a dot-separated path. The path
     is validated against the existing structure of ``d`` — if any intermediate
     key does not exist, is not itself a dict, or the leaf key is missing, a
@@ -140,6 +168,7 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     real one.
 
     Parameters
+    ----------
     d (dict)
         The dictionary to modify. Must contain the full target path already.
     path (str)
@@ -149,10 +178,12 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
         The value to set at the specified path.
 
     Returns
+    -------
     (None)
         This function modifies the dictionary in place and does not return anything.
 
     Raises
+    ------
     ValueError
         If ``path`` is empty, contains empty components, or is not a string.
     KeyError
@@ -202,9 +233,11 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
 def _convert_value(s: str) -> Any:
     """
     Description
+    -----------
     Converts a string to its appropriate type based on its content.
 
     Parameters
+    ----------
     s (str)
         The string to convert. It can be a boolean, integer, float, or string.
         - If the string is 'true' or 'false', it will be converted to a boolean.
@@ -212,6 +245,7 @@ def _convert_value(s: str) -> Any:
         - Otherwise, it will return the string with any surrounding quotes removed.
 
     Returns
+    -------
     (Any)
         The converted value:
         - `True` or `False` for boolean strings.
@@ -236,9 +270,11 @@ def _convert_value(s: str) -> Any:
 def override_toml_values(overrides: list, exp_settings_dict: dict) -> dict:
     """
     Description
+    -----------
     Overrides values in a settings dictionary based on a list of override strings.
 
     Parameters
+    ----------
     overrides (list)
         A list of strings in the format "key.path=value" where:
         - `key.path` is the dot-separated path to the value to be set.
@@ -247,6 +283,7 @@ def override_toml_values(overrides: list, exp_settings_dict: dict) -> dict:
         The keys are dot-separated paths to the values to be set.
 
     Returns
+    -------
     exp_settings_dict (dict)
         The modified settings dictionary with the provided overrides applied.
     """

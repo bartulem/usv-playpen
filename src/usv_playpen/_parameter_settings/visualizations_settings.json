@@ -3,7 +3,7 @@
   "male_colors": ["#9AC0CD", "#8CA252"],
   "female_colors": ["#FF6347", "#B851B4"],
   "visualize_booleans": {
-    "make_behavioral_tuning_figures_bool": false,
+    "make_neuronal_tuning_figures_bool": false,
     "make_behavioral_videos_bool": false
   },
   "visualize_data": {
@@ -24,8 +24,8 @@
     }
   },
   "neuronal_tuning_figures": {
-    "smoothing_sd": 1.0,
-    "occ_threshold": 1.0
+    "fig_format": "pdf",
+    "ratemap_cmap": "inferno"
   },
   "make_behavioral_videos": {
     "arena_directory": "",

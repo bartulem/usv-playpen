@@ -18,12 +18,14 @@ def run_speaker_file(io_pin_id,
                      audio_playback_gain):
     """
     Description
+    -----------
     Plays back a single audio file through the configured ALSA device at
     192 kHz while driving a TTL sync line low for the duration of playback
     (raised back high afterwards). Intended to be run on the USV playback
     Raspberry Pi.
 
     Parameters
+    ----------
     io_pin_id (int)
         BCM-numbered GPIO pin used to emit the TTL sync pulse.
     audio_directory (str)
@@ -34,6 +36,7 @@ def run_speaker_file(io_pin_id,
         Linear gain applied by 'play' via the -v flag.
 
     Returns
+    -------
     (None)
     """
 

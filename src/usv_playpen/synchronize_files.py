@@ -34,16 +34,19 @@ def find_events(diffs: np.ndarray,
                 threshold: float) -> tuple:
     """
     Description
+    -----------
     This function finds initial event candidates (rising/falling edges)
     in a signal.
 
     Parameters
+    ----------
     diffs (np.ndarray)
         The 1D input signal representing frame-to-frame changes.
     threshold (float)
         The value above which a change is considered significant.
 
     Returns
+    -------
     pos_events (np.ndarray), neg_events (np.ndarray)
         A tuple of two arrays containing the frame indices for debounced
         positive (ON) and negative (OFF) events, respectively.
@@ -62,16 +65,19 @@ def _combine_and_sort_events(pos_events: np.ndarray,
                              neg_events: np.ndarray) -> np.ndarray:
     """
     Description
+    -----------
     Internal helper function to combine separate ON and OFF event arrays
     into a single, sorted (N, 2) array of [frame, type].
 
     Parameters
+    ----------
     pos_events (np.ndarray)
         Array of frame indices for positive (ON) events.
     neg_events (np.ndarray)
         Array of frame indices for negative (OFF) events.
 
     Returns
+    -------
     (np.ndarray)
         A single (N, 2) array of all events sorted by frame number,
         with type 1 for ON and -1 for OFF.
@@ -88,10 +94,12 @@ def filter_events_by_duration(pos_events: np.ndarray,
                               min_duration: int) -> tuple:
     """
     Description
+    -----------
     This function filters event pairs that define a state (e.g., an 'ON'
     state) that is shorter than a minimum duration, removing glitches.
 
     Parameters
+    ----------
     pos_events (np.ndarray)
         Array of frame indices for candidate positive (ON) events.
     neg_events (np.ndarray)
@@ -100,6 +108,7 @@ def filter_events_by_duration(pos_events: np.ndarray,
         The minimum number of frames a state must last to be considered valid.
 
     Returns
+    -------
     final_pos (np.ndarray), final_neg (np.ndarray)
         A tuple of two arrays containing the filtered frame indices for
         valid positive (ON) and negative (OFF) events.
@@ -127,16 +136,19 @@ def validate_sequence(pos_events: np.ndarray,
                       neg_events: np.ndarray) -> tuple:
     """
     Description
+    -----------
     Ensures the final event sequence is logical by enforcing that event
     types strictly alternate (e.g., ON, OFF, ON...).
 
     Parameters
+    ----------
     pos_events (np.ndarray)
         Array of frame indices for filtered positive (ON) events.
     neg_events (np.ndarray)
         Array of frame indices for filtered negative (OFF) events.
 
     Returns
+    -------
     final_pos (np.ndarray), final_neg (np.ndarray)
         A tuple of two arrays containing the final, validated frame indices.
     """
@@ -176,12 +188,16 @@ class Synchronizer:
     @staticmethod
     def _build_led_px_dict() -> dict:
         """
+        Description
+        -----------
         Builds and returns a fresh LED pixel coordinate dictionary for each
         Synchronizer instance to avoid shared mutable state between instances.
 
         Parameters
+        ----------
 
         Returns
+        -------
         led_px_dict (dict)
             Dictionary mapping date/version keys to camera serial numbers and
             LED coordinate lists.
@@ -211,9 +227,12 @@ class Synchronizer:
                  input_parameter_dict: dict = None,
                  message_output: Callable | None = None) -> None:
         """
+        Description
+        -----------
         Initializes the Synchronizer class.
 
         Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -222,6 +241,8 @@ class Synchronizer:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -243,13 +264,16 @@ class Synchronizer:
     def validate_ephys_video_sync(self) -> None:
         """
         Description
+        -----------
         This method checks whether the time recorded between
         first and last camera signals in the e-phys data stream
         match the total video duration.
 
         Parameters
+        ----------
 
         Returns
+        -------
         binary_files_info (.json file)
             Dictionary w/ information about changepoints, binary file lengths and tracking start/end.
         """
@@ -378,11 +402,13 @@ class Synchronizer:
 
         """
         Description
+        -----------
         This method takes a WAV channel sound array or Neuropixels
         sync channel, extracts the LSB part (for WAV files) and
         finds start and end of tracking pulses.
 
         Parameters
+        ----------
         relevant_array (np.ndarray)
             Array to extract sync signal from.
         lsb_bool (bool)
@@ -391,6 +417,7 @@ class Synchronizer:
             Number of frames on the camera containing the minimum total number of frames.
 
         Returns
+        -------
         start_first_relevant_sample, end_last_relevant_sample,
         largest_break_duration, ttl_break_end_samples, largest_break_end_hop (tuple)
             Start and end of tracking in audio/e-phys samples, the duration of largest break,
@@ -419,16 +446,19 @@ class Synchronizer:
 
         """
         Description
+        -----------
         This method takes a WAV channel sound array, extracts the LSB
         part and finds durations and starts of Arduino sync pulses.
 
         Parameters
+        ----------
         sound_array (np.ndarray)
             Sound data array.
         audio_sr_rate (int)
             Sampling rate of audio device; defaults to 250 kHz.
 
         Returns
+        -------
         ipi_durations_ms (np.ndarray), audio_ipi_start_samples (np.ndarray)
             Durations of all found IPI intervals (in ms) and
             start samples of all found IPI intervals.
@@ -465,11 +495,14 @@ class Synchronizer:
                               video_name: str,
                               total_frame_number: int) -> None:
         """
+        Description
+        -----------
         This method takes find sync LEDs in video frames,
         and gathers information about their intensity changes
         over time.
 
         Parameters
+        ----------
         video_of_interest (str)
             Location of relevant sync video.
         sync_camera_fps (int / float)
@@ -482,6 +515,7 @@ class Synchronizer:
             Total least number of frames of all cameras.
 
         Returns
+        -------
         mm_arr (memmap file)
             Memory map file containing pixel intensities of sync LEDs.
         """
@@ -586,11 +620,13 @@ class Synchronizer:
                                 camera_dir: str) -> tuple:
         """
         Description
+        -----------
         This helper function takes a 1D brightness signal and attempts to find a
         match for the ground-truth Arduino IPI sequence. It contains the full
         pipeline of event detection, filtering, and sequence comparison.
 
         Parameters
+        ----------
         brightness_signal (np.ndarray)
             The 1D brightness signal generated from either median or max of LEDs.
         camera_fps (float)
@@ -601,6 +637,7 @@ class Synchronizer:
             The identifier for the camera being processed.
 
         Returns
+        -------
         (dict, np.ndarray, bool)
             A tuple containing the sync_sequence_dict, the ipi_start_frames,
             and a boolean indicating if the sequence was found. Returns
@@ -682,17 +719,20 @@ class Synchronizer:
 
         """
         Description
+        -----------
         This method takes video(s) and identifies sync events (from intensity
         changes of sync LEDs) to check sync between different data streams. It uses
         a robust temporal validation method based on known pulse durations.
 
         Parameters
+        ----------
         camera_fps (list)
             List of relevant video sampling rates (in fps).
         total_frame_number (int)
             Number of frames on the camera containing the minimum total number of frames.
 
         Returns
+        -------
         (np.ndarray, dict)
             A tuple containing an array of the OFF-event start frames (as per user
             definition) and a dictionary of the matched IPI sequences for each camera.
@@ -779,12 +819,15 @@ class Synchronizer:
     def find_audio_sync_trains(self) -> dict:
         """
         Description
+        -----------
         This method takes audio files and identifies sync events (from the least
         significant bit inputs) to check sync between different data streams.
 
         Parameters
+        ----------
 
         Returns
+        -------
         ipi_discrepancy_dict (dict)
             Contains IPI discrepancies between audio and video sync trains and IPI video start frames.
         """
@@ -988,6 +1031,7 @@ class Synchronizer:
     def crop_wav_files_to_video(self) -> None:
         """
         Description
+        -----------
         This method takes a WAV file audio recording to find sequences of recorded
         video frames in the LSB of the triggerbox input channel, and then crops the audio file to
         match the length from the beginning of the first to the end of the last video frame.
@@ -998,8 +1042,10 @@ class Synchronizer:
         LSB of those files is resampled and then maintained in the final audio file.
 
         Parameters
+        ----------
 
         Returns
+        -------
         cropped_to_video (.wav file)
             Cropped channel file(s) to match video duration.
         """

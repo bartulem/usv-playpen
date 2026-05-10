@@ -69,10 +69,12 @@ def generate_feature_distributions(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
+    -----------
     This function computes occupancy
     histograms for a given feature array.
 
     Parameters
+    ----------
     feature_arr (np.ndarray)
         A (n_frames) shape ndarray containing behavioral feature data.
     min_val (int / float)
@@ -87,6 +89,7 @@ def generate_feature_distributions(
         Boolean indicating if feature is spatial.
 
     Returns
+    -------
     occ_array (np.ndarray)
         A (num_bins) or (num_bins, num_bins) shape ndarray
         of occupancy (in seconds) for each feature.
@@ -136,6 +139,8 @@ def calculate_derivatives(
     is_angle: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
+    Description
+    -----------
     Returns arrays w/ first and second derivatives.
     NB: Computed according to the central difference derivative!
 
@@ -157,6 +162,7 @@ def calculate_derivatives(
     physical angular accelerations are not periodic.
 
     Parameters
+    ----------
     input_arr (np.ndarray)
          A (n_frames, n_features) shape ndarray containing feature data to compute derivatives on.
     diff_bins : int
@@ -167,6 +173,7 @@ def calculate_derivatives(
         Capture frame rate of the cameras; defaults to None (fps).
 
     Returns
+    -------
     first_der, second_der (tuple (np.ndarray, np.ndarray))
         A tuple of 2 (n_frames, n_features) shape np.ndarray
         w/ first and second derivatives for selected features.
@@ -206,15 +213,14 @@ def calculate_sei(
         observer_idx: int,
         observed_idx: int,
         observed_node_idx: int,
-        observer_head_root: np.ndarray,
         idx_nose: int = 0,
         idx_tti: int = 3,
         idx_head: int = 5,
         v_max: float = None,
-        sigma_yaw_deg: int | float = 45.0,
-        sigma_pitch_deg: int | float = 45.0,
 ) -> np.ndarray:
     """
+    Description
+    -----------
     Computes the Social Engagement Index (SEI) using a pursuit-proximity weight transition.
 
     The SEI quantifies a subject's engagement with a partner by integrating postural
@@ -265,7 +271,8 @@ def calculate_sei(
     still emitted separately as `*.allo_yaw-*` / `*.allo_pitch-*`
     columns; only the SEI gate is reverted.
 
-    Parameters:
+    Parameters
+    ----------
     tracks : np.ndarray
         3D tracking data of shape (n_frames, n_animals, n_bodypoints, 3).
     speed_arr : np.ndarray
@@ -276,10 +283,6 @@ def calculate_sei(
         Index of the social partner animal.
     observed_node_idx : int
         The index of the target body point on the observed partner (e.g., Nose or TTI).
-    observer_head_root : np.ndarray
-        A (n_frames, 3, 3) rotation tensor for the observer mouse, with
-        rows (h_x, h_y, h_z) expressing the observer's anatomical body
-        axes in world coordinates (typically `global_head_roots[observer_idx]`).
     idx_nose : int, optional
         Index for the observer's Nose (default 0).
     idx_tti : int, optional
@@ -288,14 +291,9 @@ def calculate_sei(
         Index for the observer's Head/Pivot (default 5).
     v_max : float, optional
         Normalization factor for speed. Defaults to the 99th percentile of speed_arr.
-    sigma_yaw_deg : int / float, optional
-        Standard deviation (in degrees) of the yaw-channel Gaussian
-        gate. Defaults to 45.0.
-    sigma_pitch_deg : int / float, optional
-        Standard deviation (in degrees) of the pitch-channel Gaussian
-        gate. Defaults to 45.0.
 
-    Returns:
+    Returns
+    -------
     sei : np.ndarray
         A (n_frames,) array of signed SEI values in `[-1, 1]`.
         Negative values correspond to "partner-behind" frames where
@@ -350,6 +348,8 @@ def calculate_sei(
 
 def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     """
+    Description
+    -----------
     Returns arrays w/ the tail curvature metric.
 
     NB: Calculate the tangent vectors: For each point,
@@ -387,10 +387,12 @@ def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     weighted by how anisotropic the segment lengths are within a frame.
 
     Parameters
+    ----------
     input_arr (np.ndarray)
          A (n_frames, n_nodes, 3) shape ndarray to compute tail curvature on.
 
     Returns
+    -------
     average_tail_curvature (np.ndarray)
          A (n_frames, 1) shape ndarray containing the average tail curvature.
     """
@@ -428,6 +430,8 @@ def get_egocentric_direction(
     spatial_resolution_tolerance: int | float = 0.001,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
+    Description
+    -----------
     Computes the per-frame egocentric direction (yaw, pitch) of a target
     point as seen from an observer's head pivot, expressed in the
     observer's anatomical head frame.
@@ -473,6 +477,7 @@ def get_egocentric_direction(
     propagate NaN to the outputs.
 
     Parameters
+    ----------
     head_root (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of observer head rotation
         matrices, with rows (h_x, h_y, h_z) expressing the observer's
@@ -492,6 +497,7 @@ def get_egocentric_direction(
         Defaults to 0.001.
 
     Returns
+    -------
     yaw_deg (np.ndarray)
         A (n_frames,) shape ndarray of signed yaw angles in
         (-180, 180] degrees.
@@ -529,6 +535,8 @@ def calculate_speed(
     smoothing_time_window: int | float,
 ) -> np.ndarray:
     """
+    Description
+    -----------
     Returns arrays w/ centroid (body minus tail) speed data.
 
     On every frame the body centroid is computed as the per-frame
@@ -549,6 +557,7 @@ def calculate_speed(
     the output has the same length as the input along the time axis.
 
     Parameters
+    ----------
     tracked_points_array (np.ndarray)
          A (n_frames, n_nodes, n_dimensions)
          shape ndarray of tracked points.
@@ -558,6 +567,7 @@ def calculate_speed(
         Time window to perform smoothing over; defaults to None (s).
 
     Returns
+    -------
     speeds (np.ndarray)
         A (n_frames) shape ndarray of centroid speed data.
     """
@@ -599,6 +609,8 @@ def get_head_root(
     spatial_resolution_tolerance: int | float = 0.001,
 ) -> np.ndarray:
     """
+    Description
+    -----------
     Computes the per-frame head-root rotation matrices from anatomical landmarks.
 
     The body frame is built directly from the four head tracked points
@@ -638,6 +650,7 @@ def get_head_root(
     rather than silently producing degenerate frames.
 
     Parameters
+    ----------
     data_arr (np.ndarray)
         A (n_frames, n_head_points, 3) shape ndarray of head point data.
         The point order along axis 1 must be [Head, Ear_R, Ear_L, Nose]
@@ -657,6 +670,7 @@ def get_head_root(
         Defaults to 0.001.
 
     Returns
+    -------
     global_heads_rot (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of head rotation matrices.
         For each valid frame, the rows are (h_x, h_y, h_z) with h_x
@@ -702,6 +716,8 @@ def get_back_root(
     spatial_resolution_tolerance: int | float = 0.001,
 ) -> np.ndarray:
     """
+    Description
+    -----------
     Computes the back-root rotation matrices.
 
     For every frame, the back x-axis is taken to be the (Neck - TTI)
@@ -742,6 +758,7 @@ def get_back_root(
       used to compute world-frame back pitch/yaw via `get_back_angles`.
 
     Parameters
+    ----------
     point_data_3d (np.ndarray)
          A (n_frames, n_mice, n_nodes, 3) shape ndarray of tracked points.
     mouse_id (int)
@@ -757,6 +774,7 @@ def get_back_root(
          distance between points (in meters).
 
     Returns
+    -------
     back_roots (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of rotation matrices.
     """
@@ -842,6 +860,8 @@ def get_back_root(
 
 def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
     """
+    Description
+    -----------
     Computes Euler angles.
     NB: always in the order roll, pitch, yaw!
 
@@ -864,10 +884,12 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
     NaN entries in the input are propagated to the output.
 
     Parameters
+    ----------
     rot_matrix (np.ndarray)
         A (n_frames, 3, 3) shape ndarray of rotation matrices.
 
     Returns
+    -------
     desired_euler_angles (np.ndarray)
         A (n_frames, 3) shape ndarray of Euler angles
         (in units of degrees); column are in order:
@@ -929,16 +951,20 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
 
 def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
     """
+    Description
+    -----------
     Computes Euler angles for the back:
         pitch: angle between the back and the horizontal plane
         yaw: angle between the back and the z-axis
 
     Parameters
+    ----------
     back_directions (np.ndarray)
         A (n_frames, 3) shape ndarray of back direction data
         Array of back direction data.
 
     Returns
+    -------
     back_euler_angles (np.ndarray)
         A (n_frames, 2) shape ndarray of
         back pitch and back yaw angles (in that order).
@@ -948,16 +974,20 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
 
     def get_rotation(argument_ang):
         """
+        Description
+        -----------
         Applies an intrinsic Rx -> Ry -> Rz rotation to back_directions.
 
         Bounds pitch (argument_ang[0]) and roll (argument_ang[1]) to ±pi/2
         to avoid gimbal-style flipping; yaw (argument_ang[2]) is unconstrained.
 
         Parameters
+        ----------
         argument_ang (array-like of float)
             A length-3 vector (pitch, roll, yaw) in radians.
 
         Returns
+        -------
         (tuple)
             (new_vector, rotator) — rotated back_directions as a
             (n_frames, 3) np.ndarray and the corresponding (3, 3)
@@ -995,15 +1025,19 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
 
     def distance_to_x_axis(argument_ang):
         """
+        Description
+        -----------
         Objective used by the Nelder-Mead optimizer. Rotates the back
         directions by (0, roll, yaw), takes the mean direction, and returns
         the unsigned angle between that mean direction and the x-axis.
 
         Parameters
+        ----------
         argument_ang (array-like of float)
             A length-2 vector (roll, yaw) in radians.
 
         Returns
+        -------
         (float)
             Absolute angle (radians) between the mean rotated back direction
             and the x-axis. Minimized to find the canonical back frame.
@@ -1220,8 +1254,46 @@ class FeatureZoo:
         },
     }
 
+    # Vocal-tuning bin ranges. Values rounded to give clean bin widths
+    # at the default 36-bin resolution (50 ms for duration, 2.5 kHz for
+    # frequency-related properties, 0.125/0.4/0.15 for the amplitude/
+    # entropy axes). `mask_number` uses a 12-bin integer-centered grid
+    # ([0.5, 12.5] with 12 bins puts each integer 1..12 at a bin centre).
+    # Ranges cover the observed extrema in a 304-session courtship pool
+    # (post `vae_supercategory != 0` filter) with at most a few bins of
+    # padding at the edges.
+    # Units are CSV-native: `duration` in seconds, `*_freq_hz` and
+    # `freq_bandwidth_hz` in Hz, amplitudes and entropy unitless,
+    # `mask_number` integer count.
+    vocal_boundaries = {
+        "duration": [0.0, 1.8],
+        "mean_freq_hz": [30000.0, 120000.0],
+        "peak_freq_hz": [30000.0, 120000.0],
+        "freq_bandwidth_hz": [0.0, 90000.0],
+        "mean_amplitude": [0.0, 4.5],
+        "max_amplitude": [0.0, 14.4],
+        "spectral_entropy": [0.0, 5.4],
+        "mask_number": [0.5, 12.5],
+    }
+
+    # Display labels for each vocal property; the unit shown matches the
+    # display-unit convention applied by the plotter (ms for duration,
+    # kHz for frequencies, raw units otherwise).
+    vocal_labels = {
+        "duration": "short -- (ms) -- long",
+        "mean_freq_hz": "low -- (kHz) -- high",
+        "peak_freq_hz": "low -- (kHz) -- high",
+        "freq_bandwidth_hz": "narrow -- (kHz) -- wide",
+        "mean_amplitude": "soft -- (a.u.) -- loud",
+        "max_amplitude": "soft -- (a.u.) -- loud",
+        "spectral_entropy": "tonal -- (a.u.) -- noisy",
+        "mask_number": "few -- (count) -- many",
+    }
+
     def __init__(self, **kwargs):
         """
+        Description
+        -----------
         Initializes the FeatureZoo class.
 
         All keyword arguments are captured into `self.__dict__` verbatim,
@@ -1240,6 +1312,7 @@ class FeatureZoo:
         compatibility but are not used here.
 
         Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         neuronal_tuning_figures_dict (dict)
@@ -1248,6 +1321,8 @@ class FeatureZoo:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -1263,6 +1338,8 @@ class FeatureZoo:
 
     def plot_feature_distributions(self, **kwargs):
         """
+        Description
+        -----------
         Plots histograms of all available behavioral features.
 
         Iterates over the feature distribution dictionary produced by
@@ -1285,6 +1362,7 @@ class FeatureZoo:
         `feature_dict`.
 
         Parameters
+        ----------
         feature_dict (dict)
             Mapping from feature column name to a dict with keys
             "occ_array", "bin_centers", and "bin_edges" (as produced by
@@ -1300,6 +1378,7 @@ class FeatureZoo:
             Path for the output PDF.
 
         Returns
+        -------
         behavioral_feature_distributions (.pdf file)
            Plot of all feature histograms.
         """
@@ -1334,7 +1413,7 @@ class FeatureZoo:
         )
 
         if feature_dict is not None and mouse_id_list is not None:
-            mouse_color_dict = {"social": "#000000"}
+            mouse_color_dict = {"social": "#202020"}
             mouse_colormap_dict = {}
             for mouse_idx, mouse in enumerate(mouse_id_list):
                 mouse_color_dict[mouse] = mouse_colors[mouse_idx]
@@ -1467,7 +1546,7 @@ class FeatureZoo:
                                     - feature_dict[feature]["bin_edges"][0],
                                     align="center",
                                     color=histogram_color,
-                                    ec="#000000",
+                                    ec="#202020",
                                     alpha=0.75,
                                     lw=0.1,
                                 )
@@ -1524,6 +1603,8 @@ class FeatureZoo:
 
     def save_behavioral_features_to_file(self):
         """
+        Description
+        -----------
         Computes and saves behavioral features to file.
 
         Top-level driver for the per-session feature pipeline. Locates
@@ -1584,8 +1665,10 @@ class FeatureZoo:
         `app_context_bool` (set automatically by `__init__`).
 
         Parameters
+        ----------
 
         Returns
+        -------
         behavioral_features_csv (.csv file)
            Data sheet w/ behavioral features.
         """
@@ -2380,7 +2463,6 @@ class FeatureZoo:
                                                                 observer_idx=mouse1_idx,
                                                                 observed_idx=mouse2_idx,
                                                                 observed_node_idx=mouse_nodes.index("Nose"),
-                                                                observer_head_root=global_head_roots[mouse1_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))
@@ -2391,7 +2473,6 @@ class FeatureZoo:
                                                                 observer_idx=mouse1_idx,
                                                                 observed_idx=mouse2_idx,
                                                                 observed_node_idx=mouse_nodes.index("TTI"),
-                                                                observer_head_root=global_head_roots[mouse1_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))
@@ -2402,7 +2483,6 @@ class FeatureZoo:
                                                                 observer_idx=mouse2_idx,
                                                                 observed_idx=mouse1_idx,
                                                                 observed_node_idx=mouse_nodes.index("Nose"),
-                                                                observer_head_root=global_head_roots[mouse2_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))
@@ -2413,7 +2493,6 @@ class FeatureZoo:
                                                                 observer_idx=mouse2_idx,
                                                                 observed_idx=mouse1_idx,
                                                                 observed_node_idx=mouse_nodes.index("TTI"),
-                                                                observer_head_root=global_head_roots[mouse2_idx, :, :, :],
                                                                 idx_nose=mouse_nodes.index("Nose"),
                                                                 idx_tti=mouse_nodes.index("TTI"),
                                                                 idx_head=mouse_nodes.index("Head"))

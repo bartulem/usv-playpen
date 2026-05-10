@@ -145,9 +145,9 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "derivative_bins": 10
   }
 
-Compute 3D feature tuning curves
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Having recorded unit activity and social behavior, you might be interested whether individual units encode specific behavioral features. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and each behavioral feature of interest. To achieve this in the GUI, you need to list the root directories of interest, select *Compute 3D feature tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
+Compute neuronal tuning curves
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Having recorded unit activity, social behavior, and ultrasonic vocalizations (USVs), you might be interested whether individual units encode specific behavioral features and / or vocal properties. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and (a) each 3D behavioral feature, and (b) USV-anchored quantities — a pooled pre-USV PETH (``usv_peth``), within-USV firing rate as a function of each continuous acoustic property (``usv_property_tuning`` over duration, mean / peak frequency, bandwidth, amplitude, spectral entropy, mask number), within-USV firing rate as a function of categorical USV labels (``usv_category_tuning`` over VAE / QLVM ``category`` and ``supercategory``), and a per-category time-resolved peri-USV PETH (``usv_category_peth``). Behavioral and vocal payloads are produced together and serialized into a single per-cluster pickle. To trigger this in the GUI, list the root directories of interest, select *Compute neuronal tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_2.png
    :align: center
@@ -157,7 +157,7 @@ Having recorded unit activity and social behavior, you might be interested wheth
 
    <br>
 
-The analysis results in the creation of a *tuning_curves* subdirectory containing a *pickle file* for each recorded unit:
+The analysis results in the creation of a *tuning_curves* subdirectory containing a *pickle file* for each recorded unit. Each pkl carries (when the corresponding inputs exist) ``beh_offset=*s`` blocks for behavioral tuning, plus ``usv_peth`` (PETH), ``usv_property_tuning`` (continuous property tuning), ``usv_category_tuning`` (categorical), ``usv_category_peth`` (per-category PETH), and ``behavioral_metadata`` / ``usv_metadata`` blocks describing the compute config:
 
 .. parsed-literal::
 
@@ -175,26 +175,98 @@ The analysis results in the creation of a *tuning_curves* subdirectory containin
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section only partially modifiable in the GUI, but it can be modified manually:
 
-* **temporal_offsets** : list of temporal offsets between spikes and behavior (in seconds, negative values: spikes precede behavior) for which the tuning curves will be calculated (adding values to the list will increase the time needed for analysis drastically)
+* **temporal_offsets** : list of temporal offsets between spikes and behavior (in seconds, negative values: spikes precede behavior) for which the tuning curves will be calculated (adding values to the list increases the time needed for analysis drastically)
 * **n_shuffles** : number of spike train shuffles (increasing this number increases the time needed for analysis drastically)
-* **total_bin_num** : total number of bins for a 1D behavioral feature
+* **total_bin_num** : total number of bins for a 1D behavioral / vocal-property feature
 * **n_spatial_bins** : number of spatial bins (2D behavioral feature)
 * **spatial_scale_cm** : maximum distance from center of arena to one edge (in cm)
+* **shuffle_seconds_range** : ``[min, max]`` of the uniform circular shift (in s) used to build the null distribution
+* **peth_window_seconds** : ``[start, stop]`` of the pre-USV PETH window (in s)
+* **peth_bin_seconds** : PETH bin width (in s)
+* **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
+* **vocal_require_clean_post_anchor** : if ``true``, the time after the USV onset must be free of contaminating USVs to keep the anchor
+* **vocal_require_clean_prior_anchor** : if ``true``, the lookback window must also be free of contaminating USVs
+* **n_usv_min_self** : minimum self-side USV count for the self plots to be computed
+* **n_usv_min_partner** : minimum partner-side USV count for the partner plots to be computed
+* **n_usv_min_category** : minimum per-category USV count to retain that category in the categorical tuning layouts
+* **behavioral_min_occupancy_seconds** : minimum behavioral occupancy per bin (in s) to draw that bin in 1D feature plots; persisted into ``behavioral_metadata``
+* **usv_property_min_occupancy_seconds** : minimum vocal-property occupancy per bin (in s) to keep the rate estimate finite
+* **include_partner_vocalization_tuning_bool** : also compute partner-side vocal tuning when its threshold is met
+* **shuffle_chunk_size** : how many shuffles to materialize at once (memory / speed knob)
+* **smoothing_sd** : standard deviation of the Gaussian kernel (in bins) applied to ratemaps and shuffle distributions; ``0`` disables smoothing
+* **circular_features** : list of behavioral feature suffixes that are wrap-around in nature (e.g. ``allo_yaw``, ``body_dir``); used by the triage helpers to detect divergence runs that span the bin-0 / bin-N boundary
 
 .. code-block:: json
 
     "calculate_neuronal_tuning_curves": {
-        "temporal_offsets": [
-          0
-        ],
+        "temporal_offsets": [0],
         "n_shuffles": 1000,
         "total_bin_num": 36,
         "n_spatial_bins": 196,
-        "spatial_scale_cm": 32
+        "spatial_scale_cm": 32,
+        "shuffle_seconds_range": [20, 60],
+        "peth_window_seconds": [-2, 0],
+        "peth_bin_seconds": 0.05,
+        "bout_quiet_seconds": 2.0,
+        "vocal_require_clean_post_anchor": true,
+        "vocal_require_clean_prior_anchor": false,
+        "n_usv_min_self": 100,
+        "n_usv_min_partner": 30,
+        "n_usv_min_category": 20,
+        "behavioral_min_occupancy_seconds": 1.0,
+        "usv_property_min_occupancy_seconds": 0.25,
+        "include_partner_vocalization_tuning_bool": false,
+        "shuffle_chunk_size": 50,
+        "smoothing_sd": 1.0,
+        "circular_features": ["allo_yaw", "body_dir"]
     }
 
+Per-cluster ``triage_stats`` block
+""""""""""""""""""""""""""""""""""
+
+Each per-cluster pkl also carries a ``triage_stats`` block — a flat collection of pre-computed scalar summaries that the downstream :ref:`detect-interesting <detect-interesting-cli>` step consumes without re-touching spike or USV data. The keys mirror the per-modality structure of the rate payload:
+
+* ``vmi[emitter]`` — Vocalization Modulation Index (Mimica et al.). For each emitter side: ``vmi`` in ``[-1, 1]``, paired Wilcoxon ``wilcoxon_statistic`` / ``wilcoxon_pvalue`` over the per-bout ``(FR_baseline, FR_USV)`` pairs, plus ``n_bouts``, ``fr_baseline_per_bout`` and ``fr_usv_per_bout`` arrays. ``VMI = (FR_USV − FR_baseline) / (FR_USV + FR_baseline)``, where ``FR_baseline`` is the mean firing rate in the ``bout_quiet_seconds``-wide window before each bout and ``FR_USV`` is the mean over USVs in each bout of (spikes during USV) / (USV duration). Bouts whose baseline window starts before ``t = 0`` are NaN-baselined.
+* ``usv_peth[emitter]``, ``usv_property_tuning[emitter][prop]``, ``usv_category_peth[emitter][cat_feat]``, ``behavioral[offset_key][feature_key]`` — per-direction (excitation / suppression) divergence-segment analysis with ``n_bins`` total above (or below) the shuffle band, ``max_run`` consecutive-bin run length, ``run_start_idx`` / ``run_end_idx`` (and the corresponding axis-value bounds), ``peak_idx`` / ``peak_z``. For 1D feature axes also ``peak_abs_z``, ``peak_signed_z``, ``selectivity = (max−min)/(max+min)``, ``monotonicity`` (Spearman ρ between bin index and rate), and ``is_circular`` (behavioral only). The PETH variants additionally carry ``ramp_index`` (a two-point pre-USV shape descriptor).
+* ``usv_category_tuning[emitter][cat_feat]`` — categorical (no run analysis): ``peak_abs_z``, ``best_cat``, ``n_sig_categories`` (count of categories outside the [p0.5, p99.5] shuffle band), ``selectivity``.
+* ``spatial[offset_key][feature_key]`` — 2D place-cell diagnostics: ``info_rate_bps`` (Skaggs information rate), ``sparsity``, ``coherence`` (Pearson correlation between each bin and the mean of its 8 neighbors), plus the unshuffled peak rate and its grid coordinates. The 2D spatial map is computed without shuffles, so peak Z is not defined; this block reports the rate / occupancy diagnostics instead.
+
+.. _detect-interesting-cli:
+
+Detect interesting tuning neurons
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once *Compute neuronal tuning curves* has produced per-cluster pkls, the :ref:`detect-interesting CLI <generate-detect-interesting>` (or the ``analyses_notebooks/neuronal_tuning_summary.ipynb`` notebook) scans every pkl in a session, applies thresholds to the pre-computed ``triage_stats``, and writes one JSON summary listing flagged clusters by modality / direction / role. This step never re-loads spike or USV data — it is a pure pkl-to-JSON pass — so thresholds can be swept without re-running compute.
+
+The output lives at ``<session_root>/ephys/tuning_curves/interesting_neurons_<YYYYMMDD>_<HHMMSS>.json`` and contains:
+
+* ``thresholds_used`` — the threshold values that produced this run.
+* ``n_clusters_total`` / ``n_clusters_flagged`` / ``n_clusters_skipped_no_triage`` — bookkeeping counts.
+* ``by_modality`` — for each ``<modality>_<role>_<direction>`` key (e.g. ``vmi_self_excit``, ``usv_peth_self_suppress``, ``behavioral_beh_offset=0s_<mouse>.body_dir_excit``), the sorted list of cluster IDs that fired the flag.
+* ``by_cluster`` — for each flagged cluster, ``modalities_flagged`` (the keys above) and a ``details`` dict whose entries are the relevant ``triage_stats`` slices (compact evidence to support the flag).
+
+The */usv-playpen/_parameter_settings/analyses_settings.json* file holds the gate thresholds in a dedicated section:
+
+* **z_threshold** : magnitude threshold on per-direction ``peak_z``. Used for ``usv_peth``, ``usv_property_tuning``, ``usv_category_peth``, ``usv_category_tuning`` (peak Z gate), and ``behavioral`` modalities.
+* **min_consecutive_bins** : minimum consecutive-bin run length to flag a direction (excit or suppress). Combined with the z_threshold gate; does not apply to ``usv_category_tuning`` (no axis order) or ``spatial`` (uses Skaggs info instead).
+* **vmi_alpha** : two-sided Wilcoxon p-value threshold for VMI significance.
+* **vmi_min_bouts** : minimum bout count required to consider VMI meaningful.
+* **spatial_info_bps_threshold** : Skaggs information-rate threshold (bits/spike) for the spatial flag.
+
+.. code-block:: json
+
+    "detect_interesting_tuning_neurons": {
+        "z_threshold": 3.0,
+        "min_consecutive_bins": 3,
+        "vmi_alpha": 0.01,
+        "vmi_min_bouts": 10,
+        "spatial_info_bps_threshold": 0.5
+    }
+
+The accompanying notebook (``analyses_notebooks/neuronal_tuning_summary.ipynb``) is a thin wrapper around the same call: list the session roots in ``SESSION_ROOTS``, optionally adjust ``THRESHOLDS``, and run all cells. Each session writes its own JSON; pooled / cross-session plotting will live in a follow-up notebook section.
+
 Compute inter-vocalization-interval (inter-USV interval) distributions
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 This analysis pools same-emitter inter-vocalization intervals (inter-USV intervals) across one or more cohorts and (optionally) sweeps a 1D Gaussian Mixture Model (GMM) on the log-transformed inter-USV intervals to identify behavioral regimes (e.g. "short" intra-bout intervals vs "long" inter-bout intervals). Unlike the other analyses on this page, this one is **not** driven by the *Root directories* GUI field — it is driven by one or more **session-list text files**, each containing one session root per line. This lets multi-cohort comparisons be assembled by simply pointing at additional list files (each session is tagged with the list file it came from for downstream grouping).
 
 By convention, ``track_names[0]`` in each session's tracking H5 is treated as the male and ``track_names[1]`` as the female. Each session-list path and each line within is run through ``configure_path`` so paths written for Linux/Mac/Windows resolve correctly on the host platform.

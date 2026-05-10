@@ -29,9 +29,11 @@ class Vocalocator:
 
         """
         Description
+        -----------
         Initializes the Vocalocator class.
 
         Parameters
+        ----------
         root_directory (str)
             Root directory containing mouse tracking data.
         input_parameter_dict (dict)
@@ -40,6 +42,8 @@ class Vocalocator:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         for kw_arg, kw_val in kwargs.items():
@@ -50,11 +54,15 @@ class Vocalocator:
     def prepare_for_vocalocator(self) -> None:
         """
         Description
+        -----------
         Prepares the root directory for vocalocator inference.
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -152,6 +160,7 @@ class Vocalocator:
     def run_vocalocator(self) -> None:
         """
         Description
+        -----------
         Run vocalocator inference.
 
         NB: The assessment.h5 file contains:
@@ -167,8 +176,11 @@ class Vocalocator:
             dataset used by vocalocator.assess, but only contain the nodes listed in config.json.
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -274,11 +286,15 @@ class Vocalocator:
     def run_vocalocator_ssl(self) -> None:
         """
         Description
+        -----------
         Run vocalocator-ssl inference.
 
         Parameters
+        ----------
 
         Returns
+        -------
+        None
         """
 
         self.message_output(f"Vocalization assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")

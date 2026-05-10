@@ -31,6 +31,7 @@ from .synchronize_files import Synchronizer
 def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
     """
     Description
+    -----------
     Locates the session metadata YAML file in root_directory and, if the
     'usv_playpen_processing_version' key is present inside the 'Session'
     section, updates it to the currently installed usv-playpen package
@@ -39,11 +40,14 @@ def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
     function returns silently without raising any errors.
 
     Parameters
+    ----------
     root_directory (str | pathlib.Path)
         Path to the session root directory that may contain a
         '{session_id}_metadata.yaml' file.
 
     Returns
+    -------
+    None
     """
 
     root = pathlib.Path(root_directory)
@@ -71,9 +75,12 @@ class Stylist:
                  message_output: Callable | None = None) -> None:
 
         """
+        Description
+        -----------
         Initializes the Stylist class.
 
         Parameters
+        ----------
         exp_settings_dict (dict)
             Experimental settings; defaults to None.
         root_directories (list)
@@ -84,6 +91,8 @@ class Stylist:
             Defines output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         if input_parameter_dict is None or root_directories is None:
@@ -98,6 +107,7 @@ class Stylist:
     def prepare_data_for_analyses(self) -> None:
         """
         Description
+        -----------
         This method performs the following data preprocessing steps:
         (1) concatenates video files (necessary for sessions >15 min)
         (2) re-encodes videos (compresses and adjusts sampling rate)
@@ -122,8 +132,10 @@ class Stylist:
 
 
         Parameters
+        ----------
 
         Returns
+        -------
         preprocessing_plot (.svg)
             Figure summarizing the preprocessing of experimental data;
             the figure is saved in /mnt/LAB/CUP-subdirectory/root_directory/sync/root_directory_summary.svg.
@@ -325,11 +337,15 @@ class Stylist:
 def concatenate_video_files_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to concatenate video files from multiple cameras.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['concatenate_camera_serial_num']
@@ -363,11 +379,15 @@ def concatenate_video_files_cli(ctx, root_directory, **kwargs) -> None:
 def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to re-encode videos to an appropriate frame rate.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['encode_camera_serial_num']
@@ -393,11 +413,15 @@ def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None
 def multichannel_to_channel_audio_cli(root_directory) -> None:
     """
     Description
+    -----------
     A command-line tool to split multichannel audio files into single-channel files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     _stamp_processing_version(root_directory)
@@ -412,11 +436,15 @@ def multichannel_to_channel_audio_cli(root_directory) -> None:
 def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to crop audio WAV files to match video length.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -453,11 +481,15 @@ def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
 def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A tool to check audio-video sync and generate a summary plot.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists=['sync_camera_serial_num']
@@ -499,11 +531,15 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to validate ephys-video synchronization.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -531,11 +567,15 @@ def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 def hpss_audio_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to perform HPSS on audio files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['stft_window_length_hop_size', 'kernel_size', 'margin']
@@ -565,11 +605,15 @@ def hpss_audio_cli(ctx, root_directory, **kwargs) -> None:
 def bp_filter_audio_files_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to band-pass filter audio files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['filter_dirs', 'filter_freq_bounds']
@@ -598,11 +642,15 @@ def bp_filter_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to vertically stack audio files into a single memmap file.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['concat_dirs']
@@ -629,11 +677,15 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to convert SLEAP (.slp) files to HDF5 (.h5) files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -663,11 +715,15 @@ def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
 def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to conduct Anipose camera calibration.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['board_xy', 'marker_len_bits', 'img_width_height']
@@ -708,11 +764,15 @@ def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
 def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to conduct Anipose 3D triangulation.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['excluded_views', 'rigid_body_constraints', 'weak_body_constraints']
@@ -744,11 +804,15 @@ def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
 def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to translate, rotate, and scale 3D point data.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     parameters_lists = ['experimental_codes']
@@ -782,11 +846,15 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
 def das_command_line_inference_cli(ctx, root_directory, **kwargs):
     """
     Description
+    -----------
     A command-line tool to run DAS inference on audio data.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -814,11 +882,15 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
 def summarize_das_findings_cli(ctx, root_directory, **kwargs):
     """
     Description
+    -----------
     A command-line tool to summarize DAS inference findings.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -841,11 +913,15 @@ def summarize_das_findings_cli(ctx, root_directory, **kwargs):
 def concatenate_binary_files_cli(root_directories):
     """
     Description
+    -----------
     A command-line tool to concatenate ephys binary files across multiple sessions.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     all_paths = [d.strip() for d in root_directories.split(',')]
@@ -868,11 +944,15 @@ def concatenate_binary_files_cli(root_directories):
 def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
     """
     Description
+    -----------
     A command-line tool to split curated ephys clusters into individual session files.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     all_paths = [d.strip() for d in root_directories.split(',')]
@@ -901,11 +981,15 @@ def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
 def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
     """
     Description
+    -----------
     A command-line tool to prepare data for vocalization assignment.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
 
     with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
@@ -931,11 +1015,15 @@ def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
 def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
+    -----------
     A command-line tool to assign vocalizations to specific mice.
 
     Parameters
+    ----------
 
     Returns
+    -------
+    None
     """
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 

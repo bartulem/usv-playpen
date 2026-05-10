@@ -17,9 +17,17 @@ figure.titlesize : medium
 figure.titleweight : normal
 figure.figsize : 12.8, 4.8
 figure.dpi : 300
-figure.facecolor : white
-figure.edgecolor : white
+figure.facecolor : FFFFFF
+figure.edgecolor : 1F1F1F
 figure.frameon : True
+
+# default text / axis / tick colors — soft black '1F1F1F'
+text.color : 1F1F1F
+axes.facecolor : FFFFFF
+axes.edgecolor : 1F1F1F
+axes.labelcolor : 1F1F1F
+xtick.color : 1F1F1F
+ytick.color : 1F1F1F
 
 # error bars and legend formatting
 errorbar.capsize : 5

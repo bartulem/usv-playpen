@@ -27,6 +27,7 @@ def find_mouse_names(root_directory: str = None,
                      metadata: dict | None = None) -> list:
     """
     Description
+    -----------
     This function finds the mouse names from the metadata.yaml file.
 
     NB: Since the video metadata file was not standardized for a while, the function
@@ -35,12 +36,14 @@ def find_mouse_names(root_directory: str = None,
     NB: from v0.8.12 onwards,it uses the usv_playpen native metadata files.
 
     Parameters
+    ----------
     root_directory (str)
         The directory where of the session.
     metadata (dict | None)
         The metadata dictionary; defaults to None.
 
     Returns
+    -------
     track_names (list)
         Mouse names (in the format of "cage_tail-stripe-num").
     """
@@ -106,6 +109,7 @@ def extract_skeleton_nodes(
 ) -> list:
     """
     Description
+    -----------
     This function extracts names of skeleton nodes
     from the SLEAP .json file.
 
@@ -113,12 +117,14 @@ def extract_skeleton_nodes(
     located in the _config directory of the repo.
 
     Parameters
+    ----------
     skeleton_loc (str)
         The directory where skeletons can be found.
     skeleton_arena_bool (bool)
         If true, the function extracts the arena nodes; defaults to False.
 
     Returns
+    -------
     skeleton_nodes (list)
         SLEAP skeleton node names.
     """
@@ -156,17 +162,20 @@ def redefine_cage_reference_nodes(
 ) -> np.ndarray:
     """
     Description
+    -----------
     This function extracts names of skeleton nodes
     from the SLEAP .json file.
 
 
     Parameters
+    ----------
     arena_input_data (np.ndarray)
         3D arena data.
     node_list_indices (list)
         Indices of the arena nodes.
 
     Returns
+    -------
     (np.ndarray)
         3D arena data with the arena corners.
     """
@@ -188,15 +197,18 @@ def redefine_cage_reference_nodes(
 def rotate_x(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
+    -----------
     This function rotates data around the X axis.
 
     Parameters
+    ----------
     data (np.ndarray)
         3D arena/mouse data.
     theta (float)
         Angle of rotation in radians.
 
     Returns
+    -------
     (np.ndarray)
         Rotated data.
     """
@@ -214,15 +226,18 @@ def rotate_x(data: np.ndarray, theta: float) -> np.ndarray:
 def rotate_y(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
+    -----------
     This function rotates data around the Y axis.
 
     Parameters
+    ----------
     data (np.ndarray)
         3D arena/mouse data.
     theta (float)
         Angle of rotation in radians.
 
     Returns
+    -------
     (np.ndarray)
         Rotated data.
     """
@@ -240,15 +255,18 @@ def rotate_y(data: np.ndarray, theta: float) -> np.ndarray:
 def rotate_z(data: np.ndarray, theta: float) -> np.ndarray:
     """
     Description
+    -----------
     This function rotates data around the Z axis.
 
     Parameters
+    ----------
     data (np.ndarray)
         3D arena/mouse data.
     theta (float)
         Angle of rotation in radians.
 
     Returns
+    -------
     (np.ndarray)
         Rotated data.
     """
@@ -271,9 +289,12 @@ class ConvertTo3D:
         message_output: Callable | None = None,
     ) -> None:
         """
+        Description
+        -----------
         Initializes the ConvertTo3D class.
 
         Parameters
+        ----------
         root_directory (str)
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
@@ -282,6 +303,8 @@ class ConvertTo3D:
             Output messages; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         if input_parameter_dict is None or root_directory is None:
@@ -307,12 +330,15 @@ class ConvertTo3D:
     def sleap_file_conversion(self) -> None:
         """
         Description
+        -----------
         This function runs the SLP to H5 conversion in parallel
         for all videos recorded.
 
         Parameters
+        ----------
 
         Returns
+        -------
         .h5 analysis files
         """
 
@@ -361,11 +387,14 @@ class ConvertTo3D:
     def conduct_anipose_calibration(self) -> None:
         """
         Description
+        -----------
         This method conducts the calibration routine for SLEAP Anipose.
 
         Parameters
+        ----------
 
         Returns
+        -------
         Calibration files:
             cboard.toml
             calibration.toml
@@ -422,11 +451,14 @@ class ConvertTo3D:
     def conduct_anipose_triangulation(self) -> None:
         """
         Description
+        -----------
         This method runs the 3D triangulation routine for SLEAP Anipose.
 
         Parameters
+        ----------
 
         Returns
+        -------
         points3d (h5 file)
             3D triangulated point h5 file,
             shape: (N_FRAMES, N_ANIMALS, N_NODES, N_DIMENSIONS).
@@ -565,11 +597,14 @@ class ConvertTo3D:
     def translate_rotate_metric(self, **kwargs) -> None:
         """
         Description
+        -----------
         This method translates and rotates the 3D points file, and converts units to meters.
 
         Parameters
+        ----------
 
         Returns
+        -------
         translated_rotated_metric (h5 file)
             3D translated rotated and metric point h5 file,
             shape: (N_FRAMES, N_ANIMALS, N_NODES, N_DIMENSIONS).

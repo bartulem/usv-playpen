@@ -18,13 +18,18 @@ from scipy.io import wavfile
 class DataLoader:
     def __init__(self, input_parameter_dict: dict | None = None) -> None:
         """
+        Description
+        -----------
         Initializes the DataLoader class.
 
         Parameters
+        ----------
         input_parameter_dict (dict)
             Processing parameters; defaults to None.
 
         Returns
+        -------
+        None
         """
 
         self.known_dtypes = {
@@ -69,11 +74,14 @@ class DataLoader:
     def load_wavefile_data(self) -> dict:
         """
         Description
+        -----------
         This method loads the .wav file(s) of interest.
 
         Parameters
+        ----------
 
         Returns
+        -------
         wave_data_dict (dict)
             A dictionary with all desired sound outputs;
             starting key in the dictionary is "session_id",
