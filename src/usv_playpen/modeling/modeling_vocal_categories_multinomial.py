@@ -112,10 +112,14 @@ def get_stratified_group_splits_stable(
         Seed for reproducibility.
     n_categories : int
         Theoretical number of USV categories the multinomial model has
-        a class slot for (typically
-        `settings['vocal_features']['usv_category_number']`). Required —
-        no default — so callers cannot silently inherit a stale literal
-        if the project's category cardinality ever changes.
+        a class slot for. The extraction pipeline auto-derives this
+        from the cohort-pooled labels after the noise filter and
+        persists the count under
+        `_input_metadata.analysis_specific.usv_category_number`; both
+        the univariate and multivariate runners read it back from
+        there. Required — no default — so callers cannot silently
+        inherit a stale literal if the project's category cardinality
+        ever changes.
     max_total_attempts : int, default=50000
         Hard ceiling on rejection-sampling attempts before raising.
     widen_step : float, default=0.02
@@ -150,8 +154,11 @@ def get_stratified_group_splits_stable(
             f"Pooled y carries {observed_n_classes} distinct classes but "
             f"n_categories={n_categories}. The cohort is missing "
             f"{n_categories - observed_n_classes} theoretical class(es) — "
-            f"check `vocal_features.usv_category_number` against the data, "
-            f"or revisit the cohort's session list."
+            f"the extractor recorded `usv_category_number={n_categories}` "
+            f"in `_input_metadata.analysis_specific` from the noise-filtered "
+            f"cohort labels, so a mismatch here means either the per-feature "
+            f"`y` lost a class during binning or the cohort session list "
+            f"changed after extraction."
         )
 
     if split_strategy == 'mixed':
@@ -869,7 +876,14 @@ class MultinomialModelingPipeline(FeatureZoo):
             analysis_specific={
                 'categories_kept': sorted(class_counts_md.keys()),
                 'class_counts': class_counts_md,
-                'usv_category_number': int(voc_settings['usv_category_number']),
+                # Auto-derived from the cohort-pooled labels after the
+                # `usv_noise_categories` filter has been applied (see
+                # `find_usv_categories`). Replaces the former hand-set
+                # `vocal_features.usv_category_number` JSON key so that
+                # the splitter's coverage gate stays in lockstep with
+                # whatever combination of `usv_category_column_name` +
+                # `usv_noise_categories` is in force.
+                'usv_category_number': len(class_counts_md),
                 'usv_category_column_name': column_name_cats,
             },
         )
@@ -1282,7 +1296,19 @@ class MultinomialModelRunner:
         bin_size = hp['bin_resizing_factor']
         balance_train = hp['balance_train_bool']
         base_seed = self.modeling_settings['model_params']['random_seed']
-        n_categories_total = self.modeling_settings['vocal_features']['usv_category_number']
+
+        # `usv_category_number` is no longer a hand-set JSON key. It is
+        # auto-derived at extraction time from the cohort-pooled labels
+        # after the noise filter (`extract_and_save_multinomial_input_data`
+        # writes `len(class_counts_md)` into
+        # `_input_metadata.analysis_specific.usv_category_number`). Read
+        # it back here so the splitter's cohort/fold coverage gate
+        # validates against the same count the extractor observed,
+        # independent of whatever `usv_category_column_name` or
+        # `usv_noise_categories` are currently configured.
+        with open(pkl_path, 'rb') as _md_fh:
+            _input_md = pickle.load(_md_fh)['_input_metadata']
+        n_categories_total = int(_input_md['analysis_specific']['usv_category_number'])
 
         # Joint-tuning configuration. Fixed-fallback `lambda_smooth_fixed`
         # and `l2_reg_fixed` are used when the toggle is off; when on,

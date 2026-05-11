@@ -2639,11 +2639,13 @@ def multinomial_vocal_category_model_selection(
 
     # Both `'session'` and `'mixed'` go through the shared splitter so
     # the cohort-wide and per-fold class-coverage guards apply
-    # uniformly. `n_categories` is read from settings rather than
-    # falling back to the splitter's default — the previous
-    # branch-specific code had `'session'` defaulting to 6 and
-    # `'mixed'` bypassing the helper entirely, which silently went
-    # stale if the project's category cardinality changed.
+    # uniformly. `n_categories` is read back from the Level-1
+    # `_input_metadata` block harvested above — the extractor
+    # auto-derives this value from the cohort-pooled labels after the
+    # `usv_noise_categories` filter (see
+    # `extract_and_save_multinomial_input_data`), so there is no
+    # hand-set JSON literal that could go stale if
+    # `usv_category_column_name` or `usv_noise_categories` change.
     cv_folds, _ = get_stratified_group_splits_stable(
         groups=groups_global,
         y=y_global,
@@ -2651,7 +2653,7 @@ def multinomial_vocal_category_model_selection(
         test_prop=test_prop,
         n_splits=n_splits,
         random_seed=random_seed,
-        n_categories=int(settings['vocal_features']['usv_category_number']),
+        n_categories=int(_input_md['analysis_specific']['usv_category_number']),
         max_total_attempts=model_ops['session_split_max_attempts'],
         widen_step=model_ops['session_split_widen_step'],
         widen_every=model_ops['session_split_widen_every'],
