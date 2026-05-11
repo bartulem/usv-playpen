@@ -535,26 +535,27 @@ class ExperimentController:
 
         client = paramiko.SSHClient()
 
-        # Trust only host keys already known to the local user (i.e.
-        # populated by a prior interactive `ssh user@host` to this
-        # machine, which records the host's public key in
-        # `~/.ssh/known_hosts`). With `RejectPolicy`, any unknown or
-        # mismatched host key raises `paramiko.SSHException`, which the
-        # existing handler below converts to a logged failure -- safer
-        # than `AutoAddPolicy`, which silently trusts a presented key
-        # the very first time and would accept a man-in-the-middle on
-        # the lab subnet. Operationally, every Falkner-lab user has
-        # already SSH'd to the Motif PCs to set up their session, so
-        # known_hosts is in place by the time this code runs.
-        try:
-            client.load_system_host_keys()
-        except (FileNotFoundError, IOError):
-            # Missing/unreadable known_hosts: don't crash here; the
-            # RejectPolicy below will reject the unknown host with a
-            # clear `SSHException`, and the user can fix it by SSHing
-            # to the host once interactively.
-            pass
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        # AutoAddPolicy is intentional here: this is a one-shot
+        # `os.path.ismount(...)` probe against the lab-internal Motif PCs
+        # on a closed subnet. The v0.10.2 attempt at `RejectPolicy` +
+        # `load_system_host_keys()` (commit 58ef3ba) silently required
+        # every recording-PC user account to have already SSH'd to the
+        # Motif PC from the command line so `~/.ssh/known_hosts` was
+        # populated -- on Windows recording PCs where the share is
+        # accessed via Explorer/SMB this is never the case, and the
+        # mount check started failing for every user.
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # lgtm[py/paramiko-missing-host-key-validation]
+
+        # Mirror every diagnostic line to stdout in addition to the
+        # GUI message stream. The caller (`check_camera_vitals`) calls
+        # `sys.exit(1)` immediately after a False return, which tears
+        # down the Qt process before the message widget can repaint --
+        # without this mirror, terminal users see only the generic
+        # "Mount point ... is not valid" line and never the actual
+        # cause of the failure.
+        def emit(msg: str) -> None:
+            self.message_output(msg)
+            print(msg, flush=True)
 
         try:
             # Disable the legacy 'ssh-rsa' (SHA-1) public-key algorithm during
@@ -579,26 +580,26 @@ class ExperimentController:
             error = stderr.read().decode('utf-8').strip()
 
             if error:
-                self.message_output(f"[**Remote mount check**] On {hostname}, an error occurred on the remote machine: {error}")
+                emit(f"[**Remote mount check**] On {hostname}, an error occurred on the remote machine: {error}")
                 return False
             elif result == "True":
-                self.message_output(f"[**Remote mount check**] On {hostname} '{mount_path}' is a mounted filesystem.")
+                emit(f"[**Remote mount check**] On {hostname} '{mount_path}' is a mounted filesystem.")
                 return True
             elif result == "False":
-                self.message_output(f"[**Remote mount check**] On {hostname}, '{mount_path}' exists but is not a mount point, or the path does not exist.")
+                emit(f"[**Remote mount check**] On {hostname}, '{mount_path}' exists but is not a mount point, or the path does not exist.")
                 return False
             else:
-                self.message_output(f"[**Remote mount check**] On {hostname}, received an unexpected result: {result}")
+                emit(f"[**Remote mount check**] On {hostname}, received an unexpected result: {result}")
                 return False
 
         except paramiko.AuthenticationException:
-            self.message_output(f"[**Remote mount check**] On {hostname}, authentication failed. Please check your username and password.")
+            emit(f"[**Remote mount check**] On {hostname}, authentication failed. Please check your username and password.")
             return False
         except paramiko.SSHException as e:
-            self.message_output(f"[**Remote mount check**] On {hostname}, SSH connection error: {e}")
+            emit(f"[**Remote mount check**] On {hostname}, SSH connection error: {e}")
             return False
         except Exception as e:
-            self.message_output(f"[**Remote mount check**] On {hostname}, an unexpected error occurred: {e}")
+            emit(f"[**Remote mount check**] On {hostname}, an unexpected error occurred: {e}")
             return False
         finally:
             client.close()
