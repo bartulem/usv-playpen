@@ -335,12 +335,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         except (StopIteration, FileNotFoundError):
             pass
 
-        # try to load tracking H5 (for behavioral mouse colors / animal IDs)
+        # try to load tracking H5 (for behavioral mouse colors / animal IDs).
+        # Search the whole session tree — mirrors `_load_behavioral_inputs`
+        # and `_load_vocal_inputs` in compute_neuronal_tuning_curves.py.
+        # Earlier revisions restricted to `<root>/video/`, which silently
+        # produced an empty mouse_id_list (and therefore zero rendered
+        # pages) on session layouts where the tracking H5 sits at the
+        # session root instead of inside a `video/` subdirectory.
         mouse_id_list: list[str] = []
         mouse_colors: list = []
         try:
             tracked_file_loc = first_match_or_raise(
-                root=root / "video",
+                root=root,
                 pattern="[!speaker]*_points3d_translated_rotated_metric.h5",
                 recursive=True,
                 label="translated/rotated mouse points3d .h5",
@@ -362,6 +368,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         segmentation = self._load_segmentation()
 
+        # One-time warning when the tracking H5 was not found at all:
+        # without it `mouse_id_list` is empty and behavioral pages cannot
+        # render for any cluster, which used to fail silently per cluster.
+        if not mouse_id_list:
+            message_output(
+                f"  neuronal-figs: no tracking H5 found under {root}; "
+                "behavioral pages will be skipped for every cluster."
+            )
+
         # double the spine thickness for all axes (mplstyle uses 0.75 default).
         spine_lw = 2.0 * float(plt.rcParams["axes.linewidth"])
         for pkl_file in tqdm(pkl_files, desc="neuronal tuning figures"):
@@ -373,8 +388,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 continue
             cluster_id = pkl_file.stem.replace("_tuning_curves_data", "")
             has_behavioral = any(k.startswith("beh_offset=") for k in cluster_data)
-            has_vocal = any(k.startswith("vocal_q") for k in cluster_data)
-            if not (has_behavioral or has_vocal):
+            # Vocal payload is written by `_compute_one_cluster_vocal` under
+            # top-level keys `usv_peth`, `usv_property_tuning`,
+            # `usv_category_tuning`, `usv_category_peth`, `usv_metadata`.
+            # An earlier revision of this predicate looked for `vocal_q*`,
+            # which matches nothing the compute side ever writes — every
+            # cluster would silently skip the vocal half.
+            has_vocal = any(k.startswith("usv_") for k in cluster_data)
+            # Skip whenever nothing can actually render: behavioral needs
+            # both behavioral payload AND a populated mouse_id_list, vocal
+            # needs vocal payload. If neither is renderable, do not open a
+            # PdfPages — closing one with zero pages raises and the broad
+            # except below would then mask the real cause.
+            behavioral_renderable = has_behavioral and bool(mouse_id_list)
+            if not (behavioral_renderable or has_vocal):
                 continue
             out_path = tuning_dir / f"{cluster_id}_neuronal_tuning.{fig_format}"
             try:
@@ -1298,10 +1325,23 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         p0_5 = cluster_payload.get("null_p0_5_smoothed", cluster_payload["null_p0_5"])
         p99_5 = cluster_payload.get("null_p99_5_smoothed", cluster_payload["null_p99_5"])
 
-        # Natural bounds: trim x-axis to bins with non-zero occupancy.
-        # The full property range often has long empty tails (e.g. duration
-        # range spans 0-1.8 s but 99% of USVs are < 300 ms); plotting them
-        # wastes axis space and squashes the data region.
+        # Firing rates are non-negative by construction (counts /
+        # occupancy, both >= 0) and Gaussian smoothing preserves that;
+        # clamp the shuffle floor at zero anyway to insulate the
+        # rendered band from any negative values that future numerics
+        # / smoothing changes could introduce.
+        p0_5 = np.maximum(p0_5, 0.0)
+
+        # Natural bounds: trim x-axis to bins where there is actually
+        # something to render. The compute side sets `rate=NaN` (and the
+        # shuffle stats follow) whenever a bin's occupancy is below
+        # `usv_property_min_occupancy_seconds`. An earlier revision used
+        # `occ > 0` to pick the visible bins, which accepted outlier
+        # bins (tiny non-zero occupancy, NaN rate / NaN shuffle band) at
+        # the far end of the property range and produced an x-axis
+        # extending well past the rightmost rendered point. Filter by
+        # `isfinite(rate)` AND the shuffle band so the displayed extent
+        # matches the visible data extent exactly.
         #
         # CRITICAL — use bin CENTERS (not bin edges) for both xlim and
         # tick positions. Different properties have different numbers of
@@ -1310,7 +1350,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # uniformity. Center-based extents with a percent margin give a
         # constant 5%-on-each-side buffer regardless of bin width
         # (matches the matplotlib auto-margin that behavioral plots use).
-        nz = np.where(occ > 0)[0]
+        visible = (
+            np.isfinite(rate) & np.isfinite(p0_5) & np.isfinite(p99_5)
+        )
+        nz = np.where(visible)[0]
         if nz.size > 0:
             sl = slice(int(nz[0]), int(nz[-1]) + 1)
             data_x_lo = float(centers[nz[0]])
@@ -1849,6 +1892,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         p0_5_all = np.asarray(payload["null_p0_5"], dtype=float)
         p99_5_all = np.asarray(payload["null_p99_5"], dtype=float)
 
+        # Defensive non-negative clamp on the shuffle floor — firing
+        # rates are non-negative by construction but a hard clamp at
+        # zero guarantees the rendered shuffle rectangle never crosses
+        # below the firing-rate floor regardless of upstream changes.
+        p0_5_all = np.maximum(p0_5_all, 0.0)
+
         # drop categories with no observed firing rate (insufficient data
         # in the cluster); we don't want their numeric label on the y-axis
         # if there is nothing to show next to it.
@@ -1891,7 +1940,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.set_xscale("symlog", linthresh=symlog_linthresh)
         # x-axis from joint min(observed, shuffle) − buffer to max + buffer
         # (no longer pinned to 0; firing-rate floor doesn't have to be
-        # visible on every plot).
+        # visible on every plot). For symlog, a LINEAR buffer near zero
+        # is enormous in log space and visually separates the leftmost
+        # data point from the spine by an order of magnitude or more —
+        # use a multiplicative (geometric) buffer when both endpoints
+        # are positive so the proportional log-space margin is 5% on
+        # each side, matching the visual proportion of a linear axis.
         all_vals = np.concatenate(
             [
                 rate[np.isfinite(rate)],
@@ -1902,12 +1956,41 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if all_vals.size > 0:
             x_lo_data = float(all_vals.min())
             x_hi_data = float(all_vals.max())
-            x_range = x_hi_data - x_lo_data
-            buffer_x = (
-                0.05 * x_range if x_range > 0
-                else max(0.05 * abs(x_hi_data), 0.05)
+            # 10% buffer on each side (linear or log-space) so the
+            # leftmost / rightmost observed-rate dots never sit on the
+            # spine. Earlier 5% buffers occasionally placed the dot
+            # essentially on the axis edge, which looked clipped.
+            if (
+                scale == "symlog"
+                and x_lo_data > 0
+                and x_hi_data > x_lo_data
+            ):
+                pad = (x_hi_data / x_lo_data) ** 0.10
+                x_lo_lim = x_lo_data / pad
+                x_hi_lim = x_hi_data * pad
+            else:
+                x_range = x_hi_data - x_lo_data
+                buffer_x = (
+                    0.10 * x_range if x_range > 0
+                    else max(0.10 * abs(x_hi_data), 0.10)
+                )
+                x_lo_lim = x_lo_data - buffer_x
+                x_hi_lim = x_hi_data + buffer_x
+            ax.set_xlim(x_lo_lim, x_hi_lim)
+            # Two explicit ticks at the data extrema: matplotlib's auto-
+            # ticker (especially with symlog) places several ticks that
+            # overlap one another given the small panel size. Two ticks
+            # at min / max guarantee legibility regardless of scale.
+            # `.3g` keeps the labels concise across magnitudes (0.5 stays
+            # "0.5", 120 stays "120", 0.005 stays "0.005").
+            ax.set_xticks(
+                ticks=[x_lo_data, x_hi_data],
+                labels=[f"{x_lo_data:.3g}", f"{x_hi_data:.3g}"],
+                fontsize=10,
             )
-            ax.set_xlim(x_lo_data - buffer_x, x_hi_data + buffer_x)
+            # Suppress any minor-tick labels symlog might add — keep just
+            # the two majors we just set.
+            ax.tick_params(axis="x", which="minor", labelbottom=False)
         ax.set_box_aspect(1)
 
     # section (d) — per-category PETH grid (tiny)
@@ -1994,6 +2077,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             p99_5 = item["p99_5"]
             bin_centers = item["bin_centers"]
 
+            # Defensive non-negative clamp on the shuffle floor (see
+            # property-tuning cell for the same rationale).
+            p0_5 = np.maximum(p0_5, 0.0)
+
             # tighten x-axis to the finite-rate extent of THIS cell;
             # 5% margin on the left, with the right side anchored at 0
             # so the anchor reference always shows up as a tick.
@@ -2007,13 +2094,27 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 else max(0.05 * abs(x_lo_cell), 0.05)
             )
 
+            # Extend the rendered curve / shuffle band by a single
+            # synthetic point at the anchor (t=0) repeating the last
+            # finite value, so the visible data reaches the right axis
+            # bound. Without this the line stops at `bin_centers[-1]`
+            # (half-a-binwidth left of the anchor) and leaves a visual
+            # air gap between the data and the t=0 tick.
+            last_idx = int(nz[-1])
+            bin_centers_ext = np.append(bin_centers, 0.0)
+            rate_ext = np.append(rate, rate[last_idx])
+            p0_5_last = p0_5[last_idx] if np.isfinite(p0_5[last_idx]) else 0.0
+            p99_5_last = p99_5[last_idx] if np.isfinite(p99_5[last_idx]) else 0.0
+            p0_5_ext = np.append(p0_5, p0_5_last)
+            p99_5_ext = np.append(p99_5, p99_5_last)
+
             ax = fig.add_subplot(gs[row, col])
             ax.fill_between(
-                bin_centers, p0_5, p99_5,
-                where=np.isfinite(p0_5) & np.isfinite(p99_5),
+                bin_centers_ext, p0_5_ext, p99_5_ext,
+                where=np.isfinite(p0_5_ext) & np.isfinite(p99_5_ext),
                 facecolor=COLOR_GRAY_BAND, interpolate=True,
             )
-            ax.plot(bin_centers, rate, lw=3.2, color=line_color)
+            ax.plot(bin_centers_ext, rate_ext, lw=3.2, color=line_color)
             ax.set_xlim(x_lo_cell - cell_margin, x_hi_cell + cell_margin)
             ax.set_xticks(
                 ticks=[x_lo_cell, 0.0],

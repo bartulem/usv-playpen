@@ -93,7 +93,7 @@
     "bout_quiet_seconds": 2.0,
     "vocal_require_clean_post_anchor": true,
     "vocal_require_clean_prior_anchor": false,
-    "n_usv_min_self": 100,
+    "n_usv_min_self": 30,
     "n_usv_min_partner": 30,
     "n_usv_min_category": 20,
     "behavioral_min_occupancy_seconds": 1.0,
