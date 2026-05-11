@@ -94,3 +94,37 @@ repos:
     rev: 0.8.1
     hooks:
       - id: nbstripout
+
+  # Local hooks: run the same pre-commit suite CI runs (`--all-files`)
+  # AND the full pytest suite before every `git push`. The
+  # `stages: [pre-push]` directive scopes these to the pre-push stage
+  # only — they do NOT fire on `git commit`. Requires a one-time
+  # `pre-commit install --hook-type pre-push` to enable in this clone.
+  # Bypass with `git push --no-verify` in a pinch.
+  #
+  # The first hook mirrors the CI "Format" job exactly so any drift
+  # that only `--all-files` catches (e.g. prettier reformatting a file
+  # that no recent commit has touched) is rejected locally instead of
+  # only surfacing as a red CI badge after the push has landed. The
+  # `--hook-stage manual` flag matches what `.github/workflows/ci.yml`
+  # invokes and avoids re-triggering the pre-push hooks themselves
+  # (they are tagged `stages: [pre-push]`, not `manual`, so the inner
+  # invocation skips them).
+  - repo: local
+    hooks:
+      - id: pre-commit-format-check
+        name: pre-commit (all files, mirrors CI Format job)
+        entry: pre-commit run --all-files --hook-stage manual
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+        verbose: true
+      - id: pytest
+        name: pytest (full suite, pre-push)
+        entry: python3 -m pytest -x
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+        verbose: true
