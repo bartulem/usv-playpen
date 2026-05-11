@@ -1,6 +1,9 @@
 import pytest
 
 from importlib import metadata
+from pathlib import Path
+
+import yaml
 from PyQt6.QtCore import Qt  # Added import
 
 from usv_playpen import usv_playpen_gui
@@ -41,6 +44,84 @@ def test_record_one_settings_are_saved(app, qtbot):
     assert app.exp_settings_dict['video_session_duration'] != 25.5
     qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
     assert app.exp_settings_dict['video_session_duration'] == 25.5
+
+
+def test_bundled_metadata_yaml_is_a_dict():
+    """
+    Description
+    -----------
+    Guards against silent corruption / accidental truncation of the
+    bundled ``_config/_metadata.yaml``. If the file is empty (or anything
+    other than a top-level mapping with the ``Session`` / ``Equipment``
+    blocks), ``yaml.safe_load`` returns ``None`` and the GUI later
+    crashes when ``record_three`` does ``self.metadata_settings['Session']
+    ['institution']``. We caught exactly this regression after commit
+    ff8eef1 shipped an empty file in v0.10.1 / v0.10.2.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    metadata_yaml_path = (
+        Path(usv_playpen_gui.__file__).parent / '_config' / '_metadata.yaml'
+    )
+    with open(metadata_yaml_path, 'r') as metadata_file:
+        loaded = yaml.safe_load(metadata_file)
+    assert isinstance(loaded, dict), (
+        f"{metadata_yaml_path} did not parse to a dict (got {type(loaded).__name__}); "
+        "the bundled metadata template must not be empty."
+    )
+    assert 'Session' in loaded and isinstance(loaded['Session'], dict)
+    assert 'Equipment' in loaded and isinstance(loaded['Equipment'], dict)
+    for required_session_key in (
+        'institution', 'lab', 'session_experiment_code',
+        'calibration_session', 'session_usv_playback_file',
+        'session_description', 'keywords', 'notes',
+    ):
+        assert required_session_key in loaded['Session'], (
+            f"Session.{required_session_key} missing from bundled metadata YAML"
+        )
+
+
+def test_navigation_to_record_metadata_window(app, qtbot):
+    """
+    Description
+    -----------
+    Click ``Record`` → ``Next`` → ``Next`` to walk all the way to the
+    ``record_three`` (Metadata) window and assert that the Session
+    metadata widgets were constructed from the bundled
+    ``_config/_metadata.yaml``. Had this test existed before commit
+    ff8eef1, it would have flagged the empty-YAML regression that
+    crashed the GUI on the recording PC with
+    ``TypeError: 'NoneType' object is not subscriptable``.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    qtbot.mouseClick(app.button_map['Record'], Qt.MouseButton.LeftButton)
+    assert "Record > Select config" in app.windowTitle()
+
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Record > Audio and Video Settings" in app.windowTitle()
+
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Record > Metadata" in app.windowTitle()
+
+    assert isinstance(app.metadata_settings, dict)
+    assert hasattr(app, 'institution_edit')
+    assert app.institution_edit.text() == \
+        app.metadata_settings['Session']['institution']
+    assert hasattr(app, 'lab_edit')
+    assert app.lab_edit.text() == app.metadata_settings['Session']['lab']
 
 
 # def test_start_recording_button_calls_backend(app, qtbot):
