@@ -960,7 +960,8 @@ def vocal_category_model_selection(
         output_directory: str,
         settings_path: str = None,
         use_top_rank_as_anchor: bool = False,
-        p_val: float = 0.025
+        *,
+        p_val: float
 ) -> None:
     """
     Performs Forward Stepwise Selection for Vocal Category prediction using strict
@@ -1017,8 +1018,9 @@ def vocal_category_model_selection(
         The path to the 'modeling_settings.json' configuration file.
     use_top_rank_as_anchor : bool, default False
         If True, the selection process initializes with the highest-ranked univariate feature.
-    p_val : float, default 0.025
-        The alpha level used to determine significance against shuffled null.
+    p_val : float
+        The alpha level used to determine significance against the shuffled null.
+        Keyword-only and required — callers must specify it explicitly (no default).
 
     Returns
     -------

@@ -56,7 +56,8 @@ def validate_paths(
     input_path : str
         Path to the raw feature data .pkl file.
     settings_path : str
-        Path to the modeling_settings.json configuration.
+        Path to the modeling_settings.json configuration (auto-resolved
+        by the dispatcher relative to this module, not taken as CLI input).
 
     Raises
     ------
@@ -94,11 +95,15 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
     print(f"--- USV Model Selection Dispatcher | Task: {args.analysis_type.upper()} ---")
     print(f"[{datetime.now()}] Univariate Source: {Path(args.univariate_path).name}")
 
+    # Auto-resolve the settings JSON relative to this module — it ships
+    # with the package at `<pkg>/_parameter_settings/modeling_settings.json`.
+    settings_path = str(Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json')
+
     # 1. Mount Point Verification
     validate_paths(
         univariate_path=args.univariate_path,
         input_path=args.input_path,
-        settings_path=args.settings_path
+        settings_path=settings_path
     )
 
     # 2. Execution Routing with Multi-line Architecture
@@ -109,7 +114,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
             bout_onset_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
-                settings_path=args.settings_path,
+                settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
                 p_val=args.pval
@@ -120,7 +125,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
             vocal_category_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
-                settings_path=args.settings_path,
+                settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
                 p_val=args.pval
@@ -133,7 +138,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
             bout_parameter_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
-                settings_path=args.settings_path,
+                settings_path=settings_path,
                 output_directory=args.output_dir,
                 target_variable=args.target_variable,
                 use_top_rank_as_anchor=args.anchor,
@@ -145,7 +150,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
             multinomial_vocal_category_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
-                settings_path=args.settings_path,
+                settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
                 p_val=args.pval
@@ -156,7 +161,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
             continuous_vocal_manifold_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
-                settings_path=args.settings_path,
+                settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
                 p_val=args.pval
@@ -186,9 +191,6 @@ if __name__ == "__main__":
 
     parser.add_argument('--input_path', type=str, required=True,
                         help='Path to raw modeling input pkl.')
-
-    parser.add_argument('--settings_path', type=str, required=True,
-                        help='Path to modeling_settings.json.')
 
     parser.add_argument('--output_dir', type=str, required=True,
                         help='Directory where step-wise results will be saved.')

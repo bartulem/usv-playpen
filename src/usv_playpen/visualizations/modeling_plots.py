@@ -68,7 +68,7 @@ from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
 
 from .auxiliary_plot_functions import create_colormap
-from ..modeling.modeling_metadata import load_selection_results
+from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
 
 
@@ -615,7 +615,13 @@ def plot_feature_ranking(
         self_label = "Self"
         other_label = "Other"
 
-    first_feat = next(iter(modeling_data.values()))
+    # Strip reserved metadata blocks (`_input_metadata`, `_run_metadata`,
+    # `_univariate_metadata`, `_consolidation_metadata`) before scanning
+    # for the null-distribution key or iterating feature entries — they
+    # are top-level dict keys in the consolidated artifact but are not
+    # behavioral features.
+    feature_keys = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
+    first_feat = modeling_data[feature_keys[0]]
     if 'shuffled' in first_feat:
         null_key = 'shuffled'
         print("Detected 'shuffled' key (Bout Analysis mode)")
@@ -627,7 +633,7 @@ def plot_feature_ranking(
 
     print(f"Calculating significance based on: {evaluation_metric_name}...")
 
-    valid_features = [k for k in modeling_data.keys() if k not in ignore_features]
+    valid_features = [k for k in feature_keys if k not in ignore_features]
     n_features = len(valid_features)
     corrected_p_top = (1 - (p_val / n_features)) * 100
     corrected_p_bottom = (p_val / n_features) * 100
@@ -715,6 +721,12 @@ def plot_feature_ranking(
                                    "allo_pitch-TTI", "TTI-allo_pitch"]
                 if any(x in feature_name for x in dyadic_keywords):
                     feat_color = DYADIC_COLOR
+                elif '-sei' in feature_name:
+                    # Per the column-selection rule in `modeling_utils.select_kinematic_columns`,
+                    # SEI columns are kept in the `{target}-{predictor}.{feature}` orientation,
+                    # so the surviving SEI signal is the target's attention to the partner.
+                    # The target is "self" → self_color, matching `_classify_predictor_feature`.
+                    feat_color = self_color
                 elif 'self' in feature_name:
                     feat_color = self_color
                 else:
@@ -822,7 +834,9 @@ def plot_significant_filters(
     else:
         self_color, other_color = male_color, female_color
 
-    first_feat = next(iter(modeling_data.values()))
+    # Strip reserved metadata blocks before iterating feature entries.
+    feature_keys = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
+    first_feat = modeling_data[feature_keys[0]]
     if 'shuffled' in first_feat:
         null_key = 'shuffled'
     elif 'null' in first_feat:
@@ -830,7 +844,7 @@ def plot_significant_filters(
     else:
         raise KeyError("Missing 'shuffled' or 'null' key")
 
-    valid_features = [k for k in modeling_data.keys() if k not in ignore_features]
+    valid_features = [k for k in feature_keys if k not in ignore_features]
     n_feats = len(valid_features)
 
     # Bonferroni correction for CI
@@ -879,6 +893,10 @@ def plot_significant_filters(
                            "allo_pitch-TTI", "TTI-allo_pitch"]
         if any(x in feature for x in dyadic_keywords):
             feat_color = DYADIC_COLOR
+        elif '-sei' in feature:
+            # SEI signals are target-attending-to-predictor (see column-selection rule);
+            # target is "self" → self_color.
+            feat_color = self_color
         elif 'self' in feature:
             feat_color = self_color
         else:
@@ -995,6 +1013,8 @@ def plot_significant_filters_grid(
     print(f"--- Processing features for metric: {metric} ---")
 
     for feature in modeling_data.keys():
+        if feature in RESERVED_METADATA_KEYS:
+            continue
         if feature in ignore_features:
             continue
 
@@ -1099,6 +1119,9 @@ def plot_significant_filters_grid(
                                           "allo_pitch-nose", "nose-allo_pitch",
                                           "allo_pitch-TTI", "TTI-allo_pitch"]):
             c = dyadic_color
+        elif '-sei' in beh_feature:
+            # SEI signals are target-attending-to-predictor; target is "self" → self_color.
+            c = self_color
         elif 'self' in beh_feature:
             c = self_color
         else:
@@ -1691,6 +1714,9 @@ def plot_model_selection_results(
 
                 if any(x in feature for x in dyadic_keywords):
                     c = DYADIC_COLOR
+                elif '-sei' in feature:
+                    # SEI signals are target-attending-to-predictor; target is "self" → self_color.
+                    c = self_color
                 elif 'self' in feature:
                     c = self_color
                 else:
@@ -1812,7 +1838,8 @@ def plot_univariate_multinomial_performance(
     else:
         self_color, other_color, self_label, other_label = male_color, female_color, "Self", "Other"
 
-    valid_features = list(modeling_data.keys())
+    # Strip reserved metadata blocks before iterating feature entries.
+    valid_features = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
     n_features = len(valid_features)
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
@@ -1846,6 +1873,9 @@ def plot_univariate_multinomial_performance(
         if is_sig:
             if any(x in feat for x in ["nose", "TTI", "allo_yaw", "neck_elevation_diff"]):
                 color = DYADIC_COLOR
+            elif '-sei' in feat:
+                # SEI signals are target-attending-to-predictor; target is "self" → self_color.
+                color = self_color
             elif 'self' in feat:
                 color = self_color
             else:
@@ -2062,7 +2092,8 @@ def plot_univariate_multinomial_filters_grid(
     else:
         self_color, other_color = male_color, female_color
 
-    valid_features = list(modeling_data.keys())
+    # Strip reserved metadata blocks before iterating feature entries.
+    valid_features = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
     n_features = len(valid_features)
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
@@ -2095,6 +2126,9 @@ def plot_univariate_multinomial_filters_grid(
 
         if any(x in feat for x in ["nose", "TTI", "allo_yaw", "neck_elevation_diff"]):
             feat_color = DYADIC_COLOR
+        elif '-sei' in feat:
+            # SEI signals are target-attending-to-predictor; target is "self" → self_color.
+            feat_color = self_color
         elif 'self' in feat:
             feat_color = self_color
         else:

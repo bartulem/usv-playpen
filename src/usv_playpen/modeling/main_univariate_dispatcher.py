@@ -171,8 +171,12 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         - analysis_type: The modeling framework to use.
         - feature_idx: The integer index from the SLURM job array.
         - input_data: Path to the source .pkl data.
-        - settings_file: Path to the project configuration .json.
         - output_dir: Destination for the results file.
+
+    The settings JSON path is not taken as input. It is auto-resolved
+    relative to this module (`<pkg>/_parameter_settings/modeling_settings.json`),
+    since the JSON ships with the package and there is exactly one
+    canonical location for it.
 
     Returns
     -------
@@ -182,9 +186,13 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
     print(f"--- USV Univariate Dispatcher | Task: {args.analysis_type.upper()} ---")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
+    # Auto-resolve the settings JSON relative to this module — it ships
+    # with the package at `<pkg>/_parameter_settings/modeling_settings.json`.
+    settings_path = str(Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json')
+
     # 1. Load Experimental Configuration
     try:
-        with open(args.settings_file, 'r') as f:
+        with open(settings_path, 'r') as f:
             settings = json.load(f)
     except Exception as e:
         print(f"FATAL: Settings load failed: {e}")
@@ -302,7 +310,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         null_strategy='x_history_shuffle',
         n_outer_folds=int(settings['model_params']['split_num']),
         split_strategy=settings['model_params']['split_strategy'],
-        settings_path=args.settings_file,
+        settings_path=settings_path,
     )
 
     # 5. Atomic Result Serialization
@@ -355,12 +363,6 @@ if __name__ == "__main__":
         '--input_data',
         required=True,
         help="Path to the .pkl file containing aligned feature history."
-    )
-
-    parser.add_argument(
-        '--settings_file',
-        required=True,
-        help="Path to the modeling_settings.json configuration."
     )
 
     parser.add_argument(

@@ -16,7 +16,6 @@ ANALYSIS_TYPE=$1
 # Define your core variables
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 INPUT_DATA="/mnt/cup/labs/falkner/Name/modeling/data/modeling_UMAP_manifold_position_female_20260226_150803_hist4s.pkl"
-SETTINGS_FILE="/mnt/cup/labs/falkner/Name/modeling/cluster/settings/modeling_settings.json"
 OUTPUT_DIR="/mnt/cup/labs/falkner/Name/modeling/univariate_results"
 
 mkdir -p logs
@@ -52,5 +51,4 @@ python -m usv_playpen.modeling.main_univariate_dispatcher \
     --analysis_type "$ANALYSIS_TYPE" \
     --feature_idx "$SLURM_ARRAY_TASK_ID" \
     --input_data "$INPUT_DATA" \
-    --settings_file "$SETTINGS_FILE" \
     --output_dir "$OUTPUT_DIR"

@@ -16,7 +16,6 @@ ANALYSIS_TYPE=$1
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 UNIVARIATE_PATH="/mnt/cup/labs/falkner/Name/modeling/univariate_results/univariate_multinomial_results.pkl"
 INPUT_DATA="/mnt/cup/labs/falkner/Name/modeling/data/modeling_male_hist4s.pkl"
-SETTINGS_FILE="/mnt/cup/labs/falkner/Name/modeling/cluster/settings/modeling_settings.json"
 OUTPUT_DIR="/mnt/cup/labs/falkner/Name/modeling/model_selection_results"
 
 mkdir -p logs
@@ -60,7 +59,6 @@ python -m usv_playpen.modeling.main_model_selection_dispatcher \
     --analysis_type "$ANALYSIS_TYPE" \
     --univariate_path "$UNIVARIATE_PATH" \
     --input_path "$INPUT_DATA" \
-    --settings_path "$SETTINGS_FILE" \
     --output_dir "$OUTPUT_DIR" \
     --target_variable "$TARGET_VAR" \
     --pval "$PVAL" \
