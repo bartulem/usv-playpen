@@ -3,6 +3,7 @@
 Test recording module.
 """
 
+import builtins
 import os
 import pathlib
 import shutil
@@ -11,7 +12,7 @@ import pytest
 import configparser
 import paramiko
 from click.testing import CliRunner
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, mock_open
 import usv_playpen.behavioral_experiments as be_mod
 from usv_playpen.behavioral_experiments import (
     ExperimentController,
@@ -104,11 +105,19 @@ def test_get_connection_params(mocker, tmp_path, controller):
 
 
 def test_check_remote_mount_success(mocker, controller):
-    """Simulates a successful remote mount check, and asserts the two
-    paramiko hardening measures applied on every connect:
-      - ssh-rsa (SHA-1) pubkey algorithm disabled (paramiko advisory)
-      - RejectPolicy + load_system_host_keys (CodeQL py/paramiko-missing
-        -host-key-validation)."""
+    """Simulates a successful remote mount check, and asserts that the
+    paramiko-advisory mitigation (disable ssh-rsa SHA-1 pubkey algorithm) is
+    applied on every connect.
+
+    The v0.10.2 RejectPolicy + load_system_host_keys assertions were
+    rolled back in v0.10.4 (commit b9e1bd5): they silently required every
+    recording-PC user account to have pre-populated ~/.ssh/known_hosts
+    via an interactive `ssh user@host`, which on Windows recording PCs
+    accessing the share via Explorer/SMB is never the case -- the result
+    was that the mount check started failing for every user. We retain
+    AutoAddPolicy with an `lgtm[py/paramiko-missing-host-key-validation]`
+    suppression in source; this test now only enforces the SHA-1 mitigation.
+    """
 
     # mock the entire paramiko SSHClient
     mock_ssh_client = MagicMock()
@@ -127,37 +136,11 @@ def test_check_remote_mount_success(mocker, controller):
         hostname='host', port=22, username='user', password='pw', timeout=10,
         disabled_algorithms={'pubkeys': ['ssh-rsa']},
     )
-    # known_hosts loaded before connect
-    mock_ssh_client.load_system_host_keys.assert_called_once()
-    # And RejectPolicy is set as the missing-host-key handler — never
-    # AutoAddPolicy, which would silently trust an unknown / spoofed host.
+    # AutoAddPolicy is set as the missing-host-key handler (intentional
+    # on the closed lab subnet; see in-source rationale).
     set_policy_call = mock_ssh_client.set_missing_host_key_policy.call_args
     policy_arg = set_policy_call.args[0]
-    assert isinstance(policy_arg, paramiko.RejectPolicy)
-    assert result is True
-
-
-def test_check_remote_mount_handles_missing_known_hosts(mocker, controller):
-    """If ~/.ssh/known_hosts is missing, load_system_host_keys raises
-    FileNotFoundError. The function must still set RejectPolicy and proceed
-    with the connect (which will then fail loudly if the host isn't
-    pre-trusted, rather than silently auto-adding the key)."""
-    mock_ssh_client = MagicMock()
-    mock_ssh_client.load_system_host_keys.side_effect = FileNotFoundError("no known_hosts")
-    mocker.patch('paramiko.SSHClient', return_value=mock_ssh_client)
-
-    mock_stdout, mock_stderr = MagicMock(), MagicMock()
-    mock_stdout.read.return_value = b'True'
-    mock_stderr.read.return_value = b''
-    mock_ssh_client.exec_command.return_value = (MagicMock(), mock_stdout, mock_stderr)
-
-    result = controller.check_remote_mount('h', 22, 'u', 'p', '/m')
-
-    # The FileNotFoundError must be swallowed; RejectPolicy still applied.
-    set_policy_call = mock_ssh_client.set_missing_host_key_policy.call_args
-    assert isinstance(set_policy_call.args[0], paramiko.RejectPolicy)
-    # And the connect was still attempted
-    assert mock_ssh_client.connect.called
+    assert isinstance(policy_arg, paramiko.AutoAddPolicy)
     assert result is True
 
 
@@ -1019,8 +1002,18 @@ def test_conduct_recording_cli_invokes_controller_and_dumps_metadata(mocker, tmp
     """conduct-recording CLI: builds an ExperimentController, runs the
     recording, and dumps the returned metadata back to _config/_metadata.yaml.
 
-    We patch yaml.dump rather than writing the real file — otherwise this
-    test would mutate a tracked package file every run."""
+    Patching only ``yaml.dump`` is NOT enough on its own: the CLI does
+    ``with open(metadata_path, 'w') as f: yaml.dump(...)``, and the
+    ``open(..., 'w')`` call itself truncates the file before yaml.dump
+    runs. The earlier version of this test (introduced in commit a87717a)
+    silently zeroed ``src/usv_playpen/_config/_metadata.yaml`` on every
+    run -- and that is how the empty YAML shipped in v0.10.1 / v0.10.2
+    and crashed the recording GUI on the Metadata window. We now also
+    redirect any write to ``*_metadata.yaml`` through ``mock_open`` so
+    the bundled package file is never touched, while preserving real
+    reads for the upstream ``open(...,'r')`` calls in the CLI.
+    """
+
     returned_metadata = {'Session': {'session_id': '20260101_000000'}}
     fake_ctrl = MagicMock()
     fake_ctrl.conduct_behavioral_recording.return_value = returned_metadata
@@ -1029,6 +1022,15 @@ def test_conduct_recording_cli_invokes_controller_and_dumps_metadata(mocker, tmp
         return_value=fake_ctrl,
     )
     yaml_dump = mocker.patch('usv_playpen.behavioral_experiments.yaml.dump')
+
+    real_open = builtins.open
+
+    def _safe_open(path, mode='r', *args, **kwargs):
+        if 'w' in mode and str(path).endswith('_metadata.yaml'):
+            return mock_open()(path, mode, *args, **kwargs)
+        return real_open(path, mode, *args, **kwargs)
+
+    mocker.patch('builtins.open', side_effect=_safe_open)
 
     runner = CliRunner()
     result = runner.invoke(conduct_recording_cli, [])
