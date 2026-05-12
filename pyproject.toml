@@ -54,6 +54,7 @@ dependencies = [
     "soundfile",
     "scikit-learn",
     "statsmodels",
+    "tifffile",
     "toml",
     "tqdm",
     "motifapi",
