@@ -109,5 +109,14 @@
     "vmi_alpha": 0.01,
     "vmi_min_bouts": 10,
     "spatial_info_bps_threshold": 0.5
+  },
+  "npx_histology_stack_lightsheet_volume": {
+    "xy_flip": "none",
+    "z_flip": false,
+    "skip_first": true
+  },
+  "npx_histology_stitch_smartspim_tiles": {
+    "z_flip": true,
+    "feather_pixels": 64
   }
 }
