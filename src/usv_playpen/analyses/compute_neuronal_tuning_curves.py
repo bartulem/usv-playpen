@@ -1419,8 +1419,8 @@ class NeuronalTuning(FeatureZoo):
         voc_inputs = self._load_vocal_inputs()
         if voc_inputs is None:
             message_output(
-                "  vocal skipped: missing *_usv_summary.csv, tracking .h5, "
-                "or audio_triggerbox_sync_info.json in this session."
+                "  vocal skipped: missing *_usv_summary.csv or tracking .h5 "
+                "in this session."
             )
             return
 
