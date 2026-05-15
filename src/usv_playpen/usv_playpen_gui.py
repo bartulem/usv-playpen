@@ -1275,6 +1275,7 @@ class USVPlaypenWindow(QMainWindow):
         self.subject_form_widgets = {}
         self.active_subject_id = None
         self._is_clearing_form = False
+        self._is_populating_form = False
 
         self.subject_repository = []
 
@@ -1414,7 +1415,22 @@ class USVPlaypenWindow(QMainWindow):
         """
         Description
         -----------
-        Live-updates the active subject's data whenever a form field is changed.
+        Live-updates the active subject's data whenever a form field is
+        changed. Handles three modes:
+
+        - clearing / programmatic population: short-circuits via the
+          `_is_clearing_form` / `_is_populating_form` guards so that
+          widget-state changes driven by the code itself never persist.
+        - plain field edit (subject_id matches active_subject_id): updates
+          the session record and rewrites the repository preset.
+        - subject_id rename (form's subject_id differs from
+          active_subject_id): the session record's id is updated, the old
+          repository preset is dropped so it does not linger as an orphan,
+          the new preset is written, and active_subject_id is bumped so
+          subsequent keystrokes still resolve the same record. Mid-typing
+          collisions with another existing repository or session id are
+          refused for that keystroke; an empty new id is treated as a
+          transient mid-edit state and not persisted.
 
         Parameters
         ----------
@@ -1425,6 +1441,9 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         if self._is_clearing_form:
+            return
+
+        if self._is_populating_form:
             return
 
         if not self.active_subject_id:
@@ -1446,7 +1465,48 @@ class USVPlaypenWindow(QMainWindow):
         except (ValueError, SyntaxError):
             pass
 
-        target_subject.update(current_form_data)
+        new_subject_id = current_form_data.get('subject_id', '')
+        old_subject_id = self.active_subject_id
+
+        # If the user is mid-edit and the subject_id field is blank, do not
+        # persist anything yet. Writing current_form_data with an empty
+        # subject_id would orphan the session record (it would no longer be
+        # findable by id from active_subject_id on the next keystroke) and
+        # would push an empty-id entry into the repository, both of which
+        # break subsequent edits silently.
+        if not new_subject_id:
+            return
+
+        if new_subject_id != old_subject_id:
+            # The user typed something into subject_id that no longer matches
+            # the active animal -- treat this as a rename. Two collisions
+            # must be refused to avoid silently clobbering another animal:
+            #   * a different repository preset already lives under the new
+            #     id (it would be overwritten by _update_subject_in_repository),
+            #   * a different session record already uses the new id (it would
+            #     make future lookups by active_subject_id ambiguous).
+            # During mid-typing the new id will routinely pass through values
+            # that collide; in those keystrokes we simply skip persistence
+            # and let the user keep typing until the id is unique again.
+            session_subjects = self.metadata_settings.get('Subjects', []) or []
+            colliding = (
+                any(s.get('subject_id') == new_subject_id for s in self.subject_repository)
+                or any(s.get('subject_id') == new_subject_id and s is not target_subject for s in session_subjects)
+            )
+            if colliding:
+                return
+
+            # Drop the old repository preset so it does not linger as an
+            # orphan once the renamed record is written under the new id.
+            self.subject_repository = [
+                s for s in self.subject_repository
+                if s.get('subject_id') != old_subject_id
+            ]
+
+            target_subject.update(current_form_data)
+            self.active_subject_id = new_subject_id
+        else:
+            target_subject.update(current_form_data)
 
         self._update_subject_in_repository(target_subject)
         self._save_metadata_to_yaml()
@@ -1476,13 +1536,26 @@ class USVPlaypenWindow(QMainWindow):
         if not subject_data:
             return
 
-        for key, value in subject_data.items():
-            if key in self.subject_form_widgets:
-                widget = self.subject_form_widgets[key]
-                if isinstance(widget, QComboBox):
-                    widget.setCurrentText(str(value))
-                else:
-                    widget.setText(str(value))
+        # Suppress _on_subject_form_changed during the programmatic fill below.
+        # Each setText / setCurrentText emits textChanged / currentIndexChanged,
+        # and that handler writes the form contents onto whatever
+        # active_subject_id currently points at -- i.e. the PREVIOUSLY selected
+        # animal. Without this guard, picking a second animal from the
+        # completer renames the previous session record to the new id and
+        # overwrites the new animal's repository preset with the previous
+        # animal's data (corrupting both _metadata.yaml and
+        # subject_presets.json).
+        self._is_populating_form = True
+        try:
+            for key, value in subject_data.items():
+                if key in self.subject_form_widgets:
+                    widget = self.subject_form_widgets[key]
+                    if isinstance(widget, QComboBox):
+                        widget.setCurrentText(str(value))
+                    else:
+                        widget.setText(str(value))
+        finally:
+            self._is_populating_form = False
 
         self.active_subject_id = subject_id
 
@@ -1533,10 +1606,18 @@ class USVPlaypenWindow(QMainWindow):
                 existing_subject_index = i
                 break
 
+        # Always store an independent deepcopy so the session list
+        # (metadata_settings['Subjects']) and the repository list
+        # (subject_repository) never share a dict object. _add_subject appends
+        # the same locally-built dict to both lists, and intervention dialogs
+        # pass the session object straight through; without this copy, later
+        # mutations to one would silently leak into the other.
+        repository_entry = copy.deepcopy(subject_data_to_save)
+
         if existing_subject_index != -1:
-            self.subject_repository[existing_subject_index] = subject_data_to_save
+            self.subject_repository[existing_subject_index] = repository_entry
         else:
-            self.subject_repository.append(subject_data_to_save)
+            self.subject_repository.append(repository_entry)
 
         self._save_subject_to_repository()
 
@@ -1985,48 +2066,6 @@ class USVPlaypenWindow(QMainWindow):
             subjects.pop(index_to_remove)
             self._save_metadata_to_yaml()
             self._update_subject_ui()
-
-    def _redraw_remove_subject_buttons(self) -> None:
-        """
-        Description
-        -----------
-        Clears and redraws the list of 'Remove Subject' buttons based on the
-        current subjects in the metadata.
-
-        Parameters
-        ----------
-
-        Returns
-        -------
-        None
-        """
-
-        for button in self.remove_subject_buttons:
-            button.deleteLater()
-        self.remove_subject_buttons.clear()
-
-        start_x = 10
-        start_y = 900
-        horizontal_spacing = 145
-        vertical_spacing = 20
-        buttons_per_row = 3
-
-        subjects = self.metadata_settings.get('Subjects', [])
-        if subjects is None:
-            return
-
-        for i, subject in enumerate(subjects):
-            subject_id = subject.get('subject_id', f'Index {i}')
-            row, col = divmod(i, buttons_per_row)
-            button_x = start_x + (col * horizontal_spacing)
-            button_y = start_y + (row * vertical_spacing)
-
-            button = QPushButton(f"Remove '{subject_id}'", self.VideoSettings)
-            button.setStyleSheet('QPushButton { min-width: 120px; min-height: 12px; max-width: 120px; max-height: 13px; background-color: #552222;}')
-            button.move(button_x, button_y)
-            button.clicked.connect(partial(self._remove_subject, index_to_remove=i))
-            button.show()
-            self.remove_subject_buttons.append(button)
 
     def _on_equipment_checkbox_toggled(self, state: int, equipment_key: str) -> None:
         """
