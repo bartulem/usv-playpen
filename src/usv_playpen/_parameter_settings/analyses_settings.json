@@ -118,5 +118,27 @@
   "npx_histology_stitch_smartspim_tiles": {
     "z_flip": true,
     "feather_pixels": 64
+  },
+  "npx_histology_ibl_alignment_export": {
+    "probe_to_hemisphere": {
+      "imec0": "R",
+      "imec1": "L"
+    }
+  },
+  "npx_spike_quality_metrics": {
+    "kilosort_version": 4,
+    "phy_curated": true,
+    "num_channels_sparsity": 7,
+    "shank_width_microns": 70,
+    "shank_spacing_microns": 250,
+    "probe_to_hemisphere": {
+      "imec0": "R",
+      "imec1": "L"
+    },
+    "job_kwargs": {
+      "n_jobs": 16,
+      "chunk_duration": "1s",
+      "progress_bar": true
+    }
   }
 }
