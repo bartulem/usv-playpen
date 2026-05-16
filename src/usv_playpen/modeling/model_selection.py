@@ -3934,6 +3934,8 @@ def continuous_vocal_manifold_model_selection(
             verbose=False,
             use_lax_loop=use_lax_loop,
             regressor_cls=SmoothBivariateRegression,
+            metric=manifold_metric,
+            period=manifold_period,
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
 
