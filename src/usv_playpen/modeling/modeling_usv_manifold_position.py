@@ -1686,7 +1686,16 @@ class ContinuousModelRunner:
                             tol=tol,
                             random_state=random_seed + fold_idx,
                             verbose=verbose,
-                            use_lax_loop=use_lax_loop,
+                            # Inner-CV tuner: force-disable lax_loop. Per
+                            # SmoothBivariateRegression docstring, the
+                            # lax_loop cache is per-instance and the tuner
+                            # builds ~175 short-lived estimators per outer
+                            # fold, each paying a fresh JIT compile. The
+                            # Python-loop path is the docstring-recommended
+                            # choice here. The univariate runner's outer
+                            # fit (a few lines below) still honours the
+                            # user `use_lax_loop` setting.
+                            use_lax_loop=False,
                             regressor_cls=SmoothBivariateRegression,
                             metric=manifold_metric,
                             period=manifold_period,

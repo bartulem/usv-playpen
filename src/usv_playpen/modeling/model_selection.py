@@ -2774,7 +2774,12 @@ def multinomial_vocal_category_model_selection(
             tol=hp['tol'],
             random_state=hp['random_state'] + fold_idx_,
             verbose=False,
-            use_lax_loop=use_lax_loop_mn,
+            # Force-disable the lax_loop on the inner-CV tuner path. Same
+            # rationale as the manifold variant: per-instance JIT cache
+            # makes the tuner's ~175 short-lived estimators per outer fold
+            # each pay a fresh compile, which stalls for hours on wide
+            # graphs. The outer-fit call sites still honour `use_lax_loop_mn`.
+            use_lax_loop=False,
             regressor_cls=SmoothMultinomialLogisticRegression,
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
@@ -4022,7 +4027,15 @@ def continuous_vocal_manifold_model_selection(
             tol=hp['tol'],
             random_state=hp['random_state'] + fold_idx_,
             verbose=False,
-            use_lax_loop=use_lax_loop,
+            # Force-disable the lax_loop on the inner-CV tuner path. Per the
+            # SmoothBivariateRegression docstring, the lax_loop cache is keyed
+            # per-instance, so the joint tuner's ~175 short-lived estimators
+            # per outer fold each pay a fresh JIT compile and the run stalls
+            # for hours on wide-feature graphs (bin=1 with 600 time bins).
+            # The Python-loop path has no compile issues at any scale. The
+            # outer-fit call below still honours the user setting where
+            # lax_loop is appropriate.
+            use_lax_loop=False,
             regressor_cls=SmoothBivariateRegression,
             metric=manifold_metric,
             period=manifold_period,

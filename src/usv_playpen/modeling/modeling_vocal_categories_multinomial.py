@@ -1525,7 +1525,14 @@ class MultinomialModelRunner:
                             tol=hp['tol'],
                             random_state=hp['random_state'] + fold,
                             verbose=hp['verbose'],
-                            use_lax_loop=use_lax_loop,
+                            # Inner-CV tuner: force-disable lax_loop. Per
+                            # SmoothMultinomialLogisticRegression docstring,
+                            # the lax_loop cache is per-instance and the
+                            # tuner builds many short-lived estimators per
+                            # outer fold, each paying a fresh JIT compile.
+                            # The outer-fit call site below still honours
+                            # the user `use_lax_loop` setting.
+                            use_lax_loop=False,
                             regressor_cls=SmoothMultinomialLogisticRegression,
                         )
                         fold_tuned_flag = True
