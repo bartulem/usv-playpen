@@ -2042,11 +2042,30 @@ def bout_parameter_model_selection(
         try:
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
-            current_model_features = last_res['current_features']
-            best_current_score = last_res['baseline_score']
 
-            if 'candidates_summary' in last_res and last_res['candidates_summary']:
-                cand_dict = last_res['candidates_summary']
+            # Filter to candidates with a finite mean score. An entry
+            # whose mean is non-finite (or an entirely empty
+            # candidates_summary) is the same broken-fold artifact and
+            # should not look like convergence to the resume logic.
+            cand_dict = {
+                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
+                if isinstance(s, dict) and np.isfinite(s.get('mean_explained_deviance', float('nan')))
+            }
+
+            if not cand_dict:
+                # Stale / broken checkpoint: discard and start fresh
+                # so the baseline block re-establishes the marginal
+                # prior and the auto-anchor re-fires. See the manifold
+                # variant for the full rationale.
+                print(
+                    f"[RESUME] Step {last_step} has no scored candidates "
+                    "(stale checkpoint); ignoring and starting fresh."
+                )
+                existing_steps = []
+            else:
+                current_model_features = last_res['current_features']
+                best_current_score = last_res['baseline_score']
+
                 best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_explained_deviance'])
                 name, stats = best_cand_in_file
 
@@ -2061,6 +2080,7 @@ def bout_parameter_model_selection(
                     step_counter = last_step
         except Exception as e:
             print(f"Resume failed: {e}. Starting fresh.")
+            existing_steps = []
 
     # 5. Auto-Anchor Logic
     if use_top_rank_as_anchor and step_counter == 0:
@@ -2822,11 +2842,30 @@ def multinomial_vocal_category_model_selection(
         try:
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
-            current_model_features = last_res['current_features']
-            best_current_score = last_res['baseline_score']
-            cand_dict = last_res['candidates_summary'] if 'candidates_summary' in last_res else {}
 
-            if cand_dict:
+            # Filter to candidates with a finite mean score. An entry
+            # whose mean is non-finite (or an entirely empty
+            # candidates_summary) is the same broken-fold artifact and
+            # should not look like convergence to the resume logic.
+            cand_dict = {
+                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
+                if isinstance(s, dict) and np.isfinite(s.get('mean_auc', float('nan')))
+            }
+
+            if not cand_dict:
+                # Stale / broken checkpoint: discard and start fresh
+                # so the baseline block re-establishes the marginal
+                # prior and the auto-anchor re-fires. See the manifold
+                # variant for the full rationale.
+                print(
+                    f"[RESUME] Step {last_step} has no scored candidates "
+                    "(stale checkpoint); ignoring and starting fresh."
+                )
+                existing_steps = []
+            else:
+                current_model_features = last_res['current_features']
+                best_current_score = last_res['baseline_score']
+
                 best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_auc'])
                 name, stats = best_cand_in_file
 
@@ -3457,9 +3496,28 @@ def continuous_vocal_manifold_model_selection(
     # `r2_spatial` is the headline screening score: it's directly
     # comparable across features / sex groups, bounded above by 1, and
     # universally interpretable as "fraction of test-fold spatial
-    # variance explained above the marginal mean". Higher is better, so
-    # the one-sided Wilcoxon alternative is `greater` (actual beats the
-    # within-session X-history shuffled null).
+    # variance explained above the marginal mean". A feature is kept
+    # for stepwise selection only if BOTH gates pass:
+    #   (1) mean(actual r2_spatial) across folds is strictly positive —
+    #       i.e. on average it beats the spatial-centroid (no-model)
+    #       baseline. The forward selector's 1-SE rule will demand this
+    #       anyway at the anchor / step-1 round, so this gate just
+    #       refuses to spend stepwise-tuning compute on features the
+    #       selector will reject regardless.
+    #   (2) one-sided Wilcoxon `actual > null_model_free` per fold,
+    #       Bonferroni-corrected at `alpha_corrected`. This used to test
+    #       `actual > null` (within-session X-history shuffle), which
+    #       only asks "does the time-locked structure of this feature
+    #       carry any information" — a feature can pass that test while
+    #       its absolute R² sits well below the centroid baseline
+    #       (typical on misspecified manifolds — both `actual` and
+    #       `null` are stuck in regularised-noise territory below
+    #       baseline). Comparing against `null_model_free` directly
+    #       asks the question that matters: "does this feature beat
+    #       the no-model centroid consistently across folds." The
+    #       `null` strategy is still computed by the univariate runner
+    #       and saved to the pickle; this screen just no longer uses
+    #       it.
     SCREENING_METRIC = 'r2_spatial'
 
     print(f"Screening {num_features} features (Bonferroni alpha = {alpha_corrected:.2e})...")
@@ -3469,30 +3527,39 @@ def continuous_vocal_manifold_model_selection(
         else:
             results = payload
 
-        if 'actual' not in results:
+        if 'actual' not in results or 'null_model_free' not in results:
             continue
 
         actual_metrics = results['actual']['folds']['metrics']
-        null_metrics = results['null']['folds']['metrics']
-        if SCREENING_METRIC not in actual_metrics or SCREENING_METRIC not in null_metrics:
+        baseline_metrics = results['null_model_free']['folds']['metrics']
+        if SCREENING_METRIC not in actual_metrics or SCREENING_METRIC not in baseline_metrics:
             continue
 
         actual_score = np.array(actual_metrics[SCREENING_METRIC])
-        null_score = np.array(null_metrics[SCREENING_METRIC])
+        baseline_score = np.array(baseline_metrics[SCREENING_METRIC])
 
-        valid_actual = actual_score[~np.isnan(actual_score)]
-        valid_null = null_score[~np.isnan(null_score)]
+        # Pair the folds so the Wilcoxon never silently degenerates when
+        # a single fold NaNs out for one strategy but not the other.
+        paired_mask = np.isfinite(actual_score) & np.isfinite(baseline_score)
+        valid_actual = actual_score[paired_mask]
+        valid_baseline = baseline_score[paired_mask]
 
-        if len(valid_actual) == 0 or len(valid_null) == 0:
+        if valid_actual.size == 0:
             continue
 
+        mean_score = float(np.mean(valid_actual))
+
+        # Gate (1): must beat the centroid baseline on average.
+        if mean_score <= 0:
+            continue
+
+        # Gate (2): must beat the centroid baseline per fold (Wilcoxon).
         try:
-            _, p_value = wilcoxon(valid_actual, valid_null, alternative='greater')
+            _, p_value = wilcoxon(valid_actual, valid_baseline, alternative='greater')
         except ValueError:
             p_value = 1.0
 
         if p_value < alpha_corrected:
-            mean_score = float(np.mean(valid_actual))
             candidates.append({
                 'feature': feat_name,
                 'mean_r2': mean_score,
@@ -3678,11 +3745,34 @@ def continuous_vocal_manifold_model_selection(
         try:
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
-            current_model_features = last_res['current_features']
-            best_current_score = last_res['baseline_score']
 
-            if 'candidates_summary' in last_res and last_res['candidates_summary']:
-                cand_dict = last_res['candidates_summary']
+            # Filter to candidates with a finite mean score. An entry
+            # whose mean is non-finite (or an entirely empty
+            # candidates_summary) is the same broken-fold artifact and
+            # should not look like convergence to the resume logic.
+            cand_dict = {
+                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
+                if isinstance(s, dict) and np.isfinite(s.get('mean_r2', float('nan')))
+            }
+
+            if not cand_dict:
+                # Stale / broken checkpoint: every saved candidate
+                # crashed or was never scored. Discard it and fall
+                # through to the fresh-start path so the baseline block
+                # re-establishes the spatial-centroid prior and the
+                # auto-anchor re-fires. Previously this case slipped
+                # through silently with `step_counter` left at its
+                # initial value, producing a misleading "Restoring from
+                # Step N" banner followed by a Step 0 forward selection.
+                print(
+                    f"[RESUME] Step {last_step} has no scored candidates "
+                    "(stale checkpoint); ignoring and starting fresh."
+                )
+                existing_steps = []
+            else:
+                current_model_features = last_res['current_features']
+                best_current_score = last_res['baseline_score']
+
                 # Best-of-file is the candidate with highest mean R^2.
                 best_cand_in_file = max(
                     cand_dict.items(),
