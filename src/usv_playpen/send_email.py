@@ -30,7 +30,7 @@ class Messenger:
         Parameters
         ----------
         receivers (list)
-            Root directories for data; defaults to None.
+            List of recipient email addresses; defaults to None.
         exp_settings_dict (dict)
             Processing parameters; defaults to None.
         message_output (function)

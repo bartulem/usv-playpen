@@ -6452,7 +6452,7 @@ class USVPlaypenWindow(QMainWindow):
         Parameters
         ----------
         base_dict (dict)
-            Dictonary to be updated.
+            Dictionary to be updated.
         keys_path (tuple)
             Sequence of keys leading to the target value.
         text (str)
@@ -6656,7 +6656,7 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
 
     Returns
     -------
-    The intialized GUI windows.
+    The initialized GUI windows.
     """
 
     # Handle high-resolution displays:

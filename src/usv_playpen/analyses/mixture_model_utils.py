@@ -352,7 +352,11 @@ def gmm_quantile_logspace(q: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
 
     out = np.empty_like(q)
     for i, qi in enumerate(q):
-        out[i] = brentq(lambda v: gmm_cdf_logspace(v, gmm) - qi, lo, hi)
+        # Bind ``qi`` as a default arg so the lambda doesn't capture
+        # the loop variable by reference (functionally fine in this
+        # synchronous call but ruff B023 flags the pattern as
+        # fragile; the bind makes the intent explicit).
+        out[i] = brentq(lambda v, qi=qi: gmm_cdf_logspace(v, gmm) - qi, lo, hi)
     return out
 
 
@@ -1652,7 +1656,12 @@ def t_mixture_quantile_logspace(q: np.ndarray, model: TMixture) -> np.ndarray:
 
     out = np.empty_like(q)
     for i, qi in enumerate(q):
-        out[i] = brentq(lambda v: t_mixture_cdf_logspace(v, model) - qi, lo, hi)
+        # Bind ``qi`` as a default arg so the lambda doesn't capture
+        # the loop variable by reference (see ``gmm_quantile_logspace``
+        # for the same defensive pattern).
+        out[i] = brentq(
+            lambda v, qi=qi: t_mixture_cdf_logspace(v, model) - qi, lo, hi
+        )
     return out
 
 
