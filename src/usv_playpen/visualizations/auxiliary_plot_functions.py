@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import colorsys
 import json
-import sys
 
 import numpy as np
 from matplotlib.colors import ListedColormap
@@ -106,8 +105,11 @@ def luminance_equalizer(
         elif match_by == "set":
             luminance_start, luminance_end = [float(luminance), float(luminance)]
         else:
-            print("Do not recognize luminance matching approach, try again!")
-            sys.exit()
+            msg = (
+                f"unrecognized luminance matching approach {match_by!r}; "
+                "expected 'min' / 'max' / 'mean' / 'set'"
+            )
+            raise ValueError(msg)
     else:
         luminance_start = hls_start[1]
         luminance_end = hls_end[1]
@@ -234,8 +236,12 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
                 )
             )
     else:
-        print("Do not recognize cm_type, try again!")
-        sys.exit()
+        cm_type = input_parameter_dict["cm_type"]
+        msg = (
+            f"unrecognized cm_type {cm_type!r}; expected "
+            "'sequential' or 'diverging'"
+        )
+        raise ValueError(msg)
     cm_values[:, 3] = (
         np.ones(input_parameter_dict["cm_length"]) * input_parameter_dict["cm_opacity"]
     )

@@ -2,7 +2,7 @@
 @author: bartulem
 Computes behavioral features for files containing 3D tracked mouse body points.
 
-[A] INDinter-USV intervalDUAL FEATURES
+[A] INDIVIDUAL FEATURES
 (0) Head position (X,Y,Z) (1) Speed (2) Acceleration (3) Neck elevation (4) Neck elevation der (5) Neck elevation 2der
 (6) Head roll (7) Head roll der (8) Head roll 2der (9) Head pitch (10) Head pitch der (11) Head pitch 2der
 (12) Head yaw (13) Head yaw der (14) Head yaw 2der (15) Ego head yaw (16) Ego head yaw der (17) Ego head yaw 2der
@@ -177,7 +177,7 @@ def calculate_derivatives(
     is_angle (bool)
         Is the feature data in angles or not; defaults to False.
     capture_fr (int / float)
-        Capture frame rate of the cameras; defaults to None (fps).
+        Capture frame rate of the cameras, in fps. Required.
 
     Returns
     -------
