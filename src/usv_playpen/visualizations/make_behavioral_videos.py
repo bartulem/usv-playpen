@@ -50,7 +50,7 @@ def read_ttl_events(input_array: np.ndarray) -> tuple:
 
     Parameters
     ----------
-    input_arr (np.ndarray)
+    input_array (np.ndarray)
         A (n_samples) shape ndarray of audio data.
 
     Returns
@@ -224,7 +224,7 @@ def plot_mouse_data(data: np.ndarray,
         animal_line_width (int / float)
             Line width of lines connecting mouse nodes.
         node_bool (bool)
-            If ture, plots body nodes.
+            If true, plots body nodes.
         node_connections (list)
             Mouse node connections.
         node_polygons (list)
