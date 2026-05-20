@@ -77,7 +77,7 @@ import polars as pls
 from scipy.stats import pearsonr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
 
-from .load_input_files import load_behavioral_feature_data, _calculate_ibi_threshold
+from .load_input_files import _calculate_ibi_threshold
 from .modeling_collinearity_audit import (
     audit_predictor_collinearity,
     audit_predictor_timescales,

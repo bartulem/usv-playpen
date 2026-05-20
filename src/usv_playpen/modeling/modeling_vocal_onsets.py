@@ -12,7 +12,6 @@ from datetime import datetime
 import json
 import numpy as np
 from pathlib import Path
-import polars as pls
 from pygam import LogisticGAM, te
 import pickle
 import time

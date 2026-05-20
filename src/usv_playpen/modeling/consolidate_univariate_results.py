@@ -79,8 +79,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .modeling_metadata import (
-    RESERVED_METADATA_KEYS,
-    SCHEMA_VERSIONS,
     build_consolidation_metadata,
     extract_metadata_blocks,
     metadata_blocks_equal,

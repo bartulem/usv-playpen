@@ -15,8 +15,8 @@ from scipy.stats import spearmanr, wilcoxon
 from sklearn.linear_model import LogisticRegressionCV, RidgeCV
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, ShuffleSplit
 from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
-                             accuracy_score, balanced_accuracy_score, mean_squared_log_error,
-                             mean_gamma_deviance, precision_recall_curve, auc, brier_score_loss)
+                             balanced_accuracy_score, mean_squared_log_error,
+                             mean_gamma_deviance, brier_score_loss)
 from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
 from .modeling_utils import (
@@ -37,8 +37,6 @@ from .modeling_vocal_categories_multinomial import (
     _balance_multinomial_train_indices,
     _log_spaced_grid_multinomial,
     _tune_multinomial_regularization,
-    MultinomialModelingPipeline,
-    MultinomialModelRunner,
 )
 from .manifold_metric import resolve_manifold_metric
 from .modeling_usv_manifold_position import (
@@ -418,12 +416,16 @@ def bout_onset_model_selection(univariate_results_path: str,
             # (positive, negative) sample counts to match the anchor's; if
             # they ever drift (e.g., feature-specific NaN drops upstream)
             # the indices silently land on wrong rows. Fail loudly here.
-            assert _X_p.shape[0] == _anchor_n_pos and _X_n.shape[0] == _anchor_n_neg, (
-                f"pooled_feature_cache misalignment: feature {_feat_name!r} has "
-                f"({_X_p.shape[0]}, {_X_n.shape[0]}) pos/neg samples but the "
-                f"anchor has ({_anchor_n_pos}, {_anchor_n_neg}). The 'mixed' "
-                "fold indices would silently misindex this feature."
-            )
+            # ``raise`` rather than ``assert`` so the check survives
+            # under ``python -O``.
+            if _X_p.shape[0] != _anchor_n_pos or _X_n.shape[0] != _anchor_n_neg:
+                msg = (
+                    f"pooled_feature_cache misalignment: feature {_feat_name!r} has "
+                    f"({_X_p.shape[0]}, {_X_n.shape[0]}) pos/neg samples but the "
+                    f"anchor has ({_anchor_n_pos}, {_anchor_n_neg}). The 'mixed' "
+                    "fold indices would silently misindex this feature."
+                )
+                raise ValueError(msg)
         pooled_feature_cache[_feat_name] = {
             'X_pos': _X_p,
             'X_neg': _X_n,
@@ -1217,13 +1219,19 @@ def vocal_category_model_selection(
         # `(n_targ_total, n_other_total)` derived from the anchor and then
         # applies them to every trial feature's cached arrays. If a feature
         # ever has a different per-class sample count, the indices land on
-        # wrong rows. Fail loudly here.
+        # wrong rows. Fail loudly here. ``raise`` rather than ``assert``
+        # so the check survives under ``python -O``.
         for _feat_name, _entry in pooled_category_cache.items():
-            assert _entry['target'].shape[0] == n_targ_total and _entry['other'].shape[0] == n_other_total, (
-                f"pooled_category_cache misalignment: feature {_feat_name!r} has "
-                f"({_entry['target'].shape[0]}, {_entry['other'].shape[0]}) target/other "
-                f"samples but the anchor has ({n_targ_total}, {n_other_total})."
-            )
+            if (
+                _entry['target'].shape[0] != n_targ_total
+                or _entry['other'].shape[0] != n_other_total
+            ):
+                msg = (
+                    f"pooled_category_cache misalignment: feature {_feat_name!r} has "
+                    f"({_entry['target'].shape[0]}, {_entry['other'].shape[0]}) target/other "
+                    f"samples but the anchor has ({n_targ_total}, {n_other_total})."
+                )
+                raise ValueError(msg)
 
         y_dummy = np.hstack([np.ones(n_targ_total), np.zeros(n_other_total)])
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)

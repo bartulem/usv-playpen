@@ -26,8 +26,7 @@ import pickle
 from datetime import datetime
 from sklearn.metrics import (
     balanced_accuracy_score, log_loss, f1_score,
-    recall_score, roc_auc_score,
-    precision_recall_curve, auc
+    recall_score, roc_auc_score
 )
 from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm import tqdm

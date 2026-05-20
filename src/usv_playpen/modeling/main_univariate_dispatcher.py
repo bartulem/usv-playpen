@@ -51,8 +51,7 @@ from .modeling_usv_manifold_position import ContinuousModelingPipeline, Continuo
 from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import (raised_cosine, bsplines, identity,
                                       laplacian_pyramid, _normalizecols)
-from .modeling_metadata import (build_run_metadata, extract_metadata_blocks,
-                                inject_metadata, RESERVED_METADATA_KEYS)
+from .modeling_metadata import (build_run_metadata, inject_metadata, RESERVED_METADATA_KEYS)
 
 def get_basis_matrix_standardized(
         settings: dict,

@@ -41,8 +41,8 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
 
     Returns
     -------
-    behavior_data : tuple (dict. dict, dict)
-        Behavior, camera frame rate and track name data (keys are file names and values pd.DataFrames, float, list).
+    behavior_data : tuple (dict, dict, dict)
+        Behavior, camera frame rate and track name data (keys are file names and values polars.DataFrames, float, list).
     """
 
     beh_feature_data_dict = {}
