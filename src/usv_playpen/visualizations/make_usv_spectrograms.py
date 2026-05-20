@@ -775,6 +775,18 @@ class USVSpectrogramPlotter:
         freq_mask = (freq_bins >= freq_lo_hz) & (freq_bins <= freq_hi_hz)
         canvas_cropped = canvas[freq_mask, :]
         freq_bins_cropped = freq_bins[freq_mask]
+        # The store's freq axis is fixed (~30-120 kHz). A user-supplied
+        # ``freq_limits`` entirely outside that range would silently
+        # produce an empty crop and the imshow / set_yticks calls
+        # below would then raise an unhelpful IndexError. Surface the
+        # real cause here.
+        if freq_bins_cropped.size == 0:
+            msg = (
+                f"freq_limits {tuple(cfg['freq_limits'])!r} kHz selects no "
+                f"frequency bins from the consolidated store; the store's "
+                f"freq axis spans {freq_bins[0] / 1000:.1f}-{freq_bins[-1] / 1000:.1f} kHz"
+            )
+            raise ValueError(msg)
 
         stitched_vmin = 0.0
         stitched_vmax = 1.0
@@ -1414,7 +1426,7 @@ def _resolve_session_emitter_ids(session_root: str) -> tuple[str, str]:
             f"Session {session_root!r} tracking file lists "
             f"{len(track_names)} animals; need at least two."
         )
-        raise IndexError(msg)
+        raise ValueError(msg)
     return track_names[0], track_names[1]
 
 
@@ -1472,7 +1484,7 @@ def plot_session_usv_timeline(
     noise_categories (tuple of int)
         Values of ``noise_col_id`` to drop; default ``(0,)``.
     fig_size (tuple of float)
-        Figure size in inches; default ``(15, 1.6)`` for a wide,
+        Figure size in inches; default ``(7.5, 1.6)`` for a wide,
         short timeline strip.
     fig_dpi (int)
         Figure DPI; default ``300``.
@@ -1482,6 +1494,8 @@ def plot_session_usv_timeline(
         Vertical extent of each USV rectangle (axes-data units; the
         y-axis is hidden so the absolute value mainly controls the
         strip's visual thickness).
+    rectangle_linewidth (float)
+        Outline width of each USV rectangle in points.
     message_output (Callable | None)
         Logger; defaults to ``print``.
 
@@ -2612,7 +2626,7 @@ def plot_umap_with_category_thumbnails(
     # Number picks on the main scatter so the user can match a
     # spectrogram's upper-left "N" to the dot it came from.
     if annotate_picks_on_scatter:
-        for cat, picks in picks_per_category.items():
+        for picks in picks_per_category.values():
             if picks is None or picks.height == 0:
                 continue
             xs = picks[x_col].to_numpy()
