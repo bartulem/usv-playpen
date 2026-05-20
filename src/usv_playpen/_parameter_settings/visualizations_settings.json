@@ -4,7 +4,8 @@
   "female_colors": ["#FF6347", "#B851B4"],
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
-    "make_behavioral_videos_bool": false
+    "make_behavioral_videos_bool": false,
+    "make_usv_spectrograms_bool": false
   },
   "visualize_data": {
     "root_directories": []
@@ -26,6 +27,26 @@
   "neuronal_tuning_figures": {
     "fig_format": "pdf",
     "ratemap_cmap": "inferno"
+  },
+  "make_usv_spectrograms": {
+    "save_dir": "/Users/bmimica/Downloads",
+    "save_fig": true,
+    "fig_format": "svg",
+    "fig_dpi": 300,
+    "fig_size": [6, 2],
+    "transparent_fig_bg": false,
+    "mode": "single",
+    "channel_of_interest": 11,
+    "plot_raw_audio": false,
+    "time_window": [424.5, 426.5],
+    "freq_limits": [40, 80],
+    "usv_amplitude_color": "#808080",
+    "spectrogram_cmap": "inferno",
+    "nfft": 512,
+    "plot_cbar": true,
+    "cbar_limits": [-70, 0],
+    "consolidated_spectrograms_h5": "/Volumes/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5",
+    "apply_mask": true
   },
   "make_behavioral_videos": {
     "arena_directory": "",
