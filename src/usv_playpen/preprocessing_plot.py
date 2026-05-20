@@ -106,9 +106,13 @@ class SummaryPlotter:
                 np.nanmean(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"]),
                 decimals=2,
             )
+            # SEM is std / sqrt(N), not std / N. The previous formula
+            # under-reported the spread by a factor of sqrt(N), which
+            # in turn made the 99% CIs below narrower than they should
+            # have been by the same factor.
             plot_statistics_dict[device_id]["error_sem"] = (
                 np.nanstd(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"])
-                / ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"].size
+                / np.sqrt(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"].size)
             )
             plot_statistics_dict[device_id]["low_ci"] = plot_statistics_dict[device_id][
                 "error_mean"
