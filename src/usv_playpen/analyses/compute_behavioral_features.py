@@ -55,7 +55,14 @@ from ..visualizations.auxiliary_plot_functions import (
 )
 from .decode_experiment_label import extract_information
 
-fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / "fonts/Helvetica.ttf")
+for _ttf in (
+    "Helvetica.ttf",
+    "Helvetica-Bold.ttf",
+    "Helvetica-Oblique.ttf",
+    "Helvetica-BoldOblique.ttf",
+    "Helvetica-Light.ttf",
+):
+    fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / "fonts" / _ttf)
 plt.style.use(pathlib.Path(__file__).parent.parent / "_config/usv_playpen.mplstyle")
 
 

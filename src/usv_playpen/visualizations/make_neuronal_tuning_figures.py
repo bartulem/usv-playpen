@@ -42,7 +42,14 @@ from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 
-fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / "fonts/Helvetica.ttf")
+for _ttf in (
+    "Helvetica.ttf",
+    "Helvetica-Bold.ttf",
+    "Helvetica-Oblique.ttf",
+    "Helvetica-BoldOblique.ttf",
+    "Helvetica-Light.ttf",
+):
+    fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / "fonts" / _ttf)
 plt.style.use(pathlib.Path(__file__).parent.parent / "_config/usv_playpen.mplstyle")
 
 
@@ -2140,5 +2147,5 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.tick_params(axis="y", labelsize=8, length=1.5, pad=0.5)
             ax.set_xlabel("Pre-USV time (s)", fontsize=10, labelpad=2)
             ax.set_ylabel("Firing rate (sp/s)", fontsize=10, labelpad=-2)
-            ax.set_title(item["title"], fontsize=11, pad=2, fontweight="bold")
+            ax.set_title(item["title"], fontsize=11, pad=2)
             ax.set_box_aspect(1)
