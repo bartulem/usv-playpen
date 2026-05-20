@@ -61,7 +61,8 @@ dependencies = [
     "ffmpeg-binaries>=1.0.1",
     "static-sox>=1.0.2",
     "paramiko>=4.0.0",
-    "pillow>=12.2.0"
+    "pillow>=12.2.0",
+    "spikeinterface==0.104.3"
 ]
 
 [project.optional-dependencies]
