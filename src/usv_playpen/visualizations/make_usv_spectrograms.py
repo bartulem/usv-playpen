@@ -2852,4 +2852,3 @@ def plot_umap_with_category_thumbnails(
         message_output(f"Saved UMAP+thumbnails figure: {out_path}")
 
     return fig
-
