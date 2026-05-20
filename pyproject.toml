@@ -240,9 +240,13 @@ messages_control.disable = [
 #     specially-crafted inputs bypass the CVE-2024-3651 length check
 #     before valid_contexto runs (GHSA, Dependabot #41); idna is
 #     pulled in transitively via requests, jupyterlab, librosa, etc.
+#   - pymdown-extensions>=10.21.3 fixes a regression in pymdownx.snippets
+#     where sibling-prefix path traversal bypasses restrict_base_path
+#     (GHSA, Dependabot #40); pulled in transitively via marimo.
 constraint-dependencies = [
     "mistune>=3.2.1",
     "idna>=3.15",
+    "pymdown-extensions>=10.21.3",
 ]
 
 [tool.uv.sources]
