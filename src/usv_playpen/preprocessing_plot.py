@@ -672,7 +672,6 @@ class SummaryPlotter:
                     s=r"$\bf{min}$   $\bf{med}$   $\bf{max}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
-                    fontsize=10,
                 )
                 ax[0, device_num].text(
                     x=0.625,
@@ -697,7 +696,6 @@ class SummaryPlotter:
                     s=r"$\bf{min}$    $\bf{med}$   $\bf{max}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
-                    fontsize=10,
                 )
                 ax[0, device_num].text(
                     x=0.625,
@@ -722,7 +720,6 @@ class SummaryPlotter:
                     s=r"$\bf{min}$   $\bf{med}$   $\bf{max}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
-                    fontsize=10,
                 )
                 ax[0, device_num].text(
                     x=0.625,
