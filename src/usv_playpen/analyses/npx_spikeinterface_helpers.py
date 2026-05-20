@@ -275,7 +275,12 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
 
         if r2 < min_r2_exp_decay:
             exp_decay_value = np.nan
-    except:
+    except Exception:
+        # Catch failures in the scipy.optimize.curve_fit call /
+        # the surrounding r2 computation; fall back to NaN so the
+        # caller's downstream aggregation isn't aborted by a
+        # single problematic unit. Narrowed from a bare ``except:``
+        # which also swallowed KeyboardInterrupt and SystemExit.
         exp_decay_value = np.nan
 
     return exp_decay_value
