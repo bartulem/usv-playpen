@@ -85,6 +85,7 @@ dev = [
   "jupyterlab>=4.5.7",
   "ipykernel",
   "marimo",
+  "altair",
   "pre-commit>=4.5.1",
 ]
 docs = [
@@ -242,3 +243,10 @@ constraint-dependencies = [
 
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }
+
+# Lift marimo's per-cell output cap so the embedding-explorer notebook
+# can embed up to ~10 K base64-encoded spectrogram thumbnails inside
+# its altair vconcat chart spec without hitting "Your output is too
+# large". 30 MB is generous; raise further if needed.
+[tool.marimo.runtime]
+output_max_bytes = 30_000_000
