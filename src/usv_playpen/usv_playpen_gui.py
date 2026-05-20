@@ -1248,7 +1248,21 @@ class USVPlaypenWindow(QMainWindow):
         """
         super().__init__()
 
-        font_file_loc = QFontDatabase.addApplicationFont(str(Path(__file__).parent / 'fonts' / 'Helvetica.ttf'))
+        # Register the bundled Helvetica family with Qt; the first
+        # successful entry (Regular) supplies the family name used to
+        # construct QFont below. The other weights register so style
+        # roles ('bold', 'italic') resolve against the same family.
+        font_file_loc = None
+        for _ttf in (
+            'Helvetica.ttf',
+            'Helvetica-Bold.ttf',
+            'Helvetica-Oblique.ttf',
+            'Helvetica-BoldOblique.ttf',
+            'Helvetica-Light.ttf',
+        ):
+            _id = QFontDatabase.addApplicationFont(str(Path(__file__).parent / 'fonts' / _ttf))
+            if font_file_loc is None and _id != -1:
+                font_file_loc = _id
         self.font_id = QFontDatabase.applicationFontFamilies(font_file_loc)[0]
 
         if platform.system() == 'Darwin':
