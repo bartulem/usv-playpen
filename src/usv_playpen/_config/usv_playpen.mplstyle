@@ -1,4 +1,6 @@
-# text parameters
+# ------------------------------------------------------------------ #
+# fonts
+# ------------------------------------------------------------------ #
 text.usetex : False
 font.family : sans-serif
 font.sans-serif : Helvetica
@@ -6,22 +8,43 @@ font.style : normal
 font.variant : normal
 font.weight : normal
 font.stretch : normal
+
+# Now that Bold + Light are bundled, set per-role weights here so
+# every figure inherits the same convention. Per-call overrides via
+# `fontweight=` still win.
+axes.titleweight : bold
+axes.labelweight : normal
+figure.titleweight : bold
+
+# Math text rendered in the same family / weight as surrounding text.
+mathtext.default : regular
+mathtext.fontset : custom
+mathtext.rm : Helvetica
+mathtext.it : Helvetica:italic
+mathtext.bf : Helvetica:bold
+
+# ------------------------------------------------------------------ #
+# font sizes
+# ------------------------------------------------------------------ #
 axes.titlesize : 8
 axes.labelsize : 8
 xtick.labelsize : 6
 ytick.labelsize : 6
 legend.fontsize : 6
 
+# ------------------------------------------------------------------ #
 # figure formatting
+# ------------------------------------------------------------------ #
 figure.titlesize : medium
-figure.titleweight : normal
 figure.figsize : 12.8, 4.8
 figure.dpi : 300
 figure.facecolor : FFFFFF
 figure.edgecolor : 1F1F1F
 figure.frameon : True
 
+# ------------------------------------------------------------------ #
 # default text / axis / tick colors — soft black '1F1F1F'
+# ------------------------------------------------------------------ #
 text.color : 1F1F1F
 axes.facecolor : FFFFFF
 axes.edgecolor : 1F1F1F
@@ -29,22 +52,34 @@ axes.labelcolor : 1F1F1F
 xtick.color : 1F1F1F
 ytick.color : 1F1F1F
 
+# ------------------------------------------------------------------ #
 # error bars and legend formatting
+# ------------------------------------------------------------------ #
 errorbar.capsize : 5
 legend.numpoints : 1
+legend.frameon : False
+legend.handlelength : 1.5
+legend.handletextpad : 0.4
+legend.labelspacing : 0.3
+legend.columnspacing : 1.0
+legend.borderpad : 0.4
 
+# ------------------------------------------------------------------ #
 # axes and tick formatting
+# ------------------------------------------------------------------ #
 axes.linewidth : .75
 axes.spines.left : True
 axes.spines.bottom : True
 axes.spines.top : True
 axes.spines.right : True
+axes.titlepad : 6.0
+axes.labelpad : 3.0
 xtick.direction : out
 ytick.direction : out
 ytick.left : True
 xtick.bottom : True
-xtick.minor.visible : True
-ytick.minor.visible : True
+xtick.minor.visible : False
+ytick.minor.visible : False
 xtick.major.size : 3.5
 ytick.major.size : 3.5
 xtick.minor.size : 2.
@@ -54,6 +89,25 @@ ytick.major.width : .5
 xtick.minor.width : .5
 ytick.minor.width : .5
 
-# other formatting
+# ------------------------------------------------------------------ #
+# lines and markers
+# ------------------------------------------------------------------ #
 lines.linewidth : 3
 lines.markersize : 10
+
+# ------------------------------------------------------------------ #
+# saving figures: keep text editable in vector outputs
+# ------------------------------------------------------------------ #
+# fonttype 42 = TrueType -> Illustrator/Inkscape can select and edit
+# the glyphs as text instead of treating them as filled paths.
+pdf.fonttype : 42
+ps.fonttype : 42
+# svg.fonttype 'none' embeds text as <text> elements referencing the
+# system/bundled font by name (no path conversion). Renders identically
+# anywhere that has the same Helvetica registered.
+svg.fonttype : none
+savefig.dpi : 300
+savefig.bbox : tight
+savefig.facecolor : FFFFFF
+savefig.edgecolor : 1F1F1F
+savefig.transparent : False

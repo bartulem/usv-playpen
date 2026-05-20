@@ -915,8 +915,8 @@ def _draw_qq_into_axes(
         ax.tick_params(axis="both", which="both", labelsize=7, length=2)
         # Inset retains compact axis labels so the diagnostic stays
         # self-describing without dominating the panel.
-        ax.set_xlabel("Observed (s)", fontsize=8, labelpad=2)
-        ax.set_ylabel("Model (s)", fontsize=8, labelpad=2)
+        ax.set_xlabel("Observed (s)", labelpad=2)
+        ax.set_ylabel("Model (s)", labelpad=2)
         # Opaque white panel so the inset reads as a distinct object
         # against the histogram bars behind it.
         ax.set_facecolor("#ffffff")

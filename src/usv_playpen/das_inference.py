@@ -25,7 +25,14 @@ from .os_utils import configure_path, wait_for_subprocesses
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
-fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts/Helvetica.ttf")
+for _ttf in (
+    "Helvetica.ttf",
+    "Helvetica-Bold.ttf",
+    "Helvetica-Oblique.ttf",
+    "Helvetica-BoldOblique.ttf",
+    "Helvetica-Light.ttf",
+):
+    fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts" / _ttf)
 plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
 
 

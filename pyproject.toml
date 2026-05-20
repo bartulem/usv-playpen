@@ -247,11 +247,20 @@ messages_control.disable = [
 [tool.uv]
 # Pin transitive dependencies to versions that resolve known security
 # vulnerabilities. Constraints narrow the resolver's acceptable version
-# range without making mistune a direct dependency of usv-playpen.
+# range without making the package a direct dependency of usv-playpen.
 #   - mistune>=3.2.1 fixes a ReDoS in LINK_TITLE_RE (GHSA, Dependabot #32);
 #     mistune is pulled in transitively via jupyterlab -> nbconvert.
+#   - idna>=3.15 fixes a denial-of-service in idna.encode() where
+#     specially-crafted inputs bypass the CVE-2024-3651 length check
+#     before valid_contexto runs (GHSA, Dependabot #41); idna is
+#     pulled in transitively via requests, jupyterlab, librosa, etc.
+#   - pymdown-extensions>=10.21.3 fixes a regression in pymdownx.snippets
+#     where sibling-prefix path traversal bypasses restrict_base_path
+#     (GHSA, Dependabot #40); pulled in transitively via marimo.
 constraint-dependencies = [
     "mistune>=3.2.1",
+    "idna>=3.15",
+    "pymdown-extensions>=10.21.3",
 ]
 
 [tool.uv.sources]

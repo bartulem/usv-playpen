@@ -18,7 +18,14 @@ from imgstore import new_for_filename
 from .os_utils import first_match_or_raise
 from .yaml_utils import load_session_metadata, save_session_metadata
 
-fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts/Helvetica.ttf")
+for _ttf in (
+    "Helvetica.ttf",
+    "Helvetica-Bold.ttf",
+    "Helvetica-Oblique.ttf",
+    "Helvetica-BoldOblique.ttf",
+    "Helvetica-Light.ttf",
+):
+    fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts" / _ttf)
 plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
 
 
@@ -665,7 +672,6 @@ class SummaryPlotter:
                     s=r"$\bf{min}$   $\bf{med}$   $\bf{max}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
-                    fontsize=10,
                 )
                 ax[0, device_num].text(
                     x=0.625,
@@ -690,7 +696,6 @@ class SummaryPlotter:
                     s=r"$\bf{min}$    $\bf{med}$   $\bf{max}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
-                    fontsize=10,
                 )
                 ax[0, device_num].text(
                     x=0.625,
@@ -715,7 +720,6 @@ class SummaryPlotter:
                     s=r"$\bf{min}$   $\bf{med}$   $\bf{max}$",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
-                    fontsize=10,
                 )
                 ax[0, device_num].text(
                     x=0.625,

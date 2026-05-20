@@ -2421,7 +2421,7 @@ def plot_category_estrous_rates_grid(
         ax_female.bar(x_indices + bar_width/2, f_rates, width=bar_width,
                       color=female_color, label='Female', alpha=0.8)
 
-        ax_male.set_title(f"Category {int(cat)}", fontsize=15, fontweight='bold', pad=15)
+        ax_male.set_title(f"Category {int(cat)}", fontsize=15, pad=15)
 
         # Left axis (male)
         m_max = max(m_rates) if max(m_rates) > 0 else 10
@@ -2548,7 +2548,7 @@ def plot_category_estrous_ratio_grid(
         ax.axhline(1.0, color='#202020', linestyle='--', alpha=0.3, linewidth=1)
         ax.set_xticks(range(len(valid_stages)))
         ax.set_xticklabels(full_stage_names, fontsize=10)
-        ax.set_title(f"Category {int(cat)} USV ratio", fontsize=13, fontweight='bold', pad=12)
+        ax.set_title(f"Category {int(cat)} USV ratio", fontsize=13, pad=12)
         ax.set_ylabel("Male to Female Ratio", fontsize=11)
         ax.minorticks_off()
         ax.grid(axis='y', linestyle=':', alpha=0.4)
@@ -2589,7 +2589,7 @@ def plot_category_estrous_ratio_grid(
 
         ax.set_yscale('log')
         ax.axhline(1.0, color='#202020', linestyle='--', alpha=0.3, linewidth=1)
-        ax.set_title(f"{stage_name} Stage: All Categories", fontsize=14, fontweight='bold', pad=15)
+        ax.set_title(f"{stage_name} Stage: All Categories", fontsize=14, pad=15)
         ax.set_xticks(range(len(categories)))
         ax.set_xticklabels([f"Cat {int(c)}" for c in categories], fontsize=10)
 
