@@ -704,6 +704,27 @@ def find_usv_categories(root_directories: list = None,
                     manifold_arrays = [mouse_usvs[col].to_numpy() for col in manifold_column_names]
                     usv_data_dict[session_id][mouse_name]['continuous_targets'] = np.column_stack(manifold_arrays)
 
+                    # Per-USV supercategory and category labels. Used by
+                    # downstream region-conditioned analyses (CNN saliency,
+                    # cluster-circle membership). Derived from the manifold
+                    # prefix: e.g., 'vae_umap1' -> 'vae' -> 'vae_supercategory',
+                    # 'vae_category'. Stored as plain numpy arrays aligned
+                    # 1:1 with continuous_onsets / continuous_targets above.
+                    # Stored only when the columns are present in the source
+                    # CSV; absent label arrays signal "this USV summary
+                    # predates supercategory/category labelling."
+                    manifold_prefix = manifold_column_names[0].rsplit('_', 1)[0]
+                    super_col = f"{manifold_prefix}_supercategory"
+                    cat_col = f"{manifold_prefix}_category"
+                    if super_col in mouse_usvs.columns:
+                        usv_data_dict[session_id][mouse_name]['continuous_supercategory'] = (
+                            mouse_usvs[super_col].to_numpy()
+                        )
+                    if cat_col in mouse_usvs.columns:
+                        usv_data_dict[session_id][mouse_name]['continuous_category'] = (
+                            mouse_usvs[cat_col].to_numpy()
+                        )
+
     return usv_data_dict
 
 

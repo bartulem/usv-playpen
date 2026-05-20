@@ -799,26 +799,54 @@ class ContinuousModelingPipeline(FeatureZoo):
             if onsets is None or targets is None:
                 continue
 
+            # Per-USV cluster labels (supercategory + category) aligned 1:1
+            # with onsets/targets. Surfaced by `find_usv_categories` when the
+            # corresponding columns exist in the source USV CSV (the manifold
+            # prefix tells the loader which columns to read). Absent label
+            # arrays signal "this USV summary predates labelling"; downstream
+            # region-conditional analyses (e.g. CNN saliency cluster filters)
+            # raise a clear error in that case rather than silently passing.
+            sess_targ_pkt = usv_data_dict[sess_id][targ_name]
+            if 'continuous_supercategory' in sess_targ_pkt:
+                super_labels_all = sess_targ_pkt['continuous_supercategory']
+            else:
+                super_labels_all = None
+            if 'continuous_category' in sess_targ_pkt:
+                cat_labels_all = sess_targ_pkt['continuous_category']
+            else:
+                cat_labels_all = None
+
             fps = cam_fps_dict[sess_id]
             max_frame_idx = beh_data_dict[sess_id].height - 1
 
             valid_onsets = []
             valid_targets = []
+            valid_super = []
+            valid_cat = []
 
             frame_indices = np.round(onsets * fps).astype(int)
             for i, f_idx in enumerate(frame_indices):
                 if self.history_frames <= f_idx <= max_frame_idx:
                     valid_onsets.append(f_idx)
                     valid_targets.append(targets[i])
+                    if super_labels_all is not None:
+                        valid_super.append(super_labels_all[i])
+                    if cat_labels_all is not None:
+                        valid_cat.append(cat_labels_all[i])
 
             if valid_onsets:
                 valid_onsets_arr = np.array(valid_onsets, dtype=int)
                 valid_targets_arr = np.array(valid_targets, dtype=np.float32)
 
-                continuous_targets_dict[sess_id] = {
+                packet = {
                     'onsets': valid_onsets_arr,
-                    'targets': valid_targets_arr
+                    'targets': valid_targets_arr,
                 }
+                if valid_super:
+                    packet['supercategory'] = np.asarray(valid_super, dtype=np.float32)
+                if valid_cat:
+                    packet['category'] = np.asarray(valid_cat, dtype=np.float32)
+                continuous_targets_dict[sess_id] = packet
                 all_valid_Y_list.append(valid_targets_arr)
 
         if not all_valid_Y_list:
@@ -1035,11 +1063,21 @@ class ContinuousModelingPipeline(FeatureZoo):
                         chunk = np.nan_to_num(chunk, nan=0.0)
                     X_arr[i, :] = chunk
 
-                final_data[feat_key][sess_id] = {
+                # Labels carry through to every feature's per-session
+                # entry for symmetry with X/Y/w (the CNN runner reads them
+                # from `features[0]` just as it does Y/w). Absent when the
+                # source CSV predates supercategory/category labelling —
+                # downstream consumers handle that case explicitly.
+                session_entry = {
                     'X': X_arr,
                     'Y': Y_targets,
-                    'w': weights
+                    'w': weights,
                 }
+                if 'supercategory' in data_packet:
+                    session_entry['supercategory'] = data_packet['supercategory']
+                if 'category' in data_packet:
+                    session_entry['category'] = data_packet['category']
+                final_data[feat_key][sess_id] = session_entry
 
         if not final_data:
             print("No valid data extracted. Aborting save.")

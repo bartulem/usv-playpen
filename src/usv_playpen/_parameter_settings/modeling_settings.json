@@ -119,7 +119,14 @@
         "use_kinematic_masking": true,
         "masking_prob": 0.15,
         "masking_length_frames": 60,
-        "use_hybrid_flatten": false
+        "use_hybrid_flatten": false,
+        "saliency": {
+          "enable": true,
+          "segmentation": "supercategory",
+          "alpha": 0.5,
+          "radius_mode": "adaptive",
+          "noise_label": 0
+        }
       }
     },
     "jax_linear": {

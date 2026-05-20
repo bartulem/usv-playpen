@@ -43,9 +43,13 @@ import pathlib
 import pickle
 from datetime import datetime
 from functools import partial
-from matplotlib.path import Path
 from typing import Dict, Any, List, Tuple
 
+from .cluster_geometry import (
+    derive_cluster_centers_empirically,
+    derive_cluster_geometry,
+    usv_in_circle,
+)
 from .manifold_metric import (
     pairwise_distance,
     signed_diff_jax,
@@ -807,17 +811,24 @@ class NeuralContinuousCNNRunner:
         with open(pkl_path, 'rb') as f:
             raw_data = pickle.load(f)
 
-        features = sorted(list(raw_data.keys()))
+        # Strip top-level metadata keys (e.g. `_input_metadata`,
+        # `_run_metadata`); only feature dicts are session-keyed and carry
+        # the X/Y/w arrays. Without this filter, `_input_metadata` sorts
+        # to the front and the loop below tries to index an int-valued
+        # metadata field as if it were a session dict.
+        features = sorted(k for k in raw_data.keys() if not str(k).startswith('_'))
 
         # The CNN consumes the raw history frames directly
         num_frames = self.history_frames
 
         X_seq_list, Y_list, w_list, groups_list = [], [], [], []
+        super_list, cat_list = [], []
         sessions = sorted(list(raw_data[features[0]].keys()))
 
         for sess in sessions:
-            Y_sess = raw_data[features[0]][sess]['Y']
-            w_sess = raw_data[features[0]][sess]['w']
+            sess_dict = raw_data[features[0]][sess]
+            Y_sess = sess_dict['Y']
+            w_sess = sess_dict['w']
             sess_seq = []
 
             for feat in features:
@@ -833,15 +844,32 @@ class NeuralContinuousCNNRunner:
             w_list.append(w_sess)
             groups_list.append(np.full(len(Y_sess), sess))
 
-        return {
+            # Optional per-USV cluster labels (supercategory + category).
+            # Persisted by the extract-pipeline when the source USV CSV
+            # carried them; absent on legacy pickles built before that
+            # change shipped, in which case the saliency phase will raise
+            # a clear "re-extract with the updated pipeline" message.
+            if 'supercategory' in sess_dict:
+                super_list.append(sess_dict['supercategory'])
+            if 'category' in sess_dict:
+                cat_list.append(sess_dict['category'])
+
+        block = {
             'X_seq': np.vstack(X_seq_list).astype(np.float32),
             'Y': np.vstack(Y_list).astype(np.float32),
             'w': np.concatenate(w_list).astype(np.float32),
             'groups': np.concatenate(groups_list),
             'features': features,
             'num_bins': num_frames,  # Passed downstream to dynamically build network
-            'source_pkl_path': pkl_path
+            'source_pkl_path': pkl_path,
         }
+        # Surface labels only when every session provided them — partial
+        # coverage would corrupt the alignment to Y / X_seq.
+        if super_list and len(super_list) == len(sessions):
+            block['supercategory'] = np.concatenate(super_list)
+        if cat_list and len(cat_list) == len(sessions):
+            block['category'] = np.concatenate(cat_list)
+        return block
 
     def compute_centroid_saliency(self, params: Dict[str, jax.Array], state: Dict[str, jax.Array],
                                   X_te: jax.Array, Y_center: jax.Array, Y_scale: jax.Array,
@@ -1012,6 +1040,14 @@ class NeuralContinuousCNNRunner:
         w = data_blocks['w']
         groups = data_blocks['groups']
         features = list(data_blocks['features'])
+
+        # Per-USV cluster labels surfaced by the modeling pickle when it
+        # carries them (the extract pipeline persists supercategory and
+        # category alongside X/Y/w for every USV). The saliency phase
+        # below consumes whichever the user selected via
+        # `settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation']`.
+        cluster_labels_super = data_blocks['supercategory'] if 'supercategory' in data_blocks else None
+        cluster_labels_cat = data_blocks['category'] if 'category' in data_blocks else None
 
         n_feats = len(features)
         n_bins = data_blocks['num_bins']
@@ -1332,50 +1368,11 @@ class NeuralContinuousCNNRunner:
             'significant_features': significant_features
         }
 
-        # ---------------------------------------------------------
-        # PHASE 3: INPUT-GRADIENT SALIENCY EXTRACTION
-        # ---------------------------------------------------------
-        print("\n" + "=" * 50)
-        print(" PHASE 3: INPUT-GRADIENT SALIENCY EXTRACTION")
-        print("=" * 50)
-
-        deep_storage['saliency_maps'] = {}
-        cluster_centroids = self.hp['cluster_centroids']
-
-        # Pull the actual polygon boundaries from your settings
-        custom_polygons = self.hp['custom_polygons']
-
-        for cluster_name, centroid_coords in cluster_centroids.items():
-            # 1. Compute the saliency for the whole test batch
-            saliency_maps = self.compute_centroid_saliency(
-                best_params, best_state,
-                jnp.array(X_te_base), Y_center, Y_scale,
-                polygon_centroid=tuple(centroid_coords)
-            )
-
-            # 2. Define the exact boundary of the target acoustic island
-            polygon_boundary = Path(custom_polygons[cluster_name])
-
-            # 3. Find which specific trials actually landed inside this polygon
-            # Y_te_final contains the ground-truth UMAP coordinates for the test set
-            inside_polygon_mask = polygon_boundary.contains_points(Y_te_final)
-
-            # 4. Slice the massive tensor to keep ONLY the true positive trials
-            true_positive_saliency = saliency_maps['contrastive_saliency'][inside_polygon_mask]
-
-            print(f"      -> Kept {np.sum(inside_polygon_mask)} true positive trials for {cluster_name}")
-
-            # 5. Save only the filtered, 32-bit tensor
-            deep_storage['saliency_maps'][cluster_name] = {
-                'contrastive_saliency': true_positive_saliency
-            }
-
-        # ---------------------------------------------------------
-        # SERIALIZATION
-        # ---------------------------------------------------------
-        print("\nConverting JAX device arrays to NumPy and saving Deep Storage...")
-        numpy_storage = jax.device_get(deep_storage)
-
+        # Resolve the save path BEFORE Phase 3 so we can checkpoint between
+        # phases. The same `save_path` is rewritten at the end with the
+        # fully-populated `deep_storage`; a Phase-3 failure therefore no
+        # longer destroys the training + feature-importance work that
+        # already lives in memory at this point.
         source_file = pathlib.Path(data_blocks['source_pkl_path']).name
 
         # Explicit Multi-line parsing to avoid summarizing logic
@@ -1392,6 +1389,164 @@ class NeuralContinuousCNNRunner:
         save_dir = pathlib.Path(self.modeling_settings['io']['save_directory'])
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / filename
+
+        def _checkpoint_deep_storage(stage_label: str) -> None:
+            """Defensive serialisation hook called between phases.
+
+            Converts every JAX device array currently held in `deep_storage`
+            into NumPy, then writes the resulting object to `save_path` via
+            pickle. The intent is to guarantee that, even if the very next
+            phase of `run_cnn_training` raises, the user keeps every byte of
+            the work produced up to this point on disk. The final write at
+            the end of this method overwrites the same path with the
+            fully-populated structure.
+
+            Parameters
+            ----------
+            stage_label : str
+                Human-readable identifier of the phase whose output is being
+                persisted (e.g. "post-Phase-2"). Used only for the console
+                breadcrumb line.
+            """
+
+            host_snapshot = jax.device_get(deep_storage)
+            with save_path.open('wb') as fh:
+                pickle.dump(host_snapshot, fh)
+            print(f"[CHECKPOINT::{stage_label}] saved deep_storage to {save_path}")
+
+        # Persist Phase-1 + Phase-2 results before Phase 3 begins.
+        _checkpoint_deep_storage("post-Phase-2")
+
+        # ---------------------------------------------------------
+        # PHASE 3: INPUT-GRADIENT SALIENCY EXTRACTION
+        # ---------------------------------------------------------
+        print("\n" + "=" * 50)
+        print(" PHASE 3: INPUT-GRADIENT SALIENCY EXTRACTION")
+        print("=" * 50)
+
+        saliency_cfg = self.hp['saliency']
+        deep_storage['saliency_maps'] = {}
+
+        if not saliency_cfg['enable']:
+            print("  [skip] saliency.enable=False; leaving saliency_maps empty")
+        else:
+            segmentation = saliency_cfg['segmentation']
+            if segmentation == 'supercategory':
+                labels_all = cluster_labels_super
+            elif segmentation == 'category':
+                labels_all = cluster_labels_cat
+            else:
+                raise ValueError(
+                    f"saliency.segmentation must be 'supercategory' or 'category'; "
+                    f"got {segmentation!r}"
+                )
+
+            if labels_all is None:
+                raise RuntimeError(
+                    f"saliency.segmentation='{segmentation}' but the modeling pickle does "
+                    f"not carry per-USV {segmentation} labels. Re-extract the data with "
+                    f"the updated pipeline (extract_and_save_continuous_data) before "
+                    f"training, or set saliency.enable=false."
+                )
+
+            labels_all_np = np.asarray(labels_all)
+            labels_test = labels_all_np[test_idx_final]
+
+            # Empirical centres from ALL Y + labels. The centres are a
+            # property of the data labelling, not the trained model, so no
+            # train/test leakage is introduced by pooling here.
+            centres = derive_cluster_centers_empirically(
+                np.asarray(Y),
+                labels_all_np,
+                drop_label=saliency_cfg['noise_label'],
+                metric=self.manifold_metric,
+                period=self.manifold_period,
+            )
+
+            if len(centres) < 2:
+                raise RuntimeError(
+                    f"saliency.segmentation='{segmentation}' produced only {len(centres)} "
+                    f"cluster centre(s); need at least 2 for the alpha-gap radius rule. "
+                    f"Check label coverage in the modeling pickle."
+                )
+
+            geometry = derive_cluster_geometry(
+                centres,
+                alpha=saliency_cfg['alpha'],
+                mode=saliency_cfg['radius_mode'],
+                metric=self.manifold_metric,
+                period=self.manifold_period,
+            )
+
+            # Persist the derived geometry alongside the saliency tensors so
+            # downstream plotting code can reconstruct each cluster's
+            # circle without reading the modeling pickle a second time.
+            deep_storage['cluster_geometry'] = {
+                'segmentation': segmentation,
+                'alpha': float(saliency_cfg['alpha']),
+                'radius_mode': str(saliency_cfg['radius_mode']),
+                'noise_label': saliency_cfg['noise_label'],
+                'metric': self.manifold_metric,
+                'period': float(self.manifold_period),
+                'clusters': {
+                    str(int(k) if float(k).is_integer() else k): {
+                        'centroid': np.asarray(v['centroid'], dtype=np.float64),
+                        'radius': float(v['radius']),
+                        'nearest_neighbour_distance': float(v['nearest_neighbour_distance']),
+                    }
+                    for k, v in geometry.items()
+                },
+            }
+
+            for label, g in geometry.items():
+                centroid = np.asarray(g['centroid'], dtype=np.float64)
+                radius = float(g['radius'])
+                label_int = int(label) if float(label).is_integer() else label
+                cluster_name = f"{segmentation}_{label_int}"
+
+                # 1. Compute the saliency for the whole test batch toward
+                #    this cluster's empirically-derived centroid.
+                saliency_maps = self.compute_centroid_saliency(
+                    best_params, best_state,
+                    jnp.array(X_te_base), Y_center, Y_scale,
+                    polygon_centroid=tuple(centroid),
+                )
+
+                # 2. Dual filter: a USV is a true positive for this cluster
+                #    iff its ground-truth Y lies inside the (wrap-aware)
+                #    circle AND its label matches the cluster's label.
+                in_circle = usv_in_circle(
+                    Y_te_final, centroid, radius,
+                    metric=self.manifold_metric,
+                    period=self.manifold_period,
+                )
+                label_match = labels_test == label
+                keep = in_circle & label_match
+
+                # 3. Slice the saliency tensor down to the dual-filter set.
+                true_positive_saliency = saliency_maps['contrastive_saliency'][keep]
+
+                print(
+                    f"      -> {cluster_name}: r={radius:.4f}  "
+                    f"in_circle={int(in_circle.sum())}  "
+                    f"label_match={int(label_match.sum())}  "
+                    f"both={int(keep.sum())}"
+                )
+
+                deep_storage['saliency_maps'][cluster_name] = {
+                    'contrastive_saliency': true_positive_saliency,
+                    'centroid': centroid,
+                    'radius': radius,
+                    'n_inside_circle': int(in_circle.sum()),
+                    'n_label_match': int(label_match.sum()),
+                    'n_dual_filter_pass': int(keep.sum()),
+                }
+
+        # ---------------------------------------------------------
+        # SERIALIZATION
+        # ---------------------------------------------------------
+        print("\nConverting JAX device arrays to NumPy and saving Deep Storage...")
+        numpy_storage = jax.device_get(deep_storage)
 
         with save_path.open('wb') as f:
             pickle.dump(numpy_storage, f)
