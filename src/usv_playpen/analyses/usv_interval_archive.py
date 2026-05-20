@@ -44,7 +44,7 @@ import polars as pls
 from sklearn.mixture import GaussianMixture
 
 from ..os_utils import configure_path
-from .gmm_utils import TMixture
+from .mixture_model_utils import TMixture
 
 
 # Internal helpers: polars <-> HDF5 dataset translation
@@ -440,7 +440,7 @@ def reconstruct_best_model(
     instantiated with ``weights_``, ``means_`` and ``covariances_`` set
     from the row, plus a freshly computed ``precisions_cholesky_``
     (1-D analytic form: ``1 / sqrt(cov)``) so ``score_samples`` works
-    immediately. For Student-t mixtures, a :class:`gmm_utils.TMixture`
+    immediately. For Student-t mixtures, a :class:`mixture_model_utils.TMixture`
     is constructed directly.
 
     Components are returned in ascending log-mean order, matching the

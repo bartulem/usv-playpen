@@ -18,7 +18,7 @@ import pytest
 from scipy.stats import norm
 from sklearn.mixture import GaussianMixture
 
-# Headless matplotlib for the gmm_utils plotting smoke tests.
+# Headless matplotlib for the mixture_model_utils plotting smoke tests.
 matplotlib.use("Agg")
 
 from usv_playpen.analyze_data import Analyst
@@ -65,7 +65,7 @@ from usv_playpen.analyses.detect_interesting_tuning_neurons import (
     _flag_spatial,
     _emitter_role_map,
 )
-from usv_playpen.analyses.gmm_utils import (
+from usv_playpen.analyses.mixture_model_utils import (
     TMixture,
     _alpha,
     _extract_params,
@@ -1537,7 +1537,7 @@ def test_detect_thresholds_recorded_match_inputs(synthetic_session):
 
 
 # ---------------------------------------------------------------------------
-# gmm_utils — additional targeted tests
+# mixture_model_utils — additional targeted tests
 # ---------------------------------------------------------------------------
 
 
@@ -2275,7 +2275,7 @@ def test_reconstruct_best_model_gauss():
 
 def test_reconstruct_best_model_t_mixture():
     """t-mixture path returns a TMixture object."""
-    from usv_playpen.analyses.gmm_utils import TMixture
+    from usv_playpen.analyses.mixture_model_utils import TMixture
     df = _gmm_fits_row("t", K=2)
     model, order = reconstruct_best_model(df, sex="male", K=2)
     assert isinstance(model, TMixture)
@@ -2464,7 +2464,7 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
 
 
 # ===========================================================================
-# gmm_utils — coverage extension toward ~90%
+# mixture_model_utils — coverage extension toward ~90%
 # Targeting: bootstrap_lrt, select_n_components_step_up_lrt, edge cases in
 # gmm_boundaries_logspace / gmm_modes / select_best_n_components / cv helpers,
 # and the matplotlib smoke surfaces (plot_gmm_fit, qqplot_gmm).
