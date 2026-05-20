@@ -2147,5 +2147,5 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.tick_params(axis="y", labelsize=8, length=1.5, pad=0.5)
             ax.set_xlabel("Pre-USV time (s)", fontsize=10, labelpad=2)
             ax.set_ylabel("Firing rate (sp/s)", fontsize=10, labelpad=-2)
-            ax.set_title(item["title"], fontsize=11, pad=2, fontweight="bold")
+            ax.set_title(item["title"], fontsize=11, pad=2)
             ax.set_box_aspect(1)

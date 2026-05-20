@@ -16,6 +16,17 @@ env:
   # one distinguishes color depth, where "3" -> "256-bit color".
   FORCE_COLOR: 3
 
+  # Opt every JavaScript action into the Node.js 24 runtime ahead of the
+  # 2026-06-02 default-flip / 2026-09-16 Node.js 20 removal. The trigger is
+  # pre-commit/action@v3.0.1 (latest release, Feb 2024), which transitively
+  # loads actions/cache@v4 -- still pinned to Node.js 20 in its action.yml.
+  # actions/cache@v5 is Node.js 24-native but pre-commit/action has not
+  # picked it up. Forcing the runtime via this env var is GitHub's own
+  # recommended interim fix from the deprecation warning. Remove the var
+  # once pre-commit/action ships a release that pulls actions/cache@v5 (or
+  # we replace pre-commit/action with inlined steps).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   pre-commit:
     name: Format
