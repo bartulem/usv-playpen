@@ -32,7 +32,7 @@ from ..visualizations.usv_summary_statistics import (
     extract_session_metadata,
     load_and_filter_usv_data,
 )
-from .gmm_utils import (
+from .mixture_model_utils import (
     bootstrap_lrt,
     fit_log_gmm,
     fit_log_t_mixture,
@@ -307,8 +307,8 @@ def fit_gmm_sweep(
     ``{'male': ..., 'female': ...}``), repeating each fit ``n_repeats``
     times under different seeds. Selection across reps and across K is
     delegated to the bootstrap-LRT step-up procedure in
-    :func:`gmm_utils.bootstrap_lrt` /
-    :func:`gmm_utils.select_n_components_step_up_lrt`; the IC columns
+    :func:`mixture_model_utils.bootstrap_lrt` /
+    :func:`mixture_model_utils.select_n_components_step_up_lrt`; the IC columns
     in the returned table (``bic`` / ``aic`` / ``icl`` /
     ``cv_neg_loglik``) are diagnostic only.
 
@@ -348,7 +348,7 @@ def fit_gmm_sweep(
         Variance floor passed to the EM solver.
     model_class (str)
         ``'gauss'`` (sklearn ``GaussianMixture``) or ``'t'``
-        (:class:`gmm_utils.TMixture`).
+        (:class:`mixture_model_utils.TMixture`).
 
     Returns
     -------

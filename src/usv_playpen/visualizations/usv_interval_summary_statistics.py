@@ -3,7 +3,7 @@
 Cross-session inter-vocalization-interval (inter-USV interval) aggregation and
 plotting helpers.
 
-These helpers are thin wrappers around :mod:`usv_playpen.analyses.gmm_utils`
+These helpers are thin wrappers around :mod:`usv_playpen.analyses.mixture_model_utils`
 intended to keep the inter-USV interval notebook declarative. Plot functions follow
 the convention used in :mod:`usv_playpen.visualizations.usv_summary_statistics`:
 they return ``(fig, ax, stats_dict)``.
@@ -25,7 +25,7 @@ from ..analyses.compute_inter_usv_interval_distributions import (
     compute_session_usv_intervals,
     fit_gmm_sweep,
 )
-from ..analyses.gmm_utils import (
+from ..analyses.mixture_model_utils import (
     TMixture,
     bootstrap_lrt,
     gmm_quantile_logspace,
@@ -460,7 +460,7 @@ def plot_best_fit_with_annotations(
     """
     Description
     -----------
-    Wraps :func:`gmm_utils.plot_gmm_fit` and overlays a downward
+    Wraps :func:`mixture_model_utils.plot_gmm_fit` and overlays a downward
     triangle on the mixture density curve at the location of each
     fitted component mean ``mu_k`` (each component's own peak in
     log-space, not the mixture-level local maxima). The bottom apex
@@ -495,7 +495,7 @@ def plot_best_fit_with_annotations(
         (low, high) bounds in log-space; defaults to (-5.0, 5.0).
     tau (float)
         Posterior threshold passed to
-        :func:`gmm_utils.summarize_best_gmm` (used by the returned
+        :func:`mixture_model_utils.summarize_best_gmm` (used by the returned
         summary dict; no longer drawn on the plot). Defaults to 0.5.
     edge_color (str)
         Histogram edge colour and triangle outline; defaults to
@@ -536,8 +536,8 @@ def plot_best_fit_with_annotations(
     ax (plt.Axes)
         The main (distribution) axes.
     summary (dict)
-        Output of :func:`gmm_utils.summarize_best_gmm` (or
-        :func:`gmm_utils.summarize_best_t_mixture` for t-mixtures),
+        Output of :func:`mixture_model_utils.summarize_best_gmm` (or
+        :func:`mixture_model_utils.summarize_best_t_mixture` for t-mixtures),
         plus a ``'qq_pearson_r'`` key (NaN when ``qq_inset_bbox`` is
         None) recording the log-log Pearson correlation between
         empirical and model quantiles.
@@ -778,7 +778,7 @@ def _draw_mixture_components(
     -----------
     Overlays the **shape** of each fitted mixture component on the
     host axes, scaled so its peak lies exactly on the black
-    mixture-sum curve drawn by :func:`gmm_utils.plot_gmm_fit`. Each
+    mixture-sum curve drawn by :func:`mixture_model_utils.plot_gmm_fit`. Each
     component is drawn with a distinct (colour, linestyle) pair from
     :data:`_COMPONENT_PALETTE`, cycling if the mixture has more
     components than palette entries.
@@ -812,7 +812,7 @@ def _draw_mixture_components(
         evaluate the per-component pdfs.
     n_grid (int)
         Number of evaluation points along the x-axis. Defaults to
-        500, matching :func:`gmm_utils.plot_gmm_fit`.
+        500, matching :func:`mixture_model_utils.plot_gmm_fit`.
     lw (float)
         Line width for the component curves. Defaults to 1.5.
 
@@ -1061,7 +1061,7 @@ def run_bootstrap_lrt_sweep(
     sweep (dict)
         Mapping ``key -> {(K_null, K_alt) -> result_dict}``, where
         each ``result_dict`` is the return value of
-        :func:`gmm_utils.bootstrap_lrt`.
+        :func:`mixture_model_utils.bootstrap_lrt`.
     """
 
     pairs = [(k, k + 1) for k in range(n_components_min, n_components_max)]

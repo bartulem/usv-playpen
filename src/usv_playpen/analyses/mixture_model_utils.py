@@ -1,7 +1,24 @@
 """
 @author: bartulem
-Utilities for fitting and interpreting 1D Gaussian Mixture Models on
+Utilities for fitting and interpreting 1D mixture models on
 log-transformed inter-vocalization intervals (inter-USV intervals).
+Two mixture families are supported in this module:
+
+* **Gaussian mixtures** (``GaussianMixture``-backed): see
+  :func:`fit_log_gmm`, :func:`gmm_modes`, :func:`gmm_cdf_logspace`,
+  :func:`gmm_quantile_logspace`, :func:`report_gmm_stats`,
+  :func:`summarize_best_gmm`, :func:`gmm_icl`,
+  :func:`gmm_cv_neg_loglik`, :func:`select_best_n_components`.
+* **Student-t mixtures** (custom :class:`TMixture` + EM): see
+  :func:`fit_log_t_mixture`, :func:`t_mixture_icl`,
+  :func:`t_mixture_cv_neg_loglik`, :func:`report_t_mixture_stats`,
+  :func:`t_mixture_cdf_logspace`, :func:`t_mixture_quantile_logspace`.
+
+Functions prefixed ``gmm_`` are Gaussian-only; functions prefixed
+``t_mixture_`` are Student-t-only. The two families share the same
+EM-style scaffold (fit on ``log(x)``, predict modes, report quantiles)
+but the implementation details differ enough that we keep them as
+parallel surfaces rather than a generic abstraction.
 
 Conventions
 * All fits are performed on ``log(x)`` where ``x`` is in seconds.
@@ -13,7 +30,8 @@ Conventions
 * Mixture *modes* are the local maxima of the mixture density itself —
   there is no 1:1 correspondence to components unless the components are
   well separated. Modes and component means are returned by
-  :func:`report_gmm_stats` as independent objects.
+  :func:`report_gmm_stats` / :func:`report_t_mixture_stats` as
+  independent objects.
 """
 
 from __future__ import annotations
