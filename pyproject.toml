@@ -66,7 +66,8 @@ dependencies = [
     "ffmpeg-binaries>=1.0.1",
     "static-sox>=1.0.2",
     "paramiko>=4.0.0",
-    "pillow>=12.2.0"
+    "pillow>=12.2.0",
+    "spikeinterface==0.104.3"
 ]
 
 [project.optional-dependencies]
@@ -99,6 +100,7 @@ dev = [
   # analyses notebooks; without it tqdm falls back to text bars and warns
   "ipywidgets",
   "marimo",
+  "altair",
   "pre-commit>=4.5.1",
 ]
 docs = [
