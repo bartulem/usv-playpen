@@ -10,7 +10,7 @@ Audio recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 * `Dell Precision 3680 Tower Intel(R) Core(TM) i9-1900 CPU @ 2.00 GHz and 64 GB RAM <https://www.dell.com/en-us/shop/desktop-computers/precision-3680-tower-workstation/spd/precision-t3680-workstation>`_ (1x)
-* `Avisoft UltraSoundGate Player 1216H (comes with SYNC cable) <hhttps://avisoft.com/ultrasoundgate/1216h/>`_ (2x)
+* `Avisoft UltraSoundGate Player 1216H (comes with SYNC cable) <https://avisoft.com/ultrasoundgate/1216h/>`_ (2x)
 * `Avisoft 40011 CM16/CMPA microphones (come with XLR-5 extension cables) <https://avisoft.com/ultrasound-microphones/cm16-cmpa/>`_ (24x)
 * `Sound permeable mesh <https://www.mcmaster.com/catalog/131/470/9318T25>`_ (10ft)
 * `Adhesive board for holding the mesh in place <https://www.amazon.com/BENECREAT-Self-Adhesive-Insulation-Containers-Protection/dp/B08DY8QD4Y?th=1>`_ (10x)
@@ -112,7 +112,7 @@ You can verify that the installation was successful by running the following com
 `CoolTerm <https://coolterm.en.lo4d.com/windows>`_ is a serial port terminal application, which allows you to record and keep Arduino print statements in the form of a text file. In the *usv-playpen/_config* directory,
 you can find a CoolTerm configuration file, *coolterm_config.stc*, which you can import into CoolTerm. If you are setting CoolTerm up for the first time, it is best to unpack it in *D:\\CoolTerm* and further create two directories: *D:\\CoolTerm\\Connection_settings* (place the *coolterm_config.stc* file here) and *D:\\CoolTerm\\Data*. Open the config file in CoolTerm and ensure that the location of saved files is *D:\\CoolTerm\\Data* and not *D:\\CoolTerm*. An additional important point to consider is which port to set it to
 (by default it is set to COM5). If you are using the existing Arduino UNO, it is sufficient to plug it into a port (ideally COM5, which would require no changes to the CoolTerm configuration file), as the sketch was already uploaded. However,
-if you want to upload the sketch to a different Arduino device, you will need to install the `Arduino IDE <https://www.arduino.cc/en/software/>`_, compile and upload the following sketch: *usv-playpen/other/sychronization/generate_sync_pulses.ino*.
+if you want to upload the sketch to a different Arduino device, you will need to install the `Arduino IDE <https://www.arduino.cc/en/software/>`_, compile and upload the following sketch: *usv-playpen/other/synchronization/generate_sync_pulses.ino*.
 
 To control Ethernet connection status from the command line (more on this in the *Record* section), one needs to run Powershell in administrator mode. To ensure Powershell is in administrator mode all the time:
 (1) find Windows PowerShell in windows search and pin it to task bar, (2) right-click on the icon in the task bar and right click again on Windows PowerShell, (3) in the Properties, go to

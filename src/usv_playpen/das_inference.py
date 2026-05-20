@@ -65,7 +65,7 @@ class FindMouseVocalizations:
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
             Processing parameters; defaults to None.
-        ecp_settings_dict (dict)
+        exp_settings_dict (dict)
             Experimental settings; defaults to None.
         message_output (function)
             Function to output messages; defaults to None.
@@ -362,6 +362,17 @@ class FindMouseVocalizations:
                                 n_fft=len_win_signal,
                             )
                         )
+                        # Defensive: if lower_bin sits past the STFT's
+                        # freq axis the slice is empty and corrcoef
+                        # would later raise an obscure broadcasting
+                        # error; surface the real problem here.
+                        if lower_bin >= spectrogram_data_selected_ch.shape[1]:
+                            msg = (
+                                f"lower_bin ({lower_bin}) exceeds STFT freq-axis "
+                                f"length ({spectrogram_data_selected_ch.shape[1]}); "
+                                "check `freq_lower_bound` vs `nfft` / sampling rate"
+                            )
+                            raise ValueError(msg)
                         reshaped_spectrogram = spectrogram_data_selected_ch[
                             :, lower_bin:, :
                         ].reshape(len(usv_detected_chs), -1)
