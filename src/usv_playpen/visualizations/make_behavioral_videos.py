@@ -95,6 +95,80 @@ def filter_spikes_for_raster(input_arr: np.ndarray,
     return input_arr[(input_arr >= ra_st_fr) & (input_arr < ra_end_fr)] - fr_start
 
 
+def pool_brain_area(brain_region: str | None) -> str:
+    """
+    Description
+    -----------
+    Map a raw CCF region acronym (as stored in the per-mouse
+    `neuropixels_sites_to_anatomy_converter.json`) to one of the
+    six display buckets used by the plotting palette:
+
+        PAG, MRN, VTA, MB -> themselves
+        CENT*             -> 'CENT'   (e.g. CENT2, CENT3)
+        SC*               -> 'SC'     (e.g. SCdw, SCdg, SCop, SCsg, ...)
+        everything else   -> 'other'  (incl. None / empty string)
+
+    The bucket names match keys in
+    `visualizations_settings.json["brain_area_colors"]`; the `'other'`
+    bucket exists explicitly so unknown / unselected regions get a
+    well-defined grey colour rather than tripping a KeyError.
+
+    Parameters
+    ----------
+    brain_region (str | None)
+        Raw region acronym from the anatomy converter. May be `None`
+        when a cluster's channel falls outside any labelled range.
+
+    Returns
+    -------
+    bucket (str)
+        One of `{'PAG', 'MRN', 'VTA', 'MB', 'CENT', 'SC', 'other'}`.
+    """
+
+    if not brain_region:
+        return 'other'
+    if brain_region in ('PAG', 'MRN', 'VTA', 'MB'):
+        return brain_region
+    if brain_region.startswith('CENT'):
+        return 'CENT'
+    if brain_region.startswith('SC'):
+        return 'SC'
+    return 'other'
+
+
+def _resolve_brain_area_color(brain_region: str | None,
+                              brain_color_scheme: dict) -> str:
+    """
+    Description
+    -----------
+    Resolve the display colour for a raw brain-region acronym by
+    pooling it to a bucket (via `pool_brain_area`) and looking the
+    bucket up in `brain_color_scheme`. Falls back to the `'other'`
+    entry of the scheme when the bucket isn't explicitly listed —
+    callers therefore never need to pre-pool or guard against
+    KeyError.
+
+    Parameters
+    ----------
+    brain_region (str | None)
+        Raw region acronym from the anatomy converter (or `None`).
+    brain_color_scheme (dict)
+        Bucket-keyed palette, typically the
+        `visualizations_settings.json["brain_area_colors"]` block.
+        Must contain at least an `'other'` entry.
+
+    Returns
+    -------
+    color (str)
+        Hex colour string for the resolved bucket.
+    """
+
+    bucket = pool_brain_area(brain_region)
+    if bucket in brain_color_scheme:
+        return brain_color_scheme[bucket]
+    return brain_color_scheme['other']
+
+
 def find_region_by_channel(cluster_id: str,
                            brain_area_dict: dict,
                            brain_color_scheme: dict,
@@ -105,6 +179,13 @@ def find_region_by_channel(cluster_id: str,
     -----------
     Returns name and color of particular brain region.
 
+    `brain_color_scheme` is keyed by display bucket (PAG / MRN / VTA /
+    MB / CENT / SC / other), not by raw region acronym; the colour for
+    a raw region is resolved through `_resolve_brain_area_color` so
+    `SCdw` / `SCdg` / `CENT2` / etc. all map to the canonical bucket
+    colour. The raw acronym is still returned for area-only queries
+    (so filter selectors that key on subdivisions keep working).
+
     Parameters
     ----------
     cluster_id (str)
@@ -112,7 +193,8 @@ def find_region_by_channel(cluster_id: str,
     brain_area_dict (dict)
         Contains brain area information.
     brain_color_scheme (dict)
-        Contains brain color scheme.
+        Bucket-keyed display palette (see
+        `visualizations_settings.json["brain_area_colors"]`).
     return_only_color (bool)
         If True, returns only color.
     return_only_area (bool)
@@ -121,7 +203,7 @@ def find_region_by_channel(cluster_id: str,
     Returns
     -------
     brain_region, brain_color, (brain_region, brain_color)  (str | tuple)
-        Brain region and/or color.
+        Brain region (raw acronym) and/or color (bucket-resolved).
     """
 
     cluster_ch = int(cluster_id[cluster_id.index('_ch') + 3:cluster_id.index('_ch') + 6])
@@ -130,10 +212,10 @@ def find_region_by_channel(cluster_id: str,
             for channel_group in channel_groups:
                 if channel_group[0] <= cluster_ch < channel_group[1]:
                     if return_only_color:
-                        return brain_color_scheme[brain_region]
+                        return _resolve_brain_area_color(brain_region, brain_color_scheme)
                     if return_only_area:
                         return brain_region
-                    return brain_region, brain_color_scheme[brain_region]
+                    return brain_region, _resolve_brain_area_color(brain_region, brain_color_scheme)
 
     return None
 
@@ -548,19 +630,25 @@ def plot_raster(plot_axes: plt.Axes,
     plot_axes.set_yticks([])
     fig_renderer = figure_object.canvas.get_renderer()
     txt_x_start = 0
-    brain_area_already_plotted = []
+    brain_buckets_already_plotted = []
     for probe_id in raster_brain_area:
         for brain_region in raster_brain_area[probe_id]:
-            if (len(filtered_brain_areas) == 0 or brain_region in filtered_brain_areas) and brain_region not in brain_area_already_plotted:
+            bucket = pool_brain_area(brain_region)
+            area_selected = (
+                len(filtered_brain_areas) == 0
+                or brain_region in filtered_brain_areas
+                or bucket in filtered_brain_areas
+            )
+            if area_selected and bucket not in brain_buckets_already_plotted:
                 txt = plot_axes.text(x=txt_x_start,
                                      y=1.01,
-                                     s=brain_region,
+                                     s=bucket,
                                      fontsize=6,
                                      fontweight='bold',
-                                     color=brain_area_color_scheme[brain_region],
+                                     color=_resolve_brain_area_color(brain_region, brain_area_color_scheme),
                                      transform=plot_axes.transAxes)
                 txt_x_start = txt.get_window_extent(renderer=fig_renderer).transformed(plot_axes.transAxes.inverted()).x1 + .01
-                brain_area_already_plotted.append(brain_region)
+                brain_buckets_already_plotted.append(bucket)
 
 
 def plot_behavioral_features(plot_axes: plt.Axes,
@@ -1066,12 +1154,7 @@ class Create3DVideo:
 
         self.app_context_bool = is_gui_context()
 
-        self.brain_area_color_scheme = {'SC': '#2071F5',
-                                        'PAG': '#F266EE',
-                                        'MRN': '#EB3654',
-                                        'scp': '#B8B2AD',
-                                        'PPN': '#D44B22',
-                                        'PRNr': '#EB8F34'}
+        self.brain_area_color_scheme = dict(self.visualizations_parameter_dict['brain_area_colors'])
 
         self.node_connections = ['TTI-Haunch_left', 'TTI-Haunch_right', 'Shoulder_left-Haunch_left',
                                  'Shoulder_right-Haunch_right', 'Nose-Ear_L', 'Nose-Ear_R',
@@ -1384,7 +1467,11 @@ class Create3DVideo:
                                                                      brain_color_scheme=self.brain_area_color_scheme,
                                                                      return_only_color=False,
                                                                      return_only_area=True)
-                            select_area_bool = any(area_keyword == cl_brain_region for area_keyword in self.visualizations_parameter_dict['make_behavioral_videos']['raster_selection_criteria']["brain_areas"])
+                            cl_brain_bucket = pool_brain_area(cl_brain_region)
+                            select_area_bool = any(
+                                area_keyword == cl_brain_region or area_keyword == cl_brain_bucket
+                                for area_keyword in self.visualizations_parameter_dict['make_behavioral_videos']['raster_selection_criteria']["brain_areas"]
+                            )
                         if select_other_bool and select_area_bool:
                             cluster_files_filtered.append(one_file)
                     cluster_files = cluster_files_filtered
@@ -1668,13 +1755,15 @@ class Create3DVideo:
                                                                                      brain_color_scheme=self.brain_area_color_scheme,
                                                                                      return_only_color=False)
                         event_plot_colors.append(special_color)
-                        if special_brain_region not in change_brain_area_colors:
-                            change_brain_area_colors.append(special_brain_region)
+                        special_bucket = pool_brain_area(special_brain_region)
+                        if special_bucket not in change_brain_area_colors:
+                            change_brain_area_colors.append(special_bucket)
                     else:
-                        event_plot_colors.append('#B8B2AD')
+                        event_plot_colors.append(self.brain_area_color_scheme['other'])
 
                 if len(self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']) > 0:
-                    self.brain_area_color_scheme = {one_key: ('#B8B2AD' if one_key not in change_brain_area_colors else one_value) for one_key, one_value in self.brain_area_color_scheme.items()}
+                    grey_hex = self.brain_area_color_scheme['other']
+                    self.brain_area_color_scheme = {one_key: (grey_hex if one_key not in change_brain_area_colors else one_value) for one_key, one_value in self.brain_area_color_scheme.items()}
 
                 left, bottom, width, height = raster_fig_position
                 ax[2] = fig.add_axes([left, bottom, width, height])
