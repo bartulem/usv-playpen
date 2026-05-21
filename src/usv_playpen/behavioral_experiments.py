@@ -15,6 +15,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import webbrowser
 from collections.abc import Callable
 from importlib import metadata
@@ -1330,7 +1331,33 @@ class ExperimentController:
 
                         planned.append((ch_dir, prefixed_name))
 
-            # robocopy exit codes are a bitmask, not a plain status:
+            # Spawn one robocopy subprocess per planned file (all in
+            # parallel, matching the historical PowerShell Move-Item
+            # design that worked for years in this lab). The two
+            # tunings that distinguish this from the original
+            # /J /R:1 /W:5 robocopy invocation:
+            #
+            #   - NO /J. The /J flag forces unbuffered I/O, which on
+            #     parallel writes to one SMB destination dir produces
+            #     more contention than buffered I/O does (every
+            #     stream demands its own SMB credits up-front rather
+            #     than letting the Windows cache manager merge and
+            #     queue writes). PowerShell Move-Item used the cache
+            #     manager via System.IO.File.Move and never produced
+            #     the slave-channel failure mode; matching that
+            #     behaviour here.
+            #
+            #   - /R:60 /W:10 = up to 60 retries with 10 s between
+            #     each => robocopy will patiently retry a single file
+            #     for up to ~10 minutes before declaring failure. The
+            #     previous /R:1 /W:5 gave up after ~5 s, which was
+            #     not enough to ride out the transient SMB
+            #     contention seen at start-of-transfer when 8 parallel
+            #     streams hit the same destination dir. PS Move-Item
+            #     had effectively infinite retry (it just blocked);
+            #     this is the bounded equivalent.
+            #
+            # robocopy exit codes are a bitmask:
             #   bit 0 (1): files were copied
             #   bit 1 (2): extra files/dirs detected at destination
             #   bit 2 (4): mismatched files/dirs detected
@@ -1343,54 +1370,102 @@ class ExperimentController:
             # silenced and a robocopy-aware per-file summary is
             # emitted below.
             #
-            # Per-file retry budget is /R:8 /W:10 (up to ~80 s);
-            # per-batch wall-clock budget is 10 minutes. With batches
-            # of 2 there are typically <= 4 batches per session, so
-            # the worst-case total transfer wall time is ~40 minutes
-            # before we give up -- still bounded.
-            BATCH_SIZE = 2
-            BATCH_TIMEOUT_S = 10 * 60
-            audio_copy_outcomes: list[tuple[pathlib.Path, str, int | None]] = []
-            n_batches = (len(planned) + BATCH_SIZE - 1) // BATCH_SIZE
-            for batch_start in range(0, len(planned), BATCH_SIZE):
-                batch = planned[batch_start : batch_start + BATCH_SIZE]
-                batch_idx = batch_start // BATCH_SIZE + 1
-                batch_subps = [
-                    subprocess.Popen(
+            # robocopy stdout / stderr go to a per-subprocess
+            # tempfile (NOT subprocess.PIPE, because wait_for_
+            # subprocesses only polls; if the pipe buffer fills the
+            # subprocess deadlocks on write and never exits). The
+            # tempfile is read after the wait so we can include the
+            # actual Win32 error code in the FAILED line on the rare
+            # occasions when robocopy does give up.
+            audio_copy_subps: list[
+                tuple[subprocess.Popen, pathlib.Path, str, pathlib.Path]
+            ] = []
+            for ch_dir, prefixed_name in planned:
+                log_file = tempfile.NamedTemporaryFile(
+                    mode='wb', suffix='_robocopy.log', delete=False
+                )
+                try:
+                    subp = subprocess.Popen(
                         args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
-                              '/J', '/R:8', '/W:10', '/MOV',
+                              '/R:60', '/W:10', '/MOV',
                               '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
-                        stdout=subprocess.DEVNULL,
+                        stdout=log_file,
                         stderr=subprocess.STDOUT,
                         shell=False
                     )
-                    for ch_dir, prefixed_name in batch
-                ]
-                batch_rcs = wait_for_subprocesses(
-                    subps=batch_subps,
-                    max_seconds=BATCH_TIMEOUT_S,
-                    label=f"audio file move (batch {batch_idx}/{n_batches})",
-                    poll_interval_s=1,
-                    message_output=lambda _msg: None,
-                    raise_on_nonzero=False,
-                    raise_on_timeout=False,
+                finally:
+                    # Close our handle to the tempfile; the subprocess
+                    # already has its own duplicated FD. We re-open
+                    # the file for reading after the subprocess exits.
+                    log_file.close()
+                audio_copy_subps.append(
+                    (subp, ch_dir, prefixed_name, pathlib.Path(log_file.name))
                 )
-                for (ch_dir, prefixed_name), rc in zip(batch, batch_rcs):
-                    audio_copy_outcomes.append((ch_dir, prefixed_name, rc))
+
+            # 15-minute overall budget. Per-file budget is already
+            # ~10 min via /R:60 /W:10; with all robocopies running in
+            # parallel the slowest one bounds the wall clock. 15 min
+            # gives a safety margin over the per-file budget without
+            # being so large that a wedged transfer holds the GUI
+            # forever.
+            return_codes = wait_for_subprocesses(
+                subps=[t[0] for t in audio_copy_subps],
+                max_seconds=15 * 60,
+                label="audio file move",
+                poll_interval_s=1,
+                message_output=lambda _msg: None,
+                raise_on_nonzero=False,
+                raise_on_timeout=False,
+            )
+
+            # Drain each robocopy's tempfile and build the outcome
+            # list. The captured text is included in the FAILED line
+            # below so the user can see the actual Win32 error code
+            # without re-running with stderr redirected.
+            audio_copy_outcomes: list[
+                tuple[pathlib.Path, str, int | None, str]
+            ] = []
+            for (_subp, ch_dir, prefixed_name, log_path), rc in zip(
+                audio_copy_subps, return_codes
+            ):
+                captured = ''
+                try:
+                    captured = log_path.read_text(
+                        encoding='utf-8', errors='replace'
+                    ).strip()
+                except OSError:
+                    pass
+                # Best-effort cleanup; if the unlink fails (file
+                # locked, permission issue) it's harmless -- the OS
+                # cleans up temp files eventually.
+                try:
+                    log_path.unlink()
+                except OSError:
+                    pass
+                audio_copy_outcomes.append((ch_dir, prefixed_name, rc, captured))
 
             # Per-file outcome: report failures by source -> destination
             # path so the user can re-copy them manually without having
-            # to map a list index back to a filename.
+            # to map a list index back to a filename. Append the
+            # captured robocopy output so the Win32 error code is
+            # visible in the GUI log.
             n_total = len(audio_copy_outcomes)
             n_ok = 0
             n_failed = 0
-            for ch_dir, prefixed_name, rc in audio_copy_outcomes:
+            for ch_dir, prefixed_name, rc, captured in audio_copy_outcomes:
                 if rc is None or rc >= 8:
                     n_failed += 1
-                    self.message_output(
+                    failure_msg = (
                         f"[audio file move] FAILED rc={rc}  "
                         f"{ch_dir / prefixed_name}  ->  {dest_dir / prefixed_name}"
                     )
+                    if captured:
+                        # indent each captured line so it's visually
+                        # grouped with the FAILED header in the GUI
+                        # log
+                        indented = "\n    ".join(captured.splitlines())
+                        failure_msg += f"\n  robocopy output:\n    {indented}"
+                    self.message_output(failure_msg)
                 else:
                     n_ok += 1
 
@@ -1411,7 +1486,7 @@ class ExperimentController:
             if n_failed:
                 orphans = [
                     str(ch_dir / prefixed_name)
-                    for ch_dir, prefixed_name, rc in audio_copy_outcomes
+                    for ch_dir, prefixed_name, rc, _ in audio_copy_outcomes
                     if (rc is None or rc >= 8) and (ch_dir / prefixed_name).exists()
                 ]
                 if orphans:
