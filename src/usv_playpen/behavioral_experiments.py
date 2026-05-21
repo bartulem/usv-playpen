@@ -1267,7 +1267,13 @@ class ExperimentController:
         #     an instant same-volume metadata operation — it cannot
         #     itself hang the way a network move can.
         if self.exp_settings_dict['conduct_audio_recording']:
-            audio_copy_subprocesses = []
+            # Each robocopy invocation is tracked as a tuple of
+            # (subprocess, source channel dir, prefixed source/dest
+            # filename) so the post-wait summary can report a per-file
+            # outcome by name (not just by list index) and so the
+            # orphan check below can scope itself to THIS session's
+            # failures.
+            audio_copy_subprocesses: list[tuple[subprocess.Popen, pathlib.Path, str]] = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
                 dest_dir = pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original'
                 for mic_idx in self.exp_settings_dict['audio']['used_mics']:
@@ -1292,14 +1298,14 @@ class ExperimentController:
 
                     single_audio_copy_subp = subprocess.Popen(
                         args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
-                              '/J', '/R:1', '/W:5', '/MOV',
+                              '/J', '/R:8', '/W:10', '/MOV',
                               '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.STDOUT,
                         shell=False
                     )
 
-                    audio_copy_subprocesses.append(single_audio_copy_subp)
+                    audio_copy_subprocesses.append((single_audio_copy_subp, ch_dir, prefixed_name))
             else:
                 relevant_file_count = max(1, int(math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
                 device_id = ['m', 's']
@@ -1324,14 +1330,14 @@ class ExperimentController:
 
                         multi_audio_copy_subp = subprocess.Popen(
                             args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
-                                  '/J', '/R:1', '/W:5', '/MOV',
+                                  '/J', '/R:8', '/W:10', '/MOV',
                                   '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.STDOUT,
                             shell=False
                         )
 
-                        audio_copy_subprocesses.append(multi_audio_copy_subp)
+                        audio_copy_subprocesses.append((multi_audio_copy_subp, ch_dir, prefixed_name))
 
             # 30-minute budget for moving the audio files.
             #
@@ -1345,13 +1351,22 @@ class ExperimentController:
             # "copied OK") and rc >= 8 is a genuine failure. wait_for_
             # subprocesses' generic "non-zero rc is a failure" log line
             # would flag every successful robocopy, so its own logger is
-            # silenced and we emit a robocopy-aware summary below.
+            # silenced and a robocopy-aware summary is emitted below.
+            #
+            # /R:8 /W:10 -- up to 8 retries with 10 s between each, so
+            # per-file budget is ~80 s. The previous /R:1 /W:5 was too
+            # aggressive when N (typically 8) robocopy processes spawn
+            # in parallel and contend on the same SMB destination dir;
+            # the slave-channel (s_) files arrived a moment later than
+            # the master (m_) ones, hit the saturated SMB session, and
+            # exhausted their single retry inside 5 s. The new budget
+            # is still bounded by the 30-min outer timeout.
             #
             # metadata and CoolTerm sync were already written above, so
             # a hung or failed audio move cannot rob the session of its
             # non-audio artifacts.
             return_codes = wait_for_subprocesses(
-                subps=audio_copy_subprocesses,
+                subps=[t[0] for t in audio_copy_subprocesses],
                 max_seconds=30 * 60,
                 label="audio file move",
                 poll_interval_s=1,
@@ -1359,12 +1374,50 @@ class ExperimentController:
                 raise_on_nonzero=False,
                 raise_on_timeout=False,
             )
-            robocopy_failures = [(i, rc) for i, rc in enumerate(return_codes) if rc is None or rc >= 8]
-            if robocopy_failures:
-                failures_str = ", ".join(f"#{i}(rc={rc})" for i, rc in robocopy_failures)
-                self.message_output(
-                    f"[audio file move] {len(robocopy_failures)}/{len(return_codes)} robocopy invocation(s) failed: {failures_str}"
-                )
+
+            # Per-file outcome: report failures by source -> destination
+            # path so the user can re-copy them manually without having
+            # to map a list index back to a filename.
+            n_total = len(return_codes)
+            n_ok = 0
+            n_failed = 0
+            for (_subp, ch_dir, prefixed_name), rc in zip(audio_copy_subprocesses, return_codes):
+                if rc is None or rc >= 8:
+                    n_failed += 1
+                    self.message_output(
+                        f"[audio file move] FAILED rc={rc}  "
+                        f"{ch_dir / prefixed_name}  ->  {dest_dir / prefixed_name}"
+                    )
+                else:
+                    n_ok += 1
+
+            # Always-on completion summary so the user can confirm the
+            # transfer ran to completion, not just that no failures
+            # happened to be logged.
+            self.message_output(
+                f"[audio file move] done: {n_ok}/{n_total} copied, {n_failed} failed."
+            )
+
+            # Orphan scan, scoped strictly to THIS session's failed
+            # transfers: walk our own tracked list and report renamed
+            # source files still on disk (which is how /MOV indicates
+            # the copy did not succeed). Files from previous sessions
+            # are never enumerated by this loop, so a leftover
+            # ``s_*.wav`` from an older transfer can never be confused
+            # with a current orphan.
+            if n_failed:
+                orphans = [
+                    str(ch_dir / prefixed_name)
+                    for (_subp, ch_dir, prefixed_name), rc
+                    in zip(audio_copy_subprocesses, return_codes)
+                    if (rc is None or rc >= 8) and (ch_dir / prefixed_name).exists()
+                ]
+                if orphans:
+                    self.message_output(
+                        f"[audio file move] {len(orphans)} renamed file(s) "
+                        f"from THIS session remain in local channel directories. "
+                        f"Manual copy required:\n  " + "\n  ".join(orphans)
+                    )
 
         # ensure the video is done copying before proceeding
         while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
