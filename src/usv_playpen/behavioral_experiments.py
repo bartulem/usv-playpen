@@ -15,6 +15,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import webbrowser
 from collections.abc import Callable
 from importlib import metadata
@@ -1267,7 +1268,22 @@ class ExperimentController:
         #     an instant same-volume metadata operation — it cannot
         #     itself hang the way a network move can.
         if self.exp_settings_dict['conduct_audio_recording']:
-            audio_copy_subprocesses = []
+            # The transfer runs in two phases so robocopy concurrency
+            # is capped:
+            #   1. PLAN -- for every channel file we want to move,
+            #      glob it, prefix-rename it locally (instant same-
+            #      volume metadata op), and record the (ch_dir,
+            #      prefixed_name) pair in ``planned``.
+            #   2. EXECUTE -- iterate ``planned`` in fixed-size
+            #      batches; each batch spawns at most
+            #      ``BATCH_SIZE`` robocopy processes and waits for
+            #      them before the next batch starts.
+            # Capping the concurrency at 2 keeps the SMB destination
+            # from being hammered by 8 simultaneous unbuffered (/J)
+            # streams, which is what caused the slave-channel (s_)
+            # files to fail under the previous all-parallel design
+            # even with the bumped /R:8 /W:10 retry budget.
+            planned: list[tuple[pathlib.Path, str]] = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
                 dest_dir = pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original'
                 for mic_idx in self.exp_settings_dict['audio']['used_mics']:
@@ -1290,16 +1306,7 @@ class ExperimentController:
                         self.message_output(f"Local rename failed for {last_modified_audio_file.name}: {e}")
                         continue
 
-                    single_audio_copy_subp = subprocess.Popen(
-                        args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
-                              '/J', '/R:1', '/W:5', '/MOV',
-                              '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.STDOUT,
-                        shell=False
-                    )
-
-                    audio_copy_subprocesses.append(single_audio_copy_subp)
+                    planned.append((ch_dir, prefixed_name))
             else:
                 relevant_file_count = max(1, int(math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
                 device_id = ['m', 's']
@@ -1322,49 +1329,172 @@ class ExperimentController:
                             self.message_output(f"Local rename failed for {aud_file.name}: {e}")
                             continue
 
-                        multi_audio_copy_subp = subprocess.Popen(
-                            args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
-                                  '/J', '/R:1', '/W:5', '/MOV',
-                                  '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.STDOUT,
-                            shell=False
-                        )
+                        planned.append((ch_dir, prefixed_name))
 
-                        audio_copy_subprocesses.append(multi_audio_copy_subp)
-
-            # 30-minute budget for moving the audio files.
+            # Spawn one robocopy subprocess per planned file (all in
+            # parallel, matching the historical PowerShell Move-Item
+            # design that worked for years in this lab). The two
+            # tunings that distinguish this from the original
+            # /J /R:1 /W:5 robocopy invocation:
             #
-            # robocopy exit codes are a bitmask, not a plain status:
+            #   - NO /J. The /J flag forces unbuffered I/O, which on
+            #     parallel writes to one SMB destination dir produces
+            #     more contention than buffered I/O does (every
+            #     stream demands its own SMB credits up-front rather
+            #     than letting the Windows cache manager merge and
+            #     queue writes). PowerShell Move-Item used the cache
+            #     manager via System.IO.File.Move and never produced
+            #     the slave-channel failure mode; matching that
+            #     behaviour here.
+            #
+            #   - /R:60 /W:10 = up to 60 retries with 10 s between
+            #     each => robocopy will patiently retry a single file
+            #     for up to ~10 minutes before declaring failure. The
+            #     previous /R:1 /W:5 gave up after ~5 s, which was
+            #     not enough to ride out the transient SMB
+            #     contention seen at start-of-transfer when 8 parallel
+            #     streams hit the same destination dir. PS Move-Item
+            #     had effectively infinite retry (it just blocked);
+            #     this is the bounded equivalent.
+            #
+            # robocopy exit codes are a bitmask:
             #   bit 0 (1): files were copied
             #   bit 1 (2): extra files/dirs detected at destination
             #   bit 2 (4): mismatched files/dirs detected
             #   bit 3 (8): some files/dirs could not be copied
             #   bit 4 (16): serious error (usage, permissions, etc.)
             # so 0-7 are all forms of success (rc=1 is the typical
-            # "copied OK") and rc >= 8 is a genuine failure. wait_for_
-            # subprocesses' generic "non-zero rc is a failure" log line
-            # would flag every successful robocopy, so its own logger is
-            # silenced and we emit a robocopy-aware summary below.
+            # "copied OK") and rc >= 8 is a genuine failure. The
+            # wait function's generic "non-zero rc is a failure" log
+            # would flag every successful robocopy, so its logger is
+            # silenced and a robocopy-aware per-file summary is
+            # emitted below.
             #
-            # metadata and CoolTerm sync were already written above, so
-            # a hung or failed audio move cannot rob the session of its
-            # non-audio artifacts.
+            # robocopy stdout / stderr go to a per-subprocess
+            # tempfile (NOT subprocess.PIPE, because wait_for_
+            # subprocesses only polls; if the pipe buffer fills the
+            # subprocess deadlocks on write and never exits). The
+            # tempfile is read after the wait so we can include the
+            # actual Win32 error code in the FAILED line on the rare
+            # occasions when robocopy does give up.
+            audio_copy_subps: list[
+                tuple[subprocess.Popen, pathlib.Path, str, pathlib.Path]
+            ] = []
+            for ch_dir, prefixed_name in planned:
+                log_file = tempfile.NamedTemporaryFile(
+                    mode='wb', suffix='_robocopy.log', delete=False
+                )
+                try:
+                    subp = subprocess.Popen(
+                        args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
+                              '/R:60', '/W:10', '/MOV',
+                              '/NP', '/NFL', '/NDL', '/NJH', '/NJS'],
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        shell=False
+                    )
+                finally:
+                    # Close our handle to the tempfile; the subprocess
+                    # already has its own duplicated FD. We re-open
+                    # the file for reading after the subprocess exits.
+                    log_file.close()
+                audio_copy_subps.append(
+                    (subp, ch_dir, prefixed_name, pathlib.Path(log_file.name))
+                )
+
+            # 15-minute overall budget. Per-file budget is already
+            # ~10 min via /R:60 /W:10; with all robocopies running in
+            # parallel the slowest one bounds the wall clock. 15 min
+            # gives a safety margin over the per-file budget without
+            # being so large that a wedged transfer holds the GUI
+            # forever.
             return_codes = wait_for_subprocesses(
-                subps=audio_copy_subprocesses,
-                max_seconds=30 * 60,
+                subps=[t[0] for t in audio_copy_subps],
+                max_seconds=15 * 60,
                 label="audio file move",
                 poll_interval_s=1,
                 message_output=lambda _msg: None,
                 raise_on_nonzero=False,
                 raise_on_timeout=False,
             )
-            robocopy_failures = [(i, rc) for i, rc in enumerate(return_codes) if rc is None or rc >= 8]
-            if robocopy_failures:
-                failures_str = ", ".join(f"#{i}(rc={rc})" for i, rc in robocopy_failures)
-                self.message_output(
-                    f"[audio file move] {len(robocopy_failures)}/{len(return_codes)} robocopy invocation(s) failed: {failures_str}"
-                )
+
+            # Drain each robocopy's tempfile and build the outcome
+            # list. The captured text is included in the FAILED line
+            # below so the user can see the actual Win32 error code
+            # without re-running with stderr redirected.
+            audio_copy_outcomes: list[
+                tuple[pathlib.Path, str, int | None, str]
+            ] = []
+            for (_subp, ch_dir, prefixed_name, log_path), rc in zip(
+                audio_copy_subps, return_codes
+            ):
+                captured = ''
+                try:
+                    captured = log_path.read_text(
+                        encoding='utf-8', errors='replace'
+                    ).strip()
+                except OSError:
+                    pass
+                # Best-effort cleanup; if the unlink fails (file
+                # locked, permission issue) it's harmless -- the OS
+                # cleans up temp files eventually.
+                try:
+                    log_path.unlink()
+                except OSError:
+                    pass
+                audio_copy_outcomes.append((ch_dir, prefixed_name, rc, captured))
+
+            # Per-file outcome: report failures by source -> destination
+            # path so the user can re-copy them manually without having
+            # to map a list index back to a filename. Append the
+            # captured robocopy output so the Win32 error code is
+            # visible in the GUI log.
+            n_total = len(audio_copy_outcomes)
+            n_ok = 0
+            n_failed = 0
+            for ch_dir, prefixed_name, rc, captured in audio_copy_outcomes:
+                if rc is None or rc >= 8:
+                    n_failed += 1
+                    failure_msg = (
+                        f"[audio file move] FAILED rc={rc}  "
+                        f"{ch_dir / prefixed_name}  ->  {dest_dir / prefixed_name}"
+                    )
+                    if captured:
+                        # indent each captured line so it's visually
+                        # grouped with the FAILED header in the GUI
+                        # log
+                        indented = "\n    ".join(captured.splitlines())
+                        failure_msg += f"\n  robocopy output:\n    {indented}"
+                    self.message_output(failure_msg)
+                else:
+                    n_ok += 1
+
+            # Always-on completion summary so the user can confirm the
+            # transfer ran to completion, not just that no failures
+            # happened to be logged.
+            self.message_output(
+                f"[audio file move] done: {n_ok}/{n_total} copied, {n_failed} failed."
+            )
+
+            # Orphan scan, scoped strictly to THIS session's failed
+            # transfers: walk our own outcome list and report renamed
+            # source files still on disk (which is how /MOV indicates
+            # the copy did not succeed). Files from previous sessions
+            # are never enumerated by this loop, so a leftover
+            # ``s_*.wav`` from an older transfer can never be confused
+            # with a current orphan.
+            if n_failed:
+                orphans = [
+                    str(ch_dir / prefixed_name)
+                    for ch_dir, prefixed_name, rc, _ in audio_copy_outcomes
+                    if (rc is None or rc >= 8) and (ch_dir / prefixed_name).exists()
+                ]
+                if orphans:
+                    self.message_output(
+                        f"[audio file move] {len(orphans)} renamed file(s) "
+                        f"from THIS session remain in local channel directories. "
+                        f"Manual copy required:\n  " + "\n  ".join(orphans)
+                    )
 
         # ensure the video is done copying before proceeding
         while any(self.api.is_copying(_sn) for _sn in self.camera_serial_num):
