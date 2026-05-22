@@ -40,7 +40,6 @@ from collections.abc import Callable
 from datetime import datetime
 
 import matplotlib.animation as animation
-import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -49,17 +48,10 @@ from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+from usv_playpen.plot_style import apply_plot_style
 from usv_playpen.visualizations.make_behavioral_videos import pool_brain_area
 
-for _ttf in (
-    "Helvetica.ttf",
-    "Helvetica-Bold.ttf",
-    "Helvetica-Oblique.ttf",
-    "Helvetica-BoldOblique.ttf",
-    "Helvetica-Light.ttf",
-):
-    fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / "fonts" / _ttf)
-plt.style.use(pathlib.Path(__file__).parent.parent / "_config/usv_playpen.mplstyle")
+apply_plot_style()
 
 
 # Canonical bucket ordering (most-populated first; matches the order
