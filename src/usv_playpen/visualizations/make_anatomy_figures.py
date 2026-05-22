@@ -921,8 +921,10 @@ class AnatomyFigureMaker:
             Path to the written video file.
         """
 
-        out_dir = pathlib.Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # Directory + format resolution is handled by `resolve_pdf_path`
+        # below; the legacy `out_dir = pathlib.Path(out_dir)` call here
+        # used to break when `out_dir is None` (which is now the default
+        # — the helper falls back to `figures.save_directory`).
 
         fig = self.build_unit_positions_figure(
             fig_size_inches=fig_size_inches,
