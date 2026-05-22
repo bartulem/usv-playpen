@@ -29,6 +29,7 @@ from ..os_utils import first_match_or_raise
 from ..plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
+from .figure_io import save_figure
 
 apply_plot_style()
 
@@ -2101,9 +2102,15 @@ class Create3DVideo:
 
             else:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:
-                    fig_loc = putative_save_directory / f"{session_id}_3D_{frame_start}fr_{name_addition}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_format']}"
-                    fig.savefig(fig_loc,
-                                dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+                    video_fig_specs = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']
+                    fig_loc = save_figure(
+                        fig,
+                        stem=f"{session_id}_3D_{frame_start}fr_{name_addition}",
+                        viz_settings=self.visualizations_parameter_dict,
+                        override_dir=putative_save_directory,
+                        override_format=video_fig_specs['fig_format'],
+                        override_dpi=video_fig_specs['fig_dpi'],
+                    )
 
                     # open image in default viewer if display available
                     os_type = platform.system()

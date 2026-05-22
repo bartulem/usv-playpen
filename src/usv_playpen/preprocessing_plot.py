@@ -16,6 +16,7 @@ from imgstore import new_for_filename
 
 from .os_utils import first_match_or_raise
 from .plot_style import apply_plot_style
+from .visualizations.figure_io import save_figure
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 apply_plot_style()
@@ -820,8 +821,11 @@ class SummaryPlotter:
                 axin6.set_yticks([])
                 axin6.set_xlabel("time (s)")
 
-        fig.savefig(
-            fname=pathlib.Path(self.root_directory) / 'sync' / f'{pathlib.Path(self.root_directory).name}_summary.svg',
-            dpi=300,
+        save_figure(
+            fig,
+            stem=f"{pathlib.Path(self.root_directory).name}_summary",
+            viz_settings=getattr(self, "visualizations_parameter_dict", None),
+            override_dir=pathlib.Path(self.root_directory) / 'sync',
+            timestamp_in_name=False,
         )
         plt.close()

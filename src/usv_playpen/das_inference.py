@@ -23,6 +23,7 @@ from tqdm import tqdm
 from .os_utils import configure_path, wait_for_subprocesses
 from .plot_style import apply_plot_style
 from .time_utils import is_gui_context, smart_wait
+from .visualizations.figure_io import save_figure
 from .yaml_utils import load_session_metadata, save_session_metadata
 
 apply_plot_style()
@@ -456,9 +457,12 @@ class FindMouseVocalizations:
                 ax[1].set_xlabel("Signal/spectral variance")
                 ax[1].set_ylabel("Number of putative USVs")
                 ax[1].axvline(x=noise_var_cutoff, ls="-.", lw=1.2, c="#202020")
-                fig.savefig(
-                    fname=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_signal_correlation_histogram.svg",
-                    dpi=300,
+                save_figure(
+                    fig,
+                    stem=f"{session_id}_usv_signal_correlation_histogram",
+                    viz_settings=getattr(self, "visualizations_parameter_dict", None),
+                    override_dir=pathlib.Path(self.root_directory) / "audio",
+                    timestamp_in_name=False,
                 )
                 plt.close()
 
