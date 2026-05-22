@@ -929,7 +929,12 @@ class ContinuousModelingPipeline(FeatureZoo):
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = "manifold"
+        # Tag carries the USV category column the UMAP target derives
+        # from (e.g. `vae_supercategory`, `qlvm_category`) so every
+        # downstream filename — modeling input pickle, univariate pkls,
+        # model-selection step pkls, consolidated artifact — makes the
+        # source clustering explicit.
+        analysis_tag = f"manifold_{column_name_cats}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -995,6 +1000,11 @@ class ContinuousModelingPipeline(FeatureZoo):
                 'usv_manifold_column_names': list(manifold_cols),
                 'manifold_metric': str(voc_settings['usv_manifold_metric']),
                 'manifold_period': float(voc_settings['usv_manifold_period']),
+                # Pins the USV category column (e.g. `vae_supercategory`,
+                # `qlvm_category`) the manifold targets were derived
+                # from so the selector can route per-step filenames +
+                # the consolidated artifact through the same tag.
+                'usv_category_column_name': column_name_cats,
             },
         )
 

@@ -805,7 +805,13 @@ class MultinomialModelingPipeline(FeatureZoo):
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = "multinomial"
+        # Tag carries the active USV category column (e.g.
+        # `vae_supercategory`, `qlvm_category`) so downstream filenames
+        # at every level — modeling input pickle, univariate pkls,
+        # model-selection step pkls, consolidated artifact — make
+        # explicit which clustering / cardinality the multinomial
+        # selector was trained against.
+        analysis_tag = f"multinomial_{column_name_cats}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 

@@ -1266,7 +1266,16 @@ def vocal_category_model_selection(
     )
     _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
 
-    prefix = f"model_selection_{target_condition}_{target_category}_step_"
+    # Pin which USV category column generated the binary target so the
+    # per-step prefix (and downstream consolidation) carries the choice
+    # forward in the filename — e.g. `vae_supercategory`, `qlvm_category`.
+    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
+    # `target_category` is the human-readable `category_<idx>` (kept for
+    # metadata + console output); strip the redundant prefix when
+    # building the step filename so it reads `category_<col>_<idx>`
+    # instead of `category_<col>_category_<idx>`.
+    _cat_idx = target_category.replace('category_', '', 1)
+    prefix = f"model_selection_category_{_column_name_cats}_{_cat_idx}_{target_condition}_step_"
     existing_steps = []
     if model_selection_dir.is_dir():
         for f_name in (p.name for p in model_selection_dir.iterdir()):
@@ -2815,7 +2824,12 @@ def multinomial_vocal_category_model_selection(
     # for any `male_...` filename and truncated the prefix.
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
-    prefix = f"model_selection_multinomial_vocal_category_{target_condition}_{split_strategy}_step_"
+    # Pin which USV category column generated the multinomial labels so
+    # the per-step prefix (and downstream consolidation) carries the
+    # choice forward in the filename — e.g. `vae_supercategory`,
+    # `qlvm_category`.
+    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
+    prefix = f"model_selection_multinomial_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
 
     _run_md = build_selection_metadata(
         modeling_settings=settings,
@@ -3736,7 +3750,12 @@ def continuous_vocal_manifold_model_selection(
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
-    prefix = f"model_selection_continuous_manifold_{target_condition}_{split_strategy}_step_"
+    # Pin which USV category column the manifold targets were derived
+    # from (e.g. `vae_supercategory`, `qlvm_category`) so the per-step
+    # prefix (and downstream consolidation) carries the choice forward
+    # in the filename.
+    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
+    prefix = f"model_selection_continuous_manifold_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
 
     _run_md = build_selection_metadata(
         modeling_settings=settings,

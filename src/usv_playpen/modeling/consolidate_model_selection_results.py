@@ -182,7 +182,7 @@ def _build_default_output_filename(input_metadata: dict,
     metadata blocks + the per-step file prefix.
 
     Schema:
-    `model_selection_final_<sex>_<condition>_<analysis_short>_<split_strategy>[_<ts>].pkl`
+    `model_selection_final_<sex>_<condition>_<analysis_tag>_<split_strategy>[_<ts>].pkl`
 
     Components, derived from the upstream metadata:
 
@@ -191,11 +191,13 @@ def _build_default_output_filename(input_metadata: dict,
       * `condition` — `input_metadata['experimental_condition']` with
         the trailing `_<sex>` suffix stripped (so
         `'intact_partners_male'` → `'intact_partners'`).
-      * `analysis_short` — the last underscore-separated token of
-        `input_metadata['analysis_tag']` when the tag has multiple
-        tokens (`'onsets_bout'` → `'bout'`,
-        `'boutparam_durations'` → `'durations'`); otherwise the tag
-        is used verbatim (`'manifold'`, `'multinomial'`).
+      * `analysis_tag` — `input_metadata['analysis_tag']` embedded
+        verbatim. The modeling pipelines now mint canonical short
+        tags directly (`'bout'`, `'durations'`,
+        `'multinomial_vae_supercategory'`,
+        `'manifold_qlvm_category'`,
+        `'category_vae_supercategory_3'`), so no token slicing is
+        needed.
       * `split_strategy` — `run_metadata['split_strategy']` (e.g.
         `'mixed'`).
       * `ts` — the `YYYYMMDD_HHMMSSZ` token embedded in the per-step
@@ -223,14 +225,6 @@ def _build_default_output_filename(input_metadata: dict,
     if sex != 'unknown' and cohort_raw.endswith(f"_{sex}"):
         cohort = cohort_raw[: -(len(sex) + 1)]
 
-    # Take the last underscore-separated token when the tag is
-    # compound (`onsets_bout` → `bout`); leave single-token tags
-    # untouched (`manifold`, `multinomial`).
-    if '_' in analysis_tag:
-        analysis_short = analysis_tag.rsplit('_', 1)[-1]
-    else:
-        analysis_short = analysis_tag
-
     split_strategy = (
         run_metadata.get('split_strategy', 'unknown')
         if run_metadata is not None
@@ -241,7 +235,7 @@ def _build_default_output_filename(input_metadata: dict,
     ts_suffix = f"_{ts}" if ts else ''
 
     return (
-        f"model_selection_final_{sex}_{cohort}_{analysis_short}_"
+        f"model_selection_final_{sex}_{cohort}_{analysis_tag}_"
         f"{split_strategy}{ts_suffix}.pkl"
     )
 

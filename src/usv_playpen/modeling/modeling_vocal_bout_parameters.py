@@ -275,7 +275,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = f"boutparam_{target_variable}"
+        # analysis_tag is the short canonical name embedded in every
+        # downstream filename (modeling input → univariate → step → final).
+        analysis_tag = target_variable
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 

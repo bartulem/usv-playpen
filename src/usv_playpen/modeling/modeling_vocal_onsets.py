@@ -317,7 +317,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # idx, target_vocal_type) live in `_input_metadata` rather than
         # in the filename.
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = f"onsets_{target_vocal_type}"
+        # analysis_tag is the short canonical name that propagates
+        # through every level of the file-naming chain (modeling input
+        # pickle → univariate per-feature → univariate consolidated →
+        # model-selection consolidated). Keep it tight.
+        analysis_tag = target_vocal_type
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name_ = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
