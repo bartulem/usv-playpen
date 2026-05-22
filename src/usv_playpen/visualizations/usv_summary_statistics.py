@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import pathlib
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,21 @@ import seaborn as sns
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
+
+# Load the project-wide default cmap from `visualizations_settings.json`
+# at module import. Used as the default for every `cmap=` arg in this
+# file and as the base for the custom "white-base" colormap built in
+# `plot_category_polar_kde_grid` (was a hard-coded `'inferno'`).
+_VIZ_SETTINGS_PATH = (
+    pathlib.Path(__file__).parent.parent
+    / "_parameter_settings" / "visualizations_settings.json"
+)
+try:
+    with _VIZ_SETTINGS_PATH.open() as _vf:
+        _GLOBAL_CMAP = json.load(_vf).get("figures", {}).get("cmap", "inferno")
+except FileNotFoundError:
+    _GLOBAL_CMAP = "inferno"
 
 
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
@@ -1588,7 +1605,7 @@ def plot_category_local_fatigue_heatmap(
     bin_width_seconds: int,
     n_bins: int,
     smoothing_sigma: float = 0.75,
-    colormap: str = 'inferno',
+    colormap: str = _GLOBAL_CMAP,
     facet_figsize: tuple[int, int] = (12, 10)
 ) -> tuple[plt.Figure, np.ndarray, dict[str, Any]]:
     """
@@ -1600,8 +1617,9 @@ def plot_category_local_fatigue_heatmap(
 
     The function applies a 1D Gaussian filter along the time axis to reduce
     stochastic noise in sparse categories, followed by row-wise normalization
-    to isolate the fatigue 'shape' from absolute counts. Inferno is used as
-    the default colormap for high-contrast visualization of density.
+    to isolate the fatigue 'shape' from absolute counts. The project default
+    colormap (`figures.cmap`, currently 'inferno') is used for high-contrast
+    visualization of density.
 
     Parameters
     ----------
@@ -1616,7 +1634,7 @@ def plot_category_local_fatigue_heatmap(
     smoothing_sigma : float, default 0.75
         The standard deviation for the Gaussian kernel applied along the
         time axis. Set to 0 to disable smoothing.
-    colormap : str, default 'inferno'
+    colormap : str, default `figures.cmap` (currently 'inferno')
         The matplotlib colormap used for the heatmap intensity.
     facet_figsize : tuple[int, int], default (12, 10)
         The total size of the generated figure.
@@ -2010,7 +2028,7 @@ def plot_category_prevalence_and_embedding(
 
     The left column displays bar charts showing the count (and final proportion) of
     each USV category. The right column visualizes the 2D embedding space using either
-    a density heatmap ('imshow' with white_inferno) OR a scatter plot.
+    a density heatmap ('imshow' with white_base_cmap) OR a scatter plot.
 
     Global territorial boundaries are calculated using nearest-neighbor interpolation
     across ALL valid USVs and are overlaid prominently on top of every embedding plot.
@@ -2072,12 +2090,14 @@ def plot_category_prevalence_and_embedding(
     Z = griddata((dim1_all, dim2_all), cats_all, (xx, yy), method='nearest')
     unique_cats = np.unique(cats_all)
 
-    # Build the custom white-inferno colormap
-    base_cmap = plt.cm.get_cmap('inferno')
+    # Build a custom "white-base" gradient by taking the project-wide
+    # default colormap (`figures.cmap`) and pre-pending a smooth ramp
+    # from white into its low-end colours.
+    base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
     cmap_colors = base_cmap(np.linspace(0, 1, 256))
     white = np.array([1, 1, 1, 1])
     cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
-    white_inferno = mcolors.ListedColormap(cmap_colors)
+    white_base_cmap = mcolors.ListedColormap(cmap_colors)
 
     # 3. Figure setup
     fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 18), facecolor='#FFFFFF')
@@ -2117,7 +2137,7 @@ def plot_category_prevalence_and_embedding(
                 zz_norm = (zz - zz.min()) / (zz.max() - zz.min() + 1e-10)
 
                 ax_emb.imshow(
-                    zz_norm, cmap=white_inferno, interpolation='bilinear', origin='lower',
+                    zz_norm, cmap=white_base_cmap, interpolation='bilinear', origin='lower',
                     extent=[x_min, x_max, y_min, y_max], aspect='auto', zorder=2
                 )
             elif plot_type == 'scatter':
@@ -2186,7 +2206,7 @@ def plot_category_prevalence_and_embedding(
         zz_norm_global = (zz_global - zz_global.min()) / (zz_global.max() - zz_global.min() + 1e-10)
 
         ax_sum_emb.imshow(
-            zz_norm_global, cmap=white_inferno, interpolation='bilinear', origin='lower',
+            zz_norm_global, cmap=white_base_cmap, interpolation='bilinear', origin='lower',
             extent=[x_min, x_max, y_min, y_max], aspect='auto', zorder=2
         )
     elif plot_type == 'scatter':
