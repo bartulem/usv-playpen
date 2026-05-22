@@ -2,6 +2,15 @@
   "credentials_directory": "",
   "male_colors": ["#9AC0CD", "#8CA252"],
   "female_colors": ["#FF6347", "#B851B4"],
+  "brain_area_colors": {
+    "PAG": "#677470",
+    "MRN": "#939884",
+    "VTA": "#F5D27A",
+    "SC": "#9FB7D8",
+    "CENT": "#D88080",
+    "MB": "#9BBE85",
+    "other": "#B8B8B8"
+  },
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
     "make_behavioral_videos_bool": false,
