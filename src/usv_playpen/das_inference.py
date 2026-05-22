@@ -15,25 +15,17 @@ from collections.abc import Callable
 from datetime import datetime
 
 import librosa
-import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
 from tqdm import tqdm
 
 from .os_utils import configure_path, wait_for_subprocesses
+from .plot_style import apply_plot_style
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
-for _ttf in (
-    "Helvetica.ttf",
-    "Helvetica-Bold.ttf",
-    "Helvetica-Oblique.ttf",
-    "Helvetica-BoldOblique.ttf",
-    "Helvetica-Light.ttf",
-):
-    fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts" / _ttf)
-plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
+apply_plot_style()
 
 
 # DAS annotation filenames are produced by `das predict` using the input WAV's

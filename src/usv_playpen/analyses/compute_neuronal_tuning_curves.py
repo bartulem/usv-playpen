@@ -686,7 +686,7 @@ def _gaussian_smooth_2d(
 
 # triage-stat helpers (per-cluster scalar summaries written into
 # `triage_stats` at compute time, consumed downstream by
-# `detect_interesting_tuning_neurons`).
+# `unit_triage_aggregator`).
 
 
 def _longest_run(mask: np.ndarray, *, circular: bool = False) -> tuple[int, int, int]:

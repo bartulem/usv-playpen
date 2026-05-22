@@ -16,7 +16,6 @@ from typing import Any
 import h5py
 import librosa
 import librosa.display
-import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
@@ -27,18 +26,11 @@ from scipy.io import wavfile
 
 from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import first_match_or_raise
+from ..plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
 
-for _ttf in (
-    'Helvetica.ttf',
-    'Helvetica-Bold.ttf',
-    'Helvetica-Oblique.ttf',
-    'Helvetica-BoldOblique.ttf',
-    'Helvetica-Light.ttf',
-):
-    fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / 'fonts' / _ttf)
-plt.style.use(pathlib.Path(__file__).parent.parent / '_config/usv_playpen.mplstyle')
+apply_plot_style()
 
 
 @njit(parallel=True)

@@ -10,23 +10,15 @@ import pathlib
 import wave
 from collections.abc import Callable
 
-import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 from imgstore import new_for_filename
 
 from .os_utils import first_match_or_raise
+from .plot_style import apply_plot_style
 from .yaml_utils import load_session_metadata, save_session_metadata
 
-for _ttf in (
-    "Helvetica.ttf",
-    "Helvetica-Bold.ttf",
-    "Helvetica-Oblique.ttf",
-    "Helvetica-BoldOblique.ttf",
-    "Helvetica-Light.ttf",
-):
-    fm.fontManager.addfont(pathlib.Path(__file__).parent / "fonts" / _ttf)
-plt.style.use(pathlib.Path(__file__).parent / "_config/usv_playpen.mplstyle")
+apply_plot_style()
 
 
 class SummaryPlotter:

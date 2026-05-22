@@ -55,8 +55,7 @@ from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     _spatial_coherence,
     _ramp_index,
 )
-from usv_playpen.analyses.detect_interesting_tuning_neurons import (
-    detect_interesting_clusters,
+from usv_playpen.analyses.unit_triage_aggregator import (
     _to_jsonable,
     _safe_float,
     _flag_vmi,
@@ -1176,7 +1175,7 @@ def test_vmi_n_bouts_matches_detector():
 
 
 # ---------------------------------------------------------------------------
-# detect_interesting_tuning_neurons.py
+# unit_triage_aggregator.py
 # ---------------------------------------------------------------------------
 
 
@@ -1347,194 +1346,6 @@ def test_emitter_role_map_from_property_tuning():
 def test_emitter_role_map_missing_role_returns_empty():
     cluster_data = {"usv_peth": {"emitter_x": {"rate": np.zeros(5)}}}
     assert _emitter_role_map(cluster_data) == {}
-
-
-# detect_interesting_clusters end-to-end ------------------------------------
-
-
-@pytest.fixture
-def synthetic_session(tmp_path):
-    """Build a tmp session-style directory with the tuning_curves subdir."""
-    pkl_dir = tmp_path / "ephys" / "tuning_curves"
-    pkl_dir.mkdir(parents=True)
-    return tmp_path
-
-
-def _make_synthetic_pkl(
-    pkl_dir, cluster_id,
-    *,
-    vmi_significant=True,
-    behavioral_z=4.0,
-    behavioral_run=5,
-):
-    """
-    Build a minimal pkl with a `triage_stats` block. Synthetic — we don't
-    run the real compute, just emit the schema downstream consumers expect.
-    """
-    triage = {
-        "vmi": {
-            "emitter_a": {
-                "vmi": 0.5 if vmi_significant else 0.05,
-                "wilcoxon_pvalue": 0.001 if vmi_significant else 0.5,
-                "wilcoxon_statistic": 5.0,
-                "n_bouts": 20,
-                "fr_baseline": 1.0,
-                "fr_usv": 3.0,
-                "fr_baseline_per_bout": np.zeros(20),
-                "fr_usv_per_bout": np.zeros(20),
-                "role": "self",
-                "sex": "male",
-                "emitter": "emitter_a",
-            }
-        },
-        "usv_peth": {
-            "emitter_a": {
-                "peak_abs_z": 0.0, "peak_signed_z": 0.0, "peak_idx": -1,
-                "peak_t": float("nan"), "ramp_index": 0.0,
-                "excit": {
-                    "n_bins": 0, "max_run": 0, "run_start_idx": -1,
-                    "run_end_idx": -1, "peak_idx": -1,
-                    "peak_z": float("nan"), "run_t_start": float("nan"),
-                    "run_t_end": float("nan"), "peak_t": float("nan"),
-                },
-                "suppress": {
-                    "n_bins": 0, "max_run": 0, "run_start_idx": -1,
-                    "run_end_idx": -1, "peak_idx": -1,
-                    "peak_z": float("nan"), "run_t_start": float("nan"),
-                    "run_t_end": float("nan"), "peak_t": float("nan"),
-                },
-            }
-        },
-        "usv_property_tuning": {"emitter_a": {}},
-        "usv_category_tuning": {"emitter_a": {}},
-        "usv_category_peth": {"emitter_a": {}},
-        "behavioral": {
-            "beh_offset=0s": {
-                "mouse.feature1": {
-                    "peak_abs_z": behavioral_z,
-                    "peak_signed_z": behavioral_z,
-                    "peak_idx": 7,
-                    "peak_bin_value": 0.7,
-                    "selectivity": 0.4,
-                    "monotonicity": 0.0,
-                    "is_circular": False,
-                    "excit": {
-                        "n_bins": behavioral_run, "max_run": behavioral_run,
-                        "run_start_idx": 5, "run_end_idx": 5 + behavioral_run - 1,
-                        "peak_idx": 7, "peak_z": behavioral_z,
-                        "range_low": 0.5, "range_high": 0.9,
-                        "peak_bin_value": 0.7,
-                    },
-                    "suppress": {
-                        "n_bins": 0, "max_run": 0,
-                        "run_start_idx": -1, "run_end_idx": -1,
-                        "peak_idx": -1, "peak_z": float("nan"),
-                        "range_low": float("nan"),
-                        "range_high": float("nan"),
-                        "peak_bin_value": float("nan"),
-                    },
-                }
-            }
-        },
-        "spatial": {"beh_offset=0s": {}},
-    }
-    payload = {"triage_stats": triage}
-    pkl_path = pkl_dir / f"{cluster_id}_tuning_curves_data.pkl"
-    with pkl_path.open("wb") as fh:
-        _pickle.dump(payload, fh)
-    return pkl_path
-
-
-def test_detect_no_pkl_dir_returns_none(tmp_path):
-    out = detect_interesting_clusters(tmp_path, message_output=lambda *a, **k: None)
-    assert out is None
-
-
-def test_detect_empty_pkl_dir_returns_none(synthetic_session):
-    out = detect_interesting_clusters(
-        synthetic_session, message_output=lambda *a, **k: None
-    )
-    assert out is None
-
-
-def test_detect_skips_pkls_without_triage_stats(synthetic_session):
-    pkl_dir = synthetic_session / "ephys" / "tuning_curves"
-    p = pkl_dir / "old_cluster_tuning_curves_data.pkl"
-    with p.open("wb") as fh:
-        _pickle.dump({"beh_offset=0s": {}}, fh)
-    out_path = detect_interesting_clusters(
-        synthetic_session, message_output=lambda *a, **k: None
-    )
-    with open(out_path) as fh:
-        d = json.load(fh)
-    assert d["n_clusters_skipped_no_triage"] == 1
-    assert d["n_clusters_flagged"] == 0
-
-
-def test_detect_flags_vmi_when_significant(synthetic_session):
-    pkl_dir = synthetic_session / "ephys" / "tuning_curves"
-    _make_synthetic_pkl(pkl_dir, "cluster_a", vmi_significant=True)
-    out_path = detect_interesting_clusters(
-        synthetic_session, message_output=lambda *a, **k: None
-    )
-    with open(out_path) as fh:
-        d = json.load(fh)
-    assert "vmi_self_excit" in d["by_modality"]
-    assert "cluster_a" in d["by_modality"]["vmi_self_excit"]
-    assert d["n_clusters_flagged"] == 1
-
-
-def test_detect_threshold_overrides_change_flag_count(synthetic_session):
-    pkl_dir = synthetic_session / "ephys" / "tuning_curves"
-    _make_synthetic_pkl(pkl_dir, "cluster_a", vmi_significant=True, behavioral_z=4.0)
-    out_default = detect_interesting_clusters(
-        synthetic_session, message_output=lambda *a, **k: None
-    )
-    with open(out_default) as fh:
-        d_default = json.load(fh)
-    out_strict = detect_interesting_clusters(
-        synthetic_session,
-        z_threshold=10.0, vmi_alpha=0.0001,
-        message_output=lambda *a, **k: None,
-    )
-    with open(out_strict) as fh:
-        d_strict = json.load(fh)
-    assert len(d_strict["by_modality"]) < len(d_default["by_modality"])
-
-
-def test_detect_json_has_all_required_keys(synthetic_session):
-    pkl_dir = synthetic_session / "ephys" / "tuning_curves"
-    _make_synthetic_pkl(pkl_dir, "cluster_a")
-    out_path = detect_interesting_clusters(
-        synthetic_session, message_output=lambda *a, **k: None
-    )
-    with open(out_path) as fh:
-        d = json.load(fh)
-    for key in (
-        "session_root", "generated_at", "thresholds_used",
-        "n_clusters_total", "n_clusters_flagged",
-        "n_clusters_skipped_no_triage",
-        "by_modality", "by_cluster",
-    ):
-        assert key in d
-
-
-def test_detect_thresholds_recorded_match_inputs(synthetic_session):
-    pkl_dir = synthetic_session / "ephys" / "tuning_curves"
-    _make_synthetic_pkl(pkl_dir, "cluster_a")
-    out_path = detect_interesting_clusters(
-        synthetic_session,
-        z_threshold=4.5, min_consecutive_bins=4, vmi_alpha=0.005,
-        vmi_min_bouts=15, spatial_info_bps_threshold=1.0,
-        message_output=lambda *a, **k: None,
-    )
-    with open(out_path) as fh:
-        d = json.load(fh)
-    assert d["thresholds_used"] == {
-        "z_threshold": 4.5, "min_consecutive_bins": 4, "vmi_alpha": 0.005,
-        "vmi_min_bouts": 15, "spatial_info_bps_threshold": 1.0,
-    }
-
 
 # ---------------------------------------------------------------------------
 # mixture_model_utils — additional targeted tests
