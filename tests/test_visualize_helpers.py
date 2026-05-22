@@ -168,8 +168,8 @@ def test_filter_spikes_for_raster_window_and_offset():
 
 
 def test_find_region_by_channel_returns_color_when_in_group():
-    """Channel listed under a region → returns its color."""
-    brain_areas = {"probeA": {"V1": list(range(0, 50)), "S1": list(range(50, 100))}}
+    """Channel inside a region's [low, high) group → returns its color."""
+    brain_areas = {"probeA": {"V1": [(0, 50)], "S1": [(50, 100)]}}
     colors = {"V1": "#aabbcc", "S1": "#112233"}
     out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
                                   return_only_color=True)
@@ -178,7 +178,7 @@ def test_find_region_by_channel_returns_color_when_in_group():
 
 def test_find_region_by_channel_returns_area_when_only_area():
     """return_only_area=True → returns the brain region name."""
-    brain_areas = {"probeA": {"V1": list(range(0, 50))}}
+    brain_areas = {"probeA": {"V1": [(0, 50)]}}
     colors = {"V1": "#aabbcc"}
     out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
                                   return_only_color=False, return_only_area=True)
@@ -187,7 +187,7 @@ def test_find_region_by_channel_returns_area_when_only_area():
 
 def test_find_region_by_channel_returns_pair_when_neither_flag():
     """When both flags are False → returns (region, color) tuple."""
-    brain_areas = {"probeA": {"V1": list(range(0, 50))}}
+    brain_areas = {"probeA": {"V1": [(0, 50)]}}
     colors = {"V1": "#aabbcc"}
     out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
                                   return_only_color=False, return_only_area=False)
@@ -196,7 +196,7 @@ def test_find_region_by_channel_returns_pair_when_neither_flag():
 
 def test_find_region_by_channel_returns_none_for_unknown_channel():
     """Channel outside any group → None (signalling 'unknown')."""
-    brain_areas = {"probeA": {"V1": list(range(0, 50))}}
+    brain_areas = {"probeA": {"V1": [(0, 50)]}}
     colors = {"V1": "#aabbcc"}
     out = find_region_by_channel("cl_ch200_probeA", brain_areas, colors)
     assert out is None

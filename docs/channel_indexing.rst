@@ -26,11 +26,11 @@ physical shank 1, ``96..191`` on shank 2, ``192..287`` on shank 3,
 ``288..383`` on shank 4 (shank-major blocks). Within each shank
 the axial order is *not* strictly monotonic — on shanks 1 and 2
 of the NP 2.0 4-shank probes in this dataset, the KS rows step
-through axial mid → top, then wrap to the bottom band — so a
-single anatomical band on a shank can land on non-contiguous KS-row
-ids. The converter sidesteps this by storing each region as a flat
-list of KS row ids rather than a list of intervals. Phy reads these
-sidecars directly, so phy channel labels and unit file names like
+through axial mid → top, then wrap to the bottom band — so when
+the per-row anatomy is compressed into ``[lo, hi]`` KS-row ranges,
+a single anatomical band (e.g. shank-1 ventral MRN) can land on
+two non-contiguous KS-row intervals. Phy reads these sidecars
+directly, so phy channel labels and unit file names like
 ``cl0017_ch042_good.npy`` are in this space.
 
 **Phy channel** (peak channel of a unit as phy displays it).
@@ -121,16 +121,20 @@ converter:
 2. Load ``channel_positions.npy`` from the Kilosort directory.
 3. For every Kilosort row ``i``, the row's region is the IBL region
    at the physical position ``cp[i]``.
-4. Collapse the per-row labels by region into a single flat
-   sorted list of Kilosort row ids per region.
+4. Compress contiguous runs of identical regions into
+   ``[lo, hi]`` half-open ranges per region.
 
 The generated entries are written back to
-``neuropixels_sites_to_anatomy_converter.json`` in the nested
-``{mouse: {session: {probe: {region: [ks_row, ...]}}}}`` layout —
-every KS row whose IBL position falls in a given region lands in
-that region's flat list, regardless of which shank it sits on or
-whether the shank's KS rows happen to be axially monotonic.
-Consumers do ``cluster_ch in region_list`` for membership.
+``neuropixels_sites_to_anatomy_converter.json`` in the same nested
+``{mouse: {session: {probe: {region: [[lo, hi], ...]}}}}`` layout.
+
+Because Kilosort row ordering is shank-major, each probe's
+regenerated entry has every range bounded inside one shank's KS-row
+block (rows 0..95, 96..191, etc.). The within-shank axial ordering
+is not always monotonic, so a single anatomical band on a shank may
+appear as two non-contiguous ``[lo, hi]`` KS-row intervals in the
+JSON. Set membership against the converter still resolves the right
+region regardless.
 
 Translating between spaces
 --------------------------
