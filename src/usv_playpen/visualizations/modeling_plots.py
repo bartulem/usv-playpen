@@ -74,23 +74,37 @@ from ..plot_style import apply_plot_style
 
 apply_plot_style()
 
+# Load `visualizations_settings.json` at module import time to resolve
+# the canonical sex / social / cmap palette. The module-level constants
+# below are derived from this single source; in particular both the
+# multinomial-filter `DYADIC_COLOR` and the timescale-audit
+# `TIMESCALE_SOCIAL_COLOR` now share the `social_colors[0]` value, so
+# the project's "social-feature" colour is in one place.
+_PKG_ROOT = pathlib.Path(__file__).parent.parent
+with (_PKG_ROOT / "_parameter_settings" / "visualizations_settings.json").open() as _vf:
+    _VIZ_SETTINGS = json.load(_vf)
+
 # Global color definitions
-male_color = "#9AC0CD"
-female_color = "#FF6347"
-DYADIC_COLOR = "#000000"
+male_color = _VIZ_SETTINGS.get("male_colors", ["#9AC0CD"])[0]
+female_color = _VIZ_SETTINGS.get("female_colors", ["#FF6347"])[0]
+DYADIC_COLOR = _VIZ_SETTINGS.get("social_colors", ["#5A6470"])[0]
 NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
 
 # Timescale-audit palette overrides: zero / axis lines stay black, so
-# social/dyadic gets a neutral slate (distinct from the axis lines and
-# from the male/female sex colors). SEI features are coloured as a
-# pastel version of the observer's sex (= the predictor / partner),
-# obtained by blending the observer's hex colour with white.
-TIMESCALE_SOCIAL_COLOR = "#5A6470"
+# social/dyadic gets the canonical social colour (distinct from the
+# axis lines and from the male/female sex colors). SEI features are
+# coloured as a pastel version of the observer's sex (= the predictor /
+# partner), obtained by blending the observer's hex colour with white.
+TIMESCALE_SOCIAL_COLOR = DYADIC_COLOR
 TIMESCALE_AXIS_COLOR = "#000000"   # zero / spine reference lines (was 'black')
 TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'gray')
 _PASTEL_BLEND_WITH_WHITE = 0.55
+
+# Global default colormap — shared with `figures.cmap` so the
+# multinomial / continuous heatmap defaults match the rest of the repo.
+_GLOBAL_CMAP = _VIZ_SETTINGS.get("figures", {}).get("cmap", "inferno")
 
 # Initialize custom colormaps (for males and females)
 female_cmap = create_colormap(input_parameter_dict={
@@ -3184,7 +3198,7 @@ class DeepResultsVisualizer:
 
     def plot_feature_importance(self,
                                 snr_threshold: float = 3.0,
-                                cmap: str = 'inferno',
+                                cmap: str = _GLOBAL_CMAP,
                                 error_bar_color: str = '#000000',
                                 title_fontsize: int = 10,
                                 label_fontsize: int = 8,
@@ -3208,7 +3222,7 @@ class DeepResultsVisualizer:
         snr_threshold : float, default 3.0
             The minimum Signal-to-Noise Ratio required for a feature to be considered
             statistically significant relative to permutation noise.
-        cmap : str, default 'inferno'
+        cmap : str, default `figures.cmap` (currently 'inferno')
             Colormap applied to the bars of statistically significant features.
         error_bar_color : str, default '#000000'
             Color for the standard deviation error bars representing variance across folds.
@@ -3370,8 +3384,8 @@ class DeepResultsVisualizer:
         Y_true = np.vstack([np.array(f['Y_true']) for f in cv_folds])
         Y_pred = np.vstack([np.array(f['Y_pred_actual']) for f in cv_folds])
 
-        # --- 2. Custom White-Base Inferno ---
-        base_cmap = plt.cm.get_cmap('inferno')
+        # --- 2. Custom White-Base derived from the global cmap ---
+        base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
         cmap_colors = base_cmap(np.linspace(0, 1, 256))
         white = np.array([1, 1, 1, 1])
         cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
@@ -3505,7 +3519,7 @@ class DeepResultsVisualizer:
 
     def plot_error_landscape(self,
                              gridsize: int = 30,
-                             cmap: str = 'inferno',
+                             cmap: str = _GLOBAL_CMAP,
                              diff_cmap: str = 'RdBu_r',  # Reverting to RdBu_r for standard diverging look
                              vmax_percentile: float = 95.0,
                              title_fontsize: int = 10,
@@ -3529,7 +3543,7 @@ class DeepResultsVisualizer:
         ----------
         gridsize : int, default 30
             The number of hexagons in the x-direction. Controls spatial resolution.
-        cmap : str, default 'inferno'
+        cmap : str, default `figures.cmap` (currently 'inferno')
             Colormap for the absolute error landscape.
         diff_cmap : str, default 'RdBu_r'
             Diverging colormap for the Error Reduction panel.
@@ -3783,7 +3797,7 @@ class DeepResultsVisualizer:
                 spine.set_edgecolor(text_color)
                 spine.set_linewidth(1.0)
 
-        base_cmap = plt.cm.get_cmap('inferno')
+        base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
         cmap_colors = base_cmap(np.linspace(0, 1, 256))
         cmap_colors[:25, :] = np.linspace(np.array([1, 1, 1, 1]), cmap_colors[25, :], 25)
         white_inferno = ListedColormap(cmap_colors)
