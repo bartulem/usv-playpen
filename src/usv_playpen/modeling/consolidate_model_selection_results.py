@@ -159,19 +159,69 @@ def _build_default_output_filename(input_metadata: dict,
                                    run_metadata: dict) -> str:
     """
     Builds the consolidated artifact's filename from the upstream
-    metadata blocks and the current UTC timestamp.
+    metadata blocks.
 
     Schema:
-    `selection_<analysis_tag>_<experimental_condition>_<selection_function>_<ts>.pkl`.
+    `model_selection_final_<sex>_<condition>_<analysis_short>_<split_strategy>.pkl`
 
-    Falls back to bare values when an upstream block is missing.
+    Components, derived from the upstream metadata:
+
+      * `sex` — `input_metadata['target_mouse_sex']`
+        (e.g. `'male'`).
+      * `condition` — `input_metadata['experimental_condition']` with
+        the trailing `_<sex>` suffix stripped (so
+        `'intact_partners_male'` → `'intact_partners'`).
+      * `analysis_short` — the last underscore-separated token of
+        `input_metadata['analysis_tag']` when the tag has multiple
+        tokens (`'onsets_bout'` → `'bout'`,
+        `'boutparam_durations'` → `'durations'`); otherwise the tag
+        is used verbatim (`'manifold'`, `'multinomial'`).
+      * `split_strategy` — `run_metadata['split_strategy']` (e.g.
+        `'mixed'`).
+
+    No timestamp: re-running the consolidator overwrites the previous
+    consolidated artifact, which is desirable for ``selection
+    consolidated → final figures`` workflows where stale consolidated
+    files just add clutter. Pass `output_filename=...` explicitly to
+    override.
+
+    Falls back to bare `'unknown'` when an upstream block / key is
+    missing.
     """
 
-    analysis_tag = input_metadata['analysis_tag'] if input_metadata is not None else 'unknown'
-    cohort = input_metadata['experimental_condition'] if input_metadata is not None else 'unknown'
-    sel_fn = run_metadata['selection_function'] if run_metadata is not None else 'unknown'
-    ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%SZ')
-    return f"selection_{analysis_tag}_{cohort}_{sel_fn}_{ts}.pkl"
+    if input_metadata is not None:
+        sex = input_metadata.get('target_mouse_sex', 'unknown')
+        cohort_raw = input_metadata.get('experimental_condition', 'unknown')
+        analysis_tag = input_metadata.get('analysis_tag', 'unknown')
+    else:
+        sex = 'unknown'
+        cohort_raw = 'unknown'
+        analysis_tag = 'unknown'
+
+    # Strip `_<sex>` suffix from the cohort label so the filename is
+    # `<sex>_<cohort>` (not `<sex>_<cohort>_<sex>`).
+    cohort = cohort_raw
+    if sex != 'unknown' and cohort_raw.endswith(f"_{sex}"):
+        cohort = cohort_raw[: -(len(sex) + 1)]
+
+    # Take the last underscore-separated token when the tag is
+    # compound (`onsets_bout` → `bout`); leave single-token tags
+    # untouched (`manifold`, `multinomial`).
+    if '_' in analysis_tag:
+        analysis_short = analysis_tag.rsplit('_', 1)[-1]
+    else:
+        analysis_short = analysis_tag
+
+    split_strategy = (
+        run_metadata.get('split_strategy', 'unknown')
+        if run_metadata is not None
+        else 'unknown'
+    )
+
+    return (
+        f"model_selection_final_{sex}_{cohort}_{analysis_short}_"
+        f"{split_strategy}.pkl"
+    )
 
 
 def _diff_metadata(a: dict, b: dict, prefix: str = '') -> list:
