@@ -343,6 +343,14 @@ class SpikeQualityMetricsExtractor:
         self.meta_path = meta_candidates[0]
         self.meta = read_ap_meta(self.meta_path)
         self.imro_rows = parse_imro_table(self.meta['imroTbl'])
+        # snsGeomMap is the authoritative source for physical channel
+        # positions and shank assignment — Kilosort / SpikeInterface
+        # both read it for `channel_positions.npy` and
+        # `channel_shanks.npy`. The IMRO table's shank column is
+        # unreliable for NP 2.0 multi-shank probes (e.g. probe type
+        # 2013), so any code that needs a per-channel shank label
+        # must key off `geom_rows`, not `imro_rows`.
+        self.geom_rows = parse_imro_table(self.meta['snsGeomMap'])
 
         # Populated by the step methods.
         self.recording = None
@@ -809,10 +817,25 @@ class SpikeQualityMetricsExtractor:
         Order each shank's channels from the probe tip outward and write
         the result as ``channel_order_per_shank.json``.
 
-        Channels are grouped by shank from the IMRO table and sorted by
-        their electrode position (the last IMRO column), which runs from
-        the tip outward. This JSON is required to make unit-distribution
-        figures along the shanks.
+        Channels are grouped by shank using the Kilosort
+        ``channel_shanks.npy`` array (the 1-indexed physical shank
+        per raw channel id, as derived by SpikeInterface from the
+        SpikeGLX meta and validated against the absolute lateral in
+        ``channel_positions.npy``). Within each shank, channels are
+        sorted by axial position ascending — i.e. from the probe tip
+        outward.
+
+        The IMRO table and the snsGeomMap each carry a per-channel
+        "shank" field, but for NP 2.0 4-shank probes (e.g. probe
+        type 2013) those fields can disagree with the absolute lateral
+        SpikeInterface ultimately stores in ``channel_positions.npy``.
+        Reading directly from the Kilosort sidecar arrays keeps this
+        artifact consistent with the spike-sorted data and the IBL
+        ``channel_locations.json`` ``lateral``/``axial`` fields.
+
+        Output keys are 0-indexed (``shank_0`` .. ``shank_3``);
+        ``channel_shanks.npy`` is 1-indexed, so the per-shank filter
+        uses ``ks_shank == json_shank + 1``.
 
         Parameters
         ----------
@@ -825,11 +848,22 @@ class SpikeQualityMetricsExtractor:
         pathlib.Path
             Path to the written ``channel_order_per_shank.json``.
         """
-        info_dict = {}
-        for shank in range(4):
-            unordered_imro = [imro_item for imro_item in self.imro_rows[1:] if imro_item[1] == shank]
-            ordered_imro = sorted(unordered_imro, key=lambda x: x[-1])
-            info_dict[f"shank_{shank}"] = [item[0] for item in ordered_imro]
+        channel_positions = np.load(self.ks_path / 'channel_positions.npy')
+        channel_shanks = (
+            np.load(self.ks_path / 'channel_shanks.npy').astype(int)
+        )
+        info_dict: dict[str, list[int]] = {}
+        for json_shank in range(4):
+            target_shank = json_shank + 1
+            members: list[tuple[int, float]] = []
+            for channel_id in range(channel_positions.shape[0]):
+                if int(channel_shanks[channel_id]) != target_shank:
+                    continue
+                members.append(
+                    (channel_id, float(channel_positions[channel_id, 1]))
+                )
+            members.sort(key=lambda pair: pair[1])
+            info_dict[f"shank_{json_shank}"] = [c for c, _ in members]
 
         out_dir = Path(output_dir) if output_dir is not None else self.ephys_path
         out_path = out_dir / 'channel_order_per_shank.json'

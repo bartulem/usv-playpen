@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -69,28 +70,35 @@ def test_write_channel_order_per_shank_orders_by_electrode_position(tmp_path):
     """
     Description
     -----------
-    :meth:`write_channel_order_per_shank` must group IMRO channel rows by
-    shank (column index 1) and order each shank's channels by electrode
-    position (the last IMRO column), tip outward — leaving shanks with no
-    channels empty.
+    :meth:`write_channel_order_per_shank` must group channels by their
+    Kilosort ``channel_shanks.npy`` value (1-indexed physical shank)
+    and order each shank's channels by axial position
+    (``channel_positions.npy[:, 1]``) ascending — tip outward —
+    leaving shanks with no channels empty. The output JSON uses
+    0-indexed ``shank_N`` keys, so the filter is
+    ``ks_shank == json_shank + 1``.
     """
     extractor = _new_extractor()
-    # IMRO rows: [header], then [channel, shank, bank, refid, electrode]
-    extractor.imro_rows = [
-        [2013, 384],
-        [10, 0, 0, 0, 5],
-        [11, 0, 0, 0, 2],
-        [12, 1, 0, 0, 8],
-        [13, 1, 0, 0, 3],
-        [14, 0, 0, 0, 9],
-    ]
+    # Synthetic Kilosort sidecar files. 5 channels: 3 on shank 1 at
+    # axials 75/30/135, 2 on shank 2 at axials 120/45.
+    ks_dir = tmp_path / "kilosort4"
+    ks_dir.mkdir()
+    np.save(ks_dir / "channel_positions.npy", np.array([
+        [27.0,  75.0],
+        [27.0,  30.0],
+        [277.0, 120.0],
+        [277.0, 45.0],
+        [27.0,  135.0],
+    ]))
+    np.save(ks_dir / "channel_shanks.npy", np.array([1, 1, 2, 2, 1]))
+    extractor.ks_path = ks_dir
 
     out_path = extractor.write_channel_order_per_shank(output_dir=tmp_path)
     assert out_path == tmp_path / 'channel_order_per_shank.json'
 
     info = json.loads(out_path.read_text())
-    assert info['shank_0'] == [11, 10, 14]   # electrodes 2, 5, 9
-    assert info['shank_1'] == [13, 12]       # electrodes 3, 8
+    assert info['shank_0'] == [1, 0, 4]   # axials 30, 75, 135 (tip outward)
+    assert info['shank_1'] == [3, 2]      # axials 45, 120
     assert info['shank_2'] == []
     assert info['shank_3'] == []
 
