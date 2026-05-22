@@ -466,6 +466,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
+        dpi = int(
+            self.visualizations_parameter_dict.get("figures", {}).get("dpi", 300)
+        )
+
         if fig_format == "pdf":
             with PdfPages(out_path) as pdf:
                 page_idx = {"n": 0}
@@ -475,10 +479,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     Description
                     -----------
                     PDF backend: append the rendered figure to the
-                    open `PdfPages` document at 200 DPI, then close
-                    it. The `label` argument is unused (PDF pages have
-                    no per-page filename) but kept for signature
-                    parity with the non-PDF branch.
+                    open `PdfPages` document at the configured DPI,
+                    then close it. The `label` argument is unused (PDF
+                    pages have no per-page filename) but kept for
+                    signature parity with the non-PDF branch.
 
                     Parameters
                     ----------
@@ -492,7 +496,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     None
                     """
                     page_idx["n"] += 1
-                    pdf.savefig(fig, dpi=200)
+                    pdf.savefig(fig, dpi=dpi)
                     plt.close(fig)
 
                 yield save_fig
@@ -506,8 +510,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 -----------
                 Non-PDF backend: write the rendered figure to its own
                 file at `<cluster_id>_neuronal_tuning_p{N}_{label}.{fig_format}`
-                with 200 DPI, then close the figure. `N` is the running
-                page index across all pages of this cluster.
+                at the configured DPI, then close the figure. `N` is
+                the running page index across all pages of this
+                cluster.
 
                 Parameters
                 ----------
@@ -525,7 +530,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     out_dir
                     / f"{cluster_id}_neuronal_tuning_p{page_idx['n']}_{label}.{fig_format}"
                 )
-                fig.savefig(per_page_path, dpi=200, bbox_inches="tight")
+                fig.savefig(per_page_path, dpi=dpi, bbox_inches="tight")
                 plt.close(fig)
 
             yield save_fig
@@ -573,7 +578,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if not beh_offset_keys:
             return
 
-        mouse_color_dict = {"social": "#5A6470"}
+        social_color = self.visualizations_parameter_dict.get(
+            "social_colors", ["#5A6470"]
+        )[0]
+        mouse_color_dict = {"social": social_color}
         mouse_colormap_dict: dict = {}
         for mouse_idx, mouse in enumerate(mouse_id_list):
             mouse_color_dict[mouse] = mouse_colors[mouse_idx]
@@ -609,7 +617,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 plot_features.setdefault("social", []).append(feature_key)
 
         viz_params = self.visualizations_parameter_dict["neuronal_tuning_figures"]
-        ratemap_cmap = viz_params.get("ratemap_cmap", "inferno")
+        ratemap_cmap = self.visualizations_parameter_dict.get(
+            "figures", {}
+        ).get("cmap", "inferno")
         # behavioral occupancy threshold lives on the analyses side (it's
         # a tuning-curve config alongside usv_property_min_occupancy_seconds);
         # compute writes it into behavioral_metadata, plotter reads from
@@ -1585,7 +1595,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         log_threshold = VOCAL_STRIP_LOG_RATIO_THRESHOLD
         symlog_linthresh = VOCAL_STRIP_SYMLOG_LINTHRESH
-        ratemap_cmap = viz_params.get("ratemap_cmap", "inferno")
+        ratemap_cmap = self.visualizations_parameter_dict.get(
+            "figures", {}
+        ).get("cmap", "inferno")
 
         # build a sequential colormap for the occupancy watershed from
         # the emitter's sex color (mirrors the per-mouse colormap that
@@ -1670,7 +1682,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         values: np.ndarray,
         cbar_label: str,
         fig,
-        cmap="inferno",
+        cmap,
         annotate_categories: bool = False,
     ) -> None:
         """

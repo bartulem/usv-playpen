@@ -49,6 +49,7 @@ from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from usv_playpen.plot_style import apply_plot_style
+from usv_playpen.visualizations.figure_io import resolve_pdf_path, save_figure
 from usv_playpen.visualizations.make_behavioral_videos import pool_brain_area
 
 apply_plot_style()
@@ -359,18 +360,19 @@ class AnatomyFigureMaker:
 
     def make_recording_yield_figure(
             self,
-            out_dir: str | pathlib.Path,
+            out_dir: str | pathlib.Path | None = None,
             *,
             fig_size_inches: tuple[float, float] = (7.0, 2.6),
-            fig_format: str = "svg",
+            fig_format: str | None = None,
     ) -> pathlib.Path:
         """
         Description
         -----------
         Render the sub-figure (a) "recording yield" SVG as a two-panel
-        side-by-side figure and write it to `<out_dir>/anatomy_yield_
-        <YYYYMMDD>_<HHMMSS>.<fig_format>`. The output directory is
-        created if absent.
+        side-by-side figure and write it. When `out_dir` is `None` the
+        path is resolved through `figure_io.save_figure` using the
+        `figures` block of `visualizations_settings.json`; pass an
+        explicit `out_dir` to override.
 
           * Panel A (left): per-mouse stacked bar; one bar per mouse,
             sorted by total unit count descending. Stacks bottom-up:
@@ -381,23 +383,21 @@ class AnatomyFigureMaker:
 
         Parameters
         ----------
-        out_dir (str | pathlib.Path)
-            Directory under which the timestamped figure is written.
+        out_dir (str | pathlib.Path | None)
+            Directory override. `None` falls back to
+            `figures.save_directory`.
         fig_size_inches (tuple[float, float])
             Figure width / height in inches. Default targets a Nature-
             style single-column band (~89 mm wide, ~66 mm tall).
-        fig_format (str)
-            Matplotlib output format (e.g. `'svg'`, `'pdf'`, `'png'`).
-            Default `'svg'`.
+        fig_format (str | None)
+            Matplotlib output format override (e.g. `'svg'`, `'pdf'`,
+            `'png'`). `None` falls back to `figures.fig_format`.
 
         Returns
         -------
         out_path (pathlib.Path)
             Path to the written figure file.
         """
-
-        out_dir = pathlib.Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
 
         fig, (ax_left, ax_right) = plt.subplots(
             nrows=1, ncols=2,
@@ -408,9 +408,10 @@ class AnatomyFigureMaker:
         self._render_per_mouse_panel(ax_left)
         self._render_per_celltype_panel(ax_right)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = out_dir / f"anatomy_yield_{timestamp}.{fig_format}"
-        fig.savefig(out_path, format=fig_format, bbox_inches="tight")
+        out_path = save_figure(
+            fig, "anatomy_yield", self.visualizations_parameter_dict,
+            override_dir=out_dir, override_format=fig_format,
+        )
         plt.close(fig)
 
         self.message_output(
@@ -566,10 +567,10 @@ class AnatomyFigureMaker:
 
     def make_unit_positions_figure(
             self,
-            out_dir: str | pathlib.Path,
+            out_dir: str | pathlib.Path | None = None,
             *,
             fig_size_inches: tuple[float, float] = (6.0, 5.0),
-            fig_format: str = "svg",
+            fig_format: str | None = None,
             view_elev: float = 18.0,
             view_azim: float = -60.0,
             shell_vertex_stride: int = 6,
@@ -592,10 +593,12 @@ class AnatomyFigureMaker:
 
         Parameters
         ----------
-        out_dir (str | pathlib.Path)
-            Output directory; created if absent.
-        fig_format (str)
-            Output format (e.g. `'svg'`, `'pdf'`, `'png'`).
+        out_dir (str | pathlib.Path | None)
+            Directory override; `None` falls back to
+            `figures.save_directory`.
+        fig_format (str | None)
+            Output format override; `None` falls back to
+            `figures.fig_format`.
         All other kwargs
             See `build_unit_positions_figure`.
 
@@ -604,9 +607,6 @@ class AnatomyFigureMaker:
         out_path (pathlib.Path)
             Path to the written figure file.
         """
-
-        out_dir = pathlib.Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
 
         fig = self.build_unit_positions_figure(
             fig_size_inches=fig_size_inches,
@@ -623,9 +623,10 @@ class AnatomyFigureMaker:
             filter_outliers=filter_outliers,
         )
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = out_dir / f"anatomy_unit_positions_{timestamp}.{fig_format}"
-        fig.savefig(out_path, format=fig_format, bbox_inches="tight")
+        out_path = save_figure(
+            fig, "anatomy_unit_positions", self.visualizations_parameter_dict,
+            override_dir=out_dir, override_format=fig_format,
+        )
         plt.close(fig)
 
         self.message_output(
@@ -864,7 +865,7 @@ class AnatomyFigureMaker:
 
     def make_unit_positions_video(
             self,
-            out_dir: str | pathlib.Path,
+            out_dir: str | pathlib.Path | None = None,
             *,
             fig_size_inches: tuple[float, float] = (6.0, 5.0),
             view_elev: float = 18.0,
@@ -961,10 +962,13 @@ class AnatomyFigureMaker:
             blit=False,
         )
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = (
-            out_dir / f"anatomy_unit_positions_{timestamp}.{video_format}"
+        out_path, _video_dpi = resolve_pdf_path(
+            "anatomy_unit_positions", self.visualizations_parameter_dict,
+            override_dir=out_dir,
         )
+        # resolve_pdf_path returns a `.pdf` path; we override the suffix
+        # to match the requested video container.
+        out_path = out_path.with_suffix(f".{video_format}")
         if video_format.lower() == "gif":
             writer = animation.PillowWriter(fps=fps)
         else:
@@ -981,10 +985,10 @@ class AnatomyFigureMaker:
 
     def make_unit_waveform_figure(
             self,
-            out_dir: str | pathlib.Path,
             mouse_id: str,
             session_id: str,
             *,
+            out_dir: str | pathlib.Path | None = None,
             probes: tuple[str, ...] = ("imec0", "imec1"),
             probe_to_hemisphere: dict[str, str] | None = None,
             ephys_root: str | pathlib.Path = _DEFAULT_EPHYS_ROOT,
@@ -1002,7 +1006,7 @@ class AnatomyFigureMaker:
             ap_padding_um: float = 20.0,
             dv_padding_um: float = 30.0,
             fig_size_inches: tuple[float, float] = (4.5, 7.0),
-            fig_format: str = "svg",
+            fig_format: str | None = None,
     ) -> pathlib.Path:
         """
         Description
@@ -1520,10 +1524,6 @@ class AnatomyFigureMaker:
         else:
             fig.subplots_adjust(left=0.10, right=0.98, top=0.93, bottom=0.16)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = (
-            out_dir / f"anatomy_unit_waveform_{timestamp}.{fig_format}"
-        )
         # Force savefig to use the exact figure bbox — without an
         # explicit bbox matplotlib sometimes auto-grows the canvas
         # to enclose stray artists (here the multi-line shank
@@ -1531,9 +1531,9 @@ class AnatomyFigureMaker:
         # a hugely-elongated SVG. The transform below pins the
         # output to `fig.get_size_inches()` exactly.
         size_w, size_h = fig.get_size_inches()
-        fig.savefig(
-            out_path,
-            format=fig_format,
+        out_path = save_figure(
+            fig, "anatomy_unit_waveform", self.visualizations_parameter_dict,
+            override_dir=out_dir, override_format=fig_format,
             bbox_inches=Bbox.from_bounds(0, 0, size_w, size_h),
         )
         plt.close(fig)

@@ -1412,7 +1412,10 @@ class FeatureZoo:
         )
 
         if feature_dict is not None and mouse_id_list is not None:
-            mouse_color_dict = {"social": "#202020"}
+            social_color = self.visualizations_parameter_dict.get(
+                "social_colors", ["#5A6470"]
+            )[0]
+            mouse_color_dict = {"social": social_color}
             mouse_colormap_dict = {}
             for mouse_idx, mouse in enumerate(mouse_id_list):
                 mouse_color_dict[mouse] = mouse_colors[mouse_idx]
@@ -1450,6 +1453,9 @@ class FeatureZoo:
                         plot_features["social"] = []
                     plot_features["social"].append(feature_key)
 
+            pdf_dpi = int(
+                self.visualizations_parameter_dict.get("figures", {}).get("dpi", 300)
+            )
             with PdfPages(plot_file_name) as pdf_fig:
                 for plot_feature_key in plot_features:
                     if "social" in plot_feature_key:
@@ -1596,7 +1602,7 @@ class FeatureZoo:
                                     gs_y = 0
                                     gs_x += 1
 
-                        pdf_fig.savefig(dpi=600)
+                        pdf_fig.savefig(dpi=pdf_dpi)
                         plt.clf()
                         plt.close("all")
 
