@@ -225,6 +225,31 @@ def _build_default_output_filename(input_metadata: dict,
     if sex != 'unknown' and cohort_raw.endswith(f"_{sex}"):
         cohort = cohort_raw[: -(len(sex) + 1)]
 
+    # Legacy step pickles produced before the pipeline-side rename
+    # (multinomial / manifold / binomial) carry the un-augmented
+    # `analysis_tag` (`'multinomial'`, `'manifold'`, `'category_<idx>'`)
+    # but still record the USV category column under
+    # `_input_metadata['analysis_specific']['usv_category_column_name']`.
+    # Graft that column into the tag here so the consolidated filename
+    # always pins which clustering / cardinality the run targeted —
+    # whether or not the originating pipeline minted the augmented tag
+    # itself. Skip the graft if the tag already contains the column
+    # (new pipelines hand it in pre-augmented).
+    if input_metadata is not None:
+        analysis_specific = input_metadata.get('analysis_specific') or {}
+        cat_col = analysis_specific.get('usv_category_column_name')
+        if cat_col and cat_col not in analysis_tag:
+            if analysis_tag.startswith('category_'):
+                # `category_<idx>` → `category_<col>_<idx>`
+                _, _, idx_part = analysis_tag.partition('_')
+                analysis_tag = f"category_{cat_col}_{idx_part}"
+            else:
+                # `multinomial` → `multinomial_<col>`, `manifold` →
+                # `manifold_<col>`, and pre-augmented compound tags
+                # (e.g. `multinomial_vae_supercategory`) are skipped
+                # above by the substring check.
+                analysis_tag = f"{analysis_tag}_{cat_col}"
+
     split_strategy = (
         run_metadata.get('split_strategy', 'unknown')
         if run_metadata is not None
