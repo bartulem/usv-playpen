@@ -31,3 +31,9 @@ the tool correctly. Should you have any questions, please do not hesitate to ope
    Analyze
    Visualize
    CLI
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Reference
+
+   channel_indexing
