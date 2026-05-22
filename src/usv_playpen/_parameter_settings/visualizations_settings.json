@@ -41,10 +41,6 @@
       "receivers": []
     }
   },
-  "neuronal_tuning_figures": {
-    "fig_format": "pdf",
-    "ratemap_cmap": "inferno"
-  },
   "make_usv_spectrograms": {
     "save_dir": "/Users/bmimica/Downloads",
     "save_fig": true,
@@ -58,7 +54,6 @@
     "time_window": [424.5, 426.5],
     "freq_limits": [40, 80],
     "usv_amplitude_color": "#808080",
-    "spectrogram_cmap": "inferno",
     "nfft": 512,
     "plot_cbar": true,
     "cbar_limits": [-70, 0],

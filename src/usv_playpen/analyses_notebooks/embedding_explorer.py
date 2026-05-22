@@ -39,7 +39,24 @@ All paths are run through ``os_utils.configure_path`` so ``/mnt/...``
 strings from cross-OS session lists resolve correctly on macOS / Linux.
 """
 
+import json
+import pathlib
+
 import marimo
+
+# Load `visualizations_settings.json` at module import so the cmap
+# default below is the project-wide `figures.cmap` (instead of a
+# literal hard-coded in the spectrogram-strip cell). Resolves to
+# `'inferno'` when the figures block is absent.
+_VIZ_SETTINGS_PATH = (
+    pathlib.Path(__file__).parent.parent
+    / "_parameter_settings" / "visualizations_settings.json"
+)
+try:
+    with _VIZ_SETTINGS_PATH.open() as _vf:
+        _GLOBAL_CMAP = json.load(_vf).get("figures", {}).get("cmap", "inferno")
+except FileNotFoundError:
+    _GLOBAL_CMAP = "inferno"
 
 __generated_with = "0.23.6"
 app = marimo.App(width="full")
@@ -443,7 +460,7 @@ def _explorer(
                         tile,
                         origin="lower",
                         aspect="auto",
-                        cmap="inferno",
+                        cmap=_GLOBAL_CMAP,
                         vmin=0.0,
                         vmax=1.0,
                         interpolation="nearest",
