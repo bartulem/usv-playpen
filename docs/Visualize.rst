@@ -116,16 +116,22 @@ An example of such tuning curves for one particular unit is shown below:
 
    <br>
 
-The */usv-playpen/_parameter_settings/visualizations_settings.json* file holds the rendering-only knobs (compute-side knobs such as ``smoothing_sd`` and ``behavioral_min_occupancy_seconds`` live in *analyses_settings.json* under ``calculate_neuronal_tuning_curves`` — see the *Analyze* page):
+The rendering-side knobs live in the project-wide ``figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (compute-side knobs such as ``smoothing_sd`` and ``behavioral_min_occupancy_seconds`` live in *analyses_settings.json* under ``calculate_neuronal_tuning_curves`` — see the *Analyze* page):
 
-* **fig_format** : output file format for the per-cluster figures; ``pdf`` produces a single multi-page document, while ``png`` / ``jpg`` / ``svg`` write one file per page
-* **ratemap_cmap** : matplotlib colormap used for the 2D spatial ratemap and the ``usv_category_tuning`` firing-rate watershed (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``)
+* **save_directory** : default output directory for figures that aren't written next to their source data (e.g. cross-session anatomy plots). Per-figure code may override this with an explicit ``out_dir`` argument; per-cluster ratemaps and other session-bound figures always stay next to the data.
+* **fig_format** : default output file format. For the per-cluster ratemap PDFs, ``pdf`` produces a single multi-page document; ``png`` / ``jpg`` / ``svg`` write one file per page.
+* **dpi** : default raster resolution applied to every ``fig.savefig`` callsite that goes through ``visualizations.figure_io.save_figure``.
+* **timestamp_in_name** : when ``true``, ``_YYYYMMDD_HHMMSS`` is appended to figure stems by default. Session-bound figures opt out of this with ``timestamp_in_name=false`` since their filenames already embed a session id or unit id.
+* **cmap** : default matplotlib colormap used by every heatmap / ratemap callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``). ``make_behavioral_videos`` keeps its own ``general_figure_specs.cmap`` argument and is unaffected.
 
 .. code-block:: json
 
-    "neuronal_tuning_figures": {
-        "fig_format": "pdf",
-        "ratemap_cmap": "inferno"
+    "figures": {
+        "save_directory": "/mnt/falkner/Bartul/figures",
+        "fig_format": "svg",
+        "dpi": 300,
+        "timestamp_in_name": true,
+        "cmap": "inferno"
     }
 
 Visualize 3D behavior (figure/video)
