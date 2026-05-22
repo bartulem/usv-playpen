@@ -23,6 +23,7 @@ parameters live in the ``make_usv_spectrograms`` block of
 
 from __future__ import annotations
 
+import json
 import pathlib
 
 from collections.abc import Callable
@@ -42,6 +43,23 @@ from sklearn.neighbors import KNeighborsClassifier
 
 from ..os_utils import configure_path, first_match_or_raise
 from ..time_utils import is_gui_context
+
+
+# Load the project-wide default cmap from `visualizations_settings.json`
+# at module import. Used as the default for the module-level
+# `plot_umap_with_category_thumbnails` helper's `cmap=` arguments (was
+# two hard-coded `'inferno'` literals). Class instances continue to
+# resolve their cmap via `_resolve_spectrogram_cmap` (also reads from
+# `figures.cmap`).
+_VIZ_SETTINGS_PATH = (
+    pathlib.Path(__file__).parent.parent
+    / "_parameter_settings" / "visualizations_settings.json"
+)
+try:
+    with _VIZ_SETTINGS_PATH.open() as _vf:
+        _GLOBAL_CMAP = json.load(_vf).get("figures", {}).get("cmap", "inferno")
+except FileNotFoundError:
+    _GLOBAL_CMAP = "inferno"
 
 # Fraction of the figure width reserved on the right for the colorbar
 # column when ``plot_cbar`` is True; the colorbar itself is anchored to
@@ -2696,9 +2714,10 @@ def plot_umap_with_category_thumbnails(
     ax_female.set_xlabel("female emitted", fontsize=10)
 
     # Bottom row: duration / mean-frequency scatters colored by value
-    # (inferno colormap). Points are sorted ascending by value so high
-    # (bright) values are drawn last and sit on top of low (dark) ones,
-    # giving a legible gradient even with overplotting.
+    # (project default cmap from `figures.cmap`). Points are sorted
+    # ascending by value so high (bright) values are drawn last and sit
+    # on top of low (dark) ones, giving a legible gradient even with
+    # overplotting.
     bot_grid = left_inner[2, 0].subgridspec(1, 2, wspace=0.08)
     ax_dur = fig.add_subplot(bot_grid[0, 0])
     ax_freq = fig.add_subplot(bot_grid[0, 1])
@@ -2716,7 +2735,7 @@ def plot_umap_with_category_thumbnails(
             x_all[finite][order],
             y_all[finite][order],
             c=v_finite[order],
-            cmap="inferno",
+            cmap=_GLOBAL_CMAP,
             vmin=lo,
             vmax=hi,
             s=small_panel_marker_size,
@@ -2817,7 +2836,7 @@ def plot_umap_with_category_thumbnails(
 
                 ax.imshow(
                     spec_valid, origin="lower", aspect="auto",
-                    cmap="inferno", vmin=0.0, vmax=1.0,
+                    cmap=_GLOBAL_CMAP, vmin=0.0, vmax=1.0,
                     interpolation="nearest",
                 )
                 # White N in the upper-left corner of each thumbnail
