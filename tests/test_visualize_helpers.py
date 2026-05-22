@@ -168,9 +168,11 @@ def test_filter_spikes_for_raster_window_and_offset():
 
 
 def test_find_region_by_channel_returns_color_when_in_group():
-    """Channel inside a region's [low, high) group → returns its color."""
-    brain_areas = {"probeA": {"V1": [(0, 50)], "S1": [(50, 100)]}}
-    colors = {"V1": "#aabbcc", "S1": "#112233"}
+    """Channel inside a region's [low, high) group → returns its bucket
+    color. `brain_color_scheme` is bucket-keyed (PAG / MRN / ...); raw
+    region acronyms are pooled to a bucket before lookup."""
+    brain_areas = {"probeA": {"PAG": [(0, 50)], "MRN": [(50, 100)]}}
+    colors = {"PAG": "#aabbcc", "MRN": "#112233", "other": "#B8B8B8"}
     out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
                                   return_only_color=True)
     assert out == "#aabbcc"
@@ -186,12 +188,14 @@ def test_find_region_by_channel_returns_area_when_only_area():
 
 
 def test_find_region_by_channel_returns_pair_when_neither_flag():
-    """When both flags are False → returns (region, color) tuple."""
-    brain_areas = {"probeA": {"V1": [(0, 50)]}}
-    colors = {"V1": "#aabbcc"}
+    """When both flags are False → returns (raw_region, bucket_color)
+    tuple. The raw region acronym is preserved for filter selection;
+    the color is resolved through the bucket-keyed palette."""
+    brain_areas = {"probeA": {"PAG": [(0, 50)]}}
+    colors = {"PAG": "#aabbcc", "other": "#B8B8B8"}
     out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
                                   return_only_color=False, return_only_area=False)
-    assert out == ("V1", "#aabbcc")
+    assert out == ("PAG", "#aabbcc")
 
 
 def test_find_region_by_channel_returns_none_for_unknown_channel():
@@ -251,6 +255,7 @@ def test_create_3d_video_load_beh_features_missing_raises(tmp_path):
     vid = Create3DVideo(
         root_directory=str(tmp_path),
         input_parameter_dict={},
+        visualizations_parameter_dict={"brain_area_colors": {"other": "#B8B8B8"}},
         message_output=lambda *_a, **_kw: None,
     )
     with pytest.raises(FileNotFoundError):
@@ -265,6 +270,7 @@ def test_create_3d_video_load_h5_file_missing_raises(tmp_path):
         root_directory=str(tmp_path),
         arena_directory=str(tmp_path),
         input_parameter_dict={},
+        visualizations_parameter_dict={"brain_area_colors": {"other": "#B8B8B8"}},
         message_output=lambda *_a, **_kw: None,
     )
     with pytest.raises(FileNotFoundError):
