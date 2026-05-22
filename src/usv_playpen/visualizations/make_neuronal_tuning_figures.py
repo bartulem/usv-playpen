@@ -5,9 +5,10 @@ combining the behavioral feature tuning grid (one page per temporal
 offset) and the vocal pages (Page 1: bout raster + pooled `usv_peth`
 on top, `usv_property_tuning` 4x4 grid below; Page 2:
 `usv_category_tuning` watersheds + `usv_category_peth` grid). Output
-format is configurable via `neuronal_tuning_figures.fig_format` in
-visualizations_settings.json (`pdf` default; PDF is multi-page in one
-file, other formats produce one file per page).
+format is configurable via `figures.fig_format` in
+visualizations_settings.json (`svg` default project-wide; this module
+falls back to `pdf` if the key is missing). PDF is multi-page in one
+file, other formats produce one file per page.
 
 Output:
   ephys/tuning_curves/{cluster_id}_neuronal_tuning.{fig_format}
@@ -288,8 +289,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         and for each cluster render one combined output containing both
         the behavioral feature tuning pages and the vocal pages. Output
         format and per-cluster file naming are controlled by
-        `neuronal_tuning_figures.fig_format` (`pdf` produces a single
-        multi-page file; other formats produce one file per page). Pkls
+        `figures.fig_format` (`pdf` produces a single multi-page file;
+        other formats produce one file per page). Pkls
         with neither behavioral nor vocal payload are skipped silently.
 
         Parameters
@@ -318,8 +319,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             message_output(f"  neuronal-figs: no tuning pkls in {tuning_dir}; skipping.")
             return
 
-        viz_params = self.visualizations_parameter_dict["neuronal_tuning_figures"]
-        fig_format = str(viz_params.get("fig_format", "pdf")).lower()
+        viz_params = self.visualizations_parameter_dict.get(
+            "neuronal_tuning_figures", {}
+        )
+        fig_format = str(
+            self.visualizations_parameter_dict.get("figures", {}).get("fig_format", "pdf")
+        ).lower()
 
         # try to load USV summary for the bout raster (left subplot of section a).
         usv_summary_df = None
@@ -616,7 +621,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             else:
                 plot_features.setdefault("social", []).append(feature_key)
 
-        viz_params = self.visualizations_parameter_dict["neuronal_tuning_figures"]
+        viz_params = self.visualizations_parameter_dict.get(
+            "neuronal_tuning_figures", {}
+        )
         ratemap_cmap = self.visualizations_parameter_dict.get(
             "figures", {}
         ).get("cmap", "inferno")

@@ -40,10 +40,6 @@
       "receivers": []
     }
   },
-  "neuronal_tuning_figures": {
-    "fig_format": "pdf",
-    "ratemap_cmap": "inferno"
-  },
   "make_behavioral_videos": {
     "arena_directory": "",
     "speaker_audio_file": "",
