@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -284,8 +285,33 @@ def regenerate_anatomy_converter(
             regenerated[mouse_id] = new_mouse_entry
 
     if not dry_run:
-        with converter_path.open("w") as fh:
-            json.dump(regenerated, fh, indent=4)
+        # Pretty-print the converter so that the entire per-region
+        # `[[lo, hi], [lo, hi], ...]` list lands on a single line:
+        #
+        #   "PAG": [[0, 40], [72, 136], [174, 192], ...]
+        #
+        # Python's default `json.dump(indent=4)` would split every
+        # `[lo, hi]` AND the outer list across many lines — wall of
+        # one-int rows that's painful to read. Render with stock
+        # `indent=4` first to get the nested structure, then collapse
+        # in two passes:
+        #   1. Every `[\n  lo,\n  hi\n]` -> `[lo, hi]`.
+        #   2. Every outer list whose items are now all `[int, int]`
+        #      -> `[[lo, hi], [lo, hi], ...]` on one line.
+        rendered = json.dumps(regenerated, indent=4)
+        rendered = re.sub(
+            r"\[\s+(-?\d+),\s+(-?\d+)\s+\]",
+            r"[\1, \2]",
+            rendered,
+        )
+        rendered = re.sub(
+            r"\[\s*((?:\[-?\d+, -?\d+\](?:,\s*)?)+)\s*\]",
+            lambda m: "[" + ", ".join(
+                re.findall(r"\[-?\d+, -?\d+\]", m.group(0))
+            ) + "]",
+            rendered,
+        )
+        converter_path.write_text(rendered)
 
     return {
         "n_triples_total": n_total,
