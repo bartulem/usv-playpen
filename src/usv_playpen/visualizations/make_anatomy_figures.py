@@ -552,15 +552,18 @@ class AnatomyFigureMaker:
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.set_ylim(0, max(totals) * 1.12)
+        # Anchor the legend just outside the right axis edge so it no
+        # longer overlaps the rightmost bar at higher unit counts.
         ax.legend(
-            loc="upper right",
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
             fontsize=6,
             frameon=False,
             handlelength=1.0,
             handleheight=0.8,
             borderpad=0.2,
             labelspacing=0.3,
-            ncols=2,
+            ncols=1,
         )
 
     # sub-figure (b): 3D unit positions
@@ -870,10 +873,10 @@ class AnatomyFigureMaker:
             fig_size_inches: tuple[float, float] = (6.0, 5.0),
             view_elev: float = 18.0,
             view_azim_start: float = -60.0,
-            n_frames: int = 180,
+            n_frames: int = 240,
             fps: int = 30,
             video_format: str = "mp4",
-            dpi: int = 150,
+            dpi: int = 600,
             **build_kwargs,
     ) -> pathlib.Path:
         """
@@ -950,7 +953,13 @@ class AnatomyFigureMaker:
                 artist, so the animation does not need to track one.
             """
 
-            azim = view_azim_start + (360.0 * frame_idx / n_frames)
+            # Divide by `n_frames - 1` (not `n_frames`) so the LAST
+            # rendered frame lands at exactly `view_azim_start + 360°`
+            # — i.e. visually identical to the first frame. That makes
+            # the mp4 loop seamlessly in a player without the small
+            # angular gap a `frame_idx / n_frames` cycle leaves behind.
+            denom = max(1, n_frames - 1)
+            azim = view_azim_start + (360.0 * frame_idx / denom)
             ax3d.view_init(elev=view_elev, azim=azim)
             return ()
 
