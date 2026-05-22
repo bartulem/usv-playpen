@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Tests for `usv_playpen.analyses.detect_interesting_tuning_neurons`.
+Tests for `usv_playpen.analyses.unit_triage_aggregator`.
 
 Two surfaces are covered:
 
@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from usv_playpen.analyses.detect_interesting_tuning_neurons import (
+from usv_playpen.analyses.unit_triage_aggregator import (
     _aggregate_modality_stats,
     _parse_unit_id,
     aggregate_units_across_conditions,
