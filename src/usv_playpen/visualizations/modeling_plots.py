@@ -42,7 +42,6 @@ import cmasher as cmr
 import json
 import math
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
 import matplotlib.mlab as mlab
@@ -70,11 +69,10 @@ from scipy.interpolate import interp1d
 from .auxiliary_plot_functions import create_colormap
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
+from ..plot_style import apply_plot_style
 
 
-_PKG_ROOT = pathlib.Path(__file__).resolve().parent.parent
-fm.fontManager.addfont(str(_PKG_ROOT / 'fonts' / 'Helvetica.ttf'))
-plt.style.use(str(_PKG_ROOT / '_config' / 'usv_playpen.mplstyle'))
+apply_plot_style()
 
 # Global color definitions
 male_color = "#9AC0CD"
