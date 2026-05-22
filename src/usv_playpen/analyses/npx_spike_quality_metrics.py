@@ -707,37 +707,49 @@ class SpikeQualityMetricsExtractor:
         Estimate each unit's 3D anatomical location by monopolar
         triangulation against the IBL-aligned ``channel_locations.json``,
         with the candidate channel set **restricted to the shank on
-        which the unit's Kilosort template peaks**.
+        which the unit's Kilosort template peaks**, and with IBL
+        anatomy looked up by **physical electrode position** rather
+        than by raw channel index.
 
-        For each unit the sparse channel coordinates are read from the
-        alignment JSON and shifted into the anatomical frame: the
-        electrode's within-shank ``lateral`` offset is folded into the AP
-        axis using ``shank_width_microns``, with the sign set by
-        ``hemisphere``. The ``lateral`` value is first reduced modulo
-        ``shank_spacing_microns`` so the transform always receives a
-        within-shank offset — this makes it correct whether the JSON
-        stores ``lateral`` within-shank (0..shank width) or with the full
-        multi-shank offset baked in (the inter-shank offset is a multiple
-        of ``shank_spacing_microns`` and so is stripped without changing
-        the within-shank part).
+        The IBL alignment GUI writes its per-channel brain coordinates
+        keyed by an index ordering of its own (geometric, shank-major,
+        axially sorted within a shank), which for NP 2.0 4-shank probes
+        does not match the IMRO-driven channel index that Kilosort and
+        SpikeInterface use. Joining ``channel_locations[f"channel_{ks_ch}"]``
+        on the KS channel index therefore returns the anatomy of a
+        completely different physical electrode. To avoid that we
+        build a position-keyed lookup ``(lateral, axial) -> (x, y, z,
+        brain_region)`` from the IBL JSON and look up each KS
+        channel's anatomy via its physical ``(lateral, axial)`` from
+        ``channel_positions.npy`` — both IBL and KS publish the same
+        ``(lateral, axial)`` for the same electrode, so the join is
+        unambiguous.
+
+        After the position-keyed lookup the per-channel ``(x, y, z)``
+        is shifted into the anatomical frame just as before: the
+        within-shank ``lateral`` offset is folded into the AP axis
+        using ``shank_width_microns``, with the sign set by
+        ``hemisphere`` (R adds, L subtracts). The ``lateral`` is
+        reduced modulo ``shank_spacing_microns`` first so the fold
+        always receives a within-shank offset.
 
         The candidate set is then intersected with the channels that
         sit on the *template-peak shank* (determined per unit from
-        :attr:`dense_templates` and the Kilosort ``channel_shanks.npy``
-        file). This is needed because in the IBL-aligned coordinate
-        space every channel of a probe shares a single ML value and
-        the inter-shank offset lives entirely in AP — without the
-        intersection a unit whose template has even small "ghost"
-        amplitudes on far shanks can have its triangulated centroid
-        pulled AP-ward, and ``closest_channel`` then lands on the wrong
-        shank.
+        :attr:`dense_templates` and ``channel_shanks.npy``). This is
+        needed because in the IBL-aligned space every channel of a
+        probe shares a single ML and the inter-shank offset lives
+        entirely in AP — without the constraint a unit whose template
+        has even small "ghost" amplitudes on far shanks can have its
+        triangulated centroid pulled AP-ward, and ``closest_channel``
+        ends up on the wrong shank.
 
         The unit's per-channel peak-to-peak amplitudes — read from
         SpikeInterface's ``templates`` extension
         (:attr:`dense_templates`) — are then fed to
         :func:`solve_monopolar_triangulation_3d` with the
         ``"minimize_with_log_penality"`` optimiser. The closest channel
-        to the estimated location supplies the unit's brain region.
+        to the estimated location supplies the unit's brain region
+        (again by physical position).
 
         Requires :meth:`compute_recording_dependent_metrics` to have run
         first. Sets :attr:`unit_locations` (a ``dict`` keyed by unit id,
@@ -747,8 +759,25 @@ class SpikeQualityMetricsExtractor:
         with open(self.channel_locations_file, 'r') as channel_locs_file:
             channel_locations = json.load(channel_locs_file)
 
-        # Per-channel shank id — needed to constrain the candidate set
-        # to the template-peak shank (see docstring).
+        # Position-keyed IBL lookups: (lateral_int, axial_int) ->
+        # (x, y, z) and (lateral_int, axial_int) -> brain_region. Used
+        # in place of `channel_locations[f"channel_{ks_ch}"]` to avoid
+        # the IBL-vs-KS channel-index mismatch.
+        pos_to_xyz: dict[tuple[int, int], tuple[float, float, float]] = {}
+        pos_to_region: dict[tuple[int, int], str] = {}
+        for key, entry in channel_locations.items():
+            if not key.startswith('channel_'):
+                continue
+            pos = (int(entry['lateral']), int(entry['axial']))
+            pos_to_xyz[pos] = (
+                float(entry['x']), float(entry['y']), float(entry['z']),
+            )
+            pos_to_region[pos] = entry['brain_region']
+
+        # KS physical (lateral, axial) per channel id, plus shank id —
+        # the canonical source for what each Kilosort channel index
+        # actually corresponds to on the probe.
+        channel_positions = np.load(self.ks_path / 'channel_positions.npy')
         channel_shanks = np.load(self.ks_path / 'channel_shanks.npy').astype(int)
 
         sparsity = self.analyzer.sparsity
@@ -775,20 +804,24 @@ class SpikeQualityMetricsExtractor:
 
             temp_chan_locs = np.zeros((chan_inds.size, 3))
             for channel_idx, channel in enumerate(chan_inds):
-                ch = f"channel_{channel}"
+                physical_pos = (
+                    int(channel_positions[channel, 0]),
+                    int(channel_positions[channel, 1]),
+                )
+                x, y, z = pos_to_xyz[physical_pos]
                 # strip any inter-shank offset so only the within-shank position remains
-                within_shank_lateral = channel_locations[ch]['lateral'] % self.shank_spacing_microns
+                within_shank_lateral = physical_pos[0] % self.shank_spacing_microns
                 if self.hemisphere == 'R':
                     temp_chan_locs[channel_idx, :] = [
-                        channel_locations[ch]['x'],
-                        channel_locations[ch]['y'] + self.shank_width_microns - within_shank_lateral,
-                        channel_locations[ch]['z'],
+                        x,
+                        y + self.shank_width_microns - within_shank_lateral,
+                        z,
                     ]
                 else:
                     temp_chan_locs[channel_idx, :] = [
-                        channel_locations[ch]['x'],
-                        channel_locations[ch]['y'] - self.shank_width_microns + within_shank_lateral,
-                        channel_locations[ch]['z'],
+                        x,
+                        y - self.shank_width_microns + within_shank_lateral,
+                        z,
                     ]
 
             wf = self.dense_templates[unit_index][:, chan_inds]
@@ -801,11 +834,15 @@ class SpikeQualityMetricsExtractor:
             distances = np.linalg.norm(temp_chan_locs - unit_location, axis=1)
             min_distance_index = np.argmin(distances)
             closest_channel_number = chan_inds[min_distance_index]
+            closest_physical_pos = (
+                int(channel_positions[closest_channel_number, 0]),
+                int(channel_positions[closest_channel_number, 1]),
+            )
 
             unit_locations[unit_id] = {
                 'location': unit_location,
                 'closest_channel': closest_channel_number,
-                'brain_region': channel_locations[f"channel_{closest_channel_number}"]['brain_region'],
+                'brain_region': pos_to_region[closest_physical_pos],
             }
 
         self.unit_locations = unit_locations

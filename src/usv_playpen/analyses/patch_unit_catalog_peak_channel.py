@@ -77,54 +77,6 @@ _PROBE_RE = re.compile(r"(imec\d)")
 _CLUSTER_NUM_RE = re.compile(r"cl(\d{4})")
 
 
-def _build_channel_region_lookup(
-        converter: dict,
-        mouse_id: str,
-        rec_date: int,
-        probe: str,
-) -> dict[int, str]:
-    """
-    Description
-    -----------
-    Build a per-probe ``{channel_index: region_name}`` lookup from the
-    ``neuropixels_sites_to_anatomy_converter.json`` payload.
-
-    Same-day sessions share the per-probe channel-to-region map
-    (Kilosort is run on the within-day concatenation), so the first
-    session key matching the given ``rec_date`` is used.
-
-    Parameters
-    ----------
-    converter (dict)
-        Parsed JSON payload of the anatomy converter.
-    mouse_id (str)
-        Catalog ``mouse_id`` string.
-    rec_date (int)
-        Recording date as YYYYMMDD integer.
-    probe (str)
-        ``'imec0'`` or ``'imec1'``.
-
-    Returns
-    -------
-    ch_to_region (dict[int, str])
-        Mapping from probe channel index to the region name that
-        contains it. Channels outside any converter range are absent
-        from the dict (callers should default to ``'unknown'``).
-    """
-
-    mouse_sessions = converter.get(mouse_id, {})
-    matching = [k for k in mouse_sessions if k.startswith(str(rec_date))]
-    if not matching:
-        return {}
-    probe_anatomy = mouse_sessions[matching[0]].get(probe, {})
-    out: dict[int, str] = {}
-    for region_name, ranges in probe_anatomy.items():
-        for lo, hi in ranges:
-            for ch in range(int(lo), int(hi)):
-                out[ch] = region_name
-    return out
-
-
 def _load_ibl_channel_locations(
         histology_root: pathlib.Path,
         mouse_id: str,
@@ -168,16 +120,28 @@ def _load_ibl_channel_locations(
 def _build_folded_channel_locs(
         channel_locations: dict,
         hemisphere: str,
-        n_channels: int,
-) -> np.ndarray:
+        channel_positions: np.ndarray,
+) -> tuple[np.ndarray, dict[tuple[int, int], str]]:
     """
     Description
     -----------
-    Apply the lateral-into-AP fold used by the original
-    ``compute_unit_locations`` to every channel and return a dense
-    ``(n_channels, 3)`` array of ``(x, y_folded, z)``.
+    Build the per-Kilosort-channel ``(x, y_folded, z)`` array used as
+    triangulation input, **joining IBL anatomy to KS channels by
+    physical electrode position** (not by raw channel index).
 
-    The fold mirrors the original implementation byte-for-byte:
+    The IBL alignment GUI keys its `channel_<i>` entries by a
+    geometric (shank-major, axially sorted) channel ordering that
+    does not match the IMRO-driven KS index. Looking up
+    ``channel_locations[f"channel_{ks_ch}"]`` therefore returns the
+    anatomy of a different physical electrode. We instead build
+    ``pos_to_xyz[(lateral, axial)] = (x, y, z)`` from the IBL JSON
+    (both IBL and KS publish the same ``(lateral, axial)`` for the
+    same electrode) and look up each KS channel's brain coords via
+    its physical position from ``channel_positions``.
+
+    The lateral-into-AP fold from the original
+    ``compute_unit_locations`` is then applied on top, with the
+    hemisphere-dependent sign:
 
         within_shank_lateral = lateral % shank_spacing
         if hemisphere == 'R':
@@ -192,26 +156,50 @@ def _build_folded_channel_locs(
         (mouse, date, hemisphere).
     hemisphere (str)
         ``'L'`` or ``'R'``.
-    n_channels (int)
-        Total number of channels on the probe (typically 384).
+    channel_positions (np.ndarray)
+        Kilosort ``channel_positions.npy`` array of shape
+        ``(n_channels, 2)`` giving each KS channel's physical
+        ``(lateral, axial)``.
 
     Returns
     -------
     chan_locs (np.ndarray)
-        ``(n_channels, 3)`` array of ``[x, y_folded, z]`` per channel.
+        ``(n_channels, 3)`` array of ``[x, y_folded, z]`` per KS
+        channel.
+    pos_to_region (dict)
+        Position-keyed ``(lateral, axial) -> brain_region`` map
+        derived from the same IBL JSON; the caller uses it to read
+        the region of any KS channel's physical position without
+        having to round-trip back to the JSON.
     """
 
     is_right = hemisphere.upper().startswith("R")
+    pos_to_xyz: dict[tuple[int, int], tuple[float, float, float]] = {}
+    pos_to_region: dict[tuple[int, int], str] = {}
+    for key, entry in channel_locations.items():
+        if not key.startswith("channel_"):
+            continue
+        pos = (int(entry["lateral"]), int(entry["axial"]))
+        pos_to_xyz[pos] = (
+            float(entry["x"]), float(entry["y"]), float(entry["z"]),
+        )
+        pos_to_region[pos] = entry["brain_region"]
+
+    n_channels = channel_positions.shape[0]
     chan_locs = np.zeros((n_channels, 3), dtype=float)
     for ch in range(n_channels):
-        entry = channel_locations[f"channel_{ch}"]
-        within = float(entry["lateral"]) % _SHANK_SPACING_UM
+        pos = (
+            int(channel_positions[ch, 0]),
+            int(channel_positions[ch, 1]),
+        )
+        x, y, z = pos_to_xyz[pos]
+        within = pos[0] % _SHANK_SPACING_UM
         if is_right:
-            y_folded = float(entry["y"]) + _SHANK_WIDTH_UM - within
+            y_folded = y + _SHANK_WIDTH_UM - within
         else:
-            y_folded = float(entry["y"]) - _SHANK_WIDTH_UM + within
-        chan_locs[ch] = (float(entry["x"]), y_folded, float(entry["z"]))
-    return chan_locs
+            y_folded = y - _SHANK_WIDTH_UM + within
+        chan_locs[ch] = (x, y_folded, z)
+    return chan_locs, pos_to_region
 
 
 def _triangulate_within_shank_per_cluster(
@@ -357,8 +345,12 @@ def patch_unit_catalog_peak_channel(
 
     catalog_path = pathlib.Path(catalog_path)
     ephys_root = pathlib.Path(ephys_root)
-    converter_path = pathlib.Path(converter_path)
     histology_root = pathlib.Path(histology_root)
+    # `converter_path` is accepted for argparse backward-compat but is
+    # no longer used: anatomy is now joined to KS channels by physical
+    # ``(lateral, axial)`` from the IBL JSON (the converter is keyed
+    # by IBL channel indices which don't match KS).
+    del converter_path
 
     if backup and not dry_run:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -368,9 +360,6 @@ def patch_unit_catalog_peak_channel(
         backup_path.write_bytes(catalog_path.read_bytes())
     else:
         backup_path = None
-
-    with converter_path.open() as fh:
-        converter = json.load(fh)
 
     df = pd.read_csv(catalog_path)
     df["_probe"] = df["unit_id"].str.extract(_PROBE_RE, expand=False)
@@ -400,18 +389,16 @@ def patch_unit_catalog_peak_channel(
             # Histology not present for this session; leave rows alone.
             continue
 
-        ch_to_region = _build_channel_region_lookup(
-            converter, str(mouse_id), int(rec_date), str(probe),
-        )
-
-        # Build the folded (x, y, z) lookup once per probe-day. The
-        # IBL JSON also carries non-channel metadata keys ("origin"),
-        # so count only the "channel_<int>" entries.
-        n_channels = sum(
-            1 for k in channel_locations if k.startswith("channel_")
-        )
-        chan_locs_folded = _build_folded_channel_locs(
-            channel_locations, hemisphere, n_channels,
+        # Position-keyed (lateral, axial) -> brain_region from the IBL
+        # JSON is built once per (mouse, date, probe). The IBL channel
+        # indices do NOT line up with Kilosort channel indices, so the
+        # `neuropixels_sites_to_anatomy_converter.json` index-based
+        # ranges are unsafe here — we lookup by physical position
+        # instead. `channel_positions.npy` gives each KS channel's
+        # physical (lateral, axial).
+        channel_positions = np.load(ks_dir / "channel_positions.npy")
+        chan_locs_folded, pos_to_region = _build_folded_channel_locs(
+            channel_locations, hemisphere, channel_positions,
         )
 
         cluster_nums = sorted({
@@ -428,9 +415,14 @@ def patch_unit_catalog_peak_channel(
             res = cluster_to_result.get(int(cnum))
             if res is None:
                 continue
-            df.at[idx, "closest_ch"] = res["closest_ch"]
-            df.at[idx, "brain_area"] = ch_to_region.get(
-                res["closest_ch"], "unknown"
+            closest_ch = res["closest_ch"]
+            closest_physical_pos = (
+                int(channel_positions[closest_ch, 0]),
+                int(channel_positions[closest_ch, 1]),
+            )
+            df.at[idx, "closest_ch"] = closest_ch
+            df.at[idx, "brain_area"] = pos_to_region.get(
+                closest_physical_pos, "unknown"
             )
             df.at[idx, "loc_ml"] = res["loc_ml"]
             df.at[idx, "loc_ap"] = res["loc_ap"]
