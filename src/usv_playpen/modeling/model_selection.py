@@ -3363,10 +3363,29 @@ def multinomial_vocal_category_model_selection(
 
         # Only process reshaping if the winning candidate was a real model with weights
         if winner != 'null_model_free':
-            raw_weights = np.array(winning_cand_data['folds']['weights'])
-            n_folds, n_classes, _ = raw_weights.shape
-            n_final_feats = len(current_model_features)
-            reshaped_weights = raw_weights.reshape(n_folds, n_classes, n_final_feats, n_time_bins)
+            # CV folds that hit a fitting exception are recorded as
+            # `None` in `cand_data['folds']['weights']`. `np.array` on
+            # a mixed list of `None` + 2D arrays raises an
+            # inhomogeneous-shape error under numpy>=1.24, so swap
+            # each failed-fold `None` for a same-shape NaN block
+            # taken from the first successful fold. Downstream
+            # consumers of `weights_reshaped` should already treat
+            # NaNs as missing folds.
+            weights_list = list(winning_cand_data['folds']['weights'])
+            first_valid = next((w for w in weights_list if w is not None), None)
+            if first_valid is None:
+                reshaped_weights = None
+            else:
+                nan_block = np.full_like(first_valid, np.nan, dtype=float)
+                weights_list = [
+                    nan_block if w is None else w for w in weights_list
+                ]
+                raw_weights = np.array(weights_list)
+                n_folds, n_classes, _ = raw_weights.shape
+                n_final_feats = len(current_model_features)
+                reshaped_weights = raw_weights.reshape(
+                    n_folds, n_classes, n_final_feats, n_time_bins,
+                )
         else:
             reshaped_weights = None
 
