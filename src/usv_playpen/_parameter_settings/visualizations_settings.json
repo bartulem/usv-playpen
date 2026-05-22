@@ -1,7 +1,15 @@
 {
+  "figures": {
+    "save_directory": "/mnt/falkner/Bartul/figures",
+    "fig_format": "svg",
+    "dpi": 300,
+    "timestamp_in_name": true,
+    "cmap": "inferno"
+  },
   "credentials_directory": "",
   "male_colors": ["#9AC0CD", "#8CA252"],
   "female_colors": ["#FF6347", "#B851B4"],
+  "social_colors": ["#5A6470"],
   "brain_area_colors": {
     "PAG": "#677470",
     "MRN": "#939884",
