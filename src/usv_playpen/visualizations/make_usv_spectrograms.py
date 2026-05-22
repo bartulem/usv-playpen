@@ -145,9 +145,9 @@ class USVSpectrogramPlotter:
 
         if getattr(self, "cmap_override", None) is not None:
             return self.cmap_override
-        return self.visualizations_parameter_dict["make_usv_spectrograms"][
-            "spectrogram_cmap"
-        ]
+        return self.visualizations_parameter_dict.get(
+            "figures", {}
+        ).get("cmap", "inferno")
 
     def _load_audio_memmap(self) -> tuple[np.memmap, int, int, int, str]:
         """
