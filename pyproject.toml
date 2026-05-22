@@ -56,7 +56,7 @@ dependencies = [
     # pinned: the npx spike-quality-metrics pipeline is validated against
     # this exact SpikeInterface (metric names, extension APIs, the two
     # reimplemented fork patches) — see
-    # src/usv_playpen/analyses/neuropixels/spike_quality_metrics.py
+    # src/usv_playpen/neuropixels/spike_quality_metrics.py
     "spikeinterface==0.104.3",
     "statsmodels",
     "tifffile",
@@ -144,7 +144,7 @@ detect-interesting = "usv_playpen.analyze_data:detect_interesting_tuning_neurons
 generate-usv-interval-distributions = "usv_playpen.analyze_data:generate_usv_interval_distributions_cli"
 generate-rm-figs = "usv_playpen.visualize_data:generate_rm_figures_cli"
 generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
-npx-meta-to-coords = "usv_playpen.analyses.neuropixels.sglx_meta_to_coords:main"
+npx-meta-to-coords = "usv_playpen.neuropixels.sglx_meta_to_coords:main"
 
 
 [tool.hatch]

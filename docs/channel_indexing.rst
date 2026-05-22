@@ -158,9 +158,9 @@ Module reference
 ----------------
 
 The regenerator lives in
-:mod:`usv_playpen.analyses.neuropixels.anatomy_converter`. It can be run from
+:mod:`usv_playpen.neuropixels.anatomy_converter`. It can be run from
 the command line::
 
-    uv run python -m usv_playpen.analyses.neuropixels.anatomy_converter
+    uv run python -m usv_playpen.neuropixels.anatomy_converter
 
 with ``--dry-run`` to inspect the summary without writing the file.

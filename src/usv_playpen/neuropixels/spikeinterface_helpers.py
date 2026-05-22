@@ -37,7 +37,7 @@ Four groups of functions live here:
    ratio, half-width, repolarization slope, recovery slope) and the
    underlying prominence-based detector now come directly from stock
    :mod:`spikeinterface.metrics.template.metrics` — see
-   :meth:`usv_playpen.analyses.neuropixels.spike_quality_metrics.SpikeQualityMetricsExtractor._compute_template_metrics`.
+   :meth:`usv_playpen.neuropixels.spike_quality_metrics.SpikeQualityMetricsExtractor._compute_template_metrics`.
 """
 
 from __future__ import annotations

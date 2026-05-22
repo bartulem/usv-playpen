@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Tests for ``usv_playpen.analyses.neuropixels.spike_quality_metrics``.
+Tests for ``usv_playpen.neuropixels.spike_quality_metrics``.
 
 The orchestrator is mostly integration glue over real session data, so
 these tests cover the pure-logic pieces that are both self-contained and
@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from usv_playpen.analyses.neuropixels.spike_quality_metrics import (
+from usv_playpen.neuropixels.spike_quality_metrics import (
     SpikeQualityMetricsExtractor,
     SPIKE_TRAIN_METRIC_NAMES,
     RECORDING_DEPENDENT_METRIC_NAMES,

@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Tests for ``usv_playpen.analyses.neuropixels.spikeinterface_helpers``.
+Tests for ``usv_playpen.neuropixels.spikeinterface_helpers``.
 
 Two owned reimplementations of SpikeInterface fork patches are checked:
 the closest-channel sparsity built around the phy peak channel, and the
@@ -14,7 +14,7 @@ import pytest
 
 from spikeinterface.core import ChannelSparsity
 
-from usv_playpen.analyses.neuropixels.spikeinterface_helpers import (
+from usv_playpen.neuropixels.spikeinterface_helpers import (
     _closest_channel_mask,
     sparsity_around_phy_peak,
     is_somatic,
