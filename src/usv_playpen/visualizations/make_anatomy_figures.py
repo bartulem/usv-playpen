@@ -1074,8 +1074,6 @@ class AnatomyFigureMaker:
             Path to the written figure file.
         """
 
-        out_dir = pathlib.Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
         ephys_root = pathlib.Path(ephys_root)
         histology_root = pathlib.Path(histology_root)
         if probe_to_hemisphere is None:
