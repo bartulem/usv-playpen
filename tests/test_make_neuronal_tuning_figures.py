@@ -213,8 +213,8 @@ def _make_visualizations_parameters() -> dict:
     -----------
     Return the minimum `visualizations_parameter_dict` the figure maker
     reads: `male_colors` / `female_colors` palettes (only first entry of
-    each is touched) and a `neuronal_tuning_figures` block (empty -> the
-    code falls back to `fig_format='pdf'` and `ratemap_cmap='inferno'`).
+    each is touched). The `figures` block is left out so the code path
+    falls back to `fig_format='pdf'` and `cmap='inferno'`.
 
     Parameters
     ----------
@@ -226,9 +226,8 @@ def _make_visualizations_parameters() -> dict:
     """
 
     return {
-        "male_colors":             ["#202020"],
-        "female_colors":           ["#a83232"],
-        "neuronal_tuning_figures": {},
+        "male_colors":   ["#202020"],
+        "female_colors": ["#a83232"],
     }
 
 

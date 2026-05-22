@@ -4285,33 +4285,33 @@ class USVPlaypenWindow(QMainWindow):
         self.plot_behavioral_features_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='plot_behavioral_tuning_cb_bool'))
         self.plot_behavioral_features_cb.move(275, 495)
 
-        ratemap_cmap_label = QLabel('Ratemap colormap:', self.VisualizationsSettings)
-        ratemap_cmap_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        ratemap_cmap_label.move(10, 525)
-        self.ratemap_cmap_list = sorted(
+        default_cmap_label = QLabel('Colormap:', self.VisualizationsSettings)
+        default_cmap_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        default_cmap_label.move(10, 525)
+        self.default_cmap_list = sorted(
             ['viridis', 'cividis', 'plasma', 'inferno', 'magma'],
-            key=lambda x: x == self.visualizations_input_dict['neuronal_tuning_figures']['ratemap_cmap'],
+            key=lambda x: x == self.visualizations_input_dict['figures']['cmap'],
             reverse=True,
         )
-        self.ratemap_cmap_cb = QComboBox(self.VisualizationsSettings)
-        self.ratemap_cmap_cb.addItems(self.ratemap_cmap_list)
-        self.ratemap_cmap_cb.setStyleSheet('QComboBox { width: 57px; }')
-        self.ratemap_cmap_cb.activated.connect(partial(self._combo_box_ratemap_cmap, variable_id='ratemap_cmap'))
-        self.ratemap_cmap_cb.move(275, 525)
+        self.default_cmap_cb = QComboBox(self.VisualizationsSettings)
+        self.default_cmap_cb.addItems(self.default_cmap_list)
+        self.default_cmap_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.default_cmap_cb.activated.connect(partial(self._combo_box_default_cmap, variable_id='default_cmap'))
+        self.default_cmap_cb.move(275, 525)
 
-        neuronal_fig_format_label = QLabel('Tuning figure format:', self.VisualizationsSettings)
-        neuronal_fig_format_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        neuronal_fig_format_label.move(10, 555)
-        self.neuronal_fig_format_list = sorted(
+        default_fig_format_label = QLabel('Fig format:', self.VisualizationsSettings)
+        default_fig_format_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        default_fig_format_label.move(10, 555)
+        self.default_fig_format_list = sorted(
             ['png', 'jpg', 'svg', 'pdf'],
-            key=lambda x: x == self.visualizations_input_dict['neuronal_tuning_figures']['fig_format'],
+            key=lambda x: x == self.visualizations_input_dict['figures']['fig_format'],
             reverse=True,
         )
-        self.neuronal_fig_format_cb = QComboBox(self.VisualizationsSettings)
-        self.neuronal_fig_format_cb.addItems(self.neuronal_fig_format_list)
-        self.neuronal_fig_format_cb.setStyleSheet('QComboBox { width: 57px; }')
-        self.neuronal_fig_format_cb.activated.connect(partial(self._combo_box_neuronal_fig_format, variable_id='neuronal_fig_format'))
-        self.neuronal_fig_format_cb.move(275, 555)
+        self.default_fig_format_cb = QComboBox(self.VisualizationsSettings)
+        self.default_fig_format_cb.addItems(self.default_fig_format_list)
+        self.default_fig_format_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.default_fig_format_cb.activated.connect(partial(self._combo_box_default_fig_format, variable_id='default_fig_format'))
+        self.default_fig_format_cb.move(275, 555)
 
         vis_col_two_x1, vis_col_two_x2 = 380, 670
 
@@ -4610,8 +4610,8 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['make_behavioral_videos']['general_figure_specs']['fig_format'] = self.fig_format
         self.visualizations_input_dict['make_behavioral_videos']['view_angle'] = self.view_angle
 
-        self.visualizations_input_dict['neuronal_tuning_figures']['fig_format'] = self.neuronal_fig_format
-        self.visualizations_input_dict['neuronal_tuning_figures']['ratemap_cmap'] = self.ratemap_cmap
+        self.visualizations_input_dict['figures']['fig_format'] = self.default_fig_format
+        self.visualizations_input_dict['figures']['cmap'] = self.default_cmap
 
         self.visualizations_input_dict['make_behavioral_videos']['side_azimuth_start'] = int(ast.literal_eval(self.side_azimuth_start.text()))
 
@@ -5260,13 +5260,14 @@ class USVPlaypenWindow(QMainWindow):
                 self.__dict__[variable_id] = self.fig_format_list[idx]
                 break
 
-    def _combo_box_neuronal_fig_format(self,
-                                       index: int,
-                                       variable_id: str = None) -> None:
+    def _combo_box_default_fig_format(self,
+                                      index: int,
+                                      variable_id: str = None) -> None:
         """
         Description
         -----------
-        Neuronal-tuning figure file-format combo box.
+        Project-wide default figure-format combo box (writes to
+        ``figures.fig_format``).
 
         Parameters
         ----------
@@ -5280,18 +5281,19 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        for idx in range(len(self.neuronal_fig_format_list)):
+        for idx in range(len(self.default_fig_format_list)):
             if index == idx:
-                self.__dict__[variable_id] = self.neuronal_fig_format_list[idx]
+                self.__dict__[variable_id] = self.default_fig_format_list[idx]
                 break
 
-    def _combo_box_ratemap_cmap(self,
+    def _combo_box_default_cmap(self,
                                 index: int,
                                 variable_id: str = None) -> None:
         """
         Description
         -----------
-        Ratemap colormap combo box.
+        Project-wide default colormap combo box (writes to
+        ``figures.cmap``).
 
         Parameters
         ----------
@@ -5305,9 +5307,9 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        for idx in range(len(self.ratemap_cmap_list)):
+        for idx in range(len(self.default_cmap_list)):
             if index == idx:
-                self.__dict__[variable_id] = self.ratemap_cmap_list[idx]
+                self.__dict__[variable_id] = self.default_cmap_list[idx]
                 break
 
     def _combo_box_plot_theme(self,
@@ -6714,8 +6716,8 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'compute_behavioral_features_cb_bool': False, 'plot_behavioral_tuning_cb_bool': False, 'make_behavioral_video_cb_bool': False,
                            'visualization_type_cb_bool': False, 'plot_theme': visualizations_input_dict['make_behavioral_videos']['plot_theme'],
                            'fig_format': visualizations_input_dict['make_behavioral_videos']['general_figure_specs']['fig_format'], 'view_angle': visualizations_input_dict['make_behavioral_videos']['view_angle'],
-                           'neuronal_fig_format': visualizations_input_dict['neuronal_tuning_figures']['fig_format'],
-                           'ratemap_cmap': visualizations_input_dict['neuronal_tuning_figures']['ratemap_cmap'],
+                           'default_fig_format': visualizations_input_dict['figures']['fig_format'],
+                           'default_cmap': visualizations_input_dict['figures']['cmap'],
                            'rotate_side_view_bool': False, 'history_cb_bool': False, 'speaker_cb_bool': False, 'spectrogram_cb_bool': False,
                            'spectrogram_ch': visualizations_input_dict['make_behavioral_videos']['spectrogram_ch'], 'raster_plot_cb_bool': False, 'spike_sound_cb_bool': False,
                            'beh_features_cb_bool': False, 'calculate_neuronal_tuning_curves_cb_bool': False, 'include_partner_vocalization_tuning_cb_bool': analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'],

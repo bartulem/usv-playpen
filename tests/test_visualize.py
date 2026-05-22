@@ -156,10 +156,11 @@ def test_gui_settings_dicts_have_expected_top_level_keys(qtbot, monkeypatch, tmp
     # The triage-related settings live under analyses_input_dict:
     assert "calculate_neuronal_tuning_curves" in win.analyses_input_dict
     assert "detect_interesting_tuning_neurons" in win.analyses_input_dict
-    # And the figure-format / cmap dropdowns read from visualizations_input_dict:
-    assert "neuronal_tuning_figures" in win.visualizations_input_dict
-    nf = win.visualizations_input_dict["neuronal_tuning_figures"]
-    assert "fig_format" in nf and "ratemap_cmap" in nf
+    # And the figure-format / cmap dropdowns read from `figures` in
+    # visualizations_input_dict:
+    assert "figures" in win.visualizations_input_dict
+    fig_block = win.visualizations_input_dict["figures"]
+    assert "fig_format" in fig_block and "cmap" in fig_block
     win.close()
 
 
@@ -202,9 +203,9 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
     win = _make_main_window(qtbot)
     win.visualize_one()
     assert hasattr(win, "VisualizationsSettings")
-    # the new neuronal-tuning figure controls
-    assert hasattr(win, "neuronal_fig_format_cb")
-    assert hasattr(win, "ratemap_cmap_cb")
+    # the default figure-format / colormap dropdowns
+    assert hasattr(win, "default_fig_format_cb")
+    assert hasattr(win, "default_cmap_cb")
     win.close()
 
 

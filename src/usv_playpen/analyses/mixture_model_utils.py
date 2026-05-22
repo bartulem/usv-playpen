@@ -113,7 +113,6 @@ def plot_gmm_fit(
     figsize: tuple = (5, 5),
     bins: int = 100,
     xlims: tuple | None = None,
-    path: str | None = None,
     color: str = 'steelblue',
     edge_color: str = '#202020',
     histtype: str = 'stepfilled',
@@ -130,6 +129,10 @@ def plot_gmm_fit(
     range and per-bin density are computed *after* the cut, so the
     rendered histogram always integrates to 1 within the visible range.
 
+    The figure is returned without being saved; callers that want to
+    write it to disk should use
+    ``usv_playpen.visualizations.figure_io.save_figure``.
+
     Parameters
     ----------
     model (GaussianMixture)
@@ -143,8 +146,6 @@ def plot_gmm_fit(
     xlims (tuple)
         Optional (low, high) bounds in log-space for both the histogram
         cut and the density grid; defaults to None.
-    path (str)
-        Optional output path for ``savefig``; defaults to None.
     color (str)
         Histogram fill colour; defaults to 'steelblue'.
     edge_color (str)
@@ -193,8 +194,6 @@ def plot_gmm_fit(
     if (xlims is not None):
         ax.set_xlim(xlims)
 
-    if (path is not None):
-        f.savefig(path)
     return f, ax
 
 
@@ -364,17 +363,20 @@ def gmm_quantile_logspace(q: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
 def qqplot_gmm(
     log_data: np.ndarray,
     gmm: GaussianMixture,
-    path: str,
     n_q: int = 200,
-) -> None:
+) -> plt.Figure:
     """
     Description
     -----------
-    Saves a Q-Q plot of empirical quantiles (in seconds) against model
+    Build a Q-Q plot of empirical quantiles (in seconds) against model
     quantiles (in seconds) on log-log axes. Model quantiles are obtained
     by inverting the analytic GMM CDF, so the plot has no Monte-Carlo
     noise — important because the tails are exactly where one judges
     fit and where simulated empirical quantiles are noisiest.
+
+    The figure is returned without being saved; callers that want to
+    write it to disk should use
+    ``usv_playpen.visualizations.figure_io.save_figure``.
 
     Parameters
     ----------
@@ -382,15 +384,14 @@ def qqplot_gmm(
         A (n_samples,) shape ndarray of log-space samples.
     gmm (GaussianMixture)
         A fitted 1D GMM in log-space.
-    path (str)
-        Output path for ``savefig``.
     n_q (int)
         Number of evenly spaced quantile probabilities between 0.01 and
         0.99; defaults to 200.
 
     Returns
     -------
-    None
+    fig (plt.Figure)
+        The created Q-Q figure.
     """
 
     log_data = np.asarray(log_data).ravel()
@@ -399,7 +400,7 @@ def qqplot_gmm(
     obs_q = np.quantile(np.exp(log_data), qs)        # seconds
     model_q = np.exp(gmm_quantile_logspace(qs, gmm)) # seconds
 
-    plt.figure(figsize=(5.5, 4))
+    fig = plt.figure(figsize=(5.5, 4))
     plt.plot(obs_q, model_q, '.', alpha=0.7)
     lo, hi = obs_q.min(), obs_q.max()
     plt.plot([lo, hi], [lo, hi], 'r--', lw=1)
@@ -408,8 +409,7 @@ def qqplot_gmm(
     plt.ylabel('Model quantiles (s)')
     plt.title('Q-Q (mixture model vs. data)')
     plt.tight_layout()
-    plt.savefig(path, dpi=150)
-    plt.close()
+    return fig
 
 
 def _extract_params(gmm: GaussianMixture):
