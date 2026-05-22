@@ -155,14 +155,34 @@ def _file_mtime_iso(path) -> str:
     return ts.replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
+_STEP_TIMESTAMP_RE = re.compile(r'(\d{8}_\d{6}Z)')
+
+
+def _extract_run_timestamp(step_prefix: str) -> str:
+    """
+    Pull the `YYYYMMDD_HHMMSSZ` token out of the per-step file prefix
+    (e.g. `model_selection_male_20260511_203829Z_bout_mixed_step_`
+    → `20260511_203829Z`). The per-step prefix is built by the
+    selector at run start, so this token is the natural "this run
+    started at" timestamp to embed in the consolidated artifact.
+
+    Returns an empty string when the prefix carries no timestamp
+    token (legacy per-step prefixes that omit it).
+    """
+
+    m = _STEP_TIMESTAMP_RE.search(step_prefix or '')
+    return m.group(1) if m else ''
+
+
 def _build_default_output_filename(input_metadata: dict,
-                                   run_metadata: dict) -> str:
+                                   run_metadata: dict,
+                                   step_prefix: str = '') -> str:
     """
     Builds the consolidated artifact's filename from the upstream
-    metadata blocks.
+    metadata blocks + the per-step file prefix.
 
     Schema:
-    `model_selection_final_<sex>_<condition>_<analysis_short>_<split_strategy>.pkl`
+    `model_selection_final_<sex>_<condition>_<analysis_short>_<split_strategy>[_<ts>].pkl`
 
     Components, derived from the upstream metadata:
 
@@ -178,12 +198,11 @@ def _build_default_output_filename(input_metadata: dict,
         is used verbatim (`'manifold'`, `'multinomial'`).
       * `split_strategy` — `run_metadata['split_strategy']` (e.g.
         `'mixed'`).
-
-    No timestamp: re-running the consolidator overwrites the previous
-    consolidated artifact, which is desirable for ``selection
-    consolidated → final figures`` workflows where stale consolidated
-    files just add clutter. Pass `output_filename=...` explicitly to
-    override.
+      * `ts` — the `YYYYMMDD_HHMMSSZ` token embedded in the per-step
+        file prefix (the model-selection run start time). Appended
+        when present so the consolidated artifact is unambiguously
+        tied to the run it summarises; omitted when the prefix has
+        no such token (legacy layouts).
 
     Falls back to bare `'unknown'` when an upstream block / key is
     missing.
@@ -218,9 +237,12 @@ def _build_default_output_filename(input_metadata: dict,
         else 'unknown'
     )
 
+    ts = _extract_run_timestamp(step_prefix)
+    ts_suffix = f"_{ts}" if ts else ''
+
     return (
         f"model_selection_final_{sex}_{cohort}_{analysis_short}_"
-        f"{split_strategy}.pkl"
+        f"{split_strategy}{ts_suffix}.pkl"
     )
 
 
@@ -431,7 +453,7 @@ def consolidate(input_dir: str,
             output_filename = f"legacy_selection_{ts}.pkl"
         else:
             output_filename = _build_default_output_filename(
-                canonical_input_md, canonical_run_md
+                canonical_input_md, canonical_run_md, step_prefix=prefix,
             )
 
     output_root = Path(input_dir) if output_dir is None else Path(output_dir)
