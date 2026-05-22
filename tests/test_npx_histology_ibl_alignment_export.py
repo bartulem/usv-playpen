@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Tests for ``usv_playpen.analyses.npx_histology_ibl_alignment_export``.
+Tests for ``usv_playpen.analyses.neuropixels.histology_ibl_alignment_export``.
 
 Two tiers of checks:
 
@@ -14,7 +14,7 @@ Two tiers of checks:
    the Allen CCF bregma landmark or the apdvml→mlapdv affine. The
    runtime module deliberately does **not** depend on ``iblatlas`` — see
    the rationale in
-   ``src/usv_playpen/analyses/npx_histology_ibl_alignment_export.py``
+   ``src/usv_playpen/analyses/neuropixels/histology_ibl_alignment_export.py``
    for why the constants are pinned inline — but if the upstream atlas
    ever rebases on a future CCFv4 or recalibrates the bregma offset,
    these tests are how we find out about it. The tests are skipped when
@@ -32,7 +32,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from usv_playpen.analyses.npx_histology_ibl_alignment_export import (
+from usv_playpen.analyses.neuropixels.histology_ibl_alignment_export import (
     ALLEN_BREGMA_MLAPDV_UM,
     NP2_PROBE_TYPES,
     ccf_apdvml_to_xyz_mlapdv_um,

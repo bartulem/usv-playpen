@@ -48,7 +48,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from usv_playpen.analyses.npx_monopolar_triangulation import (
+from usv_playpen.analyses.neuropixels.monopolar_triangulation import (
     solve_monopolar_triangulation_3d,
 )
 

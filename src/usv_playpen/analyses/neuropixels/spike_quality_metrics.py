@@ -8,9 +8,9 @@ This module ports the per-session half of the
 testable class. It depends on a pinned stock ``spikeinterface==0.104.3``
 rather than the patched fork the notebook historically used; the two
 fork modifications the pipeline relied on are reimplemented in
-:mod:`usv_playpen.analyses.npx_spikeinterface_helpers` and the 3D
+:mod:`usv_playpen.analyses.neuropixels.spikeinterface_helpers` and the 3D
 monopolar source triangulation in
-:mod:`usv_playpen.analyses.npx_monopolar_triangulation`.
+:mod:`usv_playpen.analyses.neuropixels.monopolar_triangulation`.
 
 Two-pass design
 ---------------
@@ -76,9 +76,9 @@ from spikeinterface.metrics.template.metrics import (
     get_recovery_slope,
 )
 
-from usv_playpen.analyses.npx_histology_ibl_alignment_export import read_ap_meta, parse_imro_table
-from usv_playpen.analyses.npx_monopolar_triangulation import solve_monopolar_triangulation_3d
-from usv_playpen.analyses.npx_spikeinterface_helpers import (
+from usv_playpen.analyses.neuropixels.histology_ibl_alignment_export import read_ap_meta, parse_imro_table
+from usv_playpen.analyses.neuropixels.monopolar_triangulation import solve_monopolar_triangulation_3d
+from usv_playpen.analyses.neuropixels.spikeinterface_helpers import (
     sparsity_around_phy_peak,
     is_somatic,
     get_exp_decay,

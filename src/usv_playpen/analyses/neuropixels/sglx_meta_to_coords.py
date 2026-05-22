@@ -51,7 +51,7 @@ Usage
 Programmatic::
 
     from pathlib import Path
-    from usv_playpen.analyses.npx_sglx_meta_to_coords import (
+    from usv_playpen.analyses.neuropixels.sglx_meta_to_coords import (
         OutputFormat,
         parse_spikeglx_meta,
         coords_from_meta,
@@ -71,7 +71,7 @@ Interactive (Qt-based GUI; same family as the project's main GUI)::
 
     npx-meta-to-coords           # console-script entry point
     # or
-    python -m usv_playpen.analyses.npx_sglx_meta_to_coords
+    python -m usv_playpen.analyses.neuropixels.sglx_meta_to_coords
 """
 
 from __future__ import annotations

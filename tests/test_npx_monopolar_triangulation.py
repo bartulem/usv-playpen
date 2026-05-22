@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Tests for ``usv_playpen.analyses.npx_monopolar_triangulation``.
+Tests for ``usv_playpen.analyses.neuropixels.monopolar_triangulation``.
 
 The triangulation is verified by the round-trip property: place a
 synthetic monopolar source at a known 3D location, generate the exact
@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from usv_playpen.analyses.npx_monopolar_triangulation import (
+from usv_playpen.analyses.neuropixels.monopolar_triangulation import (
     _data_at_3d,
     make_initial_guess_and_bounds_3d,
     estimate_distance_error_with_log_3d,
