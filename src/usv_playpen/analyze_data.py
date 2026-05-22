@@ -18,7 +18,6 @@ from click.core import ParameterSource
 from .analyses.compute_behavioral_features import FeatureZoo
 from .analyses.compute_neuronal_tuning_curves import NeuronalTuning
 from .analyses.compute_inter_usv_interval_distributions import InterUSVIntervalCalculator
-from .analyses.detect_interesting_tuning_neurons import detect_interesting_clusters
 from .analyses.generate_audio_files import AudioGenerator
 from .cli_utils import modify_settings_json_for_cli
 from .os_utils import configure_path
@@ -260,51 +259,6 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     NeuronalTuning(root_directory=root_directory,
                    tuning_parameters_dict=analyses_settings_parameter_dict['calculate_neuronal_tuning_curves'],
                    message_output=print).calculate_neuronal_tuning_curves()
-
-
-@click.command(name='detect-interesting')
-@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path; the per-cluster tuning pkls live at <root>/ephys/tuning_curves/.')
-@click.option('--z-threshold', 'z_threshold', type=float, default=None, required=False, help='Magnitude threshold on per-direction peak Z (excitation / suppression) for usv_peth, usv_property_tuning, usv_category_peth, behavioral, and the categorical-tuning best-Z gate.')
-@click.option('--min-consecutive-bins', 'min_consecutive_bins', type=int, default=None, required=False, help='Minimum number of consecutive bins above (or below) the shuffle band required to flag a direction.')
-@click.option('--vmi-alpha', 'vmi_alpha', type=float, default=None, required=False, help='Wilcoxon p-value threshold for VMI significance.')
-@click.option('--vmi-min-bouts', 'vmi_min_bouts', type=int, default=None, required=False, help='Minimum bout count required to consider VMI meaningful.')
-@click.option('--spatial-info-bps-threshold', 'spatial_info_bps_threshold', type=float, default=None, required=False, help='Skaggs spatial information rate (bits/spike) threshold for the spatial flag.')
-@click.pass_context
-def detect_interesting_tuning_neurons_cli(ctx, root_directory, **kwargs) -> None:
-    """
-    Description
-    -----------
-    A command-line tool to triage neuronal tuning data: scan every
-    `*_tuning_curves_data.pkl` under `<root>/ephys/tuning_curves/`,
-    apply the configured thresholds to each cluster's pre-computed
-    `triage_stats` block, and emit one timestamped JSON summary
-    (`interesting_neurons_<YYYYMMDD>_<HHMMSS>.json`) listing flagged
-    clusters by modality / direction / role and by cluster. Pkls
-    without a `triage_stats` block (older runs) are skipped silently
-    and counted in the JSON.
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-    None
-    """
-
-    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
-    analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
-                                                                    provided_params=provided_params,
-                                                                    settings_dict='analyses_settings')
-    cfg = analyses_settings_parameter_dict['detect_interesting_tuning_neurons']
-    detect_interesting_clusters(
-        root_directory=root_directory,
-        z_threshold=float(cfg['z_threshold']),
-        min_consecutive_bins=int(cfg['min_consecutive_bins']),
-        vmi_alpha=float(cfg['vmi_alpha']),
-        vmi_min_bouts=int(cfg['vmi_min_bouts']),
-        spatial_info_bps_threshold=float(cfg['spatial_info_bps_threshold']),
-        message_output=print,
-    )
 
 
 @click.command(name='generate-beh-features')

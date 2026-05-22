@@ -596,40 +596,6 @@ For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arr
       --smoothing-sd                         Standard deviation (in bins) of the Gaussian smoothing
                                              applied to ratemaps and shuffle distributions; ``0`` disables.
 
-.. _generate-detect-interesting:
-
-``detect-interesting``
-``detect-interesting`` is the command-line interface for triaging neuronal tuning data: it scans every ``*_tuning_curves_data.pkl`` under ``<root>/ephys/tuning_curves/``, applies the configured thresholds to each cluster's pre-computed ``triage_stats`` block, and writes one timestamped JSON summary (``interesting_neurons_<YYYYMMDD>_<HHMMSS>.json``) listing flagged clusters by modality / direction / role and by cluster. The triage statistics themselves are produced by ``generate-rm`` — this CLI is a pure pkl-to-JSON pass and never reloads spike or USV data, so thresholds can be swept without recomputing tuning. Pkls without a ``triage_stats`` block (older runs) are skipped silently and counted in the JSON.
-
-.. code-block:: text
-
-    usage: detect-interesting [-h] --root-directory PATH
-                              [--z-threshold FLOAT]
-                              [--min-consecutive-bins INTEGER]
-                              [--vmi-alpha FLOAT]
-                              [--vmi-min-bouts INTEGER]
-                              [--spatial-info-bps-threshold FLOAT]
-
-    required arguments:
-      --root-directory                Session root directory path; tuning pkls
-                                      live at <root>/ephys/tuning_curves/.
-
-    optional arguments:
-      -h, --help                      Show this help message and exit.
-      --z-threshold                   Magnitude threshold on per-direction peak Z
-                                      for usv_peth, usv_property_tuning,
-                                      usv_category_peth, behavioral, and the
-                                      categorical-tuning best-Z gate.
-      --min-consecutive-bins          Minimum number of consecutive bins above
-                                      (or below) the shuffle band required to
-                                      flag a direction.
-      --vmi-alpha                     Wilcoxon p-value threshold for VMI
-                                      significance.
-      --vmi-min-bouts                 Minimum bout count required to consider VMI
-                                      meaningful.
-      --spatial-info-bps-threshold    Skaggs spatial information rate (bits/spike)
-                                      threshold for the spatial flag.
-
 Visualize
 ^^^^^^^^^
 

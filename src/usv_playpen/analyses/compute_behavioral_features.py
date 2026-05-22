@@ -38,7 +38,6 @@ import warnings
 from datetime import datetime
 
 import h5py
-import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
@@ -48,6 +47,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import minimize
 
 from ..os_utils import first_match_or_raise
+from ..plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.auxiliary_plot_functions import (
     choose_animal_colors,
@@ -55,15 +55,7 @@ from ..visualizations.auxiliary_plot_functions import (
 )
 from .decode_experiment_label import extract_information
 
-for _ttf in (
-    "Helvetica.ttf",
-    "Helvetica-Bold.ttf",
-    "Helvetica-Oblique.ttf",
-    "Helvetica-BoldOblique.ttf",
-    "Helvetica-Light.ttf",
-):
-    fm.fontManager.addfont(pathlib.Path(__file__).parent.parent / "fonts" / _ttf)
-plt.style.use(pathlib.Path(__file__).parent.parent / "_config/usv_playpen.mplstyle")
+apply_plot_style()
 
 
 def generate_feature_distributions(

@@ -1,29 +1,23 @@
 """
 @author: bartulem
-Unit triage at two granularities:
+Cross-session / cross-condition unit-triage aggregator.
 
-  * Per-session   — `detect_interesting_clusters` scans the per-cluster
-    `*_tuning_curves_data.pkl` files written by `generate-rm` for one
-    session, applies thresholds to the pre-computed `triage_stats`
-    block, and emits one JSON summary of flagged clusters by modality
-    and by cluster.
+`aggregate_units_across_conditions` applies per-cluster significance
+rules (delegated to `flag_one_cluster`) across a labelled set of
+sessions — one `.txt` list per experimental condition — joins each
+cluster with `unit_catalog.csv`, and pickles a unit-keyed roll-up so
+the same physical unit recorded across replicate sessions in a day
+is represented once with per-session evidence stacked underneath
+each modality.
 
-  * Cross-session / cross-condition — `aggregate_units_across_conditions`
-    runs the same significance rules across a labelled set of sessions
-    (one `.txt` list per experimental condition), joins each cluster
-    with `unit_catalog.csv`, and pickles a unit-keyed roll-up so the
-    same physical unit recorded across replicate sessions in a day is
-    represented once with per-session evidence stacked underneath.
+The compute step writes ALL triage statistics (peak_z, divergence
+runs, selectivity, monotonicity, info / sparsity / coherence, VMI +
+Wilcoxon p-values) so this module is a pure pkl-to-pickle pass — no
+spike or USV data are reloaded. Thresholds live in
+`analyses_settings.json` under `detect_interesting_tuning_neurons`
+and can be adjusted without re-running compute.
 
-The compute step writes ALL triage statistics (peak_z, divergence runs,
-selectivity, monotonicity, info / sparsity / coherence, VMI + Wilcoxon
-p-values) so this module is a pure pkl-to-output pass — no spike or USV
-data are reloaded. Thresholds live in `analyses_settings.json` under
-`detect_interesting_tuning_neurons` and can be adjusted without re-
-running compute.
-
-Outputs:
-  ephys/tuning_curves/interesting_neurons_<YYYYMMDD>_<HHMMSS>.json
+Output:
   <out_dir>/unit_triage_<YYYYMMDD>_<HHMMSS>.pkl
 """
 
@@ -466,9 +460,8 @@ def _emitter_role_map(cluster_data: dict) -> dict:
 
 
 # Administrative keys that `flag_one_cluster` attaches to each record
-# alongside the metric scalars. Consumers that only want the metrics
-# (e.g. the historical per-session JSON shape emitted by
-# `detect_interesting_clusters`) filter these out via `_FLAG_ADMIN_KEYS`.
+# alongside the metric scalars. Consumers that only want the metric
+# values filter these out via `_FLAG_ADMIN_KEYS`.
 _FLAG_ADMIN_KEYS = frozenset(
     {"tested", "significant", "role", "property",
      "cat_feat", "feature", "offset"}
@@ -497,14 +490,11 @@ def flag_one_cluster(
     block, so the caller can ask both "was this modality tested?" (key
     present) and "did the unit fire on it?" (`significant`).
 
-    This is the single source of truth for the threshold rules. The
-    per-session detector (`detect_interesting_clusters`) consumes it to
-    rebuild its `by_modality` / `by_cluster` summary; the cross-session
-    aggregator (`aggregate_units_across_conditions`) consumes it to
-    accumulate per-session evidence per unit.
+    This is the single source of truth for the threshold rules; the
+    cross-session aggregator (`aggregate_units_across_conditions`)
+    consumes it to accumulate per-session evidence per unit.
 
-    Modality keys follow the existing convention used by
-    `detect_interesting_clusters`:
+    Modality keys follow the convention:
 
       vmi_<role>_<direction>
       usv_peth_<role>_<direction>
@@ -756,156 +746,6 @@ def flag_one_cluster(
             }
 
     return records
-
-
-# Top-level entry point
-
-
-def detect_interesting_clusters(
-    root_directory: str | pathlib.Path,
-    *,
-    z_threshold: float = 3.0,
-    min_consecutive_bins: int = 3,
-    vmi_alpha: float = 0.01,
-    vmi_min_bouts: int = 10,
-    spatial_info_bps_threshold: float = 0.5,
-    message_output: Callable = print,
-) -> pathlib.Path | None:
-    """
-    Description
-    -----------
-    Scan every `*_tuning_curves_data.pkl` under
-    `<root_directory>/ephys/tuning_curves/`, apply the configured
-    thresholds to each cluster's `triage_stats` block, and write a
-    timestamped JSON summary
-    (`interesting_neurons_<YYYYMMDD>_<HHMMSS>.json`) listing flagged
-    clusters by modality and by cluster.
-
-    Pkls without a `triage_stats` block are skipped silently (likely
-    older pkls produced before triage was wired into compute). Returns
-    `None` and logs a graceful skip if the tuning_curves directory
-    is empty or absent.
-
-    Parameters
-    ----------
-    root_directory (str | pathlib.Path)
-        Session root. The pkls live at
-        `<root_directory>/ephys/tuning_curves/`.
-    z_threshold (float)
-        Magnitude threshold on per-direction `peak_z` in
-        usv_peth / usv_property_tuning / usv_category_tuning /
-        usv_category_peth / behavioral. Combined with the
-        `min_consecutive_bins` rule for the run-analysis modalities.
-    min_consecutive_bins (int)
-        Required consecutive-bin run length for a direction (excit or
-        suppress) to be flagged. Does not apply to categorical (no
-        ordered axis) or spatial (uses Skaggs info instead).
-    vmi_alpha (float)
-        Wilcoxon two-sided p-value threshold for VMI significance.
-    vmi_min_bouts (int)
-        Minimum bout count required to consider VMI meaningful.
-    spatial_info_bps_threshold (float)
-        Skaggs information-rate threshold (bits/spike) for spatial
-        flag.
-    message_output (Callable)
-        Logger; defaults to `print`.
-
-    Returns
-    -------
-    out_path (pathlib.Path | None)
-        Path of the written JSON summary, or `None` if nothing was
-        written (no pkls / no tuning_curves dir).
-    """
-
-    root = pathlib.Path(root_directory)
-    pkl_dir = root / "ephys" / "tuning_curves"
-    if not pkl_dir.exists():
-        message_output(
-            f"  detect-interesting: {pkl_dir} not found; skipping."
-        )
-        return None
-    pkls = sorted(pkl_dir.glob("*_tuning_curves_data.pkl"))
-    if not pkls:
-        message_output(
-            f"  detect-interesting: no tuning pkls in {pkl_dir}; skipping."
-        )
-        return None
-
-    by_modality: dict[str, list[str]] = {}
-    by_cluster: dict[str, dict] = {}
-    n_skipped_no_triage = 0
-
-    for pkl in pkls:
-        cluster_id = pkl.stem.replace("_tuning_curves_data", "")
-        try:
-            with pkl.open("rb") as fh:
-                cluster_data = pickle.load(fh)
-        except Exception as exc:  # noqa: BLE001
-            message_output(f"  failed to load {pkl.name}: {exc}")
-            continue
-
-        if not isinstance(cluster_data.get("triage_stats"), dict):
-            n_skipped_no_triage += 1
-            continue
-
-        records = flag_one_cluster(
-            cluster_data,
-            z_threshold=z_threshold,
-            min_consecutive_bins=min_consecutive_bins,
-            vmi_alpha=vmi_alpha,
-            vmi_min_bouts=vmi_min_bouts,
-            spatial_info_bps_threshold=spatial_info_bps_threshold,
-        )
-
-        flagged: list[str] = []
-        details: dict[str, Any] = {}
-        for key, rec in records.items():
-            if not rec.get("significant"):
-                continue
-            info = {
-                k: v for k, v in rec.items()
-                if k not in _FLAG_ADMIN_KEYS
-            }
-            flagged.append(key)
-            details[key] = info
-            by_modality.setdefault(key, []).append(cluster_id)
-
-        if flagged:
-            by_cluster[cluster_id] = {
-                "modalities_flagged": flagged,
-                "details": details,
-            }
-
-    out = {
-        "session_root": str(root),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "thresholds_used": {
-            "z_threshold": z_threshold,
-            "min_consecutive_bins": min_consecutive_bins,
-            "vmi_alpha": vmi_alpha,
-            "vmi_min_bouts": vmi_min_bouts,
-            "spatial_info_bps_threshold": spatial_info_bps_threshold,
-        },
-        "n_clusters_total": len(pkls),
-        "n_clusters_skipped_no_triage": n_skipped_no_triage,
-        "n_clusters_flagged": len(by_cluster),
-        "by_modality": {k: sorted(v) for k, v in sorted(by_modality.items())},
-        "by_cluster": by_cluster,
-    }
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = pkl_dir / f"interesting_neurons_{timestamp}.json"
-    with out_path.open("w") as fh:
-        json.dump(out, fh, indent=2, default=_to_jsonable)
-    message_output(
-        f"  detect-interesting: {len(by_cluster)} / {len(pkls)} cluster(s) "
-        f"flagged (skipped {n_skipped_no_triage} pkl(s) lacking triage_stats). "
-        f"Wrote {out_path.name}"
-    )
-    return out_path
-
-
-# Cross-session / cross-condition aggregator
 
 
 _DEFAULT_CATALOG_PATH = "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv"

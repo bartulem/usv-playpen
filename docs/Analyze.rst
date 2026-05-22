@@ -224,26 +224,26 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 Per-cluster ``triage_stats`` block
 """"""""""""""""""""""""""""""""""
 
-Each per-cluster pkl also carries a ``triage_stats`` block — a flat collection of pre-computed scalar summaries that the downstream :ref:`detect-interesting <detect-interesting-cli>` step consumes without re-touching spike or USV data. The keys mirror the per-modality structure of the rate payload:
+Each per-cluster pkl also carries a ``triage_stats`` block — a flat collection of pre-computed scalar summaries that the downstream :ref:`unit-triage aggregator <unit-triage-aggregator>` consumes without re-touching spike or USV data. The keys mirror the per-modality structure of the rate payload:
 
 * ``vmi[emitter]`` — Vocalization Modulation Index (Mimica et al.). For each emitter side: ``vmi`` in ``[-1, 1]``, paired Wilcoxon ``wilcoxon_statistic`` / ``wilcoxon_pvalue`` over the per-bout ``(FR_baseline, FR_USV)`` pairs, plus ``n_bouts``, ``fr_baseline_per_bout`` and ``fr_usv_per_bout`` arrays. ``VMI = (FR_USV − FR_baseline) / (FR_USV + FR_baseline)``, where ``FR_baseline`` is the mean firing rate in the ``bout_quiet_seconds``-wide window before each bout and ``FR_USV`` is the mean over USVs in each bout of (spikes during USV) / (USV duration). Bouts whose baseline window starts before ``t = 0`` are NaN-baselined.
 * ``usv_peth[emitter]``, ``usv_property_tuning[emitter][prop]``, ``usv_category_peth[emitter][cat_feat]``, ``behavioral[offset_key][feature_key]`` — per-direction (excitation / suppression) divergence-segment analysis with ``n_bins`` total above (or below) the shuffle band, ``max_run`` consecutive-bin run length, ``run_start_idx`` / ``run_end_idx`` (and the corresponding axis-value bounds), ``peak_idx`` / ``peak_z``. For 1D feature axes also ``peak_abs_z``, ``peak_signed_z``, ``selectivity = (max−min)/(max+min)``, ``monotonicity`` (Spearman ρ between bin index and rate), and ``is_circular`` (behavioral only). The PETH variants additionally carry ``ramp_index`` (a two-point pre-USV shape descriptor).
 * ``usv_category_tuning[emitter][cat_feat]`` — categorical (no run analysis): ``peak_abs_z``, ``best_cat``, ``n_sig_categories`` (count of categories outside the [p0.5, p99.5] shuffle band), ``selectivity``.
 * ``spatial[offset_key][feature_key]`` — 2D place-cell diagnostics: ``info_rate_bps`` (Skaggs information rate), ``sparsity``, ``coherence`` (Pearson correlation between each bin and the mean of its 8 neighbors), plus the unshuffled peak rate and its grid coordinates. The 2D spatial map is computed without shuffles, so peak Z is not defined; this block reports the rate / occupancy diagnostics instead.
 
-.. _detect-interesting-cli:
+.. _unit-triage-aggregator:
 
-Detect interesting tuning neurons
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Cross-session unit-triage aggregator
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Once *Compute neuronal tuning curves* has produced per-cluster pkls, the :ref:`detect-interesting CLI <generate-detect-interesting>` (or the ``analyses_notebooks/neuronal_tuning_summary.ipynb`` notebook) scans every pkl in a session, applies thresholds to the pre-computed ``triage_stats``, and writes one JSON summary listing flagged clusters by modality / direction / role. This step never re-loads spike or USV data — it is a pure pkl-to-JSON pass — so thresholds can be swept without re-running compute.
+Once *Compute neuronal tuning curves* has produced per-cluster pkls across many sessions, the ``analyses_notebooks/neuronal_tuning_summary.ipynb`` notebook drives ``aggregate_units_across_conditions``: for each condition (one ``.txt`` session list per condition), every session's pkls are loaded, the same significance rules applied to the pre-computed ``triage_stats``, and the results joined with ``unit_catalog.csv`` to enrich each cluster with ``mouse_id``, ``rec_date``, and ``brain_area``. Same-day duplicate units (one physical unit across replicate sessions) are collapsed into a single record with per-session evidence stacked underneath each modality. This step never re-loads spike or USV data — it is a pure pkl-to-pickle pass — so thresholds can be swept without re-running compute.
 
-The output lives at ``<session_root>/ephys/tuning_curves/interesting_neurons_<YYYYMMDD>_<HHMMSS>.json`` and contains:
+The output is a single pickle ``<out_dir>/unit_triage_<YYYYMMDD>_<HHMMSS>.pkl`` with:
 
 * ``thresholds_used`` — the threshold values that produced this run.
-* ``n_clusters_total`` / ``n_clusters_flagged`` / ``n_clusters_skipped_no_triage`` — bookkeeping counts.
-* ``by_modality`` — for each ``<modality>_<role>_<direction>`` key (e.g. ``vmi_self_excit``, ``usv_peth_self_suppress``, ``behavioral_beh_offset=0s_<mouse>.body_dir_excit``), the sorted list of cluster IDs that fired the flag.
-* ``by_cluster`` — for each flagged cluster, ``modalities_flagged`` (the keys above) and a ``details`` dict whose entries are the relevant ``triage_stats`` slices (compact evidence to support the flag).
+* ``conditions_included`` / ``sessions_skipped`` — what made it in, what was missing.
+* ``n_units_total`` / ``n_units_per_condition`` — bookkeeping counts.
+* ``units`` — keyed by ``unit_uid = f"{mouse_id}_{rec_date}_{unit_id}"``, each carrying identity, ``anatomy_region``, and a ``conditions`` block. For every condition, every modality reports ``n_significant`` / ``n_tested`` / ``consistency`` plus a ``per_session`` list of evidence rows and an ``aggregate`` scalar.
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file holds the gate thresholds in a dedicated section:
 
@@ -263,7 +263,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file holds the gat
         "spatial_info_bps_threshold": 0.5
     }
 
-The accompanying notebook (``analyses_notebooks/neuronal_tuning_summary.ipynb``) is a thin wrapper around the same call: list the session roots in ``SESSION_ROOTS``, optionally adjust ``THRESHOLDS``, and run all cells. Each session writes its own JSON; pooled / cross-session plotting will live in a follow-up notebook section.
+The notebook is a thin wrapper: edit ``CONDITION_TO_SESSION_LIST`` to point at the ``.txt`` lists, optionally adjust ``THRESHOLDS``, and run all cells. The pickle it produces is the input to all downstream cross-session plotting.
 
 Compute inter-vocalization-interval (inter-USV interval) distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
