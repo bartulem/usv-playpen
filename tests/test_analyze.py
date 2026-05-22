@@ -2474,29 +2474,29 @@ def test_plot_gmm_fit_returns_figure_and_axes():
     assert fig is not None and ax is not None
 
 
-def test_plot_gmm_fit_with_xlims_filters_data(tmp_path):
+def test_plot_gmm_fit_with_xlims_filters_data():
     """xlims=(lo, hi) clips the input data before plotting; show_components=True
-    triggers the per-component density-curve overlay."""
+    triggers the per-component density-curve overlay. Returns a Figure that
+    the caller can save via `figure_io.save_figure`."""
+    import matplotlib.figure
     rng = np.random.RandomState(0)
     log_x = rng.normal(0.0, 1.0, 200)
     gmm = GaussianMixture(n_components=2, covariance_type="full",
                           random_state=0).fit(log_x.reshape(-1, 1))
-    out_path = tmp_path / "overlay.png"
     fig, _ax = plot_gmm_fit(gmm, log_x, bins=10,
-                            xlims=(-1.0, 1.0), show_components=True,
-                            path=str(out_path))
-    assert out_path.is_file()
+                            xlims=(-1.0, 1.0), show_components=True)
+    assert isinstance(fig, matplotlib.figure.Figure)
 
 
-def test_qqplot_gmm_writes_figure(tmp_path):
-    """qqplot_gmm writes a savefig file at the requested path."""
+def test_qqplot_gmm_returns_figure():
+    """qqplot_gmm returns a matplotlib Figure (caller saves via figure_io)."""
+    import matplotlib.figure
     rng = np.random.RandomState(0)
     log_x = rng.normal(0.0, 0.5, 300)
     gmm = GaussianMixture(n_components=1, covariance_type="full",
                           random_state=0).fit(log_x.reshape(-1, 1))
-    out = tmp_path / "qq.png"
-    qqplot_gmm(log_x, gmm, str(out), n_q=50)
-    assert out.is_file()
+    fig = qqplot_gmm(log_x, gmm, n_q=50)
+    assert isinstance(fig, matplotlib.figure.Figure)
 
 
 # ===========================================================================
@@ -2516,8 +2516,9 @@ def test_feature_zoo_init_loads_visualizations_settings():
     )
     assert fz.root_directory == "/some/path"
     assert isinstance(fz.visualizations_parameter_dict, dict)
-    # Sanity: the loaded JSON has the expected top-level key.
-    assert "neuronal_tuning_figures" in fz.visualizations_parameter_dict
+    # Sanity: the loaded JSON has the expected top-level keys.
+    assert "figures" in fz.visualizations_parameter_dict
+    assert "male_colors" in fz.visualizations_parameter_dict
 
 
 def test_feature_zoo_save_behavioral_features_missing_h5_raises(tmp_path, mocker):
