@@ -697,7 +697,9 @@ class SpikeQualityMetricsExtractor:
         Description
         -----------
         Estimate each unit's 3D anatomical location by monopolar
-        triangulation against the IBL-aligned ``channel_locations.json``.
+        triangulation against the IBL-aligned ``channel_locations.json``,
+        with the candidate channel set **restricted to the shank on
+        which the unit's Kilosort template peaks**.
 
         For each unit the sparse channel coordinates are read from the
         alignment JSON and shifted into the anatomical frame: the
@@ -709,12 +711,26 @@ class SpikeQualityMetricsExtractor:
         stores ``lateral`` within-shank (0..shank width) or with the full
         multi-shank offset baked in (the inter-shank offset is a multiple
         of ``shank_spacing_microns`` and so is stripped without changing
-        the within-shank part). The unit's per-channel peak-to-peak
-        amplitudes — read from SpikeInterface's ``templates`` extension
+        the within-shank part).
+
+        The candidate set is then intersected with the channels that
+        sit on the *template-peak shank* (determined per unit from
+        :attr:`dense_templates` and the Kilosort ``channel_shanks.npy``
+        file). This is needed because in the IBL-aligned coordinate
+        space every channel of a probe shares a single ML value and
+        the inter-shank offset lives entirely in AP — without the
+        intersection a unit whose template has even small "ghost"
+        amplitudes on far shanks can have its triangulated centroid
+        pulled AP-ward, and ``closest_channel`` then lands on the wrong
+        shank.
+
+        The unit's per-channel peak-to-peak amplitudes — read from
+        SpikeInterface's ``templates`` extension
         (:attr:`dense_templates`) — are then fed to
         :func:`solve_monopolar_triangulation_3d` with the
         ``"minimize_with_log_penality"`` optimiser. The closest channel
         to the estimated location supplies the unit's brain region.
+
         Requires :meth:`compute_recording_dependent_metrics` to have run
         first. Sets :attr:`unit_locations` (a ``dict`` keyed by unit id,
         each value a ``dict`` with ``location``, ``closest_channel`` and
@@ -723,11 +739,32 @@ class SpikeQualityMetricsExtractor:
         with open(self.channel_locations_file, 'r') as channel_locs_file:
             channel_locations = json.load(channel_locs_file)
 
+        # Per-channel shank id — needed to constrain the candidate set
+        # to the template-peak shank (see docstring).
+        channel_shanks = np.load(self.ks_path / 'channel_shanks.npy').astype(int)
+
         sparsity = self.analyzer.sparsity
 
         unit_locations = {}
         for unit_index, unit_id in enumerate(self.analyzer.unit_ids):
-            chan_inds = sparsity.unit_id_to_channel_indices[unit_id]
+            chan_inds_sparse = sparsity.unit_id_to_channel_indices[unit_id]
+
+            # Identify the unit's template peak channel over ALL contacts
+            # (not just the sparse set) so the shank assignment can't be
+            # mis-anchored by a sparsity choice that already strayed.
+            full_template = self.dense_templates[unit_index]
+            template_peak_ch = int(np.ptp(full_template, axis=0).argmax())
+            peak_shank = int(channel_shanks[template_peak_ch])
+
+            # Restrict the sparse candidate set to the template-peak shank.
+            # The peak channel is by construction in `chan_inds_sparse`, so
+            # the intersection is non-empty; the explicit guard below is
+            # defensive against a degenerate sparsity result.
+            same_shank_mask = channel_shanks[chan_inds_sparse] == peak_shank
+            chan_inds = chan_inds_sparse[same_shank_mask]
+            if chan_inds.size == 0:
+                chan_inds = np.array([template_peak_ch], dtype=chan_inds_sparse.dtype)
+
             temp_chan_locs = np.zeros((chan_inds.size, 3))
             for channel_idx, channel in enumerate(chan_inds):
                 ch = f"channel_{channel}"
