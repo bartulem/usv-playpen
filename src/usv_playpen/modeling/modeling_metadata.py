@@ -70,7 +70,6 @@ Design choices baked in here:
 import hashlib
 import json
 import pickle
-import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1040,39 +1039,35 @@ def derive_camera_fps_field(camera_fr_dict: dict):
     return {k: float(v) for k, v in camera_fr_dict.items()}
 
 
-def load_selection_results(selection_results_dir) -> tuple:
+def load_selection_results(selection_results_path) -> tuple:
     """
-    Loads a model-selection result set from disk, transparently
-    handling both the new consolidated single-file artifact and the
-    legacy per-step directory layout.
+    Load a model-selection result set from a consolidated
+    `selection_*.pkl` artifact produced by
+    `consolidate_model_selection_results`.
 
-    Lookup policy
-    -------------
-    1. The directory is first scanned for any `selection_*.pkl` file
-       (the output of `consolidate_model_selection_results`). When one
-       or more such files exist, the most-recently-modified one is
-       loaded and its `'steps'` list is returned in step order. The
-       artifact's basename is returned as `display_name` so downstream
-       plotters can keep their existing substring-based sex / cohort
-       inference (`'_male_' in display_name` etc.). The consolidated
-       artifact's `_input_metadata` / `_run_metadata` /
-       `_univariate_metadata` blocks are returned alongside the steps
-       list under `metadata` so plotters can short-circuit any
-       per-step metadata harvesting they used to do.
-    2. When no `selection_*.pkl` exists in the directory, the function
-       falls back to the legacy `*_step_*.pkl` glob: every per-step
-       pickle is loaded, its reserved metadata blocks are stripped
-       (via `extract_metadata_blocks`), and the cleaned step dicts are
-       returned in step-index order. The first per-step pickle's
-       basename is returned as `display_name`. The metadata block
-       returned in that case is harvested from the *first* per-step
-       file, mirroring the consolidator's hoist policy.
+    Accepts either an explicit file path or a directory:
+
+    * **File** -- the given `.pkl` is loaded directly. Use this when
+      the directory has several consolidated artifacts (e.g. multiple
+      re-runs with different USV-category columns or timestamps) and
+      you want to pin a specific one.
+    * **Directory** -- scanned for `selection_*.pkl` and the
+      most-recently-modified match is loaded. Convenient for the
+      "just give me the latest" workflow.
+
+    The legacy per-step `*_step_*.pkl` directory layout that this
+    function used to fall back to has been removed: every recent
+    selection run consolidates into a single `selection_*.pkl`, and
+    carrying two code paths makes the loader harder to reason about
+    when both formats happen to coexist in the same directory. If
+    you need to plot from an old per-step result set, run the
+    consolidator on it first.
 
     Parameters
     ----------
-    selection_results_dir : str or pathlib.Path
-        Directory containing either the consolidated `selection_*.pkl`
-        or the per-step `*_step_*.pkl` files.
+    selection_results_path : str or pathlib.Path
+        Either a `selection_*.pkl` file or a directory containing
+        one or more such files.
 
     Returns
     -------
@@ -1081,67 +1076,73 @@ def load_selection_results(selection_results_dir) -> tuple:
 
         - `steps` : list of dict
             Per-step result dicts in step order, with reserved
-            metadata keys removed. May be empty when the directory
-            has neither a consolidated artifact nor any per-step
-            files.
+            metadata keys removed. Empty list when the path
+            resolves to nothing usable.
         - `display_name` : str
-            Basename of the loaded artifact (consolidated file or
-            first per-step file). Empty string when nothing was
-            loaded. Plotters use this for sex / experimental-condition
-            substring matching, which keeps working unchanged because
-            the substring `'_male_'` / `'_female_'` appears in both
-            the consolidated and the per-step filenames.
+            Basename of the loaded artifact. Empty string when
+            nothing was loaded. Plotters use this for sex /
+            experimental-condition substring matching
+            (`'_male_'` / `'_female_'` etc., which the
+            consolidator preserves in its output filename).
         - `metadata` : dict
-            The reserved metadata blocks harvested from whichever
-            file was loaded. Possible keys are
+            The reserved metadata blocks harvested from the
+            consolidated artifact. Possible keys are
             `'_input_metadata'`, `'_run_metadata'`,
             `'_univariate_metadata'`, `'_consolidation_metadata'`.
-            Empty dict for legacy artifacts that lack metadata.
+
+    Raises
+    ------
+    FileNotFoundError
+        When `selection_results_path` does not exist, when it points
+        to a directory that contains no `selection_*.pkl`, or when
+        the directory holds only legacy `*_step_*.pkl` files (which
+        should be re-consolidated before plotting).
+    ValueError
+        When the loaded pickle is not a consolidated artifact
+        (no `'steps'` list).
     """
 
-    sel_dir = Path(selection_results_dir)
-
-    # 1. Consolidated artifact path. Multiple `selection_*.pkl` files
-    #    can land in the same directory if the user re-runs the
-    #    consolidator across re-runs of the upstream selector; pick the
-    #    most-recently-modified one as the canonical artifact.
-    cons_candidates = sorted(
-        sel_dir.glob('selection_*.pkl'),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if cons_candidates:
+    path = Path(selection_results_path)
+    if path.is_file():
+        chosen = path
+    elif path.is_dir():
+        cons_candidates = sorted(
+            path.glob('selection_*.pkl'),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not cons_candidates:
+            legacy_present = any(path.glob('*_step_*.pkl'))
+            msg = (
+                f"No consolidated selection_*.pkl found in {path}."
+                + (
+                    " Legacy *_step_*.pkl files are present; run "
+                    "`consolidate_model_selection_results` on them before "
+                    "plotting (legacy step-file loading was removed)."
+                    if legacy_present else ""
+                )
+            )
+            raise FileNotFoundError(msg)
         chosen = cons_candidates[0]
-        with chosen.open('rb') as fh:
-            cons = pickle.load(fh)
-        if 'steps' in cons and isinstance(cons['steps'], list):
-            metadata = {
-                k: v for k, v in cons.items()
-                if k in RESERVED_METADATA_KEYS
-            }
-            return list(cons['steps']), chosen.name, metadata
+    else:
+        msg = f"selection_results_path does not exist: {path}"
+        raise FileNotFoundError(msg)
 
-    # 2. Legacy per-step path.
-    step_files = sorted(
-        sel_dir.glob('*_step_*.pkl'),
-        key=lambda p: int(re.search(r'_step_(\d+)', p.name).group(1)),
-    )
-    if not step_files:
-        return [], '', {}
+    with chosen.open('rb') as fh:
+        cons = pickle.load(fh)
+    if 'steps' not in cons or not isinstance(cons['steps'], list):
+        msg = (
+            f"{chosen} is not a consolidated selection artifact "
+            "(missing 'steps' list); the legacy per-step format is no "
+            "longer supported by this loader."
+        )
+        raise ValueError(msg)
 
-    steps = []
-    metadata = {}
-    for fp in step_files:
-        with fp.open('rb') as fh:
-            payload = pickle.load(fh)
-        clean, md = extract_metadata_blocks(payload)
-        steps.append(clean)
-        if not metadata and md:
-            # Capture the first non-empty metadata bundle so the
-            # plotters can rely on a consistent provenance source
-            # without needing to re-load any per-step file.
-            metadata = md
-    return steps, step_files[0].name, metadata
+    metadata = {
+        k: v for k, v in cons.items()
+        if k in RESERVED_METADATA_KEYS
+    }
+    return list(cons['steps']), chosen.name, metadata
 
 
 def metadata_blocks_equal(a: dict, b: dict, ignore_keys: tuple = ()) -> bool:

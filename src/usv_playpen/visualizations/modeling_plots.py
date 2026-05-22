@@ -1456,7 +1456,7 @@ def plot_raw_feature_difference(
 
 
 def plot_model_selection_results(
-        selection_results_dir: str,
+        selection_results_path: str,
         metric_secondary: str = 'auc',
         save_plots: bool = False,
         output_dir: str = None
@@ -1472,14 +1472,20 @@ def plot_model_selection_results(
 
     Parameters
     ----------
-    selection_results_dir : str
-        Directory containing the '_step_X.pkl' files from the model selection process.
+    selection_results_path : str
+        Path to the consolidated ``selection_*.pkl`` artifact produced by
+        ``consolidate_model_selection_results``. May be either the file
+        itself or a directory containing one (the latest by mtime wins
+        when multiple are present). The legacy per-step layout is no
+        longer supported by the loader.
     metric_secondary : str, default 'auc'
         The key for the secondary metric to plot in the right subplot.
     save_plots : bool, default False
         Whether to save the plot to disk.
     output_dir : str, optional
-        Directory to save the plot. Defaults to 'selection_results_dir'.
+        Directory to save the plot. Defaults to the parent dir of
+        ``selection_results_path`` (or to the path itself if a
+        directory was supplied).
     """
 
     BG_COLOR = '#FFFFFF'
@@ -1490,10 +1496,10 @@ def plot_model_selection_results(
     # `selection_*.pkl` artifact in the directory, falls back to legacy
     # `*_step_*.pkl` glob. `display_name` keeps the substring-based sex
     # inference below working in both modes.
-    selection_steps, display_name, _ = load_selection_results(selection_results_dir)
+    selection_steps, display_name, _ = load_selection_results(selection_results_path)
 
     if not selection_steps:
-        print(f"No step data found in {selection_results_dir}")
+        print(f"No step data found in {selection_results_path}")
         return
 
     if '_male_' in display_name:
@@ -1762,7 +1768,13 @@ def plot_model_selection_results(
         fig_grid.delaxes(axes_grid[i])
 
     if save_plots:
-        if output_dir is None: output_dir = selection_results_dir
+        if output_dir is None:
+            # ``selection_results_path`` is polymorphic (file or
+            # directory); fall back to the file's parent dir so the
+            # saved figure lands alongside the artifact rather than
+            # at the file path itself.
+            _fallback = pathlib.Path(selection_results_path)
+            output_dir = _fallback.parent if _fallback.is_file() else _fallback
         out_name = pathlib.Path(output_dir) / "model_selection_final_model_filters.svg"
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=300, facecolor=BG_COLOR, transparent=False)
         print(f"Saved final model filter grid to: {out_name}")
@@ -2238,7 +2250,7 @@ def plot_univariate_multinomial_filters_grid(
 
 
 def plot_multinomial_selection_trajectory(
-        selection_results_dir: str,
+        selection_results_path: str,
         metric_primary: str = 'auc',
         primary_metric_name: str = "Area Under ROC",
         metric_secondary: str = 'score',
@@ -2281,9 +2293,12 @@ def plot_multinomial_selection_trajectory(
 
     Parameters
     ----------
-    selection_results_dir : str
-        Path to the directory containing the stepwise results (e.g.,
-        'step_0.pkl', 'step_1.pkl', etc.).
+    selection_results_path : str
+        Path to the consolidated ``selection_*.pkl`` artifact produced
+        by ``consolidate_model_selection_results``. May be either the
+        file itself or a directory containing one (the latest by
+        mtime wins when multiple are present). The legacy per-step
+        layout is no longer supported.
     metric_primary : str, default='auc'
         The key for the primary performance metric used for selection.
     primary_metric_name : str, default="Area Under ROC"
@@ -2296,7 +2311,8 @@ def plot_multinomial_selection_trajectory(
         If True, saves the figure to the specified output directory.
     output_dir : str, optional
         The directory where the plot will be saved. Defaults to the
-        selection_results_dir if None.
+        parent dir of ``selection_results_path`` (or to the path
+        itself if a directory was supplied).
 
     Returns
     -------
@@ -2321,10 +2337,10 @@ def plot_multinomial_selection_trajectory(
     _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
     plt.rcParams.update(_rcp_override)
 
-    selection_steps, _, _ = load_selection_results(selection_results_dir)
+    selection_steps, _, _ = load_selection_results(selection_results_path)
 
     if not selection_steps:
-        print(f"No multinomial step data found in {selection_results_dir}")
+        print(f"No multinomial step data found in {selection_results_path}")
         return
 
     steps_data = []
@@ -2409,11 +2425,16 @@ def plot_multinomial_selection_trajectory(
         ax.tick_params(axis='both', which='both', bottom=True, left=True, labelbottom=True, labelleft=True)
 
     if save_plot:
-        out_dir = pathlib.Path(output_dir) if output_dir else pathlib.Path(selection_results_dir)
+        # ``selection_results_path`` is polymorphic; if a file was
+        # passed, anchor the output dir to its parent.
+        _fallback = pathlib.Path(selection_results_path)
+        if _fallback.is_file():
+            _fallback = _fallback.parent
+        out_dir = pathlib.Path(output_dir) if output_dir else _fallback
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Identify condition from the path (male, female, male_mute_partner)
-        path_str = str(selection_results_dir).lower()
+        path_str = str(selection_results_path).lower()
         if 'male_mute_partner' in path_str:
             condition = 'male_mute_partner'
         elif 'female' in path_str:
@@ -2437,7 +2458,7 @@ def plot_multinomial_selection_trajectory(
 
 
 def plot_multinomial_multivariate_filters(
-        selection_results_dir: str,
+        selection_results_path: str,
         history_window_sec: float = 4.0,
         cmap: str = 'RdBu_r',
         save_plot: bool = False,
@@ -2491,9 +2512,12 @@ def plot_multinomial_multivariate_filters(
 
     Parameters
     ----------
-    selection_results_dir : str
-        Path to the directory containing the stepwise results (e.g., 'step_0.pkl').
-        The function extracts data from the final accepted model state.
+    selection_results_path : str
+        Path to the consolidated ``selection_*.pkl`` artifact produced
+        by ``consolidate_model_selection_results``. May be either the
+        file itself or a directory containing one (the latest by
+        mtime wins when multiple are present). The function extracts
+        data from the final accepted model state.
     history_window_sec : float, default=4.0
         The duration of behavioral history analyzed. Used to convert internal
         indices into a human-readable time axis.
@@ -2503,7 +2527,9 @@ def plot_multinomial_multivariate_filters(
     save_plot : bool, default=False
         If True, exports the grid as an SVG file for publication-quality editing.
     output_dir : str, optional
-        Directory for saving the figure. Defaults to the source directory.
+        Directory for saving the figure. Defaults to the parent dir
+        of ``selection_results_path`` (or to the path itself if a
+        directory was supplied).
 
     Returns
     -------
@@ -2522,10 +2548,10 @@ def plot_multinomial_multivariate_filters(
     _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
     plt.rcParams.update(_rcp_override)
 
-    selection_steps, _, _ = load_selection_results(selection_results_dir)
+    selection_steps, _, _ = load_selection_results(selection_results_path)
 
     if not selection_steps:
-        print(f"No step data found in {selection_results_dir}")
+        print(f"No step data found in {selection_results_path}")
         return
 
     # --- BULLETPROOF DATA EXTRACTION ---
@@ -2624,10 +2650,15 @@ def plot_multinomial_multivariate_filters(
     cbar.ax.set_yticklabels(['-', '0', '+'], color=TEXT_COLOR)
 
     if save_plot:
-        path_str = str(selection_results_dir).lower()
+        path_str = str(selection_results_path).lower()
         condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
             ('female' if 'female' in path_str else 'male')
-        out_dir = pathlib.Path(output_dir) if output_dir else pathlib.Path(selection_results_dir)
+        # ``selection_results_path`` is polymorphic; if a file was
+        # passed, anchor the output dir to its parent.
+        _fallback = pathlib.Path(selection_results_path)
+        if _fallback.is_file():
+            _fallback = _fallback.parent
+        out_dir = pathlib.Path(output_dir) if output_dir else _fallback
         fname = f"model_selection_multinomial_usv_category_{condition}_filters_final.svg"
         fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
 
@@ -2636,7 +2667,7 @@ def plot_multinomial_multivariate_filters(
 
 
 def plot_multinomial_selection_diagnosis(
-        selection_results_dir: str,
+        selection_results_path: str,
         cmap_base: str = 'mako',
         cmap_diff: str = 'RdBu_r',
         save_plot: bool = False,
@@ -2662,9 +2693,13 @@ def plot_multinomial_selection_diagnosis(
 
     Parameters
     ----------
-    selection_results_dir : str
-        Directory containing the stepwise selection '.pkl' files. The function automatically
-        identifies Step 0 and the final successful step for comparison.
+    selection_results_path : str
+        Path to the consolidated ``selection_*.pkl`` artifact produced
+        by ``consolidate_model_selection_results``. May be either the
+        file itself or a directory containing one (the latest by
+        mtime wins when multiple are present). The function
+        automatically identifies Step 0 and the final successful
+        step for comparison.
     cmap_base : str, default='mako'
         Colormap for the Baseline and Multivariate matrices.
     cmap_diff : str, default='RdBu_r'
@@ -2672,7 +2707,9 @@ def plot_multinomial_selection_diagnosis(
     save_plot : bool, default=False
         If True, saves the diagnostic figure as an SVG file.
     output_dir : str, optional
-        Target directory for saved figures. Defaults to selection_results_dir.
+        Target directory for saved figures. Defaults to the parent
+        dir of ``selection_results_path`` (or to the path itself if
+        a directory was supplied).
 
     Returns
     -------
@@ -2698,7 +2735,7 @@ def plot_multinomial_selection_diagnosis(
     plt.rcParams.update(_rcp_override)
 
     # 2. Step Discovery and Selection
-    selection_steps, _, _ = load_selection_results(selection_results_dir)
+    selection_steps, _, _ = load_selection_results(selection_results_path)
 
     if len(selection_steps) < 2:
         print("Diagnosis requires at least two successful steps (Univariate vs Multivariate).")
@@ -2838,12 +2875,17 @@ def plot_multinomial_selection_diagnosis(
 
     # 7. Final Polish and Save
     plt.suptitle(
-        f"Multinomial Model Selection Audit: {pathlib.Path(selection_results_dir).stem}",
+        f"Multinomial Model Selection Audit: {pathlib.Path(selection_results_path).stem}",
         fontsize=16, fontweight='bold', y=0.98
     )
 
     if save_plot:
-        out_path = pathlib.Path(output_dir or selection_results_dir)
+        # ``selection_results_path`` is polymorphic; if a file was
+        # passed, anchor the output dir to its parent.
+        _fallback = pathlib.Path(selection_results_path)
+        if _fallback.is_file():
+            _fallback = _fallback.parent
+        out_path = pathlib.Path(output_dir) if output_dir else _fallback
         fname = "multinomial_selection_diagnostic_audit_proportions.svg"
         fig.savefig(out_path / fname, facecolor=BG_COLOR, bbox_inches='tight')
 
