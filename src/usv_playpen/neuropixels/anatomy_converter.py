@@ -112,15 +112,17 @@ def _load_ibl_position_to_region(
 
 def _runs_to_ranges(
         per_row_region: list[str],
-) -> dict[str, list[list[int]]]:
+) -> dict[str, list[int]]:
     """
     Description
     -----------
-    Compress a per-channel sequence of region labels into the
-    ``{region: [[lo, hi], ...]}`` half-open-range layout the existing
-    converter uses. Runs are maximal — ``[lo, hi)`` means KS rows
-    ``lo`` inclusive through ``hi`` exclusive all share the same
-    region.
+    Collapse a per-channel sequence of region labels into the
+    ``{region: [ks_row, ks_row, ...]}`` flat-list layout the converter
+    uses on disk. All Kilosort rows belonging to a given region end up
+    in a single sorted list under that region's key — easier for
+    consumers to do ``cluster_ch in channel_list`` membership tests
+    than chasing multiple ``[lo, hi]`` intervals across the shank-
+    blocks the KS row order produces.
 
     Parameters
     ----------
@@ -130,32 +132,28 @@ def _runs_to_ranges(
 
     Returns
     -------
-    ranges (dict[str, list[list[int]]])
-        ``{region_name: [[lo, hi], ...]}``.
+    region_to_channels (dict[str, list[int]])
+        ``{region_name: [ks_row, ...]}``; each channel list is sorted
+        ascending.
     """
 
-    ranges: dict[str, list[list[int]]] = defaultdict(list)
-    if not per_row_region:
-        return dict(ranges)
-    run_start = 0
-    for i in range(1, len(per_row_region)):
-        if per_row_region[i] != per_row_region[run_start]:
-            ranges[per_row_region[run_start]].append([run_start, i])
-            run_start = i
-    ranges[per_row_region[run_start]].append([run_start, len(per_row_region)])
-    return dict(ranges)
+    region_to_channels: dict[str, list[int]] = defaultdict(list)
+    for ks_row, region in enumerate(per_row_region):
+        region_to_channels[region].append(ks_row)
+    return {region: sorted(chs) for region, chs in region_to_channels.items()}
 
 
 def _build_ks_keyed_block(
         ks_dir: pathlib.Path,
         pos_to_region: dict[tuple[int, int], str],
-) -> dict[str, list[list[int]]]:
+) -> dict[str, list[int]]:
     """
     Description
     -----------
-    Build the per-probe ``{region: [[lo, hi], ...]}`` block for one
+    Build the per-probe ``{region: [ks_row, ...]}`` block for one
     Kilosort directory. Joins the IBL position map to KS rows by
-    physical ``(lateral, axial)``, then compresses contiguous runs.
+    physical ``(lateral, axial)``, then collapses by region into a
+    single flat sorted list per region.
 
     Parameters
     ----------
@@ -167,8 +165,8 @@ def _build_ks_keyed_block(
 
     Returns
     -------
-    ranges (dict[str, list[list[int]]])
-        Per-region KS-row ranges for this probe.
+    region_to_channels (dict[str, list[int]])
+        Per-region flat list of KS row indices.
     """
 
     channel_positions = np.load(ks_dir / "channel_positions.npy")

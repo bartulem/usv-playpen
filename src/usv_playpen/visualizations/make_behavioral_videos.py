@@ -125,15 +125,14 @@ def find_region_by_channel(cluster_id: str,
     """
 
     cluster_ch = int(cluster_id[cluster_id.index('_ch') + 3:cluster_id.index('_ch') + 6])
-    for probe_id, probe_regions in brain_area_dict.items():
-        for brain_region, channel_groups in probe_regions.items():
-            for channel_group in channel_groups:
-                if channel_group[0] <= cluster_ch < channel_group[1]:
-                    if return_only_color:
-                        return brain_color_scheme[brain_region]
-                    if return_only_area:
-                        return brain_region
-                    return brain_region, brain_color_scheme[brain_region]
+    for _probe_id, probe_regions in brain_area_dict.items():
+        for brain_region, channel_list in probe_regions.items():
+            if cluster_ch in channel_list:
+                if return_only_color:
+                    return brain_color_scheme[brain_region]
+                if return_only_area:
+                    return brain_region
+                return brain_region, brain_color_scheme[brain_region]
 
     return None
 
