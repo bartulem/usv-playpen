@@ -1049,6 +1049,51 @@ class NeuralContinuousCNNRunner:
         cluster_labels_super = data_blocks['supercategory'] if 'supercategory' in data_blocks else None
         cluster_labels_cat = data_blocks['category'] if 'category' in data_blocks else None
 
+        # Pre-flight: if Phase 3 (saliency) is enabled, validate the
+        # requested labels are present in the modeling pickle AND that
+        # they resolve to at least two cluster centres BEFORE running
+        # any folds. Without this the runner happily completes Phase 1
+        # (10 folds of CNN training) and Phase 2 (permutation
+        # importance) and only dies in Phase 3 — burning ~all of the
+        # job's wall-clock time on work that was destined to fail.
+        saliency_cfg = self.hp['saliency']
+        if saliency_cfg['enable']:
+            preflight_seg = saliency_cfg['segmentation']
+            if preflight_seg not in ('supercategory', 'category'):
+                raise ValueError(
+                    f"saliency.segmentation must be 'supercategory' or 'category'; "
+                    f"got {preflight_seg!r}"
+                )
+            preflight_labels = (
+                cluster_labels_super if preflight_seg == 'supercategory'
+                else cluster_labels_cat
+            )
+            if preflight_labels is None:
+                raise RuntimeError(
+                    f"saliency.enable=true and saliency.segmentation="
+                    f"'{preflight_seg}', but the modeling pickle does not carry "
+                    f"per-USV {preflight_seg} labels. Re-extract the data with "
+                    f"the updated pipeline (extract_and_save_continuous_data) "
+                    f"before training, or set saliency.enable=false. Failing "
+                    f"now (before Phase 1) to avoid burning training time on a "
+                    f"run that will die in Phase 3."
+                )
+            preflight_centres = derive_cluster_centers_empirically(
+                np.asarray(Y),
+                np.asarray(preflight_labels),
+                drop_label=saliency_cfg['noise_label'],
+                metric=self.manifold_metric,
+                period=self.manifold_period,
+            )
+            if len(preflight_centres) < 2:
+                raise RuntimeError(
+                    f"saliency.segmentation='{preflight_seg}' produces only "
+                    f"{len(preflight_centres)} cluster centre(s) on this "
+                    f"modeling pickle; need at least 2 for the alpha-gap "
+                    f"radius rule. Check the label coverage / noise_label "
+                    f"setting. Failing now (before Phase 1)."
+                )
+
         n_feats = len(features)
         n_bins = data_blocks['num_bins']
 
@@ -1079,6 +1124,11 @@ class NeuralContinuousCNNRunner:
                 'features_list': features,
                 'n_time_bins': n_bins,
                 'split_strategy': self.split_strategy,
+                # Source-pickle provenance — pinned in metadata so any
+                # checkpoint produced by this run can be paired back to
+                # the modeling pickle it consumed without grepping
+                # filesystem timestamps.
+                'source_pkl_path': str(data_blocks['source_pkl_path']),
                 # Manifold-metric provenance — downstream
                 # visualisation code reads these to compute wrap-aware
                 # distances on the saved Y_pred / Y_true arrays.
@@ -1088,6 +1138,60 @@ class NeuralContinuousCNNRunner:
             'cross_validation': [],
             'feature_importance': {}
         }
+
+        # Resolve the persistent save path and the checkpoint helper
+        # BEFORE Phase 1 starts so every phase boundary can checkpoint
+        # to disk. Earlier this lived between Phase 2 and Phase 3,
+        # which meant a Phase-2 failure (or any Phase-1 OOM) lost the
+        # trained-weight tensors that only existed on the device. The
+        # final write at the end of `run_cnn_training` rewrites the
+        # same path with the fully-populated `deep_storage`.
+        source_file = pathlib.Path(data_blocks['source_pkl_path']).name
+        if "male_mute_partner" in source_file:
+            sex_mod = "male_mute_partner"
+        elif "female" in source_file:
+            sex_mod = "female"
+        else:
+            sex_mod = "male"
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"cnn_manifold_integrated_predictions_{sex_mod}_{timestamp}.pkl"
+        save_dir = pathlib.Path(self.modeling_settings['io']['save_directory'])
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / filename
+
+        def _checkpoint_deep_storage(stage_label: str) -> None:
+            """
+            Description
+            -----------
+            Defensive serialisation hook called between phases.
+            Converts every JAX device array currently held in
+            `deep_storage` into NumPy via `jax.device_get`, then
+            writes the resulting object to `save_path` via pickle.
+            The intent is to guarantee that, even if the very next
+            phase of `run_cnn_training` raises, the user keeps every
+            byte of the work produced up to this point on disk —
+            including the per-fold trained weights, which are
+            persisted into `deep_storage['cross_validation']` as
+            `params_actual` / `state_actual` during Phase 1. The
+            final write at the end of this method overwrites the
+            same path with the fully-populated structure.
+
+            Parameters
+            ----------
+            stage_label : str
+                Human-readable identifier of the phase whose output
+                is being persisted (e.g. "post-Phase-1"). Used only
+                for the console breadcrumb line.
+
+            Returns
+            -------
+            None
+            """
+
+            host_snapshot = jax.device_get(deep_storage)
+            with save_path.open('wb') as fh:
+                pickle.dump(host_snapshot, fh)
+            print(f"[CHECKPOINT::{stage_label}] saved deep_storage to {save_path}")
 
         # Helper for efficient, memory-safe evaluation (splits test set to avoid OOM)
         def evaluate_batched(p, s, x_s):
@@ -1298,8 +1402,22 @@ class NeuralContinuousCNNRunner:
                     actual_errors.append(best_err)
                     best_actual_params_list.append(best_params)
                     best_actual_states_list.append(best_state)
+                    # Persist the per-fold "actual" weights into
+                    # `fold_results` so the post-Phase-1 checkpoint
+                    # captures every byte the saliency phase needs.
+                    # Without this, a Phase-2/Phase-3 crash drops the
+                    # only in-process copy of the trained weights —
+                    # the failure mode that motivated this rewrite.
+                    fold_results['params_actual'] = best_params
+                    fold_results['state_actual'] = best_state
 
             deep_storage['cross_validation'].append(fold_results)
+
+        # Persist the per-fold predictions, errors, AND trained
+        # weights before Phase 2 begins. A Phase-2 (permutation) or
+        # Phase-3 (saliency) failure from here on no longer destroys
+        # the ~hour of CNN training that just finished.
+        _checkpoint_deep_storage("post-Phase-1")
 
         # ---------------------------------------------------------
         # PHASE 2: POST-HOC PERMUTATION FEATURE IMPORTANCE
@@ -1368,53 +1486,11 @@ class NeuralContinuousCNNRunner:
             'significant_features': significant_features
         }
 
-        # Resolve the save path BEFORE Phase 3 so we can checkpoint between
-        # phases. The same `save_path` is rewritten at the end with the
-        # fully-populated `deep_storage`; a Phase-3 failure therefore no
-        # longer destroys the training + feature-importance work that
-        # already lives in memory at this point.
-        source_file = pathlib.Path(data_blocks['source_pkl_path']).name
-
-        # Explicit Multi-line parsing to avoid summarizing logic
-        if "male_mute_partner" in source_file:
-            sex_mod = "male_mute_partner"
-        elif "female" in source_file:
-            sex_mod = "female"
-        else:
-            sex_mod = "male"
-
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"cnn_manifold_integrated_predictions_{sex_mod}_{timestamp}.pkl"
-
-        save_dir = pathlib.Path(self.modeling_settings['io']['save_directory'])
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / filename
-
-        def _checkpoint_deep_storage(stage_label: str) -> None:
-            """Defensive serialisation hook called between phases.
-
-            Converts every JAX device array currently held in `deep_storage`
-            into NumPy, then writes the resulting object to `save_path` via
-            pickle. The intent is to guarantee that, even if the very next
-            phase of `run_cnn_training` raises, the user keeps every byte of
-            the work produced up to this point on disk. The final write at
-            the end of this method overwrites the same path with the
-            fully-populated structure.
-
-            Parameters
-            ----------
-            stage_label : str
-                Human-readable identifier of the phase whose output is being
-                persisted (e.g. "post-Phase-2"). Used only for the console
-                breadcrumb line.
-            """
-
-            host_snapshot = jax.device_get(deep_storage)
-            with save_path.open('wb') as fh:
-                pickle.dump(host_snapshot, fh)
-            print(f"[CHECKPOINT::{stage_label}] saved deep_storage to {save_path}")
-
-        # Persist Phase-1 + Phase-2 results before Phase 3 begins.
+        # Persist Phase-1 (predictions + per-fold weights) + Phase-2
+        # (permutation importance) results before Phase 3 begins.
+        # `save_path` and `_checkpoint_deep_storage` were hoisted to
+        # the top of this method so the post-Phase-1 checkpoint
+        # captured the trained weights too.
         _checkpoint_deep_storage("post-Phase-2")
 
         # ---------------------------------------------------------
