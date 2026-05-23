@@ -1412,6 +1412,10 @@ class NeuralContinuousCNNRunner:
                     fold_results['state_actual'] = best_state
 
             deep_storage['cross_validation'].append(fold_results)
+            # Per-fold checkpoint — a Phase-1 mid-loop failure
+            # (OOM during fold 7, say) now preserves folds 1..6
+            # on disk instead of dropping everything.
+            _checkpoint_deep_storage(f"post-fold-{fold_idx + 1}")
 
         # Persist the per-fold predictions, errors, AND trained
         # weights before Phase 2 begins. A Phase-2 (permutation) or
