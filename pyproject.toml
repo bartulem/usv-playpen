@@ -130,6 +130,7 @@ generate-rm = "usv_playpen.analyze_data:generate_rm_files_cli"
 generate-usv-interval-distributions = "usv_playpen.analyze_data:generate_usv_interval_distributions_cli"
 generate-rm-figs = "usv_playpen.visualize_data:generate_rm_figures_cli"
 generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
+recompute-filter-shapes = "usv_playpen.modeling.recompute_filter_shapes:main"
 
 
 [tool.hatch]

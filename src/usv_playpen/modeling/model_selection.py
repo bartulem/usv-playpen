@@ -214,6 +214,200 @@ def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
     return X_unrolled
 
 
+def compute_filter_shapes_per_fold_bout_onset(
+        *,
+        cv_folds: list[dict],
+        current_model_features: list[str],
+        all_feature_data: dict,
+        pooled_feature_cache: dict,
+        history_frames: int,
+        n_splines_value: int,
+        n_splines_time: int,
+        gam_kwargs: dict,
+        random_seed: int,
+        time_indices: np.ndarray,
+) -> list[dict]:
+    """
+    Description
+    -----------
+    Refit the final multivariate ``LogisticGAM`` once per CV fold
+    and extract the per-feature temporal-filter shape for that fold.
+
+    The bout-onset selector's final-refit block calls this; the
+    ``recompute_filter_shapes`` recovery utility for legacy
+    consolidated pickles calls it too. Keeping the loop in one
+    place guarantees both code paths exercise the same fitting,
+    balancing, and partial-dependence-extraction logic.
+
+    For each fold:
+      1. Pull this fold's train pos/neg arrays for every feature in
+         ``current_model_features``. Session folds re-pool via
+         ``pool_session_arrays``; mixed folds slice the cached
+         ``X_full`` arrays by the fold's ``train_idx``.
+      2. Balance the train fold 50/50 with a fold-specific RNG
+         seed; one RNG draw is shared across features so the same
+         pos / neg row indices are taken for every feature (design
+         matrix stays column-aligned).
+      3. Fit a multivariate LogisticGAM.
+      4. Extract per-feature partial dependence via the
+         ``predict_mu(test_grid) - predict_mu(base_grid)`` trick.
+      5. Append the fold's per-feature dict to the returned list.
+
+    Per-fold exceptions are caught and logged but do NOT abort the
+    loop; a subset of bad folds shouldn't lose the others. The
+    caller is responsible for checking the returned list length
+    against ``len(cv_folds)`` and deciding whether to raise (see
+    the bout-onset selector for the canonical ``RuntimeError`` on
+    fully-empty result + warning on <2 folds).
+
+    Parameters
+    ----------
+    cv_folds (list of dict)
+        Fold definitions. Each must have a ``'type'`` key of either
+        ``'session'`` (with ``'train_sessions'``) or ``'mixed'``
+        (with ``'train_idx'``, ``'n_pos_total'``, ``'n_neg_total'``).
+    current_model_features (list of str)
+        Features to include in the multivariate model. Must all be
+        present in ``all_feature_data`` (for session folds) and in
+        ``pooled_feature_cache`` (for mixed folds).
+    all_feature_data (dict)
+        Per-feature, per-session raw data. Consumed only for
+        ``'session'`` folds.
+    pooled_feature_cache (dict)
+        Pre-pooled balanced design matrices keyed by feature.
+        Values are dicts with ``'X_full'``. Consumed only for
+        ``'mixed'`` folds.
+    history_frames (int)
+        Number of time frames per filter.
+    n_splines_value, n_splines_time (int)
+        pyGAM spline counts for the value and time axes,
+        respectively.
+    gam_kwargs (dict)
+        Keyword args forwarded to ``LogisticGAM(**gam_kwargs)``.
+    random_seed (int)
+        Base RNG seed. Each fold uses ``random_seed + fold_idx``
+        so the balancing draws are reproducible across reruns.
+    time_indices (np.ndarray)
+        Vector ``np.arange(history_frames, dtype=float)`` used to
+        construct the partial-dependence base grid. Passed in to
+        avoid re-allocating it per call.
+
+    Returns
+    -------
+    list of dict
+        One entry per successfully-fit fold. Each dict maps every
+        feature in ``current_model_features`` to a 1-D numpy
+        array of length ``history_frames``. Length may be less
+        than ``len(cv_folds)`` if any folds raised; check the
+        length at the call site.
+    """
+
+    final_fold_shapes = []
+    for fold_idx, fold_info in enumerate(cv_folds):
+        try:
+            X_p_per_feat = []
+            X_n_per_feat = []
+            if fold_info['type'] == 'session':
+                train_sess = fold_info['train_sessions']
+                for feat in current_model_features:
+                    _X_p, _X_n = pool_session_arrays(
+                        all_feature_data[feat],
+                        train_sess,
+                        pos_key="usv_feature_arr",
+                        neg_key="no_usv_feature_arr",
+                        n_frames=history_frames,
+                    )
+                    X_p_per_feat.append(_X_p)
+                    X_n_per_feat.append(_X_n)
+            elif fold_info['type'] == 'mixed':
+                train_ix = fold_info['train_idx']
+                n_pos_total = fold_info['n_pos_total']
+                n_neg_total = fold_info['n_neg_total']
+                y_full = np.concatenate(
+                    (np.ones(n_pos_total), np.zeros(n_neg_total))
+                )
+                y_tr_all = y_full[train_ix]
+                for feat in current_model_features:
+                    X_full_feat = pooled_feature_cache[feat]['X_full']
+                    X_tr_all = X_full_feat[train_ix]
+                    X_p_per_feat.append(X_tr_all[y_tr_all == 1])
+                    X_n_per_feat.append(X_tr_all[y_tr_all == 0])
+            else:
+                print(
+                    f"    [!] Unknown fold type {fold_info.get('type')!r} "
+                    f"(fold {fold_idx}); skipping."
+                )
+                continue
+
+            n_pos = X_p_per_feat[0].shape[0]
+            n_neg = X_n_per_feat[0].shape[0]
+            n_k = min(n_pos, n_neg)
+            if n_k == 0:
+                print(
+                    f"    [!] Empty class in training fold {fold_idx} "
+                    f"(pos={n_pos}, neg={n_neg}); skipping."
+                )
+                continue
+
+            # One RNG per fold; same idx_p / idx_n applied across
+            # every feature so rows line up column-wise.
+            fold_rng = np.random.default_rng(random_seed + fold_idx)
+            idx_p = fold_rng.choice(n_pos, n_k, replace=False)
+            idx_n = fold_rng.choice(n_neg, n_k, replace=False)
+
+            X_list_fold = [
+                np.concatenate((X_p[idx_p], X_n[idx_n]))
+                for X_p, X_n in zip(X_p_per_feat, X_n_per_feat)
+            ]
+            y_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+
+            X_gam_tr = get_unrolled_X_for_multivariate(
+                X_list_fold, history_frames
+            )
+            y_gam_tr = np.repeat(y_fold.astype(float), history_frames)
+
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(current_model_features)):
+                gam_terms += te(
+                    i * 2, i * 2 + 1,
+                    n_splines=[n_splines_value, n_splines_time],
+                )
+
+            gam_fold = LogisticGAM(gam_terms, **gam_kwargs).fit(
+                X_gam_tr, y_gam_tr
+            )
+
+            base_grid = np.zeros(
+                (history_frames, 2 * len(current_model_features))
+            )
+            for k in range(len(current_model_features)):
+                base_grid[:, k * 2 + 1] = time_indices
+            base_prob = gam_fold.predict_mu(base_grid)
+
+            fold_res = {}
+            for k, f_name in enumerate(current_model_features):
+                test_grid = base_grid.copy()
+                test_grid[:, k * 2] = 1.0
+                fold_res[f_name] = (
+                    gam_fold.predict_mu(test_grid) - base_prob
+                ).flatten()
+
+            final_fold_shapes.append(fold_res)
+
+            del gam_fold, X_gam_tr, y_gam_tr
+            gc.collect()
+        except Exception as e:
+            # Per-fold failure is non-fatal; a subset of bad folds
+            # shouldn't kill the visualisation. The caller's
+            # post-loop assertion catches the "every fold failed"
+            # case.
+            print(
+                f"    [!] Filter-shape fit failed for fold {fold_idx}: {e}"
+            )
+            continue
+    return final_fold_shapes
+
+
 def bout_onset_model_selection(univariate_results_path: str,
                                input_data_path: str,
                                output_directory: str,
@@ -781,34 +975,20 @@ def bout_onset_model_selection(univariate_results_path: str,
     # gets one filter-shape dict per CV fold. The downstream plotter
     # stacks the folds and renders a percentile band; a single-entry
     # list collapses the band to a zero-width line. The previous
-    # version of this block did exactly that -- one global-balanced
-    # fit, written as a single-entry list, with a silent
-    # ``except Exception: print('Final fit failed: ...')``
-    # wrapper that hid every subsequent failure -- and the lost
-    # per-fold filter data was only spotted after a 6-day run.
+    # version of this block did exactly that (one global-balanced
+    # fit wrapped in a silent ``except Exception: print('Final fit
+    # failed: ...')`` that hid every subsequent failure), and the
+    # lost per-fold filter data was only spotted after a 6-day run.
     #
-    # Mirror the per-step metric loop earlier in this function:
-    # iterate ``cv_folds`` (dicts) and dispatch on
-    # ``fold_info['type']`` to figure out how to slice the data. For
-    # each fold:
-    #   1. Pull this fold's train pos/neg arrays for every feature
-    #      in ``current_model_features``. Session folds re-pool via
-    #      ``pool_session_arrays``; mixed folds slice the cached
-    #      ``X_full`` arrays by the fold's ``train_idx``.
-    #   2. Balance the train fold 50/50 with a fold-specific RNG
-    #      seed; one RNG draw is shared across features so the same
-    #      pos / neg row indices are taken for every feature
-    #      (design matrix stays column-aligned).
-    #   3. Fit a multivariate LogisticGAM.
-    #   4. Extract the per-feature partial-dependence vector via the
-    #      ``predict_mu(test_grid) - predict_mu(base_grid)`` trick.
-    #   5. Append the fold's per-feature dict to ``final_fold_shapes``.
-    #
-    # Safety nets, in order of severity:
-    #   * Per-fold exceptions are caught and logged but do NOT abort
-    #     the whole loop -- a few bad folds shouldn't lose the
-    #     others.
-    #   * If every fold fails, the function RAISES (was silently
+    # The loop body is in ``compute_filter_shapes_per_fold_bout_onset``
+    # so the legacy-pickle recovery utility
+    # (``recompute_filter_shapes``) can reuse the same code path.
+    # Safety nets are layered here (caller side) rather than inside
+    # the helper:
+    #   * Per-fold exceptions are caught inside the helper and
+    #     logged but do NOT abort the loop -- a few bad folds
+    #     shouldn't lose the others.
+    #   * If every fold fails, this caller RAISES (was silently
     #     swallowed before).
     #   * If only one fold succeeds, a warning is printed because
     #     the plotter's percentile band needs >= 2 folds to render.
@@ -817,110 +997,19 @@ def bout_onset_model_selection(univariate_results_path: str,
     # ``except Exception`` was the previous failure-hiding vector;
     # any unexpected error now propagates so the regression is
     # impossible to miss.
-    final_fold_shapes = []
     print(f"  Calculating filter shapes across {len(cv_folds)} fold(s)...")
-
-    for fold_idx, fold_info in enumerate(cv_folds):
-        try:
-            X_p_per_feat = []
-            X_n_per_feat = []
-            if fold_info['type'] == 'session':
-                train_sess = fold_info['train_sessions']
-                for feat in current_model_features:
-                    _X_p, _X_n = pool_session_arrays(
-                        all_feature_data[feat],
-                        train_sess,
-                        pos_key="usv_feature_arr",
-                        neg_key="no_usv_feature_arr",
-                        n_frames=pipeline.history_frames,
-                    )
-                    X_p_per_feat.append(_X_p)
-                    X_n_per_feat.append(_X_n)
-            elif fold_info['type'] == 'mixed':
-                train_ix = fold_info['train_idx']
-                n_pos_total = fold_info['n_pos_total']
-                n_neg_total = fold_info['n_neg_total']
-                y_full = np.concatenate(
-                    (np.ones(n_pos_total), np.zeros(n_neg_total))
-                )
-                y_tr_all = y_full[train_ix]
-                for feat in current_model_features:
-                    X_full_feat = pooled_feature_cache[feat]['X_full']
-                    X_tr_all = X_full_feat[train_ix]
-                    X_p_per_feat.append(X_tr_all[y_tr_all == 1])
-                    X_n_per_feat.append(X_tr_all[y_tr_all == 0])
-            else:
-                print(
-                    f"    [!] Unknown fold type {fold_info.get('type')!r} "
-                    f"(fold {fold_idx}); skipping."
-                )
-                continue
-
-            n_pos = X_p_per_feat[0].shape[0]
-            n_neg = X_n_per_feat[0].shape[0]
-            n_k = min(n_pos, n_neg)
-            if n_k == 0:
-                print(
-                    f"    [!] Empty class in training fold {fold_idx} "
-                    f"(pos={n_pos}, neg={n_neg}); skipping."
-                )
-                continue
-
-            # One RNG per fold; same idx_p / idx_n applied across
-            # every feature so rows line up column-wise.
-            fold_rng = np.random.default_rng(random_seed + fold_idx)
-            idx_p = fold_rng.choice(n_pos, n_k, replace=False)
-            idx_n = fold_rng.choice(n_neg, n_k, replace=False)
-
-            X_list_fold = [
-                np.concatenate((X_p[idx_p], X_n[idx_n]))
-                for X_p, X_n in zip(X_p_per_feat, X_n_per_feat)
-            ]
-            y_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
-
-            X_gam_tr = get_unrolled_X_for_multivariate(
-                X_list_fold, history_frames
-            )
-            y_gam_tr = np.repeat(y_fold.astype(float), history_frames)
-
-            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-            for i in range(1, len(current_model_features)):
-                gam_terms += te(
-                    i * 2, i * 2 + 1,
-                    n_splines=[n_splines_value, n_splines_time],
-                )
-
-            gam_fold = LogisticGAM(gam_terms, **gam_kwargs).fit(
-                X_gam_tr, y_gam_tr
-            )
-
-            base_grid = np.zeros(
-                (history_frames, 2 * len(current_model_features))
-            )
-            for k in range(len(current_model_features)):
-                base_grid[:, k * 2 + 1] = time_indices
-            base_prob = gam_fold.predict_mu(base_grid)
-
-            fold_res = {}
-            for k, f_name in enumerate(current_model_features):
-                test_grid = base_grid.copy()
-                test_grid[:, k * 2] = 1.0
-                fold_res[f_name] = (
-                    gam_fold.predict_mu(test_grid) - base_prob
-                ).flatten()
-
-            final_fold_shapes.append(fold_res)
-
-            del gam_fold, X_gam_tr, y_gam_tr
-            gc.collect()
-        except Exception as e:
-            # Per-fold failure is non-fatal; a subset of bad folds
-            # shouldn't kill the visualisation. The post-loop
-            # assertion catches the "every fold failed" case.
-            print(
-                f"    [!] Filter-shape fit failed for fold {fold_idx}: {e}"
-            )
-            continue
+    final_fold_shapes = compute_filter_shapes_per_fold_bout_onset(
+        cv_folds=cv_folds,
+        current_model_features=current_model_features,
+        all_feature_data=all_feature_data,
+        pooled_feature_cache=pooled_feature_cache,
+        history_frames=pipeline.history_frames,
+        n_splines_value=n_splines_value,
+        n_splines_time=n_splines_time,
+        gam_kwargs=gam_kwargs,
+        random_seed=random_seed,
+        time_indices=time_indices,
+    )
 
     if not final_fold_shapes:
         msg = (
