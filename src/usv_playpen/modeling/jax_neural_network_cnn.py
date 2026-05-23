@@ -717,6 +717,14 @@ class NeuralContinuousCNNRunner:
         # Hyperparameter block read directly as a dict
         self.hp = HashableDict(self.modeling_settings['hyperparameters']['deep_learning']['cnn_continuous'])
 
+        # Optional knob: when set, `run_cnn_training` only actually
+        # trains the listed fold indices and emits placeholder
+        # entries (with `error = +inf`) for the rest. Used by the
+        # Phase-3 recovery script when the only need is to regenerate
+        # the best fold's weights without paying for all 10. `None`
+        # (the default) trains every fold as usual.
+        self.restrict_to_fold_indices: list[int] | None = None
+
     def get_stratified_spatial_splits_stable(self, groups: np.ndarray,
                                              Y: np.ndarray,
                                              split_strategy: str = 'session',
@@ -1236,6 +1244,27 @@ class NeuralContinuousCNNRunner:
         actual_errors = []
 
         for fold, (train_idx, test_idx) in enumerate(folds):
+            # Skip non-target folds when the runner has been configured
+            # to only retrain a specific subset (Phase-3 recovery
+            # workflow). Per-fold list positions are still filled so
+            # downstream `best_fold_idx = argmin(actual_errors)`
+            # naturally selects the only trained fold.
+            if (self.restrict_to_fold_indices is not None
+                    and fold not in self.restrict_to_fold_indices):
+                print(f"\n--- FOLD {fold + 1}/{n_folds}  (skipped: restrict_to_fold_indices) ---")
+                fold_results = {
+                    'fold_idx':       fold,
+                    'test_indices':   test_idx,
+                    'Y_true':         Y[test_idx],
+                    'skipped':        True,
+                }
+                deep_storage['cross_validation'].append(fold_results)
+                actual_errors.append(float('inf'))
+                best_actual_params_list.append(None)
+                best_actual_states_list.append(None)
+                _checkpoint_deep_storage(f"post-fold-{fold + 1}-skipped")
+                continue
+
             print(f"\n--- FOLD {fold + 1}/{n_folds} ---")
 
             X_tr, X_te = X_seq[train_idx], X_seq[test_idx]
@@ -1415,7 +1444,7 @@ class NeuralContinuousCNNRunner:
             # Per-fold checkpoint — a Phase-1 mid-loop failure
             # (OOM during fold 7, say) now preserves folds 1..6
             # on disk instead of dropping everything.
-            _checkpoint_deep_storage(f"post-fold-{fold_idx + 1}")
+            _checkpoint_deep_storage(f"post-fold-{fold + 1}")
 
         # Persist the per-fold predictions, errors, AND trained
         # weights before Phase 2 begins. A Phase-2 (permutation) or
