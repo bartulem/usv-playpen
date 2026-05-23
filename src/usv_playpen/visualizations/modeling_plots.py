@@ -3077,7 +3077,11 @@ class DeepResultsVisualizer:
         text_color = '#000000'
 
         # 1. Data Extraction
-        cv_folds = self.data['cross_validation']
+        # Filter out placeholder folds emitted by the runner's
+        # `restrict_to_fold_indices` recovery path — they carry only
+        # `Y_true` / `test_indices` and would `KeyError` on
+        # `Y_pred_actual` / `error_*` lookups below.
+        cv_folds = [f for f in self.data['cross_validation'] if not f.get('skipped')]
         actual_errors = np.array([fold['error_actual'] for fold in cv_folds])
         null_free_errors = np.array([fold['error_null_model_free'] for fold in cv_folds])
 
@@ -3421,7 +3425,11 @@ class DeepResultsVisualizer:
         """
 
         # --- 1. Data Preparation (Aggregating Across CNN Folds) ---
-        cv_folds = self.data['cross_validation']
+        # Filter out placeholder folds emitted by the runner's
+        # `restrict_to_fold_indices` recovery path — they carry only
+        # `Y_true` / `test_indices` and would `KeyError` on
+        # `Y_pred_actual` / `error_*` lookups below.
+        cv_folds = [f for f in self.data['cross_validation'] if not f.get('skipped')]
         # Explicitly wrapping in np.array to handle potential JAX DeviceArrays
         Y_true = np.vstack([np.array(f['Y_true']) for f in cv_folds])
         Y_pred = np.vstack([np.array(f['Y_pred_actual']) for f in cv_folds])
@@ -3606,7 +3614,11 @@ class DeepResultsVisualizer:
         """
 
         # --- 1. Data Preparation (Aggregating Across CNN Folds) ---
-        cv_folds = self.data['cross_validation']
+        # Filter out placeholder folds emitted by the runner's
+        # `restrict_to_fold_indices` recovery path — they carry only
+        # `Y_true` / `test_indices` and would `KeyError` on
+        # `Y_pred_actual` / `error_*` lookups below.
+        cv_folds = [f for f in self.data['cross_validation'] if not f.get('skipped')]
 
         # Pull true coordinates and predictions from both Actual and Model-Free Null
         Y_true = np.vstack([np.array(f['Y_true']) for f in cv_folds])
