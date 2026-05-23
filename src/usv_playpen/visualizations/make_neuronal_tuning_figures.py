@@ -18,6 +18,7 @@ Output:
 from __future__ import annotations
 
 import contextlib
+import csv
 import pathlib
 import pickle
 import warnings
@@ -27,9 +28,11 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
+from matplotlib import colors as mcolors
 from matplotlib import gridspec
 from matplotlib import patheffects as mpe
 from matplotlib.backends.backend_pdf import PdfPages
+from scipy.stats import spearmanr
 from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
@@ -42,6 +45,7 @@ from ..os_utils import first_match_or_raise
 from ..plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
+from .figure_io import save_figure
 
 apply_plot_style()
 
@@ -85,6 +89,25 @@ COLOR_GRAY_BAND = "#D3D3D3"
 COLOR_GRAY_DASH = "#888888"
 COLOR_LIGHT = "#CCCCCC"
 COLOR_HATCH = "#BBBBBB"
+
+# Population-level region grouping for the VMI summary figures. Maps
+# canonical group labels (matched against
+# `visualizations_parameter_dict['brain_area_colors']`) onto the raw
+# `anatomy_region` strings in the unit triage pickle. SC pools every
+# dorsal/intermediate SC subdivision; CENT pools cerebellar lobules;
+# `Other` is the catch-all for everything not in the six explicit
+# groups (mainly fiber tracts and small nuclei).
+VMI_REGION_GROUPS: dict[str, set[str]] = {
+    "PAG":  {"PAG"},
+    "MRN":  {"MRN"},
+    "VTA":  {"VTA"},
+    "MB":   {"MB"},
+    "CENT": {"CENT2", "CENT3"},
+    "SC":   {"SCdw", "SCdg", "SCig", "SCiw", "SCop", "SCsg"},
+}
+VMI_REGION_ORDER: tuple[str, ...] = (
+    "PAG", "MRN", "VTA", "MB", "CENT", "SC", "Other",
+)
 
 # Page sizes are fixed by the layout invariants of each page (Page 1 has
 # the section-(a) raster + usv_peth on top of the 4×4 usv_property_tuning grid; Page 2 has
@@ -434,6 +457,1225 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     f"  neuronal-figs: failed to render {cluster_id}: {exc}"
                 )
                 continue
+
+    # population VMI summary figures
+
+    def _collect_vmi_best_session(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+    ) -> dict[str, list[dict]]:
+        """
+        Description
+        -----------
+        Walk the unit-triage pickle and, for every good + somatic unit,
+        find the "best" per-session VMI test (the session with the
+        largest |VMI| among sessions that passed the `vmi_min_bouts`
+        floor recorded in the pickle). Returns one entry per unit,
+        grouped by canonical brain-area label (see `VMI_REGION_GROUPS`).
+
+        The triage pickle's VMI tests are one-sided and split across
+        `vmi_self_excit` / `vmi_self_suppress` modality keys with
+        disjoint per-session lists; this method iterates over both
+        keys, applies the bout-count floor + non-null p filter, and
+        keeps the entry whose absolute VMI is the largest for that
+        unit.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact produced
+            by `unit_triage_aggregator.py`. The pickle must carry the
+            usual `thresholds_used`, `catalog_path`, and `units` blocks.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV that pairs each
+            `(mouse_id, rec_date, unit_id)` tuple with `cluster_group`
+            and `somatic` flags. Defaults to the `catalog_path` field
+            embedded in the triage pickle when omitted.
+
+        Returns
+        -------
+        per_group (dict[str, list[dict]])
+            Mapping from canonical region label (one of
+            `VMI_REGION_ORDER`) to a list of per-unit dicts with keys
+            `vmi`, `p`, `significant`, `fr_baseline`, `fr_usv`,
+            `n_bouts`. Empty groups are present (value = `[]`).
+        """
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        alpha = float(triage["thresholds_used"]["vmi_alpha"])
+        min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
+
+        region_to_group = {
+            region: group
+            for group, regions in VMI_REGION_GROUPS.items()
+            for region in regions
+        }
+        per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
+
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+
+            anatomy = u["anatomy_region"]
+            group = region_to_group[anatomy] if anatomy in region_to_group else "Other"
+
+            best_entry = None
+            for cond in u["conditions"].values():
+                modalities = cond["modalities"]
+                for direction in ("vmi_self_excit", "vmi_self_suppress"):
+                    if direction not in modalities:
+                        continue
+                    for entry in modalities[direction]["per_session"]:
+                        if entry["n_bouts"] < min_bouts:
+                            continue
+                        if entry["p"] is None or entry["vmi"] is None:
+                            continue
+                        if (best_entry is None) or (abs(entry["vmi"]) > abs(best_entry["vmi"])):
+                            best_entry = {
+                                "vmi":         float(entry["vmi"]),
+                                "p":           float(entry["p"]),
+                                "significant": bool(entry["significant"]) and float(entry["p"]) < alpha,
+                                "fr_baseline": float(entry["fr_baseline"]),
+                                "fr_usv":      float(entry["fr_usv"]),
+                                "n_bouts":     int(entry["n_bouts"]),
+                            }
+            if best_entry is not None:
+                per_group[group].append(best_entry)
+
+        return per_group
+
+    def _resolve_region_colors(self) -> dict[str, str]:
+        """
+        Description
+        -----------
+        Pull the brain-area hex palette from
+        `self.visualizations_parameter_dict['brain_area_colors']` and
+        map the canonical `VMI_REGION_ORDER` labels to their colors.
+        The `Other` group is intentionally matched against the
+        lowercase `other` settings key so the JSON stays
+        biologically-readable.
+
+        Returns
+        -------
+        colors (dict[str, str])
+            Mapping from canonical region label to hex color string.
+        """
+
+        palette = self.visualizations_parameter_dict["brain_area_colors"]
+        return {
+            "PAG":   palette["PAG"],
+            "MRN":   palette["MRN"],
+            "VTA":   palette["VTA"],
+            "MB":    palette["MB"],
+            "CENT":  palette["CENT"],
+            "SC":    palette["SC"],
+            "Other": palette["other"],
+        }
+
+    def make_vmi_fr_confound_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render the FR-baseline × |VMI| confound diagnostic — a 2×4
+        panel grid where the first seven cells scatter every
+        good + somatic unit's best-session signed VMI against its
+        baseline firing rate (one cell per brain-area group), and the
+        eighth cell overlays the per-region |VMI| ECDFs for a direct
+        across-region comparison.
+
+        Coloring follows the brain-area palette in
+        `visualizations_settings.json`: positive-significant points
+        are drawn in the region's full color, negative-significant
+        points in the same color at 50 % opacity, and non-significant
+        points in the global unassigned-gray. Each scatter panel
+        carries a small annotation reporting `N+`, `N-`, and the
+        Spearman correlation between `log10(FR_baseline)` and `|VMI|`
+        (the headline confound statistic).
+
+        Output goes through `figure_io.save_figure` so the directory,
+        format, and dpi all defer to `visualizations_settings.json`
+        unless explicitly overridden.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact produced
+            by `unit_triage_aggregator.py`.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV. Defaults to the
+            `catalog_path` field embedded in the triage pickle when
+            omitted.
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory. `None`
+            defers to `visualizations_settings.json`.
+        fig_format (str | None)
+            Override the configured figure format. `None` defers to
+            `visualizations_settings.json`.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Absolute path to the written figure.
+        """
+
+        per_group = self._collect_vmi_best_session(triage_pkl_path, catalog_csv_path)
+        region_colors = self._resolve_region_colors()
+        non_sig_color = self.visualizations_parameter_dict["unassigned_colors"][0]
+
+        with open(pathlib.Path(triage_pkl_path), "rb") as fh:
+            triage = pickle.load(fh)
+        alpha = float(triage["thresholds_used"]["vmi_alpha"])
+        min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
+
+        xlim_lo, xlim_hi = 1e-3, 1e2
+        fig = plt.figure(figsize=(14, 6.4), dpi=150)
+        gs = gridspec.GridSpec(
+            2, 4,
+            figure=fig,
+            hspace=0.22,
+            wspace=0.18,
+            left=0.06, right=0.985,
+            top=0.965, bottom=0.135,
+        )
+        panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
+
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+            ax = fig.add_subplot(gs[idx])
+            units = per_group[region]
+            region_color = region_colors[region]
+
+            if not units:
+                ax.set_title(f"{region}  (N=0)", fontsize=10)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                continue
+
+            fr_base = np.array([max(u["fr_baseline"], xlim_lo) for u in units])
+            vmi = np.array([u["vmi"] for u in units])
+            sig = np.array([u["significant"] for u in units])
+            pos_sig = sig & (vmi > 0)
+            neg_sig = sig & (vmi < 0)
+            ns_mask = ~sig
+
+            ax.scatter(
+                fr_base[ns_mask], vmi[ns_mask],
+                s=7, c=non_sig_color, alpha=0.45,
+                edgecolors="none", rasterized=True,
+            )
+            ax.scatter(
+                fr_base[neg_sig], vmi[neg_sig],
+                s=14, c=region_color, alpha=0.5,
+                edgecolors=COLOR_BLACK, linewidths=0.4,
+                rasterized=True,
+            )
+            ax.scatter(
+                fr_base[pos_sig], vmi[pos_sig],
+                s=14, c=region_color, alpha=0.95,
+                edgecolors=COLOR_BLACK, linewidths=0.4,
+                rasterized=True,
+            )
+
+            rho, _ = spearmanr(np.log10(fr_base), np.abs(vmi))
+            n_pos = int(pos_sig.sum())
+            n_neg = int(neg_sig.sum())
+
+            ax.set_xscale("log")
+            ax.set_xlim(xlim_lo, xlim_hi)
+            ax.set_ylim(-1.05, 1.05)
+            ax.axhline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax.set_title(f"{region}  (N={len(units)})", fontsize=10)
+            if idx[0] == 1:
+                ax.set_xlabel(r"FR$_\mathrm{baseline}$ (sp/s)", fontsize=9)
+            else:
+                ax.set_xticklabels([])
+            if idx[1] == 0:
+                ax.set_ylabel("VMI (best session)", fontsize=9)
+            else:
+                ax.set_yticklabels([])
+            ax.tick_params(labelsize=8)
+            ax.text(
+                0.03, 0.97,
+                f"N+={n_pos}\nN-={n_neg}\n" + r"$\rho$=" + f"{rho:+.2f}",
+                transform=ax.transAxes, fontsize=8, va="top", ha="left",
+                bbox=dict(boxstyle="round,pad=0.2", fc="#FFFFFF", ec=COLOR_HATCH, alpha=0.85),
+            )
+
+        # Aggregate |VMI| ECDF panel in the 8th cell.
+        ax_agg = fig.add_subplot(gs[1, 3])
+        for region in VMI_REGION_ORDER:
+            units = per_group[region]
+            if not units:
+                continue
+            abs_vmi = np.sort(np.array([abs(u["vmi"]) for u in units]))
+            ecdf_y = np.arange(1, abs_vmi.size + 1) / abs_vmi.size
+            ax_agg.plot(
+                abs_vmi, ecdf_y,
+                color=region_colors[region], linewidth=1.4,
+                label=f"{region} (N={abs_vmi.size})",
+            )
+        ax_agg.set_xlim(0, 1)
+        ax_agg.set_ylim(0, 1.02)
+        ax_agg.set_xlabel("|VMI|  (best session per unit)", fontsize=9)
+        ax_agg.set_ylabel("ECDF", fontsize=9)
+        ax_agg.set_title("|VMI| distribution across regions", fontsize=10)
+        ax_agg.tick_params(labelsize=8)
+        ax_agg.legend(fontsize=7, frameon=False, loc="lower right")
+
+        # Horizontal legend strip across the figure bottom — encodes the
+        # significance / sign convention used in every scatter panel.
+        leg_handles = [
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markeredgewidth=0.4, markersize=8,
+                label=f"significant positive VMI (p<{alpha})",
+            ),
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markeredgewidth=0.4, markersize=8, alpha=0.5,
+                label=f"significant negative VMI (p<{alpha})",
+            ),
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=non_sig_color, markeredgecolor="none",
+                markersize=8, alpha=0.7,
+                label="non-significant",
+            ),
+        ]
+        fig.legend(
+            handles=leg_handles, loc="lower center", ncol=3,
+            fontsize=10, frameon=False,
+            bbox_to_anchor=(0.5, 0.03),
+        )
+        fig.text(
+            0.5, 0.005,
+            f"one dot per unit, best-session by |VMI|  ·  min n_bouts={min_bouts}"
+            f"  ·  good + somatic only",
+            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+        )
+
+        out_path = save_figure(
+            fig=fig,
+            stem="vmi_fr_confound",
+            viz_settings=self.visualizations_parameter_dict,
+            override_dir=out_dir,
+            override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
+
+    def _collect_vmi_per_condition_medians(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            cond_a: str = "intact_female",
+            cond_b: str = "mute_female",
+    ) -> dict[str, list[dict]]:
+        """
+        Description
+        -----------
+        Walk the unit-triage pickle and, for every good + somatic unit
+        that has at least one valid per-session VMI test in BOTH
+        `cond_a` AND `cond_b`, summarise the unit's signed VMI in each
+        condition as the median of its per-session VMI values (across
+        the `vmi_self_excit` + `vmi_self_suppress` modality keys).
+        Also flags whether the unit was significant in either or both
+        conditions, using the `vmi_alpha` threshold from the pickle.
+
+        Valid per-session entries are those with `n_bouts >=
+        vmi_min_bouts` and non-null `p` / `vmi`.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to `unit_catalog.csv`. Defaults to the
+            `catalog_path` stored in the triage pickle.
+        cond_a, cond_b (str)
+            The two condition keys to compare (must both exist in the
+            pickle's `conditions_included` block).
+
+        Returns
+        -------
+        per_group (dict[str, list[dict]])
+            Mapping from canonical region label (one of
+            `VMI_REGION_ORDER`) to a list of per-unit dicts with keys
+            `vmi_a`, `vmi_b`, `sig_a`, `sig_b`. Units missing either
+            condition are excluded entirely.
+        """
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        alpha = float(triage["thresholds_used"]["vmi_alpha"])
+        min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
+        region_to_group = {
+            region: group
+            for group, regions in VMI_REGION_GROUPS.items()
+            for region in regions
+        }
+        per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
+
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+            if cond_a not in u["conditions"] or cond_b not in u["conditions"]:
+                continue
+
+            anatomy = u["anatomy_region"]
+            group = region_to_group[anatomy] if anatomy in region_to_group else "Other"
+
+            # Per-condition aggregation: median of signed VMI across
+            # all valid per-session entries (both directions pooled —
+            # excit/suppress entries are mutually exclusive per
+            # session by construction of the one-sided tests).
+            summaries: dict[str, dict] = {}
+            all_fr_baseline: list[float] = []
+            for cond_name in (cond_a, cond_b):
+                vmi_values: list[float] = []
+                sig_flag = False
+                modalities = u["conditions"][cond_name]["modalities"]
+                for direction in ("vmi_self_excit", "vmi_self_suppress"):
+                    if direction not in modalities:
+                        continue
+                    for entry in modalities[direction]["per_session"]:
+                        if entry["n_bouts"] < min_bouts:
+                            continue
+                        if entry["p"] is None or entry["vmi"] is None:
+                            continue
+                        vmi_values.append(float(entry["vmi"]))
+                        all_fr_baseline.append(float(entry["fr_baseline"]))
+                        if bool(entry["significant"]) and float(entry["p"]) < alpha:
+                            sig_flag = True
+                if not vmi_values:
+                    summaries = {}
+                    break
+                summaries[cond_name] = {
+                    "vmi_median": float(np.median(vmi_values)),
+                    "sig":        sig_flag,
+                }
+            if not summaries:
+                continue
+
+            per_group[group].append({
+                "vmi_a":              summaries[cond_a]["vmi_median"],
+                "vmi_b":              summaries[cond_b]["vmi_median"],
+                "sig_a":              summaries[cond_a]["sig"],
+                "sig_b":              summaries[cond_b]["sig"],
+                "fr_baseline_median": float(np.median(all_fr_baseline)),
+            })
+
+        return per_group
+
+    def make_vmi_cross_condition_stability_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            cond_a: str = "intact_female",
+            cond_b: str = "mute_female",
+            n_bootstrap: int = 2000,
+            random_seed: int = 0,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render the cross-condition VMI stability diagnostic — a 2×4
+        panel grid where the first seven cells scatter each unit's
+        median signed VMI in `cond_a` against its median signed VMI
+        in `cond_b` (one cell per brain-area group), and the eighth
+        cell summarises the per-region Pearson correlation between
+        the two conditions with 95 % bootstrap CIs.
+
+        Only units that have valid sessions in BOTH conditions are
+        included. Per-condition VMI is the median of signed
+        per-session VMI values (across the excit / suppress modality
+        keys); significance is "any valid session in that condition
+        was significant at the pickle's `vmi_alpha`".
+
+        Coloring follows the brain-area palette in
+        `visualizations_settings.json`:
+
+          * tuned in BOTH conditions, same sign: full region color
+          * tuned in BOTH conditions, opposite sign: region color at
+            50 % opacity (the sign-flippers — likely artifact or
+            unstable cells)
+          * tuned in ONLY ONE condition: region color at 30 % opacity
+          * tuned in NEITHER: small unassigned-gray dot
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV. Defaults to the
+            `catalog_path` field embedded in the triage pickle.
+        cond_a, cond_b (str)
+            Names of the two conditions to compare. Default to the
+            intact-female vs mute-female contrast.
+        n_bootstrap (int)
+            Number of resampling iterations for the per-region
+            Pearson-r confidence intervals (8th panel).
+        random_seed (int)
+            Seed for the bootstrap RNG, so the CIs are reproducible
+            across reruns.
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory.
+        fig_format (str | None)
+            Override the configured figure format.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Absolute path to the written figure.
+        """
+
+        per_group = self._collect_vmi_per_condition_medians(
+            triage_pkl_path=triage_pkl_path,
+            catalog_csv_path=catalog_csv_path,
+            cond_a=cond_a,
+            cond_b=cond_b,
+        )
+        region_colors = self._resolve_region_colors()
+        non_sig_color = self.visualizations_parameter_dict["unassigned_colors"][0]
+
+        # Marker-size scale: linear in log10(FR_baseline) so each
+        # decade of firing rate maps to the same number of points.
+        # FR is clipped to [0.1, 30] sp/s before the log transform —
+        # this is the band the bulk of good + somatic units fall in,
+        # so concentrating the size range there gives a visible
+        # gradient instead of compressing everything to similar dots.
+        FR_SIZE_MIN, FR_SIZE_MAX = 4.0, 70.0
+        FR_LOG_MIN, FR_LOG_MAX = -1.0, 1.5  # 0.1 Hz, ~31.6 Hz
+
+        def _fr_to_size(fr_values: np.ndarray) -> np.ndarray:
+            """
+            Description
+            -----------
+            Map an array of `fr_baseline` values (sp/s) to matplotlib
+            scatter marker sizes (points²) so dot area increases
+            linearly with `log10(FR)`. FR is clipped to
+            [`10**FR_LOG_MIN`, `10**FR_LOG_MAX`] to keep extreme
+            outliers from compressing the rest of the range.
+
+            Parameters
+            ----------
+            fr_values (np.ndarray)
+                Per-unit firing rates in sp/s.
+
+            Returns
+            -------
+            sizes (np.ndarray)
+                Per-unit `s=` values for `ax.scatter`.
+            """
+            log_fr = np.log10(np.clip(fr_values, 10.0**FR_LOG_MIN, 10.0**FR_LOG_MAX))
+            frac = (log_fr - FR_LOG_MIN) / (FR_LOG_MAX - FR_LOG_MIN)
+            return FR_SIZE_MIN + (FR_SIZE_MAX - FR_SIZE_MIN) * frac
+
+        rng = np.random.default_rng(random_seed)
+        # Pearson r + bootstrap CIs per region for the 8th panel.
+        r_summary: dict[str, dict] = {}
+        for region in VMI_REGION_ORDER:
+            units = per_group[region]
+            if len(units) < 5:
+                r_summary[region] = {"r": float("nan"), "lo": float("nan"), "hi": float("nan"),
+                                     "n": len(units)}
+                continue
+            x = np.array([u["vmi_a"] for u in units])
+            y = np.array([u["vmi_b"] for u in units])
+            r_pt = float(np.corrcoef(x, y)[0, 1])
+            n = x.size
+            idx_pool = np.arange(n)
+            boot_rs = np.empty(n_bootstrap)
+            for b in range(n_bootstrap):
+                sample = rng.choice(idx_pool, size=n, replace=True)
+                xs, ys = x[sample], y[sample]
+                if xs.std() == 0 or ys.std() == 0:
+                    boot_rs[b] = float("nan")
+                else:
+                    boot_rs[b] = float(np.corrcoef(xs, ys)[0, 1])
+            r_lo, r_hi = np.nanquantile(boot_rs, [0.025, 0.975])
+            r_summary[region] = {"r": r_pt, "lo": float(r_lo), "hi": float(r_hi), "n": n}
+
+        fig = plt.figure(figsize=(14, 6.4), dpi=150)
+        gs = gridspec.GridSpec(
+            2, 4,
+            figure=fig,
+            hspace=0.22,
+            wspace=0.22,
+            left=0.06, right=0.985,
+            top=0.965, bottom=0.135,
+        )
+        panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
+
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+            ax = fig.add_subplot(gs[idx])
+            units = per_group[region]
+            region_color = region_colors[region]
+
+            if not units:
+                ax.set_title(f"{region}  (N=0)", fontsize=10)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                continue
+
+            vmi_a = np.array([u["vmi_a"] for u in units])
+            vmi_b = np.array([u["vmi_b"] for u in units])
+            sig_a = np.array([u["sig_a"] for u in units])
+            sig_b = np.array([u["sig_b"] for u in units])
+            fr_b = np.array([u["fr_baseline_median"] for u in units])
+            sizes = _fr_to_size(fr_b)
+            both_sig = sig_a & sig_b
+            same_sign = (np.sign(vmi_a) == np.sign(vmi_b))
+            both_same = both_sig & same_sign
+            both_flip = both_sig & (~same_sign)
+            one_only = (sig_a ^ sig_b)
+            neither = ~(sig_a | sig_b)
+
+            # Layer dots: neither → one-only → flip → same-sign.
+            # Anything not "sig in both conditions" is rendered in the
+            # unassigned-gray so the region color is reserved for
+            # robustly tuned units; one-only gets a darker shade than
+            # neither so the two groups stay visually distinct.
+            # Dot SIZE encodes log10(FR_baseline) — sparse cells small,
+            # high-FR cells large — so the (well-known) inverse
+            # relationship between FR_baseline and |VMI| is readable
+            # straight off the scatter.
+            ax.scatter(
+                vmi_a[neither], vmi_b[neither],
+                s=sizes[neither], c=non_sig_color, alpha=0.30,
+                edgecolors="none", rasterized=True,
+            )
+            ax.scatter(
+                vmi_a[one_only], vmi_b[one_only],
+                s=sizes[one_only], c=non_sig_color, alpha=0.65,
+                edgecolors="none", rasterized=True,
+            )
+            ax.scatter(
+                vmi_a[both_flip], vmi_b[both_flip],
+                s=sizes[both_flip], c=region_color, alpha=0.55,
+                edgecolors=COLOR_BLACK, linewidths=0.4,
+                rasterized=True,
+            )
+            ax.scatter(
+                vmi_a[both_same], vmi_b[both_same],
+                s=sizes[both_same], c=region_color, alpha=0.95,
+                edgecolors=COLOR_BLACK, linewidths=0.4,
+                rasterized=True,
+            )
+
+            # Reference lines.
+            ax.axhline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax.plot([-1, 1], [-1, 1], color=COLOR_GRAY_DASH, linewidth=0.6, linestyle="--")
+
+            r_pt = r_summary[region]["r"]
+            n_total = len(units)
+            n_same = int(both_same.sum())
+            n_flip = int(both_flip.sum())
+
+            ax.set_xlim(-1.05, 1.05)
+            ax.set_ylim(-1.05, 1.05)
+            ax.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0])
+            ax.set_yticks([-1.0, -0.5, 0.0, 0.5, 1.0])
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_title(f"{region}  (N={n_total})", fontsize=10)
+            cond_a_label = cond_a.replace("_", " ")
+            cond_b_label = cond_b.replace("_", " ")
+            if idx[0] == 1:
+                ax.set_xlabel(f"VMI ({cond_a_label})", fontsize=9)
+            else:
+                ax.set_xticklabels([])
+            if idx[1] == 0:
+                ax.set_ylabel(f"VMI ({cond_b_label})", fontsize=9)
+            else:
+                ax.set_yticklabels([])
+            ax.tick_params(labelsize=8)
+            ax.text(
+                0.03, 0.97,
+                f"r={r_pt:+.2f}\n"
+                f"same={n_same}\n"
+                f"flip={n_flip}",
+                transform=ax.transAxes, fontsize=8, va="top", ha="left",
+                bbox=dict(boxstyle="round,pad=0.2", fc="#FFFFFF", ec=COLOR_HATCH, alpha=0.85),
+            )
+
+            # Size legend inside the PAG panel (largest sample,
+            # most populated scatter, so the FR-size mapping reads
+            # off cleanly here).
+            if region == "PAG":
+                fr_ref_values = np.array([0.1, 1.0, 10.0])
+                fr_ref_sizes = _fr_to_size(fr_ref_values)
+                x_dot = 0.78
+                y_top = 0.22
+                dy = 0.07
+                for i, (fr_val, sz) in enumerate(zip(fr_ref_values, fr_ref_sizes)):
+                    ax.scatter(
+                        x_dot, y_top - dy * i,
+                        s=sz, c=COLOR_BLACK, edgecolors="none",
+                        transform=ax.transAxes, clip_on=False, zorder=5,
+                    )
+                    ax.text(
+                        x_dot + 0.045, y_top - dy * i,
+                        f"{fr_val:g} sp/s", fontsize=7, color=COLOR_BLACK,
+                        ha="left", va="center", transform=ax.transAxes,
+                    )
+                ax.text(
+                    x_dot + 0.045, y_top + dy * 0.85,
+                    "FRbase",
+                    fontsize=7, color=COLOR_BLACK,
+                    ha="left", va="center", transform=ax.transAxes,
+                )
+
+        # 8th panel: per-region Pearson r with bootstrap CIs.
+        ax_r = fig.add_subplot(gs[1, 3])
+        bar_x = np.arange(len(VMI_REGION_ORDER))
+        bar_vals = np.array([r_summary[g]["r"] for g in VMI_REGION_ORDER])
+        bar_lo = np.array([r_summary[g]["lo"] for g in VMI_REGION_ORDER])
+        bar_hi = np.array([r_summary[g]["hi"] for g in VMI_REGION_ORDER])
+        bar_n = [r_summary[g]["n"] for g in VMI_REGION_ORDER]
+        bar_colors = [region_colors[g] for g in VMI_REGION_ORDER]
+
+        err_lower = np.where(np.isnan(bar_vals - bar_lo), 0, bar_vals - bar_lo)
+        err_upper = np.where(np.isnan(bar_hi - bar_vals), 0, bar_hi - bar_vals)
+
+        ax_r.bar(
+            bar_x, bar_vals,
+            color=bar_colors,
+            edgecolor=COLOR_BLACK, linewidth=0.6,
+            width=0.78,
+        )
+        ax_r.errorbar(
+            bar_x, bar_vals,
+            yerr=np.vstack([err_lower, err_upper]),
+            fmt="none", ecolor=COLOR_BLACK,
+            elinewidth=0.8, capsize=3, capthick=0.8,
+        )
+        ax_r.axhline(0.0, color=COLOR_BLACK, linewidth=0.5)
+        ax_r.set_xticks(bar_x)
+        ax_r.set_xticklabels(
+            [f"{g}\nN={n}" for g, n in zip(VMI_REGION_ORDER, bar_n)],
+            fontsize=8,
+        )
+        ax_r.set_ylim(-0.2, 1.0)
+        ax_r.set_ylabel(
+            f"Pearson r  ({cond_a.replace('_', ' ')} vs {cond_b.replace('_', ' ')})",
+            fontsize=9,
+        )
+        ax_r.set_title("cross-condition VMI correlation", fontsize=10)
+        ax_r.tick_params(axis="y", labelsize=8)
+
+        # Horizontal legend strip across the figure bottom.
+        leg_handles = [
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markeredgewidth=0.4, markersize=8,
+                label="sig in both (same sign)",
+            ),
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markeredgewidth=0.4, markersize=8, alpha=0.55,
+                label="sig in both (sign flip)",
+            ),
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=non_sig_color, markeredgecolor="none",
+                markersize=8, alpha=0.65,
+                label="sig in one condition only",
+            ),
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=non_sig_color, markeredgecolor="none",
+                markersize=8, alpha=0.30,
+                label="sig in neither",
+            ),
+        ]
+        fig.legend(
+            handles=leg_handles, loc="lower center", ncol=4,
+            fontsize=10, frameon=False,
+            bbox_to_anchor=(0.5, 0.03),
+        )
+        fig.text(
+            0.5, 0.005,
+            f"one dot per unit, median signed VMI across sessions  ·  "
+            f"good + somatic, present in both {cond_a.replace('_', ' ')} "
+            f"and {cond_b.replace('_', ' ')}  ·  "
+            r"dot area $\propto$ $\log_{10}$ FRbase",
+            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+        )
+
+
+        out_path = save_figure(
+            fig=fig,
+            stem="vmi_cross_condition_stability",
+            viz_settings=self.visualizations_parameter_dict,
+            override_dir=out_dir,
+            override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
+
+    def _collect_vmi_consistency(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            n_tested_min: int = 2,
+    ) -> dict[str, list[dict]]:
+        """
+        Description
+        -----------
+        Walk the unit-triage pickle and, for every good + somatic unit
+        with at least `n_tested_min` valid sessions, summarise its
+        cross-session VMI evidence as `(max |VMI|, consistency,
+        n_tested)`. Per-session entries from both modality directions
+        (`vmi_self_excit` / `vmi_self_suppress`) and both conditions
+        are pooled into one (unit-level) view: a session counts as
+        "tested" if any valid entry survived the `vmi_min_bouts`
+        floor, and "significant" if any entry was flagged significant
+        at the pickle's `vmi_alpha`. `consistency` is then
+        `n_sig_sessions / n_tested_sessions`.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to `unit_catalog.csv`. Defaults to the
+            `catalog_path` stored in the triage pickle.
+        n_tested_min (int)
+            Minimum number of distinct sessions with a valid entry
+            required to include the unit. Defaults to 2 — units with
+            a single valid session have degenerate consistency
+            (either 0 or 1) and pollute the distribution.
+
+        Returns
+        -------
+        per_group (dict[str, list[dict]])
+            Mapping from canonical region label (one of
+            `VMI_REGION_ORDER`) to a list of per-unit dicts with keys
+            `max_abs_vmi`, `consistency`, `n_tested`, `n_sig`.
+        """
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        alpha = float(triage["thresholds_used"]["vmi_alpha"])
+        min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
+        region_to_group = {
+            region: group
+            for group, regions in VMI_REGION_GROUPS.items()
+            for region in regions
+        }
+        per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
+
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+
+            anatomy = u["anatomy_region"]
+            group = region_to_group[anatomy] if anatomy in region_to_group else "Other"
+
+            # Pool per-session evidence across conditions + directions.
+            # A session counts as tested if ANY direction had a valid
+            # entry, and significant if ANY entry was sig.
+            per_session_max_abs: dict[str, float] = {}
+            per_session_sig:     dict[str, bool] = {}
+            for cond in u["conditions"].values():
+                modalities = cond["modalities"]
+                for direction in ("vmi_self_excit", "vmi_self_suppress"):
+                    if direction not in modalities:
+                        continue
+                    for entry in modalities[direction]["per_session"]:
+                        if entry["n_bouts"] < min_bouts:
+                            continue
+                        if entry["p"] is None or entry["vmi"] is None:
+                            continue
+                        session = entry["session"]
+                        abs_v = abs(float(entry["vmi"]))
+                        prev = per_session_max_abs[session] if session in per_session_max_abs else -1.0
+                        if abs_v > prev:
+                            per_session_max_abs[session] = abs_v
+                        is_sig = bool(entry["significant"]) and float(entry["p"]) < alpha
+                        if is_sig:
+                            per_session_sig[session] = True
+                        elif session not in per_session_sig:
+                            per_session_sig[session] = False
+
+            n_tested = len(per_session_max_abs)
+            if n_tested < n_tested_min:
+                continue
+            n_sig = sum(1 for v in per_session_sig.values() if v)
+            max_abs_vmi = max(per_session_max_abs.values())
+            per_group[group].append({
+                "max_abs_vmi": float(max_abs_vmi),
+                "consistency": float(n_sig) / float(n_tested),
+                "n_tested":    int(n_tested),
+                "n_sig":       int(n_sig),
+            })
+
+        return per_group
+
+    def make_vmi_magnitude_consistency_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            n_tested_min: int = 2,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render the magnitude × consistency diagnostic — a 2×4 panel
+        grid where the first seven cells scatter each good + somatic
+        unit's `max |VMI|` (across all valid per-session entries)
+        against its per-session consistency
+        (`n_significant / n_tested`), one cell per brain-area group.
+        The eighth cell stacks each region's units into three tiers:
+        never-significant (gray), sig but flickery (`consistency
+        < 0.5`, region color at 50 % opacity), and sig with high
+        consistency (`consistency >= 0.5`, full region color).
+
+        Reference lines mark the strong-effect threshold at `|VMI| =
+        0.5` and the majority threshold at `consistency = 0.5`. The
+        top-right quadrant ("strong AND stable") is the
+        robust-tuning population.
+
+        Coloring follows the brain-area palette in
+        `visualizations_settings.json`. Dot size is linear in
+        `n_tested`, so units backed by more session-evidence are
+        visually larger.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV. Defaults to the
+            `catalog_path` embedded in the triage pickle.
+        n_tested_min (int)
+            Minimum number of valid sessions required to include the
+            unit (default 2; single-session units have degenerate
+            consistency).
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory.
+        fig_format (str | None)
+            Override the configured figure format.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Absolute path to the written figure.
+        """
+
+        per_group = self._collect_vmi_consistency(
+            triage_pkl_path=triage_pkl_path,
+            catalog_csv_path=catalog_csv_path,
+            n_tested_min=n_tested_min,
+        )
+        region_colors = self._resolve_region_colors()
+        non_sig_color = self.visualizations_parameter_dict["unassigned_colors"][0]
+
+        # Dot size scaling — linear in n_tested. n_tested in this
+        # dataset spans 2..6, so a linear map keeps every value
+        # visually distinct.
+        NT_SIZE_MIN, NT_SIZE_MAX = 6.0, 60.0
+        NT_RANGE_MIN, NT_RANGE_MAX = 2, 6
+
+        def _nt_to_size(nt: np.ndarray) -> np.ndarray:
+            """
+            Description
+            -----------
+            Map an array of `n_tested` integers to matplotlib scatter
+            marker sizes (points²). Linear in `n_tested`, clipped to
+            `[NT_RANGE_MIN, NT_RANGE_MAX]` so out-of-band values fall
+            on the endpoints.
+
+            Parameters
+            ----------
+            nt (np.ndarray)
+                Per-unit `n_tested` values.
+
+            Returns
+            -------
+            sizes (np.ndarray)
+                Per-unit `s=` values.
+            """
+            clipped = np.clip(nt, NT_RANGE_MIN, NT_RANGE_MAX).astype(float)
+            frac = (clipped - NT_RANGE_MIN) / (NT_RANGE_MAX - NT_RANGE_MIN)
+            return NT_SIZE_MIN + (NT_SIZE_MAX - NT_SIZE_MIN) * frac
+
+        fig = plt.figure(figsize=(14, 6.4), dpi=150)
+        gs = gridspec.GridSpec(
+            2, 4,
+            figure=fig,
+            hspace=0.22,
+            wspace=0.22,
+            left=0.06, right=0.985,
+            top=0.965, bottom=0.135,
+        )
+        panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
+
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+            ax = fig.add_subplot(gs[idx])
+            units = per_group[region]
+            region_color = region_colors[region]
+
+            if not units:
+                ax.set_title(f"{region}  (N=0)", fontsize=10)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                continue
+
+            x = np.array([u["max_abs_vmi"] for u in units])
+            y = np.array([u["consistency"] for u in units])
+            nt = np.array([u["n_tested"] for u in units])
+            ns = np.array([u["n_sig"] for u in units])
+            sizes = _nt_to_size(nt)
+            sig_any = ns >= 1
+            never_sig = ~sig_any
+            stable = y >= 0.5
+            flickery = sig_any & (~stable)
+            n_total = len(units)
+            n_stable = int(stable.sum())
+            n_flicker = int(flickery.sum())
+            n_never = int(never_sig.sum())
+
+            # Background dots first (never-sig pile-up at y=0),
+            # then flickery (mid-opacity), then stable (full).
+            ax.scatter(
+                x[never_sig], y[never_sig],
+                s=sizes[never_sig], c=non_sig_color, alpha=0.45,
+                edgecolors="none", rasterized=True,
+            )
+            ax.scatter(
+                x[flickery], y[flickery],
+                s=sizes[flickery], c=region_color, alpha=0.55,
+                edgecolors=COLOR_BLACK, linewidths=0.4,
+                rasterized=True,
+            )
+            ax.scatter(
+                x[stable], y[stable],
+                s=sizes[stable], c=region_color, alpha=0.95,
+                edgecolors=COLOR_BLACK, linewidths=0.4,
+                rasterized=True,
+            )
+
+            ax.axhline(0.5, color=COLOR_GRAY_DASH, linewidth=0.6, linestyle="--")
+            ax.axvline(0.5, color=COLOR_GRAY_DASH, linewidth=0.6, linestyle="--")
+
+            ax.set_xlim(-0.02, 1.02)
+            ax.set_ylim(-0.04, 1.04)
+            ax.set_xticks([0.0, 0.25, 0.5, 0.75, 1.0])
+            ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+            ax.set_title(f"{region}  (N={n_total})", fontsize=10)
+            if idx[0] == 1:
+                ax.set_xlabel("max |VMI| across sessions", fontsize=9)
+            else:
+                ax.set_xticklabels([])
+            if idx[1] == 0:
+                ax.set_ylabel(
+                    r"consistency  ($n_\mathrm{sig}\,/\,n_\mathrm{tested}$)",
+                    fontsize=9,
+                )
+            else:
+                ax.set_yticklabels([])
+            ax.tick_params(labelsize=8)
+            ax.text(
+                0.03, 0.97,
+                f"stable={n_stable}\n"
+                f"flicker={n_flicker}\n"
+                f"never={n_never}",
+                transform=ax.transAxes, fontsize=8, va="top", ha="left",
+                bbox=dict(boxstyle="round,pad=0.2", fc="#FFFFFF", ec=COLOR_HATCH, alpha=0.85),
+            )
+
+            # Size legend inside the CENT panel — three reference dots
+            # at n_tested = 2, 4, 6 so the marker-area mapping reads
+            # off cleanly. CENT's upper-right is reliably uncluttered
+            # (CENT cells cluster near the bottom edge / left side of
+            # the consistency axis) so the legend doesn't collide
+            # with data.
+            if region == "CENT":
+                nt_ref_values = np.array([2, 4, 6])
+                nt_ref_sizes = _nt_to_size(nt_ref_values)
+                x_dot = 0.86
+                y_top = 0.90
+                dy = 0.075
+                ax.text(
+                    x_dot, y_top + dy * 0.95,
+                    r"$n_\mathrm{tested}$", fontsize=7, color=COLOR_BLACK,
+                    ha="center", va="center", transform=ax.transAxes,
+                )
+                for i, (nt_val, sz) in enumerate(zip(nt_ref_values, nt_ref_sizes)):
+                    ax.scatter(
+                        x_dot, y_top - dy * i,
+                        s=sz, c=COLOR_BLACK, edgecolors="none",
+                        transform=ax.transAxes, clip_on=False, zorder=5,
+                    )
+                    ax.text(
+                        x_dot - 0.045, y_top - dy * i,
+                        f"{int(nt_val)}", fontsize=7, color=COLOR_BLACK,
+                        ha="right", va="center", transform=ax.transAxes,
+                    )
+
+        # 8th panel: stacked-bar tier breakdown per region.
+        ax_stack = fig.add_subplot(gs[1, 3])
+        bar_x = np.arange(len(VMI_REGION_ORDER))
+        frac_never = np.zeros(len(VMI_REGION_ORDER))
+        frac_flicker = np.zeros(len(VMI_REGION_ORDER))
+        frac_stable = np.zeros(len(VMI_REGION_ORDER))
+        n_per_region: list[int] = []
+        for i, region in enumerate(VMI_REGION_ORDER):
+            units = per_group[region]
+            n = len(units)
+            n_per_region.append(n)
+            if n == 0:
+                continue
+            cons = np.array([u["consistency"] for u in units])
+            ns = np.array([u["n_sig"] for u in units])
+            mask_never = ns == 0
+            mask_stable = cons >= 0.5
+            mask_flicker = (~mask_never) & (~mask_stable)
+            frac_never[i] = mask_never.sum() / n
+            frac_flicker[i] = mask_flicker.sum() / n
+            frac_stable[i] = mask_stable.sum() / n
+
+        bar_colors = [region_colors[r] for r in VMI_REGION_ORDER]
+        flicker_face = [mcolors.to_rgba(c, 0.5) for c in bar_colors]
+        stable_face = [mcolors.to_rgba(c, 1.0) for c in bar_colors]
+        never_face = mcolors.to_rgba(non_sig_color, 0.7)
+
+        ax_stack.bar(
+            bar_x, frac_never,
+            color=[never_face] * len(VMI_REGION_ORDER),
+            edgecolor=COLOR_BLACK, linewidth=0.4, width=0.78,
+        )
+        ax_stack.bar(
+            bar_x, frac_flicker,
+            bottom=frac_never,
+            color=flicker_face,
+            edgecolor=COLOR_BLACK, linewidth=0.4, width=0.78,
+        )
+        ax_stack.bar(
+            bar_x, frac_stable,
+            bottom=frac_never + frac_flicker,
+            color=stable_face,
+            edgecolor=COLOR_BLACK, linewidth=0.4, width=0.78,
+        )
+        ax_stack.set_xticks(bar_x)
+        ax_stack.set_xticklabels(
+            [f"{r}\nN={n}" for r, n in zip(VMI_REGION_ORDER, n_per_region)],
+            fontsize=8,
+        )
+        ax_stack.set_ylim(0.0, 1.0)
+        ax_stack.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+        ax_stack.set_ylabel("fraction of units", fontsize=9)
+        ax_stack.set_title("consistency tier breakdown", fontsize=10)
+        ax_stack.tick_params(axis="y", labelsize=8)
+
+        # Horizontal legend strip across the figure bottom.
+        leg_handles = [
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markeredgewidth=0.4, markersize=8,
+                label=r"sig + stable  (consistency $\geq$ 0.5)",
+            ),
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markeredgewidth=0.4, markersize=8, alpha=0.55,
+                label="sig + flickery  (consistency < 0.5)",
+            ),
+            plt.Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor=non_sig_color, markeredgecolor="none",
+                markersize=8, alpha=0.45,
+                label="never significant",
+            ),
+        ]
+        fig.legend(
+            handles=leg_handles, loc="lower center", ncol=3,
+            fontsize=10, frameon=False,
+            bbox_to_anchor=(0.5, 0.03),
+        )
+        fig.text(
+            0.5, 0.005,
+            f"one dot per unit  ·  good + somatic, "
+            f"$n_{{\\mathrm{{tested}}}}\\geq{n_tested_min}$  ·  "
+            r"dot area $\propto$ $n_\mathrm{tested}$",
+            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+        )
+
+        out_path = save_figure(
+            fig=fig,
+            stem="vmi_magnitude_consistency",
+            viz_settings=self.visualizations_parameter_dict,
+            override_dir=out_dir,
+            override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
 
     @contextlib.contextmanager
     def _open_save_target(
