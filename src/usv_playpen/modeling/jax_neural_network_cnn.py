@@ -54,6 +54,8 @@ from .manifold_metric import (
     pairwise_distance,
     signed_diff_jax,
     resolve_manifold_metric,
+    sin_cos_encode_jax,
+    angle_decode_jax,
 )
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable as _manifold_spatial_splits,
@@ -259,6 +261,66 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 # PHASE 2: PURE JAX RESNET-1D ARCHITECTURE
 # =============================================================================
 
+# Number of manifold axes the CNN regresses. The whole pipeline (Y,
+# Y_center, Y_scale, fold metrics, saliency centroids) is hard-coded
+# around two-axis manifolds (`(umap1, umap2)`), but pulling the value
+# through a single helper keeps the output-head plumbing explicit and
+# leaves a single place to revisit if a future modality ever ships a
+# D != 2 manifold.
+def _output_axes_count(hp: Dict[str, Any]) -> int:
+    """
+    Returns the number of manifold axes the CNN predicts. The CNN
+    pipeline assumes a 2-D acoustic manifold (`vae_umap{1,2}` /
+    `qlvm_umap{1,2}`); this helper centralises that constant so the
+    output-head sizing logic doesn't sprinkle bare `2`s through
+    `init_cnn_params_and_state`, `cnn_forward`, and the loss block.
+    """
+
+    return 2
+
+
+def _use_sin_cos_torus_output(hp: Dict[str, Any]) -> bool:
+    """
+    Returns True if the CNN should use the per-axis `(sin, cos)`
+    output encoding on the torus.
+
+    Two-key gate, evaluated at Python compile time so the JIT graph
+    specialises once: the manifold metric must be `'torus'` AND
+    `cnn_torus_output_encoding` must be the string `'sin_cos'`. The
+    encoding flag accepts `'sin_cos'` (the principled fix) or
+    `'raw'` (the legacy `tanh * Y_scale + Y_center` head, kept
+    available as an ablation knob). On `'euclidean'` the encoding
+    flag is ignored — euclidean targets have no wrap-aware loss
+    degeneracy and the original head is preserved verbatim.
+
+    A missing `cnn_torus_output_encoding` key is treated as a
+    settings-file bug rather than silently defaulting; the strict
+    `hp[...]` lookup mirrors the project convention for hp access.
+
+    Parameters
+    ----------
+    hp : dict
+        Hyperparameter dictionary. Must contain `manifold_metric`
+        and, on torus runs, `cnn_torus_output_encoding`.
+
+    Returns
+    -------
+    bool
+        True iff the network should produce per-axis `(sin, cos)`
+        outputs and be trained with chord-distance MSE.
+    """
+
+    if hp['manifold_metric'] != 'torus':
+        return False
+    encoding = hp['cnn_torus_output_encoding']
+    if encoding not in ('sin_cos', 'raw'):
+        raise ValueError(
+            f"cnn_torus_output_encoding must be 'sin_cos' or 'raw'; "
+            f"got {encoding!r}"
+        )
+    return encoding == 'sin_cos'
+
+
 def init_cnn_params_and_state(key: jax.Array, in_channels: int,
                               time_steps: int, hp: Dict[str, Any]) -> Tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
     r"""
@@ -380,8 +442,21 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
     params['dense1_w'] = jax.random.normal(k[-2], (padded_flat_size, hidden_dim)) * jnp.sqrt(2.0 / padded_flat_size)
     params['dense1_b'] = jnp.zeros(hidden_dim)
 
-    params['dense2_w'] = jax.random.normal(k[-1], (hidden_dim, 2)) * jnp.sqrt(2.0 / hidden_dim)
-    params['dense2_b'] = jnp.zeros(2)
+    # Output-head dimensionality. On the torus path with `sin_cos`
+    # encoding the network predicts the per-axis `(sin 2pi y, cos 2pi y)`
+    # pair instead of the raw scalar, so the final dense layer doubles
+    # in width. Every other manifold-metric / encoding combination
+    # keeps the original 2-output projection. The branch is resolved at
+    # init time (Python-side string compare) and produces a `params`
+    # dict whose shapes match exactly the cnn_forward path selected by
+    # the same flags, so no runtime conditional inside the JIT loop.
+    if _use_sin_cos_torus_output(hp):
+        out_dim = 2 * _output_axes_count(hp)
+    else:
+        out_dim = _output_axes_count(hp)
+
+    params['dense2_w'] = jax.random.normal(k[-1], (hidden_dim, out_dim)) * jnp.sqrt(2.0 / hidden_dim)
+    params['dense2_b'] = jnp.zeros(out_dim)
 
     return params, state
 
@@ -482,7 +557,11 @@ def cnn_forward(params: Dict[str, jax.Array],
     Returns
     -------
     predictions : jax.Array
-        Predicted 2D coordinates of shape (Batch, 2).
+        Predicted manifold output of shape `(Batch, 2)` on euclidean
+        and on the legacy `'raw'` torus head; `(Batch, 4)` on the
+        torus `'sin_cos'` head (per-axis `(sin, cos)` interleaving).
+        Downstream consumers wanting a 2-D angle vector should call
+        `angle_decode_jax(predictions, period)` from `manifold_metric`.
     new_state : dict
         Updated BN moving averages (only modified if is_training=True).
     """
@@ -597,8 +676,23 @@ def cnn_forward(params: Dict[str, jax.Array],
     # 3. Final Coordinate Projection
     logits = jnp.dot(hidden, params['dense2_w']) + params['dense2_b']
 
-    # Map predictions strictly inside the empirical physical boundaries
-    predictions = Y_center + jnp.tanh(logits) * Y_scale
+    if _use_sin_cos_torus_output(hp):
+        # Torus `sin_cos` head: emit raw (sin, cos) per axis, no tanh
+        # squash and no Y_center / Y_scale rescale. A linear output is
+        # the standard choice for (sin, cos) regression — tanh would
+        # saturate gradients exactly when the network wants to commit
+        # to a confident `(±1, 0)` direction, and Y_center / Y_scale
+        # would map the natural [-1, 1] target range onto the original
+        # [0, period) data range and re-introduce a seam attractor.
+        predictions = logits
+    else:
+        # Original euclidean head (also the legacy torus `'raw'`
+        # head): squash through tanh and rescale into the empirical
+        # data bounding box. Required on euclidean to keep predictions
+        # inside the manifold's physical support; required on the
+        # legacy torus run for backward-compat with previously-saved
+        # artifacts.
+        predictions = Y_center + jnp.tanh(logits) * Y_scale
 
     return predictions, new_state
 
@@ -716,6 +810,17 @@ class NeuralContinuousCNNRunner:
 
         # Hyperparameter block read directly as a dict
         self.hp = HashableDict(self.modeling_settings['hyperparameters']['deep_learning']['cnn_continuous'])
+
+        # Promote the resolved manifold metric / period into the `hp`
+        # dict so the module-level `init_cnn_params_and_state` and
+        # `cnn_forward` can route on the torus-vs-euclidean branch
+        # without a second positional argument. Both keys are strings
+        # / floats (hashable), so the `HashableDict.__hash__` contract
+        # is preserved and the JIT cache key for the forward / update
+        # functions still flips deterministically when the metric
+        # changes between runs.
+        self.hp['manifold_metric'] = self.manifold_metric
+        self.hp['manifold_period'] = float(self.manifold_period)
 
         # Optional knob: when set, `run_cnn_training` only actually
         # trains the listed fold indices and emits placeholder
@@ -953,9 +1058,30 @@ class NeuralContinuousCNNRunner:
         #    shortest-path representation before squaring.
         polygon_centroid_jax = jnp.asarray(polygon_centroid)
 
+        # On the torus `'sin_cos'` head `cnn_forward` returns a raw 4-D
+        # `(sin, cos)` vector per axis; the saliency objectives below
+        # need to operate on the 2-D angle representation so the
+        # wrap-aware distance to the polygon centroid keeps the same
+        # geometric meaning it had on euclidean / the legacy `'raw'`
+        # head. The `_decode` closure folds the raw output back to a
+        # 2-D angle via `atan2`. `atan2` is smooth and JAX-
+        # differentiable, so the gradient flows back through the
+        # decoding step into the network parameters; saliency for the
+        # `sin_cos` head is therefore the gradient of "angle distance
+        # to centroid" w.r.t. the input, exactly what the euclidean /
+        # raw heads already compute.
+        torus_sin_cos = _use_sin_cos_torus_output(self.hp)
+        period_for_decode = jnp.asarray(self.manifold_period)
+
+        def _decode(preds_raw):
+            if torus_sin_cos:
+                return angle_decode_jax(preds_raw, period_for_decode)
+            return preds_raw
+
         def region_scalar_fn(x_single):
-            preds, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
-                                   Y_center, Y_scale, self.hp, is_training=False)
+            preds_raw, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
+                                       Y_center, Y_scale, self.hp, is_training=False)
+            preds = _decode(preds_raw)
 
             diff = signed_diff_jax(
                 preds[0], polygon_centroid_jax,
@@ -964,13 +1090,24 @@ class NeuralContinuousCNNRunner:
             dist_to_centroid = jnp.sqrt(jnp.sum(diff ** 2))
             return -dist_to_centroid
 
-        # 2. Define the global baseline objective
-        def glob_scalar_fn(x_single):
-            preds, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
-                                   Y_center, Y_scale, self.hp, is_training=False)
+        # 2. Define the global baseline objective. On torus the L1
+        #    "distance from origin" must use the wrap-aware diff so it
+        #    is smooth across the seam; on euclidean
+        #    `signed_diff_jax(..., metric='euclidean')` is the identity
+        #    of `a - b`, so this reduces to the original
+        #    `|preds[0,0]| + |preds[0,1]|`.
+        origin_jax = jnp.zeros_like(polygon_centroid_jax)
 
-            # L1 Magnitude from the origin (0,0)
-            return jnp.abs(preds[0, 0]) + jnp.abs(preds[0, 1])
+        def glob_scalar_fn(x_single):
+            preds_raw, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
+                                       Y_center, Y_scale, self.hp, is_training=False)
+            preds = _decode(preds_raw)
+
+            diff_origin = signed_diff_jax(
+                preds[0], origin_jax,
+                metric=self.manifold_metric, period=self.manifold_period,
+            )
+            return jnp.sum(jnp.abs(diff_origin))
 
         # 3. Transform scalars into Gradient functions
         compute_region_grad = jax.grad(region_scalar_fn)
@@ -1142,6 +1279,17 @@ class NeuralContinuousCNNRunner:
                 # distances on the saved Y_pred / Y_true arrays.
                 'manifold_metric': self.manifold_metric,
                 'manifold_period': self.manifold_period,
+                # CNN output-head encoding provenance. On torus runs
+                # this records whether the network produced raw 2-D
+                # coords with `tanh * Y_scale + Y_center` ('raw',
+                # legacy) or per-axis `(sin, cos)` decoded via atan2
+                # ('sin_cos', principled fix). Euclidean runs always
+                # use the 2-D tanh head and carry 'raw' for symmetry.
+                # Downstream readers can branch on this to interpret
+                # any per-fold diagnostics that depend on the encoding.
+                'output_encoding': (
+                    'sin_cos' if _use_sin_cos_torus_output(self.hp) else 'raw'
+                ),
             },
             'cross_validation': [],
             'feature_importance': {}
@@ -1201,6 +1349,22 @@ class NeuralContinuousCNNRunner:
                 pickle.dump(host_snapshot, fh)
             print(f"[CHECKPOINT::{stage_label}] saved deep_storage to {save_path}")
 
+        # `cnn_forward` returns raw network output: 2-D on euclidean
+        # and on the legacy torus `'raw'` head, 4-D per-axis (sin, cos)
+        # on the torus `'sin_cos'` head. The `_decode_predictions_for_eval`
+        # closure folds the sin/cos representation back to a 2-D angle
+        # vector so every consumer downstream of `evaluate_batched`
+        # (early-stopping RMSE, permutation importance, saved
+        # `Y_pred_*` arrays, plotting code) sees the same `(N, 2)`
+        # shape regardless of which output encoding the run chose.
+        torus_sin_cos = _use_sin_cos_torus_output(self.hp)
+        manifold_period_jax = jnp.asarray(self.manifold_period)
+
+        def _decode_predictions_for_eval(preds_raw):
+            if torus_sin_cos:
+                return angle_decode_jax(preds_raw, manifold_period_jax)
+            return preds_raw
+
         # Helper for efficient, memory-safe evaluation (splits test set to avoid OOM)
         def evaluate_batched(p, s, x_s):
             preds = []
@@ -1224,7 +1388,8 @@ class NeuralContinuousCNNRunner:
                 # Discard the padded dummy predictions and keep only the real ones
                 preds.append(pred_batch[:actual_size])
 
-            return jnp.concatenate(preds, axis=0)
+            preds_raw = jnp.concatenate(preds, axis=0)
+            return _decode_predictions_for_eval(preds_raw)
 
         # ---------------------------------------------------------
         # TRI-STRATEGY EXECUTION
@@ -1314,7 +1479,31 @@ class NeuralContinuousCNNRunner:
 
                 lr_schedule = build_lr_schedule(self.hp['learning_rate'], self.hp['epochs'], steps_per_epoch) if self.hp['use_scheduler'] else self.hp['learning_rate']
 
-                optimizer = optax.adamw(learning_rate=lr_schedule, weight_decay=self.hp['weight_decay'])
+                # Optional weight-decay mask: when
+                # `weight_decay_exclude_output_head` is True, the AdamW
+                # decoupled-wd step skips `dense2_w` / `dense2_b`. The
+                # output head is the only layer whose collapse to zero
+                # produces a degenerate constant prediction on the
+                # torus `sin_cos` head — leaving it un-decayed prevents
+                # the "weight-decay drives weights to zero -> output
+                # parks at constant -> no escape" failure mode that
+                # motivated the principled-fix rewrite. On euclidean
+                # the same exclusion is harmless: the head is small and
+                # the empirical-bound tanh squash already constrains
+                # its output range.
+                if self.hp['weight_decay_exclude_output_head']:
+                    wd_mask = jax.tree_util.tree_map(
+                        lambda _: True, params,
+                    )
+                    wd_mask = {**wd_mask, 'dense2_w': False, 'dense2_b': False}
+                else:
+                    wd_mask = None
+
+                optimizer = optax.adamw(
+                    learning_rate=lr_schedule,
+                    weight_decay=self.hp['weight_decay'],
+                    mask=wd_mask,
+                )
                 opt_state = optimizer.init(params)
 
                 # Pure Functional Update Step (Now handles splitting the dropout key)
@@ -1329,13 +1518,31 @@ class NeuralContinuousCNNRunner:
                             rng_key=drop_key, is_training=True
                         )
 
-                        # Wrap-aware residual on torus, plain `yt - preds`
-                        # on euclidean. Captured at trace time so the JIT
-                        # graph specialises on the metric tag.
-                        residual = signed_diff_jax(
-                            yt, preds,
-                            metric=self.manifold_metric, period=self.manifold_period,
-                        )
+                        if torus_sin_cos:
+                            # Torus `sin_cos` head: the network emits raw
+                            # per-axis `(sin, cos)` and the loss is the
+                            # plain Euclidean residual against the
+                            # `(sin 2pi y, cos 2pi y)` encoding of the
+                            # target. There is no wrap to apply — the
+                            # `(sin, cos)` representation is intrinsically
+                            # periodic, which is the whole point of
+                            # the encoding (it removes the wrap-aware
+                            # MSE degeneracy where every constant
+                            # prediction has identical loss on a uniform
+                            # torus target).
+                            target_sc = sin_cos_encode_jax(yt, manifold_period_jax)
+                            residual = preds - target_sc
+                        else:
+                            # Wrap-aware residual on the legacy torus
+                            # `'raw'` head and on euclidean: plain
+                            # `yt - preds` on euclidean, folded into
+                            # `(-period/2, period/2]` on torus. Captured
+                            # at trace time so the JIT graph specialises
+                            # on the metric tag.
+                            residual = signed_diff_jax(
+                                yt, preds,
+                                metric=self.manifold_metric, period=self.manifold_period,
+                            )
 
                         # Evaluate strictly based on the dictionary configuration
                         if self.hp['loss_function'] == 'huber':

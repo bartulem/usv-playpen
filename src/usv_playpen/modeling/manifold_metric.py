@@ -301,6 +301,108 @@ def total_dispersion(Y: np.ndarray, *,
     return float(np.sum(w[:, None] * diff ** 2) * len(Y))  # scale to match unweighted convention
 
 
+def sin_cos_encode_jax(y: jnp.ndarray, period: float) -> jnp.ndarray:
+    """
+    Encodes per-axis torus coordinates as `(sin, cos)` pairs along the
+    last axis.
+
+    The CNN's torus-output path predicts each axis of `y` as a 2-D
+    `(sin 2pi y / P, cos 2pi y / P)` vector instead of the raw scalar.
+    This encoding eliminates the wrap-aware-MSE degeneracy in which
+    every constant prediction has identical loss on a uniform torus
+    target (because the wrapped residual is translation-invariant in
+    that case). After the sin/cos encoding the loss is the standard
+    chord-distance MSE on the unit circle, whose unique minimum is
+    the per-axis circular mean of the data — so a network whose
+    output collapses to a constant is now penalised, not free.
+
+    The output stacks the per-axis components in the order
+    `(sin_1, cos_1, sin_2, cos_2, ...)` along the last axis: this is
+    the same layout the CNN's final dense layer produces and matches
+    the canonical 4-D torus embedding used by `torus_embed` (up to the
+    `concat([cos, sin])` ordering — `torus_embed` is for KMeans /
+    KDTree consumers and chooses the order they expect; the CNN loss
+    uses per-axis interleaving so each 2-D slice corresponds to one
+    coordinate).
+
+    Parameters
+    ----------
+    y : jnp.ndarray
+        Coordinates of shape `(..., D)` on the torus (last axis is the
+        per-coordinate axis; typically `D == 2`). Values may lie
+        outside `[0, period)` — the trig functions wrap automatically.
+    period : float
+        Per-axis wrap period.
+
+    Returns
+    -------
+    jnp.ndarray
+        `(..., 2 * D)` array with the per-axis `(sin, cos)` pairs
+        stacked along the last axis in the order
+        `(s_1, c_1, s_2, c_2, ..., s_D, c_D)`.
+    """
+
+    angles = (2.0 * jnp.pi / period) * y
+    s = jnp.sin(angles)
+    c = jnp.cos(angles)
+    # Interleave per-axis: (s_1, c_1, s_2, c_2, ...). The stack-then-
+    # reshape pattern keeps the per-axis grouping explicit; a direct
+    # `jnp.concatenate([s, c], axis=-1)` would emit
+    # (s_1, s_2, c_1, c_2), which is the `torus_embed` ordering and is
+    # NOT what the CNN's per-axis loss block expects.
+    stacked = jnp.stack([s, c], axis=-1)
+    return stacked.reshape(*y.shape[:-1], 2 * y.shape[-1])
+
+
+def angle_decode_jax(raw_sc: jnp.ndarray, period: float) -> jnp.ndarray:
+    """
+    Inverse of `sin_cos_encode_jax`: maps a `(..., 2 * D)` per-axis
+    `(sin, cos)` vector back to a `(..., D)` torus-coordinate vector
+    in `[0, period)`.
+
+    Each pair `(s_i, c_i)` along the last axis is reduced via
+    `atan2(s_i, c_i)`, scaled by `period / (2 * pi)`, and folded into
+    `[0, period)`. The magnitude of `(s_i, c_i)` is discarded: `atan2`
+    is invariant to positive radial scaling, so an under-confident
+    network output (`||(s, c)||` < 1) still decodes to the correct
+    angle.
+
+    Used by `evaluate_batched` and `compute_centroid_saliency` to
+    convert the CNN's raw 4-D torus output into a 2-D angle vector
+    before any wrap-aware downstream consumer sees it. Keeps the
+    external `Y_pred` schema unchanged across the euclidean and torus
+    encodings.
+
+    Parameters
+    ----------
+    raw_sc : jnp.ndarray
+        Raw network output of shape `(..., 2 * D)` with the per-axis
+        `(sin, cos)` interleaving produced by `sin_cos_encode_jax`.
+    period : float
+        Per-axis wrap period; the decoded values lie in `[0, period)`.
+
+    Returns
+    -------
+    jnp.ndarray
+        Decoded torus coordinates of shape `(..., D)`, every entry in
+        `[0, period)`.
+    """
+
+    # Reshape (..., 2D) -> (..., D, 2) so the trailing axis carries the
+    # per-axis (s, c) pair.
+    leading_shape = raw_sc.shape[:-1]
+    d = raw_sc.shape[-1] // 2
+    reshaped = raw_sc.reshape(*leading_shape, d, 2)
+    s = reshaped[..., 0]
+    c = reshaped[..., 1]
+    ang = jnp.arctan2(s, c)                                   # in (-pi, pi]
+    y = (period / (2.0 * jnp.pi)) * ang
+    # Fold negative angles into [0, period). `jnp.where` mirrors the
+    # NumPy `circular_mean` fold so the two pipelines agree on the
+    # near-seam representation.
+    return jnp.where(y < 0, y + period, y)
+
+
 def torus_embed(Y: np.ndarray, period: float) -> np.ndarray:
     """
     Maps torus coordinates `(x, y) in [0, period)^D` into the
