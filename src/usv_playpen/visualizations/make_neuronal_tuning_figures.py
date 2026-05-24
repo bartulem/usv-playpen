@@ -109,6 +109,45 @@ VMI_REGION_ORDER: tuple[str, ...] = (
     "PAG", "MRN", "VTA", "MB", "CENT", "SC", "Other",
 )
 
+# Per-USV-property metadata for the population property-tuning
+# distribution figures. Keys mirror the modality suffixes used by
+# the triage pickle (`usv_property_self_<property>_excit`). Tolerance
+# is the full-width window (so ±tol/2 around the cluster centre)
+# applied to per-session `peak_bin_value` values during the
+# consistency check; it's set to two upstream bin widths so the
+# rule mirrors PETH's "±2 bins" convention. `unit_scale` and
+# `unit_label` are display-only conversions for the x-axis (e.g. Hz
+# → kHz).
+USV_PROPERTY_META: dict[str, dict] = {
+    "duration":          {"tol": 0.10, "unit_scale": 1.0,  "unit_label": "s",   "display_name": "USV duration"},
+    "mean_freq_hz":      {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV mean freq"},
+    "peak_freq_hz":      {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV peak freq"},
+    "freq_bandwidth_hz": {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV freq bandwidth"},
+    "mean_amplitude":    {"tol": 0.25, "unit_scale": 1.0,  "unit_label": "a.u.","display_name": "USV mean amplitude"},
+    "max_amplitude":     {"tol": 0.80, "unit_scale": 1.0,  "unit_label": "a.u.","display_name": "USV max amplitude"},
+    "spectral_entropy":  {"tol": 0.30, "unit_scale": 1.0,  "unit_label": "",    "display_name": "spectral entropy"},
+    "mask_number":       {"tol": 2.0,  "unit_scale": 1.0,  "unit_label": "",    "display_name": "mask number"},
+}
+USV_PROPERTY_ORDER: tuple[str, ...] = tuple(USV_PROPERTY_META.keys())
+
+# Categorical USV-tuning segmentations (the four `cat_feat` axes
+# stored in the triage pickle's `usv_category_self_<segmentation>`
+# modality keys). `n_classes` is the upstream class count for that
+# segmentation, used to bound the per-region bar charts even when
+# no units happen to land in some categories.
+USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = (
+    "vae_supercategory",
+    "vae_category",
+    "qlvm_supercategory",
+    "qlvm_category",
+)
+USV_CATEGORY_N_CLASSES: dict[str, int] = {
+    "vae_supercategory": 5,
+    "vae_category":      10,
+    "qlvm_supercategory": 7,
+    "qlvm_category":     12,
+}
+
 # Page sizes are fixed by the layout invariants of each page (Page 1 has
 # the section-(a) raster + usv_peth on top of the 4×4 usv_property_tuning grid; Page 2 has
 # section-(c) 2×6 above section-(d) flowing 6 cols/row). They scale with
@@ -2691,10 +2730,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         plt.close(fig)
         return out_path
 
-    def _collect_consistent_peth_excit(
+    def _collect_consistent_peth(
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
+            direction: str = "excit",
             tol_s: float = 0.100,
             k_min: int = 2,
             require_majority: bool = True,
@@ -2767,6 +2807,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         }
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
+        if direction not in ("excit", "suppress"):
+            raise ValueError(
+                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+            )
+        modality_key = f"usv_peth_self_{direction}"
+
         def _largest_in_tol(values: list[float]) -> int:
             """
             Description
@@ -2813,7 +2859,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             pks: list[float] = []
             pzs: list[float] = []
             for cond in u["conditions"].values():
-                m = cond["modalities"].get("usv_peth_self_excit")
+                m = cond["modalities"].get(modality_key)
                 if m is None:
                     continue
                 for e in m["per_session"]:
@@ -2845,6 +2891,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
+            direction: str = "excit",
             tol_s: float = 0.100,
             k_min: int = 2,
             require_majority: bool = True,
@@ -2906,9 +2953,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Absolute path to the written figure.
         """
 
-        per_group = self._collect_consistent_peth_excit(
+        if direction not in ("excit", "suppress"):
+            raise ValueError(
+                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+            )
+        per_group = self._collect_consistent_peth(
             triage_pkl_path=triage_pkl_path,
             catalog_csv_path=catalog_csv_path,
+            direction=direction,
             tol_s=tol_s,
             k_min=k_min,
             require_majority=require_majority,
@@ -2996,24 +3048,991 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Bottom caption.
         fig.text(
             0.5, 0.015,
-            "good + somatic, consistent excit only  ·  "
-            f"consistency = $\\geq${k_min} sig excit sessions within "
+            f"good + somatic, consistent {direction} only  ·  "
+            f"consistency = $\\geq${k_min} sig {direction} sessions within "
             f"±{int(1000*tol_s/2)} ms"
             f"{' AND >=50% majority' if require_majority else ''}  ·  "
-            "per-unit anchors = medians across all sig excit sessions  ·  "
+            f"per-unit anchors = medians across all sig {direction} sessions  ·  "
             "histogram x = signed peak_t (linear); scatter x = |peak_t| (log, USV on the right)",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
 
         out_path = save_figure(
             fig=fig,
-            stem="peth_excit_timing_distribution",
+            stem=f"peth_{direction}_timing_distribution",
             viz_settings=self.visualizations_parameter_dict,
             override_dir=out_dir,
             override_format=fig_format,
         )
         plt.close(fig)
         return out_path
+
+    def _collect_consistent_property(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            property_name: str,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            direction: str = "excit",
+            tol: float | None = None,
+            k_min: int = 2,
+            require_majority: bool = True,
+    ) -> dict[str, list[dict]]:
+        """
+        Description
+        -----------
+        Walk the unit-triage pickle and, for every good + somatic unit
+        with at least two significant `usv_property_self_<property>_excit`
+        sessions whose `peak_bin_value` values cluster within `tol`
+        (largest in-tolerance subset of size `k_min` or more, optionally
+        accounting for at least 50 % of the unit's sig sessions),
+        return one summary per consistent unit:
+
+          * `median_peak_value` — median of `peak_bin_value` across
+            the unit's sig sessions (the unit's representative
+            property-space peak).
+          * `median_peak_z` — median of `peak_z` across the unit's
+            sig sessions (the unit's representative response
+            magnitude).
+          * `n_sig` — number of significant sessions.
+          * `k` — size of the largest in-tolerance peak-value cluster.
+
+        Same rule shape as `_collect_consistent_peth_excit`, with the
+        anchor swapped from `peak_t` (time) to `peak_bin_value`
+        (property value). `tol` defaults to `USV_PROPERTY_META[property_name]["tol"]`
+        when unset.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        property_name (str)
+            One of `USV_PROPERTY_ORDER` (e.g. `'duration'`,
+            `'mean_freq_hz'`).
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to `unit_catalog.csv`. Defaults to the
+            `catalog_path` field embedded in the triage pickle.
+        tol (float | None)
+            Full-width tolerance applied to the per-session
+            `peak_bin_value` values during the consistency check.
+            Defaults to `USV_PROPERTY_META[property_name]["tol"]`.
+        k_min (int)
+            Minimum number of sig sessions that must agree within
+            `tol` for the unit to count as consistent.
+        require_majority (bool)
+            When True, additionally requires `k / n_sig >= 0.5`.
+
+        Returns
+        -------
+        per_group (dict[str, list[dict]])
+            Mapping from canonical region label (one of
+            `VMI_REGION_ORDER`) to a list of per-unit summary dicts
+            for units that pass the consistency rule.
+        """
+
+        if property_name not in USV_PROPERTY_META:
+            raise ValueError(
+                f"unknown property_name {property_name!r}; "
+                f"expected one of {tuple(USV_PROPERTY_META)}"
+            )
+        if tol is None:
+            tol = float(USV_PROPERTY_META[property_name]["tol"])
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        region_to_group = {
+            region: group
+            for group, regions in VMI_REGION_GROUPS.items()
+            for region in regions
+        }
+        per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
+
+        if direction not in ("excit", "suppress"):
+            raise ValueError(
+                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+            )
+        modality_key = f"usv_property_self_{property_name}_{direction}"
+
+        def _largest_in_tol(values: list[float]) -> int:
+            """
+            Description
+            -----------
+            Sliding-window over sorted values returning the largest
+            window of size k such that max(window) - min(window) <= tol.
+
+            Parameters
+            ----------
+            values (list[float])
+                Per-session peak_bin_value entries for the unit.
+
+            Returns
+            -------
+            k (int)
+                Largest in-tolerance subset size.
+            """
+            if not values:
+                return 0
+            vs = sorted(values)
+            best_k = 1
+            lo = 0
+            for hi in range(len(vs)):
+                while vs[hi] - vs[lo] > tol:
+                    lo += 1
+                if hi - lo + 1 > best_k:
+                    best_k = hi - lo + 1
+            return best_k
+
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+
+            anatomy = u["anatomy_region"]
+            group = region_to_group[anatomy] if anatomy in region_to_group else "Other"
+
+            pvs: list[float] = []
+            pzs: list[float] = []
+            for cond in u["conditions"].values():
+                m = cond["modalities"].get(modality_key)
+                if m is None:
+                    continue
+                for e in m["per_session"]:
+                    if not e["significant"]:
+                        continue
+                    if e["peak_bin_value"] is None or e["peak_z"] is None:
+                        continue
+                    pvs.append(float(e["peak_bin_value"]))
+                    pzs.append(float(e["peak_z"]))
+            n_sig = len(pvs)
+            if n_sig < 2:
+                continue
+            k = _largest_in_tol(pvs)
+            if k < k_min:
+                continue
+            if require_majority and (k / n_sig) < 0.5:
+                continue
+
+            per_group[group].append({
+                "n_sig":            n_sig,
+                "k":                k,
+                "median_peak_value": float(np.median(pvs)),
+                "median_peak_z":    float(np.median(pzs)),
+            })
+
+        return per_group
+
+    def make_property_tuning_distribution_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            property_name: str,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            direction: str = "excit",
+            tol: float | None = None,
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render the per-region distribution of consistent excit-tuned
+        units' peak property-value for a single USV acoustic
+        property. Layout is the same 2×4 grid used by the VMI
+        distribution and PETH timing figures:
+
+          * Seven per-region histograms of `median peak_bin_value`
+            (consistent excit units only, region color, stepfilled).
+          * 8th panel — overlaid ECDFs of the same per-region pools
+            for direct across-region comparison.
+
+        The x-axis uses the property's natural units, with display
+        rescaling for Hz-valued properties (e.g. `peak_freq_hz` is
+        rendered in kHz). Tolerance defaults to two upstream bin
+        widths of that property (`USV_PROPERTY_META[property_name]["tol"]`).
+
+        Histogram bins are built directly from the property's native
+        grid (bin_width = `tol / 2`, the upstream property bin width).
+        This avoids the empty-gap artefact you get when histogram bin
+        edges don't line up with the discrete `peak_bin_value`
+        positions — every histogram bar covers exactly one of the
+        property's tuning-curve bins.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        property_name (str)
+            One of `USV_PROPERTY_ORDER` (e.g. `'duration'`,
+            `'mean_freq_hz'`).
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV. Defaults to the
+            `catalog_path` embedded in the triage pickle.
+        tol (float | None)
+            Full-width tolerance for the consistency check (defaults
+            to the per-property entry in `USV_PROPERTY_META`).
+        k_min (int)
+            Minimum in-tolerance subset size (default 2).
+        require_majority (bool)
+            Whether to also require the in-tolerance subset to
+            account for at least half of the unit's sig sessions
+            (default True).
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory.
+        fig_format (str | None)
+            Override the configured figure format.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Absolute path to the written figure.
+        """
+
+        meta = USV_PROPERTY_META[property_name]
+        unit_scale = float(meta["unit_scale"])
+        unit_label = str(meta["unit_label"])
+        display_name = str(meta["display_name"])
+
+        if direction not in ("excit", "suppress"):
+            raise ValueError(
+                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+            )
+        per_group = self._collect_consistent_property(
+            triage_pkl_path=triage_pkl_path,
+            property_name=property_name,
+            catalog_csv_path=catalog_csv_path,
+            direction=direction,
+            tol=tol,
+            k_min=k_min,
+            require_majority=require_majority,
+        )
+        region_colors = self._resolve_region_colors()
+
+        # Shared x-axis range derived from the union of all consistent
+        # units' median peak values, padded slightly so the extreme
+        # bins aren't visually clipped.
+        all_vals: list[float] = []
+        for region in VMI_REGION_ORDER:
+            for u in per_group[region]:
+                all_vals.append(u["median_peak_value"])
+        if not all_vals:
+            x_lo, x_hi = 0.0, 1.0
+        else:
+            arr = np.array(all_vals)
+            x_lo = float(arr.min())
+            x_hi = float(arr.max())
+            pad = 0.05 * max(x_hi - x_lo, 1e-12)
+            x_lo -= pad
+            x_hi += pad
+        # Bin width = upstream property bin width = tol/2 (the rule
+        # baked into USV_PROPERTY_META). Build histogram edges that
+        # straddle every discrete property-bin centre, so each bar
+        # covers exactly one tuning-curve bin and the histogram has
+        # no spurious empty gaps.
+        property_bin_width = (
+            tol if tol is not None else float(meta["tol"])
+        ) / 2.0
+        # Snap the lo / hi to property-bin-centred edges.
+        x_lo_snap = (np.floor(x_lo / property_bin_width) - 0.5) * property_bin_width
+        x_hi_snap = (np.ceil(x_hi / property_bin_width) + 0.5) * property_bin_width
+        n_bin_edges = int(np.round((x_hi_snap - x_lo_snap) / property_bin_width)) + 1
+        bins = np.linspace(x_lo_snap, x_hi_snap, n_bin_edges)
+        bins_disp = bins * unit_scale
+        x_lo_disp = x_lo_snap * unit_scale
+        x_hi_disp = x_hi_snap * unit_scale
+
+        fig = plt.figure(figsize=(14.0, 6.4), dpi=150)
+        gs = gridspec.GridSpec(
+            2, 4,
+            figure=fig,
+            hspace=0.40,
+            wspace=0.30,
+            left=0.06, right=0.985,
+            top=0.93, bottom=0.13,
+        )
+        panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
+
+        x_label = (
+            f"{display_name} ({unit_label})"
+            if unit_label else display_name
+        )
+
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+            ax = fig.add_subplot(gs[idx])
+            units = per_group[region]
+            region_color = region_colors[region]
+
+            if not units:
+                ax.set_title(f"{region}  (N=0)", fontsize=10)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                continue
+
+            pks = np.array([u["median_peak_value"] for u in units]) * unit_scale
+            ax.hist(
+                pks, bins=bins_disp,
+                color=region_color, alpha=0.95,
+                histtype="stepfilled",
+                edgecolor=COLOR_BLACK, linewidth=0.4,
+            )
+            ax.set_xlim(x_lo_disp, x_hi_disp)
+            ax.set_title(f"{region}  (N={len(units)})", fontsize=10)
+            ax.tick_params(labelsize=8)
+            if idx[0] == 1:
+                ax.set_xlabel(x_label, fontsize=9)
+            if idx[1] == 0:
+                ax.set_ylabel("unit count", fontsize=9)
+
+        # 8th panel — ECDF overlay per region.
+        ax_agg = fig.add_subplot(gs[1, 3])
+        for region in VMI_REGION_ORDER:
+            units = per_group[region]
+            if not units:
+                continue
+            arr_sorted = np.sort(
+                np.array([u["median_peak_value"] for u in units]) * unit_scale
+            )
+            ecdf_y = np.arange(1, arr_sorted.size + 1) / arr_sorted.size
+            ax_agg.plot(
+                arr_sorted, ecdf_y,
+                color=region_colors[region], linewidth=1.4,
+                label=f"{region} (N={arr_sorted.size})",
+            )
+        ax_agg.set_xlim(x_lo_disp, x_hi_disp)
+        ax_agg.set_ylim(0.0, 1.02)
+        ax_agg.set_xlabel(x_label, fontsize=9)
+        ax_agg.set_ylabel("ECDF", fontsize=9)
+        ax_agg.set_title(f"{display_name} — across regions", fontsize=10)
+        ax_agg.tick_params(labelsize=8)
+        ax_agg.legend(fontsize=7, frameon=False, loc="lower right")
+
+        # Bottom caption.
+        tol_disp = (tol if tol is not None else float(meta["tol"])) * unit_scale
+        unit_tail = f" {unit_label}" if unit_label else ""
+        fig.text(
+            0.5, 0.01,
+            f"good + somatic, consistent {direction} only  ·  "
+            f"consistency = $\\geq${k_min} sig {direction} sessions within "
+            f"±{tol_disp/2:g}{unit_tail}"
+            f"{' AND >=50% majority' if require_majority else ''}  ·  "
+            f"per-unit anchor = median peak_bin_value across all sig {direction} sessions",
+            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+        )
+
+        out_path = save_figure(
+            fig=fig,
+            stem=f"property_tuning_{direction}_distribution_{property_name}",
+            viz_settings=self.visualizations_parameter_dict,
+            override_dir=out_dir,
+            override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
+
+    def make_all_property_tuning_distribution_figures(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            direction: str = "excit",
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> list[pathlib.Path]:
+        """
+        Description
+        -----------
+        Convenience wrapper that renders the per-region tuning
+        distribution figure for every USV acoustic property in
+        `USV_PROPERTY_ORDER` in one call. Returns the full list of
+        output paths in the same order so the caller can log /
+        cross-reference them.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV.
+        k_min (int)
+            Minimum in-tolerance subset size (default 2).
+        require_majority (bool)
+            Whether to also require the in-tolerance subset to
+            account for at least half of the unit's sig sessions
+            (default True).
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory.
+        fig_format (str | None)
+            Override the configured figure format.
+
+        Returns
+        -------
+        out_paths (list[pathlib.Path])
+            One path per property in `USV_PROPERTY_ORDER`.
+        """
+
+        out_paths: list[pathlib.Path] = []
+        for property_name in USV_PROPERTY_ORDER:
+            out_paths.append(self.make_property_tuning_distribution_figure(
+                triage_pkl_path=triage_pkl_path,
+                property_name=property_name,
+                catalog_csv_path=catalog_csv_path,
+                direction=direction,
+                k_min=k_min,
+                require_majority=require_majority,
+                out_dir=out_dir,
+                fig_format=fig_format,
+            ))
+        return out_paths
+
+    def _collect_consistent_category_self(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            segmentation: str,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            k_min: int = 2,
+            require_majority: bool = True,
+    ) -> dict[str, list[dict]]:
+        """
+        Description
+        -----------
+        Walk the unit-triage pickle and, for every good + somatic unit
+        with at least two significantly-UP sessions of
+        `usv_category_self_<segmentation>` (i.e. sessions with
+        `peak_abs_z >= z_threshold` AND `peak_signed_z > 0`) whose
+        `best_cat` values agree on a single category (the mode count
+        is `>= k_min` and meets the optional majority gate), return
+        one summary per consistent unit:
+
+          * `best_cat` — the mode of `best_cat` across the unit's
+            up-sig sessions (the unit's preferred category).
+          * `median_peak_signed_z` — median signed z across up-sig
+            sessions (firing strength at that preferred category).
+          * `median_n_sig_categories` — median number of categories
+            that passed |z| >= z_threshold within a session
+            (breadth-of-tuning proxy).
+          * `median_selectivity` — median selectivity index (the
+            normalised peakedness measure persisted by the upstream
+            compute step).
+          * `n_sig_up` — total number of up-sig sessions the unit
+            contributed.
+          * `k` — size of the mode (= how many sig sessions agreed
+            on `best_cat`).
+
+        Significance rule for `usv_category_self_*` (upstream code
+        `unit_triage_aggregator.py:646-647`) is purely z-based —
+        `peak_abs_z >= z_threshold`. No `max_run` requirement
+        because category axes are discrete labels, not 1D-binned
+        tuning curves.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        segmentation (str)
+            One of `USV_CATEGORY_SEGMENTATIONS` (e.g.
+            `'vae_supercategory'`).
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to `unit_catalog.csv`. Defaults to the
+            `catalog_path` field embedded in the triage pickle.
+        k_min (int)
+            Minimum mode count (number of sig sessions agreeing on
+            `best_cat`) for the unit to count as consistent.
+        require_majority (bool)
+            When True, also requires `mode_count / n_sig_up >= 0.5`.
+
+        Returns
+        -------
+        per_group (dict[str, list[dict]])
+            Mapping from canonical region label (one of
+            `VMI_REGION_ORDER`) to a list of per-unit summary dicts.
+        """
+
+        if segmentation not in USV_CATEGORY_SEGMENTATIONS:
+            raise ValueError(
+                f"unknown segmentation {segmentation!r}; "
+                f"expected one of {USV_CATEGORY_SEGMENTATIONS}"
+            )
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        region_to_group = {
+            region: group
+            for group, regions in VMI_REGION_GROUPS.items()
+            for region in regions
+        }
+        per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
+        modality_key = f"usv_category_self_{segmentation}"
+
+        from collections import Counter
+
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+
+            anatomy = u["anatomy_region"]
+            group = region_to_group[anatomy] if anatomy in region_to_group else "Other"
+
+            best_cats: list[int] = []
+            peak_zs:   list[float] = []
+            n_sigs:    list[int] = []
+            selects:   list[float] = []
+            for cond in u["conditions"].values():
+                m = cond["modalities"].get(modality_key)
+                if m is None:
+                    continue
+                for e in m["per_session"]:
+                    if not e["significant"]:
+                        continue
+                    psz = e.get("peak_signed_z")
+                    bc = e.get("best_cat")
+                    if psz is None or bc is None or float(psz) <= 0:
+                        continue
+                    best_cats.append(int(bc))
+                    peak_zs.append(float(psz))
+                    n_sigs.append(int(e.get("n_sig_categories", 0) or 0))
+                    sel = e.get("selectivity")
+                    selects.append(float(sel) if sel is not None else float("nan"))
+            n_sig_up = len(best_cats)
+            if n_sig_up < 2:
+                continue
+            counter = Counter(best_cats)
+            mode_cat, mode_count = counter.most_common(1)[0]
+            if mode_count < k_min:
+                continue
+            if require_majority and (mode_count / n_sig_up) < 0.5:
+                continue
+
+            sel_arr = np.array([s for s in selects if not np.isnan(s)])
+            per_group[group].append({
+                "best_cat":                  int(mode_cat),
+                "k":                         int(mode_count),
+                "n_sig_up":                  n_sig_up,
+                "median_peak_signed_z":      float(np.median(peak_zs)),
+                "median_n_sig_categories":   float(np.median(n_sigs)),
+                "median_selectivity":        float(np.median(sel_arr)) if sel_arr.size else float("nan"),
+            })
+
+        return per_group
+
+    def make_category_peak_distribution_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            segmentation: str,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render the per-region distribution of consistent units'
+        preferred category (`best_cat`) for one USV-category
+        segmentation. Layout is the standard 2×4 grid:
+
+          * Seven per-region bar charts of consistent-unit counts
+            per `best_cat` (1..N_classes), region palette colour.
+          * 8th panel — region × category heatmap (rows = regions,
+            cols = categories, colour = fraction of region's
+            consistent units assigned to that category) rendered with
+            the configured cmap from `visualizations_settings.json`.
+
+        "Consistent" = good + somatic AND at least `k_min`
+        sig-up-only sessions agreeing on `best_cat` (mode), with the
+        optional majority gate.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        segmentation (str)
+            One of `USV_CATEGORY_SEGMENTATIONS`.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV.
+        k_min (int)
+            Minimum mode count for consistency.
+        require_majority (bool)
+            Whether to also require `mode_count / n_sig_up >= 0.5`.
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory.
+        fig_format (str | None)
+            Override the configured figure format.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Absolute path to the written figure.
+        """
+
+        per_group = self._collect_consistent_category_self(
+            triage_pkl_path=triage_pkl_path,
+            segmentation=segmentation,
+            catalog_csv_path=catalog_csv_path,
+            k_min=k_min,
+            require_majority=require_majority,
+        )
+        region_colors = self._resolve_region_colors()
+        density_cmap = self.visualizations_parameter_dict["figures"]["cmap"]
+
+        n_classes = USV_CATEGORY_N_CLASSES[segmentation]
+        class_ids = np.arange(1, n_classes + 1)
+
+        fig = plt.figure(figsize=(14.0, 6.4), dpi=150)
+        gs = gridspec.GridSpec(
+            2, 4,
+            figure=fig,
+            hspace=0.40,
+            wspace=0.30,
+            left=0.06, right=0.985,
+            top=0.93, bottom=0.13,
+        )
+        panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
+
+        # Per-region bar charts.
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+            ax = fig.add_subplot(gs[idx])
+            units = per_group[region]
+            region_color = region_colors[region]
+
+            if not units:
+                ax.set_title(f"{region}  (N=0)", fontsize=10)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                continue
+
+            counts = np.zeros(n_classes, dtype=int)
+            for u in units:
+                if 1 <= u["best_cat"] <= n_classes:
+                    counts[u["best_cat"] - 1] += 1
+
+            ax.bar(
+                class_ids, counts,
+                color=region_color, alpha=0.95,
+                edgecolor=COLOR_BLACK, linewidth=0.4,
+                width=0.85,
+            )
+            ax.set_xticks(class_ids)
+            ax.set_xlim(0.5, n_classes + 0.5)
+            ax.set_title(f"{region}  (N={len(units)})", fontsize=10)
+            ax.tick_params(labelsize=8)
+            if idx[0] == 1:
+                ax.set_xlabel("best_cat", fontsize=9)
+            if idx[1] == 0:
+                ax.set_ylabel("unit count", fontsize=9)
+
+        # 8th cell — region × category heatmap, fraction-normalised.
+        ax_hm = fig.add_subplot(gs[1, 3])
+        frac_grid = np.zeros((len(VMI_REGION_ORDER), n_classes), dtype=float)
+        n_per_region: list[int] = []
+        for i, region in enumerate(VMI_REGION_ORDER):
+            units = per_group[region]
+            n = len(units)
+            n_per_region.append(n)
+            if not n:
+                continue
+            for u in units:
+                if 1 <= u["best_cat"] <= n_classes:
+                    frac_grid[i, u["best_cat"] - 1] += 1
+            frac_grid[i] /= n
+        im = ax_hm.imshow(
+            frac_grid, aspect="auto", origin="lower",
+            cmap=density_cmap, vmin=0.0, vmax=float(frac_grid.max() or 1.0),
+        )
+        ax_hm.set_xticks(np.arange(n_classes))
+        ax_hm.set_xticklabels([str(i + 1) for i in range(n_classes)], fontsize=7)
+        ax_hm.set_yticks(np.arange(len(VMI_REGION_ORDER)))
+        ax_hm.set_yticklabels(
+            [f"{r} (N={n})" for r, n in zip(VMI_REGION_ORDER, n_per_region)],
+            fontsize=7,
+        )
+        ax_hm.set_xlabel("best_cat", fontsize=9)
+        ax_hm.set_title("region × category", fontsize=10)
+        cb = fig.colorbar(im, ax=ax_hm, fraction=0.046, pad=0.04)
+        cb.ax.tick_params(labelsize=7)
+        cb.set_label("frac of region", fontsize=8)
+
+        fig.text(
+            0.5, 0.005,
+            f"{segmentation}  ·  good + somatic, consistent (sig + up) only  ·  "
+            f"consistency = $\\geq${k_min} sig-up sessions agree on best_cat"
+            f"{' AND >=50% majority' if require_majority else ''}",
+            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+        )
+
+        out_path = save_figure(
+            fig=fig,
+            stem=f"category_peak_distribution_{segmentation}",
+            viz_settings=self.visualizations_parameter_dict,
+            override_dir=out_dir,
+            override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
+
+    def make_category_selectivity_breadth_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            segmentation: str,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render the per-region joint distribution of consistent
+        units' tuning **breadth** (`n_sig_categories`, x) and
+        **selectivity** (`selectivity`, y) for one segmentation.
+        Layout is the standard 2×4 grid:
+
+          * Seven per-region scatters; dot per unit, x = median
+            `n_sig_categories` across sig-up sessions, y = median
+            `selectivity`, dot size scaled by median
+            `peak_signed_z` (firing strength).
+          * 8th panel — overlaid ECDFs of `selectivity` across
+            regions for direct cross-region comparison.
+
+        Lets you see at a glance whether a region's consistently
+        tuned units are narrowly specialised (`n_sig_categories=1`,
+        `selectivity` high) or broadly responsive
+        (`n_sig_categories` many, `selectivity` low).
+
+        Parameters
+        ----------
+        See `make_category_peak_distribution_figure` for the shared
+        consistency-rule parameters. Otherwise identical.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Absolute path to the written figure.
+        """
+
+        per_group = self._collect_consistent_category_self(
+            triage_pkl_path=triage_pkl_path,
+            segmentation=segmentation,
+            catalog_csv_path=catalog_csv_path,
+            k_min=k_min,
+            require_majority=require_majority,
+        )
+        region_colors = self._resolve_region_colors()
+        n_classes = USV_CATEGORY_N_CLASSES[segmentation]
+
+        # Marker-size mapping: linear in median peak_signed_z, clipped
+        # to a plotting-friendly range so very strong outliers don't
+        # dominate.
+        SIZE_MIN, SIZE_MAX = 8.0, 60.0
+        Z_LOW, Z_HIGH = 3.0, 20.0
+
+        def _z_to_size(zs: np.ndarray) -> np.ndarray:
+            """
+            Description
+            -----------
+            Map per-unit `median_peak_signed_z` values to scatter
+            marker sizes (points²). Linear in z, clipped to
+            `[Z_LOW, Z_HIGH]` so extreme outliers don't blow up the
+            dot range.
+
+            Parameters
+            ----------
+            zs (np.ndarray)
+                Per-unit median signed z values.
+
+            Returns
+            -------
+            sizes (np.ndarray)
+                Per-unit `s=` values.
+            """
+            clipped = np.clip(zs, Z_LOW, Z_HIGH)
+            frac = (clipped - Z_LOW) / (Z_HIGH - Z_LOW)
+            return SIZE_MIN + (SIZE_MAX - SIZE_MIN) * frac
+
+        fig = plt.figure(figsize=(14.0, 6.4), dpi=150)
+        gs = gridspec.GridSpec(
+            2, 4,
+            figure=fig,
+            hspace=0.40,
+            wspace=0.30,
+            left=0.06, right=0.985,
+            top=0.93, bottom=0.13,
+        )
+        panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
+
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+            ax = fig.add_subplot(gs[idx])
+            units = per_group[region]
+            region_color = region_colors[region]
+            if not units:
+                ax.set_title(f"{region}  (N=0)", fontsize=10)
+                ax.set_xticks([]); ax.set_yticks([])
+                continue
+            x = np.array([u["median_n_sig_categories"] for u in units])
+            y = np.array([u["median_selectivity"] for u in units])
+            z = np.array([u["median_peak_signed_z"] for u in units])
+            sizes = _z_to_size(z)
+            ax.scatter(
+                x, y, s=sizes, c=region_color, alpha=0.85,
+                edgecolors=COLOR_BLACK, linewidths=0.4, rasterized=True,
+            )
+            ax.set_xlim(-0.5, n_classes + 0.5)
+            ax.set_ylim(-0.05, 1.05)
+            ax.set_xticks(np.arange(0, n_classes + 1, max(1, n_classes // 5)))
+            ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+            ax.set_title(f"{region}  (N={len(units)})", fontsize=10)
+            ax.tick_params(labelsize=8)
+            if idx[0] == 1:
+                ax.set_xlabel(r"$n_\mathrm{sig\,categories}$ (median)", fontsize=9)
+            if idx[1] == 0:
+                ax.set_ylabel("selectivity (median)", fontsize=9)
+            if region == "PAG":
+                # In-axes size legend: 3 reference dots at z = 3, 10, 20.
+                z_ref = np.array([3.0, 10.0, 20.0])
+                s_ref = _z_to_size(z_ref)
+                x_dot = 0.86
+                y_top = 0.92
+                dy = 0.075
+                ax.text(
+                    x_dot, y_top + dy * 0.95,
+                    "med. $z$", fontsize=7, color=COLOR_BLACK,
+                    ha="center", va="center", transform=ax.transAxes,
+                )
+                for i_ref, (z_v, sz) in enumerate(zip(z_ref, s_ref)):
+                    ax.scatter(
+                        x_dot, y_top - dy * i_ref,
+                        s=sz, c=COLOR_BLACK, edgecolors="none",
+                        transform=ax.transAxes, clip_on=False, zorder=5,
+                    )
+                    ax.text(
+                        x_dot - 0.045, y_top - dy * i_ref,
+                        f"{z_v:g}", fontsize=7, color=COLOR_BLACK,
+                        ha="right", va="center", transform=ax.transAxes,
+                    )
+
+        ax_agg = fig.add_subplot(gs[1, 3])
+        for region in VMI_REGION_ORDER:
+            units = per_group[region]
+            if not units:
+                continue
+            sel = np.sort(np.array([u["median_selectivity"] for u in units]))
+            sel = sel[~np.isnan(sel)]
+            if sel.size < 2:
+                continue
+            ecdf_y = np.arange(1, sel.size + 1) / sel.size
+            ax_agg.plot(
+                sel, ecdf_y,
+                color=region_colors[region], linewidth=1.4,
+                label=f"{region} (N={sel.size})",
+            )
+        ax_agg.set_xlim(0.0, 1.05)
+        ax_agg.set_ylim(0.0, 1.02)
+        ax_agg.set_xlabel("selectivity (median)", fontsize=9)
+        ax_agg.set_ylabel("ECDF", fontsize=9)
+        ax_agg.set_title("selectivity across regions", fontsize=10)
+        ax_agg.tick_params(labelsize=8)
+        ax_agg.legend(fontsize=7, frameon=False, loc="lower right")
+
+        fig.text(
+            0.5, 0.005,
+            f"{segmentation}  ·  good + somatic, consistent (sig + up) only  ·  "
+            f"consistency = $\\geq${k_min} sig-up sessions agree on best_cat"
+            f"{' AND >=50% majority' if require_majority else ''}  ·  "
+            r"dot area $\propto$ median peak_signed_z",
+            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+        )
+
+        out_path = save_figure(
+            fig=fig,
+            stem=f"category_selectivity_breadth_{segmentation}",
+            viz_settings=self.visualizations_parameter_dict,
+            override_dir=out_dir,
+            override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
+
+    def make_all_category_figures(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> list[pathlib.Path]:
+        """
+        Description
+        -----------
+        Convenience wrapper that renders both category figures (peak
+        distribution + selectivity-breadth scatter) for every
+        segmentation in `USV_CATEGORY_SEGMENTATIONS`. Returns the
+        list of output paths in render order so the caller can log
+        and cross-reference them.
+
+        Parameters
+        ----------
+        See per-segmentation method docstrings; identical knobs.
+
+        Returns
+        -------
+        out_paths (list[pathlib.Path])
+            8 paths: 4 segmentations × 2 figures each.
+        """
+
+        out_paths: list[pathlib.Path] = []
+        for segmentation in USV_CATEGORY_SEGMENTATIONS:
+            out_paths.append(self.make_category_peak_distribution_figure(
+                triage_pkl_path=triage_pkl_path,
+                segmentation=segmentation,
+                catalog_csv_path=catalog_csv_path,
+                k_min=k_min,
+                require_majority=require_majority,
+                out_dir=out_dir,
+                fig_format=fig_format,
+            ))
+            out_paths.append(self.make_category_selectivity_breadth_figure(
+                triage_pkl_path=triage_pkl_path,
+                segmentation=segmentation,
+                catalog_csv_path=catalog_csv_path,
+                k_min=k_min,
+                require_majority=require_majority,
+                out_dir=out_dir,
+                fig_format=fig_format,
+            ))
+        return out_paths
 
     @contextlib.contextmanager
     def _open_save_target(
