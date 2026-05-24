@@ -68,8 +68,8 @@
   },
 
   "diagnostics": {
-    "collinearity_audit": true,
-    "timescale_audit": true,
+    "collinearity_audit": false,
+    "timescale_audit": false,
     "timescale_max_lag_seconds": 10.0,
     "timescale_n_shuffles": 1000,
     "timescale_shuffle_range": [20, 60],
