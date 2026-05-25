@@ -2270,8 +2270,15 @@ def plot_umap_with_category_thumbnails(
     draw_cluster_boundaries: bool = True,
     knn_boundary_neighbors: int = 15,
     knn_boundary_resolution: int = 200,
+    knn_boundary_density_min_count: float = 0.2,
+    knn_boundary_density_smoothing_sigma: float = 2.5,
     annotate_picks_on_scatter: bool = True,
     pick_number_fontsize: float = 11.0,
+    annotate_cluster_ids: bool = False,
+    cluster_id_fontsize: float = 12.0,
+    thumbnail_size_fraction: float = 0.5,
+    thumbnail_hspace: float = 0.02,
+    thumbnail_wspace: float = 0.05,
     fig_size: tuple[float, float] = (16.0, 12.0),
     fig_dpi: int = 300,
     output_path: str | None = None,
@@ -2338,6 +2345,42 @@ def plot_umap_with_category_thumbnails(
     category_colors (dict | None)
         Optional mapping ``{category_int: hex_color}``. If ``None``,
         uses ``tab10`` / ``tab20`` automatically.
+    annotate_picks_on_scatter (bool)
+        If ``True``, overlay the integer pick index (1..N) on each
+        sampled point in the main scatter so the row of spectrograms
+        can be cross-referenced with the dot it came from.
+    pick_number_fontsize (float)
+        Font size for the pick-index annotations on the scatter.
+    annotate_cluster_ids (bool)
+        If ``True``, draw the integer cluster ID at the (resolved)
+        center of each category on the main scatter. Centers are
+        taken from ``cluster_centers_xy`` /
+        ``cluster_centers_h5_path`` / ``cluster_centers_json_path``
+        when supplied (same priority chain as the spiral overlay);
+        otherwise the per-category mean of the displayed scatter
+        points is used as a fallback so the label still lands inside
+        its cluster.
+    cluster_id_fontsize (float)
+        Font size used for the cluster-ID labels when
+        ``annotate_cluster_ids`` is ``True``.
+    thumbnail_size_fraction (float)
+        Fraction of the right region's vertical extent occupied by
+        the per-category thumbnail rows. ``1.0`` keeps the previous
+        full-height behaviour; ``<1.0`` adds a bottom spacer row to
+        the right gridspec so each thumbnail row gets a shorter cell.
+        Combined with ``ax.set_box_aspect(1)`` on every thumbnail
+        axes (always on), this yields smaller square thumbnails:
+        when the cell becomes shorter than wide, the square clamps
+        to the cell height and leaves a thin horizontal pad on each
+        side. Must satisfy ``0 < thumbnail_size_fraction <= 1.0``.
+    thumbnail_hspace (float)
+        ``hspace`` for the right-side per-category x per-sample
+        gridspec (fraction of average cell height). Default is
+        ``0.02`` so adjacent category rows touch; raise it if you
+        want gaps between rows.
+    thumbnail_wspace (float)
+        ``wspace`` for the right-side gridspec (fraction of average
+        cell width). Default ``0.05``.
     fig_size, fig_dpi
         Matplotlib figure size and DPI.
     output_path, fig_format (str | None)
@@ -2505,6 +2548,8 @@ def plot_umap_with_category_thumbnails(
             x_lo=x_lo, x_hi=x_hi, y_lo=y_lo, y_hi=y_hi,
             n_neighbors=knn_boundary_neighbors,
             grid_resolution=knn_boundary_resolution,
+            density_smoothing_sigma=knn_boundary_density_smoothing_sigma,
+            density_min_count=knn_boundary_density_min_count,
         )
         if np.all(np.isnan(boundary_labels)):
             boundary_labels = None
@@ -2617,6 +2662,7 @@ def plot_umap_with_category_thumbnails(
             s=scatter_point_size,
             alpha=scatter_point_alpha,
             edgecolors="none",
+            rasterized=True,
         )
     _overlay_boundaries(ax_scatter, alpha=1.0, linewidth=2.5)
 
@@ -2657,6 +2703,39 @@ def plot_umap_with_category_thumbnails(
                     ha="center", va="center",
                     zorder=10,
                 )
+
+    # Overlay the integer cluster ID at the centre of each category
+    # so the scatter doubles as a legend. Centres come from the
+    # already-resolved ``cluster_centers_resolved`` map (caller-
+    # supplied xy / h5 / json, in that priority); when none was
+    # provided we fall back to the per-category mean of the points
+    # actually plotted on the scatter so the label still lands
+    # inside its cluster.
+    if annotate_cluster_ids:
+        if cluster_centers_resolved:
+            cluster_id_centres = {
+                int(cat_id): (float(cx), float(cy))
+                for cat_id, (cx, cy) in cluster_centers_resolved.items()
+                if int(cat_id) in set(int(c) for c in categories)
+            }
+        else:
+            cluster_id_centres = {}
+            for cat in categories:
+                cat_mask = cat_all == cat
+                if not np.any(cat_mask):
+                    continue
+                cluster_id_centres[int(cat)] = (
+                    float(np.mean(x_all[cat_mask])),
+                    float(np.mean(y_all[cat_mask])),
+                )
+        for cat_id, (cx, cy) in cluster_id_centres.items():
+            ax_scatter.text(
+                cx, cy, str(int(cat_id)),
+                fontsize=cluster_id_fontsize, fontweight="bold",
+                color="#000000",
+                ha="center", va="center",
+                zorder=20,
+            )
 
     # QLVM is a quantized latent variable model, not UMAP -- label
     # accordingly.
@@ -2709,6 +2788,7 @@ def plot_umap_with_category_thumbnails(
                 s=small_panel_marker_size,
                 alpha=scatter_point_alpha,
                 edgecolors="none",
+                rasterized=True,
             )
     ax_male.set_xlabel("male emitted", fontsize=10)
     ax_female.set_xlabel("female emitted", fontsize=10)
@@ -2741,6 +2821,7 @@ def plot_umap_with_category_thumbnails(
             s=small_panel_marker_size,
             alpha=scatter_point_alpha,
             edgecolors="none",
+            rasterized=True,
         )
         ax.set_xlabel(label_template.format(lo=lo, hi=hi), fontsize=10)
 
@@ -2772,9 +2853,32 @@ def plot_umap_with_category_thumbnails(
         # as living inside the same UMAP geometry.
         _overlay_boundaries(ax, alpha=1.0, linewidth=1.5)
 
-    inner = outer[0, 1].subgridspec(
-        n_categories, n_samples_per_category, wspace=0.05, hspace=0.18,
-    )
+    # Right-side per-category x per-sample grid. When
+    # ``thumbnail_size_fraction < 1`` an extra spacer row is added at
+    # the bottom of this subgridspec so the n_categories thumbnail
+    # rows collectively take only that fraction of the right region's
+    # vertical extent -- combined with ``set_box_aspect(1)`` below
+    # this shrinks each square thumbnail (cell height becomes the
+    # binding dim once the spacer eats enough vertical space).
+    if not (0.0 < thumbnail_size_fraction <= 1.0):
+        msg = (
+            f"thumbnail_size_fraction must be in (0, 1]; "
+            f"got {thumbnail_size_fraction!r}."
+        )
+        raise ValueError(msg)
+    if thumbnail_size_fraction < 1.0:
+        spacer_ratio = n_categories * (1.0 - thumbnail_size_fraction) / thumbnail_size_fraction
+        inner_height_ratios = [1.0] * n_categories + [spacer_ratio]
+        inner = outer[0, 1].subgridspec(
+            n_categories + 1, n_samples_per_category,
+            height_ratios=inner_height_ratios,
+            wspace=thumbnail_wspace, hspace=thumbnail_hspace,
+        )
+    else:
+        inner = outer[0, 1].subgridspec(
+            n_categories, n_samples_per_category,
+            wspace=thumbnail_wspace, hspace=thumbnail_hspace,
+        )
 
     row_axes_per_category: dict[int, list[plt.Axes]] = {cat: [] for cat in categories}
 
@@ -2786,6 +2890,12 @@ def plot_umap_with_category_thumbnails(
             if picks is None:
                 for col_idx in range(n_samples_per_category):
                     ax = fig.add_subplot(inner[row_idx, col_idx])
+                    # Force a 1:1 axes box: each thumbnail renders as a
+                    # square inside its grid cell (width is the binding
+                    # dim, so height shrinks to match -- about half the
+                    # default rectangle height) regardless of
+                    # `imshow(..., aspect='auto')` stretching the data.
+                    ax.set_box_aspect(1)
                     ax.set_xticks([])
                     ax.set_yticks([])
                     for sp in ax.spines.values():
@@ -2798,6 +2908,7 @@ def plot_umap_with_category_thumbnails(
             picks_rows = list(picks.iter_rows(named=True))
             for col_idx in range(n_samples_per_category):
                 ax = fig.add_subplot(inner[row_idx, col_idx])
+                ax.set_box_aspect(1)
                 row_axes_per_category[cat].append(ax)
                 if col_idx >= len(picks_rows):
                     ax.set_xticks([])
@@ -2881,7 +2992,7 @@ def plot_umap_with_category_thumbnails(
         if fig_format is not None:
             out_path = out_path.with_suffix(f".{fig_format.lstrip('.')}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_path)
+        fig.savefig(out_path, dpi=fig_dpi)
         message_output(f"Saved UMAP+thumbnails figure: {out_path}")
 
     return fig
