@@ -3501,10 +3501,19 @@ def multinomial_vocal_category_model_selection(
                     cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
                     if cand_data['classes'] is None:
                         cand_data['classes'] = model.classes_
-                except Exception:
-                    # Append placeholders to every sibling list so per-fold
-                    # lengths stay aligned across `metrics`, the fold-level
-                    # data arrays, and the optimizer-diagnostic flags.
+                except Exception as e:
+                    # Log the exception so the silent-failure mode that
+                    # used to bury per-fold JAX / scikit-learn errors
+                    # is no longer invisible. The placeholders below
+                    # still keep per-fold list lengths aligned so the
+                    # downstream aggregation logic does not need to
+                    # special-case missing folds.
+                    print(
+                        f"\n    [!] Fold {fold_idx + 1:02d}/{n_splits:02d} "
+                        f"failed on +{feat}: "
+                        f"{type(e).__name__}: {e}",
+                        flush=True,
+                    )
                     K = len(canonical_classes)
                     for _k, _v in cand_data['folds']['metrics'].items():
                         _v.append(np.nan)

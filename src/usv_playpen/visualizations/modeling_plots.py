@@ -41,6 +41,7 @@ the continuous acoustic UMAP manifold.
 import cmasher as cmr
 import json
 import math
+import warnings
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
@@ -57,7 +58,7 @@ import pickle
 import re
 import seaborn as sns
 from scipy.stats import gaussian_kde
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, roc_auc_score
 from sklearn.cluster import KMeans
 from typing import Optional
 import h5py
@@ -65,10 +66,12 @@ import polars as pls
 from tqdm import tqdm
 from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
+from scipy.ndimage import gaussian_filter1d
 
 from .auxiliary_plot_functions import create_colormap
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
+from ..os_utils import configure_path
 from ..plot_style import apply_plot_style
 
 
@@ -224,6 +227,12 @@ def plot_vocalization_embedding_space(
     None
         Displays the generated Matplotlib figure.
     """
+
+    umap_position_file_path = configure_path(str(umap_position_file_path))
+    cluster_category_file_path = configure_path(str(cluster_category_file_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
     if target_subdirs is None:
         target_subdirs = ["Liza/data", "Jinrun/Data", "Bartul/Data"]
 
@@ -601,6 +610,10 @@ def plot_feature_ranking(
         Directory to save the figure.
     """
 
+    results_file_loc = configure_path(str(results_file_loc))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
     if ignore_features is None:
         ignore_features = []
 
@@ -831,6 +844,10 @@ def plot_significant_filters(
         of `results_file_loc`.
     """
 
+    results_file_loc = configure_path(str(results_file_loc))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
     if ignore_features is None:
         ignore_features = []
 
@@ -996,6 +1013,10 @@ def plot_significant_filters_grid(
     None
         The function displays the plot and saves it to disk; it does not return objects.
     """
+
+    results_file_loc = configure_path(str(results_file_loc))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
 
     if ignore_features is None:
         ignore_features = []
@@ -1273,6 +1294,10 @@ def plot_raw_feature_difference(
         Displays the plots and optionally saves them to disk.
     """
 
+    pickle_file_path = configure_path(str(pickle_file_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
     print(f"Loading data from: {pickle_file_path}")
     with open(pickle_file_path, 'rb') as pickle_file:
         modeling_input_data = pickle.load(pickle_file)
@@ -1459,38 +1484,73 @@ def plot_model_selection_results(
         selection_results_path: str,
         metric_secondary: str = 'auc',
         save_plots: bool = False,
-        output_dir: str = None
+        output_dir: str = None,
+        feature_label_overrides: dict = None,
 ) -> None:
     """
-    Plots the trajectory of a Forward Sequential Feature Selection process and
-    visualizes the temporal filters of the final accepted model.
+    Plot a Forward Sequential Feature Selection result set and the
+    temporal filters of the final accepted model.
 
-    Visualizes the improvement in the Primary Metric (LL or Explained Deviance)
-    and a secondary metric (e.g., AUC) as features are added to the model step-by-step.
-    It also generates a grid plot showing the temporal filter shapes for ALL features
-    in the final model.
+    Two figures are produced:
+
+    1. A two-panel summary figure.
+
+       * **Left panel** -- per-step horizontal bars showing the
+         cumulative trajectory of the primary metric (Negative Log-
+         Likelihood) one row per accepted step, top-to-bottom in
+         selection order. Each bar is split into a lighter base
+         (the previous cumulative NLL) and a darker tip (THIS step's
+         NLL reduction). Bars are coloured by the same
+         self / other / dyadic palette used in the filter grid. A
+         rejected final step, if any, is drawn below a thin
+         separator in desaturated grey.
+       * **Right panel** -- three vertical bars on a balanced-
+         classification axis (chance = 0.5):
+         best univariate single-feature model, final accepted
+         multivariate model, and final + rejected (drawn grey).
+         The features composing each model are listed above the
+         corresponding bar.
+
+    2. A grid of per-feature partial-dependence (filter) plots for
+       the final accepted model, one panel per feature, plotting
+       mean +/- SEM across CV folds.
 
     Parameters
     ----------
     selection_results_path : str
-        Path to the consolidated ``selection_*.pkl`` artifact produced by
-        ``consolidate_model_selection_results``. May be either the file
-        itself or a directory containing one (the latest by mtime wins
-        when multiple are present). The legacy per-step layout is no
-        longer supported by the loader.
+        Path to the consolidated ``selection_*.pkl`` artifact produced
+        by ``consolidate_model_selection_results``. May be either the
+        file itself or a directory containing one (the latest by mtime
+        wins when multiple are present). The legacy per-step layout is
+        no longer supported by the loader.
     metric_secondary : str, default 'auc'
-        The key for the secondary metric to plot in the right subplot.
+        The key for the secondary metric to plot in the right panel of
+        the summary figure (typical values: ``'auc'``, ``'score'``,
+        ``'f1'``).
     save_plots : bool, default False
-        Whether to save the plot to disk.
+        Whether to save the figures to disk.
     output_dir : str, optional
-        Directory to save the plot. Defaults to the parent dir of
+        Directory to save the plots. Defaults to the parent dir of
         ``selection_results_path`` (or to the path itself if a
         directory was supplied).
+    feature_label_overrides : dict, optional
+        Mapping from raw feature names (as stored in the pickle) to
+        presentation-friendly labels used for every y-tick / annotation
+        in the summary figure. Features not present in the map are
+        rendered with their raw name. The filter grid keeps the raw
+        feature names so it can be cross-referenced with the pickle.
     """
 
     BG_COLOR = '#FFFFFF'
-    COLOR_PRIM_DOT = "#000000"
-    COLOR_SEC_DOT = MEAN_LINE_COLOR
+
+    # Route input + output paths through ``configure_path`` so the
+    # caller can hand in any of the equivalent SMB-mount conventions
+    # (``/mnt/falkner/...`` on Linux, ``/Volumes/falkner/...`` on
+    # macOS, ``F:\...`` on Windows) and have it resolved for the
+    # current OS without per-machine edits to the notebook.
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
 
     # Load steps via the metadata-aware helper: prefers a consolidated
     # `selection_*.pkl` artifact in the directory, falls back to legacy
@@ -1584,62 +1644,342 @@ def plot_model_selection_results(
         print("No valid step data extracted.")
         return
 
-    # --- 3. Plot Trajectories ---
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(8, 3.5), dpi=300, constrained_layout=True)
-    fig.patch.set_facecolor(BG_COLOR)
+    # --- 3. Summary figure: NLL trajectory (left) + score bars (right) ---
+    # Left panel: horizontal bars per accepted step, growing LEFTWARD
+    # from the chance NLL baseline (right side of the axis) toward 0
+    # as features are added. Light base = previous cumulative NLL,
+    # dark tip = THIS step's NLL reduction. Coloured by self / other
+    # / dyadic palette. Optional rejected last step rendered grey
+    # below a small visual gap.
+    #
+    # Right panel: three vertical bars on the secondary-metric axis
+    # (e.g., balanced accuracy) with a 0.5 floor:
+    #   * best univariate (best secondary-metric mean across step 0
+    #     candidates);
+    #   * final accepted multivariate model;
+    #   * final + the rejected step's best secondary-metric candidate,
+    #     drawn grey.
+    # Above each bar, a vertical stack of constituent features
+    # (renamed via ``feature_label_overrides``) makes the composition
+    # of each model self-explanatory without needing a legend.
 
-    step_indices = [d['step_idx'] for d in steps_data]
+    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
+                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                       "allo_pitch-nose", "nose-allo_pitch",
+                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
-    # Plot Primary
-    ax_prim = axes[0]
-    ax_prim.set_facecolor(BG_COLOR)
-    prim_means = [d['prim_mean'] for d in steps_data]
-    ax_prim.plot(step_indices, prim_means, color=TEXT_COLOR, alpha=0.6, lw=1.5, zorder=1)
+    def _category_color(fname: str) -> str:
+        """Return the self / other / dyadic hex colour for a feature."""
+        if any(x in fname for x in dyadic_keywords):
+            return DYADIC_COLOR
+        if '-sei' in fname:
+            # SEI signals are target-attending-to-predictor; target is
+            # "self" -> self_color.
+            return self_color
+        if 'self' in fname:
+            return self_color
+        return other_color
 
-    for i, d in enumerate(steps_data):
-        x = d['step_idx']
-        y_vals = d['prim_scores']
-        ax_prim.scatter([x] * len(y_vals), y_vals, color=COLOR_PRIM_DOT, s=10, alpha=0.6, zorder=2, edgecolors='none')
+    def _lighten(hex_color: str, factor: float = 0.65) -> str:
+        """
+        Linearly interpolate a hex colour toward white.
 
-        y_max, y_min = np.max(y_vals), np.min(y_vals)
-        text_y = y_max + ((y_max - y_min) * 0.1 if (y_max - y_min) > 0 else 0.005)
-        label_text = d['feature_name'] if i == 0 else f"+{d['feature_name']}"
-        ha_align = 'left' if i == 0 else 'center'
-        ax_prim.text(x, text_y, label_text, fontsize=6, ha=ha_align, va='bottom', color=TEXT_COLOR)
+        Parameters
+        ----------
+        hex_color : str
+            ``#RRGGBB`` source colour.
+        factor : float
+            0.0 returns the source colour unchanged; 1.0 returns
+            white. Used to derive the "previous cumulative" shade
+            from a feature's category colour.
+        """
 
-    ax_prim.set_title(f'Model Fit ({metric_label})', fontsize=10, color=TEXT_COLOR)
-    ax_prim.set_ylabel(metric_label, fontsize=9, color=TEXT_COLOR)
-    ax_prim.set_xlabel('Model Step', fontsize=9, color=TEXT_COLOR)
+        h = hex_color.lstrip('#')
+        r = int(h[0:2], 16)
+        g = int(h[2:4], 16)
+        b = int(h[4:6], 16)
+        r = int(round(r + (255 - r) * factor))
+        g = int(round(g + (255 - g) * factor))
+        b = int(round(b + (255 - b) * factor))
+        return f"#{r:02x}{g:02x}{b:02x}"
 
-    ax_sec = axes[1]
-    ax_sec.set_facecolor(BG_COLOR)
-    sec_means = [d['sec_mean'] for d in steps_data]
-    ax_sec.plot(step_indices, sec_means, color=MEAN_LINE_COLOR, alpha=0.6, lw=1.5, zorder=1)
+    label_map = feature_label_overrides if feature_label_overrides is not None else {}
 
-    for i, d in enumerate(steps_data):
-        x = d['step_idx']
-        y_vals = d['sec_scores']
-        ax_sec.scatter([x] * len(y_vals), y_vals, color=COLOR_SEC_DOT, s=10, alpha=0.4, zorder=2, edgecolors='none')
-        y_max, y_min = np.max(y_vals), np.min(y_vals)
-        text_y = y_max + ((y_max - y_min) * 0.1 if (y_max - y_min) > 0 else 0.005)
-        label_text = d['feature_name'] if i == 0 else f"+{d['feature_name']}"
-        ha_align = 'left' if i == 0 else 'center'
-        ax_sec.text(x, text_y, label_text, fontsize=6, ha=ha_align, va='bottom', color=TEXT_COLOR)
+    def _pretty(fname: str) -> str:
+        """Return the override label if present, else the raw name."""
+        if fname in label_map:
+            return label_map[fname]
+        return fname
 
-    ax_sec.set_title(f'Performance ({metric_secondary.upper()})', fontsize=10, color=TEXT_COLOR)
-    ax_sec.set_ylabel(metric_secondary.upper(), fontsize=9, color=TEXT_COLOR)
-    ax_sec.set_xlabel('Model Step', fontsize=9, color=TEXT_COLOR)
+    # ----- Left-panel data: NLL trajectory -----
+    # The selector's primary metric is NLL (minimization). The chance
+    # baseline is the null-model NLL stored in step 0's
+    # ``baseline_score``; for a balanced binary classifier that is
+    # ln(2) per sample. Fall back to ln(2) if the field is missing.
+    if 'baseline_score' in selection_steps[0]:
+        chance_nll = float(selection_steps[0]['baseline_score'])
+    else:
+        chance_nll = float(np.log(2.0))
+    cum_nlls = [float(d['prim_mean']) for d in steps_data]
 
-    for ax in axes:
-        ax.set_xticks(step_indices)
-        ax.set_xticklabels([f"Step {i}" for i in step_indices], fontsize=8, color=TEXT_COLOR)
-        ax.grid(axis='y', linestyle='--', alpha=0.3, color=NEUTRAL_COLOR)
-        ax.tick_params(axis='both', colors=TEXT_COLOR, labelsize=8)
-        for spine in ax.spines.values(): spine.set_edgecolor(TEXT_COLOR)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        y_l, y_h = ax.get_ylim()
-        ax.set_ylim(y_l - (y_h - y_l) * 0.1, y_h + (y_h - y_l) * 0.1)
+    # ----- Right-panel data: secondary-metric bars -----
+    chance_secondary = 0.5
+    first_step = valid_steps_for_plot[0]
+    if 'candidates_summary' in first_step:
+        first_cands_all = first_step['candidates_summary']
+    elif 'candidates' in first_step:
+        first_cands_all = first_step['candidates']
+    else:
+        first_cands_all = {}
+    best_univariate_value = np.nan
+    best_univariate_feat = None
+    for _f, _m in first_cands_all.items():
+        if metric_secondary not in _m:
+            continue
+        _v = np.array(_m[metric_secondary], dtype=float)
+        _v = _v[~np.isnan(_v)]
+        if _v.size == 0:
+            continue
+        _mu = float(np.mean(_v))
+        if np.isnan(best_univariate_value) or _mu > best_univariate_value:
+            best_univariate_value = _mu
+            best_univariate_feat = _f
+
+    final_score = float(steps_data[-1]['sec_mean'])
+
+    # Rejected-final-step lookup (by secondary metric, so the rejected
+    # bar in the right panel and the rejected row in the left panel
+    # refer to the same candidate). We also pull the same candidate's
+    # mean NLL so the left-panel row has a real value to plot.
+    rejection_row = None
+    if len(selection_steps) > len(valid_steps_for_plot):
+        rej_step = selection_steps[-1]
+        if 'candidates_summary' in rej_step:
+            rej_cands = rej_step['candidates_summary']
+        elif 'candidates' in rej_step:
+            rej_cands = rej_step['candidates']
+        else:
+            rej_cands = {}
+        if rej_cands:
+            best_rej_feat = None
+            best_rej_mean = -np.inf
+            for _f, _m in rej_cands.items():
+                if metric_secondary not in _m:
+                    continue
+                _v = np.array(_m[metric_secondary], dtype=float)
+                _v = _v[~np.isnan(_v)]
+                if _v.size == 0:
+                    continue
+                _mu = float(np.mean(_v))
+                if _mu > best_rej_mean:
+                    best_rej_mean = _mu
+                    best_rej_feat = _f
+            if best_rej_feat is not None:
+                _ll_v = np.array(
+                    rej_cands[best_rej_feat]['ll'], dtype=float
+                )
+                _ll_v = _ll_v[~np.isnan(_ll_v)]
+                rej_ll_mean = float(np.mean(_ll_v)) if _ll_v.size > 0 else float('nan')
+                rejection_row = {
+                    'feature_name': best_rej_feat,
+                    'score_mean': best_rej_mean,
+                    'll_mean': rej_ll_mean,
+                }
+
+    # ----- Figure layout -----
+    n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
+    fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
+    fig_traj, (ax_traj, ax_bars) = plt.subplots(
+        nrows=1, ncols=2,
+        figsize=(10.5, fig_height), dpi=300,
+        gridspec_kw={'width_ratios': [2.2, 1.0]},
+    )
+    fig_traj.patch.set_facecolor(BG_COLOR)
+    ax_traj.set_facecolor(BG_COLOR)
+    ax_bars.set_facecolor(BG_COLOR)
+
+    # ----- Left panel: NLL trajectory bars (grow leftward) -----
+    bar_height = 0.88
+    y_positions = list(range(len(steps_data)))
+    rej_y = len(steps_data) + 0.4 if rejection_row is not None else None
+
+    for row_idx, d in enumerate(steps_data):
+        y = y_positions[row_idx]
+        base_color = _category_color(d['feature_name'])
+        light_color = _lighten(base_color, factor=0.65)
+        prev_nll = cum_nlls[row_idx - 1] if row_idx > 0 else chance_nll
+        cur_nll = cum_nlls[row_idx]
+        delta = prev_nll - cur_nll  # positive NLL reduction
+
+        # Light segment: from prev_nll RIGHTWARD to chance_nll
+        # (represents the cumulative improvement BEFORE this feature).
+        if chance_nll > prev_nll:
+            ax_traj.barh(y, chance_nll - prev_nll, left=prev_nll,
+                         height=bar_height, color=light_color,
+                         edgecolor='none')
+        # Dark tip: from cur_nll RIGHTWARD to prev_nll (THIS step's
+        # contribution; further leftward extension of the bar).
+        if prev_nll > cur_nll:
+            ax_traj.barh(y, prev_nll - cur_nll, left=cur_nll,
+                         height=bar_height, color=base_color,
+                         edgecolor='none')
+
+        ax_traj.text(cur_nll - 0.003, y,
+                     f"{cur_nll:.3f}  (Δ -{delta:.3f})",
+                     ha='left', va='center', fontsize=7,
+                     color=TEXT_COLOR)
+
+    if rejection_row is not None and not np.isnan(rejection_row['ll_mean']):
+        rejected_light = '#D7D7D7'
+        rejected_dark = '#9A9A9A'
+        prev_nll = cum_nlls[-1]
+        cur_nll = rejection_row['ll_mean']
+        if chance_nll > prev_nll:
+            ax_traj.barh(rej_y, chance_nll - prev_nll, left=prev_nll,
+                         height=bar_height, color=rejected_light,
+                         edgecolor='none')
+        if prev_nll > cur_nll:
+            ax_traj.barh(rej_y, prev_nll - cur_nll, left=cur_nll,
+                         height=bar_height, color=rejected_dark,
+                         edgecolor='none')
+        ax_traj.text(cur_nll - 0.003, rej_y,
+                     f"{cur_nll:.3f}  (Δ -{prev_nll - cur_nll:.3f}, ns)",
+                     ha='left', va='center', fontsize=7,
+                     color=NEUTRAL_COLOR, style='italic')
+
+    ytick_positions = list(y_positions)
+    ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+    if rejection_row is not None:
+        ytick_positions.append(rej_y)
+        ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
+    ax_traj.set_yticks(ytick_positions)
+    ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
+    # Drop the y-axis tick MARKS (the small lines) while keeping the
+    # feature-name labels — cleaner look for a categorical axis.
+    ax_traj.tick_params(axis='y', length=0)
+    ax_traj.invert_yaxis()
+
+    if rejection_row is not None:
+        sep_y = (len(steps_data) - 1) + 0.5 + 0.10
+        ax_traj.axhline(sep_y, color=NEUTRAL_COLOR, linestyle='-',
+                        lw=0.4, alpha=0.5, zorder=0)
+
+    all_left_edges = list(cum_nlls)
+    if rejection_row is not None and not np.isnan(rejection_row['ll_mean']):
+        all_left_edges.append(rejection_row['ll_mean'])
+    nll_span = chance_nll - min(all_left_edges)
+    x_left = min(all_left_edges) - 0.30 * nll_span
+    x_right = chance_nll + 0.015
+    ax_traj.set_xlim(x_left, x_right)
+    # Invert the x-axis so chance NLL is on the LEFT (start) and lower
+    # (better) NLL is on the RIGHT (end). Matches the right panel's
+    # "further from chance = better" reading direction; the cost is
+    # numeric x-tick labels decreasing left-to-right, which is the
+    # expected convention for a "lower is better" metric.
+    ax_traj.invert_xaxis()
+    ax_traj.set_xlabel("Negative log-likelihood (held-out data)",
+                       fontsize=9, color=TEXT_COLOR)
+    ax_traj.spines['top'].set_visible(False)
+    ax_traj.spines['right'].set_visible(False)
+    ax_traj.tick_params(axis='both', colors=TEXT_COLOR, labelsize=8)
+    for spine in ax_traj.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+
+    # ----- Right panel: 3 vertical bars on the held-out accuracy axis ---
+    # Bar 1 (best univariate) is a single solid bar in that feature's
+    # category colour. Bars 2 and 3 are stacked: each segment is the
+    # marginal accuracy contribution of an accepted feature, coloured
+    # by the same self / other / dyadic palette as the trajectory and
+    # the filter grid. Bar 3 has the rejected step's best secondary-
+    # metric candidate stacked grey on top. Note that per-step marginal
+    # accuracy is not guaranteed monotonic (the selector optimises
+    # NLL, not accuracy), so a small negative segment is possible and
+    # is rendered honestly as a thin downward step.
+    bar_width = 0.6
+    bar_x_positions = [0, 1]
+    bar_group_labels = ['best univariate', 'final model']
+
+    cum_scores = [float(d['sec_mean']) for d in steps_data]
+    score_marginals = []
+    _prev_score = chance_secondary
+    for _v in cum_scores:
+        score_marginals.append(_v - _prev_score)
+        _prev_score = _v
+
+    # Bar 1: best univariate (single solid bar).
+    bar1_color = (_category_color(best_univariate_feat)
+                  if best_univariate_feat is not None else NEUTRAL_COLOR)
+    ax_bars.bar(0, best_univariate_value - chance_secondary,
+                bottom=chance_secondary, width=bar_width,
+                color=bar1_color, edgecolor='none')
+
+    # Bar 2: stacked accepted features.
+    _bottom = chance_secondary
+    for d, marginal in zip(steps_data, score_marginals):
+        seg_color = _category_color(d['feature_name'])
+        ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
+                    color=seg_color, edgecolor='none')
+        _bottom += marginal
+
+    # Y-axis: 0.5 floor; visible labels up to 0.95; ceiling extended
+    # if necessary to give room for the feature-label stack above the
+    # tallest bar.
+    bar_tops = [best_univariate_value, final_score]
+    y_data_max = max(bar_tops)
+    label_line_spacing = 0.018
+    label_y_start_offset = 0.010
+    label_fontsize = 8
+    max_label_lines = len(steps_data)
+    label_stack_top = (y_data_max + label_y_start_offset
+                       + (max_label_lines + 1) * label_line_spacing)
+    y_top = max(0.97, label_stack_top)
+    ax_bars.set_ylim(chance_secondary, y_top)
+    visible_ticks = np.arange(0.5, 0.951, 0.05)
+    ax_bars.set_yticks(visible_ticks)
+    ax_bars.set_yticklabels([f"{t:.2f}" for t in visible_ticks],
+                            fontsize=8, color=TEXT_COLOR)
+
+    ax_bars.set_xticks(bar_x_positions)
+    ax_bars.set_xticklabels(bar_group_labels, fontsize=7, color=TEXT_COLOR)
+    ax_bars.set_xlim(-0.6, len(bar_group_labels) - 0.4)
+    ax_bars.set_ylabel("Accuracy (held-out data)",
+                       fontsize=9, color=TEXT_COLOR)
+
+    final_feat_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+
+    # Bar 1 label stack: just the best-univariate feature name.
+    if best_univariate_feat is not None:
+        ax_bars.text(0, best_univariate_value + label_y_start_offset,
+                     _pretty(best_univariate_feat),
+                     ha='center', va='bottom',
+                     fontsize=label_fontsize, color=TEXT_COLOR)
+
+    # Bar 2 label stack: all accepted features in selection order
+    # (bottom of stack -> first added, top -> last added).
+    for j, lab in enumerate(final_feat_labels):
+        ax_bars.text(1, final_score + label_y_start_offset + j * label_line_spacing,
+                     lab, ha='center', va='bottom',
+                     fontsize=label_fontsize, color=TEXT_COLOR)
+
+    ax_bars.spines['top'].set_visible(False)
+    ax_bars.spines['right'].set_visible(False)
+    ax_bars.tick_params(axis='both', colors=TEXT_COLOR, labelsize=8)
+    for spine in ax_bars.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+
+    fig_traj.subplots_adjust(left=0.18, right=0.97, top=0.95,
+                             bottom=0.12, wspace=0.12)
+
+    if save_plots:
+        if output_dir is None:
+            _fallback = pathlib.Path(selection_results_path)
+            _out_dir = _fallback.parent if _fallback.is_file() else _fallback
+        else:
+            _out_dir = pathlib.Path(output_dir)
+        out_traj = _out_dir / "model_selection_trajectory.svg"
+        fig_traj.savefig(out_traj, bbox_inches='tight', dpi=300,
+                         facecolor=BG_COLOR, transparent=False)
+        print(f"Saved trajectory figure to: {out_traj}")
 
     plt.show()
 
@@ -1716,9 +2056,15 @@ def plot_model_selection_results(
 
                     if not np.all(np.isnan(feat_matrix)):
                         mean_filter = np.nanmean(feat_matrix, axis=0)
-                        # Percentiles: 0.5 and 99.0
-                        p_low = np.nanpercentile(feat_matrix, q=0.5, axis=0)
-                        p_high = np.nanpercentile(feat_matrix, q=99.0, axis=0)
+                        # Per-timepoint mean +/- SEM across CV folds.
+                        # SEM = sample-std / sqrt(n_valid_folds);
+                        # nan folds (failed fits) are excluded from
+                        # both the count and the moments.
+                        n_valid = np.sum(~np.isnan(feat_matrix), axis=0)
+                        fold_std = np.nanstd(feat_matrix, axis=0, ddof=1)
+                        fold_sem = fold_std / np.sqrt(np.maximum(n_valid, 1))
+                        p_low = mean_filter - fold_sem
+                        p_high = mean_filter + fold_sem
 
             else:
                 # 2. Legacy/Single Fit
@@ -1752,10 +2098,10 @@ def plot_model_selection_results(
                 ax.set_xticks(tick_positions)
                 ax.set_xticklabels(tick_labels, fontsize=7, color=TEXT_COLOR)
                 ax.set_xlabel("Time relative to bout onset (s)", fontsize=8, color=TEXT_COLOR)
-                ax.set_ylabel("Filter amplitude (a.u.)", fontsize=8, color=TEXT_COLOR)
+                ax.set_ylabel("Partial dependence (ΔP)", fontsize=8, color=TEXT_COLOR)
 
                 ax.axhline(0, color=NEUTRAL_COLOR, ls='--', lw=0.5, zorder=0)
-                ax.set_title(feature, fontsize=9, color=TEXT_COLOR)
+                ax.set_title(_pretty(feature), fontsize=9, color=TEXT_COLOR)
                 ax.tick_params(axis='both', colors=TEXT_COLOR, labelsize=7)
                 for spine in ax.spines.values():
                     spine.set_edgecolor(TEXT_COLOR)
@@ -1846,6 +2192,10 @@ def plot_univariate_multinomial_performance(
         Target directory for saved plots. Defaults to the same directory as the
         results file if None.
     """
+
+    results_file_loc = configure_path(str(results_file_loc))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
 
     # Local override: MEAN_LINE_COLOR differs from the module-level default
     # ('#DCB400') because the ranking plot reads better with a neutral grey.
@@ -2105,6 +2455,10 @@ def plot_univariate_multinomial_filters_grid(
         Target directory for saved plots.
     """
 
+    results_file_loc = configure_path(str(results_file_loc))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
     results_path = pathlib.Path(results_file_loc)
     with open(results_path, 'rb') as f:
         modeling_data = pickle.load(f)
@@ -2252,188 +2606,475 @@ def plot_univariate_multinomial_filters_grid(
 def plot_multinomial_selection_trajectory(
         selection_results_path: str,
         metric_primary: str = 'auc',
-        primary_metric_name: str = "Area Under ROC",
+        primary_metric_name: str = "Area Under the ROC Curve",
         metric_secondary: str = 'score',
         secondary_metric_name: str = "Balanced Accuracy",
         save_plot: bool = False,
-        output_dir: str = None
+        output_dir: str = None,
+        feature_label_overrides: dict = None,
 ) -> None:
     """
-    Visualizes the stepwise progression and convergence of the forward
-    feature selection process for multinomial USV category prediction.
+    Plot the multinomial forward-selection trajectory as a compact
+    two-panel summary, mirroring the design of
+    ``plot_model_selection_results`` (the binary bout-onset analogue).
 
-    This function parses the sequential '.pkl' output files generated during
-    multivariate modeling to reconstruct the "search path" of the greedy
-    algorithm. It provides a dual-panel diagnostic view to evaluate whether
-    the inclusion of additional behavioral features provided statistically
-    significant improvements in vocal category classification.
+    Layout
+    ------
+    * **Left panel** -- one horizontal bar per accepted step, top-to-
+      bottom in selection order. Each bar is split into a lighter
+      base (the previous cumulative value of ``metric_primary``) and
+      a darker tip (THIS step's marginal contribution). Bars are
+      coloured by the same self / other / dyadic palette used in the
+      filter grid. A rejected final step, if any, is drawn below a
+      thin separator in grey. For maximisation metrics (AUC, score,
+      etc.) bars grow rightward from the chance baseline on the left;
+      for minimisation metrics (log-loss, brier) the x-axis is
+      inverted and bars grow rightward from chance on the right.
+    * **Right panel** -- two vertical bars on the secondary-metric
+      axis: best univariate (single solid bar in the winning
+      feature's category colour) and final accepted model (stacked
+      bar, one segment per accepted feature, segment height = that
+      feature's marginal contribution to the secondary metric).
+      Feature labels stack above each bar. The y-axis floor is the
+      chance baseline computed for the number of USV categories in
+      the pickle (``1 / K`` for balanced accuracy / recall, ``0.5``
+      for macro-AUC).
 
-    Panel 1: Selection Criterion (Area Under ROC)
-    -------------------------------------------
-    Displays the Area Under the Receiver Operating Characteristic (AUC) across steps.
-    This panel tracks the primary metric used to rank and select features during
-    the forward sweep. The plot includes:
-    * Fold-level variance: Individual cross-validation folds are plotted as
-      jittered points to reveal performance stability across session splits.
-    * 1-Standard Error (1SE) Rule: Error bars represent the SE across folds.
-      Forward selection logic aims to find the simplest model that performs
-      within 1SE of the numerical maximum to prevent over-parameterization.
-    * Feature Annotations: Each step is labeled with the specific feature
-      incorporated into the model (e.g., "+ self.usv_cat_5"), visualizing
-      the incremental information gain.
-    * Chance Baseline: A red dashed line at 0.5 marks the performance of
-      a random classifier (Step 0).
-
-    Panel 2: Biological Performance (Secondary Metric)
-    -------------------------------------------------
-    Displays an auxiliary metric, defined by secondary_metric_name (typically
-    Balanced Accuracy). This panel demonstrates how the model's categorical
-    recall—its ability to correctly identify specific USV types—improves
-    as multivariate behavioral context is added.
+    Robustness
+    ----------
+    All per-fold means use ``np.nanmean`` so the silent NaN-fold
+    failure mode in the multinomial selector (now patched at the
+    source, but still present in pre-existing pickles) does not
+    poison the trajectory.
 
     Parameters
     ----------
     selection_results_path : str
-        Path to the consolidated ``selection_*.pkl`` artifact produced
-        by ``consolidate_model_selection_results``. May be either the
-        file itself or a directory containing one (the latest by
-        mtime wins when multiple are present). The legacy per-step
-        layout is no longer supported.
-    metric_primary : str, default='auc'
-        The key for the primary performance metric used for selection.
-    primary_metric_name : str, default="Area Under ROC"
-        The human-readable label for the Y-axis of the primary metric plot.
-    metric_secondary : str, default='score'
-        The key for the secondary performance metric to be plotted.
-    secondary_metric_name : str, default="Balanced Accuracy"
-        The human-readable label for the Y-axis of the secondary metric plot.
-    save_plot : bool, default=False
-        If True, saves the figure to the specified output directory.
+        Path to the consolidated ``selection_*.pkl`` artifact
+        produced by ``consolidate_model_selection_results``. May be
+        either the file itself or a directory containing one
+        (latest mtime wins).
+    metric_primary : str, default ``'auc'``
+        Key for the primary per-fold metric. Used for the left-panel
+        trajectory.
+    primary_metric_name : str, default ``'Area Under the ROC Curve'``
+        Display name for ``metric_primary``; used as the left-panel
+        x-axis label (with `` (held-out data)`` appended).
+    metric_secondary : str, default ``'score'``
+        Key for the secondary per-fold metric. Used for the right-
+        panel bars.
+    secondary_metric_name : str, default ``'Balanced Accuracy'``
+        Display name for ``metric_secondary``; used as the right-
+        panel y-axis label (with `` (held-out data)`` appended).
+    save_plot : bool, default False
+        Whether to save the figure to disk.
     output_dir : str, optional
-        The directory where the plot will be saved. Defaults to the
-        parent dir of ``selection_results_path`` (or to the path
-        itself if a directory was supplied).
-
-    Returns
-    -------
-    None
-        Displays the generated Matplotlib figure.
+        Directory to save the plot. Defaults to the parent dir of
+        ``selection_results_path`` (or to the path itself if a
+        directory was supplied).
+    feature_label_overrides : dict, optional
+        Mapping from raw feature names (as stored in the pickle) to
+        presentation-friendly labels used for every annotation. Raw
+        names not in the map render unchanged.
     """
 
-    # 1. Local visibility overrides — scoped below so we don't leak into
-    #    any plot rendered after this function returns.
-    TEXT_COLOR = '#202020'
-    _rcp_override = {
-        'axes.titlesize': 14,
-        'axes.labelsize': 12,
-        'xtick.labelsize': 11,
-        'ytick.labelsize': 11,
-        'axes.edgecolor': TEXT_COLOR,
-        'axes.labelcolor': TEXT_COLOR,
-        'xtick.color': TEXT_COLOR,
-        'ytick.color': TEXT_COLOR,
-        'text.color': TEXT_COLOR
-    }
-    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
-    plt.rcParams.update(_rcp_override)
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
 
-    selection_steps, _, _ = load_selection_results(selection_results_path)
+    BG_COLOR = '#FFFFFF'
+
+    selection_steps, display_name, _ = load_selection_results(selection_results_path)
 
     if not selection_steps:
         print(f"No multinomial step data found in {selection_results_path}")
         return
 
+    # Sex-aware self/other palette inferred from the filename, matching
+    # the binary selector's convention.
+    if '_male_' in display_name:
+        self_col, other_col = male_color, female_color
+    elif '_female_' in display_name:
+        self_col, other_col = female_color, male_color
+    else:
+        self_col, other_col = male_color, female_color
+
+    lower_is_better = {'ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse', 'brier'}
+    is_minimization = metric_primary in lower_is_better
+
+    # Number of USV categories in this run -- pulled from any candidate
+    # that has a stored ``classes`` array. Drives the secondary-metric
+    # chance baseline (1/K for balanced accuracy etc.).
+    n_classes = None
+    for _s in selection_steps:
+        _cs = _s.get('candidates_summary') or {}
+        for _c in _cs.values():
+            _cl = _c.get('classes') if isinstance(_c, dict) else None
+            if _cl is not None and len(_cl) > 0:
+                n_classes = len(_cl)
+                break
+        if n_classes is not None:
+            break
+    if n_classes is None or n_classes < 2:
+        n_classes = 2
+
+    # Chance baselines.
+    rate_metrics = {'score', 'recall', 'accuracy', 'f1', 'mcc'}
+    if metric_primary == 'auc':
+        chance_primary = 0.5
+    elif metric_primary in rate_metrics:
+        chance_primary = 1.0 / n_classes
+    elif metric_primary in {'ll', 'log_loss', 'nll'}:
+        chance_primary = float(np.log(n_classes))
+    else:
+        chance_primary = 0.0
+
+    if metric_secondary == 'auc':
+        chance_secondary = 0.5
+    elif metric_secondary in rate_metrics:
+        chance_secondary = 1.0 / n_classes
+    elif metric_secondary in {'ll', 'log_loss', 'nll'}:
+        chance_secondary = float(np.log(n_classes))
+    else:
+        chance_secondary = 0.0
+
+    # Accepted steps = those with a real selected_feature that is not
+    # the multinomial selector's null baseline marker. Order preserved.
+    accepted_steps = [
+        s for s in selection_steps
+        if s.get('selected_feature') not in (None, 'null_model_free')
+    ]
+    if not accepted_steps:
+        print(f"No accepted feature steps in {selection_results_path}")
+        return
+
+    def _fold_mean(folds_metrics: dict, key: str) -> float:
+        if key not in folds_metrics:
+            return float('nan')
+        arr = np.array(folds_metrics[key], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        return float(np.mean(arr)) if arr.size else float('nan')
+
     steps_data = []
-    for data in selection_steps:
-        if data.get('selected_feature') is None: continue
-
-        winner = data['selected_feature']
-        winner_data = data['candidates_summary'][winner]
-
-        pri_vals = np.array(winner_data['folds']['metrics'][metric_primary])
-        pri_vals = pri_vals[~np.isnan(pri_vals)]
-        sec_vals = np.array(winner_data['folds']['metrics'].get(metric_secondary, [np.nan]))
-        sec_vals = sec_vals[~np.isnan(sec_vals)]
-
+    for s in accepted_steps:
+        winner = s['selected_feature']
+        wd = s['candidates_summary'][winner]
+        fm = wd.get('folds', {}).get('metrics', {})
+        sec_vals = np.array(fm.get(metric_secondary, []), dtype=float)
+        sec_vals = sec_vals[np.isfinite(sec_vals)]
         steps_data.append({
-            'step_idx': data['step_idx'],
-            'feature': winner,
-            'pri_vals': pri_vals,
-            'pri_mean': np.mean(pri_vals) if len(pri_vals) > 0 else 0.5,
-            'pri_se': np.std(pri_vals, ddof=1) / np.sqrt(len(pri_vals)) if len(pri_vals) > 1 else 0,
+            'feature_name': winner,
+            'prim_mean': _fold_mean(fm, metric_primary),
+            'sec_mean': _fold_mean(fm, metric_secondary),
             'sec_vals': sec_vals,
-            'sec_mean': np.mean(sec_vals) if len(sec_vals) > 0 else 0
         })
 
-    if not steps_data: return
+    # First accepted step is the multinomial anchor selection: every
+    # candidate evaluated here is a single-feature model, so its
+    # candidates_summary is the right place to pull best-univariate
+    # numbers from.
+    anchor_step = accepted_steps[0]
+    best_univariate_value = float('nan')
+    best_univariate_feat = None
+    for f, cdata in (anchor_step.get('candidates_summary') or {}).items():
+        fm = cdata.get('folds', {}).get('metrics', {})
+        v = np.array(fm.get(metric_secondary, []), dtype=float)
+        v = v[np.isfinite(v)]
+        if v.size == 0:
+            continue
+        mu = float(np.mean(v))
+        if np.isnan(best_univariate_value) or mu > best_univariate_value:
+            best_univariate_value = mu
+            best_univariate_feat = f
+    if np.isnan(best_univariate_value) and steps_data:
+        # Fall back to the anchor winner's score if the candidate scan
+        # produced no finite means (extreme NaN-fold case).
+        best_univariate_value = steps_data[0]['sec_mean']
+        best_univariate_feat = steps_data[0]['feature_name']
 
-    # 2. Use a specific constrained_layout alternative: plt.subplot2grid or manual rect
-    fig = plt.figure(figsize=(16, 9), dpi=300)
-    fig.patch.set_facecolor('#FFFFFF')
+    final_score = float(steps_data[-1]['sec_mean'])
 
-    # Create axes manually with specific rects to ensure they never move/clip
-    # [left, bottom, width, height]
-    ax0 = fig.add_axes([0.1, 0.2, 0.35, 0.55])
-    ax1 = fig.add_axes([0.55, 0.2, 0.35, 0.55])
-    axes = [ax0, ax1]
+    # Rejected final step lookup (by secondary metric, like binary case).
+    rejection_row = None
+    if selection_steps[-1].get('selected_feature') is None:
+        rej_step = selection_steps[-1]
+        rej_cs = rej_step.get('candidates_summary') or {}
+        if rej_cs:
+            best_rej_feat = None
+            best_rej_sec = -np.inf
+            best_rej_pri = float('nan')
+            for f, cdata in rej_cs.items():
+                fm = cdata.get('folds', {}).get('metrics', {})
+                v = np.array(fm.get(metric_secondary, []), dtype=float)
+                v = v[np.isfinite(v)]
+                if v.size == 0:
+                    continue
+                mu = float(np.mean(v))
+                if mu > best_rej_sec:
+                    best_rej_sec = mu
+                    best_rej_feat = f
+                    pv = np.array(fm.get(metric_primary, []), dtype=float)
+                    pv = pv[np.isfinite(pv)]
+                    best_rej_pri = float(np.mean(pv)) if pv.size else float('nan')
+            if best_rej_feat is not None:
+                rejection_row = {
+                    'feature_name': best_rej_feat,
+                    'sec_mean': best_rej_sec,
+                    'prim_mean': best_rej_pri,
+                }
 
-    x_steps = [d['step_idx'] for d in steps_data]
+    # Feature-category colour map (mirrors the bout-onset selector
+    # plotter so the same feature always gets the same colour across
+    # figures).
+    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
+                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                       "allo_pitch-nose", "nose-allo_pitch",
+                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
-    # Plot Panel 0
-    pri_means = [d['pri_mean'] for d in steps_data]
-    ax0.plot(x_steps, pri_means, color=TEXT_COLOR, lw=2, alpha=0.3)
-    for d in steps_data:
-        x_jitter = np.random.normal(d['step_idx'], 0.05, size=len(d['pri_vals']))
-        ax0.scatter(x_jitter, d['pri_vals'], color='black', s=20, alpha=0.2, edgecolors='none')
-        ax0.errorbar(d['step_idx'], d['pri_mean'], yerr=d['pri_se'], fmt='o', color='black', capsize=5)
+    def _category_color(fname: str) -> str:
+        if any(x in fname for x in dyadic_keywords):
+            return DYADIC_COLOR
+        if '-sei' in fname:
+            return self_col
+        if 'self' in fname:
+            return self_col
+        return other_col
 
-        label = d['feature'] if d['step_idx'] == 0 else f"+ {d['feature']}"
-        ax0.text(d['step_idx'], d['pri_mean'] + d['pri_se'] + 0.01, f" {label}",
-                 fontsize=10, rotation=40, va='bottom', ha='left', fontweight='bold')
+    def _lighten(hex_color: str, factor: float = 0.65) -> str:
+        h = hex_color.lstrip('#')
+        r = int(h[0:2], 16)
+        g = int(h[2:4], 16)
+        b = int(h[4:6], 16)
+        r = int(round(r + (255 - r) * factor))
+        g = int(round(g + (255 - g) * factor))
+        b = int(round(b + (255 - b) * factor))
+        return f"#{r:02x}{g:02x}{b:02x}"
 
-    ax0.set_title(primary_metric_name, pad=40)
-    ax0.set_ylabel(primary_metric_name)
-    ax0.axhline(0.5, ls='--', color='red', alpha=0.5)
+    label_map = feature_label_overrides if feature_label_overrides is not None else {}
 
-    # Plot Panel 1
-    sec_means = [d['sec_mean'] for d in steps_data]
-    ax1.plot(x_steps, sec_means, color=TEXT_COLOR, lw=2, alpha=0.3)
-    step0_sec_baseline = steps_data[0]['sec_mean']
-    ax1.axhline(step0_sec_baseline, ls=':', color='red', lw=2, label='Step 0 Baseline')
+    def _pretty(fname: str) -> str:
+        return label_map[fname] if fname in label_map else fname
 
-    for d in steps_data:
-        x_jitter = np.random.normal(d['step_idx'], 0.05, size=len(d['sec_vals']))
-        ax1.scatter(x_jitter, d['sec_vals'], color=TEXT_COLOR, s=20, alpha=0.2, edgecolors='none')
-        ax1.scatter(d['step_idx'], d['sec_mean'], color='white', s=70, edgecolors=TEXT_COLOR, lw=2, zorder=5)
+    cum_prim = [d['prim_mean'] for d in steps_data]
+    cum_sec = [d['sec_mean'] for d in steps_data]
+    sec_marginals = [cum_sec[0] - chance_secondary]
+    for i in range(1, len(cum_sec)):
+        sec_marginals.append(cum_sec[i] - cum_sec[i - 1])
 
-    ax1.set_title(secondary_metric_name, pad=40)
-    ax1.set_ylabel(secondary_metric_name)
-    ax1.legend(frameon=False, loc='lower right')
+    # ---- Figure layout ----
+    n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
+    fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
+    fig_traj, (ax_traj, ax_bars) = plt.subplots(
+        nrows=1, ncols=2,
+        figsize=(10.5, fig_height), dpi=300,
+        gridspec_kw={'width_ratios': [2.2, 1.0]},
+    )
+    fig_traj.patch.set_facecolor(BG_COLOR)
+    ax_traj.set_facecolor(BG_COLOR)
+    ax_bars.set_facecolor(BG_COLOR)
 
-    # 3. FORCE label visibility by not using any "tight" or "auto" layout
-    for ax in axes:
-        ax.set_facecolor('#FFFFFF')
-        ax.set_xlabel("Selection Step", labelpad=15)
-        ax.set_xticks(x_steps)
-        ax.set_xticklabels([f"Step {i}" for i in x_steps])
+    bar_height = 0.88
+    y_positions = list(range(len(steps_data)))
+    rej_y = len(steps_data) + 0.4 if rejection_row is not None else None
 
-        # Force spines
-        for side in ['top', 'right', 'bottom', 'left']:
-            ax.spines[side].set_visible(side in ['left', 'bottom'])
-            ax.spines[side].set_color(TEXT_COLOR)
+    for row_idx, d in enumerate(steps_data):
+        y = y_positions[row_idx]
+        base_color = _category_color(d['feature_name'])
+        light_color = _lighten(base_color, factor=0.65)
+        prev_p = cum_prim[row_idx - 1] if row_idx > 0 else chance_primary
+        cur_p = cum_prim[row_idx]
 
-        ax.tick_params(axis='both', which='both', bottom=True, left=True, labelbottom=True, labelleft=True)
+        if is_minimization:
+            # Bars grow leftward (lower = better). Light = prev->chance,
+            # dark tip = cur->prev. x-axis inverted below.
+            if chance_primary > prev_p:
+                ax_traj.barh(y, chance_primary - prev_p, left=prev_p,
+                             height=bar_height, color=light_color,
+                             edgecolor='none')
+            if prev_p > cur_p:
+                ax_traj.barh(y, prev_p - cur_p, left=cur_p,
+                             height=bar_height, color=base_color,
+                             edgecolor='none')
+            delta = prev_p - cur_p
+            ax_traj.text(cur_p - 0.003 * (chance_primary - cur_p + 1e-9), y,
+                         f"{cur_p:.3f}  (Δ -{delta:.3f})",
+                         ha='left', va='center', fontsize=7,
+                         color=TEXT_COLOR)
+        else:
+            # Bars grow rightward (higher = better). Light = chance->prev,
+            # dark tip = prev->cur.
+            if prev_p > chance_primary:
+                ax_traj.barh(y, prev_p - chance_primary, left=chance_primary,
+                             height=bar_height, color=light_color,
+                             edgecolor='none')
+            if cur_p > prev_p:
+                ax_traj.barh(y, cur_p - prev_p, left=prev_p,
+                             height=bar_height, color=base_color,
+                             edgecolor='none')
+            delta = cur_p - prev_p
+            ax_traj.text(cur_p + 0.003, y,
+                         f"{cur_p:.3f}  (Δ +{delta:.3f})",
+                         ha='left', va='center', fontsize=7,
+                         color=TEXT_COLOR)
+
+    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
+        rejected_light = '#D7D7D7'
+        rejected_dark = '#9A9A9A'
+        prev_p = cum_prim[-1]
+        cur_p = rejection_row['prim_mean']
+        if is_minimization:
+            if chance_primary > prev_p:
+                ax_traj.barh(rej_y, chance_primary - prev_p, left=prev_p,
+                             height=bar_height, color=rejected_light,
+                             edgecolor='none')
+            if prev_p > cur_p:
+                ax_traj.barh(rej_y, prev_p - cur_p, left=cur_p,
+                             height=bar_height, color=rejected_dark,
+                             edgecolor='none')
+            ax_traj.text(cur_p - 0.003, rej_y,
+                         f"{cur_p:.3f}  (Δ -{prev_p - cur_p:.3f}, ns)",
+                         ha='left', va='center', fontsize=7,
+                         color=NEUTRAL_COLOR, style='italic')
+        else:
+            if prev_p > chance_primary:
+                ax_traj.barh(rej_y, prev_p - chance_primary, left=chance_primary,
+                             height=bar_height, color=rejected_light,
+                             edgecolor='none')
+            if cur_p > prev_p:
+                ax_traj.barh(rej_y, cur_p - prev_p, left=prev_p,
+                             height=bar_height, color=rejected_dark,
+                             edgecolor='none')
+            ax_traj.text(cur_p + 0.003, rej_y,
+                         f"{cur_p:.3f}  (Δ +{cur_p - prev_p:.3f}, ns)",
+                         ha='left', va='center', fontsize=7,
+                         color=NEUTRAL_COLOR, style='italic')
+
+    ytick_positions = list(y_positions)
+    ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+    if rejection_row is not None:
+        ytick_positions.append(rej_y)
+        ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
+    ax_traj.set_yticks(ytick_positions)
+    ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
+    ax_traj.tick_params(axis='y', length=0)
+    ax_traj.invert_yaxis()
+
+    if rejection_row is not None:
+        sep_y = (len(steps_data) - 1) + 0.5 + 0.10
+        ax_traj.axhline(sep_y, color=NEUTRAL_COLOR, linestyle='-',
+                        lw=0.4, alpha=0.5, zorder=0)
+
+    # X-axis range / orientation depending on direction.
+    all_endpoints = list(cum_prim)
+    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
+        all_endpoints.append(rejection_row['prim_mean'])
+    if is_minimization:
+        span = chance_primary - min(all_endpoints)
+        span = span if span > 1e-9 else 1.0
+        x_left_lim = min(all_endpoints) - 0.30 * span
+        x_right_lim = chance_primary + 0.015 * abs(chance_primary if chance_primary > 0 else 1)
+        ax_traj.set_xlim(x_left_lim, x_right_lim)
+        ax_traj.invert_xaxis()
+    else:
+        span = max(all_endpoints) - chance_primary
+        span = span if span > 1e-9 else 1.0
+        x_left_lim = chance_primary - 0.015
+        x_right_lim = max(all_endpoints) + 0.30 * span
+        ax_traj.set_xlim(x_left_lim, x_right_lim)
+
+    ax_traj.set_xlabel(f"{primary_metric_name} (held-out data)",
+                       fontsize=10, color=TEXT_COLOR)
+    ax_traj.spines['top'].set_visible(False)
+    ax_traj.spines['right'].set_visible(False)
+    ax_traj.tick_params(axis='x', colors=TEXT_COLOR)
+    for spine in ax_traj.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+
+    # ---- Right panel: 2 vertical bars (best univariate, final) ----
+    bar_width = 0.6
+    bar_x_positions = [0, 1]
+    bar_group_labels = ['best univariate', 'final model']
+
+    bar1_color = (_category_color(best_univariate_feat)
+                  if best_univariate_feat is not None else NEUTRAL_COLOR)
+    ax_bars.bar(0, best_univariate_value - chance_secondary,
+                bottom=chance_secondary, width=bar_width,
+                color=bar1_color, edgecolor='none')
+
+    _bottom = chance_secondary
+    for d, marginal in zip(steps_data, sec_marginals):
+        seg_color = _category_color(d['feature_name'])
+        ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
+                    color=seg_color, edgecolor='none')
+        _bottom += marginal
+
+    bar_tops = [best_univariate_value, final_score]
+    y_data_max = float(np.nanmax(bar_tops))
+    label_line_spacing = 0.006
+    label_y_start_offset = 0.005
+    label_fontsize = 8
+    max_label_lines = len(steps_data)
+    label_stack_top = (y_data_max + label_y_start_offset
+                       + (max_label_lines + 1) * label_line_spacing)
+
+    # Cap visible y-axis at 0.4 -- multinomial balanced accuracy with
+    # K=6 classes tops out around 0.3 in practice, so a higher cap
+    # leaves the bars looking stubby. y_top extends past the cap when
+    # the feature-label stack above the bars would otherwise clip;
+    # the visible tick range still stops at 0.4 so the axis reads
+    # cleanly. First tick is rounded up to the nearest 0.05 above
+    # the chance floor (e.g., 0.20 when chance = 1/6 ~= 0.167).
+    if metric_secondary in rate_metrics or metric_secondary == 'auc':
+        cap = 0.31
+        y_top = max(cap, label_stack_top + 0.01)
+        first_tick = float(np.ceil(chance_secondary * 20) / 20)
+        visible_ticks = np.arange(first_tick, cap + 1e-9, 0.05)
+        if visible_ticks.size == 0:
+            visible_ticks = np.linspace(first_tick, cap, 3)
+        ax_bars.set_ylim(chance_secondary, y_top)
+        ax_bars.set_yticks(visible_ticks)
+        ax_bars.set_yticklabels([f"{t:.2f}" for t in visible_ticks],
+                                fontsize=8, color=TEXT_COLOR)
+    else:
+        y_top = max(y_data_max + 0.10, label_stack_top)
+        ax_bars.set_ylim(chance_secondary, y_top)
+
+    ax_bars.set_xticks(bar_x_positions)
+    ax_bars.set_xticklabels(bar_group_labels, fontsize=7, color=TEXT_COLOR)
+    ax_bars.set_xlim(-0.6, len(bar_group_labels) - 0.4)
+    ax_bars.set_ylabel(f"{secondary_metric_name} (held-out data)",
+                       fontsize=10, color=TEXT_COLOR)
+
+    final_feat_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+
+    if best_univariate_feat is not None:
+        ax_bars.text(0, best_univariate_value + label_y_start_offset,
+                     _pretty(best_univariate_feat),
+                     ha='center', va='bottom',
+                     fontsize=label_fontsize, color=TEXT_COLOR)
+
+    for j, lab in enumerate(final_feat_labels):
+        ax_bars.text(1, final_score + label_y_start_offset
+                     + j * label_line_spacing,
+                     lab, ha='center', va='bottom',
+                     fontsize=label_fontsize, color=TEXT_COLOR)
+
+    ax_bars.spines['top'].set_visible(False)
+    ax_bars.spines['right'].set_visible(False)
+    ax_bars.tick_params(axis='both', colors=TEXT_COLOR)
+    for spine in ax_bars.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+
+    fig_traj.subplots_adjust(left=0.18, right=0.97, top=0.95,
+                             bottom=0.12, wspace=0.12)
 
     if save_plot:
-        # ``selection_results_path`` is polymorphic; if a file was
-        # passed, anchor the output dir to its parent.
-        _fallback = pathlib.Path(selection_results_path)
-        if _fallback.is_file():
-            _fallback = _fallback.parent
-        out_dir = pathlib.Path(output_dir) if output_dir else _fallback
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        # 1. Identify condition from the path (male, female, male_mute_partner)
+        if output_dir is None:
+            _fallback = pathlib.Path(selection_results_path)
+            _out_dir = _fallback.parent if _fallback.is_file() else _fallback
+        else:
+            _out_dir = pathlib.Path(output_dir)
+        _out_dir.mkdir(parents=True, exist_ok=True)
         path_str = str(selection_results_path).lower()
         if 'male_mute_partner' in path_str:
             condition = 'male_mute_partner'
@@ -2443,18 +3084,14 @@ def plot_multinomial_selection_trajectory(
             condition = 'male'
         else:
             condition = 'unknown'
-
-        # 2. Construct the specific filename
-        base_name = "multinomial_usv_category_model_selection_trajectory"
-        fname = f"{base_name}_{condition}_{metric_primary}.svg"
-
-        # 3. Save with high DPI and explicit white background
-        save_path = out_dir / fname
-        fig.savefig(save_path, facecolor='#FFFFFF', bbox_inches=None)
-        print(f"Trajectory plot saved to: {save_path.name}")
+        fname = (f"multinomial_selection_trajectory_{condition}_"
+                 f"{metric_primary}.svg")
+        save_path = _out_dir / fname
+        fig_traj.savefig(save_path, bbox_inches='tight', dpi=300,
+                         facecolor=BG_COLOR, transparent=False)
+        print(f"Trajectory plot saved to: {save_path}")
 
     plt.show()
-    plt.rcParams.update(_saved_rcp)
 
 
 def plot_multinomial_multivariate_filters(
@@ -2537,6 +3174,10 @@ def plot_multinomial_multivariate_filters(
         Displays the high-resolution Matplotlib grid.
     """
 
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
     # 1. Local overrides — restored at function exit so they don't leak
     #    into any plot rendered after this function returns.
     TEXT_COLOR = '#000000'
@@ -2585,7 +3226,17 @@ def plot_multinomial_multivariate_filters(
         n_time_bins = n_total_inputs // n_features
         weights = raw_weights.reshape(n_folds, n_classes, n_features, n_time_bins)
 
-    mean_weights = np.mean(weights, axis=0)
+    # ``nanmean`` so folds that failed to converge (stored as all-NaN
+    # weight tensors by the CNN trainer) are skipped at each position
+    # rather than poisoning every cell of the averaged weight matrix.
+    # ``np.mean`` here would propagate any NaN into the cell, which
+    # turns the whole heatmap into NaN as soon as a single fold is
+    # bad. ``catch_warnings`` silences the "All-NaN slice" emission
+    # that fires only for positions where every fold is NaN -- those
+    # cells stay NaN and the plotting code below handles them.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean_weights = np.nanmean(weights, axis=0)
 
     n_feats = len(features)
     ncols = 3
@@ -2611,7 +3262,16 @@ def plot_multinomial_multivariate_filters(
         ax.set_facecolor('#FFFFFF')
 
         feat_slice = mean_weights[:, i, :]
-        max_amp = np.nanmax(np.abs(feat_slice)) or 1.0
+        # ``nanmax`` returns NaN when every cell of ``feat_slice`` is
+        # NaN (would happen only if every fold is NaN at every
+        # position for this feature -- still possible if the feature
+        # was unlucky enough to land entirely in failed folds).
+        # NaN is truthy in Python so ``nanmax(...) or 1.0`` would
+        # leave NaN as the colormap range -- be explicit instead.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            peak = np.nanmax(np.abs(feat_slice))
+        max_amp = float(peak) if np.isfinite(peak) and peak > 0 else 1.0
 
         ax.imshow(feat_slice, aspect='auto', cmap=cmap,
                   vmin=-max_amp, vmax=max_amp, interpolation='nearest')
@@ -2668,229 +3328,293 @@ def plot_multinomial_multivariate_filters(
 
 def plot_multinomial_selection_diagnosis(
         selection_results_path: str,
-        cmap_base: str = 'mako',
-        cmap_diff: str = 'RdBu_r',
         save_plot: bool = False,
-        output_dir: str = None
+        output_dir: str = None,
+        feature_label_overrides: dict = None,
 ) -> None:
     """
-    Evaluates categorical Information Gain and fold-level reliability between univariate and multivariate models.
+    Two-figure post-hoc audit of the final multinomial selection model
+    -- replaces the prior 3-heatmap + slope-chart layout, which was
+    built around the multinomial selector's null-model baseline at
+    step 0 (always predicts the majority class) and therefore made
+    the univariate-vs-multivariate comparison degenerate.
 
-    Purpose and Diagnostic Value:
-    -----------------------------
-    This function provides a comprehensive post-hoc audit of the model selection process. It specifically
-    addresses whether the addition of multivariate behavioral features actually improves the classification
-    of difficult or rare vocal categories.
+    The two figures rendered here are computed entirely from the held-
+    out predictions and confusion matrices already stored in the final
+    accepted step's ``folds`` dict; failed folds (silent NaN
+    placeholders the multinomial selector used to write) are skipped
+    by ``nanmean`` / finiteness checks throughout.
 
-    The diagnostic is split into two primary visual tiers:
-    1. The Top Tier (Heatmaps): Compares the row-normalized recall (sensitivity) of the best univariate
-       anchor (Step 0) against the final multivariate ensemble. The middle plot's colorbar is scaled
-       to its own local maximum to highlight classification nuances. The third plot (Information Gain)
-       isolates the delta (Final - Univariate).
-    2. The Bottom Tier (Slope Charts): Visualizes the "Correct vs. Incorrect" proportions across all
-       cross-validation folds. Each fold is represented as a dot pair connected by a line, revealing
-       the stability of the model's performance and the variance across different experimental sessions.
+    Figure 1 -- pairwise binary AUC matrix
+        K x K heatmap where cell (i, j) is the binary AUC of "class i
+        vs class j" computed on samples whose true label is i or j,
+        using the model's ``p_i / (p_i + p_j)`` as the score. Reveals
+        which class pairs are behaviourally separable; the full
+        multinomial accuracy can be modest while many pairs are
+        well-separated. Only the lower triangle + diagonal is drawn
+        because the matrix is symmetric.
+
+    Figure 2 -- per-class recall, log y-axis
+        One bar per USV category showing the final multivariate
+        model's recall (= correctly classified / total per class).
+        Chance baseline (1/K) plotted as a dashed reference line.
+        Log scale because recall ranges span ~50x across categories
+        when one class is heavily favoured by the model.
 
     Parameters
     ----------
     selection_results_path : str
-        Path to the consolidated ``selection_*.pkl`` artifact produced
-        by ``consolidate_model_selection_results``. May be either the
-        file itself or a directory containing one (the latest by
-        mtime wins when multiple are present). The function
-        automatically identifies Step 0 and the final successful
-        step for comparison.
-    cmap_base : str, default='mako'
-        Colormap for the Baseline and Multivariate matrices.
-    cmap_diff : str, default='RdBu_r'
-        Diverging colormap for the Information Gain matrix.
-    save_plot : bool, default=False
-        If True, saves the diagnostic figure as an SVG file.
+        Consolidated ``selection_*.pkl`` produced by
+        ``consolidate_model_selection_results`` (file or containing
+        dir). Routed through ``configure_path`` for cross-OS mounts.
+    save_plot : bool, default False
+        Whether to save the two figures to disk.
     output_dir : str, optional
-        Target directory for saved figures. Defaults to the parent
-        dir of ``selection_results_path`` (or to the path itself if
-        a directory was supplied).
-
-    Returns
-    -------
-    None
-        Displays the multi-panel diagnostic figure.
+        Output directory. Defaults to the parent dir of
+        ``selection_results_path``.
+    feature_label_overrides : dict, optional
+        Mapping from raw modeling feature names to presentation-
+        friendly labels; used in the figure title that names the
+        final-model feature set.
     """
 
-    # 1. Aesthetics and local styling overrides — restored at function exit.
-    TEXT_COLOR = '#000000'
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+    label_map = feature_label_overrides if feature_label_overrides is not None else {}
+
+    def _pretty(fname: str) -> str:
+        return label_map[fname] if fname in label_map else fname
+
     BG_COLOR = '#FFFFFF'
 
-    _rcp_override = {
-        'text.color': TEXT_COLOR,
-        'axes.labelcolor': TEXT_COLOR,
-        'xtick.color': TEXT_COLOR,
-        'ytick.color': TEXT_COLOR,
-        'axes.edgecolor': TEXT_COLOR,
-        'figure.facecolor': BG_COLOR,
-        'axes.facecolor': BG_COLOR,
-        'font.family': 'sans-serif'
-    }
-    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
-    plt.rcParams.update(_rcp_override)
-
-    # 2. Step Discovery and Selection
-    selection_steps, _, _ = load_selection_results(selection_results_path)
-
-    if len(selection_steps) < 2:
-        print("Diagnosis requires at least two successful steps (Univariate vs Multivariate).")
+    selection_steps, display_name, _ = load_selection_results(selection_results_path)
+    if not selection_steps:
+        print(f"No multinomial step data found in {selection_results_path}")
         return
 
-    # Load Step 0 (Univariate anchor)
-    step0_data = selection_steps[0]
+    # Final accepted step = last step with a real (non-null) winner;
+    # skip a rejected last step if present.
+    final_step = None
+    for s in reversed(selection_steps):
+        sel = s.get('selected_feature')
+        if sel and sel != 'null_model_free':
+            final_step = s
+            break
+    if final_step is None:
+        print(f"No accepted multivariate step in {selection_results_path}")
+        return
 
-    # Identify the final successful multivariate step
-    final_idx = len(selection_steps) - 1
-    final_data = selection_steps[final_idx]
+    winner = final_step['selected_feature']
+    cdata = final_step['candidates_summary'][winner]
+    folds = cdata['folds']
+    classes_raw = cdata.get('canonical_classes')
+    if classes_raw is None:
+        classes_raw = cdata.get('classes')
+    classes = np.asarray(classes_raw).ravel()
+    K = len(classes)
+    final_features = list(final_step.get('final_model_features') or [])
 
-    if final_data.get('selected_feature') is None:
-        final_idx -= 1
-        final_data = selection_steps[final_idx]
+    # --- Pool every valid fold's predictions for the AUC matrix ----
+    def _concat_finite(key: str) -> Optional[np.ndarray]:
+        parts = []
+        for v in folds[key]:
+            if v is None:
+                continue
+            arr = np.asarray(v)
+            if arr.size == 0:
+                continue
+            if np.issubdtype(arr.dtype, np.floating) and not np.all(np.isfinite(arr)):
+                continue
+            parts.append(arr)
+        if not parts:
+            return None
+        return np.concatenate(parts, axis=0)
 
-    # 3. Data Extraction Helper
-    def get_tier_data(step_dict):
-        winner = step_dict['selected_feature']
-        cand_summary = step_dict['candidates_summary'][winner]
-        folds = cand_summary['folds']
-        classes = cand_summary['classes']
-
-        # Initialize storage for performance slopes
-        fold_correct_prop = []
-        fold_incorrect_prop = []
-        cat_fold_correct_prop = {c: [] for c in classes}
-        cat_fold_incorrect_prop = {c: [] for c in classes}
-
-        # Calculate proportions per fold
-        for y_t, y_p in zip(folds['y_true'], folds['y_pred']):
-
-            # Global fold proportions
-            total_fold_samples = len(y_t)
-            correct_count = np.sum(y_t == y_p)
-            fold_correct_prop.append(correct_count / total_fold_samples)
-            fold_incorrect_prop.append((total_fold_samples - correct_count) / total_fold_samples)
-
-            # Per category fold proportions
-            for c in classes:
-                cat_mask = (y_t == c)
-                n_cat_samples = np.sum(cat_mask)
-
-                if n_cat_samples > 0:
-                    correct_cat = np.sum((y_t == c) & (y_p == c))
-                    cat_fold_correct_prop[c].append(correct_cat / n_cat_samples)
-                    cat_fold_incorrect_prop[c].append((n_cat_samples - correct_cat) / n_cat_samples)
-                else:
-                    cat_fold_correct_prop[c].append(np.nan)
-                    cat_fold_incorrect_prop[c].append(np.nan)
-
-        # Calculate Global Confusion Matrix (Row-Normalized for Recall)
-        y_true_all = np.concatenate(folds['y_true'])
-        y_pred_all = np.concatenate(folds['y_pred'])
-        cm = confusion_matrix(y_true_all, y_pred_all, normalize='true')
-
-        return cm, classes, fold_correct_prop, fold_incorrect_prop, cat_fold_correct_prop, cat_fold_incorrect_prop
-
-    # Process Univariate and Multivariate datasets
-    cm_uni, classes, _, _, _, _ = get_tier_data(step0_data)
-    cm_multi, _, f_corr_p, f_inc_p, c_f_corr_p, c_f_inc_p = get_tier_data(final_data)
-    cm_gain = cm_multi - cm_uni
-
-    # 4. Figure Construction
-    n_cats = len(classes)
-    fig = plt.figure(figsize=(22, 12), dpi=300)
-    gs = gridspec.GridSpec(2, n_cats + 1, height_ratios=[1, 0.8], hspace=0.3)
-
-    # 5. Top Tier: Heatmaps (Baseline, Final, Gain)
-    axes_hm = [
-        fig.add_subplot(gs[0, 0:2]),
-        fig.add_subplot(gs[0, 2:4]),
-        fig.add_subplot(gs[0, 4:])
-    ]
-
-    titles_hm = [
-        f"Univariate Baseline\n({step0_data['selected_feature']})",
-        f"Final Multivariate Model\n({len(final_data['current_features']) + 1} Features)",
-        "Information Gain\n(Multi - Uni)"
-    ]
-
-    data_hm = [cm_uni, cm_multi, cm_gain]
-
-    for i, (ax, data, title) in enumerate(zip(axes_hm, data_hm, titles_hm)):
-
-        if i == 2:
-            v_lim = np.max(np.abs(data))
-            vmin, vmax, cmap = -v_lim, v_lim, cmap_diff
-        else:
-            vmin, vmax, cmap = 0, np.max(data), cmap_base
-
-        sns.heatmap(
-            data, ax=ax, annot=True, fmt=".2f", cmap=cmap, vmin=vmin, vmax=vmax,
-            xticklabels=classes, yticklabels=classes if i == 0 else [],
-            cbar_kws={'shrink': 0.8}, annot_kws={"size": 9}
+    y_true_pool = _concat_finite('y_true')
+    y_probs_pool = _concat_finite('y_probs')
+    if y_true_pool is None or y_probs_pool is None:
+        print(
+            "No valid (y_true, y_probs) pairs across any fold of "
+            f"the final step in {selection_results_path}"
         )
-        ax.set_title(title, fontsize=12, fontweight='bold', pad=15)
+        return
 
-    # 6. Bottom Tier: Performance Slope Charts (Proportions)
-    def plot_performance_slopes(ax, corr_list, inc_list, title):
+    auc_matrix = np.full((K, K), np.nan, dtype=float)
+    for i in range(K):
+        c_i = classes[i]
+        for j in range(K):
+            if i == j:
+                continue
+            c_j = classes[j]
+            mask = (y_true_pool == c_i) | (y_true_pool == c_j)
+            if not np.any(mask):
+                continue
+            yt_bin = (y_true_pool[mask] == c_i).astype(int)
+            if yt_bin.sum() in (0, len(yt_bin)):
+                continue
+            p_i = y_probs_pool[mask, i]
+            p_j = y_probs_pool[mask, j]
+            denom = p_i + p_j
+            score = np.where(denom > 0, p_i / denom, 0.5)
+            try:
+                auc_matrix[i, j] = roc_auc_score(yt_bin, score)
+            except ValueError:
+                continue
 
-        labels = ['Match', 'Mismatch']
-        # Use nanmean to handle folds where a specific category might be absent
-        means = [np.nanmean(corr_list), np.nanmean(inc_list)]
+    # --- Per-class recall from pooled confusion matrix ---
+    summed_cms = []
+    for cm in folds['confusion_matrix']:
+        if cm is None:
+            continue
+        arr = np.asarray(cm, dtype=float)
+        if arr.size == 0 or not np.all(np.isfinite(arr)):
+            continue
+        summed_cms.append(arr)
+    if not summed_cms:
+        print(
+            "No valid confusion matrices in the final step of "
+            f"{selection_results_path}"
+        )
+        return
+    summed_cm = np.sum(summed_cms, axis=0)
+    row_sums = summed_cm.sum(axis=1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        recall_per_class = np.where(
+            row_sums > 0,
+            np.diag(summed_cm) / row_sums,
+            0.0,
+        )
+    chance = 1.0 / K
 
-        # Plot background bars for average proportions
-        ax.bar(labels, means, color=['#2ecc71', '#e74c3c'], alpha=0.2)
+    # --- Save-path resolver shared by both figures ---
+    def _resolve_out_dir() -> pathlib.Path:
+        if output_dir is None:
+            _fallback = pathlib.Path(selection_results_path)
+            return _fallback.parent if _fallback.is_file() else _fallback
+        return pathlib.Path(output_dir)
 
-        # Plot individual fold dots and connection lines
-        for c, inc in zip(corr_list, inc_list):
-            if not np.isnan(c):
-                ax.plot(
-                    labels, [c, inc],
-                    color='black', alpha=0.35, linewidth=0.7,
-                    marker='o', markersize=3.5
-                )
+    path_str = str(selection_results_path).lower()
+    if 'male_mute_partner' in path_str:
+        condition = 'male_mute_partner'
+    elif 'female' in path_str:
+        condition = 'female'
+    elif 'male' in path_str:
+        condition = 'male'
+    else:
+        condition = 'unknown'
 
-        ax.set_title(title, fontsize=10, fontweight='bold', pad=8)
-        ax.set_ylim(0, 1.05)  # Fixed scale for proportions
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.tick_params(labelsize=9)
+    # =========================================================== #
+    # Figure 1 -- pairwise binary AUC, lower triangle + diagonal
+    # =========================================================== #
+    fig_auc, ax = plt.subplots(figsize=(4.0, 3.6), dpi=300)
+    fig_auc.patch.set_facecolor(BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+    upper_tri_mask = np.triu(np.ones_like(auc_matrix, dtype=bool), k=1)
+    cmap_auc = plt.get_cmap('cividis').copy()
+    cmap_auc.set_bad(color=BG_COLOR)
+    masked = np.ma.array(
+        auc_matrix,
+        mask=upper_tri_mask | ~np.isfinite(auc_matrix),
+    )
+    im = ax.imshow(masked, aspect='equal', cmap=cmap_auc,
+                   interpolation='nearest', vmin=0.5, vmax=1.0)
+    for i in range(K):
+        for j in range(K):
+            if j > i:
+                continue
+            v = auc_matrix[i, j]
+            if not np.isfinite(v):
+                ax.text(j, i, '–', ha='center', va='center',
+                        fontsize=6, color='#909090')
+                continue
+            txt_color = '#FFFFFF' if v < 0.72 else '#202020'
+            ax.text(j, i, f"{v:.2f}", ha='center', va='center',
+                    fontsize=6, color=txt_color)
+    ax.set_xticks(np.arange(K))
+    ax.set_yticks(np.arange(K))
+    ax.set_xticklabels([str(c) for c in classes], fontsize=7)
+    ax.set_yticklabels([str(c) for c in classes], fontsize=7)
+    ax.tick_params(axis='both', length=0, pad=2)
+    ax.set_xlabel(r'USV category $j$', fontsize=8, labelpad=4)
+    ax.set_ylabel(r'USV category $i$', fontsize=8, labelpad=4)
+    cb = fig_auc.colorbar(im, ax=ax, fraction=0.045, pad=0.04)
+    cb.set_label(r'binary AUC ($i$ vs $j$)', fontsize=7, labelpad=2)
+    cb.set_ticks([0.5, 0.7, 1.0])
+    cb.ax.tick_params(labelsize=6, length=1.5)
+    cb.outline.set_edgecolor('#B0B0B0')
+    cb.outline.set_linewidth(0.5)
+    # Triangular outline: keep left + bottom spines, hide top + right,
+    # and draw a hypotenuse from the top-left corner of cell (0,0) to
+    # the bottom-right corner of cell (K-1,K-1).
+    for side in ('left', 'bottom'):
+        ax.spines[side].set_edgecolor('#404040')
+        ax.spines[side].set_linewidth(0.6)
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    ax.plot([-0.5, K - 0.5], [-0.5, K - 0.5],
+            color='#404040', lw=0.6, clip_on=False, zorder=4)
+    fig_auc.subplots_adjust(left=0.16, right=0.95, top=0.94, bottom=0.16)
+    if save_plot:
+        out_dir = _resolve_out_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"multinomial_pairwise_auc_{condition}.svg"
+        fig_auc.savefig(out_dir / fname, bbox_inches='tight', dpi=300,
+                        facecolor=BG_COLOR, transparent=False)
+        print(f"Pairwise AUC figure saved to: {out_dir / fname}")
 
-    # Global Performance Slope
-    ax_global = fig.add_subplot(gs[1, 0])
-    plot_performance_slopes(ax_global, f_corr_p, f_inc_p, "Overall (All Folds)")
-    ax_global.set_ylabel("Proportion of Samples", fontweight='bold', labelpad=10)
+    # =========================================================== #
+    # Figure 2 -- per-class recall (log y-axis, bars touch)
+    # =========================================================== #
+    fig_rec, ax_r = plt.subplots(figsize=(3.6, 2.2), dpi=300)
+    fig_rec.patch.set_facecolor(BG_COLOR)
+    ax_r.set_facecolor(BG_COLOR)
 
-    # Per-Category Performance Slopes
-    for i, cat in enumerate(classes):
+    x = np.arange(K)
+    ax_r.bar(x, recall_per_class, width=1.0, color='#404040',
+             edgecolor='none',
+             label=f"final multivariate ({len(final_features)} features)")
+    ax_r.axhline(chance, color='#909090', ls='--', lw=0.6, zorder=0,
+                 label=f"chance = 1/{K} = {chance:.2f}")
+    ax_r.set_yscale('log')
+    finite_positive = recall_per_class[recall_per_class > 0]
+    y_lo = float(finite_positive.min()) * 0.5 if finite_positive.size else 1e-3
+    ax_r.set_ylim(y_lo, 1.0)
+    ax_r.set_xticks(x)
+    ax_r.set_xticklabels([str(c) for c in classes], fontsize=7)
+    ax_r.set_xlabel('USV category', fontsize=8, labelpad=4)
+    ax_r.set_ylabel(
+        r'recall = correctly classified / total$_\mathrm{class}$',
+        fontsize=8, labelpad=4,
+    )
+    ax_r.tick_params(axis='x', length=0, pad=2)
+    ax_r.tick_params(axis='y', length=2, pad=2, labelsize=6)
+    for side in ('top', 'right'):
+        ax_r.spines[side].set_visible(False)
+    for side in ('left', 'bottom'):
+        ax_r.spines[side].set_edgecolor('#404040')
+        ax_r.spines[side].set_linewidth(0.6)
+    ax_r.legend(frameon=False, fontsize=6, loc='upper right',
+                handlelength=1.5, handletextpad=0.4, labelspacing=0.3)
+    fig_rec.subplots_adjust(left=0.14, right=0.97, top=0.94, bottom=0.18)
+    if save_plot:
+        out_dir = _resolve_out_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"multinomial_per_class_recall_{condition}.svg"
+        fig_rec.savefig(out_dir / fname, bbox_inches='tight', dpi=300,
+                        facecolor=BG_COLOR, transparent=False)
+        print(f"Per-class recall figure saved to: {out_dir / fname}")
 
-        ax_cat = fig.add_subplot(gs[1, i + 1])
-        plot_performance_slopes(ax_cat, c_f_corr_p[cat], c_f_inc_p[cat], f"Category: {cat}")
-
-        if i > 0:
-            ax_cat.set_yticklabels([])
-
-    # 7. Final Polish and Save
-    plt.suptitle(
-        f"Multinomial Model Selection Audit: {pathlib.Path(selection_results_path).stem}",
-        fontsize=16, fontweight='bold', y=0.98
+    # Surface which feature set this audit was computed on, so a reader
+    # who sees the two figures can connect them back to a specific
+    # selection run.
+    pretty_feats = [_pretty(f) for f in final_features]
+    print(
+        f"Multinomial audit: final-model features = {pretty_feats}; "
+        f"K = {K}; condition = {condition}"
     )
 
-    if save_plot:
-        # ``selection_results_path`` is polymorphic; if a file was
-        # passed, anchor the output dir to its parent.
-        _fallback = pathlib.Path(selection_results_path)
-        if _fallback.is_file():
-            _fallback = _fallback.parent
-        out_path = pathlib.Path(output_dir) if output_dir else _fallback
-        fname = "multinomial_selection_diagnostic_audit_proportions.svg"
-        fig.savefig(out_path / fname, facecolor=BG_COLOR, bbox_inches='tight')
-
     plt.show()
-    plt.rcParams.update(_saved_rcp)
 
 
 class DeepResultsVisualizer:
@@ -2938,6 +3662,7 @@ class DeepResultsVisualizer:
             animal colors, etc.
         """
 
+        results_pkl_path = configure_path(str(results_pkl_path))
         if not os.path.exists(results_pkl_path):
             raise FileNotFoundError(f"Results file not found: {results_pkl_path}")
 
@@ -3013,6 +3738,8 @@ class DeepResultsVisualizer:
         if not save_plot:
             return
 
+        if output_dir is not None:
+            output_dir = configure_path(str(output_dir))
         target_dir = pathlib.Path(output_dir) if output_dir else pathlib.Path(self.save_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3369,13 +4096,14 @@ class DeepResultsVisualizer:
     def plot_spatial_precision_grid(self,
                                     plot_type: str = 'density',
                                     n_patches: int = 20,
-                                    patch_size: float = 2.5,
+                                    patch_size: Optional[float] = None,
                                     min_samples: int = 50,
                                     bg_pt_color: str = '#E0E0E0',
                                     peak_pt_color: str = 'cyan',
                                     square_edge_color: str = '#000000',
                                     panel_fontsize: int = 9,
                                     figsize_unit: float = 3.0,
+                                    grid_shape: Optional[tuple] = None,
                                     save_plot: bool = False,
                                     output_dir: Optional[str] = None,
                                     file_format: str = 'svg') -> None:
@@ -3396,11 +4124,17 @@ class DeepResultsVisualizer:
         plot_type : str, default 'density'
             The visualization style for the prediction distribution ('density' or 'contour').
         n_patches : int, default 20
-            The total number of subplot panels to generate.
-        patch_size : float, default 2.5
-            The side length of the square sampling window in UMAP units.
+            Euclidean-manifold only: total number of K-means-derived
+            patch panels. Ignored on the torus branch, which uses a
+            uniform ``grid_shape`` instead.
+        patch_size : float, optional
+            Side length of the square sampling window in manifold
+            units. If ``None``, defaults to ``2.5`` on Euclidean
+            manifolds (unbounded UMAP plane) and to
+            ``0.20 * manifold_period`` on a torus manifold (so the
+            patch is ~20% of the unit cell on each side).
         min_samples : int, default 50
-            The minimum number of data points required within a patch.
+            Minimum number of data points required inside a patch.
         bg_pt_color : str, default '#E0E0E0'
             Hex code for the background global UMAP coordinates.
         peak_pt_color : str, default 'cyan'
@@ -3411,6 +4145,11 @@ class DeepResultsVisualizer:
             Font size for the Bias score in the subplot titles.
         figsize_unit : float, default 3.0
             Inches per subplot.
+        grid_shape : tuple of (n_cols, n_rows), optional
+            Torus-manifold only: shape of the uniform patch grid
+            covering the unit cell. Defaults to ``(4, 4)`` when on
+            torus and not supplied. Ignored on Euclidean manifolds
+            (which use K-means selection from ``n_patches``).
         save_plot : bool, default False
             If True, exports the generated figure to disk.
         output_dir : str, optional
@@ -3423,6 +4162,25 @@ class DeepResultsVisualizer:
         None
             Displays the generated matplotlib figure and optionally saves it to disk.
         """
+
+        if self.manifold_metric == 'torus':
+            self._plot_spatial_precision_grid_torus(
+                plot_type=plot_type,
+                grid_shape=grid_shape,
+                patch_size=patch_size,
+                min_samples=min_samples,
+                bg_pt_color=bg_pt_color,
+                peak_pt_color=peak_pt_color,
+                square_edge_color=square_edge_color,
+                panel_fontsize=panel_fontsize,
+                figsize_unit=figsize_unit,
+                save_plot=save_plot,
+                output_dir=output_dir,
+                file_format=file_format,
+            )
+            return
+        if patch_size is None:
+            patch_size = 2.5
 
         # --- 1. Data Preparation (Aggregating Across CNN Folds) ---
         # Filter out placeholder folds emitted by the runner's
@@ -3567,6 +4325,204 @@ class DeepResultsVisualizer:
 
         plt.show()
 
+    def _plot_spatial_precision_grid_torus(
+            self,
+            plot_type: str,
+            grid_shape: Optional[tuple],
+            patch_size: Optional[float],
+            min_samples: int,
+            bg_pt_color: str,
+            peak_pt_color: str,
+            square_edge_color: str,
+            panel_fontsize: int,
+            figsize_unit: float,
+            save_plot: bool,
+            output_dir: Optional[str],
+            file_format: str,
+    ) -> None:
+        """
+        Torus-manifold counterpart to ``plot_spatial_precision_grid``.
+
+        Renders a uniform ``grid_shape`` grid of square patches on the
+        unit cell. Each panel uses:
+          * a wrap-aware rectangular sample mask (torus distance
+            ``(p - c + period/2) % period - period/2`` per axis);
+          * a 3x3-tiled ``gaussian_kde`` so the periodic boundary of
+            the predicted-density estimate is honoured;
+          * a 9-tiled dashed square outline so a patch crossing the
+            wrap boundary shows its wrapped half on the opposite
+            edge;
+          * a wrap-aware bias distance to the predicted-density peak
+            (already in the project as
+            ``manifold_metric.pairwise_distance(..., metric='torus',
+            period=...)``).
+
+        Display axes are fixed to ``[0, period]^2`` with no padding;
+        rows are reversed so the top of the figure is the top of the
+        torus (matching the convention readers expect from a 2D
+        coordinate plane).
+        """
+
+        period = float(self.manifold_period)
+
+        # ---- defaults specific to the torus branch ----
+        if patch_size is None:
+            patch_size = 0.20 * period
+        if grid_shape is None:
+            grid_shape = (4, 4)
+        nx, ny = int(grid_shape[0]), int(grid_shape[1])
+        half_s = patch_size / 2.0
+
+        # ---- pool predictions across successfully-fit folds ----
+        cv_folds = [f for f in self.data['cross_validation']
+                    if not f.get('skipped')]
+        Y_true = np.vstack([np.asarray(f['Y_true']) for f in cv_folds])
+        Y_pred = np.vstack([np.asarray(f['Y_pred_actual']) for f in cv_folds])
+
+        # ---- white-base inferno cmap (matches Euclidean branch) ----
+        base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
+        cmap_colors = base_cmap(np.linspace(0, 1, 256))
+        white = np.array([1, 1, 1, 1])
+        cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
+        white_inferno = ListedColormap(cmap_colors)
+
+        # ---- uniform grid centres on the unit cell ----
+        x_centres = (np.arange(nx) + 0.5) / nx * period
+        y_centres = (np.arange(ny) + 0.5) / ny * period
+        # Row-major top-to-bottom: reverse y so figure-top = torus-top.
+        centres = [(cx, cy) for cy in y_centres for cx in x_centres]
+
+        # ---- figure ----
+        # No explicit ``dpi=`` here so the inline-notebook display
+        # matches the Euclidean branch's call (which also omits dpi
+        # and inherits the inline backend's default ~100). Setting
+        # dpi=300 here caused the inline preview to render at 3x
+        # the Euclidean equivalent's pixel count for the same
+        # ``figsize_unit``. SVG / PNG saves still honour
+        # ``savefig.dpi`` from the project style.
+        fig, axes = plt.subplots(
+            ny, nx,
+            figsize=(figsize_unit * nx, figsize_unit * ny + 0.3),
+            facecolor='#FFFFFF',
+        )
+        axes = np.atleast_2d(axes)
+
+        # Single KDE evaluation grid over the unit cell.
+        grid_n = 120
+        xi, yi = np.mgrid[0:period:complex(0, grid_n),
+                          0:period:complex(0, grid_n)]
+        grid_pts = np.vstack([xi.flatten(), yi.flatten()])
+
+        # 3x3 tile offsets used both by the KDE and by the wrap-
+        # spanning patch-outline renderer.
+        tile_offsets = [(dx * period, dy * period)
+                        for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+
+        for idx, (cx, cy) in enumerate(centres):
+            col_idx = idx % nx
+            # Reverse rows so figure-top is torus-top.
+            row_idx = (ny - 1) - (idx // nx)
+            ax = axes[row_idx, col_idx]
+            ax.set_facecolor('#FFFFFF')
+
+            # Wrap-aware rectangular mask.
+            dx = (Y_true[:, 0] - cx + period / 2.0) % period - period / 2.0
+            dy = (Y_true[:, 1] - cy + period / 2.0) % period - period / 2.0
+            mask = (np.abs(dx) <= half_s) & (np.abs(dy) <= half_s)
+            n_in = int(mask.sum())
+
+            # ``rasterized=True`` embeds this scatter as a single
+            # raster image inside the SVG instead of one <circle>
+            # element per point. With ~80k points x ~25 panels in
+            # the default 5x5 grid that's the difference between a
+            # ~3 MB SVG and a 300+ MB one. Saved-resolution is still
+            # ``savefig.dpi`` from the project mplstyle (300), so
+            # the rasterized layer stays crisp on export.
+            ax.scatter(Y_true[:, 0], Y_true[:, 1], s=0.3,
+                       c=bg_pt_color, alpha=0.20, zorder=1,
+                       rasterized=True)
+
+            # Always draw the 9-tiled patch outline so wrap pieces show.
+            for ox, oy in tile_offsets:
+                ax.add_patch(Rectangle(
+                    (cx - half_s + ox, cy - half_s + oy),
+                    patch_size, patch_size,
+                    fill=False, edgecolor=square_edge_color,
+                    linestyle='--', lw=0.8, zorder=10,
+                ))
+
+            if n_in < min_samples:
+                ax.set_title(f"only {n_in} pts", fontsize=panel_fontsize - 2)
+                ax.set_xlim(0, period); ax.set_ylim(0, period)
+                ax.set_aspect('equal')
+                ax.set_xticks([]); ax.set_yticks([])
+                for s in ax.spines.values():
+                    s.set_edgecolor('#B0B0B0'); s.set_linewidth(0.4)
+                continue
+
+            # 3x3 tiled KDE on the prediction subset.
+            p_subset = Y_pred[mask]
+            tiled = np.vstack([p_subset + np.array(off, dtype=float)
+                               for off in tile_offsets])
+            kde = gaussian_kde(tiled.T)
+            zi = kde(grid_pts).reshape(xi.shape)
+            zi_norm = (zi - zi.min()) / (zi.max() - zi.min() + 1e-12)
+
+            if plot_type.lower() == 'contour':
+                z_flat_sorted = np.sort(zi.flatten())[::-1]
+                z_cumsum = np.cumsum(z_flat_sorted) / np.sum(z_flat_sorted)
+                levels = sorted([z_flat_sorted[np.searchsorted(z_cumsum, p)]
+                                 for p in [0.50, 0.75, 0.90]])
+                ax.contour(xi, yi, zi, levels=levels, cmap=white_inferno,
+                           linewidths=1.0, zorder=5)
+            else:
+                ax.imshow(zi_norm.T, cmap=white_inferno,
+                          interpolation='bilinear', origin='lower',
+                          extent=(0, period, 0, period),
+                          aspect='equal', alpha=0.78, zorder=2)
+
+            # Wrap-aware peak coord + bias distance.
+            peak_idx = np.unravel_index(np.argmax(zi), zi.shape)
+            peak_xy = np.asarray([[xi[peak_idx], yi[peak_idx]]],
+                                 dtype=float)
+            bias = float(pairwise_distance(
+                peak_xy, np.asarray([[cx, cy]], dtype=float),
+                metric=self.manifold_metric, period=period,
+            )[0])
+            ax.scatter(peak_xy[0, 0], peak_xy[0, 1], marker='+',
+                       c=peak_pt_color, s=35, lw=1.5, zorder=15)
+
+            ax.set_title(rf"$\Delta d$={bias:.2f} ({n_in})",
+                         fontsize=panel_fontsize - 2, pad=2)
+            ax.set_xlim(0, period); ax.set_ylim(0, period)
+            ax.set_aspect('equal')
+            ax.set_xticks([]); ax.set_yticks([])
+            for s in ax.spines.values():
+                s.set_edgecolor('#B0B0B0'); s.set_linewidth(0.4)
+
+        fig.suptitle(
+            f"CNN torus precision grid ({nx}x{ny} patches, "
+            f"side={patch_size:.2f} of period={period:.2f})",
+            fontsize=panel_fontsize - 1, y=0.995,
+        )
+        fig.subplots_adjust(left=0.02, right=0.99, top=0.93,
+                            bottom=0.02, wspace=0.08, hspace=0.18)
+
+        pkl_path = getattr(self, 'results_pkl_path', '')
+        if "male_mute_partner" in pkl_path:
+            sex_mod = "male_mute_partner"
+        elif "female" in pkl_path:
+            sex_mod = "female"
+        else:
+            sex_mod = "male"
+        save_filename = f"cnn_precision_grid_{sex_mod}_torus_{plot_type}"
+
+        if hasattr(self, '_handle_save'):
+            self._handle_save(fig, save_filename, save_plot, output_dir,
+                              file_format)
+
+        plt.show()
+
     def plot_error_landscape(self,
                              gridsize: int = 30,
                              cmap: str = _GLOBAL_CMAP,
@@ -3663,14 +4619,18 @@ class DeepResultsVisualizer:
         cbar2 = fig.colorbar(hb2, ax=ax2, pad=0.02, shrink=0.8)
         cbar2.set_label(r'Error Reduction ($\Delta E$)', color='#202020', rotation=270, labelpad=20, fontsize=label_fontsize)
 
+        # Axis-label prefix reflects the upstream latent space:
+        # ``torus`` -> the QLVM latent; otherwise the VAE / UMAP plane.
+        dim_prefix = 'QLVM' if self.manifold_metric == 'torus' else 'UMAP'
+
         # Formatting all axes
         for ax in axes:
             ax.set_facecolor('#FFFFFF')
             ax.grid(False)
             ax.set_aspect('equal')
 
-            ax.set_xlabel('UMAP Dimension 1', fontsize=label_fontsize, color='#202020')
-            ax.set_ylabel('UMAP Dimension 2', fontsize=label_fontsize, color='#202020')
+            ax.set_xlabel(f'{dim_prefix} Dimension 1', fontsize=label_fontsize, color='#202020')
+            ax.set_ylabel(f'{dim_prefix} Dimension 2', fontsize=label_fontsize, color='#202020')
             ax.tick_params(colors='#202020', which='both', labelsize=label_fontsize - 1)
 
             for spine in ['top', 'right']:
@@ -3701,82 +4661,92 @@ class DeepResultsVisualizer:
         plt.show()
 
     def plot_regional_saliency_inset(self,
-                                     source_data_path: str,
                                      region_key: str,
-                                     polygon_vertices: list,
-                                     polygon_centroid: list,
                                      category_name: Optional[str] = None,
                                      prediction_plot_type: str = 'contour',
                                      highlight_color: Optional[str] = None,
                                      null_color: str = '#D3D3D3',
                                      cmap: str = cmr.fusion_r,
                                      figsize: tuple = (18, 9),
+                                     radius: Optional[float] = None,
+                                     smoothing_sigma: float = 60.0,
                                      save_plot: bool = False,
                                      output_dir: Optional[str] = None,
                                      file_format: str = 'svg') -> None:
         """
-        Visualizes regional manifold dynamics by mapping spatial polygon annotations
-        to kinematic saliency on the UMAP manifold.
+        Visualizes regional manifold dynamics for one pre-computed
+        saliency region. The region is defined by the (centroid,
+        radius) pair stored alongside the saliency map -- the same
+        circular region the saliency runner used at training time --
+        so the spatial filter, the contrastive map, and the displayed
+        region outline all refer to identically the same set of
+        samples.
 
-        This method identifies the specific behavioral motifs that causally drive
-        the network's predictions into localized acoustic clusters. It leverages
-        Contrastive Centroid-Gradient Saliency to isolate region-specific drivers
-        from the global postural baseline.
-
-        The method operates in retrieval mode only: it expects `region_key`
-        to exist in the pre-computed saliency dictionary
-        (`self.data['saliency_maps']`) that was populated during CNN training.
-        If the key is absent, a NotImplementedError is raised — on-the-fly
-        saliency recomputation is not supported in this plotting helper and
-        must be done in the training module.
+        Polygon-based region definitions were dropped: the saliency
+        runner now emits circular regions exclusively, and the
+        polygon-vs-circle mismatch between the function signature
+        and the data caused silent misalignment between the filtered
+        samples and the saliency map. Pass a region_key that already
+        exists in self.data['saliency_maps']; centroid + radius are
+        read straight from that entry.
 
         Parameters
         ----------
-        source_data_path : str
-            Full path to the source .pkl file containing the raw temporal
-            kinematics. Currently unused (reserved for future on-the-fly
-            saliency recomputation); kept in the signature for API stability.
         region_key : str
-            The internal identifier used to look up pre-computed saliency maps
-            stored in self.data['saliency_maps']. Also used as the display title
-            if category_name is None.
-        polygon_vertices : list
-            A list of (x, y) coordinate pairs defining the boundary polygon
-            for the target UMAP region. Previously stored in modeling_settings
-            under spatial_annotations; now passed directly by the caller.
-        polygon_centroid : list
-            A two-element [x, y] list specifying the centroid of the target
-            region. Previously stored in modeling_settings under
-            spatial_annotations; now passed directly by the caller. Currently
-            used only for diagnostic printing.
+            The internal identifier used to look up the pre-computed
+            saliency entry stored in ``self.data['saliency_maps']``.
+            The entry must carry ``centroid`` (shape (2,)) and
+            ``radius`` (float) alongside ``contrastive_saliency``.
+            Also used as the display title if ``category_name`` is
+            None.
         category_name : str, optional
-            The human-readable title for the plot (e.g., 'Category 3: Complex').
-            If None, the 'region_key' is used for the display title.
+            Human-readable plot title (e.g., 'Category 3: Complex').
+            If None, ``region_key`` is used.
         prediction_plot_type : str, default 'contour'
             Visualization style for the predicted UMAP coordinates.
             Options: ['contour', 'density', 'hexbin', 'scatter'].
         highlight_color : str, optional
-            Color for the target polygon border, the peak density marker,
-            and the model's error distribution. If None, it uses the default
-            animal color assigned during visualizer initialization.
+            Color for the region border, the peak density marker,
+            and the model's error distribution. If None, falls back
+            to ``self.default_color`` (set in __init__).
         null_color : str, default '#D3D3D3'
-            Color for the model-free null distribution in the error inset.
-        cmap : str, default 'cmr.fusion_r'
-            The diverging colormap applied to the contrastive saliency heatmap.
-            Values represent relative importance compared to the global mean.
+            Color for the model-free null distribution in the error
+            inset.
+        cmap : str, default ``cmr.fusion_r``
+            Diverging colormap for the contrastive saliency heatmap.
         figsize : tuple, default (18, 9)
-            Dimensions of the final figure in inches.
+            Figure dimensions in inches.
+        radius : float, optional
+            Override the region radius (in manifold units) used for
+            both the wrap-aware sample selection AND the displayed
+            circle outline. Defaults to ``None``, in which case the
+            radius stored with the saliency entry (the one the
+            saliency runner actually used) is read directly. The
+            stored saliency map itself was computed at the *stored*
+            radius, so overriding here changes which samples are
+            included in the per-trial scatter / KDE / error inset
+            but does not retrain the saliency map; expect a console
+            note when an override is in effect.
+        smoothing_sigma : float, default 60.0
+            Gaussian smoothing standard deviation, in time bins,
+            applied to the contrastive saliency map along the time
+            axis before cubic-spline interpolation for display. At
+            the project's 150 fps camera rate, the default ~= 400 ms.
+            Set to ``0`` to disable smoothing entirely (the heatmap
+            renders the raw per-bin contrastive values, which can be
+            visibly noisy). Smaller values preserve more high-
+            frequency structure; larger values further integrate
+            bin-to-bin variation.
         save_plot : bool, default False
-            If True, saves the figure to the specified output directory.
+            If True, saves the figure to ``output_dir``.
         output_dir : str, optional
-            Path to the export directory. Defaults to the visualizer's save_dir.
+            Export directory. Defaults to the visualizer's save_dir.
         file_format : str, default 'svg'
-            Format for the exported file (e.g., 'png', 'pdf', 'svg').
+            File format for the export.
 
         Returns
         -------
         None
-            Generates a two-panel matplotlib figure and optionally saves to disk.
         """
 
         # --- 0. COLOR MANAGEMENT ---
@@ -3800,9 +4770,48 @@ class DeepResultsVisualizer:
         num_bins = self.metadata['n_time_bins']
         num_features = len(features_list)
 
-        # --- 3. SPATIAL FILTERING ---
-        poly_path = Path(polygon_vertices)
-        r_mask = poly_path.contains_points(Y_te)
+        # --- 3. SALIENCY EXTRACTION + REGION DEFINITION ---
+        # Region geometry now comes from the stored saliency entry --
+        # the same circle the saliency runner used to assemble the
+        # contrastive map.
+        if 'saliency_maps' not in self.data or region_key not in self.data['saliency_maps']:
+            raise NotImplementedError(
+                f"No pre-computed saliency map stored for region '{region_key}'. "
+                f"Re-compute saliency during training and rerun, or pass a "
+                f"region_key already present in self.data['saliency_maps'] "
+                f"(available: {list(self.data.get('saliency_maps', {}).keys())})."
+            )
+        sal_entry = self.data['saliency_maps'][region_key]
+        centroid = np.asarray(sal_entry['centroid'], dtype=float).reshape(2)
+        stored_radius = float(sal_entry['radius'])
+        raw_saliency = np.asarray(sal_entry['contrastive_saliency'])
+        contrastive_map = np.mean(raw_saliency, axis=0)
+        if radius is None:
+            effective_radius = stored_radius
+            print(
+                f"   > Extracting pre-computed saliency for {region_key} "
+                f"(centroid={centroid.tolist()}, radius={effective_radius:.3f})"
+            )
+        else:
+            effective_radius = float(radius)
+            print(
+                f"   > Extracting pre-computed saliency for {region_key} "
+                f"(centroid={centroid.tolist()}); USING radius override "
+                f"{effective_radius:.3f} for sample selection + display "
+                f"(stored radius was {stored_radius:.3f}; the saliency "
+                f"map itself was computed at the stored radius)."
+            )
+        radius = effective_radius
+
+        # --- 4. SPATIAL FILTERING (circle, wrap-aware on torus) ---
+        # Distances are computed with the same manifold metric the
+        # CNN used at training so torus wrap is honoured automatically
+        # when applicable.
+        distances = pairwise_distance(
+            Y_te, centroid.reshape(1, 2),
+            metric=self.manifold_metric, period=self.manifold_period,
+        ).ravel()
+        r_mask = distances <= radius
         r_idx = np.where(r_mask)[0]
 
         if len(r_idx) < 3:
@@ -3819,23 +4828,6 @@ class DeepResultsVisualizer:
             Y_te[r_idx], Y_pred_null[r_idx],
             metric=self.manifold_metric, period=self.manifold_period,
         )
-
-        # --- 4. SALIENCY EXTRACTION ---
-        if 'saliency_maps' in self.data and region_key in self.data['saliency_maps']:
-            print(f"   > Extracting pre-computed saliency for {region_key}...")
-            raw_saliency = self.data['saliency_maps'][region_key]['contrastive_saliency']
-            contrastive_map = np.mean(raw_saliency, axis=0)
-        else:
-            # On-the-fly saliency recomputation is not implemented in this
-            # visualizer. It would require re-loading raw temporal blocks
-            # and rerunning a centroid-gradient attribution pass — both of
-            # which belong in the training module, not a plotting helper.
-            raise NotImplementedError(
-                f"No pre-computed saliency map stored for region '{region_key}'. "
-                f"Re-compute saliency during training and rerun, or pass a "
-                f"region_key already present in self.data['saliency_maps'] "
-                f"(available: {list(self.data.get('saliency_maps', {}).keys())})."
-            )
 
         # --- 5. VISUALIZATION PIPELINE ---
         text_color = '#000000'
@@ -3860,14 +4852,11 @@ class DeepResultsVisualizer:
         ax1.set_facecolor('#FFFFFF')
         ax1.set_title(f"UMAP Context: {display_title}", fontsize=14, color=text_color, pad=15)
 
-        # Plot the dots inside the polygon with the highlight color
-        ax1.scatter(Y_te[~r_mask, 0], Y_te[~r_mask, 1],
-                    c='#B0B0B0', s=5, alpha=0.3, edgecolors='none', zorder=1)
-
-        # Plot the SELECTED points (larger, highlighted color, black edges, top layer)
-        ax1.scatter(Y_te[r_mask, 0], Y_te[r_mask, 1],
-                    c=highlight_color, s=25, alpha=0.3, edgecolors='#000000', linewidths=0.5, zorder=2)
-
+        # Background scatter (both the out-of-region grey dots and
+        # the in-region highlighted dots) intentionally omitted --
+        # the density layer + dashed circle outline carry the
+        # spatial story on their own and the per-sample scatter
+        # blew the SVG up to tens of MB without adding information.
         y_p_region = Y_pred[r_idx]
 
         # --- FULLY RESTORED PREDICTION PLOT TYPE LOGIC ---
@@ -3909,14 +4898,44 @@ class DeepResultsVisualizer:
         else:
             ax1.scatter(y_p_region[:, 0], y_p_region[:, 1], c=highlight_color, s=15, alpha=0.6, edgecolors='none', zorder=2)
 
-        # Dynamic Padding: Shift data up and right to give the inset an empty bottom-left corner
-        x_min, x_max = Y_te[:, 0].min(), Y_te[:, 0].max()
-        y_min, y_max = Y_te[:, 1].min(), Y_te[:, 1].max()
-        ax1.set_xlim(x_min - (x_max - x_min) * 0.25, x_max + (x_max - x_min) * 0.05)
-        ax1.set_ylim(y_min - (y_max - y_min) * 0.25, y_max + (y_max - y_min) * 0.05)
+        # Region circle outline. On torus the circle is drawn 9-tiled
+        # so the wrapped half of a boundary-crossing circle appears on
+        # the opposite edge of the unit cell, matching the wrap-aware
+        # spatial-filter mask above.
+        if self.manifold_metric == 'torus':
+            period = float(self.manifold_period)
+            tile_offsets = [(dx * period, dy * period)
+                            for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+        else:
+            tile_offsets = [(0.0, 0.0)]
+        for ox, oy in tile_offsets:
+            ax1.add_patch(plt.Circle(
+                (centroid[0] + ox, centroid[1] + oy), radius,
+                fill=False, edgecolor='#000000', lw=1.5,
+                linestyle='--', zorder=5,
+            ))
 
-        ax1.set_xlabel('UMAP Dimension 1', fontsize=12, color=text_color)
-        ax1.set_ylabel('UMAP Dimension 2', fontsize=12, color=text_color)
+        # Axes extent: torus -> exactly the unit cell, no padding;
+        # Euclidean -> the original padded view that leaves the
+        # bottom-left corner free for the inset.
+        if self.manifold_metric == 'torus':
+            period = float(self.manifold_period)
+            ax1.set_xlim(0, period)
+            ax1.set_ylim(0, period)
+            ax1.set_aspect('equal')
+        else:
+            # Dynamic Padding: Shift data up and right to give the inset an empty bottom-left corner
+            x_min, x_max = Y_te[:, 0].min(), Y_te[:, 0].max()
+            y_min, y_max = Y_te[:, 1].min(), Y_te[:, 1].max()
+            ax1.set_xlim(x_min - (x_max - x_min) * 0.25, x_max + (x_max - x_min) * 0.05)
+            ax1.set_ylim(y_min - (y_max - y_min) * 0.25, y_max + (y_max - y_min) * 0.05)
+
+        # Axis-label prefix reflects the upstream latent space:
+        # ``torus`` -> the QLVM latent (named QLVM Dimension N);
+        # otherwise the VAE / UMAP-style continuous plane.
+        dim_prefix = 'QLVM' if self.manifold_metric == 'torus' else 'UMAP'
+        ax1.set_xlabel(f'{dim_prefix} Dimension 1', fontsize=12, color=text_color)
+        ax1.set_ylabel(f'{dim_prefix} Dimension 2', fontsize=12, color=text_color)
         ax1.tick_params(axis='both', colors=text_color, labelsize=10,
                         bottom=True, left=True, labelbottom=True, labelleft=True)
 
@@ -3924,8 +4943,24 @@ class DeepResultsVisualizer:
         ax_ins = ax1.inset_axes([0.07, 0.07, 0.22, 0.16])
         ax_ins.set_facecolor('none')
         ax_ins.grid(False)
-        ax_ins.hist(err_null, bins=15, density=True, color=null_color, alpha=0.6, label='Null', zorder=1)
-        ax_ins.hist(err_actual, bins=15, density=True, color=highlight_color, alpha=0.6, label='CNN', zorder=2)
+        # Darken the highlight (male) colour 50% toward black for the
+        # CNN-histogram edges; null histogram gets a plain black edge.
+        _h = highlight_color.lstrip('#')
+        _r, _g, _b = int(_h[0:2], 16), int(_h[2:4], 16), int(_h[4:6], 16)
+        darker_highlight = (
+            f"#{int(round(_r * 0.5)):02x}"
+            f"{int(round(_g * 0.5)):02x}"
+            f"{int(round(_b * 0.5)):02x}"
+        )
+        # ``histtype='stepfilled'`` draws a single filled outline
+        # rather than one rectangle per bin, so the edgecolor is just
+        # the outer step contour -- no edges visible between bins.
+        ax_ins.hist(err_null, bins=15, density=True, color=null_color,
+                    alpha=0.6, edgecolor='#000000', linewidth=0.7,
+                    histtype='stepfilled', label='Null', zorder=1)
+        ax_ins.hist(err_actual, bins=15, density=True, color=highlight_color,
+                    alpha=0.6, edgecolor=darker_highlight, linewidth=0.7,
+                    histtype='stepfilled', label='CNN', zorder=2)
         ax_ins.set_title("Prediction Error", fontsize=9, color=text_color)
         ax_ins.set_xlabel("Euclidean Distance", fontsize=8, color=text_color)
         ax_ins.set_ylabel("Density", fontsize=8, color=text_color)
@@ -3940,11 +4975,30 @@ class DeepResultsVisualizer:
 
         # PANEL 2: Contrastive Drivers Heatmap
         ax2.set_facecolor('#FFFFFF')
-        v_lim = np.max(np.abs(contrastive_map))
+
+        # Gaussian temporal smoothing of the contrastive saliency map
+        # along the time axis. Default sigma ~= 60 frames = 400 ms at
+        # 150 fps -- matches the treatment applied in
+        # ``plot_multinomial_multivariate_filters``. ``mode='reflect'``
+        # keeps the boundaries well-behaved. Caller can override via
+        # ``smoothing_sigma`` (set to 0 to disable smoothing entirely
+        # and render the raw per-bin contrastive map).
+        if smoothing_sigma > 0:
+            smoothed_contrastive = gaussian_filter1d(
+                contrastive_map, sigma=float(smoothing_sigma),
+                axis=-1, mode='reflect',
+            )
+        else:
+            smoothed_contrastive = contrastive_map
+
+        v_lim = float(np.max(np.abs(smoothed_contrastive)))
 
         original_time = np.linspace(-4, 0, num_bins)
         smooth_time = np.linspace(-4, 0, 500)
-        smooth_map = interp1d(original_time, contrastive_map, kind='cubic', axis=1)(smooth_time)
+        smooth_map = interp1d(
+            original_time, smoothed_contrastive,
+            kind='cubic', axis=1,
+        )(smooth_time)
 
         im = ax2.imshow(smooth_map, aspect='auto', cmap=cmap,
                         extent=[-4, 0, num_features, 0], vmin=-v_lim, vmax=v_lim)
@@ -4484,6 +5538,10 @@ def plot_collinearity_audit(audit_pkl_path: str,
         computed over the finite VIF values only and are NaN if
         no feature has a finite VIF.
     """
+
+    audit_pkl_path = configure_path(str(audit_pkl_path))
+    if save_dir is not None:
+        save_dir = configure_path(str(save_dir))
 
     with open(audit_pkl_path, 'rb') as fh:
         payload = pickle.load(fh)

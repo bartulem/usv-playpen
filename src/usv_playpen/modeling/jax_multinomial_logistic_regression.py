@@ -109,7 +109,21 @@ def _multinomial_train_loop_jit(
     scheduler = optax.cosine_decay_schedule(
         init_value=learning_rate, decay_steps=max_iter,
     )
-    optimizer = optax.adam(scheduler)
+    # Clip the global-norm of the gradient before Adam consumes it.
+    # The convex multinomial loss + L2 + temporal-smoothness penalty
+    # has a unique global minimum, so clipping never biases the
+    # solution -- it only bounds the per-step move and prevents the
+    # rare-but-fatal case where a single high-curvature step pushes
+    # ``W`` into a region where the next forward pass overflows.
+    # Once that happens Adam's first / second moment estimates pick
+    # up NaN, the params stay NaN, ``diff < tol`` never fires, the
+    # loop runs to ``max_iter``, and the downstream metric calls
+    # raise on NaN probabilities -- the silent per-fold failure mode
+    # observed in the multinomial selector pickles.
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adam(scheduler),
+    )
     check_interval = 100
 
     def step(params, opt_state):
@@ -551,7 +565,13 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             init_value=self.learning_rate,
             decay_steps=self.max_iter
         )
-        optimizer = optax.adam(scheduler)
+        # Same rationale as the JIT-loop variant above: clip the
+        # global gradient norm before Adam so a single overshoot can
+        # never put ``W`` into the NaN-propagating regime.
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adam(scheduler),
+        )
         opt_state = optimizer.init(params)
 
         @partial(jax.jit, static_argnums=(4, 5))
