@@ -32,7 +32,6 @@ import h5py
 import librosa
 import librosa.display
 import matplotlib.colors as mcolors
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
@@ -2279,6 +2278,7 @@ def plot_umap_with_category_thumbnails(
     thumbnail_size_fraction: float = 0.5,
     thumbnail_hspace: float = 0.02,
     thumbnail_wspace: float = 0.05,
+    tile_orientation: str = "horizontal",
     fig_size: tuple[float, float] = (16.0, 12.0),
     fig_dpi: int = 300,
     output_path: str | None = None,
@@ -2364,23 +2364,30 @@ def plot_umap_with_category_thumbnails(
         Font size used for the cluster-ID labels when
         ``annotate_cluster_ids`` is ``True``.
     thumbnail_size_fraction (float)
-        Fraction of the right region's vertical extent occupied by
-        the per-category thumbnail rows. ``1.0`` keeps the previous
-        full-height behaviour; ``<1.0`` adds a bottom spacer row to
-        the right gridspec so each thumbnail row gets a shorter cell.
+        Final shrink multiplier applied to the thumbnail cell side.
+        The cell side is first derived to make the whole thumbnail
+        block match the LEFT main scatter's on-page footprint:
+        ``target_side_in = min(left_region_w_in, top_scatter_row_h_in)``
+        and ``cell_side_in = target_side_in / max(n_rows, n_cols)``.
+        ``1.0`` keeps the scatter-matched size; ``<1.0`` shrinks
+        further. Must satisfy ``0 < thumbnail_size_fraction <= 1.0``.
         Combined with ``ax.set_box_aspect(1)`` on every thumbnail
-        axes (always on), this yields smaller square thumbnails:
-        when the cell becomes shorter than wide, the square clamps
-        to the cell height and leaves a thin horizontal pad on each
-        side. Must satisfy ``0 < thumbnail_size_fraction <= 1.0``.
+        axes (always on), each cell is square; auto-added spacer
+        row/column at the bottom/right of the inner gridspec consume
+        any remaining space in the right region.
     thumbnail_hspace (float)
         ``hspace`` for the right-side per-category x per-sample
         gridspec (fraction of average cell height). Default is
-        ``0.02`` so adjacent category rows touch; raise it if you
-        want gaps between rows.
+        ``0.02`` so adjacent cells touch; raise it if you want gaps.
     thumbnail_wspace (float)
         ``wspace`` for the right-side gridspec (fraction of average
         cell width). Default ``0.05``.
+    tile_orientation (str)
+        ``"horizontal"`` (default) tiles each category as a ROW of
+        ``n_samples_per_category`` thumbnails (n_categories rows
+        stacked vertically). ``"vertical"`` tiles each category as a
+        COLUMN of ``n_samples_per_category`` thumbnails
+        (n_categories columns side by side).
     fig_size, fig_dpi
         Matplotlib figure size and DPI.
     output_path, fig_format (str | None)
@@ -2626,9 +2633,11 @@ def plot_umap_with_category_thumbnails(
             picks_per_category[cat] = cat_df[local_idx.tolist()]
 
     fig = plt.figure(figsize=fig_size, dpi=fig_dpi)
+    outer_width_ratios = (1.0, 1.5)
     outer = fig.add_gridspec(
-        1, 2, width_ratios=[1.0, 1.5], wspace=0.08,
+        1, 2, width_ratios=list(outer_width_ratios), wspace=0.08,
     )
+    right_region_w_fraction = outer_width_ratios[1] / sum(outer_width_ratios)
     # Left column: a vertical stack of 5 UMAPs. The top scatter is
     # the large category-colored map; below it sit two pairs of
     # smaller auxiliary maps. ``height_ratios=[2, 1, 1]`` gives the
@@ -2853,78 +2862,117 @@ def plot_umap_with_category_thumbnails(
         # as living inside the same UMAP geometry.
         _overlay_boundaries(ax, alpha=1.0, linewidth=1.5)
 
-    # Right-side per-category x per-sample grid. When
-    # ``thumbnail_size_fraction < 1`` an extra spacer row is added at
-    # the bottom of this subgridspec so the n_categories thumbnail
-    # rows collectively take only that fraction of the right region's
-    # vertical extent -- combined with ``set_box_aspect(1)`` below
-    # this shrinks each square thumbnail (cell height becomes the
-    # binding dim once the spacer eats enough vertical space).
+    # Right-side per-category x per-sample grid. ``tile_orientation``
+    # picks whether each category is a horizontal ROW of thumbnails
+    # (default) or a vertical COLUMN. The WHOLE thumbnail block is
+    # sized to match the upper-left main scatter's footprint: block
+    # width = block height = min(left_region_w_in, top_scatter_row_h_in).
+    # Cells fill their slots (no set_box_aspect) so the specs end up
+    # naturally spec-shaped -- wider than tall in vertical mode (10
+    # rows / 7 cols), taller than wide in horizontal mode. Spacer
+    # row/column appended on the bottom/right so the block sits at
+    # the top-left of the right region.
+    if tile_orientation not in ("horizontal", "vertical"):
+        msg = (
+            f"tile_orientation must be 'horizontal' or 'vertical'; "
+            f"got {tile_orientation!r}."
+        )
+        raise ValueError(msg)
     if not (0.0 < thumbnail_size_fraction <= 1.0):
         msg = (
             f"thumbnail_size_fraction must be in (0, 1]; "
             f"got {thumbnail_size_fraction!r}."
         )
         raise ValueError(msg)
-    if thumbnail_size_fraction < 1.0:
-        spacer_ratio = n_categories * (1.0 - thumbnail_size_fraction) / thumbnail_size_fraction
-        inner_height_ratios = [1.0] * n_categories + [spacer_ratio]
-        inner = outer[0, 1].subgridspec(
-            n_categories + 1, n_samples_per_category,
-            height_ratios=inner_height_ratios,
-            wspace=thumbnail_wspace, hspace=thumbnail_hspace,
-        )
+    if tile_orientation == "horizontal":
+        grid_n_rows = n_categories
+        grid_n_cols = n_samples_per_category
     else:
-        inner = outer[0, 1].subgridspec(
-            n_categories, n_samples_per_category,
-            wspace=thumbnail_wspace, hspace=thumbnail_hspace,
-        )
+        grid_n_rows = n_samples_per_category
+        grid_n_cols = n_categories
 
-    row_axes_per_category: dict[int, list[plt.Axes]] = {cat: [] for cat in categories}
+    left_region_w_in = fig_size[0] * (
+        outer_width_ratios[0] / sum(outer_width_ratios)
+    )
+    right_region_w_in = fig_size[0] * right_region_w_fraction
+    right_region_h_in = fig_size[1]
+    top_row_h_in = fig_size[1] * (2.0 / 4.0)  # height_ratios [2, 1, 1]
+    block_side_in = thumbnail_size_fraction * min(
+        left_region_w_in, top_row_h_in,
+    )
+    block_w_in = block_side_in
+    block_h_in = block_side_in
+    cell_w_in = block_w_in / grid_n_cols
+    cell_h_in = block_h_in / grid_n_rows
+
+    width_ratios = [1.0] * grid_n_cols
+    n_extra_cols = 0
+    width_excess = right_region_w_in - block_w_in
+    if width_excess > 0:
+        width_ratios = [1.0] * grid_n_cols + [width_excess / cell_w_in]
+        n_extra_cols = 1
+
+    height_ratios = [1.0] * grid_n_rows
+    n_extra_rows = 0
+    height_excess = right_region_h_in - block_h_in
+    if height_excess > 0:
+        height_ratios = [1.0] * grid_n_rows + [height_excess / cell_h_in]
+        n_extra_rows = 1
+
+    inner = outer[0, 1].subgridspec(
+        grid_n_rows + n_extra_rows, grid_n_cols + n_extra_cols,
+        height_ratios=height_ratios,
+        width_ratios=width_ratios,
+        wspace=thumbnail_wspace, hspace=thumbnail_hspace,
+    )
+
+    # ``(cat_idx, sample_idx)`` -> ``(grid_row, grid_col)`` dispatch.
+    # Horizontal: each category is a row, sample index walks columns.
+    # Vertical:   each category is a column, sample index walks rows.
+    def _grid_pos(cat_idx: int, sample_idx: int) -> tuple[int, int]:
+        if tile_orientation == "horizontal":
+            return cat_idx, sample_idx
+        return sample_idx, cat_idx
 
     with h5py.File(consolidated_h5_path, "r") as h5:
         mask_index_cache: dict[str, np.ndarray] = {}
 
-        for row_idx, cat in enumerate(categories):
+        def _strip_ax_chrome(ax: plt.Axes) -> None:
+            """Hide ticks + every spine + the axes frame so no
+            rectangular outline is ever drawn around a thumbnail.
+            ``set_frame_on(False)`` is defensive on top of the per-
+            spine ``set_visible(False)`` calls in case any draw path
+            leaves the frame visible."""
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.set_frame_on(False)
+
+        for cat_idx, cat in enumerate(categories):
             picks = picks_per_category.get(cat)
             if picks is None:
-                for col_idx in range(n_samples_per_category):
-                    ax = fig.add_subplot(inner[row_idx, col_idx])
-                    # Force a 1:1 axes box: each thumbnail renders as a
-                    # square inside its grid cell (width is the binding
-                    # dim, so height shrinks to match -- about half the
-                    # default rectangle height) regardless of
-                    # `imshow(..., aspect='auto')` stretching the data.
-                    ax.set_box_aspect(1)
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-                    for sp in ax.spines.values():
-                        sp.set_visible(False)
-                    row_axes_per_category[cat].append(ax)
+                for sample_idx in range(n_samples_per_category):
+                    g_row, g_col = _grid_pos(cat_idx, sample_idx)
+                    ax = fig.add_subplot(inner[g_row, g_col])
+                    _strip_ax_chrome(ax)
                 continue
 
             this_mask = apply_mask and (cat not in mask_excluded_categories)
 
             picks_rows = list(picks.iter_rows(named=True))
-            for col_idx in range(n_samples_per_category):
-                ax = fig.add_subplot(inner[row_idx, col_idx])
-                ax.set_box_aspect(1)
-                row_axes_per_category[cat].append(ax)
-                if col_idx >= len(picks_rows):
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-                    for sp in ax.spines.values():
-                        sp.set_visible(False)
+            for sample_idx in range(n_samples_per_category):
+                g_row, g_col = _grid_pos(cat_idx, sample_idx)
+                ax = fig.add_subplot(inner[g_row, g_col])
+                if sample_idx >= len(picks_rows):
+                    _strip_ax_chrome(ax)
                     continue
-                row = picks_rows[col_idx]
+                row = picks_rows[sample_idx]
                 sess = str(row["session_id"])
                 spec_idx = int(row["row_index"])
                 spec_group_key = f"spectrogram/{sess}"
                 if spec_group_key not in h5:
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-                    for sp in ax.spines.values():
-                        sp.set_visible(False)
+                    _strip_ax_chrome(ax)
                     continue
                 grp = h5[spec_group_key]
                 spec = grp["spectrograms"][spec_idx, :, :].astype(np.float32)
@@ -2954,36 +3002,13 @@ def plot_umap_with_category_thumbnails(
                 # so the user can match the same N drawn at the
                 # picked dot's position in the main scatter.
                 ax.text(
-                    0.04, 0.95, str(col_idx + 1),
+                    0.04, 0.95, str(sample_idx + 1),
                     transform=ax.transAxes,
                     ha="left", va="top",
                     fontsize=7, fontweight="bold",
                     color="#FFFFFF",
                 )
-                ax.set_xticks([])
-                ax.set_yticks([])
-                for sp in ax.spines.values():
-                    sp.set_visible(False)
-
-    fig.canvas.draw()
-    rect_pad = 0.004
-    for cat, axes_list in row_axes_per_category.items():
-        if not axes_list:
-            continue
-        poses = [ax.get_position() for ax in axes_list]
-        x0 = min(p.x0 for p in poses) - rect_pad
-        y0 = min(p.y0 for p in poses) - rect_pad
-        x1 = max(p.x1 for p in poses) + rect_pad
-        y1 = max(p.y1 for p in poses) + rect_pad
-        rect = mpatches.Rectangle(
-            (x0, y0), (x1 - x0), (y1 - y0),
-            transform=fig.transFigure,
-            fill=False,
-            edgecolor=category_colors[cat],
-            linewidth=2.5,
-            clip_on=False,
-        )
-        fig.patches.append(rect)
+                _strip_ax_chrome(ax)
 
     fig.tight_layout()
 
