@@ -3617,6 +3617,680 @@ def plot_multinomial_selection_diagnosis(
     plt.show()
 
 
+def plot_manifold_selection_trajectory(
+        selection_results_path: str,
+        metric_primary: str = 'r2_spatial',
+        primary_metric_name: str = "R² (spatial, KDE-weighted)",
+        metric_secondary: str = 'pearson_y',
+        secondary_metric_name: str = "Pearson r (manifold y)",
+        save_plot: bool = False,
+        output_dir: str = None,
+        feature_label_overrides: dict = None,
+) -> None:
+    """
+    Plot the continuous-vocal-manifold forward-selection trajectory as
+    a compact two-panel summary, mirroring
+    ``plot_multinomial_selection_trajectory`` but adapted to the 2-D
+    regression metrics emitted by
+    ``continuous_vocal_manifold_model_selection``.
+
+    Layout
+    ------
+    * **Left panel** -- one horizontal bar per accepted step, top-to-
+      bottom in selection order. Each bar is split into a lighter base
+      (the previous cumulative value of ``metric_primary``) and a
+      darker tip (this step's marginal contribution). Bars are
+      coloured by the self / other / dyadic palette so the same
+      feature gets the same colour across figures. A rejected final
+      step, if any, is drawn below a thin separator in grey.
+      Higher-is-better metrics (``r2_spatial``, ``pearson_x/y``,
+      ``spearman_x/y``) grow rightward from the chance baseline on
+      the left; lower-is-better error metrics (``euclidean_mae``,
+      ``euclidean_rmse``, ``euclidean_mae_weighted``, ``mahalanobis_mae``,
+      ``mae_x``, ``mae_y``) flip the x-axis and grow rightward from the
+      step-0 (null-model / intercept-only) baseline on the right.
+    * **Right panel** -- two vertical bars on the secondary-metric
+      axis: best univariate (= the anchor, since the manifold selector
+      restricts the first step to a single anchor feature) and final
+      accepted model (stacked bar, one segment per accepted feature,
+      segment height = that feature's marginal contribution to the
+      secondary metric). Feature labels stack above each bar.
+
+    Chance baselines
+    ----------------
+    * Higher-is-better metrics: ``0.0`` (r2 / correlation chance).
+    * Lower-is-better metrics: read from the step-0
+      ``baseline_score`` when present; otherwise pulled from the
+      same metric on the null-model fold dict; otherwise falls back
+      to the worst (max) across accepted-step means.
+
+    Robustness
+    ----------
+    All per-fold means use ``np.nanmean`` so NaN folds from the JAX
+    bivariate trainer's hyperparameter-grid failures do not poison
+    the trajectory.
+
+    Parameters
+    ----------
+    selection_results_path : str
+        Path to the consolidated ``model_selection_final_*.pkl``
+        artifact produced by ``continuous_vocal_manifold_model_selection``.
+        May be either the file itself or a directory containing one
+        (latest mtime wins). Routed through ``configure_path``.
+    metric_primary : str, default ``'r2_spatial'``
+        Key for the primary per-fold metric. Used for the left-panel
+        trajectory.
+    primary_metric_name : str, default ``'R² (spatial, KDE-weighted)'``
+        Display name for ``metric_primary``; used as the left-panel
+        x-axis label (with `` (held-out data)`` appended).
+    metric_secondary : str, default ``'pearson_y'``
+        Key for the secondary per-fold metric. Used for the right-
+        panel bars.
+    secondary_metric_name : str, default ``'Pearson r (manifold y)'``
+        Display name for ``metric_secondary``; used as the right-
+        panel y-axis label (with `` (held-out data)`` appended).
+    save_plot : bool, default False
+        Whether to save the figure to disk.
+    output_dir : str, optional
+        Directory to save the plot. Defaults to the parent dir of
+        ``selection_results_path`` (or to the path itself if a
+        directory was supplied).
+    feature_label_overrides : dict, optional
+        Mapping from raw feature names (as stored in the pickle) to
+        presentation-friendly labels used for every annotation. Raw
+        names not in the map render unchanged.
+    """
+
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
+    BG_COLOR = '#FFFFFF'
+
+    selection_steps, display_name, _ = load_selection_results(selection_results_path)
+
+    if not selection_steps:
+        print(f"No manifold selection step data found in {selection_results_path}")
+        return
+
+    # Sex-aware palette inferred from the filename, matching the
+    # bout-onset / multinomial selectors' convention.
+    if '_male_' in display_name:
+        self_col, other_col = male_color, female_color
+    elif '_female_' in display_name:
+        self_col, other_col = female_color, male_color
+    else:
+        self_col, other_col = male_color, female_color
+
+    lower_is_better_set = {
+        'euclidean_mae', 'euclidean_rmse', 'euclidean_mae_weighted',
+        'euclidean_mae_raw', 'mahalanobis_mae', 'mae_x', 'mae_y',
+        'mse', 'rmse',
+    }
+    higher_is_better_set = {
+        'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
+    }
+    is_minimization_primary = metric_primary in lower_is_better_set
+    is_minimization_secondary = metric_secondary in lower_is_better_set
+
+    def _fold_mean(folds_metrics: dict, key: str) -> float:
+        if not folds_metrics or key not in folds_metrics:
+            return float('nan')
+        arr = np.array(folds_metrics[key], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        return float(np.mean(arr)) if arr.size else float('nan')
+
+    def _chance_value(metric_name: str, minimisation: bool) -> float:
+        """Higher-is-better metrics anchor at 0; for error metrics we
+        try to pull the null-model baseline from step 0, otherwise use
+        the worst observed mean across accepted steps."""
+        if not minimisation:
+            return 0.0
+        null_step = selection_steps[0] if selection_steps else None
+        if null_step is not None:
+            null_cs = null_step.get('candidates_summary') or {}
+            for cd in null_cs.values():
+                fm = cd.get('folds', {}).get('metrics', {})
+                val = _fold_mean(fm, metric_name)
+                if np.isfinite(val):
+                    return val
+        return float('nan')
+
+    # Accepted steps = those with a real selected_feature that is not
+    # the manifold selector's null baseline marker.
+    accepted_steps = [
+        s for s in selection_steps
+        if s.get('selected_feature') not in (None, 'null_model_free')
+    ]
+    if not accepted_steps:
+        print(f"No accepted feature steps in {selection_results_path}")
+        return
+
+    chance_primary = _chance_value(metric_primary, is_minimization_primary)
+    chance_secondary = _chance_value(metric_secondary, is_minimization_secondary)
+    if not np.isfinite(chance_primary):
+        chance_primary = 0.0
+    if not np.isfinite(chance_secondary):
+        chance_secondary = 0.0
+
+    steps_data = []
+    for s in accepted_steps:
+        winner = s['selected_feature']
+        wd = s['candidates_summary'][winner]
+        fm = wd.get('folds', {}).get('metrics', {})
+        steps_data.append({
+            'feature_name': winner,
+            'prim_mean': _fold_mean(fm, metric_primary),
+            'sec_mean': _fold_mean(fm, metric_secondary),
+        })
+
+    # Best univariate = the anchor step (the manifold selector locks
+    # the first accepted step to a single anchor feature, so there is
+    # no broader single-feature screen here).
+    anchor_step = accepted_steps[0]
+    anchor_winner = anchor_step['selected_feature']
+    anchor_fm = (
+        anchor_step['candidates_summary'][anchor_winner]
+        .get('folds', {}).get('metrics', {})
+    )
+    best_univariate_value = _fold_mean(anchor_fm, metric_secondary)
+    best_univariate_feat = anchor_winner
+
+    final_score = float(steps_data[-1]['sec_mean'])
+
+    # Rejected final step lookup -- mirrored from the multinomial
+    # trajectory plotter so a rejection row is rendered consistently.
+    rejection_row = None
+    if selection_steps[-1].get('selected_feature') is None:
+        rej_step = selection_steps[-1]
+        rej_cs = rej_step.get('candidates_summary') or {}
+        if rej_cs:
+            best_rej_feat = None
+            best_rej_pri = float('nan')
+            comp = (lambda a, b: a < b) if is_minimization_primary else (lambda a, b: a > b)
+            best_pri_so_far = np.inf if is_minimization_primary else -np.inf
+            for f, cdata in rej_cs.items():
+                fm = cdata.get('folds', {}).get('metrics', {})
+                pv = _fold_mean(fm, metric_primary)
+                if not np.isfinite(pv):
+                    continue
+                if comp(pv, best_pri_so_far):
+                    best_pri_so_far = pv
+                    best_rej_feat = f
+                    best_rej_pri = pv
+            if best_rej_feat is not None:
+                rejection_row = {
+                    'feature_name': best_rej_feat,
+                    'prim_mean': best_rej_pri,
+                }
+
+    # Feature-category colour map: dyadic features get the social
+    # colour; self-prefixed and sex-emitted-from-self features get
+    # self_col; everything else (other.*, partner orofacial, etc.)
+    # gets other_col.
+    dyadic_keywords = [
+        "nose-nose", "nose-TTI", "TTI-nose",
+        "allo_yaw-nose", "nose-allo_yaw",
+        "allo_yaw-TTI", "TTI-allo_yaw",
+        "allo_pitch-nose", "nose-allo_pitch",
+        "allo_pitch-TTI", "TTI-allo_pitch",
+    ]
+
+    def _category_color(fname: str) -> str:
+        if any(x in fname for x in dyadic_keywords):
+            return DYADIC_COLOR
+        if '-sei' in fname:
+            return self_col
+        if fname.startswith('self.') or 'self' in fname:
+            return self_col
+        return other_col
+
+    def _lighten(hex_color: str, factor: float = 0.65) -> str:
+        h = hex_color.lstrip('#')
+        r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
+        r = int(round(r + (255 - r) * factor))
+        g = int(round(g + (255 - g) * factor))
+        b = int(round(b + (255 - b) * factor))
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    label_map = feature_label_overrides if feature_label_overrides is not None else {}
+
+    def _pretty(fname: str) -> str:
+        return label_map[fname] if fname in label_map else fname
+
+    cum_prim = [d['prim_mean'] for d in steps_data]
+    cum_sec = [d['sec_mean'] for d in steps_data]
+    sec_marginals = [cum_sec[0] - chance_secondary]
+    for i in range(1, len(cum_sec)):
+        sec_marginals.append(cum_sec[i] - cum_sec[i - 1])
+
+    # ---- Figure layout ----
+    n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
+    fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
+    fig_traj, (ax_traj, ax_bars) = plt.subplots(
+        nrows=1, ncols=2,
+        figsize=(10.5, fig_height), dpi=300,
+        gridspec_kw={'width_ratios': [2.2, 1.0]},
+    )
+    fig_traj.patch.set_facecolor(BG_COLOR)
+    ax_traj.set_facecolor(BG_COLOR)
+    ax_bars.set_facecolor(BG_COLOR)
+
+    bar_height = 0.88
+    y_positions = list(range(len(steps_data)))
+    rej_y = len(steps_data) + 0.4 if rejection_row is not None else None
+
+    for row_idx, d in enumerate(steps_data):
+        y = y_positions[row_idx]
+        base_color = _category_color(d['feature_name'])
+        light_color = _lighten(base_color, factor=0.65)
+        prev_p = cum_prim[row_idx - 1] if row_idx > 0 else chance_primary
+        cur_p = cum_prim[row_idx]
+
+        if is_minimization_primary:
+            if chance_primary > prev_p:
+                ax_traj.barh(y, chance_primary - prev_p, left=prev_p,
+                             height=bar_height, color=light_color,
+                             edgecolor='none')
+            if prev_p > cur_p:
+                ax_traj.barh(y, prev_p - cur_p, left=cur_p,
+                             height=bar_height, color=base_color,
+                             edgecolor='none')
+            delta = prev_p - cur_p
+            ax_traj.text(cur_p - 0.003 * (chance_primary - cur_p + 1e-9), y,
+                         f"{cur_p:.3f}  (Δ -{delta:.3f})",
+                         ha='left', va='center', fontsize=7,
+                         color=TEXT_COLOR)
+        else:
+            if prev_p > chance_primary:
+                ax_traj.barh(y, prev_p - chance_primary, left=chance_primary,
+                             height=bar_height, color=light_color,
+                             edgecolor='none')
+            if cur_p > prev_p:
+                ax_traj.barh(y, cur_p - prev_p, left=prev_p,
+                             height=bar_height, color=base_color,
+                             edgecolor='none')
+            delta = cur_p - prev_p
+            ax_traj.text(cur_p + 0.003, y,
+                         f"{cur_p:.3f}  (Δ +{delta:.3f})",
+                         ha='left', va='center', fontsize=7,
+                         color=TEXT_COLOR)
+
+    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
+        rejected_light = '#D7D7D7'
+        rejected_dark = '#9A9A9A'
+        prev_p = cum_prim[-1]
+        cur_p = rejection_row['prim_mean']
+        if is_minimization_primary:
+            if chance_primary > prev_p:
+                ax_traj.barh(rej_y, chance_primary - prev_p, left=prev_p,
+                             height=bar_height, color=rejected_light,
+                             edgecolor='none')
+            if prev_p > cur_p:
+                ax_traj.barh(rej_y, prev_p - cur_p, left=cur_p,
+                             height=bar_height, color=rejected_dark,
+                             edgecolor='none')
+            ax_traj.text(cur_p - 0.003, rej_y,
+                         f"{cur_p:.3f}  (Δ -{prev_p - cur_p:.3f}, ns)",
+                         ha='left', va='center', fontsize=7,
+                         color=NEUTRAL_COLOR, style='italic')
+        else:
+            if prev_p > chance_primary:
+                ax_traj.barh(rej_y, prev_p - chance_primary, left=chance_primary,
+                             height=bar_height, color=rejected_light,
+                             edgecolor='none')
+            if cur_p > prev_p:
+                ax_traj.barh(rej_y, cur_p - prev_p, left=prev_p,
+                             height=bar_height, color=rejected_dark,
+                             edgecolor='none')
+            ax_traj.text(cur_p + 0.003, rej_y,
+                         f"{cur_p:.3f}  (Δ +{cur_p - prev_p:.3f}, ns)",
+                         ha='left', va='center', fontsize=7,
+                         color=NEUTRAL_COLOR, style='italic')
+
+    ytick_positions = list(y_positions)
+    ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+    if rejection_row is not None:
+        ytick_positions.append(rej_y)
+        ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
+    ax_traj.set_yticks(ytick_positions)
+    ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
+    ax_traj.tick_params(axis='y', length=0)
+    ax_traj.invert_yaxis()
+
+    if rejection_row is not None:
+        sep_y = (len(steps_data) - 1) + 0.5 + 0.10
+        ax_traj.axhline(sep_y, color=NEUTRAL_COLOR, linestyle='-',
+                        lw=0.4, alpha=0.5, zorder=0)
+
+    # X-axis range / orientation depending on direction.
+    all_endpoints = list(cum_prim)
+    if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
+        all_endpoints.append(rejection_row['prim_mean'])
+    if is_minimization_primary:
+        span = chance_primary - min(all_endpoints)
+        span = span if span > 1e-9 else 1.0
+        x_left_lim = min(all_endpoints) - 0.30 * span
+        x_right_lim = chance_primary + 0.015 * abs(chance_primary if chance_primary > 0 else 1)
+        ax_traj.set_xlim(x_left_lim, x_right_lim)
+        ax_traj.invert_xaxis()
+    else:
+        span = max(all_endpoints) - chance_primary
+        span = span if span > 1e-9 else 1.0
+        x_left_lim = chance_primary - 0.015 * (1.0 if span < 0.1 else span)
+        x_right_lim = max(all_endpoints) + 0.30 * span
+        ax_traj.set_xlim(x_left_lim, x_right_lim)
+
+    ax_traj.set_xlabel(f"{primary_metric_name} (held-out data)",
+                       fontsize=10, color=TEXT_COLOR)
+    ax_traj.spines['top'].set_visible(False)
+    ax_traj.spines['right'].set_visible(False)
+    ax_traj.tick_params(axis='x', colors=TEXT_COLOR)
+    for spine in ax_traj.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+
+    # ---- Right panel: 2 vertical bars (best univariate, final) ----
+    bar_width = 0.6
+    bar_x_positions = [0, 1]
+    bar_group_labels = ['best univariate', 'final model']
+
+    bar1_color = _category_color(best_univariate_feat) if best_univariate_feat else NEUTRAL_COLOR
+    ax_bars.bar(0, best_univariate_value - chance_secondary,
+                bottom=chance_secondary, width=bar_width,
+                color=bar1_color, edgecolor='none')
+
+    _bottom = chance_secondary
+    for d, marginal in zip(steps_data, sec_marginals):
+        seg_color = _category_color(d['feature_name'])
+        ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
+                    color=seg_color, edgecolor='none')
+        _bottom += marginal
+
+    bar_tops = [best_univariate_value, final_score]
+    y_data_max = float(np.nanmax(bar_tops))
+    y_data_min = float(np.nanmin(bar_tops + [chance_secondary]))
+    label_line_spacing_data = max(0.006, 0.012 * abs(y_data_max - chance_secondary + 1e-9))
+    label_y_start_offset = max(0.005, 0.01 * abs(y_data_max - chance_secondary + 1e-9))
+    label_fontsize = 8
+    max_label_lines = len(steps_data)
+    label_stack_top = (y_data_max + label_y_start_offset
+                       + (max_label_lines + 1) * label_line_spacing_data)
+
+    # Generic axis sizing: pad ~25% above the highest bar (or label
+    # stack, whichever is taller) and ~5% below the chance baseline.
+    y_top = max(y_data_max + 0.25 * abs(y_data_max - chance_secondary + 1e-9),
+                label_stack_top)
+    y_bot = min(chance_secondary - 0.05 * abs(y_data_max - chance_secondary + 1e-9),
+                y_data_min - 0.05 * abs(y_data_max - chance_secondary + 1e-9))
+    ax_bars.set_ylim(y_bot, y_top)
+
+    ax_bars.set_xticks(bar_x_positions)
+    ax_bars.set_xticklabels(bar_group_labels, fontsize=7, color=TEXT_COLOR)
+    ax_bars.set_xlim(-0.6, len(bar_group_labels) - 0.4)
+    ax_bars.set_ylabel(f"{secondary_metric_name} (held-out data)",
+                       fontsize=10, color=TEXT_COLOR)
+
+    final_feat_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+
+    if best_univariate_feat is not None:
+        ax_bars.text(0, best_univariate_value + label_y_start_offset,
+                     _pretty(best_univariate_feat),
+                     ha='center', va='bottom',
+                     fontsize=label_fontsize, color=TEXT_COLOR)
+
+    for j, lab in enumerate(final_feat_labels):
+        ax_bars.text(1, final_score + label_y_start_offset
+                     + j * label_line_spacing_data,
+                     lab, ha='center', va='bottom',
+                     fontsize=label_fontsize, color=TEXT_COLOR)
+
+    ax_bars.spines['top'].set_visible(False)
+    ax_bars.spines['right'].set_visible(False)
+    ax_bars.tick_params(axis='both', colors=TEXT_COLOR)
+    for spine in ax_bars.spines.values():
+        spine.set_edgecolor(TEXT_COLOR)
+
+    fig_traj.subplots_adjust(left=0.18, right=0.97, top=0.95,
+                             bottom=0.12, wspace=0.12)
+
+    if save_plot:
+        if output_dir is None:
+            _fallback = pathlib.Path(selection_results_path)
+            _out_dir = _fallback.parent if _fallback.is_file() else _fallback
+        else:
+            _out_dir = pathlib.Path(output_dir)
+        _out_dir.mkdir(parents=True, exist_ok=True)
+        path_str = str(selection_results_path).lower()
+        if 'male_mute_partner' in path_str:
+            condition = 'male_mute_partner'
+        elif 'female' in path_str:
+            condition = 'female'
+        elif 'male' in path_str:
+            condition = 'male'
+        else:
+            condition = 'unknown'
+        fname = (f"manifold_selection_trajectory_{condition}_"
+                 f"{metric_primary}.svg")
+        save_path = _out_dir / fname
+        fig_traj.savefig(save_path, bbox_inches='tight', dpi=300,
+                         facecolor=BG_COLOR, transparent=False)
+        print(f"Manifold trajectory plot saved to: {save_path}")
+
+    plt.show()
+
+
+def plot_manifold_multivariate_filters(
+        selection_results_path: str,
+        history_window_sec: float = 4.0,
+        cmap: str = 'RdBu_r',
+        save_plot: bool = False,
+        output_dir: str = None,
+) -> None:
+    """
+    Visualize the converged multivariate manifold (bivariate-regression)
+    model as a per-feature atlas of temporal influence on the 2-D
+    acoustic manifold output.
+
+    Purpose
+    -------
+    Mirror of ``plot_multinomial_multivariate_filters`` but for the 2-D
+    output case: each behavioral feature gets a single subplot, and
+    within that subplot the two rows correspond to the manifold
+    coordinates (row 0 = manifold-x partial filter, row 1 = manifold-y
+    partial filter). The x-axis is time prior to USV onset; the cell
+    colour is the signed coefficient (red = pushes the predicted USV
+    location toward +axis, blue = pushes toward -axis), symmetrically
+    scaled to that feature's own ± max|W| so subtle filters remain
+    visible alongside dominant drivers.
+
+    Data layout
+    -----------
+    The bivariate regressor stores per-fold weights as
+    ``(n_features * n_time_bins, 2)`` -- the 2 here is the manifold
+    output dim. We reshape to
+    ``(n_folds, n_features, n_time_bins, 2)``, ``nanmean`` across folds
+    (so a single failed-fold NaN doesn't poison the average), and
+    visualise the ``(2, n_time_bins)`` slice per feature.
+
+    Parameters
+    ----------
+    selection_results_path : str
+        Path to the consolidated ``model_selection_final_*.pkl``
+        artifact produced by ``continuous_vocal_manifold_model_selection``.
+        May be either the file itself or a directory containing one
+        (latest mtime wins). Routed through ``configure_path``.
+    history_window_sec : float, default 4.0
+        The duration of behavioral history analyzed. Used to convert
+        the internal time-bin index into a human-readable axis.
+    cmap : str, default ``'RdBu_r'``
+        Diverging colormap. Red = positive coefficient (pushes the
+        predicted USV location toward the +axis); blue = negative.
+    save_plot : bool, default False
+        If True, exports the grid as an SVG for publication-quality
+        editing.
+    output_dir : str, optional
+        Directory for saving the figure. Defaults to the parent dir
+        of ``selection_results_path`` (or to the path itself if a
+        directory was supplied).
+
+    Returns
+    -------
+    None
+        Displays the high-resolution Matplotlib grid.
+    """
+
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
+    TEXT_COLOR_LOCAL = '#000000'
+    _rcp_override = {
+        'axes.grid': False,
+        'xtick.minor.visible': False,
+        'ytick.minor.visible': False,
+    }
+    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
+    plt.rcParams.update(_rcp_override)
+
+    try:
+        selection_steps, _, _ = load_selection_results(selection_results_path)
+        if not selection_steps:
+            print(f"No manifold selection step data found in {selection_results_path}")
+            return
+
+        # Last step with an actual selected feature -- skips the
+        # rejection / null marker steps so we always render the final
+        # accepted multivariate model.
+        valid_data = None
+        for data in reversed(selection_steps):
+            sel = data.get('selected_feature')
+            if sel is not None and sel != 'null_model_free':
+                valid_data = data
+                break
+        if valid_data is None:
+            print("No accepted feature steps in this run.")
+            return
+
+        winner = valid_data['selected_feature']
+        features = list(valid_data['current_features']) + [winner]
+        if features and features[0] == winner and len(features) > 1 and features.count(winner) > 1:
+            # Anchor step writes the same feature into both
+            # ``current_features`` and ``selected_feature``; drop the
+            # duplicate so the filter atlas isn't doubled.
+            features = list(valid_data['current_features'])
+        winner_data = valid_data['candidates_summary'][winner]
+
+        raw_weights = np.array(winner_data['folds']['weights'])
+        if raw_weights.ndim != 3 or raw_weights.shape[-1] != 2:
+            print(
+                f"Unexpected weight shape {raw_weights.shape}; expected "
+                f"(n_folds, n_features*n_time_bins, 2). Aborting."
+            )
+            return
+        n_folds, n_total_inputs, _ = raw_weights.shape
+        n_features = len(features)
+        if n_features == 0 or n_total_inputs % n_features != 0:
+            print(
+                f"Cannot reshape weights: {n_total_inputs} columns is not "
+                f"divisible by {n_features} features. Aborting."
+            )
+            return
+        n_time_bins = n_total_inputs // n_features
+        weights = raw_weights.reshape(n_folds, n_features, n_time_bins, 2)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mean_weights = np.nanmean(weights, axis=0)
+
+        ncols = 3
+        nrows = math.ceil(n_features / ncols)
+
+        fig = plt.figure(figsize=(18, 3.6 * nrows), dpi=300)
+        fig.patch.set_facecolor('#FFFFFF')
+
+        LM, BM = 0.10, 0.14
+        W_GAP, H_GAP = 0.08, 0.32
+        SUB_W = (1.0 - LM - 0.1) / ncols - W_GAP
+        SUB_H = (1.0 - BM - 0.12) / nrows - H_GAP
+
+        manifold_axis_labels = ['manifold x', 'manifold y']
+
+        for i in range(n_features):
+            row = i // ncols
+            col = i % ncols
+            ax_x = LM + col * (SUB_W + W_GAP)
+            ax_y = (1.0 - 0.10 - SUB_H) - row * (SUB_H + H_GAP)
+            ax = fig.add_axes([ax_x, ax_y, SUB_W, SUB_H])
+            ax.set_facecolor('#FFFFFF')
+
+            feat_slice = mean_weights[i, :, :].T  # shape (2, n_time_bins)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                peak = np.nanmax(np.abs(feat_slice))
+            max_amp = float(peak) if np.isfinite(peak) and peak > 0 else 1.0
+
+            ax.imshow(feat_slice, aspect='auto', cmap=cmap,
+                      vmin=-max_amp, vmax=max_amp, interpolation='nearest')
+
+            tick_times = np.arange(-int(history_window_sec), 1)
+            tick_locs = [
+                (t + history_window_sec) / history_window_sec * (n_time_bins - 1)
+                for t in tick_times
+            ]
+            ax.set_xticks(tick_locs)
+            ax.set_xticklabels([f"{t}s" for t in tick_times],
+                               color=TEXT_COLOR_LOCAL, fontsize=10)
+            ax.set_xlabel("Time prior to USV (s)", color=TEXT_COLOR_LOCAL,
+                          fontsize=11, labelpad=10)
+
+            ax.set_yticks([0, 1])
+            ax.set_yticklabels(manifold_axis_labels,
+                               color=TEXT_COLOR_LOCAL, fontsize=10)
+            ax.set_ylabel("Output dim", color=TEXT_COLOR_LOCAL,
+                          fontsize=11, fontweight='bold', labelpad=12)
+
+            ax.set_title(f"{features[i]}\nInfluence: ±{max_amp:.3f}",
+                         color=TEXT_COLOR_LOCAL, fontsize=11,
+                         fontweight='bold', pad=14)
+
+            for side in ('top', 'right', 'bottom', 'left'):
+                ax.spines[side].set_visible(True)
+                ax.spines[side].set_edgecolor('#000000')
+                ax.spines[side].set_linewidth(1.2)
+
+            ax.tick_params(axis='both', which='both', bottom=True, left=True,
+                           labelbottom=True, color=TEXT_COLOR_LOCAL, length=4)
+
+        cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.set_label(
+            'Per-feature partial weight (blue: -axis | red: +axis)',
+            color=TEXT_COLOR_LOCAL, fontsize=11, labelpad=12,
+        )
+        cbar.ax.yaxis.set_tick_params(color=TEXT_COLOR_LOCAL,
+                                      labelcolor=TEXT_COLOR_LOCAL)
+        cbar.set_ticks([-1, 0, 1])
+        cbar.ax.set_yticklabels(['-', '0', '+'], color=TEXT_COLOR_LOCAL)
+
+        if save_plot:
+            path_str = str(selection_results_path).lower()
+            condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
+                ('female' if 'female' in path_str else 'male')
+            _fallback = pathlib.Path(selection_results_path)
+            if _fallback.is_file():
+                _fallback = _fallback.parent
+            out_dir = pathlib.Path(output_dir) if output_dir else _fallback
+            out_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"model_selection_manifold_{condition}_filters_final.svg"
+            fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
+            print(f"Manifold filters plot saved to: {out_dir / fname}")
+
+        plt.show()
+    finally:
+        plt.rcParams.update(_saved_rcp)
+
+
 class DeepResultsVisualizer:
     """
     Interpretation engine for CNN-based USV manifold models.
