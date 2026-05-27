@@ -2279,6 +2279,7 @@ def plot_umap_with_category_thumbnails(
     thumbnail_hspace: float = 0.02,
     thumbnail_wspace: float = 0.05,
     tile_orientation: str = "horizontal",
+    unstretched_specs: bool = False,
     fig_size: tuple[float, float] = (16.0, 12.0),
     fig_dpi: int = 300,
     output_path: str | None = None,
@@ -2388,6 +2389,24 @@ def plot_umap_with_category_thumbnails(
         stacked vertically). ``"vertical"`` tiles each category as a
         COLUMN of ``n_samples_per_category`` thumbnails
         (n_categories columns side by side).
+    unstretched_specs (bool)
+        If ``True``, every spectrogram is zero-padded to a common
+        ``(n_freq, max_dur)`` shape -- where ``max_dur`` is the
+        largest stored ``durations`` value across all picks in
+        this figure (computed in a pre-pass) -- with the valid
+        slice centered horizontally and equal zero borders on
+        both sides. The padded array is then shown with
+        ``aspect="auto"`` so it fills the uniform slot. Net
+        effect: every thumbnail has literally the same on-page
+        shape and the same time scale, the longest USV fills its
+        slot, and shorter calls sit centered with symmetric
+        zero borders proportional to ``1 - dur / max_dur``.
+        Default ``False`` keeps the existing ``aspect="auto"``
+        behaviour, which stretches every spectrogram horizontally
+        to fill its slot. Underlying spec data is identical in
+        both cases -- the array is already cropped to the per-USV
+        original time-bin count via the ``durations`` field;
+        this toggle only changes display padding / aspect.
     fig_size, fig_dpi
         Matplotlib figure size and DPI.
     output_path, fig_format (str | None)
@@ -2949,6 +2968,35 @@ def plot_umap_with_category_thumbnails(
                 sp.set_visible(False)
             ax.set_frame_on(False)
 
+        # Pre-pass for ``unstretched_specs``: walk every pick across
+        # every category, read its stored ``durations`` value, and use
+        # the maximum as the shared x-axis upper bound. Anchoring to
+        # the actual max-displayed dur (rather than the storage cap
+        # of 128) means the longest USV in the figure fills its slot
+        # horizontally and every other USV scales proportionally,
+        # which keeps the right-side whitespace bounded instead of
+        # crushing 95% of calls into ~25% of slot width.
+        unstretched_x_max = None
+        if unstretched_specs:
+            max_dur = 1
+            for cat in categories:
+                picks = picks_per_category.get(cat)
+                if picks is None:
+                    continue
+                for row in picks.iter_rows(named=True):
+                    sess = str(row["session_id"])
+                    spec_idx = int(row["row_index"])
+                    spec_group_key = f"spectrogram/{sess}"
+                    if spec_group_key not in h5:
+                        continue
+                    grp = h5[spec_group_key]
+                    n_time_max = int(grp["spectrograms"].shape[2])
+                    d = int(grp["durations"][spec_idx])
+                    d = max(1, min(d, n_time_max))
+                    if d > max_dur:
+                        max_dur = d
+            unstretched_x_max = float(max_dur)
+
         for cat_idx, cat in enumerate(categories):
             picks = picks_per_category.get(cat)
             if picks is None:
@@ -2993,11 +3041,37 @@ def plot_umap_with_category_thumbnails(
                             combined = np.any(masks, axis=0)
                             spec_valid = spec_valid * combined.astype(np.float32)
 
-                ax.imshow(
-                    spec_valid, origin="lower", aspect="auto",
-                    cmap=_GLOBAL_CMAP, vmin=0.0, vmax=1.0,
-                    interpolation="nearest",
-                )
+                if unstretched_specs:
+                    # Pad every spec to a common ``(n_freq, max_dur)``
+                    # shape by surrounding the valid time slice with
+                    # zeros split evenly left/right, so the call sits
+                    # centered horizontally and the array fed to
+                    # ``imshow`` has identical dimensions for every
+                    # thumbnail. Combined with ``aspect="auto"`` and
+                    # the uniform gridspec slots, this gives the
+                    # truly identical-shape thumbnails the caller
+                    # asked for: longest USV fills the slot, shorter
+                    # ones get progressively wider zero borders.
+                    n_freq = int(spec_valid.shape[0])
+                    w_target = int(unstretched_x_max)
+                    pad_total = max(0, w_target - dur)
+                    pad_left = pad_total // 2
+                    pad_right = pad_total - pad_left
+                    spec_padded = np.zeros(
+                        (n_freq, w_target), dtype=spec_valid.dtype,
+                    )
+                    spec_padded[:, pad_left:pad_left + dur] = spec_valid
+                    ax.imshow(
+                        spec_padded, origin="lower", aspect="auto",
+                        cmap=_GLOBAL_CMAP, vmin=0.0, vmax=1.0,
+                        interpolation="nearest",
+                    )
+                else:
+                    ax.imshow(
+                        spec_valid, origin="lower", aspect="auto",
+                        cmap=_GLOBAL_CMAP, vmin=0.0, vmax=1.0,
+                        interpolation="nearest",
+                    )
                 # White N in the upper-left corner of each thumbnail
                 # so the user can match the same N drawn at the
                 # picked dot's position in the main scatter.
