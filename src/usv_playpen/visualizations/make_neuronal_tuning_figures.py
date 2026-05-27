@@ -22,12 +22,14 @@ import csv
 import pathlib
 import pickle
 import warnings
+from collections import Counter
 from datetime import datetime
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
+import seaborn as sns
 from matplotlib import colors as mcolors
 from matplotlib import gridspec
 from matplotlib import patheffects as mpe
@@ -148,6 +150,78 @@ USV_CATEGORY_N_CLASSES: dict[str, int] = {
     "qlvm_category":     12,
 }
 
+# ---------------------------------------------------------------------- #
+# Behavioral tuning-summary bucket definitions.
+#
+# The behavioral modalities in the unit-triage pickle are keyed as
+# `behavioral_beh_offset=0s_<prefix>.<feat>_<direction>`, where
+# `<prefix>` is either a single mouse id (recorded-mouse self pose),
+# another single mouse id (partner-self pose; ignored here), or a
+# hyphenated pair (`<A>-<B>`, i.e. a dyadic feature that depends on
+# BOTH animals — distances, allocentric angles toward partner, social-
+# behavior tags such as orofacial-sei). The tuning-summary figure
+# folds every per-feature consistency outcome into three orthogonal
+# buckets, then assigns each unit to one of `2**3 = 8` disjoint tiers
+# (`BEHAVIORAL_TIER_ORDER`).
+#
+# Per-feature consistency rule (matches the rest of the suite): a
+# feature is "tuned" for a unit if either direction (excit / suppress)
+# of its modality block has `n_significant >= k_min` significant
+# sessions AND (when `require_majority` is True) those significant
+# sessions form a majority of `n_tested`. The bucket flag is set if
+# >= 1 feature in the bucket is tuned by that criterion.
+# ---------------------------------------------------------------------- #
+BEHAVIORAL_POSE_FEATURES: frozenset[str] = frozenset({
+    "allo_pitch", "allo_roll", "allo_yaw",
+    "back_pitch", "back_yaw",
+    "body_dir", "ego_yaw", "neck_elevation", "tail_curvature",
+})
+
+BEHAVIORAL_MOVEMENT_FEATURES: frozenset[str] = frozenset({
+    "speed", "acceleration",
+    "allo_pitch_1st_der", "allo_pitch_2nd_der",
+    "allo_roll_1st_der",  "allo_roll_2nd_der",
+    "allo_yaw_1st_der",   "allo_yaw_2nd_der",
+    "back_pitch_1st_der", "back_pitch_2nd_der",
+    "back_yaw_1st_der",   "back_yaw_2nd_der",
+    "body_dir_1st_der",   "body_dir_2nd_der",
+    "ego_yaw_1st_der",    "ego_yaw_2nd_der",
+    "neck_elevation_1st_der", "neck_elevation_2nd_der",
+    "tail_curvature_1st_der", "tail_curvature_2nd_der",
+})
+
+# The eight disjoint tiers produced by intersecting the three bucket
+# flags. Display order is "most multimodal first": the triple
+# intersection at the leftmost column, then the three two-bucket
+# overlaps, then the three single-bucket tiers, with the trivial
+# `none` tier at the rightmost column. A left-to-right scan therefore
+# corresponds to "decreasingly multimodal tuning", which the figure
+# uses to lead the reader's eye into the dominant tiers first.
+BEHAVIORAL_TIER_ORDER: tuple[str, ...] = (
+    "all_three",
+    "pose+movement",
+    "pose+social",
+    "movement+social",
+    "pose_only",
+    "movement_only",
+    "social_only",
+    "none",
+)
+
+# Display labels for the heatmap column ticks. Kept short so the
+# n_regions x 8 grid stays readable.
+BEHAVIORAL_TIER_LABELS: dict[str, str] = {
+    "none":            "none",
+    "pose_only":       "P only",
+    "movement_only":   "M only",
+    "social_only":     "S only",
+    "pose+movement":   "P+M",
+    "pose+social":     "P+S",
+    "movement+social": "M+S",
+    "all_three":       "all 3",
+}
+
+
 # Page sizes are fixed by the layout invariants of each page (Page 1 has
 # the section-(a) raster + usv_peth on top of the 4×4 usv_property_tuning grid; Page 2 has
 # section-(c) 2×6 above section-(d) flowing 6 cols/row). They scale with
@@ -163,6 +237,58 @@ VOCAL_PAGE2_FIGSIZE_INCHES = (16, 22)
 # preferences.
 VOCAL_STRIP_LOG_RATIO_THRESHOLD = 10.0
 VOCAL_STRIP_SYMLOG_LINTHRESH = 0.5
+
+
+def _parse_behavioral_modality_key(modality_key: str) -> tuple[str, str, str] | None:
+    """
+    Description
+    -----------
+    Parse a unit-triage `behavioral_beh_offset=0s_*` modality key into
+    `(prefix, feature_name, direction)`. Returns `None` for any key
+    that doesn't match the expected shape (so the caller can iterate
+    over a full `modalities` dict without first filtering by prefix).
+
+    The key shape, as produced by `unit_triage_aggregator.py`, is::
+
+        behavioral_beh_offset=0s_<prefix>.<feat>_<direction>
+
+    where `<prefix>` is either a single mouse id (`<a-zA-Z0-9>_<digit>`),
+    a hyphenated pair (`<id_a>-<id_b>` for dyadic features), and
+    `<feat>` is the kinematic-feature suffix (may itself contain
+    hyphens, e.g. `nose-nose` or `allo_yaw-nose_1st_der`). The split
+    uses string operations rather than regex because the hyphenated
+    case would otherwise force a complex pattern that's harder to
+    follow than the explicit rsplit / partition chain below.
+
+    Parameters
+    ----------
+    modality_key (str)
+        Modality key as stored under
+        `unit["conditions"][cond]["modalities"]`.
+
+    Returns
+    -------
+    parsed (tuple[str, str, str] | None)
+        `(prefix, feature_name, direction)` on a match, `None`
+        otherwise. `direction` is exactly `"excit"` or `"suppress"`.
+    """
+
+    tag = "behavioral_beh_offset=0s_"
+    if not modality_key.startswith(tag):
+        return None
+    body = modality_key[len(tag):]
+    if body.endswith("_excit"):
+        direction = "excit"
+        body = body[:-len("_excit")]
+    elif body.endswith("_suppress"):
+        direction = "suppress"
+        body = body[:-len("_suppress")]
+    else:
+        return None
+    if "." not in body:
+        return None
+    prefix, feat = body.split(".", 1)
+    return prefix, feat, direction
 
 
 def _decide_strip_xscale(
@@ -3741,7 +3867,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 class_ids, counts,
                 color=region_color, alpha=0.95,
                 edgecolor=COLOR_BLACK, linewidth=0.4,
-                width=0.85,
+                width=1.0,
             )
             ax.set_xticks(class_ids)
             ax.set_xlim(0.5, n_classes + 0.5)
@@ -3900,19 +4026,49 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 ax.set_title(f"{region}  (N=0)", fontsize=10)
                 ax.set_xticks([]); ax.set_yticks([])
                 continue
-            x = np.array([u["median_n_sig_categories"] for u in units])
-            y = np.array([u["median_selectivity"] for u in units])
-            z = np.array([u["median_peak_signed_z"] for u in units])
+            x_all = np.array([u["median_n_sig_categories"] for u in units])
+            y_all = np.array([u["median_selectivity"] for u in units])
+            z_all = np.array([u["median_peak_signed_z"] for u in units])
+
+            # Drop units whose median n_sig_categories is 0. These pass
+            # the sig-up gate (peak_z >= threshold) but no individual
+            # category clears the per-bin (p0.5, p99.5) shuffle band
+            # on median, which is confusing to interpret as a "breadth"
+            # value of 0 — exclude them from this figure to keep the
+            # axis honest.
+            mask = x_all > 0
+            x = x_all[mask]
+            y = y_all[mask]
+            z = z_all[mask]
             sizes = _z_to_size(z)
             ax.scatter(
                 x, y, s=sizes, c=region_color, alpha=0.85,
                 edgecolors=COLOR_BLACK, linewidths=0.4, rasterized=True,
             )
-            ax.set_xlim(-0.5, n_classes + 0.5)
+
+            # Per-region regression overlay (seaborn linear fit + 95%
+            # CI band) plus Spearman rho annotated in the panel title.
+            # Spearman is the right statistic given x is a discrete
+            # category count and y is bounded in [0, 1]; the seaborn
+            # line is purely a visual aid for the negative trend.
+            rho_str = ""
+            if x.size >= 5 and np.unique(x).size >= 2:
+                from scipy.stats import spearmanr
+                rho, p_val = spearmanr(x, y)
+                if np.isfinite(rho):
+                    rho_str = f"  ρ={rho:+.2f}"
+                sns.regplot(
+                    x=x, y=y, ax=ax, scatter=False,
+                    color=region_color,
+                    line_kws={"linewidth": 1.2, "alpha": 0.85},
+                    ci=95,
+                )
+
+            ax.set_xlim(0.0, n_classes + 0.5)
             ax.set_ylim(-0.05, 1.05)
             ax.set_xticks(np.arange(0, n_classes + 1, max(1, n_classes // 5)))
             ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-            ax.set_title(f"{region}  (N={len(units)})", fontsize=10)
+            ax.set_title(f"{region}  (N={int(mask.sum())}){rho_str}", fontsize=10)
             ax.tick_params(labelsize=8)
             if idx[0] == 1:
                 ax.set_xlabel(r"$n_\mathrm{sig\,categories}$ (median)", fontsize=9)
@@ -4033,6 +4189,1025 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 fig_format=fig_format,
             ))
         return out_paths
+
+    # ------------------------------------------------------------------ #
+    # behavioral tuning summary (pose / movement / social tier matrix)
+    # ------------------------------------------------------------------ #
+
+    def _compute_behavioral_bucket_flags(
+            self,
+            unit: dict,
+            recorded_mouse_id: str,
+            condition: str,
+            k_min: int,
+            require_majority: bool,
+    ) -> dict[str, bool]:
+        """
+        Description
+        -----------
+        Compute the per-bucket `(pose, movement, social)` boolean
+        flags for one unit. Encapsulates the modality-iteration +
+        consistency-rule + dyadic-pooling logic that both
+        `_classify_unit_behavioral_tier` (figure 1) and
+        `make_three_set_overlap_venn_figure` (figure 2) need, so the
+        same rule applies to both figures by construction.
+
+        Bucket classification rules:
+          * self pose / movement: `prefix == recorded_mouse_id` AND
+            `feat` belongs to `BEHAVIORAL_POSE_FEATURES` or
+            `BEHAVIORAL_MOVEMENT_FEATURES` respectively.
+          * social: `prefix` contains a hyphen (dyadic feature key,
+            e.g. `158112_0-156693_3.nose-nose`). The dyadic-prefix
+            check is direction-agnostic — both `<self>-<partner>` and
+            `<partner>-<self>` are counted as social because both
+            require the partner's presence to be defined.
+          * partner-self (single non-matching mouse id): explicitly
+            skipped per the figure spec.
+
+        Per-feature consistency rule (mirrors the rest of the suite):
+          A feature is "tuned" if either direction (excit OR suppress)
+          of its modality block has `n_significant >= k_min`
+          significant sessions; when `require_majority` is True the
+          significant sessions must also form a strict majority of
+          `n_tested`. The bucket flag goes True as soon as ONE feature
+          in the bucket meets the criterion (early-exit).
+
+        Dyadic modality keys embed the partner-mouse identity
+        (`<self>-<partner_id>.<feat>_<dir>`), so a unit recorded
+        across sessions with different partners produces multiple
+        dyadic keys for the same `<feat>`, each with `n_tested = 1`.
+        The cross-session consistency rule then trivially fails on
+        every dyadic key in isolation. To preserve the same
+        "consistent in >= k_min sessions" semantics as for self
+        features, we pool dyadic per-key counts by `(feat, direction)`
+        across all partner identities BEFORE applying the
+        consistency rule. The pooled counts are equivalent to "is
+        this cell consistently tuned to feature F, ignoring which
+        partner happened to be present" — exactly the question the
+        social bucket is asking.
+
+        Parameters
+        ----------
+        unit (dict)
+            One entry from `triage["units"]`.
+        recorded_mouse_id (str)
+            The `mouse_id` field of the unit — used to disambiguate
+            self-pose modalities from partner-self pose modalities.
+        condition (str)
+            Which `unit["conditions"][...]` block to walk
+            (e.g. `"intact_female"`).
+        k_min (int)
+            Minimum sig-session count per feature.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min`.
+
+        Returns
+        -------
+        flags (dict[str, bool])
+            Mapping `{"pose": bool, "movement": bool, "social":
+            bool}`. Units with no `condition` entry get all-False.
+        """
+
+        cond = unit["conditions"].get(condition)
+        if not cond:
+            return {"pose": False, "movement": False, "social": False}
+
+        bucket_tuned = {"pose": False, "movement": False, "social": False}
+
+        # Dyadic modality keys embed the partner-mouse identity
+        # (`<self>-<partner_id>.<feat>_<dir>`), so a unit recorded
+        # across sessions with different partners produces multiple
+        # dyadic keys for the same `<feat>`, each with `n_tested = 1`.
+        # The cross-session consistency rule then trivially fails on
+        # every dyadic key in isolation. To preserve the same
+        # "consistent in >= k_min sessions" semantics as for self
+        # features, we pool dyadic per-key counts by `(feat, direction)`
+        # across all partner identities BEFORE applying the
+        # consistency rule. The pooled counts are equivalent to "is
+        # this cell consistently tuned to feature F, ignoring which
+        # partner happened to be present" — exactly the question the
+        # social bucket is asking.
+        dyadic_pool: dict[tuple[str, str], dict[str, int]] = {}
+
+        for mkey, payload in cond.get("modalities", {}).items():
+            parsed = _parse_behavioral_modality_key(mkey)
+            if parsed is None:
+                continue
+            prefix, feat, direction = parsed
+            if not isinstance(payload, dict):
+                continue
+            n_sig = int(payload.get("n_significant", 0) or 0)
+            n_test = int(payload.get("n_tested", 0) or 0)
+
+            if "-" in prefix:
+                # Pool dyadic across partner identities.
+                agg = dyadic_pool.setdefault((feat, direction), {"n_sig": 0, "n_test": 0})
+                agg["n_sig"] += n_sig
+                agg["n_test"] += n_test
+                continue
+
+            if prefix == recorded_mouse_id:
+                if feat in BEHAVIORAL_POSE_FEATURES:
+                    bucket = "pose"
+                elif feat in BEHAVIORAL_MOVEMENT_FEATURES:
+                    bucket = "movement"
+                else:
+                    continue
+            else:
+                # partner-self single-mouse-id prefix — explicitly
+                # ignored per the figure spec.
+                continue
+
+            if bucket_tuned[bucket]:
+                # Bucket already flagged by an earlier feature; skip
+                # the consistency check.
+                continue
+
+            if n_sig < k_min:
+                continue
+            if require_majority and n_test > 0 and (n_sig / n_test) <= 0.5:
+                continue
+            bucket_tuned[bucket] = True
+
+        # Apply the same consistency rule to the pooled dyadic
+        # counts; flip the social bucket on the first `(feat,
+        # direction)` pair that passes.
+        for (feat, direction), agg in dyadic_pool.items():
+            if bucket_tuned["social"]:
+                break
+            n_sig = agg["n_sig"]
+            n_test = agg["n_test"]
+            if n_sig < k_min:
+                continue
+            if require_majority and n_test > 0 and (n_sig / n_test) <= 0.5:
+                continue
+            bucket_tuned["social"] = True
+
+        return bucket_tuned
+
+    def _classify_unit_behavioral_tier(
+            self,
+            unit: dict,
+            recorded_mouse_id: str,
+            condition: str,
+            k_min: int,
+            require_majority: bool,
+    ) -> str:
+        """
+        Description
+        -----------
+        Map the per-bucket flags produced by
+        `_compute_behavioral_bucket_flags` to a string tier name in
+        `BEHAVIORAL_TIER_ORDER`. Thin wrapper kept as a public-ish
+        interface so figure (1)'s collector can iterate one unit at
+        a time without knowing the bool-tuple → tier mapping.
+
+        Parameters
+        ----------
+        See `_compute_behavioral_bucket_flags`; identical signature.
+
+        Returns
+        -------
+        tier (str)
+            One of the eight entries in `BEHAVIORAL_TIER_ORDER`.
+        """
+
+        flags = self._compute_behavioral_bucket_flags(
+            unit=unit, recorded_mouse_id=recorded_mouse_id,
+            condition=condition, k_min=k_min,
+            require_majority=require_majority,
+        )
+        p, m, s = flags["pose"], flags["movement"], flags["social"]
+        triple_to_tier = {
+            (False, False, False): "none",
+            (True,  False, False): "pose_only",
+            (False, True,  False): "movement_only",
+            (False, False, True ): "social_only",
+            (True,  True,  False): "pose+movement",
+            (True,  False, True ): "pose+social",
+            (False, True,  True ): "movement+social",
+            (True,  True,  True ): "all_three",
+        }
+        return triple_to_tier[(p, m, s)]
+
+    # Modality-key prefixes that count as "vocal" for the
+    # behavioral / social / vocal overlap. Each modality block under
+    # one of these prefixes is checked with the same
+    # `n_significant >= k_min` + optional majority-gate rule used by
+    # the behavioral classifier — and the unit is flagged "vocal" as
+    # soon as ANY modality passes. Direction is folded in automatically
+    # (excit and suppress modalities each get their own key).
+    _VOCAL_MODALITY_PREFIXES: tuple[str, ...] = (
+        "vmi_self_",
+        "usv_peth_self_",
+        "usv_property_self_",
+        "usv_category_self_",
+        "usv_category_peth_self_",
+    )
+
+    def _compute_vocal_flag(
+            self,
+            unit: dict,
+            condition: str,
+            k_min: int,
+            require_majority: bool,
+    ) -> bool:
+        """
+        Description
+        -----------
+        Return True iff the unit is "vocally tuned" — i.e.
+        consistently significant in at least one USV-related modality
+        block under `condition`. Iterates every modality key whose
+        prefix matches one of `_VOCAL_MODALITY_PREFIXES` (VMI,
+        USV-PETH, USV-property tuning, USV-category tuning,
+        USV-category-PETH) and applies the same per-feature
+        consistency rule the behavioral classifier uses.
+
+        Direction handling: each direction-split modality (e.g.
+        `usv_property_self_duration_excit` and
+        `usv_property_self_duration_suppress`) is its own key, so
+        passing on EITHER direction independently flips the flag —
+        same union semantics as the behavioral side.
+
+        Parameters
+        ----------
+        unit (dict)
+            One entry from `triage["units"]`.
+        condition (str)
+            Which `unit["conditions"][...]` block to walk.
+        k_min (int)
+            Minimum sig-session count per modality.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min`.
+
+        Returns
+        -------
+        vocal (bool)
+            True on first modality whose pooled (`n_sig`, `n_test`)
+            satisfies the consistency rule; False otherwise.
+        """
+
+        cond = unit["conditions"].get(condition)
+        if not cond:
+            return False
+        for mkey, payload in cond.get("modalities", {}).items():
+            if not isinstance(payload, dict):
+                continue
+            if not any(mkey.startswith(px) for px in self._VOCAL_MODALITY_PREFIXES):
+                continue
+            n_sig = int(payload.get("n_significant", 0) or 0)
+            n_test = int(payload.get("n_tested", 0) or 0)
+            if n_sig < k_min:
+                continue
+            if require_majority and n_test > 0 and (n_sig / n_test) <= 0.5:
+                continue
+            return True
+        return False
+
+    def _collect_behavioral_tiers_per_region(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None,
+            condition: str,
+            k_min: int,
+            require_majority: bool,
+    ) -> tuple[dict[str, Counter], int]:
+        """
+        Description
+        -----------
+        Walk the unit-triage pickle and tally, per canonical brain-area
+        bucket, how many good + somatic units fall into each
+        `BEHAVIORAL_TIER_ORDER` tier. Returns the raw counts; the
+        rendering layer normalises them to per-region fractions.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit-catalog CSV that pairs each
+            `(mouse_id, rec_date, unit_id)` with `cluster_group` and
+            `somatic` flags. Defaults to the `catalog_path` field
+            embedded in the triage pickle when omitted.
+        condition (str)
+            Which `unit["conditions"][...]` block to walk
+            (e.g. `"intact_female"`).
+        k_min (int)
+            Minimum sig-session count per feature for the consistency
+            rule.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min`.
+
+        Returns
+        -------
+        per_region (dict[str, Counter])
+            Mapping from canonical region label (one of
+            `VMI_REGION_ORDER`) to a `Counter` of tier counts. Tiers
+            absent from a region simply do not appear in its
+            `Counter` (the caller pads with 0).
+        n_eligible (int)
+            Total number of units that passed the good + somatic
+            filter across all regions; used by the caption.
+        """
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        region_to_group = {
+            region: group
+            for group, regions in VMI_REGION_GROUPS.items()
+            for region in regions
+        }
+        per_region: dict[str, Counter] = {g: Counter() for g in VMI_REGION_ORDER}
+        n_eligible = 0
+
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+
+            anatomy = u["anatomy_region"]
+            region = region_to_group[anatomy] if anatomy in region_to_group else "Other"
+
+            tier = self._classify_unit_behavioral_tier(
+                unit=u,
+                recorded_mouse_id=u["mouse_id"],
+                condition=condition,
+                k_min=k_min,
+                require_majority=require_majority,
+            )
+            per_region[region][tier] += 1
+            n_eligible += 1
+
+        return per_region, n_eligible
+
+    def make_behavioral_tuning_summary_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            condition: str = "intact_female",
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render the behavioral-tuning tier matrix: a
+        `len(VMI_REGION_ORDER) x len(BEHAVIORAL_TIER_ORDER)` heatmap
+        whose `(r, c)` cell is the fraction of region `r`'s good +
+        somatic units that fall into the `(Pose, Movement, Social)`
+        disjoint tier `c`. Rows therefore sum to 1 by construction.
+
+        Tier columns are arranged left-to-right by increasing
+        multimodality:
+
+            none, P only, M only, S only, P+M, P+S, M+S, all 3
+
+        Bucket definitions:
+          * **Pose** = 9 self raw postural features (allo/back/body/ego
+            /neck/tail without derivatives).
+          * **Movement** = 20 self features (`*_1st_der` / `*_2nd_der`
+            of pose + `speed` + `acceleration`).
+          * **Social** = 42 dyadic features (modality keys with a
+            hyphen in the prefix, e.g. `158112_0-156693_3.nose-nose`).
+            Partner-self pose is excluded per the figure spec.
+
+        Per-feature consistency rule: see
+        `_classify_unit_behavioral_tier`.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Optional override of the catalog CSV path; defaults to the
+            `catalog_path` embedded in the triage pickle.
+        condition (str)
+            Which `unit["conditions"][...]` block to walk. Defaults to
+            `"intact_female"` (the headline condition).
+        k_min (int)
+            Minimum sig-session count per feature.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min`.
+        out_dir (str | pathlib.Path | None)
+            Directory override; `None` falls back to
+            `figures.save_directory`.
+        fig_format (str | None)
+            Output format override; `None` falls back to
+            `figures.fig_format`.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Path to the written figure file.
+        """
+
+        per_region, n_eligible = self._collect_behavioral_tiers_per_region(
+            triage_pkl_path=triage_pkl_path,
+            catalog_csv_path=catalog_csv_path,
+            condition=condition,
+            k_min=k_min,
+            require_majority=require_majority,
+        )
+
+        n_rows = len(VMI_REGION_ORDER)
+        n_cols = len(BEHAVIORAL_TIER_ORDER)
+        fractions = np.zeros((n_rows, n_cols), dtype=float)
+        counts = np.zeros((n_rows, n_cols), dtype=int)
+        region_totals = np.zeros(n_rows, dtype=int)
+        for r, region in enumerate(VMI_REGION_ORDER):
+            ctr = per_region[region]
+            total = int(sum(ctr.values()))
+            region_totals[r] = total
+            if total == 0:
+                continue
+            for c, tier in enumerate(BEHAVIORAL_TIER_ORDER):
+                k = int(ctr.get(tier, 0))
+                counts[r, c] = k
+                fractions[r, c] = k / total
+
+        # ------- render -------
+        fig, ax = plt.subplots(figsize=(7.5, 3.5))
+        cmap_name = self.visualizations_parameter_dict.get(
+            "figures", {}
+        ).get("cmap", "inferno")
+        im = ax.imshow(
+            fractions, aspect="auto", cmap=cmap_name, vmin=0.0, vmax=1.0,
+        )
+
+        # Tick labels. The region row labels are individually
+        # color-coded using the project's brain-area palette so a
+        # glance at the y-axis still maps each row to the same color
+        # as the per-region scatter / bar figures elsewhere in the
+        # suite.
+        region_colors = self._resolve_region_colors()
+        ax.set_yticks(np.arange(n_rows))
+        ax.set_yticklabels(
+            [f"{r}\n(n={int(t)})" for r, t in zip(VMI_REGION_ORDER, region_totals)],
+            fontsize=7,
+        )
+        for label, region in zip(ax.get_yticklabels(), VMI_REGION_ORDER):
+            label.set_color(region_colors[region])
+        ax.set_xticks(np.arange(n_cols))
+        ax.set_xticklabels(
+            [BEHAVIORAL_TIER_LABELS[t] for t in BEHAVIORAL_TIER_ORDER],
+            rotation=30, ha="right", fontsize=7,
+        )
+
+        # Numeric annotations: light text on dark cells, dark text on
+        # light cells (threshold at 0.5 of the [0, 1] colormap).
+        for r in range(n_rows):
+            for c in range(n_cols):
+                frac = float(fractions[r, c])
+                text_color = "#FFFFFF" if frac < 0.5 else COLOR_BLACK
+                ax.text(
+                    c, r, f"{frac:.2f}",
+                    ha="center", va="center",
+                    color=text_color, fontsize=7,
+                )
+
+        # Tight box / cleaner spines for a heatmap look
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(top=False, bottom=False, left=False, right=False)
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+        cbar.set_label("fraction of region's good+somatic units", fontsize=7)
+        cbar.ax.tick_params(labelsize=6)
+
+        majority_tag = "majority" if require_majority else "no-majority"
+        # Explicit `fontweight='light'` overrides the project mplstyle's
+        # `axes.titleweight: bold` / `figure.titleweight: bold` so the
+        # whole figure renders in Helvetica Light. Without this the
+        # title text emits `font-weight: 700` and Inkscape resolves to
+        # the system Helvetica Bold instead of the bundled Helvetica
+        # Light, breaking visual consistency with the rest of the suite.
+        fig.suptitle(
+            f"behavioral tuning tier matrix · {condition.replace('_', ' ')} · "
+            f"N={n_eligible} good+somatic units",
+            fontsize=10, y=0.99, fontweight="light",
+        )
+        ax.set_title(
+            f"pose={len(BEHAVIORAL_POSE_FEATURES)}f · "
+            f"movement={len(BEHAVIORAL_MOVEMENT_FEATURES)}f · "
+            f"social=dyadic only (42f) · "
+            f"k_min={k_min}, {majority_tag}",
+            fontsize=8, fontweight="light",
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+
+        out_path = save_figure(
+            fig, "behavioral_tuning_tier_matrix",
+            self.visualizations_parameter_dict,
+            override_dir=out_dir, override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
+
+    # ------------------------------------------------------------------ #
+    # behavioral / social / vocal overlap (3-set Venn)
+    # ------------------------------------------------------------------ #
+
+    def _collect_three_set_overlap_counts(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None,
+            condition: str,
+            k_min: int,
+            require_majority: bool,
+    ) -> tuple[Counter, int]:
+        """
+        Description
+        -----------
+        Walk the unit-triage pickle and tally how many good + somatic
+        units fall into each of the eight `(behavioral, social,
+        vocal)` boolean triples. "Behavioral" = `pose OR movement`
+        flag from `_compute_behavioral_bucket_flags`; "social" = the
+        same helper's social flag; "vocal" = `_compute_vocal_flag`.
+        Counts are pooled across all brain regions — this figure is
+        a population-level overlap summary, not a per-region split.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Catalog CSV override; defaults to the path embedded in
+            the triage pickle.
+        condition (str)
+            Which `unit["conditions"][...]` block to walk.
+        k_min (int)
+            Minimum sig-session count per modality.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min`.
+
+        Returns
+        -------
+        counts (Counter)
+            Maps `(beh: bool, soc: bool, voc: bool)` tuples to the
+            number of units falling in that disjoint tier. All eight
+            tuples appear as keys (zero-padded by caller).
+        n_eligible (int)
+            Total good + somatic units that passed the catalog filter.
+        """
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        counts: Counter = Counter()
+        n_eligible = 0
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+
+            flags = self._compute_behavioral_bucket_flags(
+                unit=u, recorded_mouse_id=u["mouse_id"],
+                condition=condition,
+                k_min=k_min, require_majority=require_majority,
+            )
+            beh = bool(flags["pose"] or flags["movement"])
+            soc = bool(flags["social"])
+            voc = self._compute_vocal_flag(
+                unit=u, condition=condition,
+                k_min=k_min, require_majority=require_majority,
+            )
+            counts[(beh, soc, voc)] += 1
+            n_eligible += 1
+
+        return counts, n_eligible
+
+    def _draw_overlap_venn_on_ax(
+            self,
+            ax,
+            counts: Counter,
+            n_panel: int,
+            vocal_color: str,
+            panel_title: str | None = None,
+            font_scale: float = 1.0,
+    ) -> None:
+        """
+        Description
+        -----------
+        Render a single 3-set Venn (Kinematics / Social Features /
+        Vocal) onto a pre-existing matplotlib axes. Shared by the
+        population-level (one global panel) and per-region (2x4
+        small-multiples) figures so the visual idiom is identical
+        across both.
+
+        Geometry: three equal-radius circles centred on the vertices
+        of an equilateral triangle whose centroid is the origin.
+        Each disjoint region is annotated with `n  (%)` text; the
+        "None" tier sits in project gray beneath the circles.
+
+        Set colours:
+          * Kinematics: `male_colors[0]` (`#9AC0CD`) — the "self
+            mouse" palette entry.
+          * Social Features: `social_colors[0]` (`#5A6470`).
+          * Vocal: the caller-supplied `vocal_color`. For the
+            per-region figure that's the brain-area hex for that
+            panel; for the aggregate panel it's the project's
+            unassigned-grey.
+
+        Parameters
+        ----------
+        ax (matplotlib.axes.Axes)
+            Target axes. Aspect ratio + limits are set here.
+        counts (Counter)
+            Maps `(beh, soc, voc)` tuples to unit counts.
+        n_panel (int)
+            Denominator for the percentages; usually the total of
+            `counts.values()`.
+        vocal_color (str)
+            Hex string for the Vocal circle.
+        panel_title (str | None)
+            Optional title (region name) rendered above the Venn.
+        font_scale (float)
+            Multiplier on font sizes; per-region panels use ~0.8 so
+            text fits inside the smaller circles.
+
+        Returns
+        -------
+        None
+        """
+
+        import math
+        from matplotlib.patches import Circle
+
+        # Equilateral triangle of unit-radius circles, centroid at
+        # the origin.
+        r = 1.0
+        cx = (-0.5, +0.5, 0.0)
+        cy = (-math.sqrt(3.0) / 6.0, -math.sqrt(3.0) / 6.0, +math.sqrt(3.0) / 3.0)
+
+        set_colors = (
+            self.visualizations_parameter_dict["male_colors"][0],
+            self.visualizations_parameter_dict["social_colors"][0],
+            vocal_color,
+        )
+        set_labels = ("Kinematics", "Social Features", "Vocal")
+
+        ax.set_aspect("equal")
+        ax.set_xlim(-2.0, 2.0)
+        ax.set_ylim(-2.0, 2.2)
+        ax.axis("off")
+
+        for i, color in enumerate(set_colors):
+            ax.add_patch(Circle(
+                (cx[i], cy[i]), r,
+                facecolor=color, alpha=0.35,
+                edgecolor=color, linewidth=1.5,
+            ))
+
+        # Set labels just outside each circle's far edge. Anchors are
+        # tuned so labels don't collide with the count text.
+        label_positions = ((-1.65, -1.10), (+1.65, -1.10), (0.0, +1.85))
+        label_anchors = (("right", "top"), ("left", "top"), ("center", "bottom"))
+        for label, pos, anchor, color in zip(
+            set_labels, label_positions, label_anchors, set_colors
+        ):
+            ax.text(
+                pos[0], pos[1], label,
+                ha=anchor[0], va=anchor[1], color=color,
+                fontsize=10 * font_scale, fontweight="light",
+            )
+
+        total = max(1, n_panel)
+
+        def _annotate(triple, pos):
+            n = counts.get(triple, 0)
+            p = 100.0 * n / total
+            ax.text(
+                pos[0], pos[1], f"{n}\n({p:.1f}%)",
+                ha="center", va="center",
+                fontsize=9 * font_scale, fontweight="light",
+                color=COLOR_BLACK,
+            )
+
+        _annotate((True,  False, False), (-1.05, -0.40))
+        _annotate((False, True,  False), (+1.05, -0.40))
+        _annotate((False, False, True ), (0.00,  +1.20))
+        _annotate((True,  True,  False), (0.00,  -0.70))
+        _annotate((True,  False, True ), (-0.60, +0.30))
+        _annotate((False, True,  True ), (+0.60, +0.30))
+        _annotate((True,  True,  True ), (0.00,  -0.10))
+
+        n_none = counts.get((False, False, False), 0)
+        p_none = 100.0 * n_none / total
+        ax.text(
+            0.0, -1.85, f"None: n={n_none}  ({p_none:.1f}%)",
+            ha="center", va="bottom",
+            fontsize=8 * font_scale, fontweight="light",
+            color=COLOR_GRAY_DASH,
+        )
+
+        if panel_title is not None:
+            ax.set_title(panel_title, fontsize=11 * font_scale, fontweight="light")
+
+    def make_three_set_overlap_venn_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            condition: str = "intact_female",
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Render a 3-set Venn diagram (Behavioral / Social / Vocal)
+        summarising the population-level overlap between cells with
+        behavioral self-feature tuning (`pose OR movement` from
+        figure 1's rule), social/dyadic tuning, and vocal tuning
+        (any USV modality). Each of the seven inside regions is
+        annotated with the count and the percentage of good + somatic
+        units it contains; the eighth tier ("neither") is annotated
+        outside the circles.
+
+        Circles are drawn hand-rolled (no `matplotlib_venn`
+        dependency): three equal-radius circles centred on the
+        vertices of an equilateral triangle, semitransparent fills
+        in three on-brand palette colours. Layout is fixed (not
+        area-proportional) — exact area-proportional 3-set Venns
+        don't exist for arbitrary tier cardinalities, and the
+        numeric annotations carry the actual counts anyway.
+
+        Set definitions:
+          * **Behavioral** = `pose OR movement` from
+            `_compute_behavioral_bucket_flags`. 29 self features (9
+            pose + 20 movement) on the recorded mouse.
+          * **Social** = the same helper's social flag — partner-
+            pooled dyadic consistency over 42 dyadic features.
+          * **Vocal** = `_compute_vocal_flag` — any of VMI / USV-PETH
+            / USV-property / USV-category / USV-category-PETH passes
+            the same per-modality consistency rule.
+
+        Parameters
+        ----------
+        triage_pkl_path, catalog_csv_path, condition, k_min,
+        require_majority, out_dir, fig_format
+            Same semantics as
+            `make_behavioral_tuning_summary_figure`.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Path to the written figure file.
+        """
+
+        counts, n_eligible = self._collect_three_set_overlap_counts(
+            triage_pkl_path=triage_pkl_path,
+            catalog_csv_path=catalog_csv_path,
+            condition=condition,
+            k_min=k_min,
+            require_majority=require_majority,
+        )
+
+        # Single global panel: vocal circle uses the project's
+        # unassigned-grey because no specific brain area applies to
+        # the all-pooled population.
+        unassigned_grey = self.visualizations_parameter_dict["unassigned_colors"][0]
+
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        self._draw_overlap_venn_on_ax(
+            ax=ax,
+            counts=counts,
+            n_panel=n_eligible,
+            vocal_color=unassigned_grey,
+            panel_title=None,
+            font_scale=1.0,
+        )
+
+        majority_tag = "majority" if require_majority else "no-majority"
+        fig.suptitle(
+            f"Kinematics / Social Features / Vocal overlap · "
+            f"{condition.replace('_', ' ')} · "
+            f"N={n_eligible} good+somatic units · "
+            f"k_min={k_min}, {majority_tag}",
+            fontsize=10, y=0.99, fontweight="light",
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+
+        out_path = save_figure(
+            fig, "tuning_overlap_venn",
+            self.visualizations_parameter_dict,
+            override_dir=out_dir, override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
+
+    def _collect_three_set_overlap_counts_per_region(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None,
+            condition: str,
+            k_min: int,
+            require_majority: bool,
+    ) -> tuple[dict[str, Counter], int]:
+        """
+        Description
+        -----------
+        Per-region variant of `_collect_three_set_overlap_counts`.
+        Walks every good + somatic unit, classifies into the
+        `(behavioral, social, vocal)` triple using the same helpers,
+        and bins the count under the unit's canonical brain-area
+        bucket from `VMI_REGION_GROUPS`. Returns one `Counter` per
+        region plus the total `n_eligible` across all regions (used
+        by the aggregate panel of the per-region figure).
+
+        Parameters
+        ----------
+        Same as `_collect_three_set_overlap_counts`.
+
+        Returns
+        -------
+        per_region (dict[str, Counter])
+            `{region_label: Counter[(beh, soc, voc) -> count]}` for
+            every region in `VMI_REGION_ORDER` (empty Counters
+            included so the caller doesn't need to check for missing
+            keys).
+        n_total (int)
+            Sum of all per-region totals; equivalent to the global
+            `n_eligible` from the population-level collector.
+        """
+
+        triage_pkl_path = pathlib.Path(triage_pkl_path)
+        with open(triage_pkl_path, "rb") as fh:
+            triage = pickle.load(fh)
+
+        if catalog_csv_path is None:
+            catalog_csv_path = triage["catalog_path"]
+        catalog_csv_path = pathlib.Path(catalog_csv_path)
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(catalog_csv_path) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+
+        region_to_group = {
+            region: group
+            for group, regions in VMI_REGION_GROUPS.items()
+            for region in regions
+        }
+        per_region: dict[str, Counter] = {g: Counter() for g in VMI_REGION_ORDER}
+        n_total = 0
+
+        for u in triage["units"].values():
+            key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
+            if key not in cat_lookup:
+                continue
+            cat_row = cat_lookup[key]
+            if u["kslabel"] != "good":
+                continue
+            if str(cat_row["somatic"]).strip().lower() != "true":
+                continue
+
+            anatomy = u["anatomy_region"]
+            region = region_to_group[anatomy] if anatomy in region_to_group else "Other"
+
+            flags = self._compute_behavioral_bucket_flags(
+                unit=u, recorded_mouse_id=u["mouse_id"],
+                condition=condition,
+                k_min=k_min, require_majority=require_majority,
+            )
+            beh = bool(flags["pose"] or flags["movement"])
+            soc = bool(flags["social"])
+            voc = self._compute_vocal_flag(
+                unit=u, condition=condition,
+                k_min=k_min, require_majority=require_majority,
+            )
+            per_region[region][(beh, soc, voc)] += 1
+            n_total += 1
+
+        return per_region, n_total
+
+    def make_per_region_overlap_venn_figure(
+            self,
+            triage_pkl_path: str | pathlib.Path,
+            catalog_csv_path: str | pathlib.Path | None = None,
+            condition: str = "intact_female",
+            k_min: int = 2,
+            require_majority: bool = True,
+            out_dir: str | pathlib.Path | None = None,
+            fig_format: str | None = None,
+    ) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Per-region variant of the Kinematics / Social Features /
+        Vocal overlap Venn: a 2x4 grid where panels 1-7 are
+        `VMI_REGION_ORDER` (PAG, MRN, VTA, MB, CENT, SC, Other) and
+        the 8th panel is the all-regions aggregate. Each panel
+        shares the same 3-circle layout from
+        `_draw_overlap_venn_on_ax`, and the **Vocal circle takes the
+        brain-area colour of that panel's region** — so a glance at
+        any panel's Vocal hue identifies the region without reading
+        the title. The aggregate panel uses the project's
+        unassigned-grey for its Vocal circle.
+
+        Parameters
+        ----------
+        triage_pkl_path, catalog_csv_path, condition, k_min,
+        require_majority, out_dir, fig_format
+            Identical semantics to
+            `make_three_set_overlap_venn_figure`.
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            Path to the written figure file.
+        """
+
+        per_region, n_total = self._collect_three_set_overlap_counts_per_region(
+            triage_pkl_path=triage_pkl_path,
+            catalog_csv_path=catalog_csv_path,
+            condition=condition,
+            k_min=k_min,
+            require_majority=require_majority,
+        )
+
+        region_colors = self._resolve_region_colors()
+        unassigned_grey = self.visualizations_parameter_dict["unassigned_colors"][0]
+
+        fig, axes = plt.subplots(2, 4, figsize=(18.0, 9.0))
+        axes_flat = axes.flat
+
+        # Panels 1-7: one per region.
+        for idx, region in enumerate(VMI_REGION_ORDER):
+            ax = axes_flat[idx]
+            counts = per_region[region]
+            n_panel = int(sum(counts.values()))
+            self._draw_overlap_venn_on_ax(
+                ax=ax,
+                counts=counts,
+                n_panel=n_panel,
+                vocal_color=region_colors[region],
+                panel_title=f"{region}  (n={n_panel})",
+                font_scale=0.82,
+            )
+
+        # Panel 8: all-regions aggregate. Pool every per-region
+        # Counter into one and use the unassigned-grey for Vocal.
+        aggregate: Counter = Counter()
+        for region in VMI_REGION_ORDER:
+            aggregate.update(per_region[region])
+        self._draw_overlap_venn_on_ax(
+            ax=axes_flat[7],
+            counts=aggregate,
+            n_panel=n_total,
+            vocal_color=unassigned_grey,
+            panel_title=f"All regions  (n={n_total})",
+            font_scale=0.82,
+        )
+
+        majority_tag = "majority" if require_majority else "no-majority"
+        fig.suptitle(
+            f"Kinematics / Social Features / Vocal overlap · "
+            f"{condition.replace('_', ' ')} · "
+            f"per brain area  ·  N={n_total} good+somatic units · "
+            f"k_min={k_min}, {majority_tag}",
+            fontsize=11, y=0.995, fontweight="light",
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+
+        out_path = save_figure(
+            fig, "tuning_overlap_venn_per_region",
+            self.visualizations_parameter_dict,
+            override_dir=out_dir, override_format=fig_format,
+        )
+        plt.close(fig)
+        return out_path
 
     @contextlib.contextmanager
     def _open_save_target(
