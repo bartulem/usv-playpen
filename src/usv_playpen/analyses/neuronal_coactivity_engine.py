@@ -37,13 +37,23 @@ def extract_snippet_matrix(
     neuron_keys = list(neural_data.keys())
     num_neurons = len(neuron_keys)
     num_trials = len(onsets)
-    count_matrix = np.zeros((num_neurons, num_trials))
+    count_matrix = np.zeros((num_neurons, num_trials), dtype=np.float64)
+    if num_trials == 0:
+        return count_matrix
+    onsets_arr = np.asarray(onsets, dtype=np.float64)
+    ends_arr = onsets_arr + window_s
 
-    for t_idx, t_start in enumerate(onsets):
-        t_end = t_start + window_s
-        for n_idx, n_key in enumerate(neuron_keys):
-            spikes = neural_data[n_key]
-            count_matrix[n_idx, t_idx] = np.sum((spikes >= t_start) & (spikes <= t_end))
+    # Spike arrays are sorted on disk (Kilosort output) and
+    # `apply_circular_shift` re-sorts after wraparound, so we can use
+    # binary search to count spikes in each window in O(log N_spikes)
+    # per onset, vectorised across the whole onset vector at once.
+    # The previous double-loop was O(N_neurons * N_trials * N_spikes)
+    # which dominated chained-shuffle / bootstrap runtimes.
+    for n_idx, n_key in enumerate(neuron_keys):
+        spikes = neural_data[n_key]
+        lo = np.searchsorted(spikes, onsets_arr, side="left")
+        hi = np.searchsorted(spikes, ends_arr, side="right")
+        count_matrix[n_idx, :] = hi - lo
 
     return count_matrix
 
@@ -100,50 +110,60 @@ def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
         "pop_corr": mean_pop_corr
     }
 
-def get_bootstrapped_simple_calls(
-    simple_counts: np.ndarray,
+def bootstrap_coactivity_distribution(
+    count_matrix: np.ndarray,
     n_target: int,
     n_iterations: int = 1000
 ) -> dict[str, np.ndarray]:
     """
-    Performs bootstrapping on simple vocalization trials to equalize sample size
-    with the complex vocalization group, ensuring statistical symmetry.
+    Performs trial-level bootstrap resampling of a coactivity count
+    matrix to build an empirical distribution of each metric at a
+    fixed `n_target`. Used to equalise trial counts between two
+    vocalization groups before comparing their coactivity, so the
+    statistical power for both is identical.
 
-    This function resamples the simple vocalization count matrix with replacement
-    to match the trial count of the complex group. It calculates three distinct
-    coactivity metrics—r_sc, population similarity (cosine), and population
-    correlation—to build an empirical distribution of the mean for the
-    subsampled group.
+    For each iteration the function draws `n_target` trial indices
+    with replacement, slices the input matrix to those columns, and
+    evaluates `compute_coactivity_metrics` on the resample. The
+    per-iteration metric values are accumulated into per-metric
+    arrays which the caller can summarise as means, percentiles or
+    confidence intervals.
 
     Parameters
     ----------
-    simple_counts : np.ndarray
-        The neural count matrix for simple USVs, shape (Neurons x N_simple).
+    count_matrix : np.ndarray
+        Neural spike-count matrix for the group, shape
+        (N_neurons x N_trials). Earlier revisions named this
+        argument `simple_counts` (back when the analysis only
+        bootstrapped the "simple" call group); the function has
+        always been group-agnostic and works on any count matrix.
     n_target : int
-        The target sample size to match (typically the N of the complex group).
+        The target trial count per resample. Typically the size of
+        the smaller of the two groups being compared, so the larger
+        group is sampled down to match.
     n_iterations : int, optional
-        The number of bootstrap iterations to perform, by default 1000.
+        Number of bootstrap iterations. Defaults to 1000.
 
     Returns
     -------
     dict[str, np.ndarray]
-        A dictionary containing the bootstrap distributions for:
-        - 'r_sc': Mean pairwise spike count correlations.
-        - 'similarity': Mean population vector cosine similarities.
-        - 'pop_corr': Mean population vector Pearson correlations.
+        Per-metric bootstrap distributions:
+        * `r_sc`        — mean pairwise neuron spike-count correlations
+        * `similarity`  — mean population-vector cosine similarities
+        * `pop_corr`    — mean population-vector Pearson correlations
     """
 
     boot_rsc = np.zeros(n_iterations)
     boot_sim = np.zeros(n_iterations)
     boot_pop = np.zeros(n_iterations)
 
-    num_trials = simple_counts.shape[1]
+    num_trials = count_matrix.shape[1]
     rng = np.random.default_rng()
 
     for i in range(n_iterations):
         # Sample trial indices with replacement to match n_target
         idx = rng.choice(num_trials, n_target, replace=True)
-        resampled_matrix = simple_counts[:, idx]
+        resampled_matrix = count_matrix[:, idx]
 
         # Calculate coactivity metrics for the resampled matrix
         metrics = compute_coactivity_metrics(resampled_matrix)
@@ -348,6 +368,88 @@ def perform_chained_circular_shuffle(
 
     return results
 
+def perform_label_permutation_test(
+    counts_a: np.ndarray,
+    counts_b: np.ndarray,
+    n_permutations: int = 1000,
+) -> dict[str, dict[str, Any]]:
+    """
+    Direct two-group comparison of coactivity via trial-label permutation.
+
+    Pools the trial columns of `counts_a` and `counts_b` into a single
+    matrix, then on each iteration randomly partitions them back into
+    pseudo-groups of the original sizes and computes
+    `metric(pseudo_a) - metric(pseudo_b)`. This builds a null
+    distribution of the group-difference under the hypothesis that
+    the two trial labels are interchangeable. The observed difference
+    `metric(a) - metric(b)` is then placed against this null to test
+    whether the two groups differ in coactivity (right-tailed `a > b`
+    p-value plus a two-tailed p-value).
+
+    Use this when the bootstrap-vs-shuffle test only gives per-group
+    significance against a within-group null — it does NOT directly
+    test whether the two groups differ from each other.
+
+    Parameters
+    ----------
+    counts_a, counts_b : np.ndarray
+        Per-group spike-count matrices, both shape (N_neurons,
+        N_trials_group). The neuron axis must agree (same population
+        of cells); only the trial axis differs.
+    n_permutations : int, optional
+        Number of trial-label permutations. Defaults to 1000.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        Mapping `metric -> {observed_delta, null, p_a_gt_b,
+        p_two_tailed, z_score}`. `metric` covers every key returned
+        by `compute_coactivity_metrics` (`r_sc`, `similarity`,
+        `pop_corr`).
+    """
+
+    n_a = counts_a.shape[1]
+    n_b = counts_b.shape[1]
+    combined = np.hstack([counts_a, counts_b])
+    n_total = combined.shape[1]
+
+    # Observed per-group metrics + delta.
+    m_a = compute_coactivity_metrics(counts_a)
+    m_b = compute_coactivity_metrics(counts_b)
+    observed_delta = {k: m_a[k] - m_b[k] for k in m_a}
+
+    # Null distribution: shuffle trial labels, recompute delta.
+    null_dists = {k: np.zeros(n_permutations) for k in m_a}
+    rng = np.random.default_rng()
+    for i in range(n_permutations):
+        perm = rng.permutation(n_total)
+        idx_a = perm[:n_a]
+        idx_b = perm[n_a:]
+        pa = compute_coactivity_metrics(combined[:, idx_a])
+        pb = compute_coactivity_metrics(combined[:, idx_b])
+        for k in null_dists:
+            null_dists[k][i] = pa[k] - pb[k]
+
+    results: dict[str, dict[str, Any]] = {}
+    for k, null in null_dists.items():
+        obs = observed_delta[k]
+        null_mean = float(np.nanmean(null))
+        null_std = float(np.nanstd(null))
+        p_a_gt_b = float(np.mean(null >= obs))   # right-tailed: a > b
+        p_two = float(np.mean(np.abs(null) >= abs(obs)))
+        z = (obs - null_mean) / null_std if null_std > 0 else 0.0
+        results[k] = {
+            "observed_delta": float(obs),
+            "null": null,
+            "null_mean": null_mean,
+            "null_std": null_std,
+            "p_a_gt_b": p_a_gt_b,
+            "p_two_tailed": p_two,
+            "z_score": float(z),
+        }
+    return results
+
+
 def compute_sliding_coactivity(
     onsets: np.ndarray,
     neural_data: dict[str, np.ndarray],
@@ -409,7 +511,7 @@ def sample_onsets_across_sessions(
     session identity for subsequent circular shifting.
 
     This function pools all available onsets from a specific category
-    (e.g., 'complex_df') across all provided sessions, draws a random
+    (e.g., 'group_a_df') across all provided sessions, draws a random
     subset of size n_total, and returns them as a list of arrays
     corresponding to the original session order.
 
@@ -419,7 +521,7 @@ def sample_onsets_across_sessions(
         The list of session data dictionaries created during loading.
     category_key : str
         The key in the session dictionary to pull onsets from
-        (e.g., 'complex_df' or 'simple_df').
+        (e.g., 'group_a_df' or 'group_b_df').
     n_total : int
         The total number of onsets to sample across the entire dataset.
 
