@@ -2612,6 +2612,7 @@ def plot_multinomial_selection_trajectory(
         save_plot: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
+        secondary_ylim_max: float = None,
 ) -> None:
     """
     Plot the multinomial forward-selection trajectory as a compact
@@ -2676,6 +2677,13 @@ def plot_multinomial_selection_trajectory(
         Mapping from raw feature names (as stored in the pickle) to
         presentation-friendly labels used for every annotation. Raw
         names not in the map render unchanged.
+    secondary_ylim_max : float, optional
+        Hard upper bound for the right-panel y-axis (the secondary-
+        metric bars). When supplied, overrides the default rate-metric
+        cap (0.31) used for AUC / balanced-accuracy / recall / etc.
+        The visible tick range stops at this value; the label-stack
+        above each bar still extends past it if needed so feature
+        annotations are not clipped.
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -3021,11 +3029,13 @@ def plot_multinomial_selection_trajectory(
     # K=6 classes tops out around 0.3 in practice, so a higher cap
     # leaves the bars looking stubby. y_top extends past the cap when
     # the feature-label stack above the bars would otherwise clip;
-    # the visible tick range still stops at 0.4 so the axis reads
+    # the visible tick range still stops at the cap so the axis reads
     # cleanly. First tick is rounded up to the nearest 0.05 above
     # the chance floor (e.g., 0.20 when chance = 1/6 ~= 0.167).
+    # ``secondary_ylim_max`` overrides the default rate-metric cap
+    # when the caller wants tighter framing (e.g., 0.26 for K=7).
     if metric_secondary in rate_metrics or metric_secondary == 'auc':
-        cap = 0.31
+        cap = float(secondary_ylim_max) if secondary_ylim_max is not None else 0.31
         y_top = max(cap, label_stack_top + 0.01)
         first_tick = float(np.ceil(chance_secondary * 20) / 20)
         visible_ticks = np.arange(first_tick, cap + 1e-9, 0.05)
@@ -3036,7 +3046,10 @@ def plot_multinomial_selection_trajectory(
         ax_bars.set_yticklabels([f"{t:.2f}" for t in visible_ticks],
                                 fontsize=8, color=TEXT_COLOR)
     else:
-        y_top = max(y_data_max + 0.10, label_stack_top)
+        if secondary_ylim_max is not None:
+            y_top = max(float(secondary_ylim_max), label_stack_top + 0.01)
+        else:
+            y_top = max(y_data_max + 0.10, label_stack_top)
         ax_bars.set_ylim(chance_secondary, y_top)
 
     ax_bars.set_xticks(bar_x_positions)
