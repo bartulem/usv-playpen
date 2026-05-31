@@ -44,7 +44,7 @@ from ..analyses.compute_neuronal_tuning_curves import (
 )
 from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import first_match_or_raise
-from ..plot_style import apply_plot_style
+from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 from .figure_io import save_figure

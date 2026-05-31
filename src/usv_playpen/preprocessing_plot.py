@@ -15,7 +15,7 @@ import numpy as np
 from imgstore import new_for_filename
 
 from .os_utils import first_match_or_raise
-from .plot_style import apply_plot_style
+from .visualizations.plot_style import apply_plot_style
 from .visualizations.figure_io import save_figure
 from .yaml_utils import load_session_metadata, save_session_metadata
 

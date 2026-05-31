@@ -21,7 +21,7 @@ import polars as pls
 from tqdm import tqdm
 
 from .os_utils import configure_path, wait_for_subprocesses
-from .plot_style import apply_plot_style
+from .visualizations.plot_style import apply_plot_style
 from .time_utils import is_gui_context, smart_wait
 from .visualizations.figure_io import save_figure
 from .yaml_utils import load_session_metadata, save_session_metadata

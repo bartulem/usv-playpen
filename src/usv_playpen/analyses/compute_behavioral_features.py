@@ -47,7 +47,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import minimize
 
 from ..os_utils import first_match_or_raise
-from ..plot_style import apply_plot_style
+from ..visualizations.plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.auxiliary_plot_functions import (
     choose_animal_colors,

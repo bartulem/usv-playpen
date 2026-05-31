@@ -26,7 +26,7 @@ from scipy.io import wavfile
 
 from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import first_match_or_raise
-from ..plot_style import apply_plot_style
+from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap, choose_animal_colors
 from .figure_io import save_figure
@@ -503,36 +503,47 @@ def plot_spectrogram(plot_axes: plt.Axes,
                               xmax=((min(half_window_size_sec, usv_[1]) - (-half_window_size_sec)) / (half_window_size_sec - (-half_window_size_sec))),
                               color=usv_segment_colors_list[idx_usv_],
                               lw=usv_segment_lw)
-    plot_axes.set_xticklabels([])
-    plot_axes.set_xlabel('')
+    # x-axis: keep only the two bounding labels (the window is centred, so they
+    # read -half .. +half — e.g. -0.5 / +0.5 for a 1 s window), drop the tick
+    # marks, and add an enlarged 'Time (s)' label.
+    spec_xlim = plot_axes.get_xlim()
+    plot_axes.set_xticks([spec_xlim[0], spec_xlim[1]])
+    plot_axes.set_xticklabels([f"{-half_window_size_sec:g}", f"{half_window_size_sec:g}"])
+    plot_axes.set_xlim(spec_xlim)
     plot_axes.xaxis.set_tick_params(which='minor', bottom=False)
+    plot_axes.set_xlabel(xlabel='Time (s)',
+                         labelpad=-6,
+                         fontsize=6,
+                         color=color_mode_preferences['spectrogram_text_color'])
+    # y-axis: only the 'Freq (kHz)' label, pulled in close to the axis; no
+    # frequency tick marks or numeric labels.
     plot_axes.set_ylim(freq_limit)
-    plot_axes.set_yticks(freq_yticks)
-    plot_axes.set_yticklabels([int(y_tick / 1000) for y_tick in freq_yticks])
+    plot_axes.set_yticks([])
     plot_axes.yaxis.set_tick_params(which='minor', left=False)
     plot_axes.spines['bottom'].set_color(color_mode_preferences['tick_color'])
     plot_axes.spines['top'].set_color(color_mode_preferences['tick_color'])
     plot_axes.spines['left'].set_color(color_mode_preferences['tick_color'])
     plot_axes.spines['right'].set_color(color_mode_preferences['tick_color'])
-    plot_axes.tick_params(axis='both',
+    plot_axes.tick_params(axis='x',
                           which='major',
+                          length=0,
                           colors=color_mode_preferences['tick_color'])
     plot_axes.set_ylabel(ylabel='Freq (kHz)',
-                         labelpad=1,
+                         labelpad=3,
                          fontsize=6,
                          color=color_mode_preferences['spectrogram_text_color'])
 
     if cbar_bool:
         cbar = figure_object.colorbar(mappable=img,
                                       ax=plot_axes,
-                                      format='%+2.0f',
                                       pad=.01)
-        cbar.set_label(label=r'Power (dBFS)',
-                       labelpad=1,
+        # strip every colorbar tick and tick label; keep only the label, pulled
+        # in close to the bar.
+        cbar.set_ticks([])
+        cbar.set_label(label=r'Amplitude (dB)',
+                       labelpad=3,
                        size='xx-small',
                        color=color_mode_preferences['spectrogram_text_color'])
-        cbar.ax.tick_params(axis='both', which='both', length=0, pad=.5)
-        plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color=color_mode_preferences['spectrogram_text_color'])
         cbar.outline.set_edgecolor(color_mode_preferences['tick_color'])
 
 
@@ -607,15 +618,15 @@ def plot_raster(plot_axes: plt.Axes,
                           colors=color_mode_preferences['tick_color'],
                           pad=1.5,
                           length=1,
-                          labelsize=2,
+                          labelsize=6,
                           labelcolor=color_mode_preferences['text_color'])
     plot_axes.set_xlim(-raster_half_window, raster_half_window)
     plot_axes.set_xticks([-raster_half_window, 0, raster_half_window])
-    plot_axes.set_xticklabels(np.arange(-raster_half_window_sec,
-                                        raster_half_window_sec + .001,
-                                        raster_half_window_sec))
+    # keep all three ticks but drop the central "0" label; the two bounding
+    # labels are enlarged via the tick_params labelsize above.
+    plot_axes.set_xticklabels([f"{-raster_half_window_sec:g}", '', f"{raster_half_window_sec:g}"])
     plot_axes.set_xlabel(xlabel='Time (s)',
-                         fontsize=3,
+                         fontsize=6,
                          fontweight='bold',
                          color=color_mode_preferences['text_color'])
     plot_axes.xaxis.set_label_coords(0.5, -0.025)
@@ -623,7 +634,11 @@ def plot_raster(plot_axes: plt.Axes,
     plot_axes.set_yticks([])
     fig_renderer = figure_object.canvas.get_renderer()
     txt_x_start = 0
-    brain_buckets_already_plotted = []
+    # Fixed left-to-right display order for the area labels; this matches the
+    # top-to-bottom unit ordering imposed on the raster. A representative raw
+    # region is stored per bucket so its bucket colour can be resolved.
+    brain_area_label_order = ['CENT', 'SC', 'PAG', 'MRN', 'MB', 'VTA', 'other']
+    bucket_to_region = {}
     for probe_id in raster_brain_area:
         for brain_region in raster_brain_area[probe_id]:
             bucket = pool_brain_area(brain_region)
@@ -632,16 +647,19 @@ def plot_raster(plot_axes: plt.Axes,
                 or brain_region in filtered_brain_areas
                 or bucket in filtered_brain_areas
             )
-            if area_selected and bucket not in brain_buckets_already_plotted:
-                txt = plot_axes.text(x=txt_x_start,
-                                     y=1.01,
-                                     s=bucket,
-                                     fontsize=6,
-                                     fontweight='bold',
-                                     color=_resolve_brain_area_color(brain_region, brain_area_color_scheme),
-                                     transform=plot_axes.transAxes)
-                txt_x_start = txt.get_window_extent(renderer=fig_renderer).transformed(plot_axes.transAxes.inverted()).x1 + .01
-                brain_buckets_already_plotted.append(bucket)
+            if area_selected and bucket not in bucket_to_region:
+                bucket_to_region[bucket] = brain_region
+    for bucket in brain_area_label_order:
+        if bucket not in bucket_to_region:
+            continue
+        txt = plot_axes.text(x=txt_x_start,
+                             y=1.01,
+                             s=bucket,
+                             fontsize=6,
+                             fontweight='bold',
+                             color=_resolve_brain_area_color(bucket_to_region[bucket], brain_area_color_scheme),
+                             transform=plot_axes.transAxes)
+        txt_x_start = txt.get_window_extent(renderer=fig_renderer).transformed(plot_axes.transAxes.inverted()).x1 + .01
 
 
 def plot_behavioral_features(plot_axes: plt.Axes,
@@ -804,7 +822,7 @@ def plot_behavioral_features(plot_axes: plt.Axes,
                                       length=1,
                                       color=x_axis_feature_color,
                                       pad=1.5,
-                                      labelsize=2,
+                                      labelsize=6,
                                       labelcolor=x_axis_feature_color)
         plot_axes[ax_num].tick_params(axis='y',
                                       which='both',
@@ -815,15 +833,15 @@ def plot_behavioral_features(plot_axes: plt.Axes,
                                       labelcolor=feature_color)
         if feature_idx == len(beh_features_to_plot) - 1:
             plot_axes[ax_num].set_xticks(ticks=[x_axis_start, x_axis_middle, x_axis_end])
-            plot_axes[ax_num].set_xticklabels(labels=[-beh_window_size_sec, 0, beh_window_size_sec])
+            # keep all three ticks but drop the central "0" label
+            plot_axes[ax_num].set_xticklabels(labels=[-beh_window_size_sec, '', beh_window_size_sec])
         else:
             plot_axes[ax_num].set_xticks([])
         plot_axes[ax_num].set_ylim(ylim_dict[feature_name.split('.')[1]][0],
                                    ylim_dict[feature_name.split('.')[1]][1])
-        plot_axes[ax_num].set_yticks(ticks=[ylim_dict[feature_name.split('.')[1]][0],
-                                            ylim_dict[feature_name.split('.')[1]][1]])
-        plot_axes[ax_num].set_yticklabels(labels=[f"{ylim_dict[feature_name.split('.')[1]][0]:.2f}",
-                                                  f"{ylim_dict[feature_name.split('.')[1]][1]:.2f}"])
+        # y-axis keeps only its (enlarged, Helvetica-Light) label — drop the
+        # numeric tick labels and ticks to free room next to the spectrogram
+        plot_axes[ax_num].set_yticks([])
         plot_axes[ax_num].spines['top'].set_visible(False)
         plot_axes[ax_num].spines['right'].set_visible(False)
         if feature_idx == len(beh_features_to_plot) - 1:
@@ -831,22 +849,22 @@ def plot_behavioral_features(plot_axes: plt.Axes,
             plot_axes[ax_num].spines['bottom'].set_color(x_axis_feature_color)
             plot_axes[ax_num].spines['bottom'].set_bounds(x_axis_start, x_axis_end)
             plot_axes[ax_num].set_xlabel(xlabel='Time (s)',
-                                         fontsize=3,
+                                         fontsize=6,
                                          fontweight='bold',
                                          color=x_axis_feature_color,
                                          alpha=1.)
-            plot_axes[ax_num].xaxis.set_label_coords(.5, -.8)
+            plot_axes[ax_num].xaxis.set_label_coords(.5, -.55)
         else:
             plot_axes[ax_num].spines['bottom'].set_visible(False)
         plot_axes[ax_num].spines['left'].set_color(feature_color)
 
         ylabel_for_feature = beh_features_ylabels[feature_name.split('.')[1]]
         plot_axes[ax_num].set_ylabel(ylabel=ylabel_for_feature[:ylabel_for_feature.index('(')] + '\n' + ylabel_for_feature[ylabel_for_feature.index('('):],
-                                     fontsize=3,
-                                     fontweight='bold',
+                                     fontsize=5,
+                                     fontweight='light',
                                      rotation=0,
                                      color=feature_color)
-        plot_axes[ax_num].yaxis.set_label_coords(-.175, .25)
+        plot_axes[ax_num].yaxis.set_label_coords(-.12, .25)
 
 
 def plot_arena_corners_mics(data: np.ndarray,
@@ -1045,11 +1063,16 @@ def plot_arena_corners_mics(data: np.ndarray,
                      color=color_mode_preferences['text_color'],
                      transform=plot_axes.transAxes)
     for animal_idx, animal_key in enumerate(animal_id.keys()):
+        # An explicit family *list* (not the generic 'sans-serif' alias) is
+        # what triggers matplotlib's silent per-glyph fallback: the ID renders
+        # in Helvetica and the ♂ / ♀ sign, which Helvetica lacks, is supplied
+        # by DejaVu Sans without any "missing glyph" warning.
         plot_axes.text2D(x=text_start_coords[0],
                          y=text_start_coords[1] - mouse_id_text_offset - (animal_idx * main_text_offset),
                          s=f"{animal_key} {animal_id[animal_key]}",
                          fontsize=text_fontsize,
                          color=animal_colors[animal_idx],
+                         fontfamily=['Helvetica', 'DejaVu Sans'],
                          transform=plot_axes.transAxes)
 
 
@@ -1354,10 +1377,28 @@ class Create3DVideo:
              empirical_camera_sr) = self.load_h5_file()
 
         experiment_info_dict = extract_information(experiment_code=mouse_experimental_code)
-        animal_id_sex_dict = {mouse_name: "$\u2642$" if mouse_sex == 'male' else "$\u2640$" for mouse_name, mouse_sex in zip(mouse_track_names, experiment_info_dict['mouse_sex'], strict=True)}
+        # Plain Unicode (not mathtext "$\u2642$"): Helvetica lacks the \u2642 / \u2640
+        # signs, so the symbols resolve through the silent Helvetica -> DejaVu
+        # Sans text-fallback chain. Wrapping them in mathtext instead would
+        # route them through the custom math fontset and emit the noisy
+        # "Font family ['cursive'] not found" findfont message.
+        animal_id_sex_dict = {mouse_name: "\u2642" if mouse_sex == 'male' else "\u2640" for mouse_name, mouse_sex in zip(mouse_track_names, experiment_info_dict['mouse_sex'], strict=True)}
 
         animal_colors = choose_animal_colors(exp_info_dict=experiment_info_dict, visualizations_parameter_dict=self.visualizations_parameter_dict)
         animal_colors_dict = {mouse_name: animal_colors[mouse_idx] for mouse_idx, mouse_name in enumerate(mouse_track_names)}
+
+        # The GUI / JSON default for "raster_special_units" is [""] (a lone
+        # empty-string sentinel), not an actual unit. Because every downstream
+        # guard tests `len(...) == 0`, that sentinel is truthy enough to flip
+        # the raster onto the all-grey "special units" code path, which paints
+        # every cluster (and the brain-area legend) with the 'other' colour.
+        # Strip empty entries here so the per-brain-area colouring path runs
+        # whenever no genuine special unit was requested.
+        self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units'] = [
+            one_special_unit
+            for one_special_unit in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']
+            if one_special_unit
+        ]
 
         animal_colormaps = []
         for mouse_idx, mouse in enumerate(mouse_track_names):
@@ -1383,43 +1424,83 @@ class Create3DVideo:
         frame_span = int(np.floor(self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] * empirical_camera_sr))
 
         active_mic_position = 0
-        raster_fig_position = [0.815, 0.215, 0.175, 0.645]
-        beh_features_fig_position = [0.045, 0.813, 0.185, 0.035]
+        beh_features_fig_position = [0.09, 0.85, 0.158, 0.035]
         if self.visualizations_parameter_dict['make_behavioral_videos']['view_angle'] == 'top':
             view_elevation = 90
             view_azimuth = 0
             plot_xlim = 0.5
             plot_ylim = 0.5
             plot_zlim = 0.5
-            main_text_offset = 0.012
             if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
                     self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool'] or
                     self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']):
-                figure_pad = -13
-                text_start_coords = [0.115, 0.765]
-                spec_fig_position = [0.28, 0.015, 0.575, 0.125]
-                mouse_id_text_offset = 0.025
+                # arena_zoom is the 3-D content scale factor (set_box_aspect
+                # zoom): 1.0 = matplotlib default, larger = bigger arena. Unlike
+                # the old tight_layout(pad) knob it is decoupled from layout,
+                # subplot count and bbox cropping, and behaves identically for
+                # static frames and video frames. This is THE enlargement knob.
+                arena_zoom = 1.6
+                # arena_position is the [left, bottom, width, height] placement
+                # rectangle of the arena axis, independent of arena_zoom (which
+                # sets size). Shifting `left` re-centres the arena between the
+                # companion panels; for the lone-arena cases the offset is moot
+                # (cropped on save / centred in video) so it stays full-frame.
+                arena_position = [-0.02, 0.0, 1.0, 1.0]
+                text_start_coords = [-0.15, 0.98]
+                # bottom is raised off the frame edge so the spectrogram's
+                # x-tick labels and 'Time (s)' label sit ABOVE y=0: static
+                # figures crop tight (bbox_inches='tight') and would show them
+                # regardless, but video frames grab the fixed [0,1] canvas with
+                # no crop, so anything below y=0 is cut off.
+                spec_fig_position = [0.275, 0.03, 0.49, 0.125]
+                # raster_fig_position is the [left, bottom, width, height] of the
+                # right-hand spike raster; widen it to de-squeeze the panel (it can
+                # grow leftward into the arena's empty, animal-free right margin).
+                # NOTE for video: left + width must stay <= ~0.96 so the right
+                # spine and the '+0.5' tick label fit inside the fixed [0,1] frame
+                # (static figures crop tight and hide an overflow; videos do not).
+                raster_fig_position = [0.734, 0.18, 0.221, 0.70]
+                mouse_id_text_offset = 0.05
+                # main_text_offset is the vertical gap between consecutive text
+                # lines (title -> frame counter, and between animal-ID rows).
+                main_text_offset = 0.025
             else:
-                figure_pad = -19
-                text_start_coords = [0.175, 0.72]
-                mouse_id_text_offset = 0.024
+                # No companion panels: a larger zoom fills more of the frame.
+                arena_zoom = 2.2
+                arena_position = [0.0, 0.0, 1.0, 1.0]
+                text_start_coords = [-0.25, 0.99]
+                mouse_id_text_offset = 0.05
+                main_text_offset = 0.025
         else:
             view_elevation = 45
             view_azimuth = self.visualizations_parameter_dict['make_behavioral_videos']['side_azimuth_start']
-            main_text_offset = 0.0175
-            mouse_id_text_offset = 0.035
-            spec_fig_position = [0.285, 0.835, 0.55, 0.15]
-            figure_pad = -6.5
-            text_start_coords = [0.005, 0.84]
+            mouse_id_text_offset = 0.05
+            spec_fig_position = [0.265, 0.835, 0.5, 0.125]
+            text_start_coords = [-0.15, 0.98]
             plot_zlim = 0.4
             if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
                     self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool'] or
                     self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']):
                 plot_xlim = 0.6
                 plot_ylim = 0.6
+                raster_fig_position = [0.72, 0.18, 0.26, 0.70]
+                # arena_zoom sets size (set_box_aspect zoom; larger = bigger);
+                # arena_position sets placement. The raster occupies the right,
+                # so shift the arena left (negative `left`) to re-centre it
+                # between the left-hand features and the raster — which also frees
+                # room on the right to grow it via arena_zoom.
+                arena_zoom = 1.2
+                arena_position = [-0.05, 0.0, 1.0, 1.0]
+                # main_text_offset is the vertical gap between consecutive text
+                # lines (title -> frame counter, and between animal-ID rows).
+                main_text_offset = 0.025
             else:
                 plot_xlim = 0.5
                 plot_ylim = 0.5
+                # No companion panels: full-frame placement, offset is moot.
+                arena_zoom = 1.3
+                arena_position = [-0.05, 0.0, 1.0, 1.0]
+                main_text_offset = 0.025
 
 
         if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
@@ -1473,6 +1554,49 @@ class Create3DVideo:
                 cluster_data_dict = {}
                 for cluster_file in cluster_files:
                     cluster_data_dict[cluster_file.stem] = np.load(file=cluster_file)[1, :]
+
+                # Order units by brain-area bucket so the raster groups areas in
+                # a fixed sequence (CENT, SC, PAG, MRN, MB, VTA, other) read top
+                # to bottom, matching the area-label order drawn above the raster;
+                # WITHIN each area block, order units anatomically by their
+                # dorsoventral coordinate (loc_dv) read from the unit catalog.
+                # eventplot offsets increase upward, so the bucket key uses the
+                # reversed (bottom-to-top) sequence. This single reordering
+                # propagates to the raster data, colours and line specs built from
+                # the dict below.
+                #
+                # The catalog keys units by `unit_id`, which equals the cluster-file
+                # stem; a `rec_sessions` timestamp is a globally-unique recording,
+                # so filtering on the session alone scopes the lookup to this
+                # session's units (a single mouse).
+                unit_catalog_path = first_match_or_raise(
+                    root=pathlib.Path(ephys_directory),
+                    pattern='unit_catalog.csv',
+                    label="unit catalog CSV",
+                )
+                unit_catalog_df = pls.read_csv(str(unit_catalog_path),
+                                               columns=['unit_id', 'rec_sessions', 'loc_dv'])
+                unit_catalog_df = unit_catalog_df.with_columns(pls.col('loc_dv').cast(pls.Float64, strict=False))
+                unit_catalog_df = unit_catalog_df.filter(pls.col('rec_sessions').str.contains(session_id, literal=True))
+                unit_dv_lookup = dict(zip(unit_catalog_df['unit_id'], unit_catalog_df['loc_dv'], strict=True))
+
+                raster_area_order_top_to_bottom = ['CENT', 'SC', 'PAG', 'MRN', 'MB', 'VTA', 'other']
+                raster_area_order_bottom_to_top = raster_area_order_top_to_bottom[::-1]
+                cluster_bucket_rank = {}
+                cluster_depth = {}
+                for cluster_id in cluster_data_dict:
+                    cluster_region = find_region_by_channel(cluster_id=cluster_id,
+                                                            brain_area_dict=neuropixels_sites_to_anatomy_converter[mouse_track_names[0]][session_id],
+                                                            brain_color_scheme=self.brain_area_color_scheme,
+                                                            return_only_color=False,
+                                                            return_only_area=True)
+                    cluster_bucket_rank[cluster_id] = raster_area_order_bottom_to_top.index(pool_brain_area(cluster_region))
+                    # units absent from the catalog sort to the end of their block
+                    cluster_dv = unit_dv_lookup[cluster_id] if cluster_id in unit_dv_lookup else None
+                    cluster_depth[cluster_id] = float(cluster_dv) if cluster_dv is not None else float('inf')
+                cluster_data_dict = {cluster_id: cluster_data_dict[cluster_id]
+                                     for cluster_id in sorted(cluster_data_dict,
+                                                              key=lambda one_cluster_id: (cluster_bucket_rank[one_cluster_id], cluster_depth[one_cluster_id]))}
 
             if self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool']:
 
@@ -1581,14 +1705,52 @@ class Create3DVideo:
         with warnings.catch_warnings():
             warnings.simplefilter(action="ignore")
 
-            fig, ax = plt.subplots(figsize=(6.4, 4.8),
+            fig, ax = plt.subplots(figsize=(7.5, 4.8),
                                    nrows=1,
                                    ncols=3 + n_plot_cols,
                                    dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
                                    squeeze=True)
 
-            ax[0] = plt.subplot(projection='3d')
+            # Hardware H.264 decoders (PowerPoint's DXVA / Media Foundation path)
+            # cap frame dimensions at 4096 px; a larger frame exceeds the decoder
+            # texture limit and the video glitches even though VLC's software
+            # decoder plays it. H.264 also encodes in 16x16 macroblocks. So clamp
+            # BOTH output pixel dimensions (figsize_inches * dpi) to <= 4096 with a
+            # uniform down-scale (preserves the aspect ratio / tuned layout) and
+            # round DOWN to a multiple of 16. Panels are placed in figure
+            # fractions, so the size change does not move them.
+            max_decoder_px = 4096
+            fig_w_in, fig_h_in = fig.get_size_inches()
+            fig_w_px = fig_w_in * fig.dpi
+            fig_h_px = fig_h_in * fig.dpi
+            decoder_scale = min(1.0, max_decoder_px / fig_w_px, max_decoder_px / fig_h_px)
+            fig_w_px = (int(fig_w_px * decoder_scale) // 16) * 16
+            fig_h_px = (int(fig_h_px * decoder_scale) // 16) * 16
+            fig.set_size_inches(fig_w_px / fig.dpi, fig_h_px / fig.dpi)
+
+            # plt.subplots only builds the indexable `ax` scaffold; every panel
+            # below is drawn on a freshly created axis (a 3-D subplot for the
+            # arena, add_axes for the spectrogram / raster / behavioural-feature
+            # panels), so detach the auto-created grid axes now to stop their
+            # empty 0-1 frames from showing through the composite. The indices
+            # that get reused (ax[0], ax[1], ax[2], ax[3:]) are all rebound
+            # before they are touched again.
+            for scaffold_axis in ax:
+                scaffold_axis.remove()
+
+            # Darken the figure patch in dark mode (light_mode background is
+            # #FFFFFF, so this is a no-op there). Without it the figure stays
+            # white behind the dark axes and shows through wherever a panel does
+            # not cover the canvas — the "white square" border in dark videos.
+            fig.set_facecolor(color_mode_preferences['background_color'])
+
+            # The arena is placed full-frame; its companion panels are add_axes
+            # drawn on top. The 3-D content size is controlled by arena_zoom via
+            # set_box_aspect — an intuitive, layout-independent scale factor that
+            # replaces the old plt.subplot + tight_layout(pad) enlargement.
+            ax[0] = fig.add_axes(arena_position, projection='3d')
             ax[0].view_init(elev=view_elevation, azim=view_azimuth, roll=0)
+            ax[0].set_box_aspect(None, zoom=arena_zoom)
             ax[0].set_facecolor(color_mode_preferences['background_color'])
 
             plot_arena_corners_mics(data=arena_data,
@@ -1814,8 +1976,6 @@ class Create3DVideo:
                                          color_mode_preferences=color_mode_preferences,
                                          animal_colors=animal_colors)
 
-            plt.tight_layout(pad=figure_pad)
-
             def animate(frame_num):
                 """
                 Description
@@ -1845,6 +2005,10 @@ class Create3DVideo:
                     azim = (self.visualizations_parameter_dict['make_behavioral_videos']['rotation_speed']* ((frame_num + frame_start) / empirical_camera_sr)
                             + self.visualizations_parameter_dict['make_behavioral_videos']['side_azimuth_start']) % 360
                     ax[0].view_init(elev=view_elevation, azim=azim, roll=0)
+
+                # Axes3D.clear() above resets the box aspect, so re-apply the
+                # zoom every frame to keep the arena at its intended size.
+                ax[0].set_box_aspect(None, zoom=arena_zoom)
 
                 plot_arena_corners_mics(data=arena_data,
                                         plot_axes=ax[0],
@@ -2005,7 +2169,12 @@ class Create3DVideo:
                                              animal_colors=animal_colors,
                                              remove_axes_bool=True)
 
-                plt.tight_layout(pad=figure_pad)
+            # Persist the dark-mode patch colour through both the per-frame video
+            # encoder and the static savefig. The mplstyle pins savefig.facecolor
+            # to #FFFFFF, so without these the saved frames would revert to a
+            # white background regardless of fig.set_facecolor above.
+            frame_savefig_kwargs = {'facecolor': color_mode_preferences['background_color'],
+                                    'edgecolor': color_mode_preferences['background_color']}
 
             name_addition = f"{self.visualizations_parameter_dict['make_behavioral_videos']['plot_theme']}"
             name_addition = f"{name_addition}_{self.visualizations_parameter_dict['make_behavioral_videos']['view_angle']}view"
@@ -2053,7 +2222,8 @@ class Create3DVideo:
                         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
                         anima.save(filename=animation_file_path,
                                    writer=animation_writer,
-                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
+                                   savefig_kwargs=frame_savefig_kwargs)
                     else:
                         # CPU attempt: Pass the string AND the fps.
                         self.message_output("Using default CPU for video encoding...")
@@ -2061,7 +2231,8 @@ class Create3DVideo:
                         anima.save(filename=animation_file_path,
                                    writer=animation_writer,
                                    fps=int(np.floor(empirical_camera_sr)),
-                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
+                                   savefig_kwargs=frame_savefig_kwargs)
 
                 except Exception as write_error:
                     self.message_output(f"WARNING: Video saving failed. Error: {write_error}")
@@ -2077,7 +2248,8 @@ class Create3DVideo:
                         anima.save(filename=animation_file_path,
                                    writer=cpu_writer_fallback,
                                    fps=int(np.floor(empirical_camera_sr)),
-                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'])
+                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
+                                   savefig_kwargs=frame_savefig_kwargs)
                     else:
                         self.message_output("CPU encoding failed. No fallback available.")
                         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
@@ -2106,6 +2278,13 @@ class Create3DVideo:
             else:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:
                     video_fig_specs = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']
+                    # bbox_inches=None (NOT 'tight'): the static frame is a single
+                    # frame of the same composite as the video, so it must use the
+                    # identical fixed [0,1] canvas. Tight-cropping here would hide
+                    # any panel that overflows the frame edge, making the preview
+                    # disagree with the video (where overflow is clipped). Saving
+                    # the full frame keeps the preview truthful — tune once, match
+                    # both.
                     fig_loc = save_figure(
                         fig,
                         stem=f"{session_id}_3D_{frame_start}fr_{name_addition}",
@@ -2113,6 +2292,8 @@ class Create3DVideo:
                         override_dir=putative_save_directory,
                         override_format=video_fig_specs['fig_format'],
                         override_dpi=video_fig_specs['fig_dpi'],
+                        bbox_inches=None,
+                        **frame_savefig_kwargs,
                     )
 
                     # open image in default viewer if display available

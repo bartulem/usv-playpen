@@ -48,7 +48,7 @@ from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from usv_playpen.plot_style import apply_plot_style
+from usv_playpen.visualizations.plot_style import apply_plot_style
 from usv_playpen.visualizations.figure_io import resolve_pdf_path, save_figure
 from usv_playpen.visualizations.make_behavioral_videos import pool_brain_area
 
