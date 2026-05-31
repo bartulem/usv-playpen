@@ -1789,24 +1789,68 @@ def plot_estrous_ratio_scatter(
             global_max = max(global_max, values.max())
 
         if n == 0:
-            stats_dict[category] = {'n': 0, 'mean': float('nan'), 'sem': float('nan')}
+            stats_dict[category] = {
+                'n': 0,
+                'mean': float('nan'), 'sem': float('nan'),
+                'geom_mean': float('nan'), 'log_sem': float('nan'),
+                'ci_lower': float('nan'), 'ci_upper': float('nan'),
+            }
             continue
 
-        # Descriptive Statistics
-        mean_val = float(np.mean(values))
+        # Arithmetic descriptive stats (always computed for backwards-
+        # compatibility of the returned stats_dict).
+        arith_mean = float(np.mean(values))
+        arith_sem = float(sem(values)) if n > 1 else float('nan')
         if n > 1:
-            sem_val = float(sem(values))
             t_crit = t.ppf((1 + confidence_level) / 2, n - 1)
-            ci_margin = t_crit * sem_val
-            ci_lower, ci_upper = mean_val - ci_margin, mean_val + ci_margin
-            stats_text = f"{mean_val:.2f} ± {sem_val:.2f}"
+            ci_margin = t_crit * arith_sem
+            ci_lower, ci_upper = arith_mean - ci_margin, arith_mean + ci_margin
         else:
-            sem_val, ci_lower, ci_upper = float('nan'), float('nan'), float('nan')
-            stats_text = f"Mean: {mean_val:.2f}"
+            ci_lower, ci_upper = float('nan'), float('nan')
+
+        # Geometric mean + log-space SEM, used as the plotted summary
+        # when the y-axis is logarithmic. Per-session ratios are right-
+        # skewed and unbounded above, so the arithmetic mean is biased
+        # upward by sessions with very small denominators; the eye reads
+        # the cloud's centre on a log axis, which corresponds to the
+        # geometric mean. Restrict to strictly positive values, since
+        # log10 is undefined elsewhere.
+        pos_values = values[values > 0]
+        n_pos = len(pos_values)
+        if n_pos >= 1:
+            log_vals = np.log10(pos_values)
+            log_mean = float(np.mean(log_vals))
+            log_sem_val = float(sem(log_vals)) if n_pos > 1 else 0.0
+            geom_mean = float(10.0 ** log_mean)
+        else:
+            log_mean, log_sem_val, geom_mean = float('nan'), float('nan'), float('nan')
+
+        # Choose what to draw based on use_log_scale.
+        if use_log_scale and not np.isnan(geom_mean):
+            center = geom_mean
+            if n_pos > 1:
+                lo = 10.0 ** (log_mean - log_sem_val)
+                hi = 10.0 ** (log_mean + log_sem_val)
+                yerr_arr = np.array([[center - lo], [hi - center]])
+                mult_factor = 10.0 ** log_sem_val
+                stats_text = f"G={geom_mean:.1f}  ×÷ {mult_factor:.2f}"
+            else:
+                yerr_arr = None
+                stats_text = f"G={geom_mean:.1f}"
+        else:
+            center = arith_mean
+            if n > 1:
+                yerr_arr = arith_sem
+                stats_text = f"{arith_mean:.2f} ± {arith_sem:.2f}"
+            else:
+                yerr_arr = None
+                stats_text = f"Mean: {arith_mean:.2f}"
 
         stats_dict[category] = {
-            'n': n, 'mean': mean_val, 'sem': sem_val,
-            'ci_lower': ci_lower, 'ci_upper': ci_upper
+            'n': n,
+            'mean': arith_mean, 'sem': arith_sem,
+            'geom_mean': geom_mean, 'log_sem': log_sem_val,
+            'ci_lower': ci_lower, 'ci_upper': ci_upper,
         }
 
         # Jitter and Plot Points
@@ -1815,13 +1859,13 @@ def plot_estrous_ratio_scatter(
 
         ax.scatter(x_positions, values, color=scatter_colors[idx], alpha=0.4, s=15, zorder=5)
 
-        # Plot Mean and SEM
-        ax.hlines(y=mean_val, xmin=cloud_center_x - mean_line_width, xmax=cloud_center_x + mean_line_width,
-                  color=line_color, linewidth=2.5, zorder=10)
-
-        if not np.isnan(sem_val):
-            ax.errorbar(cloud_center_x, mean_val, yerr=sem_val, fmt='none',
-                        color=line_color, elinewidth=1.5, capsize=0, zorder=9)
+        # Plot summary statistic (geometric or arithmetic mean) + SE marker.
+        if not np.isnan(center):
+            ax.hlines(y=center, xmin=cloud_center_x - mean_line_width, xmax=cloud_center_x + mean_line_width,
+                      color=line_color, linewidth=2.5, zorder=10)
+            if yerr_arr is not None:
+                ax.errorbar(cloud_center_x, center, yerr=yerr_arr, fmt='none',
+                            color=line_color, elinewidth=1.5, capsize=0, zorder=9)
 
         # Statistical Text Labels
         ax.text(cloud_center_x, -0.15, stats_text, transform=ax.get_xaxis_transform(),
@@ -2543,7 +2587,7 @@ def plot_category_estrous_ratio_grid(
 
         for idx, stage in enumerate(valid_stages):
             ratios = np.array(estrous_data[cat]['male_female_ratios'].get(stage, []))
-            ratios = ratios[np.isfinite(ratios)]
+            ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
             n = len(ratios)
 
             if n > 0:
@@ -2552,17 +2596,34 @@ def plot_category_estrous_ratio_grid(
                 x_jit = rng.normal(idx, 0.08, size=n)
                 ax.scatter(x_jit, ratios, color=scatter_colors[idx], alpha=0.5, s=20, zorder=5)
 
-                # Statistics
-                m = np.mean(ratios)
-                s = sem(ratios) if n > 1 else 0
+                # Geometric mean and log-space SEM (the y-axis is log10,
+                # so the arithmetic mean is dominated by low-denominator
+                # outliers and does not represent the visual centre of
+                # the cloud).
+                log_vals = np.log10(ratios)
+                log_mean = float(np.mean(log_vals))
+                log_sem_val = float(sem(log_vals)) if n > 1 else 0.0
+                geom_mean = float(10.0 ** log_mean)
+                arith_mean = float(np.mean(ratios))
+                arith_sem = float(sem(ratios)) if n > 1 else 0.0
+
+                # Asymmetric error bar in linear units corresponding to
+                # ±1 SE in log10 space.
+                lo = 10.0 ** (log_mean - log_sem_val)
+                hi = 10.0 ** (log_mean + log_sem_val)
+                yerr_arr = np.array([[geom_mean - lo], [hi - geom_mean]])
 
                 # Black statistical overlay
-                ax.hlines(y=m, xmin=idx - mean_line_width, xmax=idx + mean_line_width,
+                ax.hlines(y=geom_mean, xmin=idx - mean_line_width, xmax=idx + mean_line_width,
                           color='#202020', linewidth=2.0, zorder=10)
-                ax.errorbar(idx, m, yerr=s, fmt='none', color='#202020',
+                ax.errorbar(idx, geom_mean, yerr=yerr_arr, fmt='none', color='#202020',
                             elinewidth=0.5, capsize=0, zorder=9)
 
-                cat_stats[stage] = {'mean': float(m), 'sem': float(s), 'n': n}
+                cat_stats[stage] = {
+                    'mean': arith_mean, 'sem': arith_sem,
+                    'geom_mean': geom_mean, 'log_sem': log_sem_val,
+                    'n': n,
+                }
 
         ax.set_yscale('log')
         ax.axhline(1.0, color='#202020', linestyle='--', alpha=0.3, linewidth=1)
@@ -2588,7 +2649,7 @@ def plot_category_estrous_ratio_grid(
 
         for cat_idx, cat_id in enumerate(categories):
             ratios = np.array(estrous_data[cat_id]['male_female_ratios'].get(stage_char, []))
-            ratios = ratios[np.isfinite(ratios)]
+            ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
             n = len(ratios)
 
             if n > 0:
@@ -2597,14 +2658,20 @@ def plot_category_estrous_ratio_grid(
                 x_jit = rng.normal(cat_idx, 0.08, size=n)
                 ax.scatter(x_jit, ratios, color=scatter_colors[idx], alpha=0.5, s=20, zorder=5)
 
-                # Use pre-calculated stats from Figure 1 loop
-                m = stats_dict[cat_id][stage_char]['mean']
-                s = stats_dict[cat_id][stage_char]['sem']
+                # Reuse the log-space stats computed in the category
+                # facet loop above; render the asymmetric error bar in
+                # linear units (±1 SE in log10 space).
+                geom_mean = stats_dict[cat_id][stage_char]['geom_mean']
+                log_sem_val = stats_dict[cat_id][stage_char]['log_sem']
+                log_mean = float(np.log10(geom_mean))
+                lo = 10.0 ** (log_mean - log_sem_val)
+                hi = 10.0 ** (log_mean + log_sem_val)
+                yerr_arr = np.array([[geom_mean - lo], [hi - geom_mean]])
 
                 # Black Statistical Overlay
-                ax.hlines(y=m, xmin=cat_idx - mean_line_width, xmax=cat_idx + mean_line_width,
+                ax.hlines(y=geom_mean, xmin=cat_idx - mean_line_width, xmax=cat_idx + mean_line_width,
                           color='#202020', linewidth=2.0, zorder=10)
-                ax.errorbar(cat_idx, m, yerr=s, fmt='none', color='#202020',
+                ax.errorbar(cat_idx, geom_mean, yerr=yerr_arr, fmt='none', color='#202020',
                             elinewidth=1.5, capsize=0, zorder=9)
 
         ax.set_yscale('log')

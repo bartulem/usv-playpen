@@ -2323,7 +2323,25 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         pag_color = region_colors["PAG"]
         non_sig_color = self.visualizations_parameter_dict["unassigned_colors"][0]
-        density_cmap = self.visualizations_parameter_dict["figures"]["cmap"]
+        # Build a sequential white -> PAG colormap for the two
+        # fraction panels: at zero data the pixel renders as white,
+        # which matches the figure background, so the alpha-fade at
+        # low occupancy blends in seamlessly. PAG-coloured pixels
+        # mark high local fractions.
+        pag_rgb = tuple(int(pag_color[1 + 2 * k : 3 + 2 * k], 16) for k in range(3))
+        density_cmap = create_colormap(input_parameter_dict={
+            "cm_length":           255,
+            "cm_name":             "pag_fraction_cm",
+            "cm_type":             "sequential",
+            "cm_start":            pag_rgb,
+            "cm_end":              (255, 255, 255),
+            "equalize_luminance":  True,
+            "match_luminance_by":  "max",
+            "change_saturation":   1.0,
+            "cm_opacity":          1,
+        })
+        diff_cmap = plt.get_cmap("RdBu_r").copy()
+        diff_cmap.set_bad(color=COLOR_BLACK)
 
         loc_ap = np.array([u["loc_ap"] for u in per_unit])
         loc_dv = np.array([u["loc_dv"] for u in per_unit])
@@ -2380,19 +2398,72 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         density_pos = _kde_density(pos_sig)
         density_neg = _kde_density(neg_sig)
-        # Shared color scale so the two density panels are directly
-        # comparable. `vmin=0` because KDEs are non-negative; `vmax`
-        # is the max across both populations.
-        density_vmax = float(max(density_pos.max(), density_neg.max()))
 
-        # Figure layout: three equal-aspect sagittal panels sharing
-        # axis extent.
-        fig = plt.figure(figsize=(13.5, 4.8), dpi=150)
+        # Occupancy: KDE of every good + somatic PAG unit (i.e. where
+        # we recorded). The sig +VMI and sig -VMI density panels are
+        # divided by this to express the local fraction of cells at
+        # each anatomical location that fall into each polarity,
+        # removing the sampling-bias confound where regions that were
+        # recorded more heavily look "denser" for every cell type.
+        density_all = _kde_density(np.ones(n_total, dtype=bool))
+
+        # KDE units integrate to 1; multiply by N to recover an
+        # expected-count density. Then fraction = expected_count_subset
+        # / expected_count_total per pixel. We do NOT hard-mask
+        # low-occupancy pixels — instead, the per-pixel alpha used in
+        # imshow scales smoothly with `density_all`, so the gradient
+        # stays continuous across the cell and gradually fades out
+        # where the population was poorly sampled.
+        all_max = float(density_all.max()) if density_all.size else 0.0
+        # A tiny epsilon avoids division by exact zero at corners
+        # where the KDE evaluates to numerical zero; values there
+        # will be rendered with alpha≈0 anyway.
+        eps = 1e-12 * max(all_max, 1.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            frac_pos = (n_pos * density_pos) / (n_total * (density_all + eps))
+            frac_neg = (n_neg * density_neg) / (n_total * (density_all + eps))
+        frac_pos = np.nan_to_num(frac_pos, nan=0.0, posinf=0.0, neginf=0.0)
+        frac_neg = np.nan_to_num(frac_neg, nan=0.0, posinf=0.0, neginf=0.0)
+        frac_diff = frac_pos - frac_neg
+
+        # Smooth occupancy-driven alpha: full opacity in the densest
+        # 80 % of the cell, fades linearly to 0 below `alpha_floor`.
+        alpha_floor = 0.20 * all_max if all_max > 0.0 else 0.0
+        alpha_mask = (
+            np.clip(density_all / alpha_floor, 0.0, 1.0)
+            if alpha_floor > 0.0 else np.ones_like(density_all)
+        )
+
+        # Shared color scale across the two fraction panels, derived
+        # from the well-sampled core (where `alpha_mask >= 0.5`) so a
+        # handful of peripheral pixels with tiny denominators don't
+        # blow up `vmax`. `vmin=0` because fractions are non-negative.
+        core = alpha_mask >= 0.5
+        frac_vmax = float(
+            max(
+                frac_pos[core].max() if core.any() else frac_pos.max(),
+                frac_neg[core].max() if core.any() else frac_neg.max(),
+            )
+        )
+        if frac_vmax <= 0.0:
+            frac_vmax = 1.0
+        # Symmetric, divergent scale for the difference panel, also
+        # taken from the well-sampled core.
+        diff_abs_max = float(
+            np.abs(frac_diff[core]).max() if core.any() else np.abs(frac_diff).max()
+        )
+        if diff_abs_max <= 0.0:
+            diff_abs_max = frac_vmax
+
+        # Figure layout: four equal-aspect sagittal panels sharing
+        # axis extent (scatter + sig+ occupancy-normalized density +
+        # sig- occupancy-normalized density + sig+ minus sig- diff).
+        fig = plt.figure(figsize=(18.0, 4.8), dpi=150)
         gs = gridspec.GridSpec(
-            1, 3,
+            1, 4,
             figure=fig,
-            wspace=0.32,
-            left=0.06, right=0.985,
+            wspace=0.34,
+            left=0.045, right=0.99,
             top=0.93, bottom=0.20,
         )
 
@@ -2423,47 +2494,71 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_sc.set_title("sagittal scatter", fontsize=11)
         ax_sc.tick_params(labelsize=8)
 
-        # Panel 2 — sig +VMI density.
+        # Panel 2 — occupancy-normalized sig +VMI fraction.
         ax_pos = fig.add_subplot(gs[0, 1])
         im_pos = ax_pos.imshow(
-            density_pos,
+            frac_pos,
             extent=(ap_lo, ap_hi, dv_lo, dv_hi),
             origin="lower",
             aspect="auto",
             cmap=density_cmap,
-            vmin=0.0, vmax=density_vmax,
+            vmin=0.0, vmax=frac_vmax,
+            alpha=alpha_mask,
         )
         ax_pos.set_xlim(ap_lo, ap_hi)
         ax_pos.set_ylim(dv_lo, dv_hi)
         ax_pos.set_aspect("equal", adjustable="box")
         ax_pos.set_xlabel(r"loc_ap (µm, caudal to rostral)", fontsize=9)
         ax_pos.set_ylabel(r"loc_dv (µm, ventral to dorsal)", fontsize=9)
-        ax_pos.set_title(f"sig +VMI density  (N+={n_pos})", fontsize=11)
+        ax_pos.set_title(f"sig +VMI fraction  (N+={n_pos})", fontsize=11)
         ax_pos.tick_params(labelsize=8)
         cbar_pos = fig.colorbar(im_pos, ax=ax_pos, fraction=0.046, pad=0.04)
         cbar_pos.ax.tick_params(labelsize=7)
-        cbar_pos.set_label("KDE density", fontsize=8)
+        cbar_pos.set_label("fraction of recorded cells", fontsize=8)
 
-        # Panel 3 — sig -VMI density.
+        # Panel 3 — occupancy-normalized sig -VMI fraction.
         ax_neg = fig.add_subplot(gs[0, 2])
         im_neg = ax_neg.imshow(
-            density_neg,
+            frac_neg,
             extent=(ap_lo, ap_hi, dv_lo, dv_hi),
             origin="lower",
             aspect="auto",
             cmap=density_cmap,
-            vmin=0.0, vmax=density_vmax,
+            vmin=0.0, vmax=frac_vmax,
+            alpha=alpha_mask,
         )
         ax_neg.set_xlim(ap_lo, ap_hi)
         ax_neg.set_ylim(dv_lo, dv_hi)
         ax_neg.set_aspect("equal", adjustable="box")
         ax_neg.set_xlabel(r"loc_ap (µm, caudal to rostral)", fontsize=9)
         ax_neg.set_ylabel(r"loc_dv (µm, ventral to dorsal)", fontsize=9)
-        ax_neg.set_title(f"sig -VMI density  (N-={n_neg})", fontsize=11)
+        ax_neg.set_title(f"sig -VMI fraction  (N-={n_neg})", fontsize=11)
         ax_neg.tick_params(labelsize=8)
         cbar_neg = fig.colorbar(im_neg, ax=ax_neg, fraction=0.046, pad=0.04)
         cbar_neg.ax.tick_params(labelsize=7)
-        cbar_neg.set_label("KDE density", fontsize=8)
+        cbar_neg.set_label("fraction of recorded cells", fontsize=8)
+
+        # Panel 4 — sig +VMI - sig -VMI fraction difference, divergent.
+        ax_diff = fig.add_subplot(gs[0, 3])
+        im_diff = ax_diff.imshow(
+            frac_diff,
+            extent=(ap_lo, ap_hi, dv_lo, dv_hi),
+            origin="lower",
+            aspect="auto",
+            cmap=diff_cmap,
+            vmin=-diff_abs_max, vmax=diff_abs_max,
+            alpha=alpha_mask,
+        )
+        ax_diff.set_xlim(ap_lo, ap_hi)
+        ax_diff.set_ylim(dv_lo, dv_hi)
+        ax_diff.set_aspect("equal", adjustable="box")
+        ax_diff.set_xlabel(r"loc_ap (µm, caudal to rostral)", fontsize=9)
+        ax_diff.set_ylabel(r"loc_dv (µm, ventral to dorsal)", fontsize=9)
+        ax_diff.set_title("sig +VMI − sig −VMI fraction", fontsize=11)
+        ax_diff.tick_params(labelsize=8)
+        cbar_diff = fig.colorbar(im_diff, ax=ax_diff, fraction=0.046, pad=0.04)
+        cbar_diff.ax.tick_params(labelsize=7)
+        cbar_diff.set_label("Δ fraction (+VMI − −VMI)", fontsize=8)
 
         # Single legend strip + caption at the bottom.
         leg_handles = [
