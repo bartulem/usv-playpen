@@ -34,6 +34,44 @@ from .figure_io import save_figure
 apply_plot_style()
 
 
+# Behavioral-video figure geometry + palette: the single source of truth for the
+# hand-tuned video composite. The arena/panel layout is optimised for this fixed
+# figure size, so the size is hard-coded rather than down-scaled at runtime.
+# _VIDEO_DPI is chosen so figsize * dpi stays within the 4096 px hardware-H.264 /
+# PowerPoint decoder limit on the long (7.5") edge (7.5 * 540 = 4050 px), which
+# removes the need for any runtime clamp. The figure-creation dpi AND every
+# encoder/static-save dpi must read _VIDEO_DPI from here, or the rendered frame
+# size desyncs from the figure and the video glitches in PowerPoint.
+_VIDEO_FIGSIZE = (7.5, 4.8)
+_VIDEO_DPI = 540
+_VIDEO_COLOR_MODES = {
+    "light_mode": {
+        "background_color": "#FFFFFF",
+        "node_edge_color": "#8B8B8B",
+        "body_edge_color": "#8B8B8B",
+        "text_color": "#202020",
+        "tick_color": "#202020",
+        "arena_line_color": "#202020",
+        "arena_mic_color": "#202020",
+        "arena_mesh_color": "#202020",
+        "spectrogram_text_color": "#202020",
+        "speaker_color": "#202020"
+    },
+    "dark_mode": {
+        "background_color": "#202020",
+        "node_edge_color": "#8B8B8B",
+        "body_edge_color": "#8B8B8B",
+        "text_color": "#FFFFFF",
+        "tick_color": "#FFFFFF",
+        "arena_line_color": "#FFFFFF",
+        "arena_mic_color": "#FFFFFF",
+        "arena_mesh_color": "#FFFFFF",
+        "spectrogram_text_color": "#FFFFFF",
+        "speaker_color": "#FFFFFF"
+    }
+}
+
+
 @njit(parallel=True)
 def read_ttl_events(input_array: np.ndarray) -> tuple:
     """
@@ -1215,32 +1253,7 @@ class Create3DVideo:
                                      "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
                                      "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
 
-        self.color_mode_preferences = {
-            "light_mode": {
-                "background_color": "#FFFFFF",
-                "node_edge_color": "#8B8B8B",
-                "body_edge_color": "#8B8B8B",
-                "text_color": "#202020",
-                "tick_color": "#202020",
-                "arena_line_color": "#202020",
-                "arena_mic_color": "#202020",
-                "arena_mesh_color": "#202020",
-                "spectrogram_text_color": "#202020",
-                "speaker_color": "#202020"
-            },
-            "dark_mode": {
-                "background_color": "#202020",
-                "node_edge_color": "#8B8B8B",
-                "body_edge_color": "#8B8B8B",
-                "text_color": "#FFFFFF",
-                "tick_color": "#FFFFFF",
-                "arena_line_color": "#FFFFFF",
-                "arena_mic_color": "#FFFFFF",
-                "arena_mesh_color": "#FFFFFF",
-                "spectrogram_text_color": "#FFFFFF",
-                "speaker_color": "#FFFFFF"
-            }
-        }
+        self.color_mode_preferences = _VIDEO_COLOR_MODES
 
 
     def load_beh_features_file(self) -> pls.DataFrame:
@@ -1705,28 +1718,11 @@ class Create3DVideo:
         with warnings.catch_warnings():
             warnings.simplefilter(action="ignore")
 
-            fig, ax = plt.subplots(figsize=(7.5, 4.8),
+            fig, ax = plt.subplots(figsize=_VIDEO_FIGSIZE,
                                    nrows=1,
                                    ncols=3 + n_plot_cols,
-                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
+                                   dpi=_VIDEO_DPI,
                                    squeeze=True)
-
-            # Hardware H.264 decoders (PowerPoint's DXVA / Media Foundation path)
-            # cap frame dimensions at 4096 px; a larger frame exceeds the decoder
-            # texture limit and the video glitches even though VLC's software
-            # decoder plays it. H.264 also encodes in 16x16 macroblocks. So clamp
-            # BOTH output pixel dimensions (figsize_inches * dpi) to <= 4096 with a
-            # uniform down-scale (preserves the aspect ratio / tuned layout) and
-            # round DOWN to a multiple of 16. Panels are placed in figure
-            # fractions, so the size change does not move them.
-            max_decoder_px = 4096
-            fig_w_in, fig_h_in = fig.get_size_inches()
-            fig_w_px = fig_w_in * fig.dpi
-            fig_h_px = fig_h_in * fig.dpi
-            decoder_scale = min(1.0, max_decoder_px / fig_w_px, max_decoder_px / fig_h_px)
-            fig_w_px = (int(fig_w_px * decoder_scale) // 16) * 16
-            fig_h_px = (int(fig_h_px * decoder_scale) // 16) * 16
-            fig.set_size_inches(fig_w_px / fig.dpi, fig_h_px / fig.dpi)
 
             # plt.subplots only builds the indexable `ax` scaffold; every panel
             # below is drawn on a freshly created axis (a 3-D subplot for the
@@ -2222,7 +2218,7 @@ class Create3DVideo:
                         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
                         anima.save(filename=animation_file_path,
                                    writer=animation_writer,
-                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
+                                   dpi=_VIDEO_DPI,
                                    savefig_kwargs=frame_savefig_kwargs)
                     else:
                         # CPU attempt: Pass the string AND the fps.
@@ -2231,7 +2227,7 @@ class Create3DVideo:
                         anima.save(filename=animation_file_path,
                                    writer=animation_writer,
                                    fps=int(np.floor(empirical_camera_sr)),
-                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
+                                   dpi=_VIDEO_DPI,
                                    savefig_kwargs=frame_savefig_kwargs)
 
                 except Exception as write_error:
@@ -2248,7 +2244,7 @@ class Create3DVideo:
                         anima.save(filename=animation_file_path,
                                    writer=cpu_writer_fallback,
                                    fps=int(np.floor(empirical_camera_sr)),
-                                   dpi=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['fig_dpi'],
+                                   dpi=_VIDEO_DPI,
                                    savefig_kwargs=frame_savefig_kwargs)
                     else:
                         self.message_output("CPU encoding failed. No fallback available.")
@@ -2291,7 +2287,7 @@ class Create3DVideo:
                         viz_settings=self.visualizations_parameter_dict,
                         override_dir=putative_save_directory,
                         override_format=video_fig_specs['fig_format'],
-                        override_dpi=video_fig_specs['fig_dpi'],
+                        override_dpi=_VIDEO_DPI,
                         bbox_inches=None,
                         **frame_savefig_kwargs,
                     )
