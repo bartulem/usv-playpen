@@ -117,7 +117,10 @@ _VIDEO_LAYOUT = {
         # No companion panels: a larger zoom fills more of the frame.
         "arena_zoom": 2.2,
         "arena_position": [0.0, 0.0, 1.0, 1.0],
-        "text_start_coords": [-0.25, 0.99],
+        # y kept at 0.98 (not 0.99): the session-title text2D is baseline-aligned,
+        # so glyphs extend upward; on the no-crop video [0,1] canvas a y of 0.99
+        # clipped the title's top edge (figures crop tight, so they never showed it).
+        "text_start_coords": [-0.25, 0.98],
         "spec_fig_position": None,
         "raster_fig_position": None,
         "mouse_id_text_offset": 0.05,
