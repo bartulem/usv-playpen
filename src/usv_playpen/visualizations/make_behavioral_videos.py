@@ -71,6 +71,88 @@ _VIDEO_COLOR_MODES = {
     }
 }
 
+# Per-case behavioral-video panel layout, hand-tuned per
+# (view_angle, has-companion-panels) combination and kept here as one
+# inspectable table. Each entry is the full set of [left, bottom, width, height]
+# panel rectangles, 3-D view angles, axis limits, arena zoom and text offsets for
+# that case; the rationale for individual values is preserved inline. `view_azimuth`
+# is None for the side views (resolved at runtime from `side_azimuth_start`).
+# `spec_fig_position` / `raster_fig_position` are None for layouts whose
+# spectrogram / raster panel is absent — the value is never read there, since each
+# panel is gated on its own `*_bool` downstream.
+_VIDEO_BEH_FEATURES_POSITION = [0.09, 0.85, 0.158, 0.035]
+_VIDEO_LAYOUT = {
+    "top_panels": {
+        "view_elevation": 90,
+        "view_azimuth": 0,
+        "plot_xlim": 0.5, "plot_ylim": 0.5, "plot_zlim": 0.5,
+        # arena_zoom is the 3-D content scale factor (set_box_aspect zoom): 1.0 =
+        # matplotlib default, larger = bigger arena. Decoupled from layout, subplot
+        # count and bbox cropping; identical for static + video frames. THE
+        # enlargement knob.
+        "arena_zoom": 1.6,
+        # arena_position is the [left, bottom, width, height] placement of the
+        # arena axis, independent of arena_zoom (which sets size). Shifting `left`
+        # re-centres the arena between the companion panels.
+        "arena_position": [-0.02, 0.0, 1.0, 1.0],
+        "text_start_coords": [-0.15, 0.98],
+        # bottom is raised off the frame edge so the spectrogram's x-tick labels
+        # and 'Time (s)' label sit ABOVE y=0: video frames grab the fixed [0,1]
+        # canvas with no crop, so anything below y=0 is cut off.
+        "spec_fig_position": [0.275, 0.03, 0.49, 0.125],
+        # raster_fig_position: widen to de-squeeze the right-hand spike raster (it
+        # grows leftward into the arena's empty right margin). For video, left +
+        # width must stay <= ~0.96 so the right spine and '+0.5' tick label fit
+        # inside the fixed [0,1] frame.
+        "raster_fig_position": [0.734, 0.18, 0.221, 0.70],
+        "mouse_id_text_offset": 0.05,
+        # main_text_offset is the vertical gap between consecutive text lines
+        # (title -> frame counter, and between animal-ID rows).
+        "main_text_offset": 0.025,
+    },
+    "top_plain": {
+        "view_elevation": 90,
+        "view_azimuth": 0,
+        "plot_xlim": 0.5, "plot_ylim": 0.5, "plot_zlim": 0.5,
+        # No companion panels: a larger zoom fills more of the frame.
+        "arena_zoom": 2.2,
+        "arena_position": [0.0, 0.0, 1.0, 1.0],
+        "text_start_coords": [-0.25, 0.99],
+        "spec_fig_position": None,
+        "raster_fig_position": None,
+        "mouse_id_text_offset": 0.05,
+        "main_text_offset": 0.025,
+    },
+    "side_panels": {
+        "view_elevation": 45,
+        "view_azimuth": None,
+        "plot_xlim": 0.6, "plot_ylim": 0.6, "plot_zlim": 0.4,
+        # arena_zoom sets size; arena_position sets placement. The raster occupies
+        # the right, so shift the arena left to re-centre it between the left-hand
+        # features and the raster — which also frees room to grow it via arena_zoom.
+        "arena_zoom": 1.2,
+        "arena_position": [-0.05, 0.0, 1.0, 1.0],
+        "text_start_coords": [-0.15, 0.98],
+        "spec_fig_position": [0.265, 0.835, 0.5, 0.125],
+        "raster_fig_position": [0.72, 0.18, 0.26, 0.70],
+        "mouse_id_text_offset": 0.05,
+        "main_text_offset": 0.025,
+    },
+    "side_plain": {
+        "view_elevation": 45,
+        "view_azimuth": None,
+        # No companion panels: full-frame placement, offset is moot.
+        "plot_xlim": 0.5, "plot_ylim": 0.5, "plot_zlim": 0.4,
+        "arena_zoom": 1.3,
+        "arena_position": [-0.05, 0.0, 1.0, 1.0],
+        "text_start_coords": [-0.15, 0.98],
+        "spec_fig_position": [0.265, 0.835, 0.5, 0.125],
+        "raster_fig_position": None,
+        "mouse_id_text_offset": 0.05,
+        "main_text_offset": 0.025,
+    },
+}
+
 
 @njit(parallel=True)
 def read_ttl_events(input_array: np.ndarray) -> tuple:
@@ -1437,83 +1519,29 @@ class Create3DVideo:
         frame_span = int(np.floor(self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] * empirical_camera_sr))
 
         active_mic_position = 0
-        beh_features_fig_position = [0.09, 0.85, 0.158, 0.035]
-        if self.visualizations_parameter_dict['make_behavioral_videos']['view_angle'] == 'top':
-            view_elevation = 90
-            view_azimuth = 0
-            plot_xlim = 0.5
-            plot_ylim = 0.5
-            plot_zlim = 0.5
-            if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
-                    self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool'] or
-                    self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']):
-                # arena_zoom is the 3-D content scale factor (set_box_aspect
-                # zoom): 1.0 = matplotlib default, larger = bigger arena. Unlike
-                # the old tight_layout(pad) knob it is decoupled from layout,
-                # subplot count and bbox cropping, and behaves identically for
-                # static frames and video frames. This is THE enlargement knob.
-                arena_zoom = 1.6
-                # arena_position is the [left, bottom, width, height] placement
-                # rectangle of the arena axis, independent of arena_zoom (which
-                # sets size). Shifting `left` re-centres the arena between the
-                # companion panels; for the lone-arena cases the offset is moot
-                # (cropped on save / centred in video) so it stays full-frame.
-                arena_position = [-0.02, 0.0, 1.0, 1.0]
-                text_start_coords = [-0.15, 0.98]
-                # bottom is raised off the frame edge so the spectrogram's
-                # x-tick labels and 'Time (s)' label sit ABOVE y=0: static
-                # figures crop tight (bbox_inches='tight') and would show them
-                # regardless, but video frames grab the fixed [0,1] canvas with
-                # no crop, so anything below y=0 is cut off.
-                spec_fig_position = [0.275, 0.03, 0.49, 0.125]
-                # raster_fig_position is the [left, bottom, width, height] of the
-                # right-hand spike raster; widen it to de-squeeze the panel (it can
-                # grow leftward into the arena's empty, animal-free right margin).
-                # NOTE for video: left + width must stay <= ~0.96 so the right
-                # spine and the '+0.5' tick label fit inside the fixed [0,1] frame
-                # (static figures crop tight and hide an overflow; videos do not).
-                raster_fig_position = [0.734, 0.18, 0.221, 0.70]
-                mouse_id_text_offset = 0.05
-                # main_text_offset is the vertical gap between consecutive text
-                # lines (title -> frame counter, and between animal-ID rows).
-                main_text_offset = 0.025
-            else:
-                # No companion panels: a larger zoom fills more of the frame.
-                arena_zoom = 2.2
-                arena_position = [0.0, 0.0, 1.0, 1.0]
-                text_start_coords = [-0.25, 0.99]
-                mouse_id_text_offset = 0.05
-                main_text_offset = 0.025
-        else:
-            view_elevation = 45
-            view_azimuth = self.visualizations_parameter_dict['make_behavioral_videos']['side_azimuth_start']
-            mouse_id_text_offset = 0.05
-            spec_fig_position = [0.265, 0.835, 0.5, 0.125]
-            text_start_coords = [-0.15, 0.98]
-            plot_zlim = 0.4
-            if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
-                    self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool'] or
-                    self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool']):
-                plot_xlim = 0.6
-                plot_ylim = 0.6
-                raster_fig_position = [0.72, 0.18, 0.26, 0.70]
-                # arena_zoom sets size (set_box_aspect zoom; larger = bigger);
-                # arena_position sets placement. The raster occupies the right,
-                # so shift the arena left (negative `left`) to re-centre it
-                # between the left-hand features and the raster — which also frees
-                # room on the right to grow it via arena_zoom.
-                arena_zoom = 1.2
-                arena_position = [-0.05, 0.0, 1.0, 1.0]
-                # main_text_offset is the vertical gap between consecutive text
-                # lines (title -> frame counter, and between animal-ID rows).
-                main_text_offset = 0.025
-            else:
-                plot_xlim = 0.5
-                plot_ylim = 0.5
-                # No companion panels: full-frame placement, offset is moot.
-                arena_zoom = 1.3
-                arena_position = [-0.05, 0.0, 1.0, 1.0]
-                main_text_offset = 0.025
+        beh_features_fig_position = _VIDEO_BEH_FEATURES_POSITION
+        # Select the hand-tuned layout for this (view, companion-panel) case from
+        # the _VIDEO_LAYOUT table above. Any non-'top' view_angle is treated as
+        # 'side' (mirrors the original if/else). view_azimuth for the side views is
+        # resolved here from the live `side_azimuth_start` setting.
+        _has_companion_panels = (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
+                                 self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool'] or
+                                 self.visualizations_parameter_dict['make_behavioral_videos']['raster_plot_bool'])
+        _view_key = 'top' if self.visualizations_parameter_dict['make_behavioral_videos']['view_angle'] == 'top' else 'side'
+        _layout = _VIDEO_LAYOUT[f"{_view_key}_{'panels' if _has_companion_panels else 'plain'}"]
+        view_elevation = _layout['view_elevation']
+        view_azimuth = (self.visualizations_parameter_dict['make_behavioral_videos']['side_azimuth_start']
+                        if _view_key == 'side' else _layout['view_azimuth'])
+        plot_xlim = _layout['plot_xlim']
+        plot_ylim = _layout['plot_ylim']
+        plot_zlim = _layout['plot_zlim']
+        arena_zoom = _layout['arena_zoom']
+        arena_position = _layout['arena_position']
+        text_start_coords = _layout['text_start_coords']
+        spec_fig_position = _layout['spec_fig_position']
+        raster_fig_position = _layout['raster_fig_position']
+        mouse_id_text_offset = _layout['mouse_id_text_offset']
+        main_text_offset = _layout['main_text_offset']
 
 
         if (self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'] or
