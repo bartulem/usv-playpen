@@ -113,6 +113,17 @@ def test_first_match_raises_on_missing_root(tmp_path):
         os_utils.first_match_or_raise(tmp_path / "absent", "*.txt")
 
 
+def test_first_match_digit_prefix_excludes_speaker(tmp_path):
+    # Mirrors assign_vocalizations: track files are timestamp-prefixed, so a
+    # '[0-9]*' pattern selects the session track h5 and excludes 'speaker_*'.
+    (tmp_path / "speaker_points3d_translated_rotated_metric.h5").touch()
+    (tmp_path / "20230207213549_points3d_translated_rotated_metric.h5").touch()
+    chosen = os_utils.first_match_or_raise(
+        tmp_path, "[0-9]*_points3d_translated_rotated_metric.h5"
+    )
+    assert chosen.name == "20230207213549_points3d_translated_rotated_metric.h5"
+
+
 # newest_match_or_raise
 
 def test_newest_match_picks_max_key(tmp_path):

@@ -27,10 +27,7 @@ from usv_playpen.das_inference import FindMouseVocalizations
 from usv_playpen.assign_vocalizations import Vocalocator
 
 
-# ---------------------------------------------------------------------------
 # Shared parameter fixture
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def processing_settings():
@@ -42,11 +39,7 @@ def processing_settings():
     with (package_dir / '_parameter_settings' / 'processing_settings.json').open('r') as f:
         return json.load(f)
 
-
-# ===========================================================================
 # FindMouseVocalizations
-# ===========================================================================
-
 
 def test_find_mouse_vocalizations_init_loads_defaults_when_no_input_dict(tmp_path):
     """input_parameter_dict=None now reliably loads the package defaults from
@@ -254,7 +247,7 @@ def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_
 
     # tracking H5 + USV summary CSV (both required by the method's
     # first_match_or_raise calls).
-    track_h5 = video_dir / "tk_points3d_translated_rotated_metric.h5"
+    track_h5 = video_dir / "20230207213549_points3d_translated_rotated_metric.h5"
     with h5py.File(track_h5, "w") as f:
         f.create_dataset("track_names", data=np.array([b"M", b"F"]))
     pls.DataFrame({
@@ -316,7 +309,7 @@ def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
     audio_dir.mkdir()
     video_dir = tmp_path / "video"
     video_dir.mkdir()
-    track_h5 = video_dir / "tk_points3d_translated_rotated_metric.h5"
+    track_h5 = video_dir / "20230207213549_points3d_translated_rotated_metric.h5"
     with h5py.File(track_h5, "w") as f:
         f.create_dataset("track_names", data=np.array([b"M", b"F"]))
     pls.DataFrame({"usv_id": ["x"]}).write_csv(audio_dir / "x_usv_summary.csv")

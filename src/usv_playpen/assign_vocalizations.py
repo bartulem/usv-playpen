@@ -81,13 +81,13 @@ class Vocalocator:
         )
         track_file_path = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'video',
-            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            pattern='[0-9]*_points3d_translated_rotated_metric.h5',
             recursive=True,
             label="3D translated/rotated/metric track H5",
         )
         arena_info_path = first_match_or_raise(
             root=pathlib.Path(configure_path(self.input_parameter_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'])) / 'video',
-            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            pattern='[0-9]*_points3d_translated_rotated_metric.h5',
             recursive=True,
             label="arena calibration translated/rotated/metric H5",
         )
@@ -193,7 +193,7 @@ class Vocalocator:
         output_file_path = str(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment.h5')
         track_file_path = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'video',
-            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            pattern='[0-9]*_points3d_translated_rotated_metric.h5',
             recursive=True,
             label="3D translated/rotated/metric track H5",
         )
@@ -305,7 +305,7 @@ class Vocalocator:
         data_file_path = pathlib.Path(self.root_directory) / 'audio' / 'sound_localization'
         track_file_path = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'video',
-            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            pattern='[0-9]*_points3d_translated_rotated_metric.h5',
             recursive=True,
             label="3D translated/rotated/metric track H5",
         )
