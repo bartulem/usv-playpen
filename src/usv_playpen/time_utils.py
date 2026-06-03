@@ -20,6 +20,7 @@ def is_gui_context() -> bool:
 
     Parameters
     ----------
+    None
 
     Returns
     -------
@@ -34,20 +35,28 @@ def smart_wait(app_context_bool: bool = False, seconds: float = 0) -> None:
     """
     Description
     -----------
-    Waits for a specified number of seconds, using QTest.qWait if a QApplication instance is available,
+    Waits for ``seconds`` seconds. When ``app_context_bool`` is True the wait is
+    performed with ``QTest.qWait`` (which keeps the Qt event loop responsive in a
+    GUI context); otherwise it uses ``time.sleep``. The mechanism is chosen purely
+    by ``app_context_bool``, not by probing for a live QApplication. A negative
+    ``seconds`` is clamped to 0 so both branches behave consistently (``time.sleep``
+    would otherwise raise on a negative value).
 
     Parameters
     ----------
     app_context_bool (bool)
-        If True, indicates that the function should use QTest.qWait for waiting. If False or None, it will use time.sleep.
+        If True, wait via ``QTest.qWait`` (GUI context); if False, via
+        ``time.sleep``. Callers typically pass the result of ``is_gui_context()``.
     seconds (float)
-        The number of seconds to wait. This can be a fractional value for more precise timing.
+        The number of seconds to wait; may be fractional for more precise timing.
+        Values below 0 are treated as 0.
 
     Returns
     -------
     (None)
     """
 
+    seconds = max(0.0, seconds)
     if app_context_bool:
         QTest.qWait(int(seconds * 1000))
     else:
