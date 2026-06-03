@@ -53,6 +53,13 @@ class AudioGenerator:
         None
         """
 
+        expected_kwargs = {'exp_id', 'root_directory', 'create_playback_settings_dict',
+                           'freq_shift_settings_dict', 'message_output'}
+        unexpected_kwargs = set(kwargs) - expected_kwargs
+        if unexpected_kwargs:
+            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+                            f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 

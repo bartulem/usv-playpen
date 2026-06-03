@@ -61,11 +61,18 @@ def _make_settings(tmp_path, fit_gmm=False):
 # ---------------------------------------------------------------------------
 
 
-def test_iui_calculator_init_stores_kwargs():
-    """All kwargs become public attributes (no allowlist)."""
-    calc = InterUSVIntervalCalculator(foo=1, bar="x")
-    assert calc.foo == 1
-    assert calc.bar == "x"
+def test_iui_calculator_init_rejects_unknown_kwargs():
+    """Unknown keyword arguments (typos) raise TypeError instead of being
+    silently stored, so a mistyped settings key is caught at construction."""
+    with pytest.raises(TypeError, match=r"unexpected keyword argument"):
+        InterUSVIntervalCalculator(foo=1, bar="x")
+
+
+def test_iui_calculator_init_accepts_expected_kwargs():
+    """The documented kwargs are still accepted and exposed as attributes."""
+    calc = InterUSVIntervalCalculator(input_parameter_dict={},
+                                      message_output=lambda *_a, **_kw: None)
+    assert calc.input_parameter_dict == {}
 
 
 # ---------------------------------------------------------------------------

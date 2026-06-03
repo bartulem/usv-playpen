@@ -1159,6 +1159,12 @@ class NeuronalTuning(FeatureZoo):
         """
 
         FeatureZoo.__init__(self)
+        expected_kwargs = {'root_directory', 'tuning_parameters_dict', 'message_output'}
+        unexpected_kwargs = set(kwargs) - expected_kwargs
+        if unexpected_kwargs:
+            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+                            f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
         self.app_context_bool = is_gui_context()

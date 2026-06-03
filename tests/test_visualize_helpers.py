@@ -254,7 +254,6 @@ def test_create_3d_video_load_beh_features_missing_raises(tmp_path):
     """No behavioral features CSV → FileNotFoundError from first_match_or_raise."""
     vid = Create3DVideo(
         root_directory=str(tmp_path),
-        input_parameter_dict={},
         visualizations_parameter_dict={"brain_area_colors": {"other": "#B8B8B8"}},
         message_output=lambda *_a, **_kw: None,
     )
@@ -269,7 +268,6 @@ def test_create_3d_video_load_h5_file_missing_raises(tmp_path):
     vid = Create3DVideo(
         root_directory=str(tmp_path),
         arena_directory=str(tmp_path),
-        input_parameter_dict={},
         visualizations_parameter_dict={"brain_area_colors": {"other": "#B8B8B8"}},
         message_output=lambda *_a, **_kw: None,
     )

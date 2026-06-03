@@ -243,11 +243,19 @@ def _make_vocalocator(tmp_path, processing_settings, **extras):
     )
 
 
-def test_vocalocator_init_stores_arbitrary_kwargs():
-    """The constructor sets every kwarg as a public attribute (no allowlist)."""
-    voc = Vocalocator(foo=1, bar="baz", message_output=lambda *_a, **_kw: None)
-    assert voc.foo == 1
-    assert voc.bar == "baz"
+def test_vocalocator_init_rejects_unknown_kwargs():
+    """Unknown keyword arguments (typos) raise TypeError at construction instead
+    of being silently stored, so a mistyped settings key is caught immediately."""
+    with pytest.raises(TypeError, match=r"unexpected keyword argument"):
+        Vocalocator(foo=1, bar="baz", message_output=lambda *_a, **_kw: None)
+
+
+def test_vocalocator_init_accepts_expected_kwargs():
+    """The documented kwargs are still accepted and exposed as attributes."""
+    voc = Vocalocator(root_directory="/x", input_parameter_dict={},
+                      message_output=lambda *_a, **_kw: None)
+    assert voc.root_directory == "/x"
+    assert voc.input_parameter_dict == {}
 
 
 def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_settings, mocker):
