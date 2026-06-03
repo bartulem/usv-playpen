@@ -594,6 +594,22 @@ def test_shuffle_spikes_per_row_is_sorted():
         assert (np.diff(row) >= 0).all()
 
 
+def test_shuffle_spikes_seed_is_reproducible_and_varies():
+    """A fixed seed makes the shuffled null distribution exactly reproducible
+    (so the significance verdict is stable across runs), a different seed
+    produces a different draw, and the default (seed=None) stays
+    non-reproducible -- the property the seeding was introduced to control."""
+    kwargs = dict(spike_array=np.array([10, 20, 30]), total_fr_num=100,
+                  shuffle_min_fr=10, shuffle_max_fr=99, n_shuffles=20)
+
+    same_a = shuffle_spikes(seed=0, **kwargs)
+    same_b = shuffle_spikes(seed=0, **kwargs)
+    different = shuffle_spikes(seed=1, **kwargs)
+
+    assert np.array_equal(same_a, same_b)
+    assert not np.array_equal(same_a, different)
+
+
 def test_fit_log_gmm_recovers_two_modes():
     rng = np.random.default_rng(0)
     short = np.exp(rng.normal(loc=np.log(0.05), scale=0.1, size=300))
@@ -1647,6 +1663,7 @@ def _make_neuronal_tuning(root, *, n_shuffles=5, smoothing_sd=0.0):
         tuning_parameters_dict={
             "temporal_offsets": [0],
             "n_shuffles": n_shuffles,
+            "shuffle_seed": 0,
             "total_bin_num": 10,
             "n_spatial_bins": 36,
             "spatial_scale_cm": 32,

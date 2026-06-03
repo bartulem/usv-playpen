@@ -186,6 +186,7 @@ def _make_tuning_parameters() -> dict:
     return {
         "temporal_offsets":                         [0],
         "n_shuffles":                               5,
+        "shuffle_seed":                             0,
         "total_bin_num":                            10,
         "n_spatial_bins":                           36,
         "spatial_scale_cm":                         32,

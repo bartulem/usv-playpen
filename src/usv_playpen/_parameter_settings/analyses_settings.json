@@ -84,6 +84,7 @@
   "calculate_neuronal_tuning_curves": {
     "temporal_offsets": [0],
     "n_shuffles": 1000,
+    "shuffle_seed": 0,
     "total_bin_num": 36,
     "n_spatial_bins": 196,
     "spatial_scale_cm": 32,

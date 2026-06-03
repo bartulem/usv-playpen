@@ -195,6 +195,7 @@ def shuffle_spikes(
     shuffle_min_fr: int,
     shuffle_max_fr: int,
     n_shuffles: int,
+    seed: int | None = None,
 ) -> np.ndarray:
     """
     Description
@@ -216,6 +217,11 @@ def shuffle_spikes(
         Maximum number of frames to shuffle spikes by.
     n_shuffles (int)
         Number of shuffles to perform.
+    seed (int | None)
+        Optional seed for reproducibility; `None` draws from a fresh
+        default-RNG state (non-reproducible). Passing a fixed seed makes the
+        null distribution -- and therefore the significance verdict -- exactly
+        reproducible across runs.
 
     Returns
     -------
@@ -224,7 +230,7 @@ def shuffle_spikes(
         frames.
     """
 
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     shuffled_amounts = rng.integers(
         low=shuffle_min_fr, high=shuffle_max_fr, size=n_shuffles, dtype=np.int32
     )
@@ -1520,6 +1526,7 @@ class NeuronalTuning(FeatureZoo):
                 shuffle_min_fr=int(np.floor(20 * empirical_camera_sr)),
                 shuffle_max_fr=int(np.floor(60 * empirical_camera_sr)),
                 n_shuffles=params["n_shuffles"],
+                seed=params["shuffle_seed"],
             )
 
             # 1D feature ratemaps for every non-spatial column
@@ -2495,6 +2502,7 @@ class NeuronalTuning(FeatureZoo):
             n_shuffles=n_shuffles,
             shuffle_min_seconds=shuffle_min_s,
             shuffle_max_seconds=shuffle_max_s,
+            seed=params["shuffle_seed"],
         )
 
         per_side_acc: dict[str, dict] = {}
