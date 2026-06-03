@@ -55,19 +55,17 @@ class PrepareClusterJob:
 
         Parameters
         ----------
-        camera_names (list)
-            Cameras used for recording video.
-        inference_root_dir (str)
-            Root directory of inference slurm files.
-        centroid_model_path (str)
-            Path to the centroid model.
-        centered_instance_model_path (str)
-            Path to the centered instance model.
+        None
+            Inputs are read from ``self.input_parameter_dict`` (the
+            ``prepare_cluster_job`` settings block: ``camera_names``,
+            ``inference_root_dir``, ``centroid_model_path``,
+            ``centered_instance_model_path``).
 
         Returns
         -------
-        job_list (.txt)
-            List of sessions to run inference on.
+        None
+            Writes ``job_list.txt`` (the list of sessions to run SLEAP
+            inference on) into the inference root directory.
         """
 
         spock_converted_first_model_path = to_cluster_path(self.input_parameter_dict['centroid_model_path'])

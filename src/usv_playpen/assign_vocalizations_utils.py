@@ -50,7 +50,9 @@ def get_arena_dimensions(arena_dims_path: pathlib.Path) -> np.ndarray:
     """
     Description
     -----------
-    Prepares the root directory for vocalocator inference.
+    Reads the arena's four corner nodes (North/West/South/East) from a 3D arena
+    tracking H5 file and returns the arena's X and Y extents (the span between
+    the min and max corner coordinates along each axis).
 
     Parameters
     ----------

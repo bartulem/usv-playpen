@@ -240,8 +240,9 @@ class AudioGenerator:
 
         Parameters
         ----------
-        spock_cluster_bool (bool)
-            If True, the code is run on Spock.
+        None
+            Inputs are read from ``self.create_playback_settings_dict`` (the
+            ``create_usv_playback_wav`` settings block) and ``self.exp_id``.
 
         Returns
         -------

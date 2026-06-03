@@ -163,21 +163,21 @@ def redefine_cage_reference_nodes(
     """
     Description
     -----------
-    This function extracts names of skeleton nodes
-    from the SLEAP .json file.
-
+    Extracts the four cage-corner coordinates from 3D arena tracking data by
+    selecting the four ``node_list_indices`` (the corner nodes) at the first
+    frame and stacking them into a single array.
 
     Parameters
     ----------
     arena_input_data (np.ndarray)
         3D arena data.
     node_list_indices (list)
-        Indices of the arena nodes.
+        Indices of the four arena corner nodes.
 
     Returns
     -------
     (np.ndarray)
-        3D arena data with the arena corners.
+        A (4, 3) array of the four cage-corner coordinates.
     """
 
     cage_corner_first = arena_input_data[0, 0, node_list_indices[0], :]

@@ -370,18 +370,17 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Initialize the per-cluster figure maker. Loads `FeatureZoo`
         feature definitions (vocal boundaries / vocal labels / display
-        units), stashes any keyword arguments as attributes (notably
-        `root_directory`, `visualizations_parameter_dict`, and
-        `message_output`), records GUI-vs-CLI context, pins the path of
-        the bundled UMAP segmentation file used by section (c), and
-        primes a lazy segmentation cache.
+        units), validates and stashes the keyword arguments as attributes,
+        records GUI-vs-CLI context, pins the path of the bundled UMAP
+        segmentation file used by section (c), and primes a lazy
+        segmentation cache.
 
         Parameters
         ----------
         **kwargs
-            Forwarded as-is to `self.__dict__`. Expected keys include
-            `root_directory`, `visualizations_parameter_dict`,
-            `message_output`.
+            The expected keys are `root_directory`,
+            `visualizations_parameter_dict` and `message_output`; each is set
+            as an attribute and any other key raises ``TypeError``.
 
         Returns
         -------

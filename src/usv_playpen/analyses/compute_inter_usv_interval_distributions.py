@@ -522,10 +522,10 @@ class InterUSVIntervalCalculator:
         """
         Description
         -----------
-        Initialises the InterUSVIntervalCalculator. All keyword arguments are
-        captured into ``self.__dict__`` verbatim so the instance
-        exposes every supplied kwarg as an attribute (no whitelisting),
-        matching the convention used by :class:`FeatureZoo`.
+        Initialises the InterUSVIntervalCalculator. The keyword arguments are
+        validated against the keys the class consumes (an unknown key raises
+        ``TypeError``) and then captured into ``self.__dict__``, matching the
+        convention used by :class:`FeatureZoo`.
 
         Parameters
         ----------

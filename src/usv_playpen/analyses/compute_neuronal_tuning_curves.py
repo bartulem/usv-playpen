@@ -1141,8 +1141,7 @@ class NeuronalTuning(FeatureZoo):
         -----------
         Initialize the unified per-cluster compute. Loads `FeatureZoo`
         feature definitions (boundaries / labels / vocal segmentation
-        metadata), stashes any keyword arguments as attributes (notably
-        `root_directory`, `tuning_parameters_dict`, `message_output`),
+        metadata), validates and stashes the keyword arguments as attributes,
         records GUI-vs-CLI execution context, and pins the path of the
         bundled UMAP segmentation file used by the categorical vocal
         compute.
@@ -1150,8 +1149,9 @@ class NeuronalTuning(FeatureZoo):
         Parameters
         ----------
         **kwargs
-            Forwarded as-is to `self.__dict__`. Expected keys include
-            `root_directory`, `tuning_parameters_dict`, `message_output`.
+            The expected keys are `root_directory`, `tuning_parameters_dict`
+            and `message_output`; each is set as an attribute and any other
+            key raises ``TypeError``.
 
         Returns
         -------

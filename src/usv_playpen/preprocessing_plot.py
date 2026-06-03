@@ -211,16 +211,23 @@ class SummaryPlotter:
                             """
                             Description
                             -----------
-                            Return a length-2 list, padding missing entries with '-' so
-                            downstream `list[0]` / `list[1]` indexing never raises IndexError
+                            Return a length-2 list, padding missing entries with
+                            '-' so downstream ``list[0]`` / ``list[1]`` indexing
+                            never raises IndexError when the session metadata
+                            lists fewer than two subjects.
 
                             Parameters
                             ----------
-
+                            raw_list (list)
+                                Subject-attribute values for the session (0, 1 or
+                                2 entries).
 
                             Returns
                             -------
-                            when the session metadata lists fewer than two subjects."""
+                            padded (list)
+                                The first two values of ``raw_list``, right-padded
+                                with '-' to a length of exactly 2.
+                            """
                             padded = list(raw_list) + ['-', '-']
                             return padded[:2]
 
