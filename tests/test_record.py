@@ -372,16 +372,18 @@ def test_get_cup_mount_params_reads_ini(tmp_path, controller):
 
 
 def test_get_cup_mount_params_exits_when_missing(tmp_path, controller):
-    """SystemExit when the credentials file is absent (mirrors get_connection_params)."""
+    """FileNotFoundError when the credentials file is absent (raises rather than
+    sys.exit, so an `except Exception` orchestrator can handle it)."""
     controller.exp_settings_dict['credentials_directory'] = str(tmp_path)
-    with pytest.raises(SystemExit):
+    with pytest.raises(FileNotFoundError, match=r"cup_config\.ini"):
         controller.get_cup_mount_params()
 
 
 def test_get_connection_params_exits_when_missing(tmp_path, controller):
-    """SystemExit when motif_config.ini is absent."""
+    """FileNotFoundError when motif_config.ini is absent (raises rather than
+    sys.exit)."""
     controller.exp_settings_dict['credentials_directory'] = str(tmp_path)
-    with pytest.raises(SystemExit):
+    with pytest.raises(FileNotFoundError, match=r"motif_config\.ini"):
         controller.get_connection_params()
 
 
@@ -430,7 +432,7 @@ def test_check_ethernet_connection_timeout_exits(mocker, controller):
 
     mocker.patch('usv_playpen.behavioral_experiments.subprocess.run', side_effect=_fake)
     mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
-    with pytest.raises(SystemExit):
+    with pytest.raises(RuntimeError, match=r"did not come Up"):
         controller.check_ethernet_connection()
 
 
@@ -648,7 +650,7 @@ def test_check_camera_vitals_motif_unreachable(mocker, monkeypatch, controller):
         raise _motifapi.api.MotifError('not running')
 
     mocker.patch('usv_playpen.behavioral_experiments.motifapi.MotifApi', side_effect=_explode)
-    with pytest.raises(SystemExit):
+    with pytest.raises(RuntimeError, match=r"Motif is not running or reachable"):
         controller.check_camera_vitals(camera_fr=150)
 
 
@@ -691,7 +693,7 @@ def test_check_camera_vitals_remote_mount_fails(mocker, monkeypatch, controller)
         lambda self: ('1.2.3.4', '1.2.3.5', '22', 'u', 'p', 'k'),
     )
     monkeypatch.setattr(ExperimentController, 'check_remote_mount', lambda self, **kw: False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(RuntimeError, match=r"is not valid"):
         controller.check_camera_vitals(camera_fr=150)
 
 
@@ -933,11 +935,18 @@ def test_conduct_behavioral_recording_orchestrates_calls(mocker, monkeypatch,
     assert 'session_id' in out['Session']
 
 
-def test_conduct_behavioral_recording_aborts_if_avisoft_silent(mocker, monkeypatch,
-                                                                full_recording_settings):
-    """If verify_avisoft_is_recording returns False we must SystemExit and
-    NOT call api.call('recording/start'). conduct_audio_recording is True for
-    this test so the verification gate is exercised."""
+def test_conduct_behavioral_recording_raises_not_exits_on_bad_credentials(mocker, monkeypatch,
+                                                                          full_recording_settings):
+    """conduct_behavioral_recording must surface a missing-credential failure as
+    a catchable exception (FileNotFoundError from get_cup_mount_params), NOT a
+    process-killing sys.exit, and must never reach api.call('recording/start').
+
+    This pins the C3 behavior: library code raises so an `except Exception`
+    orchestrator can handle it, instead of tearing down the whole GUI/pipeline
+    process. (The full hardware path past the credential check -- CoolTerm/
+    Avisoft launch -- opens real device files and is exercised on the rig, not
+    in unit tests; the per-method credential raises are covered individually
+    above.)"""
     full_recording_settings['conduct_audio_recording'] = True
 
     for method_name in (
@@ -946,9 +955,6 @@ def test_conduct_behavioral_recording_aborts_if_avisoft_silent(mocker, monkeypat
         'modify_audio_file',
     ):
         monkeypatch.setattr(ExperimentController, method_name, lambda self, *a, **kw: None)
-
-    monkeypatch.setattr(ExperimentController, 'verify_avisoft_is_recording',
-                        lambda self, *a, **kw: False)
 
     fake_api = MagicMock()
     fake_api.call.return_value = {'now': 1.0}
@@ -962,9 +968,9 @@ def test_conduct_behavioral_recording_aborts_if_avisoft_silent(mocker, monkeypat
     mocker.patch('usv_playpen.behavioral_experiments.Messenger')
 
     ec = ExperimentController(exp_settings_dict=full_recording_settings)
-    with pytest.raises(SystemExit):
+    with pytest.raises(FileNotFoundError):
         ec.conduct_behavioral_recording()
-    # 'recording/start' must never have been called — the abort happened first.
+    # 'recording/start' must never have been called — it raised before recording.
     rec_starts = [c for c in fake_api.call.call_args_list
                   if c.args and c.args[0] in ('recording/start',
                                               'camera/SN1/recording/start')]

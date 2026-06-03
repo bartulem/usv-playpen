@@ -14,7 +14,6 @@ import os
 import pathlib
 import shutil
 import subprocess
-import sys
 import tempfile
 import webbrowser
 from collections.abc import Callable
@@ -189,7 +188,7 @@ class ExperimentController:
                     smart_wait(app_context_bool=self.app_context_bool, seconds=poll_interval_seconds)
             else:
                 self.message_output(f"Timeout: Adapter '{ethernet_name}' did not come Up after {max_wait_seconds} seconds.")
-                sys.exit(1)
+                raise RuntimeError(f"Adapter '{ethernet_name}' did not come Up after {max_wait_seconds} seconds.")
 
     def verify_avisoft_is_recording(self,
                                     warmup_s: int = 3,
@@ -643,8 +642,8 @@ class ExperimentController:
         config = configparser.ConfigParser()
 
         if not (pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'cup_config.ini').exists():
-            print("Cup config file not found. Try again!")
-            sys.exit(1)
+            raise FileNotFoundError(f"Cup config file 'cup_config.ini' not found in "
+                                    f"'{configure_path(self.exp_settings_dict['credentials_directory'])}'.")
         else:
             config.read(pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'cup_config.ini')
             return config['cup']['username'], config['cup']['password']
@@ -669,8 +668,8 @@ class ExperimentController:
         config = configparser.ConfigParser()
 
         if not (pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'motif_config.ini').exists():
-            print("Motif config file not found. Try again!")
-            sys.exit(1)
+            raise FileNotFoundError(f"Motif config file 'motif_config.ini' not found in "
+                                    f"'{configure_path(self.exp_settings_dict['credentials_directory'])}'.")
         else:
             config.read(pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'motif_config.ini')
             return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
@@ -734,14 +733,12 @@ class ExperimentController:
                 lin_dir_elements = lin_directory.split('/')[0:3]
                 mount_check_bool = self.check_remote_mount(hostname=ip_address_pc, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path='/'.join(lin_dir_elements))
                 if not mount_check_bool:
-                    print(f"Mount point {lin_directory} on {ip_address} is not valid. Please fix the issue and try again.")
-                    sys.exit(1)
+                    raise RuntimeError(f"Mount point {lin_directory} on {ip_address} is not valid; fix the mount and try again.")
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
-        except motifapi.api.MotifError:
-            print('Motif not running or reachable. Check hardware and connections.')
-            sys.exit(1)
+        except motifapi.api.MotifError as exc:
+            raise RuntimeError("Motif is not running or reachable; check hardware and connections.") from exc
         else:
             if 1 < len(self.exp_settings_dict['video']['general']['expected_cameras']) < 5:
                 temp_camera_serial_num = [camera_dict['serial'] for camera_dict in api.call('cameras')['cameras']]
@@ -1103,8 +1100,7 @@ class ExperimentController:
                     subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
                     subprocess.Popen(['powershell', '-Command', f"Stop-Process -Name '{avisoft_recorder_program_name}' -Force -ErrorAction SilentlyContinue"]).wait()
                     self.message_output("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
-                    print("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
-                    sys.exit(1)
+                    raise RuntimeError("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
 
         # record video data
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
