@@ -88,9 +88,6 @@ class DataLoader:
             with "sampling_rate", "wav_data" and "dtype" as sub-keys.
         """
 
-        # spits out warnings if .wav file has header, the line below suppresses it
-        warnings.simplefilter("ignore")
-
         wave_data_dict = {}
         for one_dir in self.input_parameter_dict["wave_data_loc"]:
             for one_file in sorted(pathlib.Path(one_dir).iterdir(), key=lambda p: p.name):
@@ -123,10 +120,16 @@ class DataLoader:
                         == "scipy"
                     ):
                         try:
-                            (
-                                wave_data_dict[one_file.name]["sampling_rate"],
-                                wave_data_dict[one_file.name]["wav_data"],
-                            ) = wavfile.read(one_file)
+                            with warnings.catch_warnings():
+                                # scipy.io.wavfile.read emits a WavFileWarning on
+                                # non-standard/extra header chunks; suppress it only
+                                # around the read instead of disabling warnings
+                                # process-wide for everything that runs afterwards.
+                                warnings.simplefilter("ignore")
+                                (
+                                    wave_data_dict[one_file.name]["sampling_rate"],
+                                    wave_data_dict[one_file.name]["wav_data"],
+                                ) = wavfile.read(one_file)
                         except struct.error:
                             # The .wav header is malformed; try to rewrite it with sox.
                             # We do NOT delete the original until sox has successfully
@@ -152,15 +155,27 @@ class DataLoader:
                                 )
                             one_file.unlink()
                             correct_file.rename(one_file)
-                            (
-                                wave_data_dict[one_file.name]["sampling_rate"],
-                                wave_data_dict[one_file.name]["wav_data"],
-                            ) = wavfile.read(one_file)
+                            with warnings.catch_warnings():
+                                # scipy.io.wavfile.read emits a WavFileWarning on
+                                # non-standard/extra header chunks; suppress it only
+                                # around the read instead of disabling warnings
+                                # process-wide for everything that runs afterwards.
+                                warnings.simplefilter("ignore")
+                                (
+                                    wave_data_dict[one_file.name]["sampling_rate"],
+                                    wave_data_dict[one_file.name]["wav_data"],
+                                ) = wavfile.read(one_file)
                     else:
-                        (
-                            wave_data_dict[one_file.name]["wav_data"],
-                            wave_data_dict[one_file.name]["sampling_rate"],
-                        ) = librosa.load(one_file)
+                        with warnings.catch_warnings():
+                            # librosa imports the stdlib `aifc` module, which is
+                            # deprecated in Python 3.13; suppress that
+                            # DeprecationWarning here rather than disabling warnings
+                            # process-wide (the old module-level simplefilter).
+                            warnings.simplefilter("ignore")
+                            (
+                                wave_data_dict[one_file.name]["wav_data"],
+                                wave_data_dict[one_file.name]["sampling_rate"],
+                            ) = librosa.load(one_file)
                     wave_data_dict[one_file.name]["dtype"] = self.known_dtypes[
                         type(wave_data_dict[one_file.name]["wav_data"].ravel()[0]).__name__
                     ]

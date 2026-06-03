@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import pathlib
 import traceback
-import warnings
 from collections.abc import Callable
 from datetime import datetime
 
@@ -22,8 +21,6 @@ from .analyses.generate_audio_files import AudioGenerator
 from .cli_utils import modify_settings_json_for_cli
 from .os_utils import configure_path
 from .send_email import Messenger
-
-warnings.simplefilter('ignore')
 
 
 class Analyst:
