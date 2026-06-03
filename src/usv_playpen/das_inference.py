@@ -29,14 +29,17 @@ from .yaml_utils import load_session_metadata, save_session_metadata
 apply_plot_style()
 
 
-# DAS annotation filenames are produced by `das predict` using the input WAV's
-# basename, so they reach us as `<device>_<...>_<chXX>_annotations.csv` where
-# <device> is 'm' (master) or 's' (slave) and <chXX> is the two-digit channel
-# index. The middle segment is timestamp-like but may contain underscores
-# (e.g. session id "20260109_142347"), so split-by-underscore is brittle.
-# This regex anchors on the first/last meaningful tokens and tolerates any
-# intervening content.
-_DAS_ANNOTATION_FILE_RE = re.compile(r"^([ms])_.*_(ch\d{2})_annotations\.csv$")
+# DAS annotation filenames are produced by `das predict` from the input WAV's
+# basename, so they reach us as `<device>_<...>_<chXX>_<...>annotations.csv`,
+# e.g. `m_260421185826_ch01_cropped_to_video_hpss_filtered_annotations.csv`,
+# where <device> is 'm' (master) or 's' (slave) and <chXX> is the two-digit
+# channel index. Both the timestamp segment before <chXX> and the
+# pipeline-suffix segment after it ('cropped_to_video_hpss_filtered') contain
+# underscores, so the regex anchors only on the device prefix and the channel
+# token and tolerates any intervening/trailing content (the trailing `.*` is
+# what lets the channel sit anywhere before `annotations.csv`, not just
+# immediately before it).
+_DAS_ANNOTATION_FILE_RE = re.compile(r"^([ms])_.*_(ch\d{2})_.*annotations\.csv$")
 
 
 class FindMouseVocalizations:

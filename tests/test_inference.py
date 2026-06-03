@@ -23,8 +23,23 @@ import pytest
 import matplotlib
 matplotlib.use("Agg")
 
-from usv_playpen.das_inference import FindMouseVocalizations
+from usv_playpen.das_inference import FindMouseVocalizations, _DAS_ANNOTATION_FILE_RE
 from usv_playpen.assign_vocalizations import Vocalocator
+
+
+@pytest.mark.parametrize("name,expected", [
+    # real DAS annotation names: the chNN token sits before the pipeline suffix
+    ("m_260421185826_ch01_cropped_to_video_hpss_filtered_annotations.csv", ("m", "ch01")),
+    ("s_230207213541_ch12_cropped_to_video_hpss_filtered_annotations.csv", ("s", "ch12")),
+    # short form (chNN immediately before annotations) must still match
+    ("m_230207213541_ch01_annotations.csv", ("m", "ch01")),
+    # invalid: wrong device prefix, or no channel token
+    ("x_foo_ch01_annotations.csv", None),
+    ("m_foo_annotations.csv", None),
+])
+def test_das_annotation_regex_matches_real_filenames(name, expected):
+    m = _DAS_ANNOTATION_FILE_RE.match(name)
+    assert (m.groups() if m else None) == expected
 
 
 # Shared parameter fixture
