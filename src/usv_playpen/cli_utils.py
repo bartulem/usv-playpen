@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sys
 from typing import Any
 
 import click
@@ -107,7 +108,7 @@ def modify_settings_json_for_cli(
     ctx: click.Context,
     provided_params: list,
     parameters_lists: list | None = None,
-    settings_dict: str = None,
+    settings_dict: str | None = None,
 ) -> dict:
     """
     Description
@@ -115,15 +116,19 @@ def modify_settings_json_for_cli(
     Modifies the `*_settings.json` file to include
     parameters provided via the command line interface.
 
+    A provided parameter that does not match any key in the loaded settings
+    dictionary (e.g. a typo'd, renamed or stale CLI option) is reported on
+    stderr and skipped, rather than being dropped silently as before.
+
     Parameters
     ----------
     ctx (click.Context)
         Click context containing the parameters.
+    provided_params (list)
+        Parameters provided via the command line interface.
     parameters_lists (list)
         List of parameters that are expected to be lists.
         If a parameter is not in this list, it is treated as a single value.
-    provided_params (list)
-        Parameters provided via the command line interface.
     settings_dict (str)
         Settings dictionary file (analyses, processing or visualizations).
 
@@ -134,7 +139,8 @@ def modify_settings_json_for_cli(
     """
 
     with open(
-        pathlib.Path(__file__).parent / f"_parameter_settings/{settings_dict}.json"
+        pathlib.Path(__file__).parent / f"_parameter_settings/{settings_dict}.json",
+        encoding="utf-8",
     ) as input_json_file:
         settings_parameter_dict = json.load(input_json_file)
 
@@ -149,7 +155,12 @@ def modify_settings_json_for_cli(
         else:
             param_value = [ctx.params[param_name]]
 
-        set_nested_key(settings_parameter_dict, param_name, param_value)
+        if not set_nested_key(settings_parameter_dict, param_name, param_value):
+            print(
+                f"Warning: CLI option '{param_name}' did not match any key in "
+                f"'{settings_dict}.json'; its value was not applied.",
+                file=sys.stderr,
+            )
 
     return settings_parameter_dict
 
