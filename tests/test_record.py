@@ -198,9 +198,9 @@ def test_get_email_params_reads_ini(credentials_file):
     assert pwd == 'hunter2'
 
 
-def test_get_email_params_exits_when_credentials_missing(tmp_path, capsys):
+def test_get_email_params_raises_when_credentials_missing(tmp_path):
     m = Messenger(credentials_file=str(tmp_path / 'absent.ini'))
-    with pytest.raises(SystemExit):
+    with pytest.raises(FileNotFoundError):
         m.get_email_params()
 
 

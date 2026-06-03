@@ -1201,7 +1201,7 @@ def _dump(value):
         "07",
         "+42",
         "2024-01-01",
-        "2024-1-1T12:00",
+        "2024-01-01T12:00:00",
         "yes",
         "No",
         "ON",
@@ -1634,7 +1634,7 @@ def test_phidget_gatherer_single_file(tmp_path, settings):
         {"sensor_time": 2.0, "hum_h": 41.0, "lux": 110.0, "hum_t": 23.0},
         {"sensor_time": 0.5, "hum_h": 39.0, "lux": 90.0, "hum_t": 21.0},
     ]
-    _write_phidget_file(cam_dir / 'phidget.json', records)
+    _write_phidget_file(cam_dir / 'phidget.extra_data.json', records)
 
     g = Gatherer(input_parameter_dict=settings, root_directory=str(tmp_path))
     out = g.prepare_data_for_analyses()
@@ -1648,11 +1648,11 @@ def test_phidget_gatherer_merges_multiple_files(tmp_path, settings):
     cam_dir = tmp_path / 'video' / 'cam_21372315_data'
     cam_dir.mkdir(parents=True)
     _write_phidget_file(
-        cam_dir / 'a.json',
+        cam_dir / 'a.extra_data.json',
         [{"sensor_time": 5.0, "hum_h": 50.0, "lux": 500.0, "hum_t": 25.0}],
     )
     _write_phidget_file(
-        cam_dir / 'b.json',
+        cam_dir / 'b.extra_data.json',
         [{"sensor_time": 1.0, "hum_h": 10.0, "lux": 100.0, "hum_t": 21.0}],
     )
 
@@ -1668,7 +1668,7 @@ def test_phidget_gatherer_handles_missing_keys_with_nan(tmp_path, settings):
         {"sensor_time": 1.0, "lux": 100.0},
         {"sensor_time": 2.0, "hum_h": 40.0, "hum_t": 22.0},
     ]
-    _write_phidget_file(cam_dir / 'p.json', records)
+    _write_phidget_file(cam_dir / 'p.extra_data.json', records)
 
     g = Gatherer(input_parameter_dict=settings, root_directory=str(tmp_path))
     out = g.prepare_data_for_analyses()
