@@ -15,6 +15,8 @@ from joblib import Parallel, delayed
 from scipy.stats import vonmises as sp_vonmises
 from tqdm import tqdm
 
+from .os_utils import atomic_output_path
+
 # Fixed seed for the Monte-Carlo angle-PDF estimation so that the sound-
 # localization angle marginals -- and therefore the vocalization-to-mouse
 # assignment that consumes them -- are reproducible across runs. A single fixed
@@ -187,7 +189,7 @@ def write_to_h5(
     None
     """
 
-    with h5py.File(output_path, mode="w") as f:
+    with atomic_output_path(output_path) as tmp_path, h5py.File(tmp_path, mode="w") as f:
         if extra_metadata is not None:
             for k, v in extra_metadata.items():
                 f.attrs[k] = v

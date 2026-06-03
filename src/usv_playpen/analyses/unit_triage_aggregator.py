@@ -34,6 +34,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..os_utils import atomic_output_path
+
 
 # JSON encoder helpers
 
@@ -1245,7 +1247,7 @@ def aggregate_units_across_conditions(
     out_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"unit_triage_{timestamp}.pkl"
-    with out_path.open("wb") as fh:
+    with atomic_output_path(out_path) as tmp_path, tmp_path.open("wb") as fh:
         pickle.dump(out, fh)
 
     message_output(

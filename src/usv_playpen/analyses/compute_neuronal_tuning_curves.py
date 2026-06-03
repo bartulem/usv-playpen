@@ -48,7 +48,7 @@ import polars as pls
 from scipy import ndimage, stats
 from tqdm import tqdm
 
-from ..os_utils import first_match_or_raise
+from ..os_utils import atomic_output_path, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .compute_behavioral_features import FeatureZoo
 
@@ -1219,7 +1219,7 @@ class NeuronalTuning(FeatureZoo):
                 existing[top_key] = {**existing[top_key], **new_value}
             else:
                 existing[top_key] = new_value
-        with pkl_path.open("wb") as fh:
+        with atomic_output_path(pkl_path) as tmp_path, tmp_path.open("wb") as fh:
             pickle.dump(existing, fh)
 
     # input loaders (each is graceful — returns None on missing)

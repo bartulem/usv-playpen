@@ -43,7 +43,7 @@ import numpy as np
 import polars as pls
 from sklearn.mixture import GaussianMixture
 
-from ..os_utils import configure_path
+from ..os_utils import atomic_output_path, configure_path
 from .mixture_model_utils import TMixture
 
 
@@ -251,7 +251,7 @@ def write_ivi_h5(
     out_path = Path(configure_path(str(h5_path)))
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with h5py.File(out_path, "w") as f:
+    with atomic_output_path(out_path) as tmp_path, h5py.File(tmp_path, "w") as f:
         for k, v in analysis_attrs.items():
             f.attrs[k] = _attr_value(v)
 
