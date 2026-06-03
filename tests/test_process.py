@@ -1903,6 +1903,23 @@ def test_estimate_angle_pdf_custom_theta_bins():
     assert pdf.shape == (10,)
 
 
+def test_estimate_angle_pdf_seed_is_reproducible_and_varies():
+    """A fixed seed makes the Monte-Carlo angle PDF (and the assignment that
+    consumes it) reproducible; a different seed yields a different estimate;
+    the default seed=None stays non-reproducible."""
+    rng = np.random.default_rng(0)
+    mean_6d = rng.normal(size=(6,))
+    A = rng.normal(size=(6, 6))
+    cov_6d = A @ A.T + np.eye(6)
+
+    _, pdf_a = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, seed=0)
+    _, pdf_b = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, seed=0)
+    _, pdf_c = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, seed=1)
+
+    assert np.array_equal(pdf_a, pdf_b)
+    assert not np.array_equal(pdf_a, pdf_c)
+
+
 def test_are_points_in_conf_set_3d_branch():
     n, y_res, x_res = 2, 100, 100
     confidence_sets = np.zeros((n, y_res, x_res), dtype=bool)

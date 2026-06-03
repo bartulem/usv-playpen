@@ -15,6 +15,13 @@ from joblib import Parallel, delayed
 from scipy.stats import vonmises as sp_vonmises
 from tqdm import tqdm
 
+# Fixed seed for the Monte-Carlo angle-PDF estimation so that the sound-
+# localization angle marginals -- and therefore the vocalization-to-mouse
+# assignment that consumes them -- are reproducible across runs. A single fixed
+# seed is used by design (every vocalization shares the same MC draw).
+_ANGLE_PDF_SEED = 0
+
+
 def softplus(x):
     """
     Description
@@ -298,6 +305,7 @@ def estimate_angle_pdf(
     pred_6d_cov: np.ndarray,
     n_samples: int = 1000,
     theta_bins: np.ndarray | None = None,
+    seed: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
@@ -314,6 +322,10 @@ def estimate_angle_pdf(
         Number of samples to draw from the Gaussian distribution.
     theta_bins (np.ndarray)
         Bins for the angle histogram. If None, defaults to 46 bins from -pi to pi.
+    seed (int | None)
+        Optional seed for the Monte-Carlo draw; `None` uses a fresh default-RNG
+        state (non-reproducible). Passing a fixed seed makes the estimated angle
+        PDF -- and the downstream assignment -- reproducible across runs.
 
     Returns
     -------
@@ -324,7 +336,8 @@ def estimate_angle_pdf(
     if theta_bins is None:
         theta_bins = np.linspace(-np.pi, np.pi, 46, endpoint=True)
 
-    gaussian_rv = np.random.multivariate_normal(
+    rng = np.random.default_rng(seed)
+    gaussian_rv = rng.multivariate_normal(
         mean=pred_6d_mean, cov=pred_6d_cov, size=n_samples
     )
     angles = np.arctan2(
@@ -488,7 +501,7 @@ def get_conf_sets_6d(
         """
 
         _, est_angle_pdf = estimate_angle_pdf(
-            mean_6d, cov_6d, n_samples=500, theta_bins=bins_angular
+            mean_6d, cov_6d, n_samples=500, theta_bins=bins_angular, seed=_ANGLE_PDF_SEED
         )
         total_pdf = eval_pdf_with_angle(
             points_spatial=points_spatial,
