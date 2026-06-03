@@ -85,6 +85,29 @@ def test_smart_dumper_does_not_quote_plain_string():
     assert "name: hello_world" in out
 
 
+@pytest.mark.parametrize("coercible", [
+    "3.14", ".5", "1.0",
+    ".inf", ".nan",
+    "null", "~", "",
+    "0x1A", "012", "1:2:3",
+])
+def test_smart_dumper_quotes_all_yaml11_coercible_strings(coercible):
+    """Any string YAML 1.1 would coerce (float / .inf / .nan / null / non-decimal
+    int) must survive a dump+load round-trip as the original string."""
+    out = yaml.dump({"v": coercible}, Dumper=SmartDumper,
+                    default_flow_style=False, sort_keys=False)
+    assert yaml.safe_load(out)["v"] == coercible
+
+
+def test_smart_dumper_leaves_non_coercible_lookalike_unquoted():
+    """'1e3' is NOT a YAML 1.1 float (it lacks a dot), so it stays a string
+    without quoting: the resolver only quotes values that would truly coerce."""
+    out = yaml.dump({"v": "1e3"}, Dumper=SmartDumper,
+                    default_flow_style=False, sort_keys=False)
+    assert "v: 1e3" in out
+    assert yaml.safe_load(out)["v"] == "1e3"
+
+
 # ---------------------------------------------------------------------------
 # SmartDumper.represent_numpy_scalar — convert np scalars to native Python
 # ---------------------------------------------------------------------------
@@ -302,6 +325,31 @@ def test_sync_equipment_writes_video_settings_with_codec_long_name():
     # Per-camera exposures / gains follow the sorted serial order
     assert vl["sensor_exposure_time"] == [5000, 6000]
     assert vl["sensor_gain"] == [1.0, 1.5]
+
+
+def test_sync_equipment_sorts_serials_numerically_not_lexicographically():
+    """Serials of differing digit-length must sort numerically (2, 9, 10), not
+    lexicographically (10, 2, 9); the exposure / gain lists must stay aligned
+    with their serial under that order."""
+    md = _equip_fixture()
+    exp = {
+        "video": {
+            "general": {
+                "recording_frame_rate": 150,
+                "expected_cameras": ["9", "10", "2"],
+            },
+            "cameras_config": {
+                "2":  {"exposure_time": 2000, "gain": 0.2},
+                "9":  {"exposure_time": 9000, "gain": 0.9},
+                "10": {"exposure_time": 1000, "gain": 1.0},
+            },
+        },
+    }
+    sync_equipment_dynamic_fields(md, exp)
+    vl = md["Equipment"]["video_Loopbio"]
+    assert vl["sensor_sn"] == [2, 9, 10]
+    assert vl["sensor_exposure_time"] == [2000, 9000, 1000]
+    assert vl["sensor_gain"] == [0.2, 0.9, 1.0]
 
 
 def test_sync_equipment_no_op_when_already_current():

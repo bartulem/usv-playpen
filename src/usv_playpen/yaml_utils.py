@@ -6,25 +6,11 @@ Utility functions for modifying the metadata YAML file.
 from __future__ import annotations
 
 import numbers
-import re
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import yaml
-
-# Matches strings that YAML 1.1 would silently coerce to a non-string type.
-# Covers: integers (with optional sign/underscores), ISO dates (YYYY-MM-DD),
-# ISO datetimes (YYYY-MM-DDTHH:MM:SS…), and YAML 1.1 boolean literals.
-_YAML11_INT_PATTERN = re.compile(r'^[+-]?[0-9][0-9_]*$')
-_YAML11_DATE_PATTERN = re.compile(
-    r'^\d{4}-\d{1,2}-\d{1,2}'       # date part: YYYY-M-D or YYYY-MM-DD
-    r'([T ]\d{2}:\d{2}(:\d{2})?.*)?$'  # optional time part
-)
-_YAML11_BOOL_PATTERN = re.compile(
-    r'^(y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$'
-)
-
 
 # Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
 # while keeping dictionaries in block style for overall readability.
@@ -66,10 +52,13 @@ class SmartDumper(yaml.Dumper):
         """
         Description
         -----------
-        Represents a Python string in YAML. If the string looks like an integer,
-        ISO date/datetime, or YAML 1.1 boolean literal (e.g., 'yes', 'off', '2024-01-01'),
-        it is emitted with single quotes so consumers do not silently coerce it
-        to a non-string type on load.
+        Represents a Python string in YAML. If the string would be coerced to a
+        non-string scalar on load under YAML 1.1's implicit resolver -- an int
+        (decimal / hex / octal / binary / sexagesimal), a float (incl. '.inf' /
+        '.nan'), a boolean (e.g. 'yes', 'off'), a null ('~', '', 'null'), or a
+        date / datetime -- it is emitted single-quoted so it round-trips as a
+        string. The check delegates to PyYAML's own resolver, so every coercion
+        case is covered authoritatively rather than via partial regexes.
 
         Parameters
         ----------
@@ -82,11 +71,7 @@ class SmartDumper(yaml.Dumper):
             A YAML scalar node, single-quoted when coercion would occur.
         """
 
-        if (
-            _YAML11_INT_PATTERN.match(data)
-            or _YAML11_DATE_PATTERN.match(data)
-            or _YAML11_BOOL_PATTERN.match(data)
-        ):
+        if self.resolve(yaml.ScalarNode, data, (True, False)) != 'tag:yaml.org,2002:str':
             return self.represent_scalar('tag:yaml.org,2002:str', data, style="'")
         return self.represent_scalar('tag:yaml.org,2002:str', data)
 
@@ -378,10 +363,12 @@ def sync_equipment_dynamic_fields(metadata_settings: dict, exp_settings_dict: di
         codec_long = _RECORDING_CODEC_LONG_NAME.get(codec_short, codec_short)
         maybe_set('video_Loopbio', 'output_file_codec', codec_long)
     if 'expected_cameras' in video_general:
-        # Sort ascending so sensor_sn matches the original YAML order;
-        # exposure / gain lists must follow the same sort order to keep
-        # per-camera values aligned with their serial.
-        sorted_cams = sorted(str(c) for c in video_general['expected_cameras'])
+        # Sort serials numerically when they are all integer strings (camera
+        # serials are), else lexicographically. sensor_sn and the exposure /
+        # gain lists below are built in this order, so they must agree -- a
+        # lexicographic sort would order '10' before '9' and misalign them.
+        _cam_serials = [str(c) for c in video_general['expected_cameras']]
+        sorted_cams = sorted(_cam_serials, key=int) if all(c.isdigit() for c in _cam_serials) else sorted(_cam_serials)
         sn_values = [int(c) if c.isdigit() else c for c in sorted_cams]
         maybe_set('video_Loopbio', 'sensor_count', len(sorted_cams))
         maybe_set('video_Loopbio', 'sensor_sn', sn_values)
