@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import pathlib
 import traceback
+import warnings
 from collections.abc import Callable
 from datetime import datetime
 
@@ -60,6 +61,33 @@ class Visualizer:
         This method performs the following analyses:
         (1) creates per-cluster combined neuronal tuning figures (behavioral + vocal)
         (2) visualizes (plot or video) 3D tracking, vocalization and neural data
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        None
+        """
+
+        # Benign numpy/scipy RuntimeWarnings raised while plotting -- all-NaN
+        # slices, divide-by-zero, scipy ConstantInputWarning from constant-input
+        # pearsonr/spearmanr, and gaussian_kde numerical warnings -- carry no
+        # actionable information. Suppress only that category, scoped to the run
+        # via catch_warnings (the visualization pipeline previously relied on the
+        # now-removed module-level filter in analyze_data when both ran in one
+        # process). Informative warnings still surface.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            self._visualize_data_impl()
+
+    def _visualize_data_impl(self) -> None:
+        """
+        Description
+        -----------
+        Runs the configured visualizations. Wrapped by ``visualize_data``, which
+        scopes RuntimeWarning suppression around the whole run; see that method's
+        docstring for the list of visualizations performed.
 
         Parameters
         ----------

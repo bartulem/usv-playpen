@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import pathlib
 import traceback
+import warnings
 from collections.abc import Callable
 from datetime import datetime
 
@@ -65,6 +66,35 @@ class Analyst:
         (2) computes per-cluster neuronal tuning curves (behavioral + vocal)
         (3) generates playback WAV files
         (4) frequency shifts audio segments
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        None
+        """
+
+        # Benign numpy/scipy RuntimeWarnings raised during analysis -- all-NaN
+        # slices, divide-by-zero in sparse-bin ratios, and scipy's
+        # ConstantInputWarning/NearConstantInputWarning (RuntimeWarning
+        # subclasses) from constant-input pearsonr/spearmanr -- carry no
+        # actionable information. Suppress only that category, scoped to the run
+        # via catch_warnings, instead of the old module-level
+        # simplefilter('ignore') that silenced every warning process-wide (GUI
+        # included) the moment this module was imported. Genuinely informative
+        # warnings (DeprecationWarning, ConvergenceWarning, ...) still surface.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            self._analyze_data_impl()
+
+    def _analyze_data_impl(self) -> None:
+        """
+        Description
+        -----------
+        Runs the configured analyses. Wrapped by ``analyze_data``, which scopes
+        RuntimeWarning suppression around the whole run; see that method's
+        docstring for the list of analyses performed.
 
         Parameters
         ----------
