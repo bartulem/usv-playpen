@@ -318,7 +318,7 @@ class Vocalocator:
 
         try:
             # Locate the calibration file or raise an error if not found
-            cal_file = next(f.name for f in pathlib.Path(model_directory).glob("*cal*.npz"))
+            cal_file = next(f.name for f in sorted(pathlib.Path(model_directory).glob("*cal*.npz")))
 
             conda_exe = os.environ.get('CONDA_EXE', 'conda')
             clean_env = os.environ.copy()

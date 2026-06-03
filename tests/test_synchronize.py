@@ -186,13 +186,13 @@ def test_validate_ephys_video_sync_no_camera_json_raises(processing_settings, tm
 
 def test_crop_wav_files_to_video_raises_when_camera_json_missing(processing_settings,
                                                                   tmp_path, mocker):
-    """Missing video/<...>_camera_frame_count_dict.json → IndexError from
-    sorted(...)[0] (the function indexes the first match without checking
-    whether any matched). Documents the brittleness."""
+    """Missing video/<...>_camera_frame_count_dict.json → a clear
+    FileNotFoundError from first_match_or_raise (naming the missing pattern),
+    instead of the previous bare IndexError from sorted(...)[0]."""
     (tmp_path / "video").mkdir()
     mocker.patch("usv_playpen.synchronize_files.smart_wait")
     sync = _make_sync(tmp_path, processing_settings)
-    with pytest.raises(IndexError):
+    with pytest.raises(FileNotFoundError, match=r"camera_frame_count_dict"):
         sync.crop_wav_files_to_video()
 
 

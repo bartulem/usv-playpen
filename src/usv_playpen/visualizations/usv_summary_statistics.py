@@ -65,7 +65,7 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
     """
 
     session_path = Path(session_root)
-    tracking_file = next(session_path.glob('**/*_points3d_translated_rotated_metric.h5'), None)
+    tracking_file = next(iter(sorted(session_path.glob('**/*_points3d_translated_rotated_metric.h5'))), None)
 
     if tracking_file is None:
         msg = f"No tracking file found in {session_root}"
@@ -120,7 +120,7 @@ def load_and_filter_usv_data(
     """
 
     session_path = Path(session_root)
-    usv_file = next(session_path.glob('**/*_usv_summary.csv'), None)
+    usv_file = next(iter(sorted(session_path.glob('**/*_usv_summary.csv'))), None)
 
     if usv_file is None:
         msg = f"USV summary file missing in {session_root}"
@@ -243,7 +243,7 @@ def get_session_behavioral_features(session_root: str) -> pls.DataFrame:
     """
 
     session_path = Path(session_root)
-    features_file = next(session_path.glob('**/*_behavioral_features.csv'), None)
+    features_file = next(iter(sorted(session_path.glob('**/*_behavioral_features.csv'))), None)
 
     if features_file is None:
         msg = f"Behavioral features file missing in {session_root}"
@@ -404,7 +404,7 @@ def build_master_usv_dataframe(
         frame_rate = metadata['frame_rate']
         experiment_code = metadata['experiment_code']
 
-        usv_file = next(session_path.glob('**/*_usv_summary.csv'), None)
+        usv_file = next(iter(sorted(session_path.glob('**/*_usv_summary.csv'))), None)
         if usv_file is None:
             continue
 

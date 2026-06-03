@@ -53,7 +53,7 @@ def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
     """
 
     root = pathlib.Path(root_directory)
-    matches = list(root.glob('*_metadata.yaml'))
+    matches = sorted(root.glob('*_metadata.yaml'))
     if not matches:
         return
     metadata_path = matches[0]

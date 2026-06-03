@@ -127,7 +127,7 @@ def load_session_metadata(root_directory: str, logger: Callable = print) -> tupl
     """
 
     path = Path(root_directory)
-    metadata_path_list = list(path.glob('*_metadata.yaml'))
+    metadata_path_list = sorted(path.glob('*_metadata.yaml'))
     if not metadata_path_list:
         return None, None
 

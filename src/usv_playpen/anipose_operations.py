@@ -469,7 +469,7 @@ class ConvertTo3D:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        calibration_dir_search = list(pathlib.Path(configure_path(self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc'])).rglob('*_calibration.toml*'))
+        calibration_dir_search = sorted(pathlib.Path(configure_path(self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc'])).rglob('*_calibration.toml*'))
         if len(calibration_dir_search) == 0:
             self.message_output(
                 "Calibration directory not found. Please run calibration first and provide a correct path."

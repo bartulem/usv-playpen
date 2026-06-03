@@ -857,7 +857,7 @@ class Synchronizer:
         video_sync_sequence_array = np.array(list(video_sync_sequence_dict.values()))
 
         # find NIDQ sync trains
-        nidq_file = next(pathlib.Path(self.root_directory).glob("**/*.nidq.bin"), None)
+        nidq_file = next(iter(sorted(pathlib.Path(self.root_directory).glob("**/*.nidq.bin"))), None)
         nidq_ipi_data_file = pathlib.Path(self.root_directory) / 'sync' / 'nidq_ipi_data.npy'
         if nidq_file is not None and not nidq_ipi_data_file.is_file():
             nidq_recording = np.memmap(filename=nidq_file, mode='r', dtype=np.int16, order='C')
@@ -964,7 +964,7 @@ class Synchronizer:
                             self.message_output(f"IPI sequence match NOT found in audio file! There is/are {(~bool_condition_array).sum()} difference(s) larger "
                                                 f"than the tolerance and the largest one is {diff_array.max()} ms")
                         else:
-                            video_metadata_search = next((pathlib.Path(self.root_directory) / 'video').glob(f'*.{video_key}/metadata.yaml'), None)
+                            video_metadata_search = next(iter(sorted((pathlib.Path(self.root_directory) / 'video').glob(f'*.{video_key}/metadata.yaml'))), None)
                             if video_metadata_search:
                                 img_store = new_for_filename(str(video_metadata_search))
                                 frame_times = np.array(img_store.get_frame_metadata()['frame_time'])
@@ -978,7 +978,7 @@ class Synchronizer:
                                 audio_video_ipi_discrepancy_ms = ((_audio_starts / wave_data_dict[audio_file]['sampling_rate']) - (_video_frames / camera_fr[0])) * 1000
 
                                 # the following segment checks whether the IPI video frames indices extracted from the audio file match the video frames indices
-                                if next((pathlib.Path(self.root_directory) / 'sync').glob(f'*{audio_device_prefixes[af_idx]}_video_frames_in_audio_samples.txt'), None):
+                                if next(iter(sorted((pathlib.Path(self.root_directory) / 'sync').glob(f'*{audio_device_prefixes[af_idx]}_video_frames_in_audio_samples.txt'))), None):
                                     with (pathlib.Path(self.root_directory) / 'sync' / f'{audio_device_prefixes[af_idx]}_video_frames_in_audio_samples.txt').open() as txt_file:
                                        video_fr_starts_in_samples = np.array([line.rstrip() for line in txt_file], dtype=np.int64)
 
@@ -1054,7 +1054,11 @@ class Synchronizer:
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # load info from camera_frame_count_dict
-        with sorted(pathlib.Path(self.root_directory).glob('video/*_camera_frame_count_dict.json'))[0].open() as frame_count_infile:
+        with first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern='video/*_camera_frame_count_dict.json',
+            label="camera_frame_count_dict JSON",
+        ).open() as frame_count_infile:
             camera_frame_count_dict = json.load(frame_count_infile)
             total_frame_number = camera_frame_count_dict['total_frame_number_least']
             total_video_time = camera_frame_count_dict['total_video_time_least']
