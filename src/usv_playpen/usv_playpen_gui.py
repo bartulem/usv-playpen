@@ -1729,7 +1729,10 @@ class USVPlaypenWindow(QMainWindow):
         exp_id_label = QLabel('Experimenter:', self.Main)
         exp_id_label.setFont(QFont(self.font_id, 10+self.font_size_increase))
         exp_id_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        exp_id_label.move(120, 329)
+        # macOS uses a larger font (font_size_increase = +4 vs -1 on Windows), so
+        # the bold 'Experimenter:' label is wider and its trailing ':' ran under the
+        # combobox at x=215; nudge the label left on Darwin so the ':' stays visible.
+        exp_id_label.move(115 if platform.system() == 'Darwin' else 120, 329)
         self.exp_id_list = sorted(self.exp_settings_dict['experimenter_list'], key=lambda x: x == self.exp_id, reverse=True)
         self.exp_id_cb = QComboBox(self.Main)
         self.exp_id_cb.addItems(self.exp_id_list)
