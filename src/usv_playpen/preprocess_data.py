@@ -26,6 +26,8 @@ from .prepare_cluster_job import PrepareClusterJob
 from .preprocessing_plot import SummaryPlotter
 from .send_email import Messenger
 from .synchronize_files import Synchronizer
+from .os_utils import atomic_output_path
+from .yaml_utils import SmartDumper
 
 
 def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
@@ -62,8 +64,9 @@ def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
     if 'usv_playpen_processing_version' not in session_metadata.get('Session', {}):
         return
     session_metadata['Session']['usv_playpen_processing_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
-    with open(metadata_path, 'w') as yaml_out:
-        yaml.dump(session_metadata, yaml_out, default_flow_style=False, sort_keys=False, indent=2)
+    with atomic_output_path(metadata_path) as tmp_path:
+        with open(tmp_path, 'w') as yaml_out:
+            yaml.dump(session_metadata, yaml_out, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
 
 
 class Stylist:

@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from .os_utils import atomic_output_path
+
 # Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
 # while keeping dictionaries in block style for overall readability.
 class SmartDumper(yaml.Dumper):
@@ -474,7 +476,8 @@ def save_session_metadata(data: dict, filepath: Path, logger: Callable = print) 
     """
 
     try:
-        with open(filepath, 'w') as f:
-            yaml.dump(data, f, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
+        with atomic_output_path(filepath) as tmp_path:
+            with open(tmp_path, 'w') as f:
+                yaml.dump(data, f, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
     except yaml.YAMLError as e:
         logger(f"Error saving metadata file: {e}")

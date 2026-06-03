@@ -6,11 +6,13 @@ across the codebase.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import pathlib
 import platform
 import subprocess
 import time as _time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from typing import Optional
 
 
@@ -197,6 +199,55 @@ def to_cluster_path(pa: str) -> str:
             if normalised == root or (normalised.startswith(root) and normalised[len(root):len(root) + 1] == "/"):
                 return f"{cluster_root}{normalised[len(root):]}"
     return normalised
+
+
+@contextlib.contextmanager
+def atomic_output_path(final_path: str | pathlib.Path) -> Iterator[pathlib.Path]:
+    """
+    Description
+    -----------
+    Context manager for crash-safe, atomic publishing of precious files. It
+    yields a temporary sibling path to write into and, on clean exit, replaces
+    ``final_path`` with it via ``os.replace`` (an atomic rename on the same
+    filesystem).
+
+    Writing irreplaceable data (session metadata, h5 archives, pickles)
+    straight to its final path with mode ``'w'`` truncates the existing file
+    before the new bytes land, so a crash, kill, or full disk mid-write leaves
+    a corrupt or empty file -- and the original is already gone. Writing to a
+    sibling temp file and renaming makes the publish all-or-nothing: a reader
+    sees either the complete old file or the complete new file, never a partial
+    one.
+
+    The temp file is created in the same directory as ``final_path`` so the
+    rename stays on one filesystem (cross-filesystem ``os.replace`` is not
+    atomic and may fail). If the body raises, the temp file is removed and the
+    exception re-raised, leaving any existing ``final_path`` untouched.
+
+    Parameters
+    ----------
+    final_path (str | pathlib.Path)
+        Destination path to publish atomically. Its parent directory must
+        already exist (this helper does not create it, matching the callers'
+        existing assumption).
+
+    Yields
+    ------
+    tmp_path (pathlib.Path)
+        Sibling temporary path the caller writes its bytes to. After a clean
+        exit it has been renamed onto ``final_path`` and no longer exists under
+        the temporary name.
+    """
+
+    final = pathlib.Path(final_path)
+    tmp = final.with_name(f".{final.name}.tmp-{os.getpid()}")
+    try:
+        yield tmp
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            tmp.unlink()
+        raise
+    os.replace(tmp, final)
 
 
 def wait_for_subprocesses(

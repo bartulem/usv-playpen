@@ -182,6 +182,32 @@ def test_to_cluster_path_passthrough(pa, expected):
     assert os_utils.to_cluster_path(pa) == expected
 
 
+# atomic_output_path
+
+def test_atomic_output_path_publishes_only_on_clean_exit(tmp_path):
+    # The final file must not appear until the with-block exits cleanly; once
+    # it does, it holds exactly what was written and no temp sibling remains.
+    final = tmp_path / "data.txt"
+    with os_utils.atomic_output_path(final) as tmp:
+        tmp.write_text("new content")
+        assert not final.exists()
+    assert final.read_text() == "new content"
+    assert list(tmp_path.glob(".data.txt.tmp*")) == []
+
+
+def test_atomic_output_path_preserves_original_on_error(tmp_path):
+    # A crash mid-write must leave the pre-existing file untouched (the whole
+    # point of the helper) and clean up the temp sibling.
+    final = tmp_path / "data.txt"
+    final.write_text("original")
+    with pytest.raises(RuntimeError):
+        with os_utils.atomic_output_path(final) as tmp:
+            tmp.write_text("half-written, never published")
+            raise RuntimeError("boom")
+    assert final.read_text() == "original"
+    assert list(tmp_path.glob(".data.txt.tmp*")) == []
+
+
 # first_match_or_raise
 
 def test_first_match_returns_alphabetically_first(tmp_path):
