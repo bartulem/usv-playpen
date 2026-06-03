@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import configparser
 import smtplib
-import sys
 from collections.abc import Callable
 from email.message import EmailMessage
 from pathlib import Path
@@ -59,22 +58,28 @@ class Messenger:
 
         Parameters
         ----------
+        None
 
         Returns
         -------
         email_host (str), email_port (str), email_address (str), email_password (str)
             Lab e-mail address and password.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the credentials file does not exist. send_message() calls this
+            inside its try/except, so it is reported via message_output and the
+            send returns False, rather than terminating the whole process.
         """
 
-        config = configparser.ConfigParser()
-
         if not Path(self.credentials_file).is_file():
-            print(self.credentials_file)  # noqa: T201
-            print("E-mail config file not found. Try again!")  # noqa: T201
-            sys.exit(1)
-        else:
-            config.read(self.credentials_file)
-            return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'], config['email']['email_password']
+            raise FileNotFoundError(
+                f"E-mail config file not found: '{self.credentials_file}'."
+            )
+        config = configparser.ConfigParser()
+        config.read(self.credentials_file)
+        return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'], config['email']['email_password']
 
     def send_message(self, subject: str | None = None, message: str | None = None) -> bool | None:
         """
@@ -110,13 +115,6 @@ class Messenger:
             email_port = None
             try:
                 email_host, email_port, email_address, email_password = self.get_email_params()
-
-                if email_address is None or email_password is None:
-                    # no email address or password
-                    self.message_output(
-                        "Did you set the e-mail address and password correctly?"
-                    )
-                    sys.exit()
 
                 # create email
                 msg = EmailMessage()
