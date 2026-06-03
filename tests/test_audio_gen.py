@@ -213,3 +213,56 @@ def test_frequency_shift_audio_segment_no_match_logs_and_returns(tmp_path, mocke
 
     assert fake_popen.call_count == 0
     assert any("Requested audio file not found" in m for m in msgs)
+
+
+def _run_usv_playback(tmp_path, mocker, *, seed, exp_id, n_snippets=8, total_usv=25):
+    """Drive create_usv_playback_wav with mocked audio I/O and return the
+    ordered list of chosen snippet filenames (from the *_usvids.txt the method
+    writes). Identical snippet filenames are created under each exp_id so the
+    sorted wav list -- and therefore the seeded selection -- is comparable
+    across runs.
+    """
+    snippets_name = "snips"
+    snip_dir = tmp_path / exp_id / "usv_playback_experiments" / snippets_name
+    snip_dir.mkdir(parents=True)
+    for i in range(n_snippets):
+        (snip_dir / f"snippet_{i:02d}.wav").write_bytes(b"")
+
+    mocker.patch("usv_playpen.analyses.generate_audio_files.find_base_path",
+                 return_value=str(tmp_path))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.os.path.ismount",
+                 return_value=True)
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+    mocker.patch("usv_playpen.analyses.generate_audio_files.wavfile.read",
+                 return_value=(250, np.zeros(8, dtype=np.int16)))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.wavfile.write")
+
+    ag = AudioGenerator(
+        exp_id=exp_id,
+        create_playback_settings_dict={
+            "num_usv_files": 1,
+            "total_usv_number": total_usv,
+            "ipi_duration": 0.015,
+            "wav_sampling_rate": 250,
+            "playback_snippets_dir": snippets_name,
+            "playback_seed": seed,
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+    ag.create_usv_playback_wav()
+
+    out_dir = tmp_path / exp_id / "usv_playback_experiments" / "usv_playback_files"
+    usvids_file = sorted(out_dir.glob("*_usvids.txt"))[0]
+    return usvids_file.read_text().split()
+
+
+def test_create_usv_playback_wav_seed_is_reproducible_and_varies(tmp_path, mocker):
+    """A fixed integer playback_seed makes the chosen USV sequence exactly
+    reproducible across runs, while a different seed yields a different
+    sequence -- so a documented stimulus set can be regenerated bit-for-bit."""
+    seq_a = _run_usv_playback(tmp_path, mocker, seed=0, exp_id="expA")
+    seq_b = _run_usv_playback(tmp_path, mocker, seed=0, exp_id="expB")
+    seq_c = _run_usv_playback(tmp_path, mocker, seed=1, exp_id="expC")
+
+    assert seq_a == seq_b
+    assert seq_a != seq_c

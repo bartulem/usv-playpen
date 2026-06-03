@@ -62,14 +62,16 @@
     "num_naturalistic_usv_files": 1,
     "naturalistic_wav_sampling_rate": 250,
     "naturalistic_playback_snippets_dir_prefix": "female",
-    "total_acceptable_naturalistic_playback_time": 1080
+    "total_acceptable_naturalistic_playback_time": 1080,
+    "playback_seed": null
   },
   "create_usv_playback_wav": {
     "num_usv_files": 1,
     "total_usv_number": 10000,
     "ipi_duration": 0.015,
     "wav_sampling_rate": 250,
-    "playback_snippets_dir": "usv_playback_snippets_loudness_corrected"
+    "playback_snippets_dir": "usv_playback_snippets_loudness_corrected",
+    "playback_seed": null
   },
   "frequency_shift_audio_segment": {
     "fs_audio_dir": "hpss_filtered",
