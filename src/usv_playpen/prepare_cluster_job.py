@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import json
 import pathlib
-import platform
 from collections.abc import Callable
 
-from .os_utils import configure_path
+from .os_utils import configure_path, to_cluster_path
 
 
 class PrepareClusterJob:
@@ -71,36 +70,18 @@ class PrepareClusterJob:
             List of sessions to run inference on.
         """
 
-        if platform.system() == 'Windows':
-            spock_converted_first_model_path = self.input_parameter_dict['centroid_model_path'].replace('\\', '/').replace('F:', '/mnt/cup/labs/falkner')
-            if self.input_parameter_dict['centered_instance_model_path'] == '':
-                spock_converted_second_model_path = ''
-            else:
-                spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('\\', '/').replace('F:', '/mnt/cup/labs/falkner')
-        elif platform.system() == 'Linux':
-            spock_converted_first_model_path = self.input_parameter_dict['centroid_model_path'].replace('mnt', 'mnt/cup/labs')
-            if self.input_parameter_dict['centered_instance_model_path'] == '':
-                spock_converted_second_model_path = ''
-            else:
-                spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('mnt', 'mnt/cup/labs')
+        spock_converted_first_model_path = to_cluster_path(self.input_parameter_dict['centroid_model_path'])
+        if self.input_parameter_dict['centered_instance_model_path'] == '':
+            spock_converted_second_model_path = ''
         else:
-            spock_converted_first_model_path = self.input_parameter_dict['centroid_model_path'].replace('Volumes', 'mnt/cup/labs')
-            if self.input_parameter_dict['centered_instance_model_path'] == '':
-                spock_converted_second_model_path = ''
-            else:
-                spock_converted_second_model_path = self.input_parameter_dict['centered_instance_model_path'].replace('Volumes', 'mnt/cup/labs')
+            spock_converted_second_model_path = to_cluster_path(self.input_parameter_dict['centered_instance_model_path'])
 
         pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir'])).mkdir(parents=True, exist_ok=True)
 
         with open(pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir'])) / 'job_list.txt', mode='w') as job_list_file:
             for root_dir in self.root_directory:
 
-                if platform.system() == 'Windows':
-                    spock_converted_root_dir = root_dir.replace('\\', '/').replace('F:', '/mnt/cup/labs/falkner')
-                elif platform.system() == 'Linux':
-                    spock_converted_root_dir = root_dir.replace('mnt', 'mnt/cup/labs')
-                else:
-                    spock_converted_root_dir = root_dir.replace('Volumes', 'mnt/cup/labs')
+                spock_converted_root_dir = to_cluster_path(root_dir)
 
                 for video_processed_dir in (pathlib.Path(root_dir) / 'video').iterdir():
                     if video_processed_dir.name.isnumeric():

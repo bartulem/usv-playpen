@@ -134,6 +134,54 @@ def test_ephys_base_for_data_root_no_data_component_returns_parent_unchanged():
             == pathlib.Path("/mnt/falkner/Bartul/Other"))
 
 
+# to_cluster_path
+#
+# Host-independent by design (a job may be submitted from any workstation), so
+# no platform monkeypatching: every host-OS source form is matched regardless
+# of the running OS.
+
+@pytest.mark.parametrize("pa,expected", [
+    # falkner from every host form -> identical to the old per-OS .replace
+    ("F:\\Bartul\\Data\\s1", "/mnt/cup/labs/falkner/Bartul/Data/s1"),
+    ("/Volumes/falkner/Bartul/Data/s1", "/mnt/cup/labs/falkner/Bartul/Data/s1"),
+    ("/mnt/falkner/Bartul/Data/s1", "/mnt/cup/labs/falkner/Bartul/Data/s1"),
+    # murthy from every host form -> the Windows M: case was BROKEN before
+    # (left as 'M:/...'); Linux/macOS murthy already worked and stay the same
+    ("M:\\a\\b", "/mnt/cup/labs/murthy/a/b"),
+    ("/Volumes/murthy/a/b", "/mnt/cup/labs/murthy/a/b"),
+    ("/mnt/murthy/a/b", "/mnt/cup/labs/murthy/a/b"),
+])
+def test_to_cluster_path_maps_every_host_form(pa, expected):
+    assert os_utils.to_cluster_path(pa) == expected
+
+
+def test_to_cluster_path_windows_murthy_regression():
+    # Explicit regression for the dropped-murthy bug: a Windows murthy path must
+    # resolve to the murthy cluster mount, not stay an unconverted drive path.
+    assert os_utils.to_cluster_path("M:\\Lab\\Data\\s1") == "/mnt/cup/labs/murthy/Lab/Data/s1"
+
+
+def test_to_cluster_path_does_not_corrupt_inner_mnt_token():
+    # The old Linux .replace('mnt', 'mnt/cup/labs') mangled any inner 'mnt';
+    # anchoring on the leading root leaves 'mnt_backup' intact.
+    assert (os_utils.to_cluster_path("/mnt/falkner/mnt_backup/x")
+            == "/mnt/cup/labs/falkner/mnt_backup/x")
+
+
+def test_to_cluster_path_bare_root():
+    assert os_utils.to_cluster_path("/mnt/murthy") == "/mnt/cup/labs/murthy"
+
+
+@pytest.mark.parametrize("pa,expected", [
+    ("", ""),                                       # empty -> unchanged
+    ("/home/user/not/a/share", "/home/user/not/a/share"),
+    ("C:\\Windows\\System32", "C:/Windows/System32"),   # only separators normalised
+    ("/mnt/other_lab/x", "/mnt/other_lab/x"),       # /mnt but not a known share
+])
+def test_to_cluster_path_passthrough(pa, expected):
+    assert os_utils.to_cluster_path(pa) == expected
+
+
 # first_match_or_raise
 
 def test_first_match_returns_alphabetically_first(tmp_path):

@@ -15,16 +15,19 @@ from typing import Optional
 
 
 # Single source of truth for the lab CUP shares and their mount root on each OS.
-# Each entry maps an OS key to that share's *leading* mount root (without a
-# trailing separator). The first share (falkner) is the default returned by
-# ``find_base_path``. ``configure_path`` rewrites only this leading root when
-# translating a path between OSs, so substrings that merely happen to look like
-# a mount token elsewhere in the path are never touched, and additional shares
-# (murthy, ...) are handled by construction rather than by special-casing.
+# Each entry maps a form key to that share's *leading* mount root (without a
+# trailing separator). The ``windows``/``darwin``/``linux`` keys are the host-OS
+# mount forms used by ``configure_path``/``find_base_path``; the ``cluster`` key
+# is the form the compute cluster (spock/della) mounts CUP under, used by
+# ``to_cluster_path`` when submitting jobs. The first share (falkner) is the
+# default returned by ``find_base_path``. Only a leading mount root is ever
+# rewritten, so substrings that merely happen to look like a mount token
+# elsewhere in the path are never touched, and additional shares (murthy, ...)
+# are handled by construction rather than by special-casing.
 _OS_KEYS = {"Windows": "windows", "Darwin": "darwin", "Linux": "linux"}
 _LAB_SHARES: tuple[dict[str, str], ...] = (
-    {"windows": "F:", "darwin": "/Volumes/falkner", "linux": "/mnt/falkner"},
-    {"windows": "M:", "darwin": "/Volumes/murthy",  "linux": "/mnt/murthy"},
+    {"windows": "F:", "darwin": "/Volumes/falkner", "linux": "/mnt/falkner", "cluster": "/mnt/cup/labs/falkner"},
+    {"windows": "M:", "darwin": "/Volumes/murthy",  "linux": "/mnt/murthy",  "cluster": "/mnt/cup/labs/murthy"},
 )
 
 
@@ -93,9 +96,12 @@ def configure_path(pa: str) -> str:
     target_key = _OS_KEYS[system]
 
     for share in _LAB_SHARES:
-        for src_key, root in share.items():
+        # Only the host-OS forms are translation sources; the non-OS ``cluster``
+        # form is handled by ``to_cluster_path`` and must never match here.
+        for src_key in _OS_KEYS.values():
             if src_key == target_key:
                 continue
+            root = share[src_key]
             if pa == root or (pa.startswith(root) and pa[len(root):len(root) + 1] in ("/", "\\")):
                 remainder = pa[len(root):]
                 remainder = remainder.replace("/", "\\") if target_key == "windows" else remainder.replace("\\", "/")
@@ -144,6 +150,53 @@ def ephys_base_for_data_root(data_root_directory: str) -> pathlib.Path:
             parts[index] = "EPHYS"
             break
     return pathlib.Path(*parts)
+
+
+def to_cluster_path(pa: str) -> str:
+    """
+    Description
+    -----------
+    Translates a CUP-share path written in any host-OS form (Windows drive
+    letter, macOS ``/Volumes`` mount, or Linux ``/mnt`` mount) into the form the
+    compute cluster (spock/della) uses, where every lab share is mounted under
+    ``/mnt/cup/labs/<lab>``. Unlike ``configure_path``, whose target is the host
+    OS, the target here is fixed (the cluster), because this is used when
+    *submitting* jobs from a workstation to run remotely.
+
+    Both lab shares in ``_LAB_SHARES`` (falkner, murthy) are handled from every
+    host form, so a ``M:\\...`` / ``/Volumes/murthy/...`` / ``/mnt/murthy/...``
+    path maps correctly to ``/mnt/cup/labs/murthy/...`` -- the previous
+    per-OS ``.replace`` only special-cased falkner on Windows and silently left
+    murthy paths unconverted.
+
+    Matching is anchored on a full mount root followed by a separator (or the
+    whole string), so embedded look-alike substrings are never corrupted
+    (the previous Linux ``.replace('mnt', 'mnt/cup/labs')`` mangled any inner
+    ``mnt`` token). Separators in the remainder are normalised to ``/`` because
+    the cluster is Linux.
+
+    Parameters
+    ----------
+    pa (str)
+        Original path in any host-OS form for a known CUP share. A path that
+        does not begin with a known share root is returned with its separators
+        normalised to ``/`` but otherwise unchanged.
+
+    Returns
+    -------
+    pa (str)
+        Cluster-form path (``/mnt/cup/labs/<lab>/...``), or the separator-
+        normalised original if no known share root matched.
+    """
+
+    normalised = pa.replace("\\", "/")
+    for share in _LAB_SHARES:
+        cluster_root = share["cluster"]
+        for src_key in _OS_KEYS.values():
+            root = share[src_key].replace("\\", "/")
+            if normalised == root or (normalised.startswith(root) and normalised[len(root):len(root) + 1] == "/"):
+                return f"{cluster_root}{normalised[len(root):]}"
+    return normalised
 
 
 def wait_for_subprocesses(
