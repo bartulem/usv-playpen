@@ -20,7 +20,7 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
-from .os_utils import configure_path, wait_for_subprocesses
+from .os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
 from .visualizations.plot_style import apply_plot_style
 from .time_utils import is_gui_context, smart_wait
 from .visualizations.figure_io import save_figure
@@ -225,11 +225,15 @@ class FindMouseVocalizations:
 
         session_id = pathlib.Path(self.root_directory).name
 
-        try:
-            das_annotation_files = sorted(
-                (pathlib.Path(self.root_directory) / "audio" / "das_annotations").glob("*.csv")
+        annot_dir = pathlib.Path(self.root_directory) / "audio" / "das_annotations"
+        das_annotation_files = sorted(annot_dir.glob("*.csv")) if annot_dir.is_dir() else []
+        if not das_annotation_files:
+            self.message_output(
+                f"No DAS annotations found in directory: {self.root_directory}. Skipping summary generation."
             )
+            return
 
+        try:
             # Phase 1: load all channel CSVs, filter noise, collect flat segment list
             # Each entry is (start_seconds, stop_seconds, channel_numeric_index).
             all_segments = []
@@ -292,9 +296,11 @@ class FindMouseVocalizations:
 
             # Phase 4: amplitude + spectrogram quality checks
             if n_usv > 1:
-                audio_file_loc = sorted(
-                    (pathlib.Path(self.root_directory) / "audio" / "hpss_filtered").glob("*.mmap")
-                )[0]
+                audio_file_loc = first_match_or_raise(
+                    root=pathlib.Path(self.root_directory) / "audio" / "hpss_filtered",
+                    pattern="*.mmap",
+                    label="concatenated audio mmap",
+                )
                 audio_file_name = audio_file_loc.name
                 data_type, channel_num, sample_num, audio_sampling_rate = (
                     audio_file_name.split("_")[-1][:-5],
@@ -494,10 +500,10 @@ class FindMouseVocalizations:
                 logger=self.message_output
             )
             if metadata is not None:
-                metadata['Session']['session_usv_count'] = len(merged) if len(merged) > 1 else 0
+                metadata['Session']['session_usv_count'] = len(merged) if n_usv > 1 else 0
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
-        except (IndexError, FileNotFoundError):
+        except (IndexError, FileNotFoundError) as exc:
             self.message_output(
-                f"No DAS annotations found in directory: {self.root_directory}. Skipping summary generation."
+                f"DAS summary skipped for '{self.root_directory}': {type(exc).__name__}: {exc}"
             )

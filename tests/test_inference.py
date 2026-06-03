@@ -152,8 +152,9 @@ def test_das_command_line_inference_creates_save_dir_even_if_no_annotations(
 def test_summarize_das_findings_handles_no_annotations(processing_settings,
                                                         tmp_path, mocker):
     """When the das_annotations directory is missing entirely, the method
-    falls into its except (IndexError, FileNotFoundError) block and emits a
-    skip message rather than crashing."""
+    short-circuits via its up-front `is_dir()` guard and emits the
+    "No DAS annotations found" skip message rather than crashing or falling
+    through to the audio-loading phase."""
     msgs: list[str] = []
     mocker.patch("usv_playpen.das_inference.smart_wait")
 
@@ -162,11 +163,10 @@ def test_summarize_das_findings_handles_no_annotations(processing_settings,
         input_parameter_dict=processing_settings,
         message_output=msgs.append,
     )
-    # No audio/das_annotations dir exists → glob raises FileNotFoundError on
-    # some Python/Path versions; the function catches it gracefully.
+    # No audio/das_annotations dir exists → the guard returns before any glob
+    # of the audio tree, emitting the deterministic skip message.
     fmv.summarize_das_findings()
-    # We don't assert the exact wording — just confirm execution didn't raise.
-    assert isinstance(msgs, list)
+    assert any("No DAS annotations found" in m for m in msgs)
 
 
 def test_summarize_das_findings_skips_unrecognised_filename(processing_settings,
@@ -472,3 +472,43 @@ def test_summarize_das_findings_skips_unknown_channel_filename(
     fmv.summarize_das_findings()  # must not raise
 
     assert any("unrecognized device/channel" in m for m in msgs)
+
+
+def test_summarize_das_findings_missing_mmap_reports_real_cause(
+    processing_settings, tmp_path, mocker
+):
+    """Regression: when annotations exist and merge to >1 USV but the
+    concatenated audio mmap is absent, the skip message must name the real
+    failure (a missing file) rather than falsely claiming "no annotations".
+
+    Before the fix, the bare `sorted(...glob('*.mmap'))[0]` raised an
+    IndexError that the broad except swallowed under the misleading
+    "No DAS annotations found" wording, sending anyone debugging a genuinely
+    missing audio file down the wrong path. The except now surfaces the
+    exception type and message; the no-annotations case is handled separately
+    by an up-front guard that early-returns before this phase.
+    """
+    _make_summary_fixture(tmp_path, n_usv=2, channels=("ch01", "ch02"))
+    # Remove the audio mmap so Phase 4's lookup fails with the annotations
+    # still present on disk.
+    for mmap_path in (tmp_path / "audio" / "hpss_filtered").glob("*.mmap"):
+        mmap_path.unlink()
+
+    mocker.patch("usv_playpen.das_inference.smart_wait")
+    mocker.patch("usv_playpen.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.das_inference.save_session_metadata")
+
+    msgs: list[str] = []
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=msgs.append,
+    )
+    fmv.summarize_das_findings()  # must not raise
+
+    joined = " ".join(msgs).lower()
+    # The real cause is reported (a missing file), not the misleading
+    # "no annotations" wording.
+    assert "filenotfounderror" in joined
+    assert "no das annotations found" not in joined
