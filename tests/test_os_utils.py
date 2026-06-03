@@ -1,7 +1,8 @@
 """
 Tests for usv_playpen.os_utils: cross-OS path translation (find_base_path /
-configure_path), the deterministic glob helpers (first_match_or_raise /
-newest_match_or_raise) and the subprocess-group waiter (wait_for_subprocesses).
+configure_path), the Data->EPHYS sibling-tree mapping (ephys_base_for_data_root),
+the deterministic glob helpers (first_match_or_raise / newest_match_or_raise)
+and the subprocess-group waiter (wait_for_subprocesses).
 
 `configure_path`/`find_base_path` are exercised under all three target OSs by
 monkeypatching `os_utils.platform.system`; the cases include the two bugs the
@@ -9,6 +10,7 @@ mount-mapping table was introduced to fix (all-occurrence substring corruption,
 and the previously-unhandled `murthy` share).
 """
 
+import pathlib
 import time
 
 import pytest
@@ -86,6 +88,50 @@ def test_configure_path_unknown_os_passthrough(as_os):
 def test_configure_path_bare_root(as_os):
     as_os("Linux")
     assert os_utils.configure_path("F:") == "/mnt/falkner"
+
+
+# ephys_base_for_data_root
+#
+# Path-component logic only (no platform.system() branch), so these run under
+# the host OS's pathlib; POSIX inputs are used since the suite runs on
+# POSIX CI/dev machines, and results are compared Path-to-Path for robustness.
+
+@pytest.mark.parametrize("data_root,expected", [
+    # canonical single-'Data' session roots -> sibling EPHYS base (byte-identical
+    # to the old str(parent).replace('Data','EPHYS') on these real paths)
+    ("/mnt/falkner/Bartul/Data/20230101_120000", "/mnt/falkner/Bartul/EPHYS"),
+    ("/Volumes/falkner/Bartul/Data/20230101_120000", "/Volumes/falkner/Bartul/EPHYS"),
+    ("/mnt/murthy/Lab/Data/sess_01", "/mnt/murthy/Lab/EPHYS"),
+])
+def test_ephys_base_for_data_root_maps_data_to_ephys(data_root, expected):
+    assert os_utils.ephys_base_for_data_root(data_root) == pathlib.Path(expected)
+
+
+def test_ephys_base_for_data_root_does_not_corrupt_lookalike_component():
+    # 'Database' must survive: only the exact 'Data' component is swapped, where
+    # the old unanchored replace would have produced '.../EPHYSbase/EPHYS'.
+    assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Database/Data/sess")
+            == pathlib.Path("/mnt/falkner/Database/EPHYS"))
+
+
+def test_ephys_base_for_data_root_ignores_data_inside_session_id():
+    # The session id lives below the parent, so a 'Data'-containing id is never
+    # rewritten; the parent's 'Data' component still maps to 'EPHYS'.
+    assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Bartul/Data/Data_collection_01")
+            == pathlib.Path("/mnt/falkner/Bartul/EPHYS"))
+
+
+def test_ephys_base_for_data_root_swaps_only_final_data_component():
+    # Old unanchored replace turned BOTH 'Data's into 'EPHYS'; the anchored
+    # helper rewrites only the last, leaving the upper one intact.
+    assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Data/Bartul/Data/sess")
+            == pathlib.Path("/mnt/falkner/Data/Bartul/EPHYS"))
+
+
+def test_ephys_base_for_data_root_no_data_component_returns_parent_unchanged():
+    # No 'Data' component -> parent returned unchanged (no accidental rewrite).
+    assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Bartul/Other/sess")
+            == pathlib.Path("/mnt/falkner/Bartul/Other"))
 
 
 # first_match_or_raise

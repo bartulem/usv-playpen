@@ -31,7 +31,7 @@ from scipy.io import wavfile
 from tqdm import tqdm
 
 from .load_audio_files import DataLoader
-from .os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
+from .os_utils import configure_path, ephys_base_for_data_root, first_match_or_raise, wait_for_subprocesses
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import load_session_metadata, save_session_metadata
 
@@ -108,7 +108,7 @@ class Operator:
         calibrated_sr_config.read(pathlib.Path(__file__).parent / '_config/calibrated_sample_rates_imec.ini')
 
         for one_root_dir in self.root_directory:
-            _ephys_base = pathlib.Path(str(pathlib.Path(one_root_dir).parent).replace('Data', 'EPHYS')) / pathlib.Path(one_root_dir).name.split('_')[0]
+            _ephys_base = ephys_base_for_data_root(one_root_dir) / pathlib.Path(one_root_dir).name.split('_')[0]
             for ephys_dir in sorted(_ephys_base.parent.glob(f"{_ephys_base.name}_imec*")):
 
                 probe_id = re.search(r'imec\d', ephys_dir.name).group()
@@ -247,7 +247,7 @@ class Operator:
         concat_save_dir = []
         available_probes = []
         for ord_idx, one_root_dir in enumerate(self.root_directory):
-            ephys_save_dir_base = str(pathlib.Path(str(pathlib.Path(one_root_dir).parent).replace('Data', 'EPHYS')) / pathlib.Path(one_root_dir).name.split('_')[0])
+            ephys_save_dir_base = str(ephys_base_for_data_root(one_root_dir) / pathlib.Path(one_root_dir).name.split('_')[0])
             for one_probe_dir in sorted((pathlib.Path(one_root_dir) / 'ephys').iterdir()):
                 if one_probe_dir.is_dir() and 'imec' in one_probe_dir.name:
                     if one_probe_dir.name not in available_probes:

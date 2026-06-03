@@ -104,6 +104,48 @@ def configure_path(pa: str) -> str:
     return pa
 
 
+def ephys_base_for_data_root(data_root_directory: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Maps a session's ``Data``-tree root directory to the parent of its sibling
+    ``EPHYS``-tree directory. The lab mirrors every ``Data`` directory with an
+    ``EPHYS`` directory at the same level, so a session stored at
+    ``<base>/Data/<session_id>`` keeps its electrophysiology recordings under
+    ``<base>/EPHYS/...``.
+
+    Only the final path *component* that is exactly ``Data`` in the **parent**
+    of ``data_root_directory`` is swapped for ``EPHYS``; look-alike substrings
+    elsewhere in the path -- an experimenter directory such as ``Database``, or
+    a session id that merely contains the text ``Data`` -- are therefore never
+    corrupted. This replaces the previous unanchored
+    ``str(parent).replace('Data', 'EPHYS')`` idiom, which rewrote every
+    occurrence of the substring and so was prone to silently mangling such
+    paths.
+
+    Parameters
+    ----------
+    data_root_directory (str)
+        Absolute path to a single session's ``Data``-tree root directory, e.g.
+        ``/mnt/falkner/Bartul/Data/20230101_120000``.
+
+    Returns
+    -------
+    ephys_base (pathlib.Path)
+        The session root's parent with its final ``Data`` component replaced by
+        ``EPHYS``, e.g. ``/mnt/falkner/Bartul/EPHYS``. If the parent contains no
+        ``Data`` component it is returned unchanged.
+    """
+
+    parent = pathlib.Path(data_root_directory).parent
+    parts = list(parent.parts)
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] == "Data":
+            parts[index] = "EPHYS"
+            break
+    return pathlib.Path(*parts)
+
+
 def wait_for_subprocesses(
     subps: Iterable[subprocess.Popen],
     max_seconds: float,
