@@ -14,65 +14,92 @@ from collections.abc import Callable, Iterable
 from typing import Optional
 
 
+# Single source of truth for the lab CUP shares and their mount root on each OS.
+# Each entry maps an OS key to that share's *leading* mount root (without a
+# trailing separator). The first share (falkner) is the default returned by
+# ``find_base_path``. ``configure_path`` rewrites only this leading root when
+# translating a path between OSs, so substrings that merely happen to look like
+# a mount token elsewhere in the path are never touched, and additional shares
+# (murthy, ...) are handled by construction rather than by special-casing.
+_OS_KEYS = {"Windows": "windows", "Darwin": "darwin", "Linux": "linux"}
+_LAB_SHARES: tuple[dict[str, str], ...] = (
+    {"windows": "F:", "darwin": "/Volumes/falkner", "linux": "/mnt/falkner"},
+    {"windows": "M:", "darwin": "/Volumes/murthy",  "linux": "/mnt/murthy"},
+)
+
+
 def find_base_path() -> str | None:
     """
     Description
     -----------
-    This function converts the CUP path between OSs.
+    Returns the primary (falkner) CUP share's mount root for the OS currently
+    in use: ``F:\\`` on Windows, ``/Volumes/falkner`` on macOS, ``/mnt/falkner``
+    on Linux. Derived from the first entry of ``_LAB_SHARES`` so the roots are
+    defined in exactly one place.
 
     Parameters
     ----------
+    None
 
     Returns
     -------
-     base_path (str)
-        OS-converted CUP path.
+    base_path (str | None)
+        The falkner mount root for the host OS, or ``None`` on an unrecognised
+        platform (callers must handle the ``None`` case before using the value).
     """
 
-    if platform.system() == "Windows":
-        base_path = "F:\\"
-    elif platform.system() == "Darwin":
-        base_path = "/Volumes/falkner"
-    elif platform.system() == "Linux":
-        base_path = "/mnt/falkner"
-    else:
-        base_path = None
-
-    return base_path
+    system = platform.system()
+    if system not in _OS_KEYS:
+        return None
+    base = _LAB_SHARES[0][_OS_KEYS[system]]
+    return f"{base}\\" if system == "Windows" else base
 
 
 def configure_path(pa: str) -> str:
     """
     Description
     -----------
-    This function converts path names between OSs.
+    Translates a CUP-share path from whichever OS form it was written in into
+    the form expected by the OS currently in use, for any share listed in
+    ``_LAB_SHARES`` (falkner, murthy, ...).
+
+    Only the leading mount root is rewritten; the remainder of the path is kept
+    verbatim apart from normalising the path separator to the target OS
+    (``\\`` on Windows, ``/`` elsewhere). A root must be followed by a path
+    separator (or be the whole string) to match, so:
+
+    * embedded look-alike substrings are never corrupted -- e.g.
+      ``/mnt/falkner/exp_mnt_2025`` on macOS becomes
+      ``/Volumes/falkner/exp_mnt_2025`` (the inner ``mnt`` is left alone), and
+    * a path that is already in the host-OS form, or that does not begin with
+      any known share root, is returned unchanged (passthrough).
 
     Parameters
     ----------
     pa (str)
-        Original path.
+        Original path, in any OS's form for a known CUP share, or an unrelated
+        path (returned unchanged).
 
     Returns
     -------
-     pa (str)
-        OS-converted path.
+    pa (str)
+        OS-converted path, or the original string if no known share root
+        matched or the host OS is unrecognised.
     """
 
-    if pa.startswith("F:\\"):
-        if platform.system() == "Darwin":
-            pa = pa.replace("\\", "/").replace("F:", "/Volumes/falkner")
-        elif platform.system() == "Linux":
-            pa = pa.replace("\\", "/").replace("F:", "/mnt/falkner")
-    elif pa.startswith("/mnt"):
-        if platform.system() == "Windows":
-            pa = pa.replace("/mnt/falkner", "F:").replace("/", "\\")
-        elif platform.system() == "Darwin":
-            pa = pa.replace("mnt", "Volumes")
-    elif pa.startswith("/Volumes"):
-        if platform.system() == "Windows":
-            pa = pa.replace("/Volumes/falkner", "F:").replace("/", "\\")
-        elif platform.system() == "Linux":
-            pa = pa.replace("Volumes", "mnt")
+    system = platform.system()
+    if system not in _OS_KEYS:
+        return pa
+    target_key = _OS_KEYS[system]
+
+    for share in _LAB_SHARES:
+        for src_key, root in share.items():
+            if src_key == target_key:
+                continue
+            if pa == root or (pa.startswith(root) and pa[len(root):len(root) + 1] in ("/", "\\")):
+                remainder = pa[len(root):]
+                remainder = remainder.replace("/", "\\") if target_key == "windows" else remainder.replace("\\", "/")
+                return f"{share[target_key]}{remainder}"
 
     return pa
 
