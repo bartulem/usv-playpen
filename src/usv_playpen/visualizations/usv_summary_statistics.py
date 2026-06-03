@@ -35,6 +35,12 @@ try:
 except FileNotFoundError:
     _GLOBAL_CMAP = "inferno"
 
+# Fixed seed for the purely cosmetic figure randomness in this module -- the
+# strip/swarm x-jitter and the KDE point subsampling -- so that re-rendering a
+# figure yields pixel-identical output instead of a slightly different cloud /
+# density estimate each run.
+_FIGURE_RNG_SEED = 0
+
 
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
     """
@@ -642,7 +648,7 @@ def plot_assignment_summary_panel(
     for category, pos in x_positions.items():
         subset = df_long.filter(pls.col('category') == category)
         counts = subset['count'].to_numpy()
-        jittered_x = np.random.normal(loc=pos, scale=jitter_strength, size=len(counts))
+        jittered_x = np.random.default_rng(_FIGURE_RNG_SEED).normal(loc=pos, scale=jitter_strength, size=len(counts))
         ax_scatter.scatter(jittered_x, counts, color=colors[category], label=category, alpha=0.7, s=50)
 
     ax_scatter.set_xticks(list(x_positions.values()))
@@ -901,10 +907,10 @@ def plot_polar_kde_distance_angle(
 
     # 2. Subsample for performance
     if len(filt_usv_dist) > max_kde_points:
-        idx = np.random.choice(len(filt_usv_dist), max_kde_points, replace=False)
+        idx = np.random.default_rng(_FIGURE_RNG_SEED).choice(len(filt_usv_dist), max_kde_points, replace=False)
         filt_usv_dist, abs_usv_rad = filt_usv_dist[idx], abs_usv_rad[idx]
     if len(filt_all_dist) > max_kde_points:
-        idx = np.random.choice(len(filt_all_dist), max_kde_points, replace=False)
+        idx = np.random.default_rng(_FIGURE_RNG_SEED).choice(len(filt_all_dist), max_kde_points, replace=False)
         filt_all_dist, abs_all_rad = filt_all_dist[idx], abs_all_rad[idx]
 
     fig = plt.figure(figsize=(10, 4))
@@ -1855,7 +1861,7 @@ def plot_estrous_ratio_scatter(
 
         # Jitter and Plot Points
         cloud_center_x = idx
-        x_positions = np.random.uniform(cloud_center_x - jitter_width, cloud_center_x + jitter_width, size=n)
+        x_positions = np.random.default_rng(_FIGURE_RNG_SEED).uniform(cloud_center_x - jitter_width, cloud_center_x + jitter_width, size=n)
 
         ax.scatter(x_positions, values, color=scatter_colors[idx], alpha=0.4, s=15, zorder=5)
 
@@ -2592,7 +2598,7 @@ def plot_category_estrous_ratio_grid(
 
             if n > 0:
                 # Jittered scatter
-                rng = np.random.default_rng()
+                rng = np.random.default_rng(_FIGURE_RNG_SEED)
                 x_jit = rng.normal(idx, 0.08, size=n)
                 ax.scatter(x_jit, ratios, color=scatter_colors[idx], alpha=0.5, s=20, zorder=5)
 
@@ -2654,7 +2660,7 @@ def plot_category_estrous_ratio_grid(
 
             if n > 0:
                 # Jittered scatter
-                rng = np.random.default_rng()
+                rng = np.random.default_rng(_FIGURE_RNG_SEED)
                 x_jit = rng.normal(cat_idx, 0.08, size=n)
                 ax.scatter(x_jit, ratios, color=scatter_colors[idx], alpha=0.5, s=20, zorder=5)
 
@@ -2948,7 +2954,7 @@ def plot_estrous_category_kde_grid(
     bg_angle_f = bg_angle_rad[valid_bg]
 
     if len(bg_dist_f) > max_kde_points:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(_FIGURE_RNG_SEED)
         idx = rng.choice(len(bg_dist_f), max_kde_points, replace=False)
         bg_dist_f, bg_angle_f = bg_dist_f[idx], bg_angle_f[idx]
 
