@@ -370,11 +370,30 @@ class Operator:
             smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
             # run command in shell
-            subprocess.Popen(args=concatenation_command,
-                             shell=True,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.STDOUT,
-                             cwd=concat_save_dir[probe_idx]).wait()
+            #
+            # shell=True is required here: the command relies on shell I/O
+            # redirection ('cat ... > out.bin' on POSIX) and the 'copy /b'
+            # cmd.exe builtin on Windows, neither of which works with a plain
+            # argv list. The arguments are the session's own .bin file paths,
+            # not externally supplied input.
+            #
+            # No timeout is imposed on .wait(): concatenating ~10 multi-hour
+            # e-phys recordings can legitimately run for hours or overnight,
+            # and terminating a live 'cat'/'copy' would leave a truncated,
+            # silently-corrupt .bin. We do, however, inspect the exit code so a
+            # failed concatenation (e.g. full disk, unreadable source) is
+            # surfaced loudly instead of being mistaken for a clean run by the
+            # downstream stages that read this binary.
+            concat_process = subprocess.Popen(args=concatenation_command,
+                                              shell=True,
+                                              stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.STDOUT,
+                                              cwd=concat_save_dir[probe_idx])
+            concat_return_code = concat_process.wait()
+            if concat_return_code != 0:
+                self.message_output(f"WARNING: binary concatenation in {concat_save_dir[probe_idx]} exited with "
+                                    f"non-zero status {concat_return_code}; the concatenated .bin may be "
+                                    f"incomplete or corrupt and should not be trusted downstream.")
 
     def multichannel_to_channel_audio(self) -> None:
         """
@@ -754,8 +773,8 @@ class Operator:
         )
 
         date_joint = ''
-        total_frame_number = 1e9
-        total_video_time = 1e9
+        total_frame_number = None
+        total_video_time = None
         camera_frame_count_dict = {}
         empirical_camera_sr = np.zeros(len(self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']))
         empirical_camera_sr[:] = np.nan
@@ -784,9 +803,9 @@ class Operator:
                     if total_frame_num == last_frame_num:
                         self.message_output(f"Camera {cam_serial} has {total_frame_num} total frames, no dropped frames, "
                                             f"video duration of {video_duration:.4f} seconds, and sampling rate of {esr} fps.")
-                        if total_frame_num < total_frame_number:
+                        if total_frame_number is None or total_frame_num < total_frame_number:
                             total_frame_number = total_frame_num
-                        if video_duration < total_video_time:
+                        if total_video_time is None or video_duration < total_video_time:
                             total_video_time = video_duration
 
                         if metadata is not None:
@@ -863,8 +882,31 @@ class Operator:
                         (current_working_dir / target_file).unlink()
 
         # save camera_frame_count_dict to a file
+        # If no camera produced a clean (no-dropped-frames) recording, there is
+        # no trustworthy "least" frame count / duration. Downstream stages
+        # (anipose_operations, synchronize_files) read these strictly as numbers
+        # via int()/arithmetic, so writing None would crash them. Warn loudly
+        # and fall back to the historical numeric sentinel so the failure is
+        # visible instead of silently propagating a fabricated count.
+        if total_frame_number is None:
+            self.message_output("WARNING: no camera produced a clean (no-dropped-frames) recording for this session; "
+                                "total_frame_number_least/total_video_time_least fall back to a sentinel and should "
+                                "not be trusted downstream.")
+            total_frame_number = int(1e9)
+            total_video_time = 1e9
         camera_frame_count_dict['total_frame_number_least'] = total_frame_number
         camera_frame_count_dict['total_video_time_least'] = total_video_time
-        camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.median(empirical_camera_sr), ndigits=4)
+        # Use nanmedian so a single missing/failed camera (whose pre-allocated
+        # slot stays NaN) does not collapse the whole session's median to NaN
+        # and poison the frame rate that every downstream stage
+        # (assign_vocalizations, anipose_operations, synchronize_files) reads.
+        # Only the pathological all-cameras-missing case stays NaN, which we
+        # surface explicitly rather than silently writing a misleading number.
+        if np.all(np.isnan(empirical_camera_sr)):
+            self.message_output("WARNING: no empirical camera sampling rates were recorded for this session; "
+                                "median_empirical_camera_sr written as NaN.")
+            camera_frame_count_dict['median_empirical_camera_sr'] = float('nan')
+        else:
+            camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.nanmedian(empirical_camera_sr), ndigits=4)
         with open(video_dir / f'{date_joint}_camera_frame_count_dict.json', 'w') as frame_count_outfile:
             json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)

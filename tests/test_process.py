@@ -2112,3 +2112,142 @@ def test_vocalocator_run_missing_track_h5_raises(tmp_path, processing_settings):
     voc = _make_vocalocator(tmp_path, processing_settings)
     with pytest.raises(FileNotFoundError, match=r"3D translated/rotated/metric track H5"):
         voc.run_vocalocator()
+
+
+def _make_rectify_operator(root_dir: Path, serials: list[str], message_output) -> Operator:
+    """Builds an Operator wired for a focused ``rectify_video_fps`` test.
+
+    Only the nested config the method actually touches is supplied: the
+    ``rectify_video_fps`` block under ``modify_files/Operator`` and the empty
+    ``synchronize_files/Synchronizer`` block the constructor also reads. The
+    camera serials are caller-controlled so a test can configure more serials
+    than there are on-disk camera directories (the case that exercises the
+    NaN-slot / nanmedian behavior).
+    """
+    input_parameter_dict = {
+        'modify_files': {'Operator': {
+            'rectify_video_fps': {
+                'encode_camera_serial_num': list(serials),
+                'constant_rate_factor': 16,
+                'encoding_preset': 'veryfast',
+                'encode_video_extension': 'mp4',
+                'conversion_target_file': 'concatenated_video',
+                'delete_old_file': False,
+            },
+        }},
+        'synchronize_files': {'Synchronizer': {}},
+    }
+    return Operator(root_directory=str(root_dir),
+                    input_parameter_dict=input_parameter_dict,
+                    message_output=message_output)
+
+
+def _make_rectify_mock_img_store(mocker, frame_count: int, frame_max: int, fps: int):
+    """A stand-in for ``imgstore.new_for_filename``'s return value.
+
+    Exposes exactly the three attributes ``rectify_video_fps`` reads:
+    ``frame_count``, ``frame_max``, and ``get_frame_metadata()['frame_time']``
+    (an evenly-spaced time vector so the empirical sampling rate is
+    deterministic). Setting ``frame_count != frame_max`` simulates a camera
+    that dropped frames.
+    """
+    store = mocker.MagicMock()
+    store.frame_count = frame_count
+    store.frame_max = frame_max
+    duration = (frame_count - 1) / fps
+    store.get_frame_metadata.return_value = {
+        'frame_time': np.linspace(0, duration, frame_count)
+    }
+    return store
+
+
+def _patch_rectify_externals(mocker, img_store):
+    """Patches every external ``rectify_video_fps`` reaches for so the method
+    runs purely against the in-memory mock store and the tmp filesystem:
+
+    * ``new_for_filename`` → the supplied mock img store,
+    * ``load_session_metadata`` → (None, None) so no metadata file is required,
+    * ``wait_for_subprocesses`` / ``subprocess.Popen`` → no-op ffmpeg,
+    * ``shutil.move`` → no-op file relocation.
+    """
+    mocker.patch('usv_playpen.modify_files.new_for_filename', return_value=img_store)
+    mocker.patch('usv_playpen.modify_files.load_session_metadata', return_value=(None, None))
+    mocker.patch('usv_playpen.modify_files.wait_for_subprocesses')
+    mocker.patch('usv_playpen.modify_files.subprocess.Popen', return_value=mocker.MagicMock())
+    mocker.patch('usv_playpen.modify_files.shutil.move')
+
+
+def test_rectify_video_fps_missing_camera_uses_nanmedian(tmp_path, mocker):
+    """Regression: a configured camera serial with no on-disk directory leaves
+    its pre-allocated ``empirical_camera_sr`` slot as NaN. The session-wide
+    ``median_empirical_camera_sr`` must come from ``np.nanmedian`` (ignoring
+    that slot) rather than ``np.median`` (which would collapse the whole median
+    to NaN and poison every downstream stage that reads the frame rate).
+
+    Three serials are configured but only two camera directories exist, so the
+    third slot stays NaN; the written median must equal the two present
+    cameras' empirical rate, not NaN.
+    """
+    frame_count, frame_max, fps = 1000, 1000, 150
+    serials = ['cam0', 'cam1', 'cam2']
+    video_dir = tmp_path / 'video'
+    # Only two of the three configured cameras actually recorded a directory.
+    for serial in ('cam0', 'cam1'):
+        (video_dir / f'm_20230101_120000.{serial}').mkdir(parents=True)
+
+    img_store = _make_rectify_mock_img_store(mocker, frame_count, frame_max, fps)
+    _patch_rectify_externals(mocker, img_store)
+
+    msgs: list[str] = []
+    op = _make_rectify_operator(tmp_path, serials, msgs.append)
+    op.rectify_video_fps()
+
+    json_path = sorted(video_dir.glob('*_camera_frame_count_dict.json'))[0]
+    with open(json_path, 'r') as infile:
+        frame_count_dict = json.load(infile)
+
+    expected_duration = (frame_count - 1) / fps
+    expected_esr = round(frame_count / expected_duration, 4)
+    # nanmedian over [esr, esr, NaN] is esr; np.median would have been NaN.
+    assert frame_count_dict['median_empirical_camera_sr'] == pytest.approx(expected_esr)
+    assert frame_count_dict['total_frame_number_least'] == frame_count
+    assert isinstance(frame_count_dict['total_frame_number_least'], int)
+    assert frame_count_dict['total_video_time_least'] == pytest.approx(expected_duration)
+    assert not any('written as NaN' in m for m in msgs)
+    assert not any('fall back to a sentinel' in m for m in msgs)
+
+
+def test_rectify_video_fps_all_dropped_frames_warns_and_uses_sentinel(tmp_path, mocker):
+    """Regression: when every camera dropped frames (``frame_count`` never
+    equals ``frame_max``), there is no trustworthy "least" frame count, so the
+    internal running minimum stays unset. The method must NOT silently write a
+    fabricated value: it warns and falls back to the historical numeric
+    sentinel (so downstream ``int()``/arithmetic consumers still get a number),
+    while the empirical median — which is recorded even for dropped-frame
+    cameras — remains a real rate.
+    """
+    frame_count, frame_max, fps = 1000, 1001, 150
+    serials = ['cam0', 'cam1']
+    video_dir = tmp_path / 'video'
+    for serial in serials:
+        (video_dir / f'm_20230101_120000.{serial}').mkdir(parents=True)
+
+    img_store = _make_rectify_mock_img_store(mocker, frame_count, frame_max, fps)
+    _patch_rectify_externals(mocker, img_store)
+
+    msgs: list[str] = []
+    op = _make_rectify_operator(tmp_path, serials, msgs.append)
+    op.rectify_video_fps()
+
+    json_path = sorted(video_dir.glob('*_camera_frame_count_dict.json'))[0]
+    with open(json_path, 'r') as infile:
+        frame_count_dict = json.load(infile)
+
+    assert any('no camera produced a clean' in m for m in msgs)
+    assert frame_count_dict['total_frame_number_least'] == int(1e9)
+    assert frame_count_dict['total_video_time_least'] == 1e9
+    # Empirical sampling rate is captured before the dropped-frame check, so the
+    # median is still a real value even though the frame-count sentinel fired.
+    expected_duration = (frame_count - 1) / fps
+    expected_esr = round(frame_count / expected_duration, 4)
+    assert frame_count_dict['median_empirical_camera_sr'] == pytest.approx(expected_esr)
