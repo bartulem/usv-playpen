@@ -161,6 +161,39 @@ def test_analyze_data_no_booleans_true(mock_settings, mock_dependencies):
             assert mock_class.call_count == 0
 
 
+def test_analyze_data_reports_failures_in_completion_email(mock_settings, mock_dependencies):
+    """A per-directory failure must be surfaced in the completion e-mail
+    (subject + body) instead of the old unconditional 'completed' message. The
+    orchestrator deliberately swallows the exception to keep going, so the
+    e-mail is the only signal the run wasn't clean."""
+    mock_settings['analyses_booleans']['compute_behavioral_features_bool'] = True
+    mock_dependencies['FeatureZoo'].return_value.save_behavioral_features_to_file.side_effect = \
+        RuntimeError("boom")
+
+    analyst = Analyst(input_parameter_dict=mock_settings, root_directories=['/fake/dir1'])
+    analyst.analyze_data()
+
+    # The completion e-mail is the last send_message call (the first is the
+    # 'PC is busy' start notification).
+    last_call = mock_dependencies['Messenger'].return_value.send_message.call_args_list[-1]
+    assert "failure(s)" in last_call.kwargs['subject']
+    assert "/fake/dir1" in last_call.kwargs['message']
+    assert "RuntimeError: boom" in last_call.kwargs['message']
+
+
+def test_analyze_data_clean_run_reports_success(mock_settings, mock_dependencies):
+    """With no failures the completion e-mail keeps its original success wording
+    (the honest-reporting change must not regress the clean-run path)."""
+    mock_settings['analyses_booleans']['compute_behavioral_features_bool'] = True
+
+    analyst = Analyst(input_parameter_dict=mock_settings, root_directories=['/fake/dir1'])
+    analyst.analyze_data()
+
+    last_call = mock_dependencies['Messenger'].return_value.send_message.call_args_list[-1]
+    assert "have been completed" in last_call.kwargs['subject']
+    assert "failure(s)" not in last_call.kwargs['subject']
+
+
 def test_compute_behavioral_features_logic(mock_settings, mock_dependencies):
     """
     Tests that `FeatureZoo.save_behavioral_features_to_file` is called when the flag is True.

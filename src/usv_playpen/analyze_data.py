@@ -129,6 +129,7 @@ class Analyst:
                                create_playback_settings_dict=self.input_parameter_dict['create_naturalistic_usv_playback_wav'],
                                message_output=self.message_output).create_naturalistic_usv_playback_wav()
 
+        failed_directories = []
         for one_directory in self.root_directories:
             try:
                 self.message_output(f"Analyzing data in {one_directory} started at: "
@@ -155,19 +156,40 @@ class Analyst:
                 self.message_output(f"Analyzing data in {one_directory} finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
+            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
+                failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
+
+        # The completion e-mail must report failures honestly: previously it
+        # always announced success even when every directory had errored and
+        # been swallowed by the except above, so a silent total failure looked
+        # like a clean run to whoever was waiting on the notification.
+        if failed_directories:
+            failure_summary = "\n".join(f"  - {failed_dir}: {failure_reason}"
+                                        for failed_dir, failure_reason in failed_directories)
+            completion_subject = (f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, "
+                                  f"analyses completed with {len(failed_directories)} failure(s)")
+            completion_message = (f"Data analyses finished at "
+                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                  f"by @{self.input_parameter_dict['send_email']['experimenter']}, but "
+                                  f"{len(failed_directories)} of {len(self.root_directories)} director(ies) failed:\n"
+                                  f"{failure_summary}\n\n"
+                                  f"See the run log / traceback for details. \n \n "
+                                  f"***This is an automatic e-mail, please do NOT respond.***")
+        else:
+            completion_subject = (f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, "
+                                  f"analyses have been completed")
+            completion_message = (f"Data analyses have been completed at "
+                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                  f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
+                                  f"You will be notified about further PC usage "
+                                  f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
                   credentials_file=pathlib.Path(configure_path(self.input_parameter_dict['credentials_directory'])) / 'email_config.ini',
-                  exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, analyses have been completed",
-                                                       message=f"Data analyses have been completed at "
-                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
-                                                               f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
-                                                               f"You will be notified about further PC usage "
-                                                               f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+                  exp_settings_dict=None).send_message(subject=completion_subject, message=completion_message)
 
 
 @click.command(name='generate-usv-playback')

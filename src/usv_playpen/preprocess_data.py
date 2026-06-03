@@ -153,6 +153,8 @@ class Stylist:
                                                                                  f"and run by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}. "
                                                                                  f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
+        failed_preprocessing = []
+
         # analyze data in all root directories at once
         if self.input_parameter_dict['processing_booleans']['conduct_ephys_file_chaining'] or self.input_parameter_dict['processing_booleans']['split_cluster_spikes'] or self.input_parameter_dict['processing_booleans']['prepare_sleap_cluster']:
             try:
@@ -183,8 +185,9 @@ class Stylist:
                 self.message_output(f"Preprocessing data finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
+            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
+                failed_preprocessing.append(("ephys/cluster preprocessing (all root directories)", f"{type(exc).__name__}: {exc}"))
 
         # analyze data in each root directory separately
         else:
@@ -317,19 +320,38 @@ class Stylist:
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-                except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
+                except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                     self.message_output(traceback.format_exc())
+                    failed_preprocessing.append((one_directory, f"{type(exc).__name__}: {exc}"))
+
+        # Report failures honestly: the completion e-mail previously always
+        # announced success even when steps/directories had errored and been
+        # swallowed by the excepts above.
+        if failed_preprocessing:
+            failure_summary = "\n".join(f"  - {label}: {reason}"
+                                        for label, reason in failed_preprocessing)
+            completion_subject = (f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, "
+                                  f"processing completed with {len(failed_preprocessing)} failure(s)")
+            completion_message = (f"Data preprocessing finished at "
+                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                  f"by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}, but the following failed:\n"
+                                  f"{failure_summary}\n\n"
+                                  f"See the run log / traceback for details. \n \n "
+                                  f"***This is an automatic e-mail, please do NOT respond.***")
+        else:
+            completion_subject = (f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, "
+                                  f"processing has been completed")
+            completion_message = (f"Data preprocessing has been completed at "
+                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                  f"by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}. "
+                                  f"You will be notified about further PC usage "
+                                  f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['Messenger']['send_message']['receivers'],
                   credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
-                  exp_settings_dict=self.exp_settings_dict).send_message(subject=f"{self.input_parameter_dict['send_email']['Messenger']['processing_pc_choice']} PC is available again, processing has been completed",
-                                                                         message=f"Data preprocessing has been completed at "
-                                                                                 f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
-                                                                                 f"by @{self.input_parameter_dict['send_email']['Messenger']['experimenter']}. "
-                                                                                 f"You will be notified about further PC usage "
-                                                                                 f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+                  exp_settings_dict=self.exp_settings_dict).send_message(subject=completion_subject, message=completion_message)
 
 @click.command(name="concatenate-video-files")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')

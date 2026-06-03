@@ -106,6 +106,7 @@ class Visualizer:
                                                                f"and run by @{self.input_parameter_dict['send_email']['experimenter']}. "
                                                                f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
+        failed_directories = []
         for one_directory in self.root_directories:
             try:
                 self.message_output(f"Visualizing data in {one_directory} started at: "
@@ -129,19 +130,39 @@ class Visualizer:
                 self.message_output(f"Visualizing data in {one_directory} finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError):
+            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
+                failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
+
+        # Report failures honestly: the completion e-mail previously always
+        # announced success even when directories had errored and been swallowed
+        # by the except above.
+        if failed_directories:
+            failure_summary = "\n".join(f"  - {failed_dir}: {failure_reason}"
+                                        for failed_dir, failure_reason in failed_directories)
+            completion_subject = (f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is available again, "
+                                  f"visualizations completed with {len(failed_directories)} failure(s)")
+            completion_message = (f"Data visualizations finished at "
+                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                  f"by @{self.input_parameter_dict['send_email']['experimenter']}, but "
+                                  f"{len(failed_directories)} of {len(self.root_directories)} director(ies) failed:\n"
+                                  f"{failure_summary}\n\n"
+                                  f"See the run log / traceback for details. \n \n "
+                                  f"***This is an automatic e-mail, please do NOT respond.***")
+        else:
+            completion_subject = (f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is available again, "
+                                  f"visualizations have been completed")
+            completion_message = (f"Data visualizations have been completed at "
+                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                  f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
+                                  f"You will be notified about further PC usage "
+                                  f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
         Messenger(message_output=self.message_output,
                   no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
                   credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
-                  exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is available again, visualizations have been completed",
-                                                       message=f"Data visualizations have been completed at "
-                                                               f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
-                                                               f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
-                                                               f"You will be notified about further PC usage "
-                                                               f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+                  exp_settings_dict=None).send_message(subject=completion_subject, message=completion_message)
 
 @click.command(name='generate-viz')
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Session root directory path.')
