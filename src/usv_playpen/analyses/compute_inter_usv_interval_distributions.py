@@ -28,7 +28,7 @@ import numpy as np
 import polars as pls
 
 from ..os_utils import configure_path
-from ..visualizations.usv_summary_statistics import (
+from ._usv_io import (
     extract_session_metadata,
     load_and_filter_usv_data,
 )
