@@ -2409,8 +2409,8 @@ class USVPlaypenWindow(QMainWindow):
         recording_files_destinations_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
         recording_files_destinations_label.move(5, 190)
 
-        for lab_idx, lab in enumerate(self.exp_settings_dict['recording_files_destinations_all']):
-            self._create_checkbox_file_destinations(lab_id=lab, x_start=5+(lab_idx*365))
+        for lab_idx, share in enumerate(self.exp_settings_dict['lab_shares']):
+            self._create_checkbox_file_destinations(lab_id=share['name'], x_start=5+(lab_idx*365))
 
         # set main recording parameters
         parameters_label = QLabel('Please set main recording parameters', self.Record)
@@ -4855,36 +4855,11 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.email_recipients = self.email_recipients.split(',')
 
-        if self.falkner_checkbox_bool:
-            if not f"/mnt/falkner/{self.exp_id}/Data" in self.destination_linux_global:
-                self.destination_linux_global.insert(0, f"/mnt/falkner/{self.exp_id}/Data")
-            if not f"F:\\{self.exp_id}\\Data" in self.destination_win_global:
-                self.destination_win_global.insert(0, f"F:\\{self.exp_id}\\Data")
-        else:
-            if f"/mnt/falkner/{self.exp_id}/Data" in self.destination_linux_global:
-                self.destination_linux_global.pop(self.destination_linux_global.index(f"/mnt/falkner/{self.exp_id}/Data"))
-                if not f"/mnt/murthy/{self.exp_id}/Data" in self.destination_linux_global:
-                    self.destination_linux_global.insert(0, f"/mnt/murthy/{self.exp_id}/Data")
-            if f"F:\\{self.exp_id}\\Data" in self.destination_win_global:
-                self.destination_win_global.pop(self.destination_win_global.index(f"F:\\{self.exp_id}\\Data"))
-                if not f"M:\\{self.exp_id}\\Data" in self.destination_win_global:
-                    self.destination_win_global.insert(0, f"M:\\{self.exp_id}\\Data")
-
-        if self.murthy_checkbox_bool:
-            if not f"M:\\{self.exp_id}\\Data" in self.destination_win_global:
-                self.destination_win_global.insert(1, f"M:\\{self.exp_id}\\Data")
-        else:
-            if f"/mnt/murthy/{self.exp_id}/Data" in self.destination_linux_global:
-                self.destination_linux_global.pop(self.destination_linux_global.index(f"/mnt/murthy/{self.exp_id}/Data"))
-                if not f"/mnt/falkner/{self.exp_id}/Data" in self.destination_linux_global:
-                    self.destination_linux_global.insert(0, f"/mnt/falkner/{self.exp_id}/Data")
-            if f"M:\\{self.exp_id}\\Data" in self.destination_win_global:
-                self.destination_win_global.pop(self.destination_win_global.index(f"M:\\{self.exp_id}\\Data"))
-                if not f"F:\\{self.exp_id}\\Data" in self.destination_win_global:
-                    self.destination_win_global.insert(0, f"F:\\{self.exp_id}\\Data")
-
-        self.exp_settings_dict['recording_files_destination_linux'] = self.destination_linux_global
-        self.exp_settings_dict['recording_files_destination_win'] = self.destination_win_global
+        # Persist only WHICH labs are selected; the full per-OS destination paths
+        # are derived from the lab_shares table + experimenter at recording time,
+        # so no mount path is stored here.
+        self.exp_settings_dict['selected_labs'] = [share['name'] for share in self.exp_settings_dict['lab_shares']
+                                                   if self.__dict__[f"{share['name']}_checkbox_bool"]]
 
         self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.video_session_duration)
         self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.calibration_session_duration)
@@ -5000,13 +4975,9 @@ class USVPlaypenWindow(QMainWindow):
         self.recording_credentials_dir_global = str(Path(platformdirs.user_config_dir(appname='usv_playpen', appauthor='lab')) / f'.credentials_{self.exp_id}')
         self.exp_settings_dict['credentials_directory'] = self.recording_credentials_dir_global
 
-        self.destination_linux_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
-                                                             recording_files_destinations=self.exp_settings_dict['recording_files_destination_linux'],
-                                                             exp_id=self.exp_id).split(',')
-
-        self.destination_win_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
-                                                           recording_files_destinations=self.exp_settings_dict['recording_files_destination_win'],
-                                                           exp_id=self.exp_id).split(',')
+        # Recording destinations are rebuilt from the lab_shares table + checkbox
+        # state when settings are saved (see the destination-build block above),
+        # so they are not seeded from the stored full paths here.
 
         self.processing_input_dict['send_email']['Messenger']['experimenter'] = f'{self.exp_id}'
         self.analyses_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
@@ -5512,7 +5483,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        self.__dict__[f'{lab_id}_checkbox'] = QCheckBox(self.Record, text=f"{lab_id.capitalize()} (/cup/{lab_id}/{self.exp_id}/Data/)")
+        self.__dict__[f'{lab_id}_checkbox'] = QCheckBox(self.Record, text=f"{lab_id.capitalize()} (/{self.exp_settings_dict['file_server']}/{lab_id}/{self.exp_id}/Data/)")
         self.__dict__[f'{lab_id}_checkbox'].setStyleSheet("""QCheckBox {spacing: 5px;}
                                                              QCheckBox::indicator {border: 2px solid grey; width: 15px; height: 15px; border-radius: 7.5px;}
                                                              QCheckBox::indicator:checked {background-color: #F58025;}""")
@@ -6735,9 +6706,12 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            '21369048_rec_checkbox_bool': True if '21369048' in _toml['video']['general']['expected_cameras'] else False,
                            '22085397_rec_checkbox_bool': True if '22085397' in _toml['video']['general']['expected_cameras'] else False,
                            '21241563_rec_checkbox_bool': True if '21241563' in _toml['video']['general']['expected_cameras'] else False,
-                           'falkner_checkbox_bool': any("F:" in cup_path for cup_path in _toml['recording_files_destination_win']),
-                           'murthy_checkbox_bool': any("M:" in cup_path for cup_path in _toml['recording_files_destination_win']),
                            'create_naturalistic_usv_playback_wav_cb_bool': False, 'preferred_mouse_sex': analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix']}
+
+    # Seed each lab's destination checkbox directly from the persisted selection
+    # (the only recording-destination state stored now); no drive-letter matching.
+    for share in _toml['lab_shares']:
+        initial_values_dict[f"{share['name']}_checkbox_bool"] = share['name'] in _toml['selected_labs']
 
     usv_playpen_window = USVPlaypenWindow(**initial_values_dict)
 

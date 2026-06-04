@@ -8,6 +8,7 @@ from __future__ import annotations
 import concurrent.futures
 import configparser
 import datetime
+import functools
 import json
 import math
 import os
@@ -27,7 +28,7 @@ import toml
 import yaml
 
 from .cli_utils import override_toml_values
-from .os_utils import configure_path, newest_match_or_raise, wait_for_subprocesses
+from .os_utils import configure_path, expand_lab_share, newest_match_or_raise, recording_destinations, wait_for_subprocesses
 from .send_email import Messenger
 from .time_utils import is_gui_context, smart_wait
 from .yaml_utils import SmartDumper, sync_equipment_dynamic_fields
@@ -116,6 +117,33 @@ class ExperimentController:
         self.message_output = message_output if message_output is not None else print
 
         self.app_context_bool = is_gui_context()
+
+    @functools.cached_property
+    def _recording_destinations(self) -> tuple[list[str], list[str]]:
+        """
+        Description
+        -----------
+        The (linux, windows) recording-destination lists, derived from the
+        ``lab_shares`` table, ``file_server``, ``selected_labs`` and
+        ``experimenter`` in ``exp_settings_dict``. Destinations are composed here
+        rather than persisted as full paths, so a mount change in the lab_shares
+        config flows straight through to recording.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        (linux_destinations, win_destinations) (tuple[list[str], list[str]])
+            Parallel per-OS destination lists, one entry per selected lab.
+        """
+
+        return recording_destinations(
+            self.exp_settings_dict['lab_shares'],
+            self.exp_settings_dict['file_server'],
+            self.exp_settings_dict['selected_labs'],
+            self.exp_settings_dict['experimenter'])
 
     def check_ethernet_connection(self) -> None:
         """
@@ -355,7 +383,9 @@ class ExperimentController:
         None
         """
 
-        all_possible_drives = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
+        expanded_shares = [expand_lab_share(share, self.exp_settings_dict['file_server'])
+                           for share in self.exp_settings_dict['lab_shares']]
+        all_possible_drives = {share['windows']: share['unc'] for share in expanded_shares}
 
         # Always purge ALL connections to \\cup, regardless of which drives the
         # current user needs. This prevents System error 1219 when switching
@@ -419,8 +449,10 @@ class ExperimentController:
 
         cup_username, cup_password = self.get_cup_mount_params()
 
-        all_possible_drives = {"F:": r"\\cup\falkner", "M:": r"\\cup\murthy"}
-        needed_letters = {path.split("\\")[0] for path in self.exp_settings_dict['recording_files_destination_win']}
+        expanded_shares = [expand_lab_share(share, self.exp_settings_dict['file_server'])
+                           for share in self.exp_settings_dict['lab_shares']]
+        all_possible_drives = {share['windows']: share['unc'] for share in expanded_shares}
+        needed_letters = {path.split("\\")[0] for path in self._recording_destinations[1]}
         drives_to_mount = {letter: unc for letter, unc in all_possible_drives.items()
                            if letter in needed_letters}
 
@@ -701,10 +733,10 @@ class ExperimentController:
         total_dir_name_linux = []
         total_dir_name_windows = []
 
-        for lin_directory in self.exp_settings_dict['recording_files_destination_linux']:
+        for lin_directory in self._recording_destinations[0]:
             total_dir_name_linux.append(f"{lin_directory}/{sub_dir_name}")
 
-        for win_directory in self.exp_settings_dict['recording_files_destination_win']:
+        for win_directory in self._recording_destinations[1]:
             total_dir_name_windows.append(f"{win_directory}\\{sub_dir_name}")
 
         return start_hour_min_sec, total_dir_name_linux, total_dir_name_windows, sub_dir_name
@@ -729,7 +761,7 @@ class ExperimentController:
 
         # check the existence and functionality of mount points on both tracking computers
         for ip_address_pc in [ip_address, second_ip_address]:
-            for lin_directory in self.exp_settings_dict['recording_files_destination_linux']:
+            for lin_directory in self._recording_destinations[0]:
                 lin_dir_elements = lin_directory.split('/')[0:3]
                 mount_check_bool = self.check_remote_mount(hostname=ip_address_pc, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path='/'.join(lin_dir_elements))
                 if not mount_check_bool:

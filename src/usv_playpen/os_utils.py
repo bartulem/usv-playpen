@@ -15,22 +15,162 @@ import time as _time
 from collections.abc import Callable, Iterable, Iterator
 from typing import Optional
 
+import toml
 
-# Single source of truth for the lab CUP shares and their mount root on each OS.
-# Each entry maps a form key to that share's *leading* mount root (without a
-# trailing separator). The ``windows``/``darwin``/``linux`` keys are the host-OS
-# mount forms used by ``configure_path``/``find_base_path``; the ``cluster`` key
-# is the form the compute cluster (spock/della) mounts CUP under, used by
-# ``to_cluster_path`` when submitting jobs. The first share (falkner) is the
-# default returned by ``find_base_path``. Only a leading mount root is ever
-# rewritten, so substrings that merely happen to look like a mount token
-# elsewhere in the path are never touched, and additional shares (murthy, ...)
-# are handled by construction rather than by special-casing.
+
+# The lab CUP shares are defined ONCE, in the ``lab_shares`` / ``file_server``
+# entries of the host config (``_config/behavioral_experiments_settings.toml``),
+# read by ``_host_lab_shares`` below -- the single source also consumed by the
+# recording GUI and behavioral_experiments. Each share stores only the
+# irreducible tokens: the share ``name`` (falkner), the Windows drive LETTER
+# (``F``), and the per-OS mount PARENT (``/Volumes``, ``/mnt``, ``/mnt/cup/labs``
+# for ``darwin``/``linux``/``cluster``). ``expand_lab_share`` turns those into
+# the full leading mount roots (``F:``, ``/Volumes/falkner``, ...) and the
+# ``\\<file_server>\<name>`` UNC. The first share (falkner) is the default
+# returned by ``find_base_path``. Only a leading mount root is ever rewritten, so
+# look-alike substrings elsewhere in the path are never touched, and additional
+# shares (murthy, ...) are handled by construction, not special-casing.
+#
+# The token values below are a hardcoded fallback, used only when the host config
+# is absent or unparseable (e.g. isolated tests), so translation never breaks.
 _OS_KEYS = {"Windows": "windows", "Darwin": "darwin", "Linux": "linux"}
-_LAB_SHARES: tuple[dict[str, str], ...] = (
-    {"windows": "F:", "darwin": "/Volumes/falkner", "linux": "/mnt/falkner", "cluster": "/mnt/cup/labs/falkner"},
-    {"windows": "M:", "darwin": "/Volumes/murthy",  "linux": "/mnt/murthy",  "cluster": "/mnt/cup/labs/murthy"},
+_LAB_SHARES_FALLBACK: tuple[dict[str, str], ...] = (
+    {"name": "falkner", "windows": "F", "darwin": "/Volumes", "linux": "/mnt", "cluster": "/mnt/cup/labs"},
+    {"name": "murthy",  "windows": "M", "darwin": "/Volumes", "linux": "/mnt", "cluster": "/mnt/cup/labs"},
 )
+_FILE_SERVER_FALLBACK = "cup"
+
+
+def expand_lab_share(share: dict, file_server: str) -> dict:
+    """
+    Description
+    -----------
+    Expands a token-form lab share into its full leading mount roots. The host
+    config stores only the irreducible tokens per share (the drive LETTER and the
+    per-OS mount PARENT, with the share ``name`` factored out); this appends the
+    name (and the ``:`` for Windows) to build each OS's leading mount root, plus
+    the ``\\<file_server>\\<name>`` UNC path. It is the single place this
+    derivation happens, used by ``_host_lab_shares`` (path translation), the
+    recording GUI, and behavioral_experiments.
+
+    Parameters
+    ----------
+    share (dict)
+        Token-form share: ``name`` + ``windows`` (drive letter, e.g. ``F``) +
+        ``darwin``/``linux``/``cluster`` mount parents (e.g. ``/Volumes``,
+        ``/mnt``, ``/mnt/cup/labs``).
+    file_server (str)
+        The SMB server name (e.g. ``cup``) -- the ``\\<file_server>\\...`` host.
+
+    Returns
+    -------
+    expanded (dict)
+        ``name`` plus the full leading roots ``windows`` (``F:``), ``darwin``
+        (``/Volumes/falkner``), ``linux`` (``/mnt/falkner``), ``cluster``
+        (``/mnt/cup/labs/falkner``), and ``unc`` (``\\cup\\falkner``).
+    """
+
+    name = share["name"]
+    return {
+        "name": name,
+        "windows": f"{share['windows']}:",
+        "darwin": f"{share['darwin']}/{name}",
+        "linux": f"{share['linux']}/{name}",
+        "cluster": f"{share['cluster']}/{name}",
+        "unc": rf"\\{file_server}\{name}",
+    }
+
+
+def recording_destinations(lab_shares, file_server: str, selected_labs, experimenter: str) -> tuple[list[str], list[str]]:
+    """
+    Description
+    -----------
+    Builds the per-OS recording destination lists for the selected labs --
+    ``<mount root>/<experimenter>/Data`` for each selected share, in both Linux
+    and Windows forms. The single place recording destinations are composed,
+    used by the recording GUI and behavioral_experiments so the destination
+    layout lives in one spot and is never persisted as hardcoded full paths.
+
+    Parameters
+    ----------
+    lab_shares (iterable of dict)
+        Token-form shares (see ``expand_lab_share``).
+    file_server (str)
+        The SMB server name.
+    selected_labs (iterable of str)
+        The ``name`` of each lab this host should write recordings to.
+    experimenter (str)
+        The experimenter folder placed under the share root.
+
+    Returns
+    -------
+    (linux_destinations, win_destinations) (tuple[list[str], list[str]])
+        Parallel lists of full destination directories in Linux and Windows
+        form, one per selected lab, in ``lab_shares`` order.
+    """
+
+    selected = set(selected_labs)
+    linux_destinations = []
+    win_destinations = []
+    for share in lab_shares:
+        if share["name"] in selected:
+            roots = expand_lab_share(share, file_server)
+            linux_destinations.append(f"{roots['linux']}/{experimenter}/Data")
+            win_destinations.append(f"{roots['windows']}\\{experimenter}\\Data")
+    return linux_destinations, win_destinations
+
+_HOST_CONFIG_PATH = pathlib.Path(__file__).parent / "_config" / "behavioral_experiments_settings.toml"
+# One-element cache for the resolved (shares, file_server); a list so it can be
+# populated by mutation (no ``global``). Cleared in tests to force a re-read.
+_HOST_SHARES_CACHE: list[tuple[tuple[dict[str, str], ...], str]] = []
+
+
+def _host_lab_shares() -> tuple[tuple[dict[str, str], ...], str]:
+    """
+    Description
+    -----------
+    Returns the host's EXPANDED lab share table and file-server name, resolved
+    once and cached for the process. The token-form values are read from the
+    ``lab_shares`` and ``file_server`` entries of the host config
+    (``_config/behavioral_experiments_settings.toml``) -- the single place the
+    drive letters / mount roots are defined, also consumed by the recording GUI
+    and behavioral_experiments -- and expanded into full leading roots via
+    ``expand_lab_share`` so ``configure_path``/``find_base_path``/
+    ``to_cluster_path`` see ready-to-use mount roots. If that file or its
+    ``lab_shares`` entry is absent or unparseable, the hardcoded token fallback is
+    used so path translation and the test-suite keep working with no config
+    present.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    (shares, file_server) (tuple[tuple[dict[str, str], ...], str])
+        ``shares`` is the ordered per-lab table of EXPANDED shares (first entry =
+        default for ``find_base_path``), each a dict with full
+        ``name``/``windows``/``darwin``/``linux``/``cluster``/``unc`` roots;
+        ``file_server`` is the SMB server name (e.g. ``cup``).
+    """
+
+    if _HOST_SHARES_CACHE:
+        return _HOST_SHARES_CACHE[0]
+
+    raw_shares = _LAB_SHARES_FALLBACK
+    file_server = _FILE_SERVER_FALLBACK
+    try:
+        host_config = toml.load(_HOST_CONFIG_PATH)
+        if "lab_shares" in host_config and host_config["lab_shares"]:
+            raw_shares = tuple(host_config["lab_shares"])
+        if "file_server" in host_config:
+            file_server = host_config["file_server"]
+    except (OSError, toml.TomlDecodeError):
+        pass
+
+    expanded = tuple(expand_lab_share(share, file_server) for share in raw_shares)
+    _HOST_SHARES_CACHE.append((expanded, file_server))
+    return _HOST_SHARES_CACHE[0]
 
 
 def find_base_path() -> str | None:
@@ -39,8 +179,8 @@ def find_base_path() -> str | None:
     -----------
     Returns the primary (falkner) CUP share's mount root for the OS currently
     in use: ``F:\\`` on Windows, ``/Volumes/falkner`` on macOS, ``/mnt/falkner``
-    on Linux. Derived from the first entry of ``_LAB_SHARES`` so the roots are
-    defined in exactly one place.
+    on Linux. Derived from the first entry of the resolved lab-share table
+    (``_host_lab_shares``) so the roots are defined in exactly one place.
 
     Parameters
     ----------
@@ -56,7 +196,7 @@ def find_base_path() -> str | None:
     system = platform.system()
     if system not in _OS_KEYS:
         return None
-    base = _LAB_SHARES[0][_OS_KEYS[system]]
+    base = _host_lab_shares()[0][0][_OS_KEYS[system]]
     return f"{base}\\" if system == "Windows" else base
 
 
@@ -66,7 +206,7 @@ def configure_path(pa: str) -> str:
     -----------
     Translates a CUP-share path from whichever OS form it was written in into
     the form expected by the OS currently in use, for any share listed in
-    ``_LAB_SHARES`` (falkner, murthy, ...).
+    the resolved lab-share table (falkner, murthy, ...).
 
     Only the leading mount root is rewritten; the remainder of the path is kept
     verbatim apart from normalising the path separator to the target OS
@@ -97,7 +237,7 @@ def configure_path(pa: str) -> str:
         return pa
     target_key = _OS_KEYS[system]
 
-    for share in _LAB_SHARES:
+    for share in _host_lab_shares()[0]:
         # Only the host-OS forms are translation sources; the non-OS ``cluster``
         # form is handled by ``to_cluster_path`` and must never match here.
         for src_key in _OS_KEYS.values():
@@ -165,7 +305,7 @@ def to_cluster_path(pa: str) -> str:
     OS, the target here is fixed (the cluster), because this is used when
     *submitting* jobs from a workstation to run remotely.
 
-    Both lab shares in ``_LAB_SHARES`` (falkner, murthy) are handled from every
+    Both lab shares in the resolved table (falkner, murthy) are handled from every
     host form, so a ``M:\\...`` / ``/Volumes/murthy/...`` / ``/mnt/murthy/...``
     path maps correctly to ``/mnt/cup/labs/murthy/...`` -- the previous
     per-OS ``.replace`` only special-cased falkner on Windows and silently left
@@ -192,7 +332,7 @@ def to_cluster_path(pa: str) -> str:
     """
 
     normalised = pa.replace("\\", "/")
-    for share in _LAB_SHARES:
+    for share in _host_lab_shares()[0]:
         cluster_root = share["cluster"]
         for src_key in _OS_KEYS.values():
             root = share[src_key].replace("\\", "/")

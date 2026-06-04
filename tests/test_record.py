@@ -33,8 +33,13 @@ def default_exp_settings():
         'credentials_directory': '/fake/credentials',
         'avisoft_basedirectory': 'C:\\Avisoft\\',
         'coolterm_basedirectory': 'C:\\CoolTerm',
-        'recording_files_destination_linux': ['/mnt/falkner/data'],
-        'recording_files_destination_win': ['F:\\data'],
+        'experimenter': 'TestBot',
+        'file_server': 'cup',
+        'selected_labs': ['falkner'],
+        'lab_shares': [
+            {'name': 'falkner', 'windows': 'F', 'darwin': '/Volumes', 'linux': '/mnt', 'cluster': '/mnt/cup/labs'},
+            {'name': 'murthy', 'windows': 'M', 'darwin': '/Volumes', 'linux': '/mnt', 'cluster': '/mnt/cup/labs'},
+        ],
         'video_session_duration': 0.2,
         'conduct_audio_recording': True,
         'disable_ethernet': True,
@@ -346,16 +351,16 @@ def test_get_cpu_affinity_mask_single_high_bit(controller):
 
 
 def test_get_custom_dir_names_format(controller):
-    """sub_dir_name must be YYYYMMDD_HHMMSS; total_dir_names must list-multiply."""
+    """sub_dir_name must be YYYYMMDD_HHMMSS; total_dir_names must list one entry
+    per selected lab, derived from the lab_shares table + experimenter."""
     import datetime as _dt
     now = _dt.datetime(2026, 5, 9, 13, 7, 2).timestamp()
-    controller.exp_settings_dict['recording_files_destination_linux'] = ['/lin1', '/lin2']
-    controller.exp_settings_dict['recording_files_destination_win'] = ['F:\\w1', 'M:\\w2']
+    controller.exp_settings_dict['selected_labs'] = ['falkner', 'murthy']
     start_str, lin_dirs, win_dirs, sub = controller.get_custom_dir_names(now=now)
     assert sub == "20260509_130702"
     assert start_str == "13:07:02"
-    assert lin_dirs == ['/lin1/20260509_130702', '/lin2/20260509_130702']
-    assert win_dirs == ['F:\\w1\\20260509_130702', 'M:\\w2\\20260509_130702']
+    assert lin_dirs == ['/mnt/falkner/TestBot/Data/20260509_130702', '/mnt/murthy/TestBot/Data/20260509_130702']
+    assert win_dirs == ['F:\\TestBot\\Data\\20260509_130702', 'M:\\TestBot\\Data\\20260509_130702']
 
 
 # ---- get_cup_mount_params -------------------------------------------------
@@ -856,8 +861,12 @@ def full_recording_settings(tmp_path):
         'coolterm_basedirectory': str(coolterm_dir),
         'arduino_sync_port': 'COM7',
         'credentials_directory': str(creds_dir),
-        'recording_files_destination_linux': ['/lin/dest'],
-        'recording_files_destination_win': [str(win_dir)],
+        'file_server': 'cup',
+        'selected_labs': ['falkner'],
+        'lab_shares': [
+            {'name': 'falkner', 'windows': 'F', 'darwin': '/Volumes', 'linux': '/mnt', 'cluster': '/mnt/cup/labs'},
+            {'name': 'murthy', 'windows': 'M', 'darwin': '/Volumes', 'linux': '/mnt', 'cluster': '/mnt/cup/labs'},
+        ],
         'video_session_duration': 0.05,
         'conduct_audio_recording': False,
         'disable_ethernet': False,

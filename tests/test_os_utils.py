@@ -39,6 +39,55 @@ def test_find_base_path_per_os(as_os, system, expected):
     assert os_utils.find_base_path() == expected
 
 
+# _host_lab_shares (single-source table read from the host config TOML)
+
+def test_host_lab_shares_reads_from_host_config(monkeypatch):
+    """The live table is read from the lab_shares/file_server entries of the host
+    config TOML and expanded to full roots, with falkner first."""
+    monkeypatch.setattr(os_utils, "_HOST_SHARES_CACHE", [])
+    shares, file_server = os_utils._host_lab_shares()
+    assert file_server == "cup"
+    assert [s["name"] for s in shares][:2] == ["falkner", "murthy"]
+    # the TOML stores tokens ('F', '/mnt'); _host_lab_shares returns full roots
+    assert shares[0]["windows"] == "F:" and shares[0]["linux"] == "/mnt/falkner"
+    assert shares[0]["unc"] == r"\\cup\falkner"
+
+
+def test_host_lab_shares_falls_back_when_config_absent(monkeypatch, tmp_path):
+    """A missing/unparseable host config falls back to the hardcoded token table,
+    expanded, so path translation and tests keep working with no config present."""
+    monkeypatch.setattr(os_utils, "_HOST_SHARES_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
+    shares, file_server = os_utils._host_lab_shares()
+    assert file_server == os_utils._FILE_SERVER_FALLBACK
+    assert [s["name"] for s in shares] == ["falkner", "murthy"]
+    assert shares[0]["windows"] == "F:" and shares[0]["linux"] == "/mnt/falkner"
+
+
+def test_expand_lab_share_builds_full_roots_from_tokens():
+    """A token-form share expands to full per-OS roots + UNC (name appended,
+    ':' added for Windows)."""
+    expanded = os_utils.expand_lab_share(
+        {"name": "falkner", "windows": "F", "darwin": "/Volumes", "linux": "/mnt", "cluster": "/mnt/cup/labs"},
+        "cup")
+    assert expanded == {
+        "name": "falkner", "windows": "F:", "darwin": "/Volumes/falkner",
+        "linux": "/mnt/falkner", "cluster": "/mnt/cup/labs/falkner", "unc": r"\\cup\falkner",
+    }
+
+
+def test_recording_destinations_derives_selected_only():
+    """Destinations are <root>/<experimenter>/Data for each SELECTED lab, in both
+    OS forms, in table order; unselected labs are skipped."""
+    lab_shares = [
+        {"name": "falkner", "windows": "F", "darwin": "/Volumes", "linux": "/mnt", "cluster": "/mnt/cup/labs"},
+        {"name": "murthy", "windows": "M", "darwin": "/Volumes", "linux": "/mnt", "cluster": "/mnt/cup/labs"},
+    ]
+    lin, win = os_utils.recording_destinations(lab_shares, "cup", ["murthy"], "Bartul")
+    assert lin == ["/mnt/murthy/Bartul/Data"]
+    assert win == ["M:\\Bartul\\Data"]
+
+
 # configure_path
 
 @pytest.mark.parametrize("system,pa,expected", [
