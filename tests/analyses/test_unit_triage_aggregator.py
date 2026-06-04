@@ -1033,7 +1033,7 @@ def test_aggregator_defaults_to_settings_json_thresholds(tmp_path):
         out = pickle.load(fh)
 
     settings_path = (
-        pathlib.Path(__file__).resolve().parent.parent
+        pathlib.Path(__file__).resolve().parent.parent.parent
         / "src"
         / "usv_playpen"
         / "_parameter_settings"

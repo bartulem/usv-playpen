@@ -116,7 +116,7 @@ def mock_settings():
     the schema the Analyst actually references. Every analyses_booleans flag
     is forced to False; tests then flip individual flags as needed.
     """
-    settings_path = pathlib.Path(__file__).parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'analyses_settings.json'
+    settings_path = pathlib.Path(__file__).parent.parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'analyses_settings.json'
     settings = json.loads(settings_path.read_text())
 
     for key in settings['analyses_booleans']:

@@ -2032,7 +2032,7 @@ def test_write_to_h5_skips_animal_ids_when_none(tmp_path):
 
 @pytest.fixture
 def processing_settings():
-    settings_path = pathlib.Path(__file__).parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'processing_settings.json'
+    settings_path = pathlib.Path(__file__).parent.parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'processing_settings.json'
     return json.loads(settings_path.read_text())
 
 
