@@ -1454,10 +1454,6 @@ class Create3DVideo:
         self.message_output(f"Creating data visualization started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        # create save directory (if one doesn't exist already)
-        putative_save_directory = pathlib.Path(self.root_directory) / 'data_animation_examples'
-        putative_save_directory.mkdir(exist_ok=True, parents=True)
-
         if self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
             (arena_dir_name,
              arena_data,
@@ -1481,6 +1477,16 @@ class Create3DVideo:
              mouse_node_names,
              mouse_experimental_code,
              empirical_camera_sr) = self.load_h5_file()
+
+        # Create the save directory only AFTER load_h5_file() has validated that
+        # the session actually has data. Creating it at method entry left an
+        # empty 'data_animation_examples' directory behind on any data-less run
+        # (e.g. a smoke test pointed at an empty root); git silently ignored it
+        # because the directory had no files, so the debris went unnoticed. The
+        # directory is not referenced until well below (first use ~line 1913),
+        # so deferring its creation past the validation gate is free.
+        putative_save_directory = pathlib.Path(self.root_directory) / 'data_animation_examples'
+        putative_save_directory.mkdir(exist_ok=True, parents=True)
 
         experiment_info_dict = extract_information(experiment_code=mouse_experimental_code)
         # Plain Unicode (not mathtext "$\u2642$"): Helvetica lacks the \u2642 / \u2640

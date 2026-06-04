@@ -273,3 +273,40 @@ def test_create_3d_video_load_h5_file_missing_raises(tmp_path):
     )
     with pytest.raises(FileNotFoundError):
         vid.load_h5_file()
+
+
+def test_visualize_in_video_no_data_leaves_no_save_directory(tmp_path):
+    """
+    Description
+    -----------
+    Regression guard: `visualize_in_video` must not create its
+    `data_animation_examples` save directory on a data-less run. The
+    directory's `mkdir` was previously the first statement in the method,
+    so any run pointed at an empty root left an empty directory behind --
+    invisible to git (git ignores empty directories) and easy to miss.
+    The mkdir now sits behind the `load_h5_file()` validation gate, so a
+    root with no tracking H5 must raise `FileNotFoundError` *before* the
+    directory is created.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Empty session root (no tracking H5), so load_h5_file raises.
+
+    Returns
+    -------
+    None
+    """
+
+    vid = Create3DVideo(
+        root_directory=str(tmp_path),
+        arena_directory=str(tmp_path),
+        visualizations_parameter_dict={
+            "make_behavioral_videos": {"speaker_bool": False},
+            "brain_area_colors": {"other": "#B8B8B8"},
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+    with pytest.raises(FileNotFoundError):
+        vid.visualize_in_video()
+    assert not (tmp_path / "data_animation_examples").exists()
