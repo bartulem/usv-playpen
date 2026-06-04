@@ -14,6 +14,20 @@ def app(qtbot):
     qtbot.addWidget(window)
     return window
 
+
+@pytest.fixture
+def preserve_settings_toml():
+    """Back up and restore the package behavioral_experiments_settings.toml.
+
+    A GUI 'save' exercised under test writes that file via toml.dump, which
+    strips comments and reformats it -- churning the tracked package config in
+    the repo. Restoring it after the test keeps the working tree clean.
+    """
+    settings_path = Path(usv_playpen_gui.__file__).parent / '_config' / 'behavioral_experiments_settings.toml'
+    original = settings_path.read_text()
+    yield
+    settings_path.write_text(original)
+
 def test_main_window_initialization(app):
     expected_version = metadata.version('usv-playpen').split('.dev')[0].split('.post')[0]
     assert app.windowTitle() == f"USV Playpen v{expected_version}"
@@ -24,8 +38,7 @@ def test_navigation_to_record_window(app, qtbot):
     assert "Record > Select config" in app.windowTitle()
     assert app.recorder_settings_edit is not None
 
-# python
-def test_record_one_settings_are_saved(app, qtbot):
+def test_record_one_settings_are_saved(app, qtbot, preserve_settings_toml):
     qtbot.mouseClick(app.button_map['Record'], Qt.MouseButton.LeftButton)
 
     new_duration = "25.5"

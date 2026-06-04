@@ -893,7 +893,7 @@ def full_recording_settings(tmp_path):
 
 
 def test_conduct_behavioral_recording_orchestrates_calls(mocker, monkeypatch,
-                                                          full_recording_settings):
+                                                          full_recording_settings, tmp_path):
     """End-to-end smoke: every subordinate ExperimentController method and
     every external dependency is mocked. We verify the orchestration order /
     counts and that the function returns the metadata it was given."""
@@ -929,6 +929,14 @@ def test_conduct_behavioral_recording_orchestrates_calls(mocker, monkeypatch,
     mocker.patch('usv_playpen.behavioral_experiments.subprocess.Popen')
     mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
     msg_mock = mocker.patch('usv_playpen.behavioral_experiments.Messenger')
+
+    # get_custom_dir_names is tested separately; mock it to tmp_path dirs so the
+    # destination mkdir / metadata write land in tmp, not as a literal
+    # 'F:\\TestBot\\Data\\...' folder in the repo root (backslashes aren't path
+    # separators on POSIX, so the Windows destination becomes one real dir here).
+    monkeypatch.setattr(ExperimentController, 'get_custom_dir_names',
+                        lambda self, now=None: ('00:00:00', [str(tmp_path / 'lin_dest')],
+                                                [str(tmp_path / 'win_dest')], 'sess'))
 
     ec = ExperimentController(
         exp_settings_dict=full_recording_settings,
