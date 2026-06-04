@@ -11,6 +11,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pandas as pd
 import polars as pls
 import pytest
 
@@ -18,6 +19,7 @@ import pytest
 # import matplotlib so figure-rendering tests don't try to open a window.
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from usv_playpen.visualizations.usv_summary_statistics import (
     extract_session_metadata,
@@ -26,6 +28,11 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     get_session_behavioral_features,
     merge_usv_and_behavioral_features,
     build_master_usv_dataframe,
+    plot_assignment_stacked_bars,
+    plot_assignment_summary_panel,
+    plot_animal_participation_stats,
+    plot_polar_kde_distance_angle,
+    plot_behavior_duration_regressions,
 )
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
     build_master_usv_interval_dataframe,
@@ -619,3 +626,185 @@ def test_build_master_usv_interval_dataframe_aggregates_two_sessions(tmp_path):
     assert df.height > 0
     assert set(df["interval_type"].unique().to_list()) == {"s2s", "e2s"}
     assert summary["n_sessions_loaded"] == 2
+
+
+# Smoke tests for the figure-rendering functions of usv_summary_statistics.
+# These were previously uncovered (the module sat at ~11 %). Each builds a
+# minimal, directly-constructed input (the functions take plain frames / dicts
+# / arrays, not the full on-disk pipeline) and asserts a Figure is produced
+# without error. Every returned figure is closed so the suite never trips the
+# matplotlib ">20 open figures" warning (which filterwarnings=error promotes).
+
+_HEX_MALE = "#202020"
+_HEX_FEMALE = "#A83232"
+_HEX_UNASSIGNED = "#7A7A7A"
+_HEX_LINE = "#1A1A1A"
+
+
+def _assignment_frame() -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Build a small per-session assignment frame with the four columns the
+    assignment plots read: `session`, `male`, `female`, `unassigned`
+    (raw USV counts per category per session).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    df (pls.DataFrame)
+        Five-session synthetic assignment frame.
+    """
+
+    return pls.DataFrame({
+        "session": [f"s{i}" for i in range(5)],
+        "male": [40, 55, 30, 62, 48],
+        "female": [22, 18, 35, 27, 30],
+        "unassigned": [8, 12, 5, 15, 10],
+    })
+
+
+def test_plot_assignment_stacked_bars_counts_and_proportions():
+    """
+    Description
+    -----------
+    `plot_assignment_stacked_bars` must render the horizontal stacked-bar
+    chart in both the raw-count and the proportion modes, returning a
+    Figure and a stats dict summarising the session totals.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    df = _assignment_frame()
+    for plot_proportions in (False, True):
+        fig, ax, stats = plot_assignment_stacked_bars(
+            df, plot_proportions, _HEX_MALE, _HEX_FEMALE, _HEX_UNASSIGNED,
+        )
+        assert fig is not None
+        assert stats["total_sessions"] == 5
+        plt.close(fig)
+
+
+def test_plot_assignment_summary_panel_three_panels():
+    """
+    Description
+    -----------
+    `plot_assignment_summary_panel` must render its three panels (scatter,
+    violin, aggregate bar) and return per-category global medians / totals
+    / proportions in the stats dict.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    fig, axes, stats = plot_assignment_summary_panel(
+        _assignment_frame(), _HEX_MALE, _HEX_FEMALE, _HEX_UNASSIGNED, jitter_strength=0.05,
+    )
+    assert len(axes) == 3
+    assert {"male_median", "female_median", "grand_total"}.issubset(stats)
+    plt.close(fig)
+
+
+def test_plot_animal_participation_stats():
+    """
+    Description
+    -----------
+    `plot_animal_participation_stats` must turn the nested per-animal
+    `{session_count, total_usvs}` dict into the two-panel session-count /
+    vocal-rate bar figure and report the animal-count summary.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    animal_stats = {
+        "m1": {"session_count": 4, "total_usvs": 120},
+        "m2": {"session_count": 2, "total_usvs": 30},
+        "m3": {"session_count": 6, "total_usvs": 240},
+    }
+    fig, axes, stats = plot_animal_participation_stats(
+        animal_stats, sex_label="Male", bar_color=_HEX_MALE, text_color=_HEX_LINE,
+    )
+    assert len(axes) == 2
+    assert stats["total_animals"] == 3
+    plt.close(fig)
+
+
+def test_plot_polar_kde_distance_angle():
+    """
+    Description
+    -----------
+    `plot_polar_kde_distance_angle` must compute the raw / occupancy-
+    normalised polar KDEs from the USV-moment and all-frame
+    distance/angle arrays and return the two polar axes plus the point
+    counts.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(0)
+    usv_dist = rng.uniform(0, 25, 300)
+    usv_ang = rng.uniform(-180, 180, 300)
+    all_dist = rng.uniform(0, 25, 2000)
+    all_ang = rng.uniform(-180, 180, 2000)
+    fig, axes, stats = plot_polar_kde_distance_angle(
+        usv_dist, usv_ang, all_dist, all_ang,
+        max_distance=30.0, colormap="inferno", ylabel="distance (cm)",
+        occupancy_threshold=1e-6,
+    )
+    assert len(axes) == 2
+    assert stats["n_usv_points"] == 300
+    plt.close(fig)
+
+
+def test_plot_behavior_duration_regressions():
+    """
+    Description
+    -----------
+    `plot_behavior_duration_regressions` must render the 2x2 grid of
+    distance/angle-vs-duration regressions for both sexes and return the
+    Pearson statistics dict.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(1)
+
+    def _df(n: int) -> pd.DataFrame:
+        return pd.DataFrame({
+            "distance": rng.uniform(0, 25, n),
+            "angle": rng.uniform(-180, 180, n),
+            "usv_duration": rng.uniform(0.02, 0.3, n),
+        })
+
+    fig, axes, stats = plot_behavior_duration_regressions(
+        _df(60), _df(50), _HEX_MALE, _HEX_FEMALE, _HEX_LINE,
+    )
+    assert fig is not None
+    assert isinstance(stats, dict)
+    plt.close(fig)
