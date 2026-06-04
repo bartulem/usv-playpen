@@ -18,9 +18,9 @@ import numpy as np
 import sleap_anipose
 from imgstore import new_for_filename
 
-from .os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
-from .time_utils import is_gui_context, smart_wait
-from .yaml_utils import load_session_metadata, save_session_metadata
+from ..os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
+from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import load_session_metadata, save_session_metadata
 
 
 def find_mouse_names(root_directory: str = None,
@@ -309,7 +309,7 @@ class ConvertTo3D:
 
         if input_parameter_dict is None or root_directory is None:
             with open(
-                pathlib.Path(__file__).parent
+                pathlib.Path(__file__).parent.parent
                 / "_parameter_settings/processing_settings.json"
             ) as json_file:
                 _settings = json.load(json_file)["anipose_operations"]
@@ -644,7 +644,7 @@ class ConvertTo3D:
             arena_data = np.array(h5_file_arena["tracks"], dtype="float64")
 
         arena_nodes = extract_skeleton_nodes(
-            skeleton_loc=pathlib.Path(__file__).parent
+            skeleton_loc=pathlib.Path(__file__).parent.parent
             / "_config/playpen_skeleton.json",
             skeleton_arena_bool=True,
         )
@@ -839,7 +839,7 @@ class ConvertTo3D:
                 mouse_data = np.array(h5_file_mouse["tracks"], dtype="float64")
 
             mouse_nodes = extract_skeleton_nodes(
-                skeleton_loc=pathlib.Path(__file__).parent
+                skeleton_loc=pathlib.Path(__file__).parent.parent
                 / "_config/mouse_skeleton.json",
                 skeleton_arena_bool=False,
             )

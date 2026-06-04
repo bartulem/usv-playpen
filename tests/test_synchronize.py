@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from usv_playpen.synchronize_files import Synchronizer
+from usv_playpen.processing.synchronize_files import Synchronizer
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ def test_validate_ephys_video_sync_no_camera_json_raises(processing_settings, tm
                                                           mocker):
     """No camera_frame_count_dict.json under root_directory → FileNotFoundError
     with an actionable label."""
-    mocker.patch("usv_playpen.synchronize_files.smart_wait")
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
     sync = _make_sync(tmp_path, processing_settings)
     with pytest.raises(FileNotFoundError, match="camera frame count JSON"):
         sync.validate_ephys_video_sync()
@@ -190,7 +190,7 @@ def test_crop_wav_files_to_video_raises_when_camera_json_missing(processing_sett
     FileNotFoundError from first_match_or_raise (naming the missing pattern),
     instead of the previous bare IndexError from sorted(...)[0]."""
     (tmp_path / "video").mkdir()
-    mocker.patch("usv_playpen.synchronize_files.smart_wait")
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
     sync = _make_sync(tmp_path, processing_settings)
     with pytest.raises(FileNotFoundError, match=r"camera_frame_count_dict"):
         sync.crop_wav_files_to_video()
@@ -206,11 +206,11 @@ def test_find_audio_sync_trains_raises_when_camera_json_missing(processing_setti
     """Missing camera frame count JSON → DataLoader returns an empty dict but
     the helper subsequently calls first_match_or_raise which raises. We just
     confirm the function refuses to silently no-op."""
-    mocker.patch("usv_playpen.synchronize_files.smart_wait")
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
     sync = _make_sync(tmp_path, processing_settings)
     # Empty wave_data_dict is fine (DataLoader returns {} when the path
     # doesn't exist), but the next step queries the JSON, which raises.
-    mocker.patch("usv_playpen.synchronize_files.DataLoader",
+    mocker.patch("usv_playpen.processing.synchronize_files.DataLoader",
                  return_value=MagicMock(load_wavefile_data=lambda: {}))
     with pytest.raises(FileNotFoundError, match="camera frame count JSON"):
         sync.find_audio_sync_trains()
@@ -228,7 +228,7 @@ def test_find_video_sync_trains_no_video_dir_returns_empty(processing_settings,
     (tmp_path / "video").mkdir()
     # Only a single underscore-named dir, which the loop skips.
     (tmp_path / "video" / "session_data").mkdir()
-    mocker.patch("usv_playpen.synchronize_files.smart_wait")
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
     sync = _make_sync(tmp_path, processing_settings)
     ipi_starts, sync_dict = sync.find_video_sync_trains(camera_fps=[150.0],
                                                          total_frame_number=100)

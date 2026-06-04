@@ -4,7 +4,7 @@ Test visualizations module.
 """
 
 import pytest
-from usv_playpen.visualize_data import Visualizer
+from usv_playpen.visualizations.visualize_data import Visualizer
 
 @pytest.fixture
 def mock_settings():
@@ -35,9 +35,9 @@ def mock_dependencies(mocker):
     """Mocks all external class dependencies for the Visualizer class."""
 
     mocked_classes = {
-        'NeuronalTuningFigureMaker': mocker.patch('usv_playpen.visualize_data.NeuronalTuningFigureMaker'),
-        'Create3DVideo': mocker.patch('usv_playpen.visualize_data.Create3DVideo'),
-        'Messenger': mocker.patch('usv_playpen.visualize_data.Messenger'),
+        'NeuronalTuningFigureMaker': mocker.patch('usv_playpen.visualizations.visualize_data.NeuronalTuningFigureMaker'),
+        'Create3DVideo': mocker.patch('usv_playpen.visualizations.visualize_data.Create3DVideo'),
+        'Messenger': mocker.patch('usv_playpen.visualizations.visualize_data.Messenger'),
     }
     return mocked_classes
 

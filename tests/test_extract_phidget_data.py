@@ -1,5 +1,5 @@
 """
-Tests for usv_playpen.extract_phidget_data.Gatherer.prepare_data_for_analyses:
+Tests for usv_playpen.processing.extract_phidget_data.Gatherer.prepare_data_for_analyses:
 the happy path (single + multi file, missing-key -> NaN) and the three error
 paths that previously crashed with AttributeError / IndexError / a raw
 iterdir FileNotFoundError (no matching camera dir, no json files, no video dir).
@@ -10,7 +10,7 @@ import json
 import numpy as np
 import pytest
 
-from usv_playpen.extract_phidget_data import Gatherer
+from usv_playpen.processing.extract_phidget_data import Gatherer
 
 CAM = "21372315"
 

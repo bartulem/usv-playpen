@@ -16,12 +16,19 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
-from .assign_vocalizations_utils import (are_points_in_conf_set, get_arena_dimensions,
-                                         get_conf_sets_6d, load_tracks_from_h5,
-                                         load_usv_segments, to_float, write_to_h5)
-from .os_utils import configure_path, first_match_or_raise
-from .time_utils import is_gui_context, smart_wait
-from .yaml_utils import load_session_metadata, save_session_metadata
+from ..os_utils import configure_path, first_match_or_raise
+from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import load_session_metadata, save_session_metadata
+from .assign_vocalizations_utils import (
+    are_points_in_conf_set,
+    get_arena_dimensions,
+    get_conf_sets_6d,
+    load_tracks_from_h5,
+    load_usv_segments,
+    to_float,
+    write_to_h5,
+)
+
 
 class Vocalocator:
 

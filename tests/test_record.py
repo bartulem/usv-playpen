@@ -13,8 +13,8 @@ import configparser
 import paramiko
 from click.testing import CliRunner
 from unittest.mock import MagicMock, mock_open
-import usv_playpen.behavioral_experiments as be_mod
-from usv_playpen.behavioral_experiments import (
+import usv_playpen.recording.behavioral_experiments as be_mod
+from usv_playpen.recording.behavioral_experiments import (
     ExperimentController,
     count_last_recording_dropouts,
     conduct_calibration_cli,
@@ -397,9 +397,9 @@ def test_get_connection_params_exits_when_missing(tmp_path, controller):
 
 def test_check_ethernet_connection_already_up(mocker, controller):
     """If the adapter is already 'Up', no enable command is issued."""
-    fake_run = mocker.patch('usv_playpen.behavioral_experiments.subprocess.run')
+    fake_run = mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run')
     fake_run.return_value = MagicMock(stdout='Up\n', returncode=0)
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     controller.check_ethernet_connection()
     # Only the initial status-check Get-NetAdapter call should have been made;
     # netsh / enable should never appear.
@@ -410,7 +410,7 @@ def test_check_ethernet_connection_already_up(mocker, controller):
 
 def test_check_ethernet_connection_recovers(mocker, controller):
     """Adapter starts 'Down' but comes 'Up' after enable — must not exit."""
-    fake_run = mocker.patch('usv_playpen.behavioral_experiments.subprocess.run')
+    fake_run = mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run')
     # 1st call: status -> Down
     # 2nd call: netsh enable -> ok
     # 3rd call: status -> Up
@@ -419,7 +419,7 @@ def test_check_ethernet_connection_recovers(mocker, controller):
         MagicMock(stdout='', returncode=0),
         MagicMock(stdout='Up', returncode=0),
     ]
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     controller.check_ethernet_connection()
     # netsh interface set interface ... enable was called exactly once
     netsh_calls = [c for c in fake_run.call_args_list
@@ -435,8 +435,8 @@ def test_check_ethernet_connection_timeout_exits(mocker, controller):
             return MagicMock(stdout='', returncode=0)
         return MagicMock(stdout='Disconnected', returncode=0)
 
-    mocker.patch('usv_playpen.behavioral_experiments.subprocess.run', side_effect=_fake)
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run', side_effect=_fake)
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     with pytest.raises(RuntimeError, match=r"did not come Up"):
         controller.check_ethernet_connection()
 
@@ -450,8 +450,8 @@ def test_purge_cup_connections_invokes_expected_commands(mocker, controller):
     Credential Manager entry. The cmdkey call is the key fix for the
     multi-user-on-shared-Windows-account 1326 failure where /persistent:yes
     leaves a stored credential under the previous user's identity."""
-    fake_run = mocker.patch('usv_playpen.behavioral_experiments.subprocess.run')
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    fake_run = mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     controller.purge_cup_connections_on_windows()
     invoked = [tuple(c.args[0]) for c in fake_run.call_args_list]
     # Per-drive deletes (F:, \\cup\falkner, M:, \\cup\murthy) + server-level
@@ -481,8 +481,8 @@ def test_remount_cup_drives_happy_path(mocker, monkeypatch, controller):
     _stub_get_cup_params(monkeypatch)
     monkeypatch.setattr(ExperimentController, 'check_ethernet_connection', lambda self: None)
     monkeypatch.setattr(ExperimentController, 'purge_cup_connections_on_windows', lambda self: None)
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
-    fake_run = mocker.patch('usv_playpen.behavioral_experiments.subprocess.run')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
+    fake_run = mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run')
     fake_run.return_value = MagicMock(returncode=0, stderr='', stdout='')
     # The verify step uses ThreadPoolExecutor → pathlib.Path.is_dir(); we
     # stub that to always succeed.
@@ -507,8 +507,8 @@ def test_remount_cup_drives_critical_when_all_fail(mocker, monkeypatch, controll
     _stub_get_cup_params(monkeypatch)
     monkeypatch.setattr(ExperimentController, 'check_ethernet_connection', lambda self: None)
     monkeypatch.setattr(ExperimentController, 'purge_cup_connections_on_windows', lambda self: None)
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
-    fake_run = mocker.patch('usv_playpen.behavioral_experiments.subprocess.run')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
+    fake_run = mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run')
     fake_run.return_value = MagicMock(returncode=2, stderr='generic failure', stdout='')
     mocker.patch('pathlib.Path.is_dir', return_value=False)
 
@@ -573,7 +573,7 @@ def test_verify_avisoft_returns_true_with_no_channels(mocker, controller):
     controller.exp_settings_dict['avisoft_basedirectory'] = '/does-not-exist-anywhere'
     controller.exp_settings_dict['audio']['general'] = {'total': 0}
     controller.exp_settings_dict['audio']['used_mics'] = []
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     assert controller.verify_avisoft_is_recording() is True
 
 
@@ -591,7 +591,7 @@ def test_verify_avisoft_detects_new_file(mocker, controller, avisoft_dir_factory
         if len(sleeps) == 2:
             (base / 'ch1' / 'fresh.wav').write_bytes(b'x' * 4096)
 
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait', side_effect=fake_wait)
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait', side_effect=fake_wait)
     assert controller.verify_avisoft_is_recording(warmup_s=1, poll_interval_s=1, max_wait_s=10) is True
 
 
@@ -615,7 +615,7 @@ def test_verify_avisoft_detects_growth(mocker, controller, avisoft_dir_factory):
         if counter[0] >= 2:
             wav.write_bytes(b'a' * 8192)
 
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait', side_effect=fake_wait)
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait', side_effect=fake_wait)
     assert controller.verify_avisoft_is_recording(warmup_s=1, poll_interval_s=1, max_wait_s=5) is True
 
 
@@ -627,7 +627,7 @@ def test_verify_avisoft_returns_false_when_no_growth(mocker, controller, avisoft
     controller.exp_settings_dict['audio']['used_mics'] = [0]
     (base / 'ch1' / 'static.wav').write_bytes(b'a' * 1024)
 
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     assert controller.verify_avisoft_is_recording(warmup_s=1, poll_interval_s=1, max_wait_s=2) is False
 
 
@@ -654,7 +654,7 @@ def test_check_camera_vitals_motif_unreachable(mocker, monkeypatch, controller):
     def _explode(*_a, **_kw):
         raise _motifapi.api.MotifError('not running')
 
-    mocker.patch('usv_playpen.behavioral_experiments.motifapi.MotifApi', side_effect=_explode)
+    mocker.patch('usv_playpen.recording.behavioral_experiments.motifapi.MotifApi', side_effect=_explode)
     with pytest.raises(RuntimeError, match=r"Motif is not running or reachable"):
         controller.check_camera_vitals(camera_fr=150)
 
@@ -674,8 +674,8 @@ def test_check_camera_vitals_happy_path_single_camera(mocker, monkeypatch, contr
         'version': {'software': '4.2.0'},
     }.get(endpoint, MagicMock())
 
-    mocker.patch('usv_playpen.behavioral_experiments.motifapi.MotifApi', return_value=fake_api)
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.motifapi.MotifApi', return_value=fake_api)
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     controller.check_camera_vitals(camera_fr=150)
 
     # The API ref is captured for later use, and the per-camera configure call
@@ -709,7 +709,7 @@ def test_conduct_tracking_calibration_kicks_off_recording(mocker, monkeypatch, c
     """Calibration: vitals check + 'recording/start' call with calibration_duration."""
     monkeypatch.setattr(ExperimentController, 'check_camera_vitals',
                         lambda self, camera_fr: setattr(self, 'api', MagicMock()))
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
 
     controller.exp_settings_dict['video']['general']['calibration_frame_rate'] = 50
     controller.exp_settings_dict['video']['general']['recording_codec'] = 'H264'
@@ -732,8 +732,9 @@ def test_conduct_tracking_calibration_kicks_off_recording(mocker, monkeypatch, c
 
 # Captured at import time, BEFORE any test can monkeypatch be_mod.__file__.
 # Used to find the real package _config/ for tests that need to seed a
-# tmp copy of avisoft_config.ini and read realistic settings.
-_REAL_PKG_DIR = pathlib.Path(be_mod.__file__).parent
+# tmp copy of avisoft_config.ini and read realistic settings. behavioral_experiments
+# now lives one level deep (recording/), so the package root is .parent.parent.
+_REAL_PKG_DIR = pathlib.Path(be_mod.__file__).parent.parent
 
 
 def _seed_avisoft_config(tmp_path):
@@ -741,12 +742,17 @@ def _seed_avisoft_config(tmp_path):
 
     Returns the directory that the test should pretend is the module's
     source directory (used by monkeypatching be_mod.__file__ to redirect
-    `pathlib.Path(__file__).parent / '_config/...'` lookups).
+    `pathlib.Path(__file__).parent.parent / '_config/...'` lookups). Because
+    the module now lives one level deep (recording/), the fake source dir is
+    nested under a fake package root and _config/ is seeded at that root, so
+    the source's `.parent.parent` lands on the directory holding _config/.
     """
     real_cfg = _REAL_PKG_DIR / '_config' / 'avisoft_config.ini'
-    fake_module_dir = tmp_path / 'fake_pkg'
-    (fake_module_dir / '_config').mkdir(parents=True)
-    shutil.copy(real_cfg, fake_module_dir / '_config' / 'avisoft_config.ini')
+    fake_pkg_root = tmp_path / 'fake_pkg'
+    fake_module_dir = fake_pkg_root / 'recording'
+    (fake_pkg_root / '_config').mkdir(parents=True)
+    fake_module_dir.mkdir(parents=True)
+    shutil.copy(real_cfg, fake_pkg_root / '_config' / 'avisoft_config.ini')
     return fake_module_dir
 
 
@@ -775,7 +781,7 @@ def test_modify_audio_file_writes_destination(monkeypatch, tmp_path, mocker):
     settings['avisoft_config_directory'] = str(dest_dir)
     settings['video_session_duration'] = 5
 
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     ec = ExperimentController(exp_settings_dict=settings)
     ec.modify_audio_file()
 
@@ -804,7 +810,7 @@ def test_modify_audio_file_idempotent_on_second_run(monkeypatch, tmp_path, mocke
     settings['avisoft_config_directory'] = str(dest_dir)
     settings['video_session_duration'] = 5
 
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
 
     out_messages = []
     ec = ExperimentController(exp_settings_dict=settings, message_output=out_messages.append)
@@ -926,9 +932,9 @@ def test_conduct_behavioral_recording_orchestrates_calls(mocker, monkeypatch,
         self.camera_serial_num = ['SN12345']
     monkeypatch.setattr(ExperimentController, 'check_camera_vitals', _vitals)
 
-    mocker.patch('usv_playpen.behavioral_experiments.subprocess.Popen')
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
-    msg_mock = mocker.patch('usv_playpen.behavioral_experiments.Messenger')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.Popen')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
+    msg_mock = mocker.patch('usv_playpen.recording.behavioral_experiments.Messenger')
 
     # get_custom_dir_names is tested separately; mock it to tmp_path dirs so the
     # destination mkdir / metadata write land in tmp, not as a literal
@@ -980,9 +986,9 @@ def test_conduct_behavioral_recording_raises_not_exits_on_bad_credentials(mocker
         self.camera_serial_num = ['SN1']
     monkeypatch.setattr(ExperimentController, 'check_camera_vitals', _vitals)
 
-    mocker.patch('usv_playpen.behavioral_experiments.subprocess.Popen')
-    mocker.patch('usv_playpen.behavioral_experiments.smart_wait')
-    mocker.patch('usv_playpen.behavioral_experiments.Messenger')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.Popen')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
+    mocker.patch('usv_playpen.recording.behavioral_experiments.Messenger')
 
     ec = ExperimentController(exp_settings_dict=full_recording_settings)
     with pytest.raises(FileNotFoundError):
@@ -1002,11 +1008,11 @@ def test_conduct_calibration_cli_invokes_controller(mocker):
     is invoked, and --set overrides flow through override_toml_values."""
     fake_ctrl = MagicMock()
     fake_ctrl_cls = mocker.patch(
-        'usv_playpen.behavioral_experiments.ExperimentController',
+        'usv_playpen.recording.behavioral_experiments.ExperimentController',
         return_value=fake_ctrl,
     )
     fake_override = mocker.patch(
-        'usv_playpen.behavioral_experiments.override_toml_values',
+        'usv_playpen.recording.behavioral_experiments.override_toml_values',
         side_effect=lambda overrides, exp_settings_dict: exp_settings_dict,
     )
 
@@ -1041,10 +1047,10 @@ def test_conduct_recording_cli_invokes_controller_and_dumps_metadata(mocker, tmp
     fake_ctrl = MagicMock()
     fake_ctrl.conduct_behavioral_recording.return_value = returned_metadata
     mocker.patch(
-        'usv_playpen.behavioral_experiments.ExperimentController',
+        'usv_playpen.recording.behavioral_experiments.ExperimentController',
         return_value=fake_ctrl,
     )
-    yaml_dump = mocker.patch('usv_playpen.behavioral_experiments.yaml.dump')
+    yaml_dump = mocker.patch('usv_playpen.recording.behavioral_experiments.yaml.dump')
 
     real_open = builtins.open
 
@@ -1071,10 +1077,10 @@ def test_conduct_recording_cli_skips_dump_when_no_metadata(mocker):
     fake_ctrl = MagicMock()
     fake_ctrl.conduct_behavioral_recording.return_value = None
     mocker.patch(
-        'usv_playpen.behavioral_experiments.ExperimentController',
+        'usv_playpen.recording.behavioral_experiments.ExperimentController',
         return_value=fake_ctrl,
     )
-    yaml_dump = mocker.patch('usv_playpen.behavioral_experiments.yaml.dump')
+    yaml_dump = mocker.patch('usv_playpen.recording.behavioral_experiments.yaml.dump')
 
     runner = CliRunner()
     result = runner.invoke(conduct_recording_cli, [])

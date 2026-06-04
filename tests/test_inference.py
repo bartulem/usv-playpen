@@ -23,8 +23,8 @@ import pytest
 import matplotlib
 matplotlib.use("Agg")
 
-from usv_playpen.das_inference import FindMouseVocalizations, _DAS_ANNOTATION_FILE_RE
-from usv_playpen.assign_vocalizations import Vocalocator
+from usv_playpen.processing.das_inference import FindMouseVocalizations, _DAS_ANNOTATION_FILE_RE
+from usv_playpen.processing.assign_vocalizations import Vocalocator
 
 
 @pytest.mark.parametrize("name,expected", [
@@ -100,11 +100,11 @@ def test_das_command_line_inference_invokes_subprocess_per_wav(processing_settin
     (hpss_dir / "ch2.wav").write_bytes(b"\x00")
     (hpss_dir / "ch1_annotations.csv").write_text("start_seconds,stop_seconds,name\n0,1,call\n")
 
-    popen_mock = mocker.patch("usv_playpen.das_inference.subprocess.Popen",
+    popen_mock = mocker.patch("usv_playpen.processing.das_inference.subprocess.Popen",
                               return_value=MagicMock(returncode=0))
-    mocker.patch("usv_playpen.das_inference.wait_for_subprocesses",
+    mocker.patch("usv_playpen.processing.das_inference.wait_for_subprocesses",
                  return_value=[0])
-    mocker.patch("usv_playpen.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
 
     fmv = FindMouseVocalizations(
         root_directory=str(tmp_path),
@@ -133,11 +133,11 @@ def test_das_command_line_inference_creates_save_dir_even_if_no_annotations(
     hpss_dir.mkdir(parents=True)
     (hpss_dir / "ch1.wav").write_bytes(b"\x00")
 
-    mocker.patch("usv_playpen.das_inference.subprocess.Popen",
+    mocker.patch("usv_playpen.processing.das_inference.subprocess.Popen",
                  return_value=MagicMock(returncode=0))
-    mocker.patch("usv_playpen.das_inference.wait_for_subprocesses",
+    mocker.patch("usv_playpen.processing.das_inference.wait_for_subprocesses",
                  return_value=[0])
-    mocker.patch("usv_playpen.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
 
     fmv = FindMouseVocalizations(
         root_directory=str(tmp_path),
@@ -156,7 +156,7 @@ def test_summarize_das_findings_handles_no_annotations(processing_settings,
     "No DAS annotations found" skip message rather than crashing or falling
     through to the audio-loading phase."""
     msgs: list[str] = []
-    mocker.patch("usv_playpen.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
 
     fmv = FindMouseVocalizations(
         root_directory=str(tmp_path),
@@ -181,10 +181,10 @@ def test_summarize_das_findings_skips_unrecognised_filename(processing_settings,
     }).write_csv(annot_dir / "garbage_filename.csv")
 
     msgs: list[str] = []
-    mocker.patch("usv_playpen.das_inference.smart_wait")
-    mocker.patch("usv_playpen.das_inference.load_session_metadata",
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
                  return_value=(None, None))
-    mocker.patch("usv_playpen.das_inference.save_session_metadata")
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
 
     fmv = FindMouseVocalizations(
         root_directory=str(tmp_path),
@@ -212,11 +212,11 @@ def test_summarize_das_findings_zero_after_merge(processing_settings, tmp_path,
         "name": ["noise"],
     }).write_csv(annot_dir / "m_20260101_120000_ch01_annotations.csv")
 
-    mocker.patch("usv_playpen.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
     # load_session_metadata may attempt yaml IO; mock it.
-    mocker.patch("usv_playpen.das_inference.load_session_metadata",
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
                  return_value=(None, None))
-    mocker.patch("usv_playpen.das_inference.save_session_metadata")
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
 
     fmv = FindMouseVocalizations(
         root_directory=str(tmp_path),
@@ -298,19 +298,19 @@ def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_
         f.attrs["model_config"] = json.dumps(model_config)
 
     # ---- mock everything subprocess-y ----------------------------------
-    mocker.patch("usv_playpen.assign_vocalizations.subprocess.run",
+    mocker.patch("usv_playpen.processing.assign_vocalizations.subprocess.run",
                  return_value=MagicMock(returncode=0))
-    mocker.patch("usv_playpen.assign_vocalizations.smart_wait")
-    mocker.patch("usv_playpen.assign_vocalizations.load_session_metadata",
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    mocker.patch("usv_playpen.processing.assign_vocalizations.load_session_metadata",
                  return_value=(None, None))
-    mocker.patch("usv_playpen.assign_vocalizations.save_session_metadata")
+    mocker.patch("usv_playpen.processing.assign_vocalizations.save_session_metadata")
     # get_conf_sets_6d / are_points_in_conf_set are imported at module top;
     # patch them to return small synthetic outputs.
-    mocker.patch("usv_playpen.assign_vocalizations.get_conf_sets_6d",
+    mocker.patch("usv_playpen.processing.assign_vocalizations.get_conf_sets_6d",
                  return_value=(np.zeros((n_voc, 1)),
                                np.zeros((n_voc, 1)),
                                np.zeros((n_voc, 1))))
-    mocker.patch("usv_playpen.assign_vocalizations.are_points_in_conf_set",
+    mocker.patch("usv_playpen.processing.assign_vocalizations.are_points_in_conf_set",
                  return_value=np.array([True, False]))
 
     # The 'vcl_model_directory' setting may point to a path that doesn't
@@ -342,8 +342,8 @@ def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
     empty_model_dir.mkdir()
     processing_settings['vocalocator']['vcl_model_directory'] = str(empty_model_dir)
 
-    mocker.patch("usv_playpen.assign_vocalizations.smart_wait")
-    sub_run = mocker.patch("usv_playpen.assign_vocalizations.subprocess.run")
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    sub_run = mocker.patch("usv_playpen.processing.assign_vocalizations.subprocess.run")
 
     msgs: list[str] = []
     voc = Vocalocator(
@@ -427,10 +427,10 @@ def test_summarize_das_findings_writes_summary_csv_and_histogram(
     """
     _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
 
-    mocker.patch("usv_playpen.das_inference.smart_wait")
-    mocker.patch("usv_playpen.das_inference.load_session_metadata",
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
                  return_value=(None, None))
-    mocker.patch("usv_playpen.das_inference.save_session_metadata")
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
 
     fmv = FindMouseVocalizations(
         root_directory=str(tmp_path),
@@ -466,10 +466,10 @@ def test_summarize_das_findings_skips_unknown_channel_filename(
         "start_seconds": [0.1], "stop_seconds": [0.2], "name": ["call"],
     }).write_csv(annot_dir / "m_20260101_ch99_annotations.csv")
 
-    mocker.patch("usv_playpen.das_inference.smart_wait")
-    mocker.patch("usv_playpen.das_inference.load_session_metadata",
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
                  return_value=(None, None))
-    mocker.patch("usv_playpen.das_inference.save_session_metadata")
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
 
     msgs: list[str] = []
     fmv = FindMouseVocalizations(
@@ -502,10 +502,10 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
     for mmap_path in (tmp_path / "audio" / "hpss_filtered").glob("*.mmap"):
         mmap_path.unlink()
 
-    mocker.patch("usv_playpen.das_inference.smart_wait")
-    mocker.patch("usv_playpen.das_inference.load_session_metadata",
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
                  return_value=(None, None))
-    mocker.patch("usv_playpen.das_inference.save_session_metadata")
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
 
     msgs: list[str] = []
     fmv = FindMouseVocalizations(

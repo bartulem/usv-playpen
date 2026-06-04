@@ -9,7 +9,7 @@ import json
 import pathlib
 from collections.abc import Callable
 
-from .os_utils import configure_path, to_cluster_path
+from ..os_utils import configure_path, to_cluster_path
 
 
 class PrepareClusterJob:
@@ -37,7 +37,7 @@ class PrepareClusterJob:
         """
 
         if input_parameter_dict is None or root_directory is None:
-            with open(pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json') as json_file:
+            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
                 _settings = json.load(json_file)['prepare_cluster_job']
 
         self.input_parameter_dict = input_parameter_dict['prepare_cluster_job'] if input_parameter_dict is not None else _settings

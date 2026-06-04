@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from usv_playpen.anipose_operations import ConvertTo3D
+from usv_playpen.processing.anipose_operations import ConvertTo3D
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +102,12 @@ def test_sleap_file_conversion_invokes_subprocess_per_slp(
     (cam1 / "ignore.txt").write_bytes(b"")
 
     popen_mock = mocker.patch(
-        "usv_playpen.anipose_operations.subprocess.Popen",
+        "usv_playpen.processing.anipose_operations.subprocess.Popen",
         return_value=MagicMock(returncode=0),
     )
-    mocker.patch("usv_playpen.anipose_operations.wait_for_subprocesses",
+    mocker.patch("usv_playpen.processing.anipose_operations.wait_for_subprocesses",
                  return_value=[0, 0, 0])
-    mocker.patch("usv_playpen.anipose_operations.smart_wait")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
 
     converter = ConvertTo3D(
         root_directory=str(root),
@@ -130,14 +130,14 @@ def test_sleap_file_conversion_no_slp_files(processing_settings,
     root, sess_dir = session_with_video_dir
     (sess_dir / "cam1").mkdir()
     popen_mock = mocker.patch(
-        "usv_playpen.anipose_operations.subprocess.Popen",
+        "usv_playpen.processing.anipose_operations.subprocess.Popen",
         return_value=MagicMock(returncode=0),
     )
     waiter = mocker.patch(
-        "usv_playpen.anipose_operations.wait_for_subprocesses",
+        "usv_playpen.processing.anipose_operations.wait_for_subprocesses",
         return_value=[],
     )
-    mocker.patch("usv_playpen.anipose_operations.smart_wait")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
 
     converter = ConvertTo3D(
         root_directory=str(root),
@@ -163,9 +163,9 @@ def test_conduct_anipose_calibration_draws_board_when_not_provided(
     root, _ = session_with_video_dir
     processing_settings["anipose_operations"]["ConvertTo3D"]["conduct_anipose_calibration"]["board_provided_bool"] = False
 
-    draw_mock = mocker.patch("usv_playpen.anipose_operations.sleap_anipose.draw_board")
-    calib_mock = mocker.patch("usv_playpen.anipose_operations.sleap_anipose.calibrate")
-    mocker.patch("usv_playpen.anipose_operations.smart_wait")
+    draw_mock = mocker.patch("usv_playpen.processing.anipose_operations.sleap_anipose.draw_board")
+    calib_mock = mocker.patch("usv_playpen.processing.anipose_operations.sleap_anipose.calibrate")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
 
     converter = ConvertTo3D(
         root_directory=str(root),
@@ -185,9 +185,9 @@ def test_conduct_anipose_calibration_skips_draw_when_board_provided(
     root, _ = session_with_video_dir
     processing_settings["anipose_operations"]["ConvertTo3D"]["conduct_anipose_calibration"]["board_provided_bool"] = True
 
-    draw_mock = mocker.patch("usv_playpen.anipose_operations.sleap_anipose.draw_board")
-    calib_mock = mocker.patch("usv_playpen.anipose_operations.sleap_anipose.calibrate")
-    mocker.patch("usv_playpen.anipose_operations.smart_wait")
+    draw_mock = mocker.patch("usv_playpen.processing.anipose_operations.sleap_anipose.draw_board")
+    calib_mock = mocker.patch("usv_playpen.processing.anipose_operations.sleap_anipose.calibrate")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
 
     converter = ConvertTo3D(
         root_directory=str(root),
@@ -218,9 +218,9 @@ def test_conduct_anipose_triangulation_logs_when_no_calibration(
     cfg["conduct_anipose_triangulation"]["calibration_file_loc"] = str(empty_calib_dir)
 
     triangulate_mock = mocker.patch(
-        "usv_playpen.anipose_operations.sleap_anipose.triangulate"
+        "usv_playpen.processing.anipose_operations.sleap_anipose.triangulate"
     )
-    mocker.patch("usv_playpen.anipose_operations.smart_wait")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
     msgs: list[str] = []
 
     converter = ConvertTo3D(
@@ -250,9 +250,9 @@ def test_conduct_anipose_triangulation_arena_branch_uses_one_frame(
     cfg["conduct_anipose_triangulation"]["frame_restriction"] = None
 
     triangulate_mock = mocker.patch(
-        "usv_playpen.anipose_operations.sleap_anipose.triangulate"
+        "usv_playpen.processing.anipose_operations.sleap_anipose.triangulate"
     )
-    mocker.patch("usv_playpen.anipose_operations.smart_wait")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
 
     converter = ConvertTo3D(
         root_directory=str(root),
@@ -289,9 +289,9 @@ def test_conduct_anipose_triangulation_session_branch_reads_frame_count(
     cfg["conduct_anipose_triangulation"]["frame_restriction"] = None
 
     triangulate_mock = mocker.patch(
-        "usv_playpen.anipose_operations.sleap_anipose.triangulate"
+        "usv_playpen.processing.anipose_operations.sleap_anipose.triangulate"
     )
-    mocker.patch("usv_playpen.anipose_operations.smart_wait")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
 
     converter = ConvertTo3D(
         root_directory=str(root),

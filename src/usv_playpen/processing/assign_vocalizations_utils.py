@@ -15,7 +15,7 @@ from joblib import Parallel, delayed
 from scipy.stats import vonmises as sp_vonmises
 from tqdm import tqdm
 
-from .os_utils import atomic_output_path
+from ..os_utils import atomic_output_path
 
 # Fixed seed for the Monte-Carlo angle-PDF estimation so that the sound-
 # localization angle marginals -- and therefore the vocalization-to-mouse

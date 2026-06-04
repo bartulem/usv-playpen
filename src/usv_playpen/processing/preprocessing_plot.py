@@ -14,10 +14,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from imgstore import new_for_filename
 
-from .os_utils import first_match_or_raise
-from .visualizations.plot_style import apply_plot_style
-from .visualizations.figure_io import save_figure
-from .yaml_utils import load_session_metadata, save_session_metadata
+from ..os_utils import first_match_or_raise
+from ..visualizations.figure_io import save_figure
+from ..visualizations.plot_style import apply_plot_style
+from ..yaml_utils import load_session_metadata, save_session_metadata
 
 apply_plot_style()
 
@@ -45,7 +45,7 @@ class SummaryPlotter:
 
         if input_parameter_dict is None or root_directory is None:
             with open(
-                pathlib.Path(__file__).parent / "_parameter_settings/processing_settings.json"
+                pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
             ) as json_file:
                 _settings = json.load(json_file)["preprocessing_plot"]
 

@@ -21,7 +21,7 @@ from sklearn.mixture import GaussianMixture
 # Headless matplotlib for the mixture_model_utils plotting smoke tests.
 matplotlib.use("Agg")
 
-from usv_playpen.analyze_data import Analyst
+from usv_playpen.analyses.analyze_data import Analyst
 from usv_playpen.analyses.decode_experiment_label import extract_information
 from usv_playpen.analyses.compute_behavioral_features import (
     FeatureZoo,
@@ -134,11 +134,11 @@ def mock_settings():
 def mock_dependencies(mocker):
     """Mocks all external class dependencies for the Analyst class."""
     mocked_classes = {
-        'FeatureZoo': mocker.patch('usv_playpen.analyze_data.FeatureZoo'),
-        'NeuronalTuning': mocker.patch('usv_playpen.analyze_data.NeuronalTuning'),
-        'AudioGenerator': mocker.patch('usv_playpen.analyze_data.AudioGenerator'),
-        'InterUSVIntervalCalculator': mocker.patch('usv_playpen.analyze_data.InterUSVIntervalCalculator'),
-        'Messenger': mocker.patch('usv_playpen.analyze_data.Messenger'),
+        'FeatureZoo': mocker.patch('usv_playpen.analyses.analyze_data.FeatureZoo'),
+        'NeuronalTuning': mocker.patch('usv_playpen.analyses.analyze_data.NeuronalTuning'),
+        'AudioGenerator': mocker.patch('usv_playpen.analyses.analyze_data.AudioGenerator'),
+        'InterUSVIntervalCalculator': mocker.patch('usv_playpen.analyses.analyze_data.InterUSVIntervalCalculator'),
+        'Messenger': mocker.patch('usv_playpen.analyses.analyze_data.Messenger'),
     }
     return mocked_classes
 

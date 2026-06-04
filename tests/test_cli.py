@@ -6,18 +6,18 @@ Test CLI.
 import pytest
 from click.testing import CliRunner
 
-from usv_playpen.analyze_data import (
+from usv_playpen.analyses.analyze_data import (
     generate_beh_features_cli,
     generate_usv_playback_cli,
     generate_rm_files_cli,
 )
-from usv_playpen.preprocess_data import (
+from usv_playpen.processing.preprocess_data import (
     concatenate_video_files_cli,
     rectify_video_fps_cli,
     crop_wav_files_to_video_cli,
     av_sync_check_cli
 )
-from usv_playpen.visualize_data import (
+from usv_playpen.visualizations.visualize_data import (
     visualize_3D_data_cli,
     generate_rm_figures_cli
 )
@@ -33,7 +33,7 @@ def test_generate_beh_features_cli_success(runner, mocker, tmp_path):
     FeatureZoo backend with correctly parsed arguments.
     """
 
-    mock_feature_zoo = mocker.patch('usv_playpen.analyze_data.FeatureZoo')
+    mock_feature_zoo = mocker.patch('usv_playpen.analyses.analyze_data.FeatureZoo')
     mocker.patch(
         'usv_playpen.cli_utils.modify_settings_json_for_cli',
         return_value={'compute_behavioral_features': {'head_points': ['Nose', 'Ear_L', 'Ear_R', 'Head']}}
@@ -55,7 +55,7 @@ def test_generate_usv_playback_cli_success(runner, mocker):
     Tests the 'generate-usv-playback' command with a required option.
     """
 
-    mock_audio_generator = mocker.patch('usv_playpen.analyze_data.AudioGenerator')
+    mock_audio_generator = mocker.patch('usv_playpen.analyses.analyze_data.AudioGenerator')
     mocker.patch(
         'usv_playpen.cli_utils.modify_settings_json_for_cli',
         return_value={'create_usv_playback_wav': {'some_setting': 'default'}}
@@ -76,7 +76,7 @@ def test_generate_rm_files_cli_success(runner, mocker, tmp_path):
     Tests the 'generate-rm' (rate map) command.
     """
 
-    mock_tuning = mocker.patch('usv_playpen.analyze_data.NeuronalTuning')
+    mock_tuning = mocker.patch('usv_playpen.analyses.analyze_data.NeuronalTuning')
     mocker.patch(
         'usv_playpen.cli_utils.modify_settings_json_for_cli',
         return_value={'calculate_neuronal_tuning_curves': {}}
@@ -98,9 +98,9 @@ def test_visualize_3d_data_cli_success(runner, mocker, tmp_path):
     Create3DVideo backend with correctly parsed arguments.
     """
 
-    mock_create_3d_video = mocker.patch('usv_playpen.visualize_data.Create3DVideo')
+    mock_create_3d_video = mocker.patch('usv_playpen.visualizations.visualize_data.Create3DVideo')
     mocker.patch(
-        'usv_playpen.visualize_data.modify_settings_json_for_cli',
+        'usv_playpen.visualizations.visualize_data.modify_settings_json_for_cli',
         return_value={'make_behavioral_videos': {'animate_bool': True}}
     )
 
@@ -127,9 +127,9 @@ def test_generate_rm_figures_cli_success(runner, mocker, tmp_path):
     Tests the 'generate-rm-figs' (rate map figures) command.
     """
 
-    mock_maker = mocker.patch('usv_playpen.visualize_data.NeuronalTuningFigureMaker')
+    mock_maker = mocker.patch('usv_playpen.visualizations.visualize_data.NeuronalTuningFigureMaker')
     mocker.patch(
-        'usv_playpen.visualize_data.modify_settings_json_for_cli',
+        'usv_playpen.visualizations.visualize_data.modify_settings_json_for_cli',
         return_value={'neuronal_tuning_figures': {}}
     )
 
@@ -147,9 +147,9 @@ def test_concatenate_video_cli_success(runner, mocker, tmp_path):
     Tests the 'concatenate-video-files' command with required and multiple options.
     """
 
-    mock_operator = mocker.patch('usv_playpen.preprocess_data.Operator')
+    mock_operator = mocker.patch('usv_playpen.processing.preprocess_data.Operator')
     mocker.patch(
-        'usv_playpen.preprocess_data.modify_settings_json_for_cli',
+        'usv_playpen.processing.preprocess_data.modify_settings_json_for_cli',
         return_value={'modify_files': {'Operator': {}}}
     )
 
@@ -174,9 +174,9 @@ def test_rectify_video_cli_with_flag(runner, mocker, tmp_path):
     Tests the 'rectify-video-fps' command with a boolean flag.
     """
 
-    mock_operator = mocker.patch('usv_playpen.preprocess_data.Operator')
+    mock_operator = mocker.patch('usv_playpen.processing.preprocess_data.Operator')
     mocker.patch(
-        'usv_playpen.preprocess_data.modify_settings_json_for_cli',
+        'usv_playpen.processing.preprocess_data.modify_settings_json_for_cli',
         return_value={'modify_files': {'Operator': {'rectify_video_fps': {}}}}
     )
 
@@ -195,9 +195,9 @@ def test_crop_wav_cli_success(runner, mocker, tmp_path):
     Tests the 'crop-wav-files' command.
     """
 
-    mock_synchronizer = mocker.patch('usv_playpen.preprocess_data.Synchronizer')
+    mock_synchronizer = mocker.patch('usv_playpen.processing.preprocess_data.Synchronizer')
     mocker.patch(
-        'usv_playpen.preprocess_data.modify_settings_json_for_cli',
+        'usv_playpen.processing.preprocess_data.modify_settings_json_for_cli',
         return_value={'synchronize_files': {'Synchronizer': {}}}
     )
 
@@ -216,10 +216,10 @@ def test_av_sync_check_cli_success(runner, mocker, tmp_path):
     Tests the 'av-sync-check' command which calls multiple backend classes.
     """
 
-    mock_gatherer = mocker.patch('usv_playpen.preprocess_data.Gatherer')
-    mock_synchronizer = mocker.patch('usv_playpen.preprocess_data.Synchronizer')
-    mock_plotter = mocker.patch('usv_playpen.preprocess_data.SummaryPlotter')
-    mocker.patch('usv_playpen.preprocess_data.modify_settings_json_for_cli', return_value={})
+    mock_gatherer = mocker.patch('usv_playpen.processing.preprocess_data.Gatherer')
+    mock_synchronizer = mocker.patch('usv_playpen.processing.preprocess_data.Synchronizer')
+    mock_plotter = mocker.patch('usv_playpen.processing.preprocess_data.SummaryPlotter')
+    mocker.patch('usv_playpen.processing.preprocess_data.modify_settings_json_for_cli', return_value={})
 
     result = runner.invoke(av_sync_check_cli, ['--root-directory', str(tmp_path)])
 

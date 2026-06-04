@@ -15,13 +15,13 @@ from datetime import datetime
 import click
 from click.core import ParameterSource
 
-from .analyses.compute_behavioral_features import FeatureZoo
-from .analyses.compute_neuronal_tuning_curves import NeuronalTuning
-from .analyses.compute_inter_usv_interval_distributions import InterUSVIntervalCalculator
-from .analyses.generate_audio_files import AudioGenerator
-from .cli_utils import modify_settings_json_for_cli
-from .os_utils import configure_path
-from .send_email import Messenger
+from ..cli_utils import modify_settings_json_for_cli
+from ..os_utils import configure_path
+from ..send_email import Messenger
+from .compute_behavioral_features import FeatureZoo
+from .compute_inter_usv_interval_distributions import InterUSVIntervalCalculator
+from .compute_neuronal_tuning_curves import NeuronalTuning
+from .generate_audio_files import AudioGenerator
 
 
 class Analyst:
@@ -50,7 +50,7 @@ class Analyst:
         """
 
         if input_parameter_dict is None or root_directories is None:
-            with open(pathlib.Path(__file__).parent / '_parameter_settings/analyses_settings.json') as json_file:
+            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/analyses_settings.json') as json_file:
                 _settings = json.load(json_file)
 
         self.root_directories = root_directories if root_directories is not None else _settings['analyze_data']['root_directories']

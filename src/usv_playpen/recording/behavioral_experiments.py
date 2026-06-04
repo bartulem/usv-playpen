@@ -27,11 +27,17 @@ import paramiko
 import toml
 import yaml
 
-from .cli_utils import override_toml_values
-from .os_utils import configure_path, expand_lab_share, newest_match_or_raise, recording_destinations, wait_for_subprocesses
-from .send_email import Messenger
-from .time_utils import is_gui_context, smart_wait
-from .yaml_utils import SmartDumper, sync_equipment_dynamic_fields
+from ..cli_utils import override_toml_values
+from ..os_utils import (
+    configure_path,
+    expand_lab_share,
+    newest_match_or_raise,
+    recording_destinations,
+    wait_for_subprocesses,
+)
+from ..send_email import Messenger
+from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import SmartDumper, sync_equipment_dynamic_fields
 
 
 def count_last_recording_dropouts(log_file_path: str,
@@ -861,7 +867,7 @@ class ExperimentController:
         changes = 0
 
         self.config_1 = configparser.ConfigParser()
-        self.config_1.read(pathlib.Path(__file__).parent / '_config/avisoft_config.ini')
+        self.config_1.read(pathlib.Path(__file__).parent.parent / '_config/avisoft_config.ini')
 
         if f"{str(self.exp_settings_dict['avisoft_basedirectory'])}{os.sep}" != self.config_1['Configuration']['basedirectory']:
             self.config_1['Configuration']['basedirectory'] = f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}"
@@ -989,10 +995,10 @@ class ExperimentController:
 
         if changes > 0:
             self.message_output(f"{changes} lines changed in the avisoft_config_file!")
-            with open(pathlib.Path(__file__).parent / '_config/avisoft_config.ini', 'w') as configfile:
+            with open(pathlib.Path(__file__).parent.parent / '_config/avisoft_config.ini', 'w') as configfile:
                 self.config_1.write(configfile, space_around_delimiters=False)
 
-        shutil.copy(src=pathlib.Path(__file__).parent / '_config/avisoft_config.ini',
+        shutil.copy(src=pathlib.Path(__file__).parent.parent / '_config/avisoft_config.ini',
                     dst=pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini')
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
@@ -1044,7 +1050,7 @@ class ExperimentController:
         # start capturing sync LEDS
         coolterm_config_dst = pathlib.Path(self.exp_settings_dict['coolterm_basedirectory']) / 'Connection_settings' / 'coolterm_config.stc'
         if not coolterm_config_dst.is_file():
-            shutil.copy(src=pathlib.Path(__file__).parent / '_config' / 'coolterm_config.stc',
+            shutil.copy(src=pathlib.Path(__file__).parent.parent / '_config' / 'coolterm_config.stc',
                         dst=coolterm_config_dst)
 
         # Keep the destination .stc 'Port = ...' line in sync with the
@@ -1569,7 +1575,7 @@ def conduct_calibration_cli( overrides):
     None
     """
 
-    with open((pathlib.Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
+    with open((pathlib.Path(__file__).parent.parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
         exp_settings_dict = toml.load(f)
 
     if len(overrides) > 0:
@@ -1593,10 +1599,10 @@ def conduct_recording_cli(overrides):
     None
     """
 
-    with open((pathlib.Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
+    with open((pathlib.Path(__file__).parent.parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
         exp_settings_dict = toml.load(f)
 
-    metadata_path = pathlib.Path(__file__).parent / '_config/_metadata.yaml'
+    metadata_path = pathlib.Path(__file__).parent.parent / '_config/_metadata.yaml'
     with open(metadata_path, 'r') as f:
         metadata_settings = yaml.safe_load(f)
 

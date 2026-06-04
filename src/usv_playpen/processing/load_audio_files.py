@@ -63,7 +63,7 @@ class DataLoader:
 
         if input_parameter_dict is None:
             with open(
-                pathlib.Path(__file__).parent / "_parameter_settings/processing_settings.json"
+                pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
             ) as json_file:
                 self.input_parameter_dict = json.load(json_file)["load_audio_files"][
                     "DataLoader"

@@ -14,17 +14,16 @@ import os
 import platform
 import re
 import sys
-import toml
-import yaml
 from functools import partial
 from importlib import metadata
 from pathlib import Path
 
 import platformdirs
-from PyQt6.QtCore import (
-    Qt, QEvent, QRegularExpression
-)
+import toml
+import yaml
+from PyQt6.QtCore import QEvent, QRegularExpression, Qt
 from PyQt6.QtGui import (
+    QColor,
     QFont,
     QFontDatabase,
     QGuiApplication,
@@ -33,8 +32,8 @@ from PyQt6.QtGui import (
     QPixmap,
     QSyntaxHighlighter,
     QTextCharFormat,
-    QColor
 )
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -56,13 +55,17 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtTest import QTest
-from .analyze_data import Analyst
-from .behavioral_experiments import ExperimentController
+
+from .analyses.analyze_data import Analyst
 from .os_utils import configure_path
-from .preprocess_data import Stylist
-from .visualize_data import Visualizer
-from .yaml_utils import SmartDumper, set_sync_LEDs_device_port, sync_equipment_dynamic_fields
+from .processing.preprocess_data import Stylist
+from .recording.behavioral_experiments import ExperimentController
+from .visualizations.visualize_data import Visualizer
+from .yaml_utils import (
+    SmartDumper,
+    set_sync_LEDs_device_port,
+    sync_equipment_dynamic_fields,
+)
 
 # do NOT print logs (debug, warnings, or otherwise) from the qt.qpa.window category.
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.window=false"

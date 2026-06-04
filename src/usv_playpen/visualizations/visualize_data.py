@@ -15,10 +15,10 @@ from datetime import datetime
 import click
 from click.core import ParameterSource
 
-from .cli_utils import modify_settings_json_for_cli
-from .send_email import Messenger
-from .visualizations.make_behavioral_videos import Create3DVideo
-from .visualizations.make_neuronal_tuning_figures import NeuronalTuningFigureMaker
+from ..cli_utils import modify_settings_json_for_cli
+from ..send_email import Messenger
+from .make_behavioral_videos import Create3DVideo
+from .make_neuronal_tuning_figures import NeuronalTuningFigureMaker
 
 
 class Visualizer:
@@ -47,7 +47,7 @@ class Visualizer:
         """
 
         if input_parameter_dict is None or root_directories is None:
-            with open(pathlib.Path(__file__).parent / '_parameter_settings/visualizations_settings.json') as json_file:
+            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/visualizations_settings.json') as json_file:
                 _settings = json.load(json_file)
 
         self.root_directories = root_directories if root_directories is not None else _settings['visualize_data']['root_directories']

@@ -15,9 +15,9 @@ from pathlib import Path
 from click.testing import CliRunner
 from scipy.io import wavfile
 from numpy.testing import assert_array_equal, assert_allclose
-from usv_playpen.preprocess_data import Stylist
-from usv_playpen.synchronize_files import Synchronizer
-from usv_playpen.preprocess_data import (
+from usv_playpen.processing.preprocess_data import Stylist
+from usv_playpen.processing.synchronize_files import Synchronizer
+from usv_playpen.processing.preprocess_data import (
     concatenate_video_files_cli,
     rectify_video_fps_cli,
     multichannel_to_channel_audio_cli,
@@ -49,8 +49,8 @@ from usv_playpen.yaml_utils import (
     load_session_metadata,
     save_session_metadata,
 )
-from usv_playpen.load_audio_files import DataLoader
-from usv_playpen.synchronize_files import (
+from usv_playpen.processing.load_audio_files import DataLoader
+from usv_playpen.processing.synchronize_files import (
     Synchronizer,
     _combine_and_sort_events,
     filter_events_by_duration,
@@ -58,7 +58,7 @@ from usv_playpen.synchronize_files import (
     validate_sequence,
 )
 import math
-from usv_playpen.anipose_operations import (
+from usv_playpen.processing.anipose_operations import (
     extract_skeleton_nodes,
     find_mouse_names,
     redefine_cage_reference_nodes,
@@ -66,11 +66,11 @@ from usv_playpen.anipose_operations import (
     rotate_y,
     rotate_z,
 )
-from usv_playpen.extract_phidget_data import Gatherer
-from usv_playpen.prepare_cluster_job import PrepareClusterJob
+from usv_playpen.processing.extract_phidget_data import Gatherer
+from usv_playpen.processing.prepare_cluster_job import PrepareClusterJob
 import h5py
 import polars as pls
-from usv_playpen.assign_vocalizations_utils import (
+from usv_playpen.processing.assign_vocalizations_utils import (
     are_points_in_conf_set,
     compute_covs_6d,
     convert_from_arb,
@@ -86,8 +86,8 @@ from usv_playpen.assign_vocalizations_utils import (
     write_to_h5,
 )
 import pathlib
-from usv_playpen.assign_vocalizations import Vocalocator
-from usv_playpen.modify_files import Operator
+from usv_playpen.processing.assign_vocalizations import Vocalocator
+from usv_playpen.processing.modify_files import Operator
 
 
 VIDEO_WIDTH = 1280
@@ -422,7 +422,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     mock_img_store.frame_max = expected_total_frames
     expected_video_duration = (expected_total_frames - 1) / VIDEO_FPS
     mock_img_store.get_frame_metadata.return_value = {'frame_time': np.linspace(0, expected_video_duration, expected_total_frames)}
-    mocker.patch('usv_playpen.modify_files.new_for_filename', return_value=mock_img_store)
+    mocker.patch('usv_playpen.processing.modify_files.new_for_filename', return_value=mock_img_store)
 
     result_rectify = runner.invoke(rectify_video_fps_cli, ['--root-directory', str(root_dir), '--conduct-concat'])
     assert result_rectify.exit_code == 0, f"CLI failed:\n{result_rectify.output}"
@@ -624,15 +624,15 @@ def mock_dependencies(mocker):
     """Mocks all external class dependencies for the Stylist class."""
 
     mocked_classes = {
-        'ConvertTo3D': mocker.patch('usv_playpen.preprocess_data.ConvertTo3D'),
-        'Vocalocator': mocker.patch('usv_playpen.preprocess_data.Vocalocator'),
-        'FindMouseVocalizations': mocker.patch('usv_playpen.preprocess_data.FindMouseVocalizations'),
-        'Gatherer': mocker.patch('usv_playpen.preprocess_data.Gatherer'),
-        'Operator': mocker.patch('usv_playpen.preprocess_data.Operator'),
-        'PrepareClusterJob': mocker.patch('usv_playpen.preprocess_data.PrepareClusterJob'),
-        'SummaryPlotter': mocker.patch('usv_playpen.preprocess_data.SummaryPlotter'),
-        'Messenger': mocker.patch('usv_playpen.preprocess_data.Messenger'),
-        'Synchronizer': mocker.patch('usv_playpen.preprocess_data.Synchronizer'),
+        'ConvertTo3D': mocker.patch('usv_playpen.processing.preprocess_data.ConvertTo3D'),
+        'Vocalocator': mocker.patch('usv_playpen.processing.preprocess_data.Vocalocator'),
+        'FindMouseVocalizations': mocker.patch('usv_playpen.processing.preprocess_data.FindMouseVocalizations'),
+        'Gatherer': mocker.patch('usv_playpen.processing.preprocess_data.Gatherer'),
+        'Operator': mocker.patch('usv_playpen.processing.preprocess_data.Operator'),
+        'PrepareClusterJob': mocker.patch('usv_playpen.processing.preprocess_data.PrepareClusterJob'),
+        'SummaryPlotter': mocker.patch('usv_playpen.processing.preprocess_data.SummaryPlotter'),
+        'Messenger': mocker.patch('usv_playpen.processing.preprocess_data.Messenger'),
+        'Synchronizer': mocker.patch('usv_playpen.processing.preprocess_data.Synchronizer'),
     }
     mocked_classes['Gatherer'].return_value.prepare_data_for_analyses.return_value = {}
     mocked_classes['Synchronizer'].return_value.find_audio_sync_trains.return_value = {}
@@ -2187,11 +2187,11 @@ def _patch_rectify_externals(mocker, img_store):
     * ``wait_for_subprocesses`` / ``subprocess.Popen`` → no-op ffmpeg,
     * ``shutil.move`` → no-op file relocation.
     """
-    mocker.patch('usv_playpen.modify_files.new_for_filename', return_value=img_store)
-    mocker.patch('usv_playpen.modify_files.load_session_metadata', return_value=(None, None))
-    mocker.patch('usv_playpen.modify_files.wait_for_subprocesses')
-    mocker.patch('usv_playpen.modify_files.subprocess.Popen', return_value=mocker.MagicMock())
-    mocker.patch('usv_playpen.modify_files.shutil.move')
+    mocker.patch('usv_playpen.processing.modify_files.new_for_filename', return_value=img_store)
+    mocker.patch('usv_playpen.processing.modify_files.load_session_metadata', return_value=(None, None))
+    mocker.patch('usv_playpen.processing.modify_files.wait_for_subprocesses')
+    mocker.patch('usv_playpen.processing.modify_files.subprocess.Popen', return_value=mocker.MagicMock())
+    mocker.patch('usv_playpen.processing.modify_files.shutil.move')
 
 
 def test_rectify_video_fps_missing_camera_uses_nanmedian(tmp_path, mocker):

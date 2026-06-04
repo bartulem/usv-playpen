@@ -16,8 +16,8 @@ from __future__ import annotations
 import configparser
 import json
 import os
-import re
 import pathlib
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -30,10 +30,15 @@ from imgstore import new_for_filename
 from scipy.io import wavfile
 from tqdm import tqdm
 
+from ..os_utils import (
+    configure_path,
+    ephys_base_for_data_root,
+    first_match_or_raise,
+    wait_for_subprocesses,
+)
+from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import load_session_metadata, save_session_metadata
 from .load_audio_files import DataLoader
-from .os_utils import configure_path, ephys_base_for_data_root, first_match_or_raise, wait_for_subprocesses
-from .time_utils import is_gui_context, smart_wait
-from .yaml_utils import load_session_metadata, save_session_metadata
 
 
 class Operator:
@@ -61,7 +66,7 @@ class Operator:
         """
 
         if input_parameter_dict is None or root_directory is None:
-            with open(pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json') as json_file:
+            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
                 _settings = json.load(json_file)
 
         if input_parameter_dict is not None:
@@ -105,7 +110,7 @@ class Operator:
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
-        calibrated_sr_config.read(pathlib.Path(__file__).parent / '_config/calibrated_sample_rates_imec.ini')
+        calibrated_sr_config.read(pathlib.Path(__file__).parent.parent / '_config/calibrated_sample_rates_imec.ini')
 
         for one_root_dir in self.root_directory:
             _ephys_base = ephys_base_for_data_root(one_root_dir) / pathlib.Path(one_root_dir).name.split('_')[0]
@@ -241,7 +246,7 @@ class Operator:
 
         # read headstage sampling rates
         calibrated_sr_config = configparser.ConfigParser()
-        calibrated_sr_config.read(pathlib.Path(__file__).parent / '_config/calibrated_sample_rates_imec.ini')
+        calibrated_sr_config.read(pathlib.Path(__file__).parent.parent / '_config/calibrated_sample_rates_imec.ini')
 
         # create list of directories to save concatenated files in
         concat_save_dir = []

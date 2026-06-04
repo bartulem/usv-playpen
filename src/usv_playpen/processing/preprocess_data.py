@@ -16,18 +16,18 @@ import click
 import yaml
 from click.core import ParameterSource
 
+from ..cli_utils import StringTuple, modify_settings_json_for_cli
+from ..os_utils import atomic_output_path
+from ..send_email import Messenger
+from ..yaml_utils import SmartDumper
 from .anipose_operations import ConvertTo3D
 from .assign_vocalizations import Vocalocator
-from .cli_utils import StringTuple, modify_settings_json_for_cli
 from .das_inference import FindMouseVocalizations
 from .extract_phidget_data import Gatherer
 from .modify_files import Operator
 from .prepare_cluster_job import PrepareClusterJob
 from .preprocessing_plot import SummaryPlotter
-from .send_email import Messenger
 from .synchronize_files import Synchronizer
-from .os_utils import atomic_output_path
-from .yaml_utils import SmartDumper
 
 
 def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
@@ -99,7 +99,7 @@ class Stylist:
         """
 
         if input_parameter_dict is None or root_directories is None:
-            with open(pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json') as json_file:
+            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
                 _settings = json.load(json_file)
 
         self.root_directories = root_directories if root_directories is not None else _settings['preprocess_data']['root_directories']
@@ -1017,7 +1017,7 @@ def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
     None
     """
 
-    with open((pathlib.Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
+    with open((pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
         processing_settings_dict = json.load(json_file)
 
     processing_settings_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = arena_directory
