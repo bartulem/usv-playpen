@@ -2188,3 +2188,248 @@ def test_collectors_skip_non_good_and_non_somatic_units(triage_fixture):
         f"eligible-unit count {n_eligible} should equal the good+somatic "
         f"count {n_good_somatic}; the kslabel/somatic skip filters drifted"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-cluster behavioral-page rendering: the `make_neuronal_tuning_figures`
+# dispatcher's non-PDF (one-file-per-page) save path, plus the social /
+# directional-SEI branches of `_render_behavioral_pages` that the
+# single-mouse full-pipeline fixtures never reach. The full-pipeline tests
+# above already exercise the 1D self-feature + 2D spatial happy path via the
+# default PDF backend; these add the format / multi-animal branches.
+# ---------------------------------------------------------------------------
+
+
+def _beh_1d_payload(n_bins: int = 12) -> dict:
+    """
+    Description
+    -----------
+    Build a minimal 1D behavioral-feature payload as
+    `_render_behavioral_pages` reads it: `bin_edges`, `bin_centers`,
+    `rate`, `occupancy_seconds` (all above the occupancy threshold so
+    the rate line / shuffle band render), and the `null_p0_5` /
+    `null_p99_5` shuffle bounds. No `_smoothed` variants are included so
+    the renderer takes its un-smoothed `.get(..., default)` fallbacks.
+
+    Parameters
+    ----------
+    n_bins (int)
+        Number of feature bins.
+
+    Returns
+    -------
+    payload (dict)
+        1D feature payload.
+    """
+
+    edges = np.linspace(0.0, 30.0, n_bins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    return {
+        "bin_edges":         edges,
+        "bin_centers":       centers,
+        "rate":              np.linspace(1.0, 5.0, n_bins),
+        "occupancy_seconds": np.full(n_bins, 5.0),
+        "null_p0_5":         np.full(n_bins, 0.5),
+        "null_p99_5":        np.full(n_bins, 6.0),
+    }
+
+
+def _beh_2d_payload(side: int = 8) -> dict:
+    """
+    Description
+    -----------
+    Build a minimal 2D spatial (`.space`) behavioral-feature payload:
+    a `side x side` `rate` ratemap and matching `occupancy_seconds`
+    grid. Deterministic ramp values keep the colorbar tick formatting
+    branch exercised without depending on RNG.
+
+    Parameters
+    ----------
+    side (int)
+        Edge length of the square ratemap.
+
+    Returns
+    -------
+    payload (dict)
+        2D spatial feature payload.
+    """
+
+    grid = np.arange(side * side, dtype=float).reshape(side, side)
+    return {
+        "rate":              grid,
+        "occupancy_seconds": grid + 0.5,
+    }
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path):
+    """
+    Description
+    -----------
+    Drive `make_neuronal_tuning_figures` with `figures.fig_format='png'`
+    so the dispatcher takes the non-PDF branch of `_open_save_target`:
+    each rendered page is written as its own
+    `<cluster>_neuronal_tuning_p{N}_{label}.png` file (rather than one
+    multi-page PDF). Asserts several per-page PNGs land on disk and that
+    no combined PDF is produced.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+
+    Returns
+    -------
+    None
+    """
+
+    root = tmp_path / "session"
+    root.mkdir()
+    _build_synthetic_figure_session(root, tracking_h5_at_session_root=False)
+
+    nt = NeuronalTuning(
+        root_directory=str(root),
+        tuning_parameters_dict=_make_tuning_parameters(),
+        message_output=lambda *a, **k: None,
+    )
+    nt.calculate_neuronal_tuning_curves()
+
+    viz = _make_visualizations_parameters()
+    viz["figures"] = {"fig_format": "png", "dpi": 80}
+    figure_maker = NeuronalTuningFigureMaker(
+        root_directory=str(root),
+        visualizations_parameter_dict=viz,
+        message_output=lambda *a, **k: None,
+    )
+    figure_maker.make_neuronal_tuning_figures()
+
+    tuning_dir = root / "ephys" / "tuning_curves"
+    per_page = sorted(tuning_dir.glob("*_neuronal_tuning_p*.png"))
+    assert len(per_page) >= 3, (
+        f"expected >= 3 per-page PNGs (behavioral + 2 vocal pages), got "
+        f"{[p.name for p in per_page]}"
+    )
+    assert not list(tuning_dir.glob("*_neuronal_tuning.pdf")), (
+        "a combined PDF was written despite fig_format='png' — the non-PDF "
+        "branch of _open_save_target did not take"
+    )
+    for png in per_page:
+        assert png.stat().st_size > 1_000, f"per-page PNG too small: {png}"
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_render_behavioral_pages_renders_social_and_directional_sei():
+    """
+    Description
+    -----------
+    Unit-test `_render_behavioral_pages` directly with a two-mouse,
+    hand-crafted `cluster_data` so the branches the single-mouse
+    full-pipeline fixtures never reach all execute:
+
+      * the `social` plot-feature group (dyadic `m1-m2.*` keys routed to
+        the social bucket with the social ratemap color),
+      * the directional-SEI title path (`orofacial-sei` under a
+        hyphenated `m1-m2` prefix → `feat (1→2)` mathtext title),
+      * the 2D spatial (`.space`) cell with its own colorbar, AND the
+        `gs_y > 5` row-wrap after both a spatial cell and a 1D cell.
+
+    Feature ordering places the `.space` cell at column 4 (so its
+    post-cell `gs_y += 2` wraps the row) and a 1D cell at column 4 on
+    the next row (so the 1D wrap fires too). `save_fig` records one
+    label per rendered page; we assert both the individual-mouse page
+    and the social page were committed.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    cluster_data = {
+        "beh_offset=0s": {
+            "m1.speed":            _beh_1d_payload(),
+            "m1.acceleration":     _beh_1d_payload(),
+            "m1.space":            _beh_2d_payload(),
+            "m1.allo_yaw":         _beh_1d_payload(),
+            "m1.ego_yaw":          _beh_1d_payload(),
+            "m1.neck_elevation":   _beh_1d_payload(),
+            "m1-m2.nose-nose":     _beh_1d_payload(),
+            "m1-m2.orofacial-sei": _beh_1d_payload(),
+        },
+        "behavioral_metadata": {"behavioral_min_occupancy_seconds": 0.1},
+    }
+
+    maker = NeuronalTuningFigureMaker(
+        root_directory="/tmp",
+        visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
+        message_output=lambda *a, **k: None,
+    )
+
+    saved_labels: list[str] = []
+
+    def _save_fig(fig, label: str) -> None:
+        saved_labels.append(label)
+        plt.close(fig)
+
+    maker._render_behavioral_pages(
+        cluster_data=cluster_data,
+        mouse_id_list=["m1", "m2"],
+        mouse_colors=["#9AC0CD", "#8CA252"],
+        save_fig=_save_fig,
+    )
+
+    assert any("individual.m1" in lbl for lbl in saved_labels), (
+        f"individual-mouse behavioral page not rendered; got {saved_labels}"
+    )
+    assert any(lbl.endswith("social") for lbl in saved_labels), (
+        f"social behavioral page not rendered; got {saved_labels}"
+    )
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_render_behavioral_pages_returns_early_without_beh_offset():
+    """
+    Description
+    -----------
+    `_render_behavioral_pages` must early-return (rendering nothing)
+    when the cluster payload carries no `beh_offset=*` keys — the guard
+    that stops `make_neuronal_tuning_figures` from opening a page target
+    for a vocal-only cluster's behavioral half. Asserts `save_fig` is
+    never invoked.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    maker = NeuronalTuningFigureMaker(
+        root_directory="/tmp",
+        visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
+        message_output=lambda *a, **k: None,
+    )
+
+    calls: list[str] = []
+
+    def _save_fig(fig, label: str) -> None:  # pragma: no cover - must not run
+        calls.append(label)
+        plt.close(fig)
+
+    maker._render_behavioral_pages(
+        cluster_data={"usv_peth": {}},
+        mouse_id_list=["m1"],
+        mouse_colors=["#9AC0CD"],
+        save_fig=_save_fig,
+    )
+
+    assert calls == [], (
+        f"_render_behavioral_pages rendered pages for a payload with no "
+        f"beh_offset keys; save_fig called with {calls}"
+    )
