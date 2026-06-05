@@ -41,6 +41,9 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_category_global_fatigue_heatmap,
     plot_category_estrous_rates_grid,
     plot_category_estrous_ratio_grid,
+    plot_unassigned_proportion_vs_distance_jointplot,
+    plot_hourly_regressions,
+    plot_local_fatigue_binned_trends,
 )
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
     build_master_usv_interval_dataframe,
@@ -1175,3 +1178,100 @@ def test_plot_category_estrous_ratio_grid():
     assert len(figs) == 2
     for f in figs:
         plt.close(f)
+
+
+def test_plot_unassigned_proportion_vs_distance_jointplot():
+    """
+    Description
+    -----------
+    `plot_unassigned_proportion_vs_distance_jointplot` must render the
+    Seaborn JointGrid of per-session median distance vs. unassigned-call
+    proportion and return the Pearson r / p.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(12)
+    dist = rng.uniform(2.0, 8.0, 25)
+    df_combined = pd.DataFrame({
+        "median_distance": dist,
+        "unassigned_prop": np.clip(0.05 + 0.02 * dist + rng.normal(0, 0.02, 25), 0, 1),
+    })
+    g, stats = plot_unassigned_proportion_vs_distance_jointplot(
+        df_combined, _HEX_MALE, _HEX_LINE, _HEX_FEMALE,
+    )
+    assert "pearson_r" in stats
+    plt.close(g.figure)
+
+
+def test_plot_hourly_regressions():
+    """
+    Description
+    -----------
+    `plot_hourly_regressions` must render the per-sex hour-vs-metric
+    regression panels and return the per-sex Pearson r / p.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(13)
+    rows = []
+    for sex in ("male", "female"):
+        for _ in range(60):
+            hour = int(rng.integers(12, 23))
+            rows.append({"hour": hour, "sex": sex, "usv_count": float(hour * 2 + rng.normal(0, 5))})
+    df_raw = pd.DataFrame(rows)
+    fig, axes, stats = plot_hourly_regressions(
+        df_raw, y_col="usv_count", y_label="USVs/session",
+        male_color=_HEX_MALE, female_color=_HEX_FEMALE, line_color=_HEX_LINE,
+    )
+    assert len(axes) == 2
+    assert "male_r" in stats and "female_r" in stats
+    plt.close(fig)
+
+
+def test_plot_local_fatigue_binned_trends():
+    """
+    Description
+    -----------
+    `plot_local_fatigue_binned_trends` must render the per-sex binned
+    mean +/- SEM fatigue trend lines and return the global min/max.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    n_bins = 6
+    rng = np.random.default_rng(14)
+    rows = []
+    for sex in ("male", "female"):
+        for b in range(n_bins):
+            rows.append({
+                "sex": sex,
+                "time_bin": b,
+                "mean_rate": float(10.0 - b + rng.normal(0, 0.5)),
+                "sem_rate": float(abs(rng.normal(0.5, 0.1))),
+            })
+    binned_df = pd.DataFrame(rows)
+    fig, axes, stats = plot_local_fatigue_binned_trends(
+        binned_df, y_mean_col="mean_rate", y_sem_col="sem_rate", y_label="rate",
+        bin_width_seconds=300, n_bins=n_bins,
+        male_color=_HEX_MALE, female_color=_HEX_FEMALE, use_log_scale=False,
+    )
+    assert len(axes) == 2
+    assert "global_max" in stats
+    plt.close(fig)
