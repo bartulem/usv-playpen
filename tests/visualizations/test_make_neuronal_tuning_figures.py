@@ -52,6 +52,8 @@ from usv_playpen.analyses.compute_neuronal_tuning_curves import (
 from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     DISPLAY_FACTOR,
     NeuronalTuningFigureMaker,
+    USV_CATEGORY_SEGMENTATIONS,
+    USV_PROPERTY_ORDER,
 )
 
 
@@ -1109,3 +1111,1080 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
             f"triage_stats[{section}] is empty — expected at least one "
             f"emitter entry"
         )
+
+
+# ---------------------------------------------------------------------------
+# Population-level "aggregate" figures: every `make_*_figure(s)` method that
+# consumes a cross-session `unit_triage_*.pkl` (produced by
+# `unit_triage_aggregator.py`) plus the companion `unit_catalog.csv`. These
+# methods walk the triage pickle's `units` structure, classify units per
+# brain-area group / modality / consistency rule, and render one or more
+# population summary figures.
+#
+# Rather than running the full compute+aggregator chain (slow, and whose
+# random synthetic stats rarely trip the "significant" branches), we
+# hand-build a triage pickle + catalog whose `units` deliberately populate
+# every interesting branch: significant-positive / significant-negative /
+# sign-flipping / non-significant VMI units, units with consistent PETH /
+# property / category peaks, and units spanning the pose / movement / social
+# behavioral buckets — across all seven canonical region groups and both the
+# `intact_female` / `mute_female` conditions. The schema mirrors exactly what
+# `aggregate_units_across_conditions` writes (per-modality `per_session` lists
+# AND the top-level `n_significant` / `n_tested` counts the behavioral / vocal
+# flag helpers read).
+# ---------------------------------------------------------------------------
+
+_COND_A = "intact_female"
+_COND_B = "mute_female"
+_TRIAGE_ALPHA = 0.05
+_TRIAGE_MIN_BOUTS = 8
+
+# anatomy_region -> canonical region group (one raw region per group so the
+# fixture exercises the region_to_group lookup for each VMI_REGION_ORDER label;
+# "FOO" is deliberately unknown so it lands in the "Other" catch-all).
+_REGION_ANATOMY = {
+    "PAG":   "PAG",
+    "MRN":   "MRN",
+    "VTA":   "VTA",
+    "MB":    "MB",
+    "CENT":  "CENT2",
+    "SC":    "SCdw",
+    "Other": "FOO",
+}
+
+
+def _vmi_session(session, vmi, p, *, n_bouts=40, fr_baseline=2.5, fr_usv=4.0):
+    """
+    Description
+    -----------
+    Build one per-session VMI entry exactly as the triage aggregator
+    records it under a `vmi_self_{excit,suppress}` modality block:
+    `session`, `n_bouts`, `p`, `vmi`, `fr_baseline`, `fr_usv`,
+    `significant`. Significance is derived from `p < _TRIAGE_ALPHA` so
+    callers can drive the sig / non-sig branches purely by the supplied
+    p-value.
+
+    Parameters
+    ----------
+    session (str)
+        Session id string stored on the entry.
+    vmi (float | None)
+        Signed vocalization-modulation index for the session.
+    p (float | None)
+        Per-session two-sided p-value; `< _TRIAGE_ALPHA` marks the
+        entry significant.
+    n_bouts (int)
+        USV-bout count; entries below `_TRIAGE_MIN_BOUTS` are filtered
+        out by every VMI collector.
+    fr_baseline (float)
+        Pre-bout baseline firing rate (sp/s).
+    fr_usv (float)
+        During-bout firing rate (sp/s).
+
+    Returns
+    -------
+    entry (dict)
+        One per-session VMI record.
+    """
+
+    return {
+        "session":     session,
+        "n_bouts":     n_bouts,
+        "p":           p,
+        "vmi":         vmi,
+        "fr_baseline": fr_baseline,
+        "fr_usv":      fr_usv,
+        "significant": (p is not None and p < _TRIAGE_ALPHA),
+    }
+
+
+def _mod_block(per_session):
+    """
+    Description
+    -----------
+    Wrap a `per_session` list into a full modality block, computing the
+    top-level `n_tested` / `n_significant` / `consistency` scalars the
+    aggregator derives in its post-pass (and which the behavioral /
+    vocal flag helpers read directly off the block). An empty
+    `aggregate` dict is attached for schema parity.
+
+    Parameters
+    ----------
+    per_session (list[dict])
+        Per-session entries (any modality shape).
+
+    Returns
+    -------
+    block (dict)
+        Modality block with `per_session`, `n_tested`,
+        `n_significant`, `consistency`, `aggregate`.
+    """
+
+    n_test = len(per_session)
+    n_sig = sum(1 for e in per_session if e.get("significant"))
+    return {
+        "per_session":   per_session,
+        "n_tested":      n_test,
+        "n_significant": n_sig,
+        "consistency":   (n_sig / n_test) if n_test else 0.0,
+        "aggregate":     {},
+    }
+
+
+def _behavioral_block(n_sig, n_tested):
+    """
+    Description
+    -----------
+    Build a behavioral-modality block as the flag helpers see it: only
+    the top-level `n_significant` / `n_tested` counts are read (the
+    consistency rule never touches a `per_session` list for behavioral
+    keys), so the block carries exactly those two scalars.
+
+    Parameters
+    ----------
+    n_sig (int)
+        Number of significant sessions for the feature.
+    n_tested (int)
+        Number of tested sessions for the feature.
+
+    Returns
+    -------
+    block (dict)
+        `{"n_significant": int, "n_tested": int}`.
+    """
+
+    return {"n_significant": int(n_sig), "n_tested": int(n_tested)}
+
+
+def _vocal_modalities(archetype):
+    """
+    Description
+    -----------
+    Build the full set of self-vocal modality blocks for one condition,
+    parameterised by `archetype`. The archetype drives the VMI sign /
+    significance pattern and whether the unit carries consistent PETH /
+    property / category peaks:
+
+      * "pos"    — two significant +VMI sessions; consistent excit PETH,
+                   consistent property peaks for every property, and
+                   consistent up-category peaks for every segmentation.
+      * "neg"    — two significant -VMI suppress sessions; no consistent
+                   vocal-peak content (exercises the sig-negative branch).
+      * "flip"   — one significant +VMI and one significant -VMI session
+                   (the cross-session sign-flipper).
+      * "nonsig" — two non-significant VMI sessions only.
+
+    Parameters
+    ----------
+    archetype (str)
+        One of {"pos", "neg", "flip", "nonsig"}.
+
+    Returns
+    -------
+    mods (dict)
+        Mapping from modality key to modality block.
+    """
+
+    mods: dict = {}
+
+    if archetype == "pos":
+        mods["vmi_self_excit"] = _mod_block([
+            _vmi_session("s1", 0.62, 0.005),
+            _vmi_session("s2", 0.55, 0.02),
+        ])
+    elif archetype == "neg":
+        mods["vmi_self_suppress"] = _mod_block([
+            _vmi_session("s1", -0.60, 0.004),
+            _vmi_session("s2", -0.52, 0.03),
+        ])
+    elif archetype == "flip":
+        mods["vmi_self_excit"] = _mod_block([_vmi_session("s1", 0.65, 0.004)])
+        mods["vmi_self_suppress"] = _mod_block([_vmi_session("s2", -0.70, 0.004)])
+    else:  # nonsig
+        mods["vmi_self_excit"] = _mod_block([
+            _vmi_session("s1", 0.12, 0.40),
+            _vmi_session("s2", 0.08, 0.55),
+        ])
+
+    if archetype != "pos":
+        return mods
+
+    # Consistent excit PETH: two sig sessions whose peak_t cluster within
+    # the 100 ms tolerance, plus a sig suppress block for the suppress
+    # figure variants.
+    mods["usv_peth_self_excit"] = _mod_block([
+        {"session": "s1", "significant": True, "peak_t": -0.50, "peak_z": 4.2},
+        {"session": "s2", "significant": True, "peak_t": -0.52, "peak_z": 4.6},
+    ])
+    mods["usv_peth_self_suppress"] = _mod_block([
+        {"session": "s1", "significant": True, "peak_t": -0.30, "peak_z": -4.1},
+        {"session": "s2", "significant": True, "peak_t": -0.31, "peak_z": -4.4},
+    ])
+
+    # Consistent property peaks for every property: two sig sessions with
+    # peak_bin_value within the per-property tolerance.
+    _prop_base = {
+        "duration":          (0.05, 0.06),
+        "mean_freq_hz":      (60000.0, 61000.0),
+        "peak_freq_hz":      (62000.0, 63000.0),
+        "freq_bandwidth_hz": (15000.0, 16000.0),
+        "mean_amplitude":    (1.0, 1.1),
+        "max_amplitude":     (2.0, 2.3),
+        "spectral_entropy":  (2.0, 2.1),
+        "mask_number":       (3.0, 4.0),
+    }
+    for prop in USV_PROPERTY_ORDER:
+        v1, v2 = _prop_base[prop]
+        mods[f"usv_property_self_{prop}_excit"] = _mod_block([
+            {"session": "s1", "significant": True,
+             "peak_bin_value": v1, "peak_z": 4.0},
+            {"session": "s2", "significant": True,
+             "peak_bin_value": v2, "peak_z": 4.5},
+        ])
+
+    # Consistent up-category peaks for every segmentation: two sig
+    # sessions agreeing on best_cat=2 with positive signed z.
+    for seg in USV_CATEGORY_SEGMENTATIONS:
+        mods[f"usv_category_self_{seg}"] = _mod_block([
+            {"session": "s1", "significant": True, "peak_signed_z": 3.1,
+             "best_cat": 2, "n_sig_categories": 2, "selectivity": 0.62},
+            {"session": "s2", "significant": True, "peak_signed_z": 3.6,
+             "best_cat": 2, "n_sig_categories": 3, "selectivity": 0.71},
+        ])
+
+    return mods
+
+
+def _behavioral_modalities(mouse_id, partner_id, buckets):
+    """
+    Description
+    -----------
+    Build the behavioral modality keys for one condition, in the exact
+    `behavioral_beh_offset=0s_<prefix>.<feat>_<direction>` shape the
+    aggregator emits. `buckets` selects which of the pose / movement /
+    social buckets are "tuned" (consistent in >= k_min sessions with a
+    strict majority) so the caller can place a unit in any of the eight
+    behavioral tiers.
+
+    Parameters
+    ----------
+    mouse_id (str)
+        Recorded-mouse id (self-pose / self-movement key prefix).
+    partner_id (str)
+        Partner mouse id used to form the hyphenated dyadic (social)
+        key prefix `<mouse>-<partner>`.
+    buckets (set[str])
+        Subset of {"pose", "movement", "social"} to flag as tuned.
+
+    Returns
+    -------
+    mods (dict)
+        Mapping from behavioral modality key to its `{n_significant,
+        n_tested}` block. Tuned buckets get `2/2`; untuned buckets get
+        `0/2` so the feature is present-but-not-tuned.
+    """
+
+    def _counts(tuned):
+        return (2, 2) if tuned else (0, 2)
+
+    mods: dict = {}
+    ns, nt = _counts("pose" in buckets)
+    mods[f"behavioral_beh_offset=0s_{mouse_id}.allo_yaw_excit"] = _behavioral_block(ns, nt)
+    ns, nt = _counts("movement" in buckets)
+    mods[f"behavioral_beh_offset=0s_{mouse_id}.speed_excit"] = _behavioral_block(ns, nt)
+    ns, nt = _counts("social" in buckets)
+    mods[f"behavioral_beh_offset=0s_{mouse_id}-{partner_id}.nose-nose_excit"] = _behavioral_block(ns, nt)
+    return mods
+
+
+def _make_unit(
+    *,
+    mouse_id,
+    rec_date,
+    unit_id,
+    anatomy,
+    archetype,
+    both_conditions,
+    behavioral_buckets,
+    kslabel="good",
+):
+    """
+    Description
+    -----------
+    Assemble one `triage["units"][...]` entry. The unit carries a full
+    self-vocal + behavioral modality set under `_COND_A`, and the same
+    set duplicated under `_COND_B` when `both_conditions` is True (so the
+    cross-condition stability figure has paired data). Identity fields
+    (`mouse_id`, `rec_date`, `unit_id`, `kslabel`, `anatomy_region`)
+    mirror the aggregator's per-unit header.
+
+    Parameters
+    ----------
+    mouse_id (str)
+        Recorded-mouse id.
+    rec_date (int)
+        8-digit recording date (also the catalog join key).
+    unit_id (str)
+        Per-day Kilosort unit id string.
+    anatomy (str)
+        Raw `anatomy_region` value (mapped to a canonical group
+        downstream).
+    archetype (str)
+        Vocal archetype passed through to `_vocal_modalities`.
+    both_conditions (bool)
+        Whether to populate `_COND_B` in addition to `_COND_A`.
+    behavioral_buckets (set[str])
+        Behavioral buckets to flag tuned (see `_behavioral_modalities`).
+    kslabel (str)
+        Kilosort label; only `"good"` units survive the collectors'
+        filter.
+
+    Returns
+    -------
+    unit (dict)
+        One unit record keyed-ready for `triage["units"]`.
+    """
+
+    partner_id = "p9"
+
+    def _cond_block():
+        mods = dict(_vocal_modalities(archetype))
+        mods.update(_behavioral_modalities(mouse_id, partner_id, behavioral_buckets))
+        return {"sessions_tested": ["s1", "s2"], "modalities": mods}
+
+    conditions = {_COND_A: _cond_block()}
+    if both_conditions:
+        conditions[_COND_B] = _cond_block()
+
+    return {
+        "unit_uid":       f"{mouse_id}_{rec_date}_{unit_id}",
+        "mouse_id":       mouse_id,
+        "rec_date":       rec_date,
+        "unit_id":        unit_id,
+        "imec":           0,
+        "cluster_num":    int(unit_id[-2:]) if unit_id[-2:].isdigit() else 1,
+        "peak_channel":   1,
+        "kslabel":        kslabel,
+        "anatomy_region": anatomy,
+        "conditions":     conditions,
+    }
+
+
+def _build_synthetic_triage_pkl(tmp_path):
+    """
+    Description
+    -----------
+    Hand-build a `unit_triage_*.pkl` plus its companion
+    `unit_catalog.csv` rich enough to drive every aggregate figure
+    through its non-trivial branches. Produces, per canonical region
+    group, a mix of significant-positive / significant-negative /
+    sign-flipping / non-significant VMI units, with the PAG group given
+    Allen-CCF coordinates and >= 3 significant units so the anatomical
+    KDE path runs. Behavioral buckets are varied so the tier matrix and
+    Venn figures populate multiple tiers.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory; both artifacts are written beneath it.
+
+    Returns
+    -------
+    triage_path (pathlib.Path)
+        Path to the written triage pickle.
+    catalog_path (pathlib.Path)
+        Path to the written catalog CSV.
+    """
+
+    units: dict = {}
+    catalog_rows: list[dict] = []
+
+    # Per-region unit recipes: (archetype, both_conditions, behavioral_buckets).
+    region_recipes = {
+        "PAG": [
+            ("pos",   True,  {"pose", "movement", "social"}),
+            ("pos",   True,  {"pose", "movement"}),
+            ("neg",   True,  {"pose"}),
+            ("flip",  True,  {"movement", "social"}),
+            ("nonsig", False, set()),
+        ],
+        "MRN": [
+            ("pos",   True,  {"pose", "social"}),
+            ("neg",   True,  {"movement"}),
+            ("flip",  False, {"social"}),
+            ("nonsig", True,  set()),
+        ],
+        "VTA": [
+            ("pos",   True,  {"movement", "social"}),
+            ("neg",   False, {"pose", "movement"}),
+            ("nonsig", True,  set()),
+        ],
+        "MB": [
+            ("pos",   True,  {"pose"}),
+            ("flip",  True,  {"movement"}),
+        ],
+        "CENT": [
+            ("pos",   False, {"social"}),
+            ("nonsig", True,  set()),
+        ],
+        "SC": [
+            ("neg",   True,  {"pose", "movement", "social"}),
+            ("pos",   True,  set()),
+        ],
+        "Other": [
+            ("pos",   True,  {"pose"}),
+            ("nonsig", False, {"movement"}),
+        ],
+    }
+
+    # PAG Allen-CCF coordinates (µm), spread so gaussian_kde stays
+    # non-singular; non-PAG units get blank coords (never read).
+    pag_coords = [
+        (-4400.0, 300.0, 2400.0),
+        (-4450.0, 280.0, 2500.0),
+        (-4500.0, 350.0, 2600.0),
+        (-4550.0, 260.0, 2450.0),
+        (-4600.0, 330.0, 2550.0),
+    ]
+
+    date_counter = 20240101
+    for region, recipes in region_recipes.items():
+        anatomy = _REGION_ANATOMY[region]
+        for idx, (archetype, both, buckets) in enumerate(recipes):
+            mouse_id = f"m{region}"
+            rec_date = date_counter
+            date_counter += 1
+            unit_id = f"imec0_cl{idx:02d}_ch001_good"
+
+            unit = _make_unit(
+                mouse_id=mouse_id,
+                rec_date=rec_date,
+                unit_id=unit_id,
+                anatomy=anatomy,
+                archetype=archetype,
+                both_conditions=both,
+                behavioral_buckets=buckets,
+            )
+            units[unit["unit_uid"]] = unit
+
+            row = {
+                "mouse_id":      mouse_id,
+                "rec_date":      str(rec_date),
+                "unit_id":       unit_id,
+                "brain_area":    anatomy,
+                "cluster_group": "good",
+                "somatic":       "True",
+                "loc_ap":        "",
+                "loc_ml":        "",
+                "loc_dv":        "",
+            }
+            if region == "PAG":
+                ap, ml, dv = pag_coords[idx % len(pag_coords)]
+                row["loc_ap"], row["loc_ml"], row["loc_dv"] = (
+                    str(ap), str(ml), str(dv),
+                )
+            catalog_rows.append(row)
+
+    # One extra non-somatic + one non-good unit so the catalog/kslabel
+    # filters in every collector get exercised (both must be skipped).
+    skip_specs = [
+        ("mSKIP", 20240901, "imec0_cl90_ch001_good", "good", "False"),
+        ("mSKIP", 20240902, "imec0_cl91_ch001_mua",  "mua",  "True"),
+    ]
+    for mouse_id, rec_date, unit_id, kslabel, somatic in skip_specs:
+        unit = _make_unit(
+            mouse_id=mouse_id,
+            rec_date=rec_date,
+            unit_id=unit_id,
+            anatomy="PAG",
+            archetype="pos",
+            both_conditions=True,
+            behavioral_buckets={"pose"},
+            kslabel=kslabel,
+        )
+        units[unit["unit_uid"]] = unit
+        catalog_rows.append({
+            "mouse_id":      mouse_id,
+            "rec_date":      str(rec_date),
+            "unit_id":       unit_id,
+            "brain_area":    "PAG",
+            "cluster_group": kslabel,
+            "somatic":       somatic,
+            "loc_ap":        "-4400.0",
+            "loc_ml":        "300.0",
+            "loc_dv":        "2400.0",
+        })
+
+    # Every catalog value is stored as a string (matching how the
+    # collectors read the CSV back via `csv.DictReader` and then cast),
+    # so a single string-typed polars frame round-trips cleanly — empty
+    # `loc_*` fields come back as "" and trip the collectors' float()
+    # guard exactly as a real catalog's blank coordinates would.
+    catalog_path = tmp_path / "unit_catalog.csv"
+    fieldnames = [
+        "mouse_id", "rec_date", "unit_id", "brain_area",
+        "cluster_group", "somatic", "loc_ap", "loc_ml", "loc_dv",
+    ]
+    catalog_columns = {
+        field: [row[field] for row in catalog_rows] for field in fieldnames
+    }
+    pls.DataFrame(catalog_columns).write_csv(catalog_path)
+
+    triage = {
+        "generated_at":     "2026-06-04T00:00:00",
+        "thresholds_used":  {
+            "vmi_alpha":     _TRIAGE_ALPHA,
+            "vmi_min_bouts": _TRIAGE_MIN_BOUTS,
+        },
+        "catalog_path":     str(catalog_path),
+        "data_root":        str(tmp_path),
+        "conditions_included": {_COND_A: [], _COND_B: []},
+        "sessions_skipped": {_COND_A: [], _COND_B: []},
+        "n_units_total":    len(units),
+        "n_units_per_condition": {_COND_A: len(units), _COND_B: len(units)},
+        "units":            units,
+    }
+    triage_path = tmp_path / "unit_triage_20260604_000000.pkl"
+    with triage_path.open("wb") as fh:
+        pickle.dump(triage, fh)
+
+    return triage_path, catalog_path
+
+
+def _make_aggregate_visualizations_parameters() -> dict:
+    """
+    Description
+    -----------
+    Return a `visualizations_parameter_dict` carrying every palette /
+    settings key the aggregate figures read: `brain_area_colors` (with
+    the lowercase `other` entry `_resolve_region_colors` maps to),
+    `unassigned_colors`, `male_colors`, `female_colors`, `social_colors`,
+    and a `figures` block with a `cmap` (read by the category-peak
+    figure). Values mirror the project's `visualizations_settings.json`.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    viz (dict)
+        Visualizations-parameter dict for the aggregate figures.
+    """
+
+    return {
+        "brain_area_colors": {
+            "PAG":   "#677470",
+            "MRN":   "#939884",
+            "VTA":   "#F5D27A",
+            "SC":    "#9FB7D8",
+            "CENT":  "#D88080",
+            "MB":    "#9BBE85",
+            "other": "#B8B8B8",
+        },
+        "unassigned_colors": ["#C0C0C0"],
+        "male_colors":       ["#9AC0CD", "#8CA252"],
+        "female_colors":     ["#FF6347", "#B851B4"],
+        "social_colors":     ["#5A6470"],
+        "figures":           {"cmap": "inferno"},
+    }
+
+
+def _aggregate_maker(tmp_path):
+    """
+    Description
+    -----------
+    Construct a `NeuronalTuningFigureMaker` wired with the aggregate
+    visualizations palette. `root_directory` is a throwaway path since
+    the aggregate methods read the triage pickle / catalog directly.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory (used as the placeholder root).
+
+    Returns
+    -------
+    maker (NeuronalTuningFigureMaker)
+        Configured figure maker.
+    """
+
+    return NeuronalTuningFigureMaker(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
+        message_output=lambda *a, **k: None,
+    )
+
+
+def _assert_figure_written(out_path, tmp_path):
+    """
+    Description
+    -----------
+    Assert the figure method returned a real, non-trivially-sized PNG
+    that lives under the requested output directory.
+
+    Parameters
+    ----------
+    out_path (pathlib.Path)
+        Path returned by the figure method.
+    tmp_path (pathlib.Path)
+        The `out_dir` the method was asked to write under.
+
+    Returns
+    -------
+    None
+    """
+
+    out_path = pathlib.Path(out_path)
+    assert out_path.exists(), f"figure not written: {out_path}"
+    assert out_path.suffix == ".png", f"unexpected format: {out_path.suffix}"
+    assert tmp_path in out_path.parents, (
+        f"figure {out_path} not under requested out_dir {tmp_path}"
+    )
+    assert out_path.stat().st_size > 5_000, (
+        f"figure {out_path} suspiciously small ({out_path.stat().st_size} bytes)"
+    )
+
+
+@pytest.fixture
+def triage_fixture(tmp_path):
+    """
+    Description
+    -----------
+    Pytest fixture yielding `(maker, triage_path, catalog_path, out_dir)`
+    for the aggregate-figure tests: a hand-built triage pickle + catalog
+    under `tmp_path/data`, a configured figure maker, and a dedicated
+    `tmp_path/figs` output directory.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory.
+
+    Returns
+    -------
+    fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+    """
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    triage_path, catalog_path = _build_synthetic_triage_pkl(data_dir)
+    out_dir = tmp_path / "figs"
+    out_dir.mkdir()
+    return _aggregate_maker(tmp_path), triage_path, catalog_path, out_dir
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_vmi_fr_confound_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_vmi_fr_confound_figure` renders the FR-baseline × |VMI|
+    confound diagnostic (7 per-region scatter panels + a pooled ECDF
+    panel) from the triage pickle, writing a real PNG under the
+    requested output directory.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_vmi_fr_confound_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_vmi_cross_condition_stability_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_vmi_cross_condition_stability_figure` pairs per-unit median
+    VMI across `intact_female` / `mute_female` and renders the
+    cross-condition stability scatter (with a small bootstrap so the
+    test stays fast). Asserts a real PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_vmi_cross_condition_stability_figure(
+        triage_pkl_path=triage_path,
+        n_bootstrap=50,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_vmi_magnitude_consistency_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_vmi_magnitude_consistency_figure` plots per-unit max-|VMI|
+    against cross-session significance consistency for units tested in
+    at least `n_tested_min` sessions. Asserts a real PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_vmi_magnitude_consistency_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_vmi_sign_flip_summary_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_vmi_sign_flip_summary_figure` tallies units into
+    significant-positive-only / negative-only / both / never tiers
+    (the `flip` archetype populates the sig-both tier). Asserts a real
+    PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_vmi_sign_flip_summary_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_pag_anatomical_gradient_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_pag_anatomical_gradient_figure` projects PAG units' best-
+    session signed VMI onto their Allen-CCF coordinates and overlays a
+    significant-unit KDE. The fixture's five spread PAG units (>= 3
+    significant) keep the gaussian-KDE path non-singular. Asserts a
+    real PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_pag_anatomical_gradient_figure(
+        triage_pkl_path=triage_path,
+        kde_grid_resolution=40,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_vmi_distribution_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_vmi_distribution_figure` renders per-region signed-VMI
+    histograms with sig-positive / sig-negative overlays computed via
+    the hybrid per-unit assignment rule. Asserts a real PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_vmi_distribution_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.parametrize("direction", ["excit", "suppress"])
+def test_peth_timing_distribution_figure_writes_png(triage_fixture, direction):
+    """
+    Description
+    -----------
+    `make_peth_timing_distribution_figure` renders the population
+    distribution of consistent per-unit PETH peak times for the given
+    direction. The `pos` archetype supplies consistent excit and
+    suppress PETH content. Asserts a real PNG is produced for both
+    directions.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+    direction (str)
+        PETH direction under test ("excit" / "suppress").
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_peth_timing_distribution_figure(
+        triage_pkl_path=triage_path,
+        direction=direction,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_all_property_tuning_distribution_figures_writes_pngs(triage_fixture):
+    """
+    Description
+    -----------
+    `make_all_property_tuning_distribution_figures` dispatches one
+    property-tuning distribution figure per entry in
+    `USV_PROPERTY_ORDER`. Asserts one real PNG per property is written.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_paths = maker.make_all_property_tuning_distribution_figures(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    assert len(out_paths) == len(USV_PROPERTY_ORDER), (
+        f"expected {len(USV_PROPERTY_ORDER)} property figures, got "
+        f"{len(out_paths)}"
+    )
+    for out_path in out_paths:
+        _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_all_category_figures_writes_pngs(triage_fixture):
+    """
+    Description
+    -----------
+    `make_all_category_figures` dispatches a category-peak-distribution
+    figure AND a selectivity-breadth figure per entry in
+    `USV_CATEGORY_SEGMENTATIONS` (eight figures total). Asserts every
+    returned path is a real PNG.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_paths = maker.make_all_category_figures(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    assert len(out_paths) == 2 * len(USV_CATEGORY_SEGMENTATIONS), (
+        f"expected {2 * len(USV_CATEGORY_SEGMENTATIONS)} category figures, "
+        f"got {len(out_paths)}"
+    )
+    for out_path in out_paths:
+        _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_behavioral_tuning_summary_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_behavioral_tuning_summary_figure` classifies each unit into
+    one of the eight pose/movement/social tiers and renders the
+    region × tier matrix. The fixture's varied behavioral buckets
+    populate multiple tiers. Asserts a real PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_behavioral_tuning_summary_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_three_set_overlap_venn_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_three_set_overlap_venn_figure` renders the population-level
+    behavioral / social / vocal 3-set Venn from the per-unit bucket and
+    vocal flags. Asserts a real PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_three_set_overlap_venn_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_per_region_overlap_venn_figure_writes_png(triage_fixture):
+    """
+    Description
+    -----------
+    `make_per_region_overlap_venn_figure` renders the per-region
+    small-multiples Venn grid (one panel per region group plus an
+    all-regions aggregate). Asserts a real PNG is produced.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    out_path = maker.make_per_region_overlap_venn_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_collectors_skip_non_good_and_non_somatic_units(triage_fixture):
+    """
+    Description
+    -----------
+    Contract check on the catalog / kslabel filters shared by every
+    collector: the two deliberately-skipped units (one `kslabel='mua'`,
+    one `somatic='False'`) must never appear in the population counted
+    by `_collect_three_set_overlap_counts`. The eligible count must
+    therefore equal the number of good + somatic units in the fixture.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, catalog_path, _out_dir = triage_fixture
+    _counts, n_eligible = maker._collect_three_set_overlap_counts(
+        triage_pkl_path=triage_path,
+        catalog_csv_path=catalog_path,
+        condition=_COND_A,
+        k_min=2,
+        require_majority=True,
+    )
+
+    with triage_path.open("rb") as fh:
+        triage = pickle.load(fh)
+    n_good_somatic = sum(
+        1 for u in triage["units"].values()
+        if u["kslabel"] == "good" and u["unit_id"] != "imec0_cl90_ch001_good"
+    )
+    assert n_eligible == n_good_somatic, (
+        f"eligible-unit count {n_eligible} should equal the good+somatic "
+        f"count {n_good_somatic}; the kslabel/somatic skip filters drifted"
+    )
