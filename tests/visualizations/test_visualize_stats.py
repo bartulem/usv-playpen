@@ -7,6 +7,8 @@ compute / data-loading helpers when wired to synthetic sessions on disk.
 
 from __future__ import annotations
 
+import glob
+import json
 from pathlib import Path
 
 import h5py
@@ -62,6 +64,10 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_qq,
     plot_best_fit_with_annotations,
     run_bic_sweep,
+    run_bootstrap_lrt_sweep,
+    select_n_components_from_lrt_sweep,
+    plot_bootstrap_lrt_panel,
+    save_notebook_archive_to_h5,
 )
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
 
@@ -1842,3 +1848,372 @@ def test_plot_estrous_category_kde_grid_degenerate_grid_shapes(cats, stages, wan
     )
     assert axes.shape == want_shape
     plt.close(fig)
+
+
+# ===========================================================================
+# usv_interval_summary_statistics — bootstrap-LRT sweep, panel, and the
+# notebook -> HDF5 archive writer.
+#
+# The panel / cell-pair / step-up / archive paths consume hand-built sweep
+# dicts (shaped exactly like run_bootstrap_lrt_sweep / bootstrap_lrt output)
+# so the broken-axis, normal, and empty-fill rendering branches are all
+# driven without paying the bootstrap cost; one small real sweep covers the
+# compute loop and its size<2 skip.
+# ===========================================================================
+
+def _lrt_res(K_n, K_a, lr_obs, lr_null, p_value):
+    """
+    Description
+    -----------
+    Build one `(K_null, K_alt)` bootstrap-LRT result dict shaped exactly
+    like `mixture_model_utils.bootstrap_lrt` returns it, so the same dict
+    drives `plot_bootstrap_lrt_panel`, `select_n_components_from_lrt_sweep`,
+    and `save_notebook_archive_to_h5`.
+
+    Parameters
+    ----------
+    K_n (int)
+        Null-model component count.
+    K_a (int)
+        Alternative-model component count.
+    lr_obs (float)
+        Observed likelihood-ratio statistic.
+    lr_null (array-like)
+        Bootstrap null LR draws.
+    p_value (float)
+        Bootstrap p-value.
+
+    Returns
+    -------
+    res (dict)
+        Result dict with the full key set the consumers read.
+    """
+
+    lr_null = np.asarray(lr_null, dtype=float)
+    return {
+        "K_null":      int(K_n),
+        "K_alt":       int(K_a),
+        "lr_obs":      float(lr_obs),
+        "lr_null":     lr_null,
+        "null_mean":   float(lr_null.mean()),
+        "null_p95":    float(np.quantile(lr_null, 0.95)),
+        "null_max":    float(lr_null.max()),
+        "p_value":     float(p_value),
+        "B":           int(lr_null.size),
+        "n_subsample": 100,
+        "model_class": "gauss",
+    }
+
+
+def _lrt_sweep() -> dict:
+    """
+    Description
+    -----------
+    Hand-build a two-sex bootstrap-LRT sweep that exercises every panel
+    rendering branch: `male` has a far-out `LR_obs` (triggers the broken
+    axis + `_draw_lrt_cell_pair`) and a non-significant in-bulk pair;
+    `female` has a single significant pair (one fewer column, so the
+    panel's empty-column fill branch runs).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    sweep (dict)
+        `key -> {(K_null, K_alt) -> result_dict}`.
+    """
+
+    rng = np.random.default_rng(200)
+    null_bulk = rng.uniform(0.0, 2.0, 40)
+    return {
+        "male": {
+            (1, 2): _lrt_res(1, 2, 25.0, null_bulk, 0.004),  # far out -> break
+            (2, 3): _lrt_res(2, 3, 1.4, null_bulk, 0.42),    # in-bulk  -> normal
+        },
+        "female": {
+            (1, 2): _lrt_res(1, 2, 3.2, null_bulk, 0.03),    # near bulk -> normal
+        },
+    }
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_bootstrap_lrt_panel_broken_normal_and_empty_fill():
+    """
+    Description
+    -----------
+    `plot_bootstrap_lrt_panel` must render one row per key and one column
+    per K-pair: the far-out male `(1,2)` cell becomes a broken-axis
+    `(ax_left, ax_right)` tuple (via `_draw_lrt_cell_pair`), the in-bulk
+    cells stay single Axes, and female's missing second column is filled
+    with a turned-off placeholder axis. Asserts the `(2, 2)` axes grid and
+    that exactly the broken cell is a 2-tuple.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    fig, axes = plot_bootstrap_lrt_panel(_lrt_sweep())
+    assert axes.shape == (2, 2)
+    assert isinstance(axes[0, 0], tuple) and len(axes[0, 0]) == 2, (
+        "far-out LR_obs cell should be rendered as a broken-axis pair"
+    )
+    assert not isinstance(axes[0, 1], tuple), "in-bulk cell should be a single Axes"
+    plt.close(fig)
+
+
+def test_plot_bootstrap_lrt_panel_empty_sweep_returns_single_axis():
+    """
+    Description
+    -----------
+    An empty sweep dict must short-circuit to a single 1x1 placeholder
+    figure rather than crash on `max()` over no pairs.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    fig, axes = plot_bootstrap_lrt_panel({})
+    assert axes.shape == (1, 1)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("bonferroni", [False, True])
+def test_select_n_components_from_lrt_sweep(bonferroni):
+    """
+    Description
+    -----------
+    `select_n_components_from_lrt_sweep` must apply the per-key step-up
+    rule, returning one selected K per key, and (when `bonferroni=True`)
+    divide alpha by the per-key test count before delegating to the
+    step-up selector.
+
+    Parameters
+    ----------
+    bonferroni (bool)
+        Whether to apply the Bonferroni correction.
+
+    Returns
+    -------
+    None
+    """
+
+    selected = select_n_components_from_lrt_sweep(
+        _lrt_sweep(), alpha=0.05, bonferroni=bonferroni,
+    )
+    assert set(selected) == {"male", "female"}
+    assert all(isinstance(v, int) for v in selected.values())
+
+
+def test_run_bootstrap_lrt_sweep_small_and_skips_tiny_key():
+    """
+    Description
+    -----------
+    `run_bootstrap_lrt_sweep` must run the parametric bootstrap LRT for
+    every consecutive K-pair per key, while skipping keys with fewer than
+    two intervals. Uses a tiny `B` and Gaussian model class to keep the
+    real `bootstrap_lrt` calls fast.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(201)
+    intervals_by_key = {
+        "male": np.exp(rng.normal(-0.4, 0.5, 150)),
+        "tiny": np.array([0.5]),  # size < 2 -> skipped
+    }
+    sweep = run_bootstrap_lrt_sweep(
+        intervals_by_key,
+        n_components_min=1, n_components_max=2,
+        B=3, n_subsample=120, model_class="gauss",
+        n_init_obs=1, n_init_boot=1, seed=0,
+        message_output=lambda *a, **k: None,
+    )
+    assert "tiny" not in sweep, "single-interval key should be skipped"
+    assert (1, 2) in sweep["male"]
+    res = sweep["male"][(1, 2)]
+    assert {"lr_obs", "lr_null", "p_value", "null_max"}.issubset(res)
+
+
+def test_save_notebook_archive_to_h5_round_trips(tmp_path):
+    """
+    Description
+    -----------
+    `save_notebook_archive_to_h5` must consolidate the notebook's in-memory
+    interval frame + GMM sweep + bootstrap-LRT sweep into a single
+    `usv_interval_analysis_<ts>.h5` archive (applying the step-up rule and
+    writing the `K_selected_step_up` column), skipping the empty `e2s`
+    mode entirely. Asserts the archive is written and reloads via the
+    existing HDF5 loaders, with the per-sex selected-K attrs intact.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory used as the archive output directory.
+
+    Returns
+    -------
+    None
+    """
+
+    intervals_df = pls.DataFrame({
+        "session_id":   ["s1", "s1", "s1", "s2"],
+        "source_list":  ["g", "g", "g", "g"],
+        "interval_type": ["s2s"] * 4,
+        "sex":          ["male", "male", "female", "male"],
+        "interval_s":   [0.5, 0.7, 0.3, 0.9],
+        "log_interval": np.log([0.5, 0.7, 0.3, 0.9]).tolist(),
+        "male_id":      ["M"] * 4,
+        "female_id":    ["F"] * 4,
+    })
+    summary = {
+        "n_sessions_loaded": 2,
+        "n_dropped": {"s2s": {"male": 1, "female": 0}},
+    }
+    settings_path = glob.glob("**/analyses_settings.json", recursive=True)[0]
+    cfg = json.loads(
+        Path(settings_path).read_text()
+    )["compute_inter_usv_interval_distributions"]
+
+    gmm_rows = []
+    for sex in ("male", "female"):
+        for K in (1, 2):
+            row = {
+                "sex": sex, "n_comp": K, "rep": 0,
+                "bic": 10.0, "aic": 10.0, "icl": 10.0,
+                "cv_neg_loglik": 1.0, "model_class": "gauss",
+            }
+            for k in range(2):
+                row[f"weight_{k+1}"] = 0.5 if k < K else float("nan")
+                row[f"logmean_{k+1}"] = float(k - 0.5) if k < K else float("nan")
+                row[f"logsd_{k+1}"] = 0.5 if k < K else float("nan")
+                row[f"nu_{k+1}"] = float("nan")
+            gmm_rows.append(row)
+
+    h5_path = save_notebook_archive_to_h5(
+        output_directory=str(tmp_path),
+        usv_interval_df=intervals_df,
+        usv_interval_summary=summary,
+        usv_interval_cfg=cfg,
+        gmm_fits_by_mode={"s2s": pls.DataFrame(gmm_rows)},
+        lrt_sweep_by_mode={"s2s": _lrt_sweep()},
+        message_output=lambda *a, **k: None,
+    )
+
+    assert h5_path.exists()
+    assert h5_path.name.startswith("usv_interval_analysis_")
+
+    # Reloads through the existing loader family.
+    df_back = load_intervals_from_h5(str(h5_path), interval_type="s2s")
+    assert df_back.height == 4
+    lrt_back = load_lrt_sweep_from_h5(str(h5_path), interval_type="s2s")
+    assert lrt_back, "bootstrap_lrt table should round-trip"
+    selected = selected_K_from_h5(str(h5_path), interval_type="s2s")
+    assert set(selected) == {"male", "female"}
+    assert all(isinstance(v, int) for v in selected.values())
+
+
+def _fit_two_comp_gmm(seed: int):
+    """
+    Description
+    -----------
+    Fit a 2-component sklearn `GaussianMixture` to a bimodal synthetic
+    log-interval sample and return `(intervals_sec, gmm, gmm_order)` ready
+    for `plot_best_fit_with_annotations`.
+
+    Parameters
+    ----------
+    seed (int)
+        RNG seed for the synthetic sample.
+
+    Returns
+    -------
+    intervals_sec, gmm, gmm_order (tuple)
+        Positive intervals, the fitted mixture, and the ascending-log-mean
+        component order.
+    """
+
+    from sklearn.mixture import GaussianMixture
+
+    rng = np.random.default_rng(seed)
+    intervals_sec = np.exp(np.concatenate([
+        rng.normal(-1.0, 0.5, 200), rng.normal(1.0, 0.5, 200),
+    ]))
+    gmm = GaussianMixture(n_components=2, random_state=0).fit(
+        np.log(intervals_sec).reshape(-1, 1)
+    )
+    gmm_order = np.argsort(gmm.means_.ravel())
+    return intervals_sec, gmm, gmm_order
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.parametrize("corner", ["upper left", "lower right", "lower left"])
+def test_plot_best_fit_with_annotations_corners_auto_inset_and_components(corner):
+    """
+    Description
+    -----------
+    Exercise the optional rendering paths of
+    `plot_best_fit_with_annotations` the default-args test does not reach:
+    each non-default legend corner (driving the corner branches of
+    `_draw_text_legend`), the `auto_inset_below_legend=True` path (which
+    measures the rendered legend bbox and places the Q-Q inset beneath it),
+    and `show_components=True` (overlaying the per-component shapes via
+    `_draw_mixture_components`).
+
+    Parameters
+    ----------
+    corner (str)
+        Legend corner under test.
+
+    Returns
+    -------
+    None
+    """
+
+    intervals_sec, gmm, gmm_order = _fit_two_comp_gmm(seed=21)
+    fig, ax, summary = plot_best_fit_with_annotations(
+        intervals_sec, gmm, gmm_order, color=_HEX_MALE,
+        legend_corner=corner,
+        auto_inset_below_legend=True,
+        show_components=True,
+    )
+    assert "qq_pearson_r" in summary
+    plt.close(fig)
+
+
+def test_plot_best_fit_with_annotations_invalid_corner_raises():
+    """
+    Description
+    -----------
+    An unknown `legend_corner` must propagate the `_draw_text_legend`
+    ValueError rather than silently mis-placing the legend.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    intervals_sec, gmm, gmm_order = _fit_two_comp_gmm(seed=22)
+    with pytest.raises(ValueError, match="unknown corner"):
+        plot_best_fit_with_annotations(
+            intervals_sec, gmm, gmm_order, color=_HEX_MALE,
+            legend_corner="middle",
+        )
