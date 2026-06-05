@@ -56,6 +56,7 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_log_usv_interval_histograms,
     plot_ic_curves,
     plot_qq,
+    plot_best_fit_with_annotations,
 )
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
 
@@ -1274,4 +1275,38 @@ def test_plot_local_fatigue_binned_trends():
     )
     assert len(axes) == 2
     assert "global_max" in stats
+    plt.close(fig)
+
+
+def test_plot_best_fit_with_annotations():
+    """
+    Description
+    -----------
+    `plot_best_fit_with_annotations` must render the best-fit GMM density
+    over the log-interval histogram, annotate each component mean, draw the
+    Q-Q inset, and return the GMM summary (incl. the inset's log-log
+    Pearson r). Driven by a directly-fitted sklearn GaussianMixture.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    from sklearn.mixture import GaussianMixture
+
+    rng = np.random.default_rng(15)
+    intervals_sec = np.exp(np.concatenate([
+        rng.normal(-1.0, 0.5, 200), rng.normal(1.0, 0.5, 200),
+    ]))
+    gmm = GaussianMixture(n_components=2, random_state=0).fit(
+        np.log(intervals_sec).reshape(-1, 1)
+    )
+    gmm_order = np.argsort(gmm.means_.ravel())
+    fig, ax, summary = plot_best_fit_with_annotations(
+        intervals_sec, gmm, gmm_order, color=_HEX_MALE,
+    )
+    assert "qq_pearson_r" in summary
     plt.close(fig)
