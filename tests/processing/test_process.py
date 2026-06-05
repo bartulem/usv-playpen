@@ -2960,3 +2960,80 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
     result = runner.invoke(split_clusters_to_sessions_cli, multi)
     assert result.exit_code == 0, result.output
     mock_dependencies['Operator'].return_value.split_clusters_to_sessions.assert_called()
+
+
+def _video_sync_synchronizer(tmp_path, *, tolerance=50, rel_thresh=0.6):
+    """Build a Synchronizer wired only with the find_video_sync_trains knobs
+    attempt_sequence_match reads (relative intensity threshold + ms divergence
+    tolerance)."""
+    return Synchronizer(
+        root_directory=str(tmp_path),
+        input_parameter_dict={
+            "synchronize_files": {
+                "Synchronizer": {
+                    "find_video_sync_trains": {
+                        "relative_intensity_threshold": rel_thresh,
+                        "millisecond_divergence_tolerance": tolerance,
+                    }
+                }
+            }
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+
+
+def test_attempt_sequence_match_finds_matching_pulse(tmp_path):
+    """
+    attempt_sequence_match must detect the LED-off pulse in a bright baseline
+    brightness signal, derive its inter-pulse duration (frames -> ms), and find
+    a within-tolerance window inside the ground-truth Arduino IPI sequence,
+    returning (sync_dict, start_frames, True).
+    """
+    sync = _video_sync_synchronizer(tmp_path)
+    signal = np.full(600, 200.0)
+    signal[60:110] = 50.0  # one ~50-frame LED-off dip
+    arduino = np.arange(100.0, 500.0, 5.0)
+
+    sync_dict, start_frames, found = sync.attempt_sequence_match(
+        brightness_signal=signal, camera_fps=150.0,
+        arduino_ipi_durations=arduino, camera_dir="cam1",
+    )
+    assert found is True
+    assert "cam1" in sync_dict
+    assert start_frames is not None and start_frames.size >= 1
+
+
+def test_attempt_sequence_match_returns_false_on_flat_signal(tmp_path):
+    """
+    A flat (event-free) brightness signal yields no ON/OFF events at any
+    threshold, so attempt_sequence_match must exhaust the threshold sweep and
+    return (None, None, False) rather than a spurious match.
+    """
+    sync = _video_sync_synchronizer(tmp_path)
+    flat = np.full(600, 200.0)
+    result = sync.attempt_sequence_match(
+        brightness_signal=flat, camera_fps=150.0,
+        arduino_ipi_durations=np.arange(100.0, 500.0, 5.0), camera_dir="cam1",
+    )
+    assert result == (None, None, False)
+
+
+def test_find_lsb_changes_locates_largest_break(tmp_path):
+    """
+    Synchronizer.find_lsb_changes must extract the LSB toggle train, find every
+    TTL break-end sample, and (when the camera frame budget fits inside the
+    break train) return the start/end sample of the tracking window plus the
+    largest-break duration.
+    """
+    # Build an LSB toggle train: rising edges (0->1) every 10 samples, with one
+    # deliberately larger gap so the "largest break" is unambiguous.
+    lsb = np.zeros(400, dtype=np.int64)
+    edges = list(range(10, 150, 10)) + [200] + list(range(260, 400, 10))
+    for e in edges:
+        lsb[e] = 1  # single-sample high -> 0->1 rising edge at e
+    start, end, largest_break, break_ends, hop = Synchronizer.find_lsb_changes(
+        relevant_array=lsb, lsb_bool=True, total_frame_number=2,
+    )
+    assert break_ends.size == len(edges)
+    assert largest_break == max(np.diff(edges))
+    assert start is not None and end is not None and end > start
