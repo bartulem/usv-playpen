@@ -24,6 +24,7 @@ dependency:
 
 from __future__ import annotations
 
+import json
 import pathlib
 
 import numpy as np
@@ -416,3 +417,312 @@ def test_build_unit_positions_figure_filters_outliers(catalog_path, viz_settings
     assert fig.axes
     assert fig.axes[0].name == "3d"
     plt.close(fig)
+
+
+# ===========================================================================
+# Single-unit waveform helpers: catalog slicing, per-probe Kilosort context
+# loading, IBL brain-coordinate parsing, and the two LineCollection-based
+# waveform renderers. Driven by a synthetic Kilosort probe directory plus a
+# catalog whose unit_id strings carry the `imec<d>` / `cl<dddd>` tokens the
+# slicer parses.
+# ===========================================================================
+
+
+# 8-channel single-shank probe: two lateral columns (0 / 32 µm) over four
+# axial rows (0 / 20 / 40 / 60 µm).
+_WF_POSITIONS = np.array(
+    [[0, 0], [32, 0], [0, 20], [32, 20], [0, 40], [32, 40], [0, 60], [32, 60]],
+    dtype=float,
+)
+_WF_N_CHANNELS = 8
+_WF_N_SAMPLES = 60
+
+
+def _build_ks_probe(ephys_root: pathlib.Path, rec_date: int) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Materialise a synthetic `<ephys_root>/<rec_date>_imec0/kilosort4/`
+    directory carrying the Kilosort assets `_gather_probe_context_for_unit`
+    and the waveform renderers read: `spike_clusters.npy`,
+    `spike_templates.npy`, `templates.npy`, `channel_positions.npy`, and
+    `channel_shanks.npy`. Cluster 5 maps to template 0 (trough on ch 3),
+    cluster 7 to template 1 (trough on ch 5).
+
+    Parameters
+    ----------
+    ephys_root (pathlib.Path)
+        Root holding the per-probe directories.
+    rec_date (int)
+        Recording date as YYYYMMDD integer.
+
+    Returns
+    -------
+    ks_dir (pathlib.Path)
+        The written `kilosort4` directory.
+    """
+
+    ks_dir = ephys_root / f"{rec_date}_imec0" / "kilosort4"
+    ks_dir.mkdir(parents=True)
+
+    spike_clusters = np.array([5] * 40 + [7] * 40, dtype=np.int64)
+    spike_templates = np.array([0] * 40 + [1] * 40, dtype=np.int64)
+    templates = np.zeros((3, _WF_N_SAMPLES, _WF_N_CHANNELS), dtype=np.float32)
+    # Negative trough mid-window on the respective peak channels.
+    trough = -np.exp(-((np.arange(_WF_N_SAMPLES) - 30) ** 2) / (2 * 5.0 ** 2))
+    templates[0, :, 3] = trough
+    templates[1, :, 5] = trough
+
+    np.save(ks_dir / "spike_clusters.npy", spike_clusters)
+    np.save(ks_dir / "spike_templates.npy", spike_templates)
+    np.save(ks_dir / "templates.npy", templates)
+    np.save(ks_dir / "channel_positions.npy", _WF_POSITIONS)
+    np.save(ks_dir / "channel_shanks.npy", np.zeros(_WF_N_CHANNELS, dtype=np.int64))
+    return ks_dir
+
+
+def _write_waveform_catalog(path: pathlib.Path) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Write a `unit_catalog.csv` whose `unit_id` strings carry the
+    `imec0` / `cl0005` tokens `_collect_session_clusters` parses, with two
+    good + somatic clusters (PAG peak-ch 3, MRN peak-ch 5) and one MUA row
+    that the slicer must drop.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination CSV path.
+
+    Returns
+    -------
+    path (pathlib.Path)
+        The written CSV path.
+    """
+
+    rows = [
+        ("111111", 20240101, "imec0_cl0005_ch103_good", "good", True, "PAG", 3, 5000.0, -5000.0, 0.0),
+        ("111111", 20240101, "imec0_cl0007_ch105_good", "good", True, "MRN", 5, 5010.0, -5010.0, 10.0),
+        ("111111", 20240101, "imec0_cl0009_ch107_mua",  "mua", True, "VTA", 7, 5020.0, -5020.0, 20.0),
+        # good + somatic but absent from spike_clusters -> exercises the
+        # "no spikes for this cluster -> skip template" branch in
+        # _gather_probe_context_for_unit.
+        ("111111", 20240101, "imec0_cl0011_ch101_good", "good", True, "PAG", 1, 5030.0, -5030.0, 30.0),
+    ]
+    columns = [
+        "mouse_id", "rec_date", "unit_id", "cluster_group", "somatic",
+        "brain_area", "closest_ch", "loc_ap", "loc_ml", "loc_dv",
+    ]
+    pd.DataFrame(rows, columns=columns).to_csv(path, index=False)
+    return path
+
+
+def _waveform_maker(tmp_path, viz_settings):
+    """
+    Description
+    -----------
+    Construct an `AnatomyFigureMaker` backed by the waveform catalog.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    viz_settings (dict)
+        Visualizations-settings fixture.
+
+    Returns
+    -------
+    maker (AnatomyFigureMaker)
+        Maker wired to the waveform catalog.
+    """
+
+    cat = _write_waveform_catalog(tmp_path / "wf_catalog.csv")
+    return maf.AnatomyFigureMaker(cat, viz_settings, message_output=lambda *_: None)
+
+
+def test_collect_session_clusters_adds_probe_and_cluster_num(tmp_path, viz_settings):
+    """
+    Description
+    -----------
+    `_collect_session_clusters` must slice the catalog to one mouse/day's
+    good + somatic clusters and decorate each row with the parsed `probe`
+    (`imec0`) and integer `cluster_num`. The MUA row is excluded.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    viz_settings (dict)
+        Visualizations-settings fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _waveform_maker(tmp_path, viz_settings)
+    sub = maker._collect_session_clusters("111111", 20240101)
+    assert sorted(sub["cluster_num"].tolist()) == [5, 7, 11]
+    assert set(sub["probe"]) == {"imec0"}
+
+
+def test_gather_probe_context_builds_templates_and_mappings(tmp_path, viz_settings):
+    """
+    Description
+    -----------
+    `_gather_probe_context_for_unit` must load the probe's channel
+    positions and, per cluster, resolve the modal Kilosort template into a
+    `(n_samples, n_channels)` array, alongside the cluster->bucket and
+    cluster->peak-channel maps.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    viz_settings (dict)
+        Visualizations-settings fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _waveform_maker(tmp_path, viz_settings)
+    ephys_root = tmp_path / "ephys"
+    _build_ks_probe(ephys_root, 20240101)
+    clusters = maker._collect_session_clusters("111111", 20240101)
+
+    ctx = maker._gather_probe_context_for_unit(
+        ephys_root=ephys_root, rec_date=20240101, probe="imec0", clusters=clusters,
+    )
+    assert ctx["cluster_to_bucket"] == {5: "PAG", 7: "MRN", 11: "PAG"}
+    assert ctx["cluster_to_peakch"] == {5: 3, 7: 5, 11: 1}
+    assert ctx["cluster_templates"][5].shape == (_WF_N_SAMPLES, _WF_N_CHANNELS)
+    # Cluster 11 has no spikes in spike_clusters -> no resolved template.
+    assert 11 not in ctx["cluster_templates"]
+    assert ctx["channel_positions"].shape == (_WF_N_CHANNELS, 2)
+
+
+@pytest.mark.parametrize("hemisphere,sub", [("L", "ibl_LH"), ("R", "ibl_RH")])
+def test_load_ibl_brain_coords_both_hemispheres(tmp_path, hemisphere, sub):
+    """
+    Description
+    -----------
+    `_load_ibl_brain_coords` must read the per-channel `(x, y, z)` from a
+    session's `channel_locations.json` into `ml` / `ap` / `dv` arrays,
+    selecting `ibl_LH` vs `ibl_RH` by hemisphere.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    hemisphere (str)
+        `'L'` or `'R'`.
+    sub (str)
+        Expected hemisphere subdirectory name.
+
+    Returns
+    -------
+    None
+    """
+
+    hist_root = tmp_path / "histology"
+    ch_dir = hist_root / "111111" / "20240101" / sub
+    ch_dir.mkdir(parents=True)
+    payload = {
+        f"channel_{ch}": {"x": float(ch), "y": float(ch + 100), "z": float(ch + 200)}
+        for ch in range(_WF_N_CHANNELS)
+    }
+    payload["origin"] = {"x": 0, "y": 0, "z": 0}  # non-channel key, must be ignored
+    (ch_dir / "channel_locations.json").write_text(json.dumps(payload))
+
+    coords = maf.AnatomyFigureMaker._load_ibl_brain_coords(
+        histology_root=hist_root, mouse_id="111111", rec_date=20240101,
+        hemisphere=hemisphere,
+    )
+    assert coords["ml"].shape == (_WF_N_CHANNELS,)
+    assert coords["ap"][0] == 100.0 and coords["dv"][0] == 200.0
+
+
+def test_draw_single_unit_waveforms_adds_line_collections(tmp_path, viz_settings):
+    """
+    Description
+    -----------
+    `_draw_single_unit_waveforms` must render the peak + neighbour-channel
+    waveforms as opacity-binned `LineCollection`s onto the axes and zoom to
+    a box around the peak channel. Asserts at least one collection is added.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    viz_settings (dict)
+        Visualizations-settings fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _waveform_maker(tmp_path, viz_settings)
+    ephys_root = tmp_path / "ephys"
+    _build_ks_probe(ephys_root, 20240101)
+    clusters = maker._collect_session_clusters("111111", 20240101)
+    ctx = maker._gather_probe_context_for_unit(
+        ephys_root=ephys_root, rec_date=20240101, probe="imec0", clusters=clusters,
+    )
+
+    fig, ax = plt.subplots()
+    try:
+        maker._draw_single_unit_waveforms(
+            ax, ctx=ctx, cluster_num=5, template=ctx["cluster_templates"][5],
+            peakch=3, waveform_width_um=20.0, waveform_voltage_uv_scale=10.0,
+            opacity_sigma_um=40.0, n_neighbors_each_side=2,
+            zoom_axial_um=50.0, zoom_lateral_um=50.0,
+        )
+        assert len(ax.collections) >= 1, "no waveform LineCollections drawn"
+    finally:
+        plt.close(fig)
+
+
+def test_draw_single_unit_waveforms_in_brain_space_returns_positions(tmp_path, viz_settings):
+    """
+    Description
+    -----------
+    `_draw_single_unit_waveforms_in_brain_space` must render the same
+    neighbour set and return the lateral/axial centres of every drawn
+    channel (peak + sibling + 2 above + 2 below = 6). Asserts the returned
+    arrays' length and that a collection was added.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    viz_settings (dict)
+        Visualizations-settings fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _waveform_maker(tmp_path, viz_settings)
+    ephys_root = tmp_path / "ephys"
+    _build_ks_probe(ephys_root, 20240101)
+    clusters = maker._collect_session_clusters("111111", 20240101)
+    ctx = maker._gather_probe_context_for_unit(
+        ephys_root=ephys_root, rec_date=20240101, probe="imec0", clusters=clusters,
+    )
+
+    fig, ax = plt.subplots()
+    try:
+        ap_drawn, dv_drawn = maker._draw_single_unit_waveforms_in_brain_space(
+            ax, ctx=ctx, cluster_num=5, template=ctx["cluster_templates"][5],
+            peakch=3, waveform_width_um=20.0, waveform_voltage_uv_scale=10.0,
+            opacity_sigma_um=40.0, n_neighbors_each_side=2, lateral_offset_um=5.0,
+        )
+        assert ap_drawn.shape == dv_drawn.shape == (6,)
+        assert len(ax.collections) >= 1
+    finally:
+        plt.close(fig)
