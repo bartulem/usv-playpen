@@ -520,3 +520,212 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
     # "no annotations" wording.
     assert "filenotfounderror" in joined
     assert "no das annotations found" not in joined
+
+
+def _build_prepare_for_vocalocator_layout(tmp_path, settings):
+    """
+    Description
+    -----------
+    Build the on-disk inputs `Vocalocator.prepare_for_vocalocator` reads and
+    point the settings' arena `calibration_file_loc` at a synthetic arena
+    session:
+
+      <root>/audio/sess_concatenated_audio_<sr>_<n>_<ch>_<dtype>.mmap
+      <root>/audio/sess_usv_summary.csv          (start/stop columns)
+      <root>/video/track/<date>_points3d_translated_rotated_metric.h5
+      <root>/video/track/sess_camera_frame_count_dict.json
+      <arena>/video/<date>_points3d_translated_rotated_metric.h5  (NWSE corners)
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (the session root).
+    settings (dict)
+        Processing settings to mutate in place (sets calibration_file_loc).
+
+    Returns
+    -------
+    None
+    """
+
+    sr, n_samples, n_chan = 250000, 4800, 4
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    mmap_path = audio_dir / f"sess_concatenated_audio_{sr}_{n_samples}_{n_chan}_int16.mmap"
+    np.zeros((n_samples, n_chan), dtype=np.int16).tofile(mmap_path)
+
+    pls.DataFrame({
+        "start": [0.002, 0.008],
+        "stop":  [0.006, 0.012],
+    }).write_csv(audio_dir / "sess_usv_summary.csv")
+
+    video_track = tmp_path / "video" / "track"
+    video_track.mkdir(parents=True)
+    tracks = np.zeros((10, 2, 3, 3), dtype="float64")
+    tracks[...] = np.random.default_rng(0).uniform(-0.3, 0.3, size=tracks.shape)
+    with h5py.File(video_track / "20230101_points3d_translated_rotated_metric.h5", "w") as f:
+        f.create_dataset("tracks", data=tracks)
+        f.create_dataset("node_names", data=np.array([b"Nose", b"Head", b"TTI"]))
+    (video_track / "sess_camera_frame_count_dict.json").write_text(
+        json.dumps({"median_empirical_camera_sr": 150.0})
+    )
+
+    arena_base = tmp_path / "arena_cal"
+    arena_video = arena_base / "video"
+    arena_video.mkdir(parents=True)
+    arena_tracks = np.zeros((1, 1, 4, 3), dtype="float64")
+    arena_tracks[0, 0, 0, :] = (0.0, 1.0, 0.0)    # North
+    arena_tracks[0, 0, 1, :] = (-1.0, 0.0, 0.0)   # West
+    arena_tracks[0, 0, 2, :] = (0.0, -1.0, 0.0)   # South
+    arena_tracks[0, 0, 3, :] = (1.0, 0.0, 0.0)    # East
+    with h5py.File(arena_video / "20230101_points3d_translated_rotated_metric.h5", "w") as f:
+        f.create_dataset("tracks", data=arena_tracks)
+        f.create_dataset(
+            "node_names", data=np.array([b"North", b"West", b"South", b"East"])
+        )
+
+    settings["anipose_operations"]["ConvertTo3D"]["conduct_anipose_triangulation"][
+        "calibration_file_loc"
+    ] = str(arena_base)
+
+
+def test_prepare_for_vocalocator_writes_dset_h5(tmp_path, processing_settings, mocker):
+    """prepare_for_vocalocator must slice the concatenated-audio mmap at each
+    USV's sample window, gather the track locations at the USV onset video
+    frames, read the arena dimensions, and write a vocalocator `dset.h5`
+    bundling audio / node_names / locations / length_idx / animal_id."""
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    voc.prepare_for_vocalocator()
+
+    dset = tmp_path / "audio" / "sound_localization" / "dset.h5"
+    assert dset.is_file(), "vocalocator dset.h5 not written"
+    with h5py.File(dset, "r") as f:
+        assert "node_names" in f and "locations" in f and "length_idx" in f
+        # Two USVs -> length_idx is a cumulative-sum of length 3 ([0, l0, l0+l1]).
+        assert f["length_idx"].shape == (3,)
+        assert float(f.attrs["audio_sr"]) == 250000.0
+
+
+def test_prepare_for_vocalocator_skips_when_dset_exists(tmp_path, processing_settings, mocker):
+    """When `dset.h5` already exists the method must short-circuit (the
+    `if not output_path_file.exists()` guard), leaving the existing file
+    untouched."""
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
+    sl_dir = tmp_path / "audio" / "sound_localization"
+    sl_dir.mkdir(parents=True)
+    sentinel = sl_dir / "dset.h5"
+    sentinel.write_bytes(b"SENTINEL")
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    voc.prepare_for_vocalocator()
+
+    assert sentinel.read_bytes() == b"SENTINEL", "existing dset.h5 was overwritten"
+
+
+def _build_ssl_common(tmp_path, *, n_voc=3):
+    """
+    Description
+    -----------
+    Build the inputs common to both `run_vocalocator_ssl` paths: a tracking
+    H5 with two named tracks, a `*_usv_summary.csv` with `n_voc` rows, and
+    the `audio/sound_localization/` output directory.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Session root.
+    n_voc (int)
+        Number of USV rows in the summary CSV.
+
+    Returns
+    -------
+    sl_dir (pathlib.Path)
+        The `audio/sound_localization` directory.
+    """
+
+    video_track = tmp_path / "video" / "track"
+    video_track.mkdir(parents=True)
+    with h5py.File(video_track / "20230101_points3d_translated_rotated_metric.h5", "w") as f:
+        f.create_dataset("track_names", data=np.array([b"M", b"F"]))
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    pls.DataFrame({
+        "start":    [0.1 * i for i in range(n_voc)],
+        "stop":     [0.1 * i + 0.05 for i in range(n_voc)],
+        "duration": [0.05] * n_voc,
+    }).write_csv(audio_dir / "sess_usv_summary.csv")
+
+    sl_dir = audio_dir / "sound_localization"
+    sl_dir.mkdir()
+    return sl_dir
+
+
+def test_run_vocalocator_ssl_no_calibration_file_returns_early(
+    tmp_path, processing_settings, mocker,
+):
+    """With no `*cal*.npz` in the model directory, the StopIteration from
+    `next(...)` must be caught and the method must log + return without
+    attempting to read model predictions."""
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_ssl_common(tmp_path)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()  # intentionally empty -> no cal npz
+    processing_settings["vocalocator"]["vcl_model_directory"] = str(model_dir)
+
+    run_mock = mocker.patch(
+        "usv_playpen.processing.assign_vocalizations.subprocess.run",
+        return_value=MagicMock(returncode=0),
+    )
+    messages: list[str] = []
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    voc.message_output = messages.append
+    voc.run_vocalocator_ssl()
+
+    assert run_mock.call_count == 0, "subprocess should not run without a cal file"
+    assert any("No calibration NPZ" in m for m in messages)
+
+
+def test_run_vocalocator_ssl_full_path_writes_emitter_column(
+    tmp_path, processing_settings, mocker,
+):
+    """With a calibration NPZ present and the inference subprocess mocked,
+    `run_vocalocator_ssl` must read `model_predictions.npz`, map per-USV
+    assignment indices to track names (-1 -> unassigned), write the `emitter`
+    column back to the USV summary CSV, and update session metadata."""
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    sl_dir = _build_ssl_common(tmp_path, n_voc=3)
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    np.savez(model_dir / "arena_cal.npz", dummy=np.zeros(1))
+    processing_settings["vocalocator"]["vcl_model_directory"] = str(model_dir)
+
+    # assignments: voc0 -> M(0), voc1 -> F(1), voc2 -> unassigned(-1)
+    np.savez(sl_dir / "model_predictions.npz", assignments=np.array([0, 1, -1]))
+
+    mocker.patch(
+        "usv_playpen.processing.assign_vocalizations.subprocess.run",
+        return_value=MagicMock(returncode=0),
+    )
+    metadata = {"Session": {}, "Subjects": [{"subject_id": "M"}, {"subject_id": "F"}]}
+    meta_path = tmp_path / "sess_metadata.yaml"
+    mocker.patch(
+        "usv_playpen.processing.assign_vocalizations.load_session_metadata",
+        return_value=(metadata, meta_path),
+    )
+    save_mock = mocker.patch(
+        "usv_playpen.processing.assign_vocalizations.save_session_metadata"
+    )
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    voc.run_vocalocator_ssl()
+
+    out_df = pls.read_csv(str(tmp_path / "audio" / "sess_usv_summary.csv"))
+    assert out_df["emitter"].to_list() == ["M", "F", None]
+    assert metadata["Session"]["session_usv_assigned"] is True
+    assert save_mock.call_count == 1
