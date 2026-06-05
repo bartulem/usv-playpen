@@ -11,12 +11,14 @@ public methods.
 
 from __future__ import annotations
 
+import glob
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+from scipy.io import wavfile
 
 from usv_playpen.processing.synchronize_files import Synchronizer
 
@@ -235,3 +237,64 @@ def test_find_video_sync_trains_no_video_dir_returns_empty(processing_settings,
     assert isinstance(ipi_starts, np.ndarray)
     assert ipi_starts.size == 0
     assert sync_dict == {}
+
+
+def _processing_settings_full():
+    """Load the package processing_settings.json fresh (mutable copy)."""
+    path = glob.glob("**/processing_settings.json", recursive=True)[0]
+    return json.loads(Path(path).read_text())
+
+
+def test_crop_wav_files_to_video_single_device(tmp_path, mocker):
+    """
+    End-to-end single-device crop: a triggerbox-channel WAV whose LSB carries a
+    camera-frame TTL train (with one large recording break) is parsed by
+    find_lsb_changes to recover the tracking window, the per-frame audio-sample
+    offsets and sync-info JSON are written, and every original WAV is trimmed
+    to that window via static_sox into audio/cropped_to_video/.
+    """
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+
+    root = tmp_path
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(
+        json.dumps({
+            "total_frame_number_least": 5,
+            "total_video_time_least": 0.001,
+        })
+    )
+    (root / "sync").mkdir()
+    audio_orig = root / "audio" / "original"
+    audio_orig.mkdir(parents=True)
+
+    # LSB rising-edge train: three pre-break edges, a large gap, then six
+    # post-break edges (>= total_frame_number) so find_lsb_changes resolves a
+    # tracking window after the largest break.
+    edges = [10, 20, 30, 200, 210, 220, 230, 240, 250]
+    data = np.zeros(320, dtype=np.int16)
+    for e in edges:
+        data[e] = 1  # odd value -> LSB high -> 0->1 rising edge at e
+    wavfile.write(audio_orig / "m_240101_ch04.wav", 250000, data)
+
+    settings = _processing_settings_full()
+    crop = settings["synchronize_files"]["Synchronizer"]["crop_wav_files_to_video"]
+    crop["device_receiving_input"] = "m"
+    crop["triggerbox_ch_receiving_input"] = 4
+
+    sync = Synchronizer(
+        root_directory=str(root),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    sync.crop_wav_files_to_video()
+
+    # sync-info JSON written with a resolved (non-zero) tracking window.
+    info = json.loads((root / "audio" / "audio_triggerbox_sync_info.json").read_text())
+    assert info["m"]["duration_samples"] > 0
+    # tracking window spans the first to last post-break TTL edge (200..250).
+    assert info["m"]["start_first_recorded_frame"] == 200
+    assert info["m"]["end_last_recorded_frame"] == 250
+    # per-frame offsets file + the static_sox-trimmed output WAV.
+    assert (root / "sync" / "m_video_frames_in_audio_samples.txt").is_file()
+    cropped = list((root / "audio" / "cropped_to_video").glob("*_cropped_to_video.wav"))
+    assert cropped, "static_sox did not produce a cropped WAV"
