@@ -280,3 +280,55 @@ def test_intervention_dialog_edit_mode_populates_and_deletes(
     ):
         dlg.delete_intervention()
     assert key not in subject["interventions"]
+
+
+from PyQt6.QtWidgets import QPushButton  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+
+def test_start_handlers_invoke_backends(app):
+    """The thin _start_* handlers must forward to their backend worker objects
+    (processing / calibration / recording), and recording must persist any
+    updated metadata it receives."""
+    app.run_processing = MagicMock()
+    app._start_processing()
+    app.run_processing.prepare_data_for_analyses.assert_called_once()
+
+    app.run_exp = MagicMock()
+    app._start_calibration()
+    app.run_exp.conduct_tracking_calibration.assert_called_once()
+
+    # Recording that returns no metadata -> no save.
+    app.run_exp.conduct_behavioral_recording = MagicMock(return_value=None)
+    app._save_metadata_to_yaml = MagicMock()
+    app._start_recording()
+    app._save_metadata_to_yaml.assert_not_called()
+
+    # Recording that returns updated metadata -> persisted.
+    app.run_exp.conduct_behavioral_recording = MagicMock(return_value={"Session": {}})
+    app._start_recording()
+    assert app.metadata_settings == {"Session": {}}
+    app._save_metadata_to_yaml.assert_called_once()
+
+
+def test_enable_disable_buttons_toggle_state(app):
+    """The per-category enable/disable helpers must flip the Previous / Main /
+    category button states on their shared button_map."""
+    keys = ["Previous", "Main", "Visualize", "Analyze", "Process"]
+    app.button_map = {k: QPushButton() for k in keys}
+
+    app._disable_visualize_buttons()
+    assert not app.button_map["Previous"].isEnabled()
+    app._enable_visualize_buttons()
+    assert app.button_map["Previous"].isEnabled()
+    assert not app.button_map["Visualize"].isEnabled()
+
+    app._disable_analyze_buttons()
+    assert not app.button_map["Main"].isEnabled()
+    app._enable_analyze_buttons()
+    assert app.button_map["Main"].isEnabled()
+
+    app._disable_process_buttons()
+    assert not app.button_map["Process"].isEnabled()
+    app._enable_process_buttons()
+    assert app.button_map["Previous"].isEnabled()
