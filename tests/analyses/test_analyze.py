@@ -2571,6 +2571,14 @@ def test_feature_zoo_init_loads_visualizations_settings():
     assert "male_colors" in fz.visualizations_parameter_dict
 
 
+def test_feature_zoo_init_rejects_unexpected_kwarg():
+    """FeatureZoo.__init__ validates its kwargs against the consumed set
+    and raises TypeError (naming the offending key) on anything else —
+    guarding against silent typo'd settings keys."""
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        FeatureZoo(root_directory="/x", not_a_real_kwarg=1)
+
+
 def test_feature_zoo_save_behavioral_features_missing_h5_raises(tmp_path, mocker):
     """No `*_points3d_translated_rotated_metric.h5` under <root>/video →
     FileNotFoundError from first_match_or_raise. Critical: the function should
@@ -2587,6 +2595,207 @@ def test_feature_zoo_save_behavioral_features_missing_h5_raises(tmp_path, mocker
     )
     with pytest.raises(FileNotFoundError, match="translated/rotated"):
         fz.save_behavioral_features_to_file()
+
+
+# Anatomical node layout the feature pipeline requires: the union of
+# `head_points` (Head, Ear_R, Ear_L, Nose), `tail_points` (TTI, Tail_0..2,
+# TailTip), `back_root_points` (Neck, Trunk, TTI), plus the bare Head / Neck
+# / Nose / TTI literals the social block indexes. Order is arbitrary — the
+# pipeline looks every node up by name via `mouse_nodes.index(...)`.
+_BEH_NODES = [
+    "Head", "Ear_R", "Ear_L", "Nose", "Neck", "Trunk", "TTI",
+    "Tail_0", "Tail_1", "Tail_2", "TailTip",
+]
+
+# Per-node body-frame offsets (metres): a head-to-tail axis along +x with
+# the snout points slightly elevated. Distinct, non-coincident positions
+# keep `get_back_root` / `get_head_root` out of their degenerate (NaN)
+# branches so the geometry actually exercises the math.
+_BEH_NODE_OFFSETS = {
+    "Nose":    (0.030, 0.000, 0.018),
+    "Head":    (0.020, 0.000, 0.020),
+    "Ear_R":   (0.015, 0.008, 0.019),
+    "Ear_L":   (0.015, -0.008, 0.019),
+    "Neck":    (0.000, 0.000, 0.016),
+    "Trunk":   (-0.020, 0.000, 0.014),
+    "TTI":     (-0.040, 0.000, 0.012),
+    "Tail_0":  (-0.050, 0.000, 0.010),
+    "Tail_1":  (-0.060, 0.000, 0.009),
+    "Tail_2":  (-0.070, 0.000, 0.008),
+    "TailTip": (-0.080, 0.000, 0.007),
+}
+
+
+def _build_behavioral_tracking_h5(
+    h5_path, *, n_frames=240, fps=150.0, experimental_code=b"E2MF",
+):
+    """
+    Description
+    -----------
+    Write a minimal two-mouse `*_points3d_translated_rotated_metric.h5`
+    carrying every dataset `save_behavioral_features_to_file` reads:
+    `tracks` (n_frames, 2 mice, 11 nodes, 3), `node_names`, `track_names`,
+    `experimental_code`, and `recording_frame_rate`. Each mouse is a rigid
+    body-axis cloud (`_BEH_NODE_OFFSETS`) translated to its own x-centre
+    and drifted slowly across frames with light per-frame jitter, so speed
+    / derivatives / Euler-angle paths all see non-degenerate motion. All
+    coordinates stay within ±0.32 m so the centroid (×100 → cm) lands
+    inside the spatial occupancy window.
+
+    Parameters
+    ----------
+    h5_path (pathlib.Path)
+        Destination H5 path.
+    n_frames (int)
+        Number of tracked frames.
+    fps (float)
+        Camera frame rate written to `recording_frame_rate`.
+    experimental_code (bytes)
+        Experiment code; `b"E2MF"` decodes to one male + one female so
+        `choose_animal_colors` returns two colors.
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(0)
+    n_mice = 2
+    n_nodes = len(_BEH_NODES)
+    tracks = np.zeros((n_frames, n_mice, n_nodes, 3), dtype=np.float64)
+    drift = np.linspace(0.0, 0.02, n_frames)
+    for mouse_idx in range(n_mice):
+        x_centre = -0.06 + 0.12 * mouse_idx
+        for node_idx, node in enumerate(_BEH_NODES):
+            off_x, off_y, off_z = _BEH_NODE_OFFSETS[node]
+            tracks[:, mouse_idx, node_idx, 0] = (
+                x_centre + off_x + drift + rng.normal(0.0, 0.0008, n_frames)
+            )
+            tracks[:, mouse_idx, node_idx, 1] = (
+                off_y + rng.normal(0.0, 0.0008, n_frames)
+            )
+            tracks[:, mouse_idx, node_idx, 2] = (
+                off_z + rng.normal(0.0, 0.0008, n_frames)
+            )
+
+    with h5py.File(h5_path, "w") as f:
+        f.create_dataset("tracks", data=tracks)
+        f.create_dataset(
+            "node_names", data=np.array([n.encode("utf-8") for n in _BEH_NODES])
+        )
+        f.create_dataset("track_names", data=np.array([b"m1", b"m2"]))
+        f.create_dataset("experimental_code", data=experimental_code)
+        f.create_dataset("recording_frame_rate", data=np.float64(fps))
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_feature_zoo_save_behavioral_features_end_to_end(tmp_path, mocker):
+    """End-to-end run of `save_behavioral_features_to_file` on a two-mouse
+    synthetic session: drives the full individual + social + SEI feature
+    computation, the 1D / 2D `generate_feature_distributions` pass, the
+    `plot_feature_distributions` PDF render (individual + social pages,
+    bar + spatial-occupancy branches), and the CSV write.
+
+    Asserts both output artifacts land next to the input H5, the CSV has
+    one row per tracked frame, and a representative slice of the expected
+    column namespace (self pose/movement/spatial + dyadic distance / angle
+    / SEI, in both pair directions) is present.
+    """
+    video_dir = tmp_path / "video" / "vid1"
+    video_dir.mkdir(parents=True)
+    h5_path = video_dir / "vid1_points3d_translated_rotated_metric.h5"
+    n_frames = 240
+    _build_behavioral_tracking_h5(h5_path, n_frames=n_frames)
+
+    mocker.patch("usv_playpen.analyses.compute_behavioral_features.smart_wait")
+    fz = FeatureZoo(
+        root_directory=str(tmp_path),
+        behavioral_parameters_dict={
+            "head_points":      ["Head", "Ear_R", "Ear_L", "Nose"],
+            "tail_points":      ["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"],
+            "back_root_points": ["Neck", "Trunk", "TTI"],
+            "derivative_bins":  10,
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+
+    fz.save_behavioral_features_to_file()
+
+    csv_path = video_dir / "vid1_points3d_translated_rotated_metric_behavioral_features.csv"
+    pdf_path = video_dir / "vid1_points3d_translated_rotated_metric_behavioral_features_histograms.pdf"
+    assert csv_path.exists(), "behavioral features CSV not written"
+    assert pdf_path.exists(), "feature-distribution histogram PDF not written"
+    assert pdf_path.stat().st_size > 10_000, "histogram PDF suspiciously small"
+
+    df = pls.read_csv(csv_path)
+    assert df.height == n_frames, (
+        f"expected one CSV row per frame ({n_frames}), got {df.height}"
+    )
+    expected_columns = {
+        # self spatial + movement + pose
+        "m1.spaceX", "m1.spaceY", "m1.spaceZ",
+        "m1.speed", "m1.acceleration",
+        "m1.allo_yaw", "m1.ego_yaw", "m1.back_pitch", "m1.body_dir",
+        "m1.tail_curvature", "m1.neck_elevation",
+        "m2.allo_yaw",
+        # dyadic distance / angle / SEI (both pair directions)
+        "m1-m2.nose-nose", "m1-m2.TTI-TTI", "m1-m2.allo_yaw-nose",
+        "m1-m2.orofacial-sei", "m1-m2.anogenital-sei",
+        "m2-m1.orofacial-sei", "m2-m1.anogenital-sei",
+    }
+    missing = expected_columns - set(df.columns)
+    assert not missing, f"CSV missing expected feature columns: {sorted(missing)}"
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_feature_zoo_save_behavioral_features_single_mouse_skips_social(tmp_path, mocker):
+    """A one-mouse session must still produce the full individual-feature
+    table and histogram PDF, but emit no dyadic columns — the social branch
+    (`mouse_data.shape[1] >= 2`) is correctly skipped.
+    """
+    video_dir = tmp_path / "video" / "vid1"
+    video_dir.mkdir(parents=True)
+    h5_path = video_dir / "vid1_points3d_translated_rotated_metric.h5"
+    n_frames = 200
+
+    rng = np.random.default_rng(1)
+    tracks = np.zeros((n_frames, 1, len(_BEH_NODES), 3), dtype=np.float64)
+    drift = np.linspace(0.0, 0.02, n_frames)
+    for node_idx, node in enumerate(_BEH_NODES):
+        off_x, off_y, off_z = _BEH_NODE_OFFSETS[node]
+        tracks[:, 0, node_idx, 0] = off_x + drift + rng.normal(0.0, 0.0008, n_frames)
+        tracks[:, 0, node_idx, 1] = off_y + rng.normal(0.0, 0.0008, n_frames)
+        tracks[:, 0, node_idx, 2] = off_z + rng.normal(0.0, 0.0008, n_frames)
+    with h5py.File(h5_path, "w") as f:
+        f.create_dataset("tracks", data=tracks)
+        f.create_dataset(
+            "node_names", data=np.array([n.encode("utf-8") for n in _BEH_NODES])
+        )
+        f.create_dataset("track_names", data=np.array([b"m1"]))
+        f.create_dataset("experimental_code", data=b"E1M")
+        f.create_dataset("recording_frame_rate", data=np.float64(150.0))
+
+    mocker.patch("usv_playpen.analyses.compute_behavioral_features.smart_wait")
+    fz = FeatureZoo(
+        root_directory=str(tmp_path),
+        behavioral_parameters_dict={
+            "head_points":      ["Head", "Ear_R", "Ear_L", "Nose"],
+            "tail_points":      ["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"],
+            "back_root_points": ["Neck", "Trunk", "TTI"],
+            "derivative_bins":  10,
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+
+    fz.save_behavioral_features_to_file()
+
+    csv_path = video_dir / "vid1_points3d_translated_rotated_metric_behavioral_features.csv"
+    assert csv_path.exists()
+    df = pls.read_csv(csv_path)
+    assert "m1.speed" in df.columns
+    assert not any("-" in col.split(".")[0] for col in df.columns), (
+        "single-mouse session unexpectedly produced dyadic (social) columns"
+    )
 
 
 # ---- calculate_sei --------------------------------------------------------
