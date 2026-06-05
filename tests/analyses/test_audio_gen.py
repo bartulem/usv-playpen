@@ -266,3 +266,79 @@ def test_create_usv_playback_wav_seed_is_reproducible_and_varies(tmp_path, mocke
 
     assert seq_a == seq_b
     assert seq_a != seq_c
+
+
+def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, prefix="male",
+                               total_time=8, n_snippets=6):
+    """Drive create_naturalistic_usv_playback_wav with mocked audio I/O.
+    Returns the (spacing_lines, usvid_lines, write_mock) triple so callers can
+    assert the sequence structure and that a WAV was emitted."""
+    snip_dir = (
+        tmp_path / exp_id / "usv_playback_experiments"
+        / f"{prefix}_usv_playback_snippets"
+    )
+    snip_dir.mkdir(parents=True)
+    for i in range(n_snippets):
+        (snip_dir / f"snippet_{i:02d}.wav").write_bytes(b"")
+
+    mocker.patch("usv_playpen.analyses.generate_audio_files.find_base_path",
+                 return_value=str(tmp_path))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.os.path.ismount",
+                 return_value=True)
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+    mocker.patch("usv_playpen.analyses.generate_audio_files.wavfile.read",
+                 return_value=(250, np.zeros(8, dtype=np.int16)))
+    write_mock = mocker.patch("usv_playpen.analyses.generate_audio_files.wavfile.write")
+
+    ag = AudioGenerator(
+        exp_id=exp_id,
+        create_playback_settings_dict={
+            "num_naturalistic_usv_files": 1,
+            "total_acceptable_naturalistic_playback_time": total_time,
+            "naturalistic_wav_sampling_rate": 250,
+            "naturalistic_playback_snippets_dir_prefix": prefix,
+            "playback_seed": seed,
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+    ag.create_naturalistic_usv_playback_wav()
+
+    out_dir = (
+        tmp_path / exp_id / "usv_playback_experiments"
+        / "naturalistic_usv_playback_files"
+    )
+    spacing = sorted(out_dir.glob("*_spacing.txt"))[0].read_text().split("\n")
+    usvids = sorted(out_dir.glob("*_usvids.txt"))[0].read_text().split("\n")
+    return spacing, usvids, write_mock
+
+
+def test_create_naturalistic_usv_playback_wav_emits_sequences(tmp_path, mocker):
+    """create_naturalistic_usv_playback_wav must interleave inter-sequence
+    silences (ISI) and seeded USV sequences (each separated by IUIs) until the
+    target playback time is reached, logging both the per-segment sample counts
+    (spacing.txt) and the chosen snippet / ISI / IUI labels (usvids.txt), then
+    writing a single WAV. The male GMM keeps the ISIs short enough that at
+    least one full sequence is emitted within the budget."""
+    spacing, usvids, write_mock = _run_naturalistic_playback(
+        tmp_path, mocker, seed=0, exp_id="natA", prefix="male", total_time=8,
+    )
+    assert write_mock.call_count == 1, "exactly one playback WAV should be written"
+    # At least one ISI marker and one chosen snippet (a .wav line) must appear.
+    assert any(line.strip() == "ISI" for line in usvids)
+    assert any(line.strip().endswith(".wav") for line in usvids)
+    # Every spacing entry is an integer sample count.
+    assert all(line.strip().isdigit() for line in spacing if line.strip())
+
+
+def test_create_naturalistic_usv_playback_wav_seed_reproducible(tmp_path, mocker):
+    """A fixed playback_seed reproduces the exact snippet sequence across runs
+    (different exp_id dirs, identical snippet names), while a different seed
+    diverges."""
+    _, ids_a, _ = _run_naturalistic_playback(tmp_path / "a", mocker, seed=0, exp_id="x")
+    _, ids_b, _ = _run_naturalistic_playback(tmp_path / "b", mocker, seed=0, exp_id="x")
+    _, ids_c, _ = _run_naturalistic_playback(tmp_path / "c", mocker, seed=1, exp_id="x")
+    snippets_a = [ln for ln in ids_a if ln.strip().endswith(".wav")]
+    snippets_b = [ln for ln in ids_b if ln.strip().endswith(".wav")]
+    snippets_c = [ln for ln in ids_c if ln.strip().endswith(".wav")]
+    assert snippets_a == snippets_b
+    assert snippets_a != snippets_c
