@@ -47,6 +47,9 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     load_best_fit_from_h5,
     load_lrt_sweep_from_h5,
     selected_K_from_h5,
+    plot_log_usv_interval_histograms,
+    plot_ic_curves,
+    plot_qq,
 )
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
 
@@ -958,4 +961,98 @@ def test_plot_estrous_stage_pie_chart():
     )
     assert fig is not None
     assert isinstance(stats, dict)
+    plt.close(fig)
+
+
+def test_plot_log_usv_interval_histograms():
+    """
+    Description
+    -----------
+    `plot_log_usv_interval_histograms` must overlay the per-sex log-interval
+    histograms (normalised per sex) and return the per-sex counts and
+    median intervals (in seconds).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(6)
+    df = pls.DataFrame({
+        "sex": (["male"] * 100) + (["female"] * 80),
+        "log_interval": np.concatenate([
+            rng.normal(0.0, 1.0, 100), rng.normal(0.5, 1.0, 80),
+        ]).tolist(),
+    })
+    fig, ax, stats = plot_log_usv_interval_histograms(
+        df, bins=30, male_color=_HEX_MALE, female_color=_HEX_FEMALE,
+    )
+    assert stats["n_M"] == 100 and stats["n_F"] == 80
+    plt.close(fig)
+
+
+def test_plot_ic_curves():
+    """
+    Description
+    -----------
+    `plot_ic_curves` must plot the per-sex minimum information-criterion
+    curve vs. n_comp on twin y-axes and return the per-sex min-IC-per-K
+    summary, optionally highlighting the bootstrap-LRT-selected K.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(7)
+    rows = []
+    for sex in ("male", "female"):
+        for n_comp in range(1, 6):
+            for _rep in range(3):
+                rows.append({
+                    "sex": sex,
+                    "n_comp": n_comp,
+                    "bic": float(1000.0 - 30.0 * n_comp + rng.normal(0, 5)),
+                })
+    df_results = pls.DataFrame(rows)
+    fig, axes, stats = plot_ic_curves(
+        df_results, _HEX_MALE, _HEX_FEMALE,
+        selected_n_components={"male": 3, "female": 2},
+    )
+    assert len(axes) == 2
+    assert "male" in stats and "female" in stats
+    plt.close(fig)
+
+
+def test_plot_qq():
+    """
+    Description
+    -----------
+    `plot_qq` must draw the empirical-vs-model quantile plot by inverting
+    the fitted log-space GMM CDF and return the log-space Pearson r
+    goodness-of-fit.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    from sklearn.mixture import GaussianMixture
+
+    rng = np.random.default_rng(8)
+    intervals_sec = np.exp(rng.normal(0.0, 1.0, 300))
+    gmm = GaussianMixture(n_components=2, random_state=0).fit(
+        np.log(intervals_sec).reshape(-1, 1)
+    )
+    fig, ax, stats = plot_qq(intervals_sec, gmm, dot_color=_HEX_MALE)
+    assert "pearson_r" in stats
     plt.close(fig)
