@@ -218,3 +218,65 @@ def test_navigation_to_credentials_window(app, qtbot):
     qtbot.mouseClick(app.login_button, Qt.MouseButton.LeftButton)
     assert "Set credentials" in app.windowTitle()
     assert hasattr(app, 'email_address')
+
+
+from unittest.mock import patch  # noqa: E402
+
+from usv_playpen.usv_playpen_gui import (  # noqa: E402
+    ChemoDialog, EphysDialog, LesionDialog, OptoDialog,
+)
+
+_INTERVENTION_DIALOGS = [
+    (ChemoDialog, "chemogenetics"),
+    (EphysDialog, "electrophysiology"),
+    (LesionDialog, "lesion"),
+    (OptoDialog, "optogenetics"),
+]
+
+
+@pytest.fixture
+def app_with_subject(app):
+    """Main window primed with a single metadata subject and the YAML/repo
+    persistence side-effects stubbed out, so the intervention dialogs can be
+    saved/deleted without touching disk."""
+    app.metadata_settings = {"Subjects": [{"subject_id": "M", "interventions": {}}]}
+    app._save_metadata_to_yaml = lambda: None
+    app._update_subject_in_repository = lambda s: None
+    return app
+
+
+@pytest.mark.parametrize("dialog_cls,key", _INTERVENTION_DIALOGS)
+def test_intervention_dialog_add_mode_saves(app_with_subject, qtbot, dialog_cls, key):
+    """Each intervention dialog must build its add-mode form, collect the mixed
+    combo/line-edit field values on OK, and write them into the chosen
+    subject's interventions block under the dialog's own key."""
+    dlg = dialog_cls(parent=app_with_subject, subject=None)
+    qtbot.addWidget(dlg)
+    assert "Add" in dlg.windowTitle()
+    dlg.subject_combo.setCurrentText("M")
+    dlg.save_and_accept()
+    interventions = app_with_subject.metadata_settings["Subjects"][0]["interventions"]
+    assert key in interventions
+    assert isinstance(interventions[key], dict)
+
+
+@pytest.mark.parametrize("dialog_cls,key", _INTERVENTION_DIALOGS)
+def test_intervention_dialog_edit_mode_populates_and_deletes(
+    app_with_subject, qtbot, dialog_cls, key,
+):
+    """In edit mode each dialog locks the subject selector, pre-populates the
+    form from the existing intervention, and (on confirmed delete) removes the
+    intervention from the subject."""
+    subject = {"subject_id": "M", "interventions": {key: {"name": "excitatory"}}}
+    app_with_subject.metadata_settings["Subjects"][0] = subject
+    dlg = dialog_cls(parent=app_with_subject, subject=subject)
+    qtbot.addWidget(dlg)
+    assert "Edit" in dlg.windowTitle()
+    assert not dlg.subject_combo.isEnabled()
+
+    with patch(
+        "usv_playpen.usv_playpen_gui.QMessageBox.question",
+        return_value=usv_playpen_gui.QMessageBox.StandardButton.Yes,
+    ):
+        dlg.delete_intervention()
+    assert key not in subject["interventions"]
