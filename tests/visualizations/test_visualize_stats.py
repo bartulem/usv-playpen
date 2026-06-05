@@ -44,6 +44,10 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_unassigned_proportion_vs_distance_jointplot,
     plot_hourly_regressions,
     plot_local_fatigue_binned_trends,
+    plot_category_local_fatigue_heatmap,
+    plot_category_prevalence_and_embedding,
+    plot_category_polar_kde_grid,
+    plot_estrous_category_kde_grid,
 )
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
     build_master_usv_interval_dataframe,
@@ -1347,4 +1351,494 @@ def test_run_bic_sweep_feeds_plot_ic_curves():
 
     fig, axes, stats = plot_ic_curves(df_results, _HEX_MALE, _HEX_FEMALE)
     assert len(axes) == 2
+    plt.close(fig)
+
+
+# ===========================================================================
+# usv_summary_statistics — category-level grid / embedding figures
+#
+# These four figure functions were previously uncovered. Each consumes a
+# synthetic frame / nested-dict fixture spread densely enough to keep the
+# internal gaussian_kde / griddata calls non-singular, and asserts the
+# returned figure + stats structure. Error-path branches (bad sex_key,
+# missing columns, empty categories, insufficient background) are exercised
+# separately so the guardrails stay covered.
+# ===========================================================================
+
+
+def _embedding_frame() -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Build a synthetic `extract_category_embedding_data`-style frame for
+    `plot_category_prevalence_and_embedding`: `dim1` / `dim2` (spread 2D
+    embedding coords), `category` (>= 2 ids so the territorial-boundary
+    contour has levels), and `sex` (each of male / female / unassigned
+    given > 3 points so every per-sex KDE branch runs).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    df (pls.DataFrame)
+        Embedding frame with `dim1`, `dim2`, `category`, `sex`.
+    """
+
+    rng = np.random.default_rng(101)
+    per_sex = 25
+    sexes = (["male"] * per_sex) + (["female"] * per_sex) + (["unassigned"] * per_sex)
+    n = len(sexes)
+    return pls.DataFrame({
+        "dim1":     rng.normal(0.0, 1.0, n),
+        "dim2":     rng.normal(0.0, 1.0, n),
+        "category": rng.integers(1, 4, n),
+        "sex":      sexes,
+    })
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_category_local_fatigue_heatmap_both_sexes():
+    """
+    Description
+    -----------
+    `plot_category_local_fatigue_heatmap` must build per-sex smoothed,
+    row-normalised category-by-time-bin heatmaps and return the per-sex
+    peak raw rates. Drives the main (smoothed) path with both sexes
+    populated.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(102)
+    n_bins = 6
+    rows = []
+    for sess in range(3):
+        for sex in ("male", "female"):
+            for cat in (1, 2, 3):
+                for tb in range(n_bins):
+                    rows.append({
+                        "session_id": f"s{sess}", "sex": sex,
+                        "category": cat, "time_bin": tb,
+                        "usv_count": float(rng.integers(0, 12)),
+                    })
+    binned_df = pd.DataFrame(rows)
+    fig, axes, stats = plot_category_local_fatigue_heatmap(
+        binned_df, bin_width_seconds=120, n_bins=n_bins, smoothing_sigma=0.75,
+    )
+    assert len(axes) == 2
+    assert "male_peaks" in stats and "female_peaks" in stats
+    assert stats["male_peaks"], "expected per-category male peak rates"
+    plt.close(fig)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_category_local_fatigue_heatmap_empty_sex_and_no_smoothing():
+    """
+    Description
+    -----------
+    With one sex entirely absent, the empty-subset branch must render its
+    "No data available" placeholder rather than crash; `smoothing_sigma=0`
+    additionally takes the un-smoothed normalisation path. Asserts a
+    figure is still returned with both axes.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    n_bins = 5
+    rows = []
+    for cat in (1, 2):
+        for tb in range(n_bins):
+            rows.append({
+                "session_id": "s0", "sex": "male",
+                "category": cat, "time_bin": tb, "usv_count": float(tb + 1),
+            })
+    binned_df = pd.DataFrame(rows)  # no female rows
+    fig, axes, stats = plot_category_local_fatigue_heatmap(
+        binned_df, bin_width_seconds=120, n_bins=n_bins, smoothing_sigma=0.0,
+    )
+    assert len(axes) == 2
+    assert stats["female_peaks"] == {}, "female branch should stay empty"
+    plt.close(fig)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.filterwarnings(
+    "ignore::matplotlib._api.deprecation.MatplotlibDeprecationWarning"
+)
+@pytest.mark.parametrize("plot_type", ["density", "scatter"])
+def test_plot_category_prevalence_and_embedding(plot_type):
+    """
+    Description
+    -----------
+    `plot_category_prevalence_and_embedding` must render the 4x2 grid
+    (per-assignment prevalence bars + embedding maps, plus the global
+    summary row) for both the density and scatter rendering modes, with
+    global territorial boundaries overlaid. Asserts the 4x2 axes grid.
+
+    Parameters
+    ----------
+    plot_type (str)
+        Embedding rendering mode under test.
+
+    Returns
+    -------
+    None
+    """
+
+    df_embedding = _embedding_frame()
+    fig, axes = plot_category_prevalence_and_embedding(
+        df_embedding,
+        male_color=_HEX_MALE, female_color=_HEX_FEMALE,
+        unassigned_color=_HEX_UNASSIGNED,
+        plot_type=plot_type, log_scale_bars=True, grid_res=25,
+    )
+    assert axes.shape == (4, 2)
+    plt.close(fig)
+
+
+def test_plot_category_prevalence_and_embedding_bad_plot_type_raises():
+    """
+    Description
+    -----------
+    An unsupported `plot_type` must raise ValueError before any rendering.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    with pytest.raises(ValueError, match="plot_type must be"):
+        plot_category_prevalence_and_embedding(
+            _embedding_frame(), _HEX_MALE, _HEX_FEMALE, _HEX_UNASSIGNED,
+            plot_type="banana",
+        )
+
+
+def _polar_metrics(rng, *, sparse_last: bool = True) -> dict:
+    """
+    Description
+    -----------
+    Build the nested `global_behavior_metrics` dict consumed by
+    `plot_category_polar_kde_grid`: an `'all_frames'` background block of
+    distance / mf_angle / fm_angle arrays, plus four category blocks each
+    carrying male / female distance+angle arrays. The last category is
+    given only 2 points (below any sensible `threshold`) so the
+    insufficient-data placeholder branch renders.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Source of synthetic coordinates.
+    sparse_last (bool)
+        When True, the 4th category is sparse (triggers the "Insufficient
+        Data" branch); when False all categories are dense.
+
+    Returns
+    -------
+    metrics (dict)
+        Nested behavior-metrics dict.
+    """
+
+    def _block(k):
+        return {
+            "distance":  rng.uniform(1.0, 18.0, k),
+            "mf_angle":  rng.uniform(-180.0, 180.0, k),
+            "fm_angle":  rng.uniform(-180.0, 180.0, k),
+        }
+
+    metrics = {"all_frames": _block(300)}
+    for idx, cat in enumerate(("1", "2", "3", "4")):
+        k = 2 if (sparse_last and cat == "4") else 60
+        metrics[cat] = {"male": _block(k), "female": _block(k)}
+    return metrics
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_category_polar_kde_grid_dense_and_sparse():
+    """
+    Description
+    -----------
+    `plot_category_polar_kde_grid` must occupancy-normalise per-category
+    USV density against the background, render the half-circle polar
+    small-multiples, blank out the trailing unused axes, and (for the
+    sparse 4th category) draw the "Insufficient Data" placeholder.
+    Asserts the returned `global_vmax` scaling scalar.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    metrics = _polar_metrics(np.random.default_rng(103))
+    fig, axes, stats = plot_category_polar_kde_grid(
+        metrics, sex_key="male", max_distance=20.0, threshold=10,
+        colormap="inferno",
+    )
+    assert "global_vmax" in stats and stats["sex_plotted"] == "male"
+    plt.close(fig)
+
+
+def test_plot_category_polar_kde_grid_error_branches():
+    """
+    Description
+    -----------
+    The three guardrails of `plot_category_polar_kde_grid` must each
+    raise ValueError: an invalid `sex_key`, a metrics dict with no
+    categories (only `all_frames`), and insufficient background tracking
+    data.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(104)
+    metrics = _polar_metrics(rng)
+
+    with pytest.raises(ValueError, match="sex_key must be"):
+        plot_category_polar_kde_grid(
+            metrics, sex_key="other", max_distance=20.0, threshold=10,
+            colormap="inferno",
+        )
+
+    with pytest.raises(ValueError, match="No USV categories"):
+        plot_category_polar_kde_grid(
+            {"all_frames": metrics["all_frames"]}, sex_key="male",
+            max_distance=20.0, threshold=10, colormap="inferno",
+        )
+
+    thin_bg = {
+        "all_frames": {
+            "distance": np.array([1.0, 2.0]),
+            "mf_angle": np.array([10.0, 20.0]),
+            "fm_angle": np.array([10.0, 20.0]),
+        },
+        "1": metrics["1"],
+    }
+    with pytest.raises(ValueError, match="Insufficient background"):
+        plot_category_polar_kde_grid(
+            thin_bg, sex_key="male", max_distance=20.0, threshold=10,
+            colormap="inferno",
+        )
+
+
+def _estrous_kde_frames(rng):
+    """
+    Description
+    -----------
+    Build the `(usv_pls, bg_pls)` polars pair consumed by
+    `plot_estrous_category_kde_grid`: a per-(category, stage) USV frame
+    (`category`, `estrous_stage`, `sex`, `distance`, `mf_angle`,
+    `fm_angle`) with one deliberately-sparse cell, and a background
+    occupancy frame (`distance`, `mf_angle`, `fm_angle`). Two categories
+    x two stages keeps the axes grid 2D without hitting the single-row /
+    single-column reshape branches.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Source of synthetic coordinates.
+
+    Returns
+    -------
+    usv_pls, bg_pls (tuple[pls.DataFrame, pls.DataFrame])
+        The USV and background frames.
+    """
+
+    cats = (1, 2)
+    stages = ("p", "e")
+    rows = []
+    for cat in cats:
+        for stage in stages:
+            n_pts = 5 if (cat, stage) == (2, "e") else 45
+            for _ in range(n_pts):
+                rows.append({
+                    "category":      cat,
+                    "estrous_stage": stage,
+                    "sex":           "male",
+                    "distance":      float(rng.uniform(1.0, 18.0)),
+                    "mf_angle":      float(rng.uniform(-180.0, 180.0)),
+                    "fm_angle":      float(rng.uniform(-180.0, 180.0)),
+                })
+    usv_pls = pls.DataFrame(rows)
+    bg_pls = pls.DataFrame({
+        "distance": rng.uniform(1.0, 18.0, 200),
+        "mf_angle": rng.uniform(-180.0, 180.0, 200),
+        "fm_angle": rng.uniform(-180.0, 180.0, 200),
+    })
+    return usv_pls, bg_pls
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_estrous_category_kde_grid_dense_and_sparse():
+    """
+    Description
+    -----------
+    `plot_estrous_category_kde_grid` must build the category x stage polar
+    KDE grid against a shared background occupancy KDE, render dense cells
+    as filled contours and the sparse `(2, 'e')` cell as "N/A", subsample
+    the background when it exceeds `max_kde_points`, and return the
+    per-cell point counts. Asserts the `n_points` map and grid shape.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    usv_pls, bg_pls = _estrous_kde_frames(np.random.default_rng(105))
+    fig, axes, stats = plot_estrous_category_kde_grid(
+        usv_pls, bg_pls, sex_key="male",
+        valid_stages=["p", "e"],
+        stage_label_map={"p": "Proestrus", "e": "Estrus"},
+        max_distance=20.0, occupancy_threshold=0.01, colormap="inferno",
+        threshold=30, max_kde_points=50,
+    )
+    assert axes.shape == (2, 2)
+    assert stats["n_points"][(2, "e")] == 5, "sparse cell point count wrong"
+    assert stats["sex_plotted"] == "male"
+    plt.close(fig)
+
+
+def test_plot_estrous_category_kde_grid_error_branches():
+    """
+    Description
+    -----------
+    The guardrails of `plot_estrous_category_kde_grid` must each raise
+    ValueError: an invalid `sex_key`, and a `usv_pls` missing the required
+    `estrous_stage` column.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    usv_pls, bg_pls = _estrous_kde_frames(np.random.default_rng(106))
+
+    with pytest.raises(ValueError, match="sex_key must be"):
+        plot_estrous_category_kde_grid(
+            usv_pls, bg_pls, sex_key="nope", valid_stages=["p", "e"],
+            stage_label_map={"p": "Proestrus", "e": "Estrus"},
+            max_distance=20.0, occupancy_threshold=0.01, colormap="inferno",
+        )
+
+    with pytest.raises(ValueError, match="estrous_stage"):
+        plot_estrous_category_kde_grid(
+            usv_pls.drop("estrous_stage"), bg_pls, sex_key="male",
+            valid_stages=["p", "e"],
+            stage_label_map={"p": "Proestrus", "e": "Estrus"},
+            max_distance=20.0, occupancy_threshold=0.01, colormap="inferno",
+        )
+
+    # No categories survive (all filtered out) -> guardrail before bg KDE.
+    with pytest.raises(ValueError, match="No USV categories"):
+        plot_estrous_category_kde_grid(
+            usv_pls.filter(pls.col("category") == 999), bg_pls, sex_key="male",
+            valid_stages=["p", "e"],
+            stage_label_map={"p": "Proestrus", "e": "Estrus"},
+            max_distance=20.0, occupancy_threshold=0.01, colormap="inferno",
+        )
+
+    # Too few valid background frames to fit the shared occupancy KDE.
+    thin_bg = pls.DataFrame({
+        "distance": [1.0, 2.0, 3.0],
+        "mf_angle": [10.0, 20.0, 30.0],
+        "fm_angle": [10.0, 20.0, 30.0],
+    })
+    with pytest.raises(ValueError, match="Insufficient background"):
+        plot_estrous_category_kde_grid(
+            usv_pls, thin_bg, sex_key="male", valid_stages=["p", "e"],
+            stage_label_map={"p": "Proestrus", "e": "Estrus"},
+            max_distance=20.0, occupancy_threshold=0.01, colormap="inferno",
+        )
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.parametrize(
+    "cats, stages, want_shape",
+    [
+        ((1,), ("p", "e"), (1, 2)),   # single category -> row reshape branch
+        ((1, 2), ("p",),  (2, 1)),    # single stage    -> column reshape branch
+    ],
+)
+def test_plot_estrous_category_kde_grid_degenerate_grid_shapes(cats, stages, want_shape):
+    """
+    Description
+    -----------
+    The axes-normalisation branches must coerce a 1xN (single category) or
+    Nx1 (single stage) subplot result back to a 2D array so the
+    `axes[r, c]` indexing in the render loop stays valid. Asserts the
+    returned axes grid has the expected 2D shape for each degenerate case.
+
+    Parameters
+    ----------
+    cats (tuple[int, ...])
+        Category ids to populate.
+    stages (tuple[str, ...])
+        Estrous stages to populate.
+    want_shape (tuple[int, int])
+        Expected `axes.shape`.
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(107)
+    rows = []
+    for cat in cats:
+        for stage in stages:
+            for _ in range(45):
+                rows.append({
+                    "category":      cat,
+                    "estrous_stage": stage,
+                    "sex":           "male",
+                    "distance":      float(rng.uniform(1.0, 18.0)),
+                    "mf_angle":      float(rng.uniform(-180.0, 180.0)),
+                    "fm_angle":      float(rng.uniform(-180.0, 180.0)),
+                })
+    usv_pls = pls.DataFrame(rows)
+    bg_pls = pls.DataFrame({
+        "distance": rng.uniform(1.0, 18.0, 200),
+        "mf_angle": rng.uniform(-180.0, 180.0, 200),
+        "fm_angle": rng.uniform(-180.0, 180.0, 200),
+    })
+    fig, axes, _stats = plot_estrous_category_kde_grid(
+        usv_pls, bg_pls, sex_key="male", valid_stages=list(stages),
+        stage_label_map={s: s.upper() for s in stages},
+        max_distance=20.0, occupancy_threshold=0.01, colormap="inferno",
+        threshold=30,
+    )
+    assert axes.shape == want_shape
     plt.close(fig)
