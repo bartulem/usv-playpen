@@ -33,6 +33,11 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_animal_participation_stats,
     plot_polar_kde_distance_angle,
     plot_behavior_duration_regressions,
+    plot_distance_by_assignment_kde_anova,
+    plot_duration_histograms_by_sex,
+    plot_estrous_ratio_scatter,
+    plot_estrous_usv_rates,
+    plot_estrous_stage_pie_chart,
 )
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
     build_master_usv_interval_dataframe,
@@ -804,6 +809,152 @@ def test_plot_behavior_duration_regressions():
 
     fig, axes, stats = plot_behavior_duration_regressions(
         _df(60), _df(50), _HEX_MALE, _HEX_FEMALE, _HEX_LINE,
+    )
+    assert fig is not None
+    assert isinstance(stats, dict)
+    plt.close(fig)
+
+
+_ESTROUS_ORDER = ["p", "e", "m", "d"]
+_ESTROUS_LABELS = ["Proestrus", "Estrus", "Metestrus", "Diestrus"]
+_ESTROUS_COLORS = ["#E6194B", "#3CB44B", "#4363D8", "#F58231"]
+
+
+def test_plot_distance_by_assignment_kde_anova():
+    """
+    Description
+    -----------
+    `plot_distance_by_assignment_kde_anova` must render the overlaid
+    per-category distance KDEs and, with enough samples per group, run the
+    one-way ANOVA + Tukey post-hoc, returning the ANOVA stats.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(2)
+    rows = []
+    for cat, loc in (("male", 8.0), ("female", 12.0), ("unassigned", 15.0)):
+        for d in rng.normal(loc, 3.0, 40):
+            rows.append({"distance": float(d), "category": cat})
+    df_plot = pd.DataFrame(rows)
+    fig, ax, stats = plot_distance_by_assignment_kde_anova(
+        df_plot, min_samples_anova=5,
+        male_color=_HEX_MALE, female_color=_HEX_FEMALE, unassigned_color=_HEX_UNASSIGNED,
+    )
+    assert fig is not None
+    assert "anova" in stats
+    plt.close(fig)
+
+
+def test_plot_duration_histograms_by_sex():
+    """
+    Description
+    -----------
+    `plot_duration_histograms_by_sex` must render the stacked male / female
+    duration histograms and return the per-sex mean / median durations.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(3)
+    rows = []
+    for sex, loc in (("male", 60.0), ("female", 90.0)):
+        for d in rng.uniform(loc - 30, loc + 30, 80):
+            rows.append({"sex": sex, "duration_ms": float(d)})
+    plot_data = pd.DataFrame(rows)
+    fig, axes, stats = plot_duration_histograms_by_sex(
+        plot_data, bin_width_ms=10.0, max_duration_ms=200.0,
+        male_color=_HEX_MALE, female_color=_HEX_FEMALE,
+    )
+    assert len(axes) == 2
+    assert "male_mean" in stats and "female_mean" in stats
+    plt.close(fig)
+
+
+def test_plot_estrous_ratio_scatter():
+    """
+    Description
+    -----------
+    `plot_estrous_ratio_scatter` must render the jittered per-stage
+    male/female ratio scatter and return per-stage descriptive stats
+    (n, mean, sem, ...).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(4)
+    ratio_dict = {stage: rng.uniform(0.5, 3.0, 6).tolist() for stage in _ESTROUS_ORDER}
+    fig, ax, stats = plot_estrous_ratio_scatter(
+        ratio_dict, _ESTROUS_ORDER, _ESTROUS_LABELS, _ESTROUS_COLORS,
+        line_color=_HEX_LINE, text_color=_HEX_LINE,
+    )
+    assert fig is not None
+    assert all(stage in stats for stage in _ESTROUS_ORDER)
+    plt.close(fig)
+
+
+def test_plot_estrous_usv_rates():
+    """
+    Description
+    -----------
+    `plot_estrous_usv_rates` must render the side-by-side per-stage male /
+    female USV-rate bars and return the per-stage rate stats.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    session_counts = {"p": 5, "e": 4, "m": 6, "d": 3}
+    male_usv_counts = {"p": 120, "e": 90, "m": 200, "d": 60}
+    female_usv_counts = {"p": 60, "e": 45, "m": 80, "d": 30}
+    fig, axes, stats = plot_estrous_usv_rates(
+        session_counts, male_usv_counts, female_usv_counts,
+        _ESTROUS_ORDER, _ESTROUS_LABELS, _HEX_MALE, _HEX_FEMALE, _HEX_LINE,
+    )
+    assert len(axes) == 2
+    assert stats["p"]["male_rate"] == 24.0
+    plt.close(fig)
+
+
+def test_plot_estrous_stage_pie_chart():
+    """
+    Description
+    -----------
+    `plot_estrous_stage_pie_chart` must render the estrous-stage session
+    pie chart from the per-stage session counts and return per-stage
+    proportions.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    session_counts = {"p": 5, "e": 4, "m": 6, "d": 3}
+    label_map = dict(zip(_ESTROUS_ORDER, _ESTROUS_LABELS))
+    fig, ax, stats = plot_estrous_stage_pie_chart(
+        session_counts, label_map, _ESTROUS_COLORS,
     )
     assert fig is not None
     assert isinstance(stats, dict)
