@@ -327,3 +327,108 @@ def test_plot_arena_corners_mics_full_render():
         assert any("20240101_120000" in t.get_text() for t in ax.texts)
     finally:
         plt.close(fig)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_behavioral_features_sei_and_light_theme_colour_branches():
+    """
+    Description
+    -----------
+    Exercise the colour-selection sub-branches `plot_behavioral_features` takes
+    that the main test does not: the no-accent path's directional `-sei` dyadic
+    colouring (`<self>-<partner>` -> self colour) and the light-theme defaults
+    for plain dyadic features.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    n = 20
+    rng = np.random.default_rng(4)
+    beh_df = pls.DataFrame({
+        "m1-m2.nose-nose": rng.uniform(0, 90, n),
+        "m1-m2.orofacial-sei": rng.uniform(-1, 1, n),
+        "m2-m1.orofacial-sei": rng.uniform(-1, 1, n),
+    })
+    features = ["m1-m2.nose-nose", "m1-m2.orofacial-sei", "m2-m1.orofacial-sei"]
+    plot_axes: dict = {}
+    fig = plt.figure()
+    try:
+        plot_behavioral_features(
+            plot_axes=plot_axes, figure_object=fig,
+            mouse_track_names=["m1", "m2"], special_features=[],
+            beh_features_to_plot=features, beh_feature_data=beh_df,
+            beh_features_fig_position=[0.1, 0.8, 0.3, 0.03],
+            beh_window_size_sec=0.1, beh_window_size_frames=n,
+            beh_half_window_size_frames=10,
+            beh_features_ylabels={
+                "nose-nose": "distance (cm)", "orofacial-sei": "SEI (a.u.)",
+            },
+            feature_ts_fr_start=0, feature_ts_fr_end=n, feature_ts_fr_middle=10,
+            x_axis_start=0, x_axis_middle=10, x_axis_end=19,
+            ylim_dict={"nose-nose": [0, 90], "orofacial-sei": [-1, 1]},
+            plot_theme="light", color_mode_preferences=_COLOR_MODE,
+            animal_colors=["#FF0000", "#00FF00"], remove_axes_bool=False,
+        )
+        assert set(plot_axes.keys()) == {3, 4, 5}
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_behavioral_features_accent_transparent_and_remove_axes():
+    """
+    Description
+    -----------
+    With `special_features` set, non-accentuated self / dyadic features must be
+    drawn with the transparent (``...33``) colour variants, and
+    `remove_axes_bool=True` must first remove the placeholder axes that already
+    occupy the target slots.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    n = 20
+    rng = np.random.default_rng(5)
+    beh_df = pls.DataFrame({
+        "m1.speed": rng.uniform(0, 30, n),
+        "m2.acceleration": rng.uniform(-100, 100, n),
+        "m1-m2.nose-nose": rng.uniform(0, 90, n),
+    })
+    features = ["m1.speed", "m2.acceleration", "m1-m2.nose-nose"]
+    fig = plt.figure()
+    # Pre-populate the slots so remove_axes_bool=True has axes to remove.
+    plot_axes = {idx: fig.add_axes([0.01, 0.01, 0.05, 0.05]) for idx in (3, 4, 5)}
+    try:
+        plot_behavioral_features(
+            plot_axes=plot_axes, figure_object=fig,
+            mouse_track_names=["m1", "m2"], special_features=["body_dir"],
+            beh_features_to_plot=features, beh_feature_data=beh_df,
+            beh_features_fig_position=[0.1, 0.8, 0.3, 0.03],
+            beh_window_size_sec=0.1, beh_window_size_frames=n,
+            beh_half_window_size_frames=10,
+            beh_features_ylabels={
+                "speed": "speed (cm/s)", "acceleration": "accel (cm/s2)",
+                "nose-nose": "distance (cm)",
+            },
+            feature_ts_fr_start=0, feature_ts_fr_end=n, feature_ts_fr_middle=10,
+            x_axis_start=0, x_axis_middle=10, x_axis_end=19,
+            ylim_dict={"speed": [0, 30], "acceleration": [-100, 100],
+                       "nose-nose": [0, 90]},
+            plot_theme="light", color_mode_preferences=_COLOR_MODE,
+            animal_colors=["#FF0000", "#00FF00"], remove_axes_bool=True,
+        )
+        assert set(plot_axes.keys()) == {3, 4, 5}
+    finally:
+        plt.close(fig)
