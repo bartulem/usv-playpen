@@ -57,6 +57,7 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_ic_curves,
     plot_qq,
     plot_best_fit_with_annotations,
+    run_bic_sweep,
 )
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
 
@@ -1309,4 +1310,41 @@ def test_plot_best_fit_with_annotations():
         intervals_sec, gmm, gmm_order, color=_HEX_MALE,
     )
     assert "qq_pearson_r" in summary
+    plt.close(fig)
+
+
+def test_run_bic_sweep_feeds_plot_ic_curves():
+    """
+    Description
+    -----------
+    `run_bic_sweep` must fit the GMM sweep across n_components for each sex
+    from a tidy {sex, interval_s} frame and return a tidy results table;
+    that table must then drive `plot_ic_curves` end-to-end (real compute ->
+    real figure), exercising the fit_gmm_sweep wrap path with no mocks.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(16)
+    usv_interval_df = pls.DataFrame({
+        "sex": (["male"] * 200) + (["female"] * 200),
+        "interval_s": np.exp(np.concatenate([
+            rng.normal(-0.5, 0.6, 200), rng.normal(0.6, 0.6, 200),
+        ])).tolist(),
+    })
+    df_results = run_bic_sweep(
+        usv_interval_df,
+        n_components_min=1, n_components_max=3, n_repeats=2,
+        max_modes_reported=3, random_seed_base=0, model_class="gauss",
+    )
+    assert df_results.height > 0
+    assert {"sex", "n_comp", "bic"}.issubset(df_results.columns)
+
+    fig, axes, stats = plot_ic_curves(df_results, _HEX_MALE, _HEX_FEMALE)
+    assert len(axes) == 2
     plt.close(fig)
