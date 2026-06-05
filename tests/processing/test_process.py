@@ -2268,3 +2268,517 @@ def test_rectify_video_fps_all_dropped_frames_warns_and_uses_sentinel(tmp_path, 
     expected_duration = (frame_count - 1) / fps
     expected_esr = round(frame_count / expected_duration, 4)
     assert frame_count_dict['median_empirical_camera_sr'] == pytest.approx(expected_esr)
+
+
+# ===========================================================================
+# modify_files.Operator.split_clusters_to_sessions
+#
+# Pure numpy + file-I/O method (no external ffmpeg/sox), so it can be driven
+# end-to-end from a synthetic EPHYS / Kilosort layout: a changepoints JSON
+# pointing at one session root, that session's camera-frame-count JSON, and a
+# Kilosort directory holding cluster_info.tsv / spike_clusters.npy /
+# spike_times.npy. Verifies per-session, per-cluster spike .npy files land
+# under <root>/ephys/<probe>/cluster_data/ for good + MUA clusters only.
+# ===========================================================================
+
+
+def _processing_settings_dict():
+    """
+    Description
+    -----------
+    Load the package's `processing_settings.json` as a fresh dict so a test
+    can mutate a copy (e.g. lower `min_spike_num`) before handing it to
+    `Operator` without touching the on-disk settings.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    settings (dict)
+        The parsed processing-settings dict.
+    """
+
+    import usv_playpen
+    settings_path = (
+        Path(usv_playpen.__file__).parent
+        / "_parameter_settings" / "processing_settings.json"
+    )
+    return json.loads(settings_path.read_text())
+
+
+def _build_split_clusters_layout(
+    tmp_path: Path,
+    *,
+    write_cluster_info: bool = True,
+    tracking_nan: bool = False,
+):
+    """
+    Description
+    -----------
+    Build the on-disk layout `split_clusters_to_sessions` walks for a single
+    day / single probe (`imec0`) / single session:
+
+      <tmp>/Data/20230101_120000/                     (session root)
+        video/..._camera_frame_count_dict.json
+      <tmp>/EPHYS/20230101_imec0/
+        changepoints_info_20230101.json
+        kilosort4/cluster_info.tsv  (optional)
+        kilosort4/spike_clusters.npy
+        kilosort4/spike_times.npy
+
+    The Kilosort output holds four clusters — good / mua / noise / unsorted —
+    so the method's group-routing branches (save + count vs. noise-count vs.
+    unsorted-count) all execute.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    write_cluster_info (bool)
+        When False, omit `cluster_info.tsv` so the "no phy curation" skip
+        branch runs.
+    tracking_nan (bool)
+        When True, set `tracking_start_end` to NaN so the method falls back
+        to `session_start_end`.
+
+    Returns
+    -------
+    session_root (pathlib.Path)
+        The single session root directory (the `root_directory` list entry).
+    cluster_data_dir (pathlib.Path)
+        Where per-cluster spike .npy files are expected to land.
+    """
+
+    session_root = tmp_path / "Data" / "20230101_120000"
+    (session_root / "video").mkdir(parents=True)
+    (session_root / "video" / "20230101_120000_camera_frame_count_dict.json").write_text(
+        json.dumps({
+            "median_empirical_camera_sr": 150.0,
+            "total_frame_number_least": 1000,
+        })
+    )
+
+    ephys_dir = tmp_path / "EPHYS" / "20230101_imec0"
+    ks_dir = ephys_dir / "kilosort4"
+    ks_dir.mkdir(parents=True)
+
+    se = [0, 300000]
+    changepoints = {
+        "20230101_120000": {
+            "root_directory":    str(session_root),
+            "headstage_sn":      "23240370",
+            "session_start_end": se,
+            "tracking_start_end": [float("nan"), float("nan")] if tracking_nan else se,
+        }
+    }
+    (ephys_dir / "changepoints_info_20230101.json").write_text(json.dumps(changepoints))
+
+    rng = np.random.default_rng(0)
+    counts = {0: 200, 1: 150, 2: 5, 3: 5}  # good, mua, noise, unsorted
+    times_parts, clusters_parts = [], []
+    for cid, n in counts.items():
+        times_parts.append(rng.integers(1000, 299000, n))
+        clusters_parts.append(np.full(n, cid))
+    spike_times = np.concatenate(times_parts).astype(np.int64)
+    spike_clusters = np.concatenate(clusters_parts).astype(np.int64)
+    np.save(ks_dir / "spike_times.npy", spike_times)
+    np.save(ks_dir / "spike_clusters.npy", spike_clusters)
+
+    if write_cluster_info:
+        tsv_lines = ["cluster_id\tch\tgroup"]
+        for cid, ch, group in (
+            (0, 10, "good"), (1, 20, "mua"), (2, 30, "noise"), (3, 40, "unsorted"),
+        ):
+            tsv_lines.append(f"{cid}\t{ch}\t{group}")
+        (ks_dir / "cluster_info.tsv").write_text("\n".join(tsv_lines) + "\n")
+
+    cluster_data_dir = session_root / "ephys" / "imec0" / "cluster_data"
+    return session_root, cluster_data_dir
+
+
+def test_split_clusters_to_sessions_writes_per_cluster_npy(tmp_path, mocker):
+    """
+    Description
+    -----------
+    End-to-end run over a synthetic single-day / single-probe Kilosort
+    layout: `split_clusters_to_sessions` must convert spike samples to
+    seconds + frames per session and write one `.npy` per good / MUA cluster
+    (noise / unsorted clusters are only counted), under
+    `<root>/ephys/imec0/cluster_data/`. Asserts the two expected files and
+    their `(2, n_spikes)` shape.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    session_root, cluster_data_dir = _build_split_clusters_layout(tmp_path)
+
+    settings = _processing_settings_dict()
+    settings["modify_files"]["Operator"]["get_spike_times"]["min_spike_num"] = 1
+
+    op = Operator(
+        root_directory=[str(session_root)],
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    op.split_clusters_to_sessions()
+
+    npy_files = sorted(p.name for p in cluster_data_dir.glob("*.npy"))
+    assert npy_files == [
+        "imec0_cl0000_ch010_good.npy",
+        "imec0_cl0001_ch020_mua.npy",
+    ], f"unexpected cluster_data contents: {npy_files}"
+    arr = np.load(cluster_data_dir / "imec0_cl0000_ch010_good.npy")
+    assert arr.shape[0] == 2 and arr.shape[1] > 1, (
+        f"expected (2, n_spikes) spike array, got {arr.shape}"
+    )
+
+
+def test_split_clusters_to_sessions_skips_without_cluster_info(tmp_path, mocker):
+    """
+    Description
+    -----------
+    When a probe's Kilosort directory has no `cluster_info.tsv` (phy
+    curation not run), the method must log and skip that probe rather than
+    crash — no `cluster_data` files are written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    session_root, cluster_data_dir = _build_split_clusters_layout(
+        tmp_path, write_cluster_info=False,
+    )
+
+    settings = _processing_settings_dict()
+    op = Operator(
+        root_directory=[str(session_root)],
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    op.split_clusters_to_sessions()
+
+    assert not cluster_data_dir.exists() or not list(cluster_data_dir.glob("*.npy")), (
+        "no spike files should be written when cluster_info.tsv is absent"
+    )
+
+
+def test_split_clusters_to_sessions_tracking_nan_falls_back_to_session(tmp_path, mocker):
+    """
+    Description
+    -----------
+    With `tracking_start_end` all-NaN, the method must fall back to the
+    `session_start_end` window for spike-time filtering and still write the
+    per-cluster spike files.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    session_root, cluster_data_dir = _build_split_clusters_layout(
+        tmp_path, tracking_nan=True,
+    )
+
+    settings = _processing_settings_dict()
+    settings["modify_files"]["Operator"]["get_spike_times"]["min_spike_num"] = 1
+    op = Operator(
+        root_directory=[str(session_root)],
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    op.split_clusters_to_sessions()
+
+    assert (cluster_data_dir / "imec0_cl0000_ch010_good.npy").exists()
+
+
+# ===========================================================================
+# modify_files.Operator.concatenate_binary_files
+#
+# Builds tiny synthetic SpikeGLX .ap.bin / .ap.meta pairs and lets the method
+# parse the metadata, compute per-recording changepoints, write the merged
+# .meta + changepoints JSON, and run the real POSIX `cat` concatenation into
+# <EPHYS>/<day>_<probe>/. Two recordings exercise both the first-file and
+# subsequent-file changepoint branches.
+# ===========================================================================
+
+
+def _write_ap_pair(probe_dir: Path, stem: str, n_samples: int, n_channels: int):
+    """
+    Description
+    -----------
+    Write one synthetic SpikeGLX recording: a `<stem>.ap.bin` of
+    `n_samples * n_channels` int16 values and a matching `<stem>.ap.meta`
+    carrying the keys `concatenate_binary_files` parses (`acqApLfSy`,
+    `imDatHs_sn`, `imDatPrb_sn`, `fileSizeBytes`, `fileTimeSecs`).
+
+    Parameters
+    ----------
+    probe_dir (pathlib.Path)
+        The `<root>/ephys/<probe>` directory to write into.
+    stem (str)
+        Recording filename stem (without the `.ap.bin` suffix).
+    n_samples (int)
+        Number of time samples.
+    n_channels (int)
+        Total channel count (AP + SY); `acqApLfSy` is written so
+        `int(first) + int(last)` equals this.
+
+    Returns
+    -------
+    None
+    """
+
+    data = np.arange(n_samples * n_channels, dtype=np.int16)
+    bin_path = probe_dir / f"{stem}.ap.bin"
+    data.tofile(bin_path)
+    meta_lines = [
+        f"acqApLfSy={n_channels - 1},0,1",
+        "imDatHs_sn=23240370",
+        "imDatPrb_sn=PRB0001",
+        f"fileSizeBytes={data.nbytes}",
+        "fileTimeSecs=0.001",
+    ]
+    (probe_dir / f"{stem}.ap.meta").write_text("\n".join(meta_lines) + "\n")
+
+
+def test_concatenate_binary_files_merges_two_recordings(tmp_path, mocker):
+    """
+    Description
+    -----------
+    `concatenate_binary_files` must, for a probe with two recordings, parse
+    each `.ap.meta`, accumulate per-recording changepoints, write the merged
+    `concatenated_*.ap.meta` (with summed `fileSizeBytes`/`fileTimeSecs`) and
+    a `changepoints_info_*.json`, and run the real `cat` concatenation to
+    produce the merged `.ap.bin`. Asserts all three artifacts exist, the
+    JSON holds both recordings with contiguous `session_start_end` windows,
+    and the merged binary is the byte-sum of its inputs.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+
+    session_root = tmp_path / "Data" / "20230101_120000"
+    probe_dir = session_root / "ephys" / "imec0"
+    probe_dir.mkdir(parents=True)
+    n_channels = 3
+    _write_ap_pair(probe_dir, "rec_a", n_samples=10, n_channels=n_channels)
+    _write_ap_pair(probe_dir, "rec_b", n_samples=7, n_channels=n_channels)
+    bytes_in = (
+        (probe_dir / "rec_a.ap.bin").stat().st_size
+        + (probe_dir / "rec_b.ap.bin").stat().st_size
+    )
+
+    settings = _processing_settings_dict()
+    op = Operator(
+        root_directory=[str(session_root)],
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    op.concatenate_binary_files()
+
+    concat_dir = tmp_path / "EPHYS" / "20230101_imec0"
+    merged_bin = concat_dir / "concatenated_20230101_imec0.ap.bin"
+    merged_meta = concat_dir / "concatenated_20230101_imec0.ap.meta"
+    changepoints_json = concat_dir / "changepoints_info_20230101_imec0.json"
+
+    assert merged_bin.is_file(), "merged .bin not produced by cat concatenation"
+    assert merged_meta.is_file(), "merged .meta not written"
+    assert changepoints_json.is_file(), "changepoints JSON not written"
+    assert merged_bin.stat().st_size == bytes_in, (
+        "merged .bin size should equal the sum of the input .bin sizes"
+    )
+
+    info = json.loads(changepoints_json.read_text())
+    assert set(info) == {"rec_a", "rec_b"}
+    # rec_a occupies [0, 10); rec_b continues [10, 17).
+    assert info["rec_a"]["session_start_end"] == [0, 10]
+    assert info["rec_b"]["session_start_end"] == [10, 17]
+    assert info["rec_a"]["total_num_channels"] == n_channels
+
+
+# ===========================================================================
+# modify_files.Operator — audio HPSS + Sox band filtering
+#
+# hpss_audio is pure librosa/scipy; filter_audio_files shells out to the
+# bundled static_sox. Both run end-to-end on a tiny synthetic WAV, chained
+# cropped_to_video -> hpss -> hpss_filtered.
+# ===========================================================================
+
+
+def _write_small_wav(path: Path, *, sr: int = 250000, n: int = 8192):
+    """
+    Description
+    -----------
+    Write a tiny mono int16 WAV (a 20 kHz tone plus light noise) suitable
+    for driving the HPSS / Sox-filter audio methods quickly.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination WAV path (parent must exist).
+    sr (int)
+        Sample rate in Hz.
+    n (int)
+        Number of samples.
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(0)
+    t = np.arange(n) / sr
+    sig = 0.2 * np.sin(2 * np.pi * 20000.0 * t) + 0.05 * rng.standard_normal(n)
+    wavfile.write(path, sr, (sig * 10000).astype(np.int16))
+
+
+def test_hpss_audio_writes_harmonic_wav(tmp_path, mocker):
+    """
+    Description
+    -----------
+    `hpss_audio` must STFT each `audio/cropped_to_video/*.wav`, run
+    harmonic-percussive separation, invert the harmonic component back to
+    time domain, and write `audio/hpss/<stem>_hpss.wav`. Asserts the output
+    WAV is written with the input's sample rate and non-empty int16 data.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (used as the single session root).
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    cropped_dir = tmp_path / "audio" / "cropped_to_video"
+    cropped_dir.mkdir(parents=True)
+    _write_small_wav(cropped_dir / "mic0.wav")
+
+    settings = _processing_settings_dict()
+    op = Operator(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    op.hpss_audio()
+
+    out_wav = tmp_path / "audio" / "hpss" / "mic0_hpss.wav"
+    assert out_wav.is_file(), "harmonic WAV not written"
+    sr, data = wavfile.read(out_wav)
+    assert sr == 250000 and data.dtype == np.int16 and data.size > 0
+
+
+def test_filter_audio_files_runs_static_sox(tmp_path, mocker):
+    """
+    Description
+    -----------
+    `filter_audio_files` must, for each configured `filter_dirs` entry,
+    band-filter every WAV via the bundled `static_sox` into a sibling
+    `<dir>_filtered/` directory. Driven on a WAV placed in `audio/hpss/`
+    (the default `filter_dirs` target). Asserts the filtered WAV appears.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (used as the single session root).
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    hpss_dir = tmp_path / "audio" / "hpss"
+    hpss_dir.mkdir(parents=True)
+    _write_small_wav(hpss_dir / "mic0_hpss.wav")
+
+    settings = _processing_settings_dict()
+    op = Operator(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    op.filter_audio_files()
+
+    out_wav = tmp_path / "audio" / "hpss_filtered" / "mic0_hpss_filtered.wav"
+    assert out_wav.is_file(), "Sox-filtered WAV not written"
+
+
+def test_filter_audio_files_no_files_is_noop(tmp_path, mocker):
+    """
+    Description
+    -----------
+    With the configured `filter_dirs` source directory present but empty,
+    `filter_audio_files` must spawn no subprocesses and create the output
+    directory without error (the `len(all_audio_files) > 0` guard skips the
+    Sox launch).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    (tmp_path / "audio" / "hpss").mkdir(parents=True)
+
+    settings = _processing_settings_dict()
+    op = Operator(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    op.filter_audio_files()
+
+    assert (tmp_path / "audio" / "hpss_filtered").is_dir()
+    assert not list((tmp_path / "audio" / "hpss_filtered").glob("*.wav"))
