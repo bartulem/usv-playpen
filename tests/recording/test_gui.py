@@ -28,6 +28,25 @@ def preserve_settings_toml():
     yield
     settings_path.write_text(original)
 
+
+@pytest.fixture
+def preserve_all_settings():
+    """Back up and restore every package settings file the GUI's label-save
+    handlers may rewrite while navigating between windows (the .toml plus the
+    three _parameter_settings JSONs), so window-navigation tests never churn
+    the tracked configs."""
+    pkg = Path(usv_playpen_gui.__file__).parent
+    paths = [
+        pkg / '_config' / 'behavioral_experiments_settings.toml',
+        pkg / '_parameter_settings' / 'analyses_settings.json',
+        pkg / '_parameter_settings' / 'processing_settings.json',
+        pkg / '_parameter_settings' / 'visualizations_settings.json',
+    ]
+    originals = {p: p.read_text() for p in paths}
+    yield
+    for p, text in originals.items():
+        p.write_text(text)
+
 def test_main_window_initialization(app):
     expected_version = metadata.version('usv-playpen').split('.dev')[0].split('.post')[0]
     assert app.windowTitle() == f"USV Playpen v{expected_version}"
@@ -151,3 +170,51 @@ def test_navigation_to_record_metadata_window(app, qtbot):
 #     qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
 #     process_button = app.button_map['Process']
 #     qtbot.mouseClick(process_button, Qt.MouseButton.LeftButton)
+
+
+def test_navigation_to_record_conduct_window(app, qtbot, preserve_all_settings):
+    """Record -> Next -> Next -> Next walks record_one -> record_four,
+    building the 'Conduct recording' window (and its widget tree) end-to-end."""
+    qtbot.mouseClick(app.button_map['Record'], Qt.MouseButton.LeftButton)
+    assert "Record > Select config" in app.windowTitle()
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Record > Audio and Video Settings" in app.windowTitle()
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Record > Metadata" in app.windowTitle()
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Conduct recording" in app.windowTitle()
+
+
+def test_navigation_to_process_windows(app, qtbot, preserve_all_settings):
+    """Process builds the settings window; Next builds the 'Conduct
+    Processing' window — covering process_one and process_two."""
+    qtbot.mouseClick(app.button_map['Process'], Qt.MouseButton.LeftButton)
+    assert "Process recordings > Settings" in app.windowTitle()
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Conduct Processing" in app.windowTitle()
+
+
+def test_navigation_to_analyze_windows(app, qtbot, preserve_all_settings):
+    """Analyze builds the settings window; Next builds the 'Conduct
+    Analyses' window — covering analyze_one and analyze_two."""
+    qtbot.mouseClick(app.button_map['Analyze'], Qt.MouseButton.LeftButton)
+    assert "Analyze data > Settings" in app.windowTitle()
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Conduct Analyses" in app.windowTitle()
+
+
+def test_navigation_to_visualize_windows(app, qtbot, preserve_all_settings):
+    """Visualize builds the settings window; Next builds the 'Conduct
+    Visualizations' window — covering visualize_one and visualize_two."""
+    qtbot.mouseClick(app.button_map['Visualize'], Qt.MouseButton.LeftButton)
+    assert "Visualize data > Settings" in app.windowTitle()
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    assert "Conduct Visualizations" in app.windowTitle()
+
+
+def test_navigation_to_credentials_window(app, qtbot):
+    """The login button opens the credentials window — covering
+    credentials_window's widget construction."""
+    qtbot.mouseClick(app.login_button, Qt.MouseButton.LeftButton)
+    assert "Set credentials" in app.windowTitle()
+    assert hasattr(app, 'email_address')
