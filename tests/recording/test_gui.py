@@ -332,3 +332,32 @@ def test_enable_disable_buttons_toggle_state(app):
     assert not app.button_map["Process"].isEnabled()
     app._enable_process_buttons()
     assert app.button_map["Previous"].isEnabled()
+
+
+def test_update_subject_in_repository_adds_then_updates(app):
+    """_update_subject_in_repository must append a new subject (deep-copied),
+    update an existing one in place by subject_id, and no-op on a record with
+    no id — persisting via the (stubbed) repository writer each time."""
+    app.subject_repository = []
+    app._save_subject_to_repository = lambda: None
+
+    app._update_subject_in_repository({"subject_id": "M", "x": 1})
+    assert len(app.subject_repository) == 1
+    assert app.subject_repository[0] == {"subject_id": "M", "x": 1}
+
+    app._update_subject_in_repository({"subject_id": "M", "x": 2})
+    assert len(app.subject_repository) == 1
+    assert app.subject_repository[0]["x"] == 2
+
+    app._update_subject_in_repository({})  # no subject_id -> ignored
+    assert len(app.subject_repository) == 1
+
+
+def test_save_metadata_to_yaml_early_return_off_video_settings(app):
+    """On the main window (central widget is not VideoSettings),
+    _save_metadata_to_yaml must early-return without touching the bundled
+    _config/_metadata.yaml."""
+    meta_path = Path(usv_playpen_gui.__file__).parent / '_config' / '_metadata.yaml'
+    before = meta_path.read_text()
+    app._save_metadata_to_yaml()
+    assert meta_path.read_text() == before, "metadata YAML was written on early-return path"
