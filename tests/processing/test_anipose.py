@@ -459,8 +459,9 @@ def test_translate_rotate_metric_animal_branch_writes_transformed_mouse(
     `<session>_points3d_translated_rotated_metric.h5` carrying `tracks`,
     `node_names`, `track_names`, `experimental_code`, and
     `recording_frame_rate`. With `delete_original_h5=True` the source mouse
-    H5 must be removed. Driven without a session metadata file (the
-    metadata-update block is skipped; `find_mouse_names` returns no names).
+    H5 must be removed. A session metadata file is provided, so the
+    metadata-update block runs and `find_mouse_names` resolves the track
+    names from the `Subjects` list (here `["m1"]`).
 
     Parameters
     ----------
