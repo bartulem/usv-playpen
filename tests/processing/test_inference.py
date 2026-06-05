@@ -590,10 +590,29 @@ def _build_prepare_for_vocalocator_layout(tmp_path, settings):
 
 
 def test_prepare_for_vocalocator_writes_dset_h5(tmp_path, processing_settings, mocker):
-    """prepare_for_vocalocator must slice the concatenated-audio mmap at each
-    USV's sample window, gather the track locations at the USV onset video
-    frames, read the arena dimensions, and write a vocalocator `dset.h5`
-    bundling audio / node_names / locations / length_idx / animal_id."""
+    """
+    Description
+    -----------
+    ``prepare_for_vocalocator`` must slice the concatenated-audio mmap at each
+    USV's sample window, gather the track locations at the USV-onset video
+    frames, read the arena dimensions, and write a vocalocator ``dset.h5``
+    bundling audio / ``node_names`` / ``locations`` / ``length_idx`` /
+    ``animal_id``.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
     mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
     _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
 
@@ -610,9 +629,27 @@ def test_prepare_for_vocalocator_writes_dset_h5(tmp_path, processing_settings, m
 
 
 def test_prepare_for_vocalocator_skips_when_dset_exists(tmp_path, processing_settings, mocker):
-    """When `dset.h5` already exists the method must short-circuit (the
-    `if not output_path_file.exists()` guard), leaving the existing file
-    untouched."""
+    """
+    Description
+    -----------
+    When ``dset.h5`` already exists the method must short-circuit (the
+    ``if not output_path_file.exists()`` guard), leaving the existing file
+    byte-for-byte untouched.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
     mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
     _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
     sl_dir = tmp_path / "audio" / "sound_localization"
@@ -668,9 +705,27 @@ def _build_ssl_common(tmp_path, *, n_voc=3):
 def test_run_vocalocator_ssl_no_calibration_file_returns_early(
     tmp_path, processing_settings, mocker,
 ):
-    """With no `*cal*.npz` in the model directory, the StopIteration from
-    `next(...)` must be caught and the method must log + return without
-    attempting to read model predictions."""
+    """
+    Description
+    -----------
+    With no ``*cal*.npz`` in the model directory, the ``StopIteration`` from
+    ``next(...)`` must be caught and the method must log + return without
+    attempting to read model predictions or launch the inference subprocess.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op ``smart_wait`` and to spy on ``subprocess.run``.
+
+    Returns
+    -------
+    None
+    """
+
     mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
     _build_ssl_common(tmp_path)
     model_dir = tmp_path / "model"
@@ -693,10 +748,30 @@ def test_run_vocalocator_ssl_no_calibration_file_returns_early(
 def test_run_vocalocator_ssl_full_path_writes_emitter_column(
     tmp_path, processing_settings, mocker,
 ):
-    """With a calibration NPZ present and the inference subprocess mocked,
-    `run_vocalocator_ssl` must read `model_predictions.npz`, map per-USV
-    assignment indices to track names (-1 -> unassigned), write the `emitter`
-    column back to the USV summary CSV, and update session metadata."""
+    """
+    Description
+    -----------
+    With a calibration NPZ present and the inference subprocess mocked,
+    ``run_vocalocator_ssl`` must read ``model_predictions.npz``, map per-USV
+    assignment indices to track names (``-1`` -> unassigned), write the
+    ``emitter`` column back to the USV-summary CSV, and update the session
+    metadata.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op ``smart_wait``, stub the inference subprocess, and
+        patch the metadata load / save helpers.
+
+    Returns
+    -------
+    None
+    """
+
     mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
     sl_dir = _build_ssl_common(tmp_path, n_voc=3)
 

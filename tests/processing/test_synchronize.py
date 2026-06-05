@@ -240,19 +240,49 @@ def test_find_video_sync_trains_no_video_dir_returns_empty(processing_settings,
 
 
 def _processing_settings_full():
-    """Load the package processing_settings.json fresh (mutable copy)."""
+    """
+    Description
+    -----------
+    Load the package ``processing_settings.json`` fresh as a mutable dict so a
+    test can override sub-keys before handing it to ``Synchronizer`` without
+    touching the on-disk settings.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    settings (dict)
+        The parsed processing-settings dict.
+    """
+
     path = glob.glob("**/processing_settings.json", recursive=True)[0]
     return json.loads(Path(path).read_text())
 
 
 def test_crop_wav_files_to_video_single_device(tmp_path, mocker):
     """
+    Description
+    -----------
     End-to-end single-device crop: a triggerbox-channel WAV whose LSB carries a
     camera-frame TTL train (with one large recording break) is parsed by
-    find_lsb_changes to recover the tracking window, the per-frame audio-sample
-    offsets and sync-info JSON are written, and every original WAV is trimmed
-    to that window via static_sox into audio/cropped_to_video/.
+    ``find_lsb_changes`` to recover the tracking window, the per-frame
+    audio-sample offsets and sync-info JSON are written, and every original WAV
+    is trimmed to that window via the bundled ``static_sox`` into
+    ``audio/cropped_to_video/``.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
     """
+
     mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
 
     root = tmp_path

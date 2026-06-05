@@ -270,9 +270,39 @@ def test_create_usv_playback_wav_seed_is_reproducible_and_varies(tmp_path, mocke
 
 def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, prefix="male",
                                total_time=8, n_snippets=6):
-    """Drive create_naturalistic_usv_playback_wav with mocked audio I/O.
-    Returns the (spacing_lines, usvid_lines, write_mock) triple so callers can
-    assert the sequence structure and that a WAV was emitted."""
+    """
+    Description
+    -----------
+    Drive ``create_naturalistic_usv_playback_wav`` with mocked audio I/O
+    (``find_base_path`` / ``os.path.ismount`` redirected into ``tmp_path`` and
+    ``wavfile.read`` / ``wavfile.write`` stubbed), against a snippet directory
+    of ``n_snippets`` empty WAVs.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (serves as the file-server base).
+    mocker (pytest_mock.MockerFixture)
+        Used to patch the audio I/O boundary.
+    seed (int)
+        ``playback_seed`` for reproducible snippet selection.
+    exp_id (str)
+        Experiment-id subdirectory under the file-server base.
+    prefix (str)
+        Snippet-directory prefix selecting the sex-specific GMM ('male' /
+        'female').
+    total_time (int | float)
+        Target naturalistic playback time (s).
+    n_snippets (int)
+        Number of synthetic snippet WAVs to create.
+
+    Returns
+    -------
+    spacing, usvids, write_mock (tuple)
+        The spacing.txt lines, the usvids.txt lines, and the ``wavfile.write``
+        mock, so callers can assert sequence structure and WAV emission.
+    """
+
     snip_dir = (
         tmp_path / exp_id / "usv_playback_experiments"
         / f"{prefix}_usv_playback_snippets"
@@ -313,12 +343,28 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, prefix="male",
 
 
 def test_create_naturalistic_usv_playback_wav_emits_sequences(tmp_path, mocker):
-    """create_naturalistic_usv_playback_wav must interleave inter-sequence
+    """
+    Description
+    -----------
+    ``create_naturalistic_usv_playback_wav`` must interleave inter-sequence
     silences (ISI) and seeded USV sequences (each separated by IUIs) until the
     target playback time is reached, logging both the per-segment sample counts
-    (spacing.txt) and the chosen snippet / ISI / IUI labels (usvids.txt), then
-    writing a single WAV. The male GMM keeps the ISIs short enough that at
-    least one full sequence is emitted within the budget."""
+    (``spacing.txt``) and the chosen snippet / ISI / IUI labels
+    (``usvids.txt``), then writing a single WAV. The male GMM keeps the ISIs
+    short enough that at least one full sequence is emitted within the budget.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to patch the audio I/O boundary.
+
+    Returns
+    -------
+    None
+    """
+
     spacing, usvids, write_mock = _run_naturalistic_playback(
         tmp_path, mocker, seed=0, exp_id="natA", prefix="male", total_time=8,
     )
@@ -331,9 +377,25 @@ def test_create_naturalistic_usv_playback_wav_emits_sequences(tmp_path, mocker):
 
 
 def test_create_naturalistic_usv_playback_wav_seed_reproducible(tmp_path, mocker):
-    """A fixed playback_seed reproduces the exact snippet sequence across runs
-    (different exp_id dirs, identical snippet names), while a different seed
-    diverges."""
+    """
+    Description
+    -----------
+    A fixed ``playback_seed`` must reproduce the exact snippet sequence across
+    runs (different exp_id dirs, identical snippet names), while a different
+    seed must diverge.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (sub-dirs isolate the three runs).
+    mocker (pytest_mock.MockerFixture)
+        Used to patch the audio I/O boundary.
+
+    Returns
+    -------
+    None
+    """
+
     _, ids_a, _ = _run_naturalistic_playback(tmp_path / "a", mocker, seed=0, exp_id="x")
     _, ids_b, _ = _run_naturalistic_playback(tmp_path / "b", mocker, seed=0, exp_id="x")
     _, ids_c, _ = _run_naturalistic_playback(tmp_path / "c", mocker, seed=1, exp_id="x")

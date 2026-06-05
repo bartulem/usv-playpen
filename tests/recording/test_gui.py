@@ -2,11 +2,16 @@ import pytest
 
 from importlib import metadata
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import yaml
 from PyQt6.QtCore import Qt  # Added import
+from PyQt6.QtWidgets import QPushButton
 
 from usv_playpen import usv_playpen_gui
+from usv_playpen.usv_playpen_gui import (
+    ChemoDialog, EphysDialog, LesionDialog, OptoDialog,
+)
 
 @pytest.fixture
 def app(qtbot):
@@ -31,10 +36,24 @@ def preserve_settings_toml():
 
 @pytest.fixture
 def preserve_all_settings():
-    """Back up and restore every package settings file the GUI's label-save
-    handlers may rewrite while navigating between windows (the .toml plus the
-    three _parameter_settings JSONs), so window-navigation tests never churn
-    the tracked configs."""
+    """
+    Description
+    -----------
+    Back up and restore every package settings file the GUI's label-save
+    handlers may rewrite while navigating between windows (the
+    ``behavioral_experiments_settings.toml`` plus the three
+    ``_parameter_settings`` JSONs), so window-navigation tests never churn the
+    tracked configs in the working tree.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+        Yields control to the test, then restores the original file contents.
+    """
+
     pkg = Path(usv_playpen_gui.__file__).parent
     paths = [
         pkg / '_config' / 'behavioral_experiments_settings.toml',
@@ -173,8 +192,29 @@ def test_navigation_to_record_metadata_window(app, qtbot):
 
 
 def test_navigation_to_record_conduct_window(app, qtbot, preserve_all_settings):
-    """Record -> Next -> Next -> Next walks record_one -> record_four,
-    building the 'Conduct recording' window (and its widget tree) end-to-end."""
+    """
+    Description
+    -----------
+    Click ``Record`` then ``Next`` three times to walk the full recording
+    window chain (``record_one`` -> ``record_two`` -> ``record_three`` ->
+    ``record_four``), asserting each window's title in turn and that the final
+    'Conduct recording' window (and its widget tree) is built end-to-end.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver used to synthesise the button clicks.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files the
+        label-save handlers rewrite during navigation.
+
+    Returns
+    -------
+    None
+    """
+
     qtbot.mouseClick(app.button_map['Record'], Qt.MouseButton.LeftButton)
     assert "Record > Select config" in app.windowTitle()
     qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
@@ -186,8 +226,27 @@ def test_navigation_to_record_conduct_window(app, qtbot, preserve_all_settings):
 
 
 def test_navigation_to_process_windows(app, qtbot, preserve_all_settings):
-    """Process builds the settings window; Next builds the 'Conduct
-    Processing' window — covering process_one and process_two."""
+    """
+    Description
+    -----------
+    Clicking ``Process`` must build the processing-settings window
+    (``process_one``), and the subsequent ``Next`` must build the 'Conduct
+    Processing' window (``process_two``); both window titles are asserted.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver used to synthesise the button clicks.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files.
+
+    Returns
+    -------
+    None
+    """
+
     qtbot.mouseClick(app.button_map['Process'], Qt.MouseButton.LeftButton)
     assert "Process recordings > Settings" in app.windowTitle()
     qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
@@ -195,8 +254,27 @@ def test_navigation_to_process_windows(app, qtbot, preserve_all_settings):
 
 
 def test_navigation_to_analyze_windows(app, qtbot, preserve_all_settings):
-    """Analyze builds the settings window; Next builds the 'Conduct
-    Analyses' window — covering analyze_one and analyze_two."""
+    """
+    Description
+    -----------
+    Clicking ``Analyze`` must build the analysis-settings window
+    (``analyze_one``), and the subsequent ``Next`` must build the 'Conduct
+    Analyses' window (``analyze_two``); both window titles are asserted.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver used to synthesise the button clicks.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files.
+
+    Returns
+    -------
+    None
+    """
+
     qtbot.mouseClick(app.button_map['Analyze'], Qt.MouseButton.LeftButton)
     assert "Analyze data > Settings" in app.windowTitle()
     qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
@@ -204,8 +282,28 @@ def test_navigation_to_analyze_windows(app, qtbot, preserve_all_settings):
 
 
 def test_navigation_to_visualize_windows(app, qtbot, preserve_all_settings):
-    """Visualize builds the settings window; Next builds the 'Conduct
-    Visualizations' window — covering visualize_one and visualize_two."""
+    """
+    Description
+    -----------
+    Clicking ``Visualize`` must build the visualization-settings window
+    (``visualize_one``), and the subsequent ``Next`` must build the 'Conduct
+    Visualizations' window (``visualize_two``); both window titles are
+    asserted.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver used to synthesise the button clicks.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files.
+
+    Returns
+    -------
+    None
+    """
+
     qtbot.mouseClick(app.button_map['Visualize'], Qt.MouseButton.LeftButton)
     assert "Visualize data > Settings" in app.windowTitle()
     qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
@@ -213,18 +311,29 @@ def test_navigation_to_visualize_windows(app, qtbot, preserve_all_settings):
 
 
 def test_navigation_to_credentials_window(app, qtbot):
-    """The login button opens the credentials window — covering
-    credentials_window's widget construction."""
+    """
+    Description
+    -----------
+    Clicking the login button must open the credentials window
+    (``credentials_window``), building its widget tree (asserted via the title
+    and the presence of the ``email_address`` field).
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver used to synthesise the button click.
+
+    Returns
+    -------
+    None
+    """
+
     qtbot.mouseClick(app.login_button, Qt.MouseButton.LeftButton)
     assert "Set credentials" in app.windowTitle()
     assert hasattr(app, 'email_address')
 
-
-from unittest.mock import patch  # noqa: E402
-
-from usv_playpen.usv_playpen_gui import (  # noqa: E402
-    ChemoDialog, EphysDialog, LesionDialog, OptoDialog,
-)
 
 _INTERVENTION_DIALOGS = [
     (ChemoDialog, "chemogenetics"),
@@ -236,9 +345,26 @@ _INTERVENTION_DIALOGS = [
 
 @pytest.fixture
 def app_with_subject(app):
-    """Main window primed with a single metadata subject and the YAML/repo
+    """
+    Description
+    -----------
+    Main window primed with a single metadata subject and the YAML / repository
     persistence side-effects stubbed out, so the intervention dialogs can be
-    saved/deleted without touching disk."""
+    saved / deleted without touching disk.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+
+    Returns
+    -------
+    app (USVPlaypenWindow)
+        The same window with ``metadata_settings`` populated and the
+        ``_save_metadata_to_yaml`` / ``_update_subject_in_repository`` writers
+        replaced by no-ops.
+    """
+
     app.metadata_settings = {"Subjects": [{"subject_id": "M", "interventions": {}}]}
     app._save_metadata_to_yaml = lambda: None
     app._update_subject_in_repository = lambda s: None
@@ -247,9 +373,29 @@ def app_with_subject(app):
 
 @pytest.mark.parametrize("dialog_cls,key", _INTERVENTION_DIALOGS)
 def test_intervention_dialog_add_mode_saves(app_with_subject, qtbot, dialog_cls, key):
-    """Each intervention dialog must build its add-mode form, collect the mixed
-    combo/line-edit field values on OK, and write them into the chosen
-    subject's interventions block under the dialog's own key."""
+    """
+    Description
+    -----------
+    Each intervention dialog must build its add-mode form, collect the mixed
+    combo / line-edit field values on OK, and write them into the chosen
+    subject's ``interventions`` block under the dialog's own key.
+
+    Parameters
+    ----------
+    app_with_subject (USVPlaypenWindow)
+        Main window primed with one subject and stubbed persistence.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver (registers the dialog for cleanup).
+    dialog_cls (type)
+        The intervention-dialog class under test.
+    key (str)
+        The interventions-dict key the dialog writes under.
+
+    Returns
+    -------
+    None
+    """
+
     dlg = dialog_cls(parent=app_with_subject, subject=None)
     qtbot.addWidget(dlg)
     assert "Add" in dlg.windowTitle()
@@ -264,9 +410,29 @@ def test_intervention_dialog_add_mode_saves(app_with_subject, qtbot, dialog_cls,
 def test_intervention_dialog_edit_mode_populates_and_deletes(
     app_with_subject, qtbot, dialog_cls, key,
 ):
-    """In edit mode each dialog locks the subject selector, pre-populates the
-    form from the existing intervention, and (on confirmed delete) removes the
-    intervention from the subject."""
+    """
+    Description
+    -----------
+    In edit mode each dialog must lock the subject selector, pre-populate the
+    form from the existing intervention, and (on confirmed delete) remove the
+    intervention from the subject.
+
+    Parameters
+    ----------
+    app_with_subject (USVPlaypenWindow)
+        Main window primed with one subject and stubbed persistence.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver (registers the dialog for cleanup).
+    dialog_cls (type)
+        The intervention-dialog class under test.
+    key (str)
+        The interventions-dict key the dialog edits / deletes.
+
+    Returns
+    -------
+    None
+    """
+
     subject = {"subject_id": "M", "interventions": {key: {"name": "excitatory"}}}
     app_with_subject.metadata_settings["Subjects"][0] = subject
     dlg = dialog_cls(parent=app_with_subject, subject=subject)
@@ -282,14 +448,25 @@ def test_intervention_dialog_edit_mode_populates_and_deletes(
     assert key not in subject["interventions"]
 
 
-from PyQt6.QtWidgets import QPushButton  # noqa: E402
-from unittest.mock import MagicMock  # noqa: E402
-
-
 def test_start_handlers_invoke_backends(app):
-    """The thin _start_* handlers must forward to their backend worker objects
-    (processing / calibration / recording), and recording must persist any
-    updated metadata it receives."""
+    """
+    Description
+    -----------
+    The thin ``_start_*`` handlers must forward to their backend worker objects
+    (processing / calibration / recording), and ``_start_recording`` must
+    persist any updated metadata returned by the recording backend (and skip
+    the save when none is returned).
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+
+    Returns
+    -------
+    None
+    """
+
     app.run_processing = MagicMock()
     app._start_processing()
     app.run_processing.prepare_data_for_analyses.assert_called_once()
@@ -312,8 +489,22 @@ def test_start_handlers_invoke_backends(app):
 
 
 def test_enable_disable_buttons_toggle_state(app):
-    """The per-category enable/disable helpers must flip the Previous / Main /
-    category button states on their shared button_map."""
+    """
+    Description
+    -----------
+    The per-category enable / disable helpers must flip the ``Previous`` /
+    ``Main`` / category button enabled-states on their shared ``button_map``.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture (supplies the running QApplication).
+
+    Returns
+    -------
+    None
+    """
+
     keys = ["Previous", "Main", "Visualize", "Analyze", "Process"]
     app.button_map = {k: QPushButton() for k in keys}
 
@@ -335,9 +526,24 @@ def test_enable_disable_buttons_toggle_state(app):
 
 
 def test_update_subject_in_repository_adds_then_updates(app):
-    """_update_subject_in_repository must append a new subject (deep-copied),
-    update an existing one in place by subject_id, and no-op on a record with
-    no id — persisting via the (stubbed) repository writer each time."""
+    """
+    Description
+    -----------
+    ``_update_subject_in_repository`` must append a new subject (as an
+    independent deep copy), update an existing one in place by ``subject_id``,
+    and no-op on a record with no id — persisting via the (stubbed) repository
+    writer each time.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+
+    Returns
+    -------
+    None
+    """
+
     app.subject_repository = []
     app._save_subject_to_repository = lambda: None
 
@@ -354,9 +560,23 @@ def test_update_subject_in_repository_adds_then_updates(app):
 
 
 def test_save_metadata_to_yaml_early_return_off_video_settings(app):
-    """On the main window (central widget is not VideoSettings),
-    _save_metadata_to_yaml must early-return without touching the bundled
-    _config/_metadata.yaml."""
+    """
+    Description
+    -----------
+    On the main window (where the central widget is not ``VideoSettings``),
+    ``_save_metadata_to_yaml`` must early-return without touching the bundled
+    ``_config/_metadata.yaml``.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+
+    Returns
+    -------
+    None
+    """
+
     meta_path = Path(usv_playpen_gui.__file__).parent / '_config' / '_metadata.yaml'
     before = meta_path.read_text()
     app._save_metadata_to_yaml()

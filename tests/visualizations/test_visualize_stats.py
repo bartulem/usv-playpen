@@ -1563,6 +1563,8 @@ def _polar_metrics(rng, *, sparse_last: bool = True) -> dict:
     """
 
     def _block(k):
+        """Build one distance / angle metrics block of ``k`` synthetic points
+        (distance plus the male- and female-referenced angles)."""
         return {
             "distance":  rng.uniform(1.0, 18.0, k),
             "mf_angle":  rng.uniform(-180.0, 180.0, k),

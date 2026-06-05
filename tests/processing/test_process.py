@@ -2800,13 +2800,29 @@ def test_filter_audio_files_no_files_is_noop(tmp_path, mocker):
 
 def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock_dependencies, tmp_path):
     """
+    Description
+    -----------
     Enabling every per-directory processing boolean must dispatch each step to
     its worker class exactly once for the single root directory, covering the
     full per-directory branch ladder (fps change, multichannel split, cropping,
     AV + ephys sync, HPSS, filtering, mmap stacking, SLEAP/Anipose stages, the
     translate-rotate-metric match branch, DAS, and vocal preparation + ssl
     assignment).
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package processing-settings fixture (mutated to toggle booleans).
+    mock_dependencies (dict)
+        Fixture of patched worker classes keyed by name.
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the single root directory.
+
+    Returns
+    -------
+    None
     """
+
     # audio/original must exist + be empty for the multichannel branch's
     # `len(... ) == 0` guard to fire the conversion.
     (tmp_path / "audio" / "original").mkdir(parents=True)
@@ -2852,10 +2868,26 @@ def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock
 
 def test_prepare_data_all_at_once_split_and_sleap_cluster(processing_settings, mock_dependencies, tmp_path):
     """
+    Description
+    -----------
     The "all root directories at once" branch must run the split-clusters and
     prepare-SLEAP-cluster steps when their booleans are set, initialising the
     Operator / PrepareClusterJob once with the whole root-directory list.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mock_dependencies (dict)
+        Fixture of patched worker classes keyed by name.
+    tmp_path (pathlib.Path)
+        Per-test temp directory (listed twice as the root directories).
+
+    Returns
+    -------
+    None
     """
+
     pb = processing_settings['processing_booleans']
     pb['split_cluster_spikes'] = True
     pb['prepare_sleap_cluster'] = True
@@ -2869,10 +2901,26 @@ def test_prepare_data_all_at_once_split_and_sleap_cluster(processing_settings, m
 
 def test_prepare_data_trm_experimental_code_mismatch_logs(processing_settings, mock_dependencies, tmp_path):
     """
-    When `anipose_trm` is on but the number of experimental codes neither
+    Description
+    -----------
+    When ``anipose_trm`` is on but the number of experimental codes neither
     matches the root-directory count nor is arena-triangulation requested, the
-    translate-rotate-metric step is skipped and a guidance message is logged.
+    translate-rotate-metric step must be skipped and a guidance message logged.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mock_dependencies (dict)
+        Fixture of patched worker classes keyed by name.
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the single root directory.
+
+    Returns
+    -------
+    None
     """
+
     processing_settings['processing_booleans']['anipose_trm'] = True
     processing_settings['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['triangulate_arena_points_bool'] = False
     processing_settings['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['experimental_codes'] = []
@@ -2890,10 +2938,26 @@ def test_prepare_data_trm_experimental_code_mismatch_logs(processing_settings, m
 
 def test_prepare_data_records_step_failure(processing_settings, mock_dependencies, tmp_path):
     """
+    Description
+    -----------
     A worker raising inside the per-directory loop must be caught, recorded in
     the failure summary, and surfaced in the completion e-mail (rather than
     silently reporting success).
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mock_dependencies (dict)
+        Fixture of patched worker classes keyed by name.
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the single root directory.
+
+    Returns
+    -------
+    None
     """
+
     processing_settings['processing_booleans']['conduct_hpss'] = True
     mock_dependencies['Operator'].return_value.hpss_audio.side_effect = RuntimeError("boom")
 
@@ -2906,13 +2970,27 @@ def test_prepare_data_records_step_failure(processing_settings, mock_dependencie
 
 def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
     """
+    Description
+    -----------
     Each single-purpose CLI wrapper must parse its options, stamp the
     processing version, and dispatch to its worker class. With every worker
-    mocked, invoking the commands through Click's CliRunner must exit cleanly
-    (code 0) and call the expected worker method. Covers the ev-sync / hpss /
-    bp-filter / mmap / SLEAP-Anipose / DAS / ephys-concat / split-clusters /
-    vocal-assign command surface in one pass.
+    mocked, invoking the commands through Click's ``CliRunner`` must exit
+    cleanly (code 0) and call the expected worker method. Covers the ev-sync /
+    hpss / bp-filter / mmap / SLEAP-Anipose / DAS / ephys-concat /
+    split-clusters / vocal-assign command surface in one pass.
+
+    Parameters
+    ----------
+    mock_dependencies (dict)
+        Fixture of patched worker classes keyed by name.
+    tmp_path (pathlib.Path)
+        Per-test temp directory passed as the CLI ``--root-directory(ies)``.
+
+    Returns
+    -------
+    None
     """
+
     runner = CliRunner()
     rd = ["--root-directory", str(tmp_path)]
 
@@ -2963,9 +3041,28 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
 
 
 def _video_sync_synchronizer(tmp_path, *, tolerance=50, rel_thresh=0.6):
-    """Build a Synchronizer wired only with the find_video_sync_trains knobs
-    attempt_sequence_match reads (relative intensity threshold + ms divergence
-    tolerance)."""
+    """
+    Description
+    -----------
+    Build a ``Synchronizer`` wired only with the ``find_video_sync_trains``
+    knobs ``attempt_sequence_match`` reads (the relative-intensity threshold
+    and the millisecond divergence tolerance).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (the synchronizer's root directory).
+    tolerance (int | float)
+        ``millisecond_divergence_tolerance`` for the IPI sequence match.
+    rel_thresh (float)
+        ``relative_intensity_threshold`` ceiling for the threshold sweep.
+
+    Returns
+    -------
+    sync (Synchronizer)
+        A configured Synchronizer instance.
+    """
+
     return Synchronizer(
         root_directory=str(tmp_path),
         input_parameter_dict={
@@ -2984,11 +3081,23 @@ def _video_sync_synchronizer(tmp_path, *, tolerance=50, rel_thresh=0.6):
 
 def test_attempt_sequence_match_finds_matching_pulse(tmp_path):
     """
-    attempt_sequence_match must detect the LED-off pulse in a bright baseline
-    brightness signal, derive its inter-pulse duration (frames -> ms), and find
-    a within-tolerance window inside the ground-truth Arduino IPI sequence,
-    returning (sync_dict, start_frames, True).
+    Description
+    -----------
+    ``attempt_sequence_match`` must detect the LED-off pulse in a bright
+    baseline brightness signal, derive its inter-pulse duration (frames -> ms),
+    and find a within-tolerance window inside the ground-truth Arduino IPI
+    sequence, returning ``(sync_dict, start_frames, True)``.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (the synchronizer's root directory).
+
+    Returns
+    -------
+    None
     """
+
     sync = _video_sync_synchronizer(tmp_path)
     signal = np.full(600, 200.0)
     signal[60:110] = 50.0  # one ~50-frame LED-off dip
@@ -3005,10 +3114,22 @@ def test_attempt_sequence_match_finds_matching_pulse(tmp_path):
 
 def test_attempt_sequence_match_returns_false_on_flat_signal(tmp_path):
     """
+    Description
+    -----------
     A flat (event-free) brightness signal yields no ON/OFF events at any
-    threshold, so attempt_sequence_match must exhaust the threshold sweep and
-    return (None, None, False) rather than a spurious match.
+    threshold, so ``attempt_sequence_match`` must exhaust the threshold sweep
+    and return ``(None, None, False)`` rather than a spurious match.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory (the synchronizer's root directory).
+
+    Returns
+    -------
+    None
     """
+
     sync = _video_sync_synchronizer(tmp_path)
     flat = np.full(600, 200.0)
     result = sync.attempt_sequence_match(
@@ -3020,11 +3141,23 @@ def test_attempt_sequence_match_returns_false_on_flat_signal(tmp_path):
 
 def test_find_lsb_changes_locates_largest_break(tmp_path):
     """
-    Synchronizer.find_lsb_changes must extract the LSB toggle train, find every
-    TTL break-end sample, and (when the camera frame budget fits inside the
-    break train) return the start/end sample of the tracking window plus the
-    largest-break duration.
+    Description
+    -----------
+    ``Synchronizer.find_lsb_changes`` must extract the LSB toggle train, find
+    every TTL break-end sample, and (when the camera frame budget fits inside
+    the break train) return the start / end sample of the tracking window plus
+    the largest-break duration.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Unused per-test temp directory (kept for signature uniformity).
+
+    Returns
+    -------
+    None
     """
+
     # Build an LSB toggle train: rising edges (0->1) every 10 samples, with one
     # deliberately larger gap so the "largest break" is unambiguous.
     lsb = np.zeros(400, dtype=np.int64)

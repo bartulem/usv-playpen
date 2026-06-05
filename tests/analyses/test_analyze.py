@@ -2572,9 +2572,21 @@ def test_feature_zoo_init_loads_visualizations_settings():
 
 
 def test_feature_zoo_init_rejects_unexpected_kwarg():
-    """FeatureZoo.__init__ validates its kwargs against the consumed set
-    and raises TypeError (naming the offending key) on anything else —
-    guarding against silent typo'd settings keys."""
+    """
+    Description
+    -----------
+    ``FeatureZoo.__init__`` must validate its kwargs against the consumed set
+    and raise ``TypeError`` (naming the offending key) on anything else,
+    guarding against silently-typo'd settings keys.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
     with pytest.raises(TypeError, match="unexpected keyword argument"):
         FeatureZoo(root_directory="/x", not_a_real_kwarg=1)
 
@@ -2690,17 +2702,32 @@ def _build_behavioral_tracking_h5(
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_feature_zoo_save_behavioral_features_end_to_end(tmp_path, mocker):
-    """End-to-end run of `save_behavioral_features_to_file` on a two-mouse
-    synthetic session: drives the full individual + social + SEI feature
-    computation, the 1D / 2D `generate_feature_distributions` pass, the
-    `plot_feature_distributions` PDF render (individual + social pages,
-    bar + spatial-occupancy branches), and the CSV write.
-
-    Asserts both output artifacts land next to the input H5, the CSV has
-    one row per tracked frame, and a representative slice of the expected
-    column namespace (self pose/movement/spatial + dyadic distance / angle
-    / SEI, in both pair directions) is present.
     """
+    Description
+    -----------
+    End-to-end run of ``save_behavioral_features_to_file`` on a two-mouse
+    synthetic session: drives the full individual + social + SEI feature
+    computation, the 1D / 2D ``generate_feature_distributions`` pass, the
+    ``plot_feature_distributions`` PDF render (individual + social pages, bar +
+    spatial-occupancy branches), and the CSV write.
+
+    Asserts both output artifacts land next to the input H5, the CSV has one
+    row per tracked frame, and a representative slice of the expected column
+    namespace (self pose / movement / spatial + dyadic distance / angle / SEI,
+    in both pair directions) is present.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
     video_dir = tmp_path / "video" / "vid1"
     video_dir.mkdir(parents=True)
     h5_path = video_dir / "vid1_points3d_translated_rotated_metric.h5"
@@ -2749,10 +2776,25 @@ def test_feature_zoo_save_behavioral_features_end_to_end(tmp_path, mocker):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_feature_zoo_save_behavioral_features_single_mouse_skips_social(tmp_path, mocker):
-    """A one-mouse session must still produce the full individual-feature
-    table and histogram PDF, but emit no dyadic columns — the social branch
-    (`mouse_data.shape[1] >= 2`) is correctly skipped.
     """
+    Description
+    -----------
+    A one-mouse session must still produce the full individual-feature table
+    and histogram PDF, but emit no dyadic columns — the social branch
+    (``mouse_data.shape[1] >= 2``) must be correctly skipped.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
     video_dir = tmp_path / "video" / "vid1"
     video_dir.mkdir(parents=True)
     h5_path = video_dir / "vid1_points3d_translated_rotated_metric.h5"

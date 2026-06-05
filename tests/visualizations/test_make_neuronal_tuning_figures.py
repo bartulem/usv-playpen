@@ -1385,6 +1385,9 @@ def _behavioral_modalities(mouse_id, partner_id, buckets):
     """
 
     def _counts(tuned):
+        """Return the ``(n_significant, n_tested)`` pair for a behavioral
+        bucket: ``(2, 2)`` when tuned (consistent + majority), else
+        ``(0, 2)`` (present but not tuned)."""
         return (2, 2) if tuned else (0, 2)
 
     mods: dict = {}
@@ -1448,6 +1451,8 @@ def _make_unit(
     partner_id = "p9"
 
     def _cond_block():
+        """Build one condition block: the archetype's self-vocal modalities
+        merged with the behavioral modalities, under a two-session header."""
         mods = dict(_vocal_modalities(archetype))
         mods.update(_behavioral_modalities(mouse_id, partner_id, behavioral_buckets))
         return {"sessions_tested": ["s1", "s2"], "modalities": mods}
@@ -2372,6 +2377,8 @@ def test_render_behavioral_pages_renders_social_and_directional_sei():
     saved_labels: list[str] = []
 
     def _save_fig(fig, label: str) -> None:
+        """Record the rendered page's label and close its figure (stands in
+        for the per-cluster PDF/PNG save target)."""
         saved_labels.append(label)
         plt.close(fig)
 
@@ -2419,6 +2426,8 @@ def test_render_behavioral_pages_returns_early_without_beh_offset():
     calls: list[str] = []
 
     def _save_fig(fig, label: str) -> None:  # pragma: no cover - must not run
+        """Record the page label and close its figure; must never be called on
+        a payload with no ``beh_offset`` keys (asserted by the test)."""
         calls.append(label)
         plt.close(fig)
 
