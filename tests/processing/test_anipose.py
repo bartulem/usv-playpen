@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import h5py
+import numpy as np
 import pytest
 
 from usv_playpen.processing.anipose_operations import ConvertTo3D
@@ -304,3 +306,219 @@ def test_conduct_anipose_triangulation_session_branch_reads_frame_count(
     assert triangulate_mock.call_args.kwargs["frames"] == (0, 5000)
     # And the temporary frame_restriction should have been reverted to None.
     assert cfg["conduct_anipose_triangulation"]["frame_restriction"] is None
+
+
+# ---------------------------------------------------------------------------
+# translate_rotate_metric — arena + animal transform branches
+#
+# Builds a synthetic square arena points3d.h5 (the four North/West/South/East
+# corner nodes laid out as a unit square, the 24 channel nodes left at the
+# origin) plus the session's camera-frame-count JSON, then drives the full
+# metric-conversion + translate + multi-axis rotation pipeline through to a
+# written *_translated_rotated_metric.h5. The 'animal' branch additionally
+# transforms a synthetic 15-node mouse points3d.h5.
+# ---------------------------------------------------------------------------
+
+
+# Real arena skeleton: North/West/South/East occupy indices 0..3, followed by
+# 24 ch_* nodes (28 total). Lay the corners out as a unit square in z=0.
+_ARENA_N_NODES = 28
+_ARENA_CORNERS = {0: (0.0, 1.0, 0.0),    # North
+                  1: (-1.0, 0.0, 0.0),   # West
+                  2: (0.0, -1.0, 0.0),   # South
+                  3: (1.0, 0.0, 0.0)}    # East
+
+
+def _write_arena_h5(arena_dir: Path) -> Path:
+    """
+    Description
+    -----------
+    Write a synthetic arena `*_points3d.h5` with a single frame / single
+    'animal' (the arena) and the real 28-node arena skeleton layout: the
+    four corner nodes form a unit square in the z=0 plane, every channel
+    node sits at the origin. Only the `tracks` dataset is read back by
+    `translate_rotate_metric`.
+
+    Parameters
+    ----------
+    arena_dir (pathlib.Path)
+        Directory to write `arena_points3d.h5` into (created if missing).
+
+    Returns
+    -------
+    h5_path (pathlib.Path)
+        Path to the written arena H5.
+    """
+
+    arena_dir.mkdir(parents=True, exist_ok=True)
+    tracks = np.zeros((1, 1, _ARENA_N_NODES, 3), dtype="float64")
+    for idx, xyz in _ARENA_CORNERS.items():
+        tracks[0, 0, idx, :] = xyz
+    h5_path = arena_dir / "arena_points3d.h5"
+    with h5py.File(h5_path, "w") as f:
+        f.create_dataset("tracks", data=tracks)
+    return h5_path
+
+
+def _trm_settings(processing_settings, arena_dir, *, mode, exp_codes, delete=False):
+    """
+    Description
+    -----------
+    Return a copy of the processing-settings dict with the
+    `translate_rotate_metric` block pointed at a synthetic arena directory
+    and configured for the requested transform mode.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Base settings loaded from the package.
+    arena_dir (pathlib.Path)
+        Directory holding `arena_points3d.h5`.
+    mode (str)
+        `'arena'` or `'animal'`.
+    exp_codes (list[str])
+        Per-session experimental codes.
+    delete (bool)
+        Whether to delete the original mouse H5 after the animal transform.
+
+    Returns
+    -------
+    settings (dict)
+        The mutated settings dict (safe to pass to ConvertTo3D).
+    """
+
+    processing_settings["anipose_operations"]["ConvertTo3D"]["translate_rotate_metric"] = {
+        "original_arena_file_loc": str(arena_dir),
+        "save_transformed_data":   mode,
+        "delete_original_h5":      delete,
+        "static_reference_len":    0.615,
+        "experimental_codes":      exp_codes,
+    }
+    return processing_settings
+
+
+def test_translate_rotate_metric_arena_branch_writes_transformed_arena(
+    processing_settings, tmp_path, mocker,
+):
+    """
+    Description
+    -----------
+    With `save_transformed_data='arena'`, `translate_rotate_metric` must
+    metric-scale, translate-to-midpoint, and multi-axis rotate the arena
+    points, then write `<arena>_translated_rotated_metric.h5` carrying the
+    transformed `tracks` and the arena `node_names`. Asserts the output H5
+    exists with the expected (1, 1, 28, 3) shape and node-name count.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package settings fixture.
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    (video_dir / "sess_camera_frame_count_dict.json").write_text(
+        json.dumps({"median_empirical_camera_sr": 150.0})
+    )
+    arena_dir = tmp_path / "arena_src"
+    _write_arena_h5(arena_dir)
+
+    settings = _trm_settings(processing_settings, arena_dir, mode="arena", exp_codes=[])
+    converter = ConvertTo3D(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    converter.translate_rotate_metric()
+
+    out_h5 = arena_dir / "arena_points3d_translated_rotated_metric.h5"
+    assert out_h5.is_file(), "transformed arena H5 not written"
+    with h5py.File(out_h5, "r") as f:
+        assert f["tracks"].shape == (1, 1, _ARENA_N_NODES, 3)
+        assert len(f["node_names"]) == _ARENA_N_NODES
+
+
+def test_translate_rotate_metric_animal_branch_writes_transformed_mouse(
+    processing_settings, tmp_path, mocker,
+):
+    """
+    Description
+    -----------
+    With `save_transformed_data='animal'`, `translate_rotate_metric` must
+    apply the arena-derived metric/translate/rotation transform to the
+    session's 15-node mouse points, zero any negative z, and write
+    `<session>_points3d_translated_rotated_metric.h5` carrying `tracks`,
+    `node_names`, `track_names`, `experimental_code`, and
+    `recording_frame_rate`. With `delete_original_h5=True` the source mouse
+    H5 must be removed. Driven without a session metadata file (the
+    metadata-update block is skipped; `find_mouse_names` returns no names).
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package settings fixture.
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    (video_dir / "sess_camera_frame_count_dict.json").write_text(
+        json.dumps({"median_empirical_camera_sr": 150.0})
+    )
+    # Session metadata so the metadata-update block runs and find_mouse_names
+    # reads track names from the Subjects list.
+    (tmp_path / "sess_metadata.yaml").write_text(
+        "Session:\n  id: s001\nSubjects:\n  - subject_id: m1\n"
+    )
+    # No-underscore session dir is what __init__ latches onto.
+    session_dir = video_dir / "20260101120000"
+    session_dir.mkdir()
+    mouse_tracks = np.zeros((5, 1, 15, 3), dtype="float64")
+    rng = np.random.default_rng(0)
+    mouse_tracks[...] = rng.uniform(-0.5, 0.5, size=mouse_tracks.shape)
+    with h5py.File(session_dir / "20260101120000_points3d.h5", "w") as f:
+        f.create_dataset("tracks", data=mouse_tracks)
+
+    arena_dir = tmp_path / "arena_src"
+    _write_arena_h5(arena_dir)
+
+    settings = _trm_settings(
+        processing_settings, arena_dir, mode="animal",
+        exp_codes=["E2MF"], delete=True,
+    )
+    converter = ConvertTo3D(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    converter.translate_rotate_metric(session_idx=0)
+
+    out_h5 = session_dir / "20260101120000_points3d_translated_rotated_metric.h5"
+    assert out_h5.is_file(), "transformed mouse H5 not written"
+    with h5py.File(out_h5, "r") as f:
+        assert f["tracks"].shape == (5, 1, 15, 3)
+        assert f["experimental_code"][()].decode("utf-8") == "E2MF"
+        assert float(f["recording_frame_rate"][()]) == 150.0
+        assert [n.decode("utf-8") for n in f["track_names"]] == ["m1"]
+        # negative z must have been clamped to zero
+        assert float(np.asarray(f["tracks"])[:, :, :, 2].min()) >= 0.0
+    assert not (session_dir / "20260101120000_points3d.h5").exists(), (
+        "original mouse H5 should be deleted when delete_original_h5=True"
+    )
