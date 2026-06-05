@@ -22,7 +22,21 @@ from usv_playpen.processing.preprocess_data import (
     rectify_video_fps_cli,
     multichannel_to_channel_audio_cli,
     crop_wav_files_to_video_cli,
-    av_sync_check_cli
+    av_sync_check_cli,
+    ev_sync_check_cli,
+    hpss_audio_cli,
+    bp_filter_audio_files_cli,
+    concatenate_audio_files_cli,
+    sleap_file_conversion_cli,
+    conduct_anipose_calibration_cli,
+    conduct_anipose_triangulation_cli,
+    translate_rotate_metric_cli,
+    das_command_line_inference_cli,
+    summarize_das_findings_cli,
+    concatenate_binary_files_cli,
+    split_clusters_to_sessions_cli,
+    prepare_vcl_assign_cli,
+    vcl_assign_cli,
 )
 from usv_playpen.yaml_utils import SmartDumper, load_session_metadata
 import platform
@@ -2782,3 +2796,167 @@ def test_filter_audio_files_no_files_is_noop(tmp_path, mocker):
 
     assert (tmp_path / "audio" / "hpss_filtered").is_dir()
     assert not list((tmp_path / "audio" / "hpss_filtered").glob("*.wav"))
+
+
+def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock_dependencies, tmp_path):
+    """
+    Enabling every per-directory processing boolean must dispatch each step to
+    its worker class exactly once for the single root directory, covering the
+    full per-directory branch ladder (fps change, multichannel split, cropping,
+    AV + ephys sync, HPSS, filtering, mmap stacking, SLEAP/Anipose stages, the
+    translate-rotate-metric match branch, DAS, and vocal preparation + ssl
+    assignment).
+    """
+    # audio/original must exist + be empty for the multichannel branch's
+    # `len(... ) == 0` guard to fire the conversion.
+    (tmp_path / "audio" / "original").mkdir(parents=True)
+
+    pb = processing_settings['processing_booleans']
+    for key in (
+        'conduct_video_fps_change', 'conduct_audio_multichannel_to_single_ch',
+        'conduct_audio_cropping', 'conduct_ephys_video_sync', 'conduct_hpss',
+        'conduct_audio_filtering', 'conduct_audio_to_mmap', 'sleap_h5_conversion',
+        'anipose_triangulation', 'anipose_trm', 'das_infer', 'das_summarize',
+        'prepare_assign_vocalizations', 'assign_vocalizations',
+    ):
+        pb[key] = True
+    # Keep the all-at-once branch off so the per-directory loop runs.
+    for key in ('conduct_ephys_file_chaining', 'split_cluster_spikes', 'prepare_sleap_cluster'):
+        pb[key] = False
+    # trm match branch: one experimental code per root directory.
+    processing_settings['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['experimental_codes'] = ['E1M']
+    processing_settings['vocalocator']['vcl_version'] = 'vcl-ssl'
+
+    Stylist(input_parameter_dict=processing_settings, root_directories=[str(tmp_path)]).prepare_data_for_analyses()
+
+    op = mock_dependencies['Operator'].return_value
+    op.rectify_video_fps.assert_called_once()
+    op.multichannel_to_channel_audio.assert_called_once()
+    op.hpss_audio.assert_called_once()
+    op.filter_audio_files.assert_called_once()
+    op.concatenate_audio_files.assert_called_once()
+    sync = mock_dependencies['Synchronizer'].return_value
+    sync.crop_wav_files_to_video.assert_called_once()
+    sync.validate_ephys_video_sync.assert_called_once()
+    conv = mock_dependencies['ConvertTo3D'].return_value
+    conv.sleap_file_conversion.assert_called_once()
+    conv.conduct_anipose_triangulation.assert_called_once()
+    conv.translate_rotate_metric.assert_called_once()
+    fmv = mock_dependencies['FindMouseVocalizations'].return_value
+    fmv.das_command_line_inference.assert_called_once()
+    fmv.summarize_das_findings.assert_called_once()
+    voc = mock_dependencies['Vocalocator'].return_value
+    voc.prepare_for_vocalocator.assert_called_once()
+    voc.run_vocalocator_ssl.assert_called_once()
+
+
+def test_prepare_data_all_at_once_split_and_sleap_cluster(processing_settings, mock_dependencies, tmp_path):
+    """
+    The "all root directories at once" branch must run the split-clusters and
+    prepare-SLEAP-cluster steps when their booleans are set, initialising the
+    Operator / PrepareClusterJob once with the whole root-directory list.
+    """
+    pb = processing_settings['processing_booleans']
+    pb['split_cluster_spikes'] = True
+    pb['prepare_sleap_cluster'] = True
+    root_dirs = [str(tmp_path), str(tmp_path)]
+
+    Stylist(input_parameter_dict=processing_settings, root_directories=root_dirs).prepare_data_for_analyses()
+
+    mock_dependencies['Operator'].return_value.split_clusters_to_sessions.assert_called_once()
+    mock_dependencies['PrepareClusterJob'].return_value.video_list_to_txt.assert_called_once()
+
+
+def test_prepare_data_trm_experimental_code_mismatch_logs(processing_settings, mock_dependencies, tmp_path):
+    """
+    When `anipose_trm` is on but the number of experimental codes neither
+    matches the root-directory count nor is arena-triangulation requested, the
+    translate-rotate-metric step is skipped and a guidance message is logged.
+    """
+    processing_settings['processing_booleans']['anipose_trm'] = True
+    processing_settings['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['triangulate_arena_points_bool'] = False
+    processing_settings['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['experimental_codes'] = []
+
+    messages: list[str] = []
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+        message_output=messages.append,
+    ).prepare_data_for_analyses()
+
+    mock_dependencies['ConvertTo3D'].return_value.translate_rotate_metric.assert_not_called()
+    assert any("does not match" in m for m in messages)
+
+
+def test_prepare_data_records_step_failure(processing_settings, mock_dependencies, tmp_path):
+    """
+    A worker raising inside the per-directory loop must be caught, recorded in
+    the failure summary, and surfaced in the completion e-mail (rather than
+    silently reporting success).
+    """
+    processing_settings['processing_booleans']['conduct_hpss'] = True
+    mock_dependencies['Operator'].return_value.hpss_audio.side_effect = RuntimeError("boom")
+
+    Stylist(input_parameter_dict=processing_settings, root_directories=[str(tmp_path)]).prepare_data_for_analyses()
+
+    # The completion Messenger e-mail must report the failure count.
+    send_calls = mock_dependencies['Messenger'].return_value.send_message.call_args_list
+    assert any("failure" in (c.kwargs.get("subject", "")).lower() for c in send_calls)
+
+
+def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
+    """
+    Each single-purpose CLI wrapper must parse its options, stamp the
+    processing version, and dispatch to its worker class. With every worker
+    mocked, invoking the commands through Click's CliRunner must exit cleanly
+    (code 0) and call the expected worker method. Covers the ev-sync / hpss /
+    bp-filter / mmap / SLEAP-Anipose / DAS / ephys-concat / split-clusters /
+    vocal-assign command surface in one pass.
+    """
+    runner = CliRunner()
+    rd = ["--root-directory", str(tmp_path)]
+
+    invocations = [
+        (ev_sync_check_cli, rd, mock_dependencies['Synchronizer'], 'validate_ephys_video_sync'),
+        (hpss_audio_cli, rd, mock_dependencies['Operator'], 'hpss_audio'),
+        (bp_filter_audio_files_cli, rd, mock_dependencies['Operator'], 'filter_audio_files'),
+        (concatenate_audio_files_cli, rd, mock_dependencies['Operator'], 'concatenate_audio_files'),
+        (sleap_file_conversion_cli, rd, mock_dependencies['ConvertTo3D'], 'sleap_file_conversion'),
+        (conduct_anipose_calibration_cli, rd, mock_dependencies['ConvertTo3D'], 'conduct_anipose_calibration'),
+        (conduct_anipose_triangulation_cli, rd, mock_dependencies['ConvertTo3D'], 'conduct_anipose_triangulation'),
+        (das_command_line_inference_cli, rd, mock_dependencies['FindMouseVocalizations'], 'das_command_line_inference'),
+        (summarize_das_findings_cli, rd, mock_dependencies['FindMouseVocalizations'], 'summarize_das_findings'),
+        (vcl_assign_cli, rd, mock_dependencies['Vocalocator'], 'run_vocalocator_ssl'),
+        (av_sync_check_cli, rd, mock_dependencies['SummaryPlotter'], 'preprocessing_summary'),
+    ]
+    for command, args, mock_cls, method_name in invocations:
+        result = runner.invoke(command, args)
+        assert result.exit_code == 0, (
+            f"{command.name} exited {result.exit_code}: {result.output}\n{result.exception}"
+        )
+        getattr(mock_cls.return_value, method_name).assert_called()
+
+    # anipose-trm needs an experimental code and an existing arena directory.
+    result = runner.invoke(
+        translate_rotate_metric_cli,
+        rd + ["--exp-code", "E1M", "--arena-directory", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    mock_dependencies['ConvertTo3D'].return_value.translate_rotate_metric.assert_called()
+
+    # prepare-vcl-assign takes a second (arena) directory.
+    result = runner.invoke(
+        prepare_vcl_assign_cli, rd + ["--arena-directory", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    mock_dependencies['Vocalocator'].return_value.prepare_for_vocalocator.assert_called()
+
+    # The multi-root ephys commands take a comma-joined --root-directories.
+    multi = ["--root-directories", str(tmp_path)]
+    result = runner.invoke(concatenate_binary_files_cli, multi)
+    assert result.exit_code == 0, result.output
+    mock_dependencies['Operator'].return_value.concatenate_binary_files.assert_called()
+
+    result = runner.invoke(split_clusters_to_sessions_cli, multi)
+    assert result.exit_code == 0, result.output
+    mock_dependencies['Operator'].return_value.split_clusters_to_sessions.assert_called()
