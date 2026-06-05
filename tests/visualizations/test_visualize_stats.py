@@ -38,6 +38,9 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_estrous_ratio_scatter,
     plot_estrous_usv_rates,
     plot_estrous_stage_pie_chart,
+    plot_category_global_fatigue_heatmap,
+    plot_category_estrous_rates_grid,
+    plot_category_estrous_ratio_grid,
 )
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
     build_master_usv_interval_dataframe,
@@ -1056,3 +1059,119 @@ def test_plot_qq():
     fig, ax, stats = plot_qq(intervals_sec, gmm, dot_color=_HEX_MALE)
     assert "pearson_r" in stats
     plt.close(fig)
+
+
+def _category_estrous_data(rng) -> dict:
+    """
+    Description
+    -----------
+    Build the nested per-category estrous_data structure consumed by both
+    plot_category_estrous_rates_grid (session_counts / male_usv_counts /
+    female_usv_counts) and plot_category_estrous_ratio_grid
+    (male_female_ratios), so a single fixture drives both.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Source of the synthetic per-stage ratio lists.
+
+    Returns
+    -------
+    estrous_data (dict)
+        Mapping category-id -> per-stage count / ratio sub-dicts.
+    """
+
+    data = {}
+    for cat in (1, 2, 3, 4):
+        data[cat] = {
+            "session_counts": {s: 4 + i for i, s in enumerate(_ESTROUS_ORDER)},
+            "male_usv_counts": {s: 100 + 10 * i for i, s in enumerate(_ESTROUS_ORDER)},
+            "female_usv_counts": {s: 50 + 5 * i for i, s in enumerate(_ESTROUS_ORDER)},
+            "male_female_ratios": {s: rng.uniform(0.5, 3.0, 6).tolist() for s in _ESTROUS_ORDER},
+        }
+    return data
+
+
+def test_plot_category_global_fatigue_heatmap():
+    """
+    Description
+    -----------
+    `plot_category_global_fatigue_heatmap` must bin the day into 2-hour
+    blocks, build per-sex category-by-time heatmaps (smoothed + row-
+    normalised), and return the processed pivot tables.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(9)
+    rows = []
+    for sess in range(3):
+        for sex in ("male", "female"):
+            for cat in (1, 2, 3):
+                for hour in (8, 10, 12, 14, 16, 18):
+                    for _ in range(int(rng.integers(1, 5))):
+                        rows.append({
+                            "session_id": f"s{sess}", "sex": sex,
+                            "category": cat, "hour": hour,
+                        })
+    global_usv_df = pls.DataFrame(rows)
+    fig, axes, stats = plot_category_global_fatigue_heatmap(
+        global_usv_df, smoothing_sigma=0.75, colormap="inferno",
+    )
+    assert len(axes) == 2
+    assert isinstance(stats, dict)
+    plt.close(fig)
+
+
+def test_plot_category_estrous_rates_grid():
+    """
+    Description
+    -----------
+    `plot_category_estrous_rates_grid` must render the per-category facet
+    grid of dual-axis male/female USV-rate bars and return per-category
+    mean rates.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    estrous_data = _category_estrous_data(np.random.default_rng(10))
+    fig, axes, stats = plot_category_estrous_rates_grid(
+        estrous_data, _ESTROUS_ORDER, _HEX_MALE, _HEX_FEMALE,
+    )
+    assert set(stats) == set(estrous_data)
+    plt.close(fig)
+
+
+def test_plot_category_estrous_ratio_grid():
+    """
+    Description
+    -----------
+    `plot_category_estrous_ratio_grid` must render its two figures (the
+    per-category facet grid and the per-stage view) from the per-stage
+    male/female ratio lists and return the per-category-stage stats.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    estrous_data = _category_estrous_data(np.random.default_rng(11))
+    (figs, axes, stats) = plot_category_estrous_ratio_grid(
+        estrous_data, _ESTROUS_ORDER, _ESTROUS_COLORS,
+    )
+    assert len(figs) == 2
+    for f in figs:
+        plt.close(f)
