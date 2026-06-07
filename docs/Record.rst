@@ -217,6 +217,14 @@ On the next page, you can set some basic parameters:
 * **Ethernet network ID** : this is the ID of the ethernet network
 * **Notify e-mail(s) of PC usage** : this is the e-mail address that will be notified of the start and end of PC usage
 
+The file-destination directories above are derived from the ``[[lab_shares]]`` table near the top of *behavioral_experiments_settings.toml*, which records how this host mounts the lab CUP shares (it is also read by ``os_utils`` and the processing code). Each entry stores only the per-platform tokens, not full paths:
+
+* **name** : the share name (e.g. ``falkner``, ``murthy``); it is appended to the mount parent to form each full root, and is also used as ``\\<file_server>\<name>``
+* **windows** : the drive **letter** the share is mapped to on Windows (a ``:`` is appended automatically)
+* **darwin** / **linux** / **cluster** : the mount **parent** directory under which the share appears on macOS, Linux, and the compute cluster respectively
+
+The first ``[[lab_shares]]`` entry is the default returned by ``find_base_path``. To remap a drive or mount point, edit the relevant token here.
+
 In the example below, one would be doing a 20 minute audio and video recording without calibration. When ready, click *Next*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_1.png
