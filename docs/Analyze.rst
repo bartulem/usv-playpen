@@ -177,6 +177,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 * **temporal_offsets** : list of temporal offsets between spikes and behavior (in seconds, negative values: spikes precede behavior) for which the tuning curves will be calculated (adding values to the list increases the time needed for analysis drastically)
 * **n_shuffles** : number of spike train shuffles (increasing this number increases the time needed for analysis drastically)
+* **shuffle_seed** : base seed for the spike-train shuffle null distribution; fixing it makes the significance verdicts reproducible across runs
 * **total_bin_num** : total number of bins for a 1D behavioral / vocal-property feature
 * **n_spatial_bins** : number of spatial bins (2D behavioral feature)
 * **spatial_scale_cm** : maximum distance from center of arena to one edge (in cm)
@@ -201,6 +202,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
     "calculate_neuronal_tuning_curves": {
         "temporal_offsets": [0],
         "n_shuffles": 1000,
+        "shuffle_seed": 0,
         "total_bin_num": 36,
         "n_spatial_bins": 196,
         "spatial_scale_cm": 32,
@@ -449,6 +451,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **ipi_duration** : inter-pulse interval duration in seconds
 * **wav_sampling_rate** : sampling rate of the playback .WAV file in kHz
 * **playback_snippets_dir** : subdirectory where the USV snippets are stored
+* **playback_seed** : optional RNG seed for reproducible snippet selection and assembly; ``null`` draws a fresh random stimulus each run, an integer reproduces the same stimulus
 
 .. code-block:: json
 
@@ -457,7 +460,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "total_usv_number": 10000,
         "ipi_duration": 0.015,
         "wav_sampling_rate": 250,
-        "playback_snippets_dir": "usv_playback_snippets_loudness_corrected"
+        "playback_snippets_dir": "usv_playback_snippets_loudness_corrected",
+        "playback_seed": null
     }
 
 Create naturalistic playback .WAV file
@@ -497,6 +501,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **naturalistic_wav_sampling_rate** : sampling rate of the playback .WAV file in kHz
 * **naturalistic_playback_snippets_dir_prefix** : prefix of the subdirectory where the USV snippets are stored (the rest of the subdirectory name should be ``"_usv_playback_snippets"``); also determines which sex-specific GMM is used (``"female"`` or ``"male"``)
 * **total_acceptable_naturalistic_playback_time** : total acceptable duration of the playback file (in s)
+* **playback_seed** : optional RNG seed for reproducible snippet selection and assembly; ``null`` draws a fresh random stimulus each run, an integer reproduces the same stimulus
 
 .. code-block:: json
 
@@ -504,5 +509,6 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "num_naturalistic_usv_files": 1,
         "naturalistic_wav_sampling_rate": 250,
         "naturalistic_playback_snippets_dir_prefix": "female",
-        "total_acceptable_naturalistic_playback_time": 1080
+        "total_acceptable_naturalistic_playback_time": 1080,
+        "playback_seed": null
     }
