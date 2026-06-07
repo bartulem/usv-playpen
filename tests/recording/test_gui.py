@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QPushButton
 
 from usv_playpen import usv_playpen_gui
 from usv_playpen.usv_playpen_gui import (
-    ChemoDialog, EphysDialog, LesionDialog, OptoDialog,
+    ChemoDialog, EphysDialog, LesionDialog, OptoDialog, _safe_literal_eval,
 )
 
 @pytest.fixture
@@ -581,3 +581,25 @@ def test_save_metadata_to_yaml_early_return_off_video_settings(app):
     before = meta_path.read_text()
     app._save_metadata_to_yaml()
     assert meta_path.read_text() == before, "metadata YAML was written on early-return path"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("5", 5),
+    ("3.14", 3.14),
+    ("(1, 2)", (1, 2)),
+    ("[0, 1]", [0, 1]),
+    ("-3", -3),
+])
+def test_safe_literal_eval_parses_valid_literals(raw, expected):
+    """The happy path is identical to ast.literal_eval: well-formed number,
+    tuple, and list literals parse to the same Python value."""
+    assert _safe_literal_eval(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "abc", "(1,", "1 2"])
+def test_safe_literal_eval_raises_clear_value_error(raw):
+    """Blank or malformed field input raises a ValueError whose message echoes
+    the offending value, instead of the cryptic ValueError/SyntaxError that
+    ast.literal_eval raises directly."""
+    with pytest.raises(ValueError, match="Could not parse the GUI field value"):
+        _safe_literal_eval(raw)

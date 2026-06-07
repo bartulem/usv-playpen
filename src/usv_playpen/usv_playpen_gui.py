@@ -100,6 +100,50 @@ accept_icon = str(_img_dir / 'accept.png')
 cancel_icon = str(_img_dir / 'cancel.png')
 clear_icon = str(_img_dir / 'clear.png')
 
+
+def _safe_literal_eval(raw: str):
+    """
+    Description
+    -----------
+    Thin validating wrapper around ``ast.literal_eval`` used when parsing the
+    free-text GUI settings fields into Python literals (numbers, tuples, lists).
+
+    The happy path is identical to calling ``ast.literal_eval`` directly: a
+    well-formed literal string is parsed and returned unchanged. The wrapper
+    exists solely so that malformed or blank field input fails with a clear,
+    field-value-aware message instead of the cryptic ``ValueError: malformed
+    node or string`` / ``SyntaxError`` that ``ast.literal_eval`` raises, which
+    previously surfaced uncaught when a user left a field empty or typed a
+    non-literal value.
+
+    Parameters
+    ----------
+    raw (str)
+        The raw text taken from a GUI field (e.g. ``self.some_field.text()``)
+        that is expected to hold a Python literal.
+
+    Returns
+    -------
+    parsed (object)
+        The value produced by ``ast.literal_eval(raw)`` (int, float, tuple,
+        list, etc.).
+
+    Raises
+    ------
+    ValueError
+        If ``raw`` is not a parseable Python literal; the message echoes the
+        offending value and the expected format.
+    """
+
+    try:
+        return ast.literal_eval(raw)
+    except (ValueError, SyntaxError) as exc:
+        raise ValueError(
+            f"Could not parse the GUI field value {raw!r}; expected a number, "
+            "tuple, or list literal (check for blank or malformed input)."
+        ) from exc
+
+
 class YamlHighlighter(QSyntaxHighlighter):
     """
     A syntax highlighter for basic YAML files that colors keys.
@@ -1478,7 +1522,7 @@ class USVPlaypenWindow(QMainWindow):
                 current_form_data[key] = widget.text()
 
         try:
-            current_form_data['weight'] = ast.literal_eval(current_form_data['weight'])
+            current_form_data['weight'] = _safe_literal_eval(current_form_data['weight'])
         except (ValueError, SyntaxError):
             pass
 
@@ -2050,7 +2094,7 @@ class USVPlaypenWindow(QMainWindow):
                 subject_data[key] = widget.text()
 
         try:
-            subject_data['weight'] = ast.literal_eval(subject_data['weight'])
+            subject_data['weight'] = _safe_literal_eval(subject_data['weight'])
         except (ValueError, SyntaxError):
             pass
 
@@ -4183,9 +4227,9 @@ class USVPlaypenWindow(QMainWindow):
         self.calculate_neuronal_tuning_curves_cb_bool = False
 
         self.analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'] = self.include_partner_vocalization_tuning_cb_bool
-        self.analyses_input_dict['calculate_neuronal_tuning_curves']['behavioral_min_occupancy_seconds'] = float(ast.literal_eval(self.behavioral_min_occupancy_seconds.text()))
-        self.analyses_input_dict['calculate_neuronal_tuning_curves']['usv_property_min_occupancy_seconds'] = float(ast.literal_eval(self.usv_property_min_occupancy_seconds.text()))
-        self.analyses_input_dict['calculate_neuronal_tuning_curves']['smoothing_sd'] = float(ast.literal_eval(self.smoothing_sd.text()))
+        self.analyses_input_dict['calculate_neuronal_tuning_curves']['behavioral_min_occupancy_seconds'] = float(_safe_literal_eval(self.behavioral_min_occupancy_seconds.text()))
+        self.analyses_input_dict['calculate_neuronal_tuning_curves']['usv_property_min_occupancy_seconds'] = float(_safe_literal_eval(self.usv_property_min_occupancy_seconds.text()))
+        self.analyses_input_dict['calculate_neuronal_tuning_curves']['smoothing_sd'] = float(_safe_literal_eval(self.smoothing_sd.text()))
 
         self.analyses_input_dict['analyses_booleans']['create_usv_playback_wav_bool'] = self.create_usv_playback_wav_cb_bool
         self.create_usv_playback_wav_cb_bool = False
@@ -4196,21 +4240,21 @@ class USVPlaypenWindow(QMainWindow):
         self.analyses_input_dict['analyses_booleans']['frequency_shift_audio_segment_bool'] = self.frequency_shift_audio_segment_cb_bool
         self.frequency_shift_audio_segment_cb_bool = False
 
-        self.analyses_input_dict['create_usv_playback_wav']['num_usv_files'] = int(ast.literal_eval(self.num_usv_files.text()))
-        self.analyses_input_dict['create_usv_playback_wav']['total_usv_number'] = int(ast.literal_eval(self.total_usv_number.text()))
-        self.analyses_input_dict['create_usv_playback_wav']['ipi_duration'] = float(ast.literal_eval(self.ipi_duration.text()))
+        self.analyses_input_dict['create_usv_playback_wav']['num_usv_files'] = int(_safe_literal_eval(self.num_usv_files.text()))
+        self.analyses_input_dict['create_usv_playback_wav']['total_usv_number'] = int(_safe_literal_eval(self.total_usv_number.text()))
+        self.analyses_input_dict['create_usv_playback_wav']['ipi_duration'] = float(_safe_literal_eval(self.ipi_duration.text()))
 
-        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files'] = int(ast.literal_eval(self.num_naturalistic_usv_files.text()))
-        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['total_acceptable_naturalistic_playback_time'] = int(ast.literal_eval(self.total_playback_file_duration.text()))
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files'] = int(_safe_literal_eval(self.num_naturalistic_usv_files.text()))
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['total_acceptable_naturalistic_playback_time'] = int(_safe_literal_eval(self.total_playback_file_duration.text()))
         self.analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix'] = self.preferred_mouse_sex
 
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'] = self.fs_audio_dir
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'] = self.fs_device_id
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'] = self.fs_channel_id
 
-        self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_start'] = float(ast.literal_eval(self.fs_sequence_start.text()))
-        self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_duration'] = float(ast.literal_eval(self.fs_sequence_duration.text()))
-        self.analyses_input_dict['frequency_shift_audio_segment']['fs_octave_shift'] = int(ast.literal_eval(self.fs_octave_shift.text()))
+        self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_start'] = float(_safe_literal_eval(self.fs_sequence_start.text()))
+        self.analyses_input_dict['frequency_shift_audio_segment']['fs_sequence_duration'] = float(_safe_literal_eval(self.fs_sequence_duration.text()))
+        self.analyses_input_dict['frequency_shift_audio_segment']['fs_octave_shift'] = int(_safe_literal_eval(self.fs_octave_shift.text()))
 
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_volume_adjustment'] = self.volume_adjust_audio_segment_cb_bool
         self.volume_adjust_audio_segment_cb_bool = True
@@ -4608,8 +4652,8 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['make_behavioral_videos']['animate_bool'] = self.visualization_type_cb_bool
         self.visualization_type_cb_bool = False
 
-        self.visualizations_input_dict['make_behavioral_videos']['video_start_time'] = float(ast.literal_eval(self.video_start_time.text()))
-        self.visualizations_input_dict['make_behavioral_videos']['video_duration'] = float(ast.literal_eval(self.video_duration.text()))
+        self.visualizations_input_dict['make_behavioral_videos']['video_start_time'] = float(_safe_literal_eval(self.video_start_time.text()))
+        self.visualizations_input_dict['make_behavioral_videos']['video_duration'] = float(_safe_literal_eval(self.video_duration.text()))
 
         self.visualizations_input_dict['make_behavioral_videos']['plot_theme'] = self.plot_theme
 
@@ -4619,12 +4663,12 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['figures']['fig_format'] = self.default_fig_format
         self.visualizations_input_dict['figures']['cmap'] = self.default_cmap
 
-        self.visualizations_input_dict['make_behavioral_videos']['side_azimuth_start'] = int(ast.literal_eval(self.side_azimuth_start.text()))
+        self.visualizations_input_dict['make_behavioral_videos']['side_azimuth_start'] = int(_safe_literal_eval(self.side_azimuth_start.text()))
 
         self.visualizations_input_dict['make_behavioral_videos']['rotate_side_view_bool'] = self.rotate_side_view_bool
         self.rotate_side_view_bool = False
 
-        self.visualizations_input_dict['make_behavioral_videos']['rotation_speed'] = int(ast.literal_eval(self.rotation_speed.text()))
+        self.visualizations_input_dict['make_behavioral_videos']['rotation_speed'] = int(_safe_literal_eval(self.rotation_speed.text()))
 
         self.visualizations_input_dict['make_behavioral_videos']['history_bool'] = self.history_cb_bool
         self.history_cb_bool = False
@@ -4717,16 +4761,16 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(getattr(self, 'processing_pc_choice'))
 
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
-        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(ast.literal_eval(self.constant_rate_factor)))
+        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(_safe_literal_eval(self.constant_rate_factor)))
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(getattr(self, 'encoding_preset'))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input'] = int(ast.literal_eval(self.ch_receiving_input))
-        self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(ast.literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(ast.literal_eval(stft_value)) for stft_value in self.stft_window_hop]
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['kernel_size'] = tuple([int(ast.literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['hpss_power'] = float(ast.literal_eval(self.hpss_power))
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['margin'] = tuple([int(ast.literal_eval(margin_value)) for margin_value in self.hpss_margin])
-        self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num'] = int(ast.literal_eval(self.min_spike_num))
-        self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input'] = int(ast.literal_eval(self.a_ch_receiving_input))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input'] = int(_safe_literal_eval(self.ch_receiving_input))
+        self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(_safe_literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
+        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(_safe_literal_eval(stft_value)) for stft_value in self.stft_window_hop]
+        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['kernel_size'] = tuple([int(_safe_literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
+        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['hpss_power'] = float(_safe_literal_eval(self.hpss_power))
+        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['margin'] = tuple([int(_safe_literal_eval(margin_value)) for margin_value in self.hpss_margin])
+        self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num'] = int(_safe_literal_eval(self.min_spike_num))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input'] = int(_safe_literal_eval(self.a_ch_receiving_input))
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
 
         self.processing_input_dict['preprocess_data']['root_directories'] = self.processing_dir_edit
@@ -4740,9 +4784,9 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_name_base'] = self.das_model_base
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['output_file_type'] = self.das_output_type
 
-        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_confidence_threshold'] = float(ast.literal_eval(self.segment_confidence_threshold))
-        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_minlen'] = float(ast.literal_eval(self.segment_minlen))
-        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_fillgap'] = float(ast.literal_eval(self.segment_fillgap))
+        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_confidence_threshold'] = float(_safe_literal_eval(self.segment_confidence_threshold))
+        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_minlen'] = float(_safe_literal_eval(self.segment_minlen))
+        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_fillgap'] = float(_safe_literal_eval(self.segment_fillgap))
 
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'] = self.das_model_dir_edit
         self.processing_input_dict['vocalocator']['vcl_model_directory'] = self.vcl_model_dir_edit
@@ -4753,7 +4797,7 @@ class USVPlaypenWindow(QMainWindow):
         if self.frame_restriction == ['']:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] = None
         else:
-            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] = [int(ast.literal_eval(fr_value)) for fr_value in self.frame_restriction]
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] = [int(_safe_literal_eval(fr_value)) for fr_value in self.frame_restriction]
         if self.excluded_views == ['']:
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['excluded_views'] = []
         else:
@@ -4761,19 +4805,19 @@ class USVPlaypenWindow(QMainWindow):
         if self.rigid_body_constraints == '':
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['rigid_body_constraints'] = []
         else:
-            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['rigid_body_constraints'] = list(ast.literal_eval(self.rigid_body_constraints))
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['rigid_body_constraints'] = list(_safe_literal_eval(self.rigid_body_constraints))
         if self.weak_body_constraints == '':
             self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weak_body_constraints'] = []
         else:
-            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weak_body_constraints'] = list(ast.literal_eval(self.weak_body_constraints))
+            self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weak_body_constraints'] = list(_safe_literal_eval(self.weak_body_constraints))
 
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['smooth_scale'] = int(ast.literal_eval(self.smooth_scale))
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_rigid'] = int(ast.literal_eval(self.weight_rigid))
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_weak'] = int(ast.literal_eval(self.weight_weak))
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['reprojection_error_threshold'] = int(ast.literal_eval(self.reprojection_error_threshold))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['smooth_scale'] = int(_safe_literal_eval(self.smooth_scale))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_rigid'] = int(_safe_literal_eval(self.weight_rigid))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['weight_weak'] = int(_safe_literal_eval(self.weight_weak))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['reprojection_error_threshold'] = int(_safe_literal_eval(self.reprojection_error_threshold))
         self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['regularization_function'] = self.regularization_function
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['n_deriv_smooth'] = int(ast.literal_eval(self.n_deriv_smooth))
-        self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['static_reference_len'] = float(ast.literal_eval(self.static_reference_len))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['n_deriv_smooth'] = int(_safe_literal_eval(self.n_deriv_smooth))
+        self.processing_input_dict['anipose_operations']['ConvertTo3D']['translate_rotate_metric']['static_reference_len'] = float(_safe_literal_eval(self.static_reference_len))
 
         self.processing_input_dict['processing_booleans']['conduct_video_concatenation'] = self.conduct_video_concatenation_cb_bool
         self.conduct_video_concatenation_cb_bool = False
@@ -4864,8 +4908,8 @@ class USVPlaypenWindow(QMainWindow):
         self.exp_settings_dict['selected_labs'] = [share['name'] for share in self.exp_settings_dict['lab_shares']
                                                    if self.__dict__[f"{share['name']}_checkbox_bool"]]
 
-        self.exp_settings_dict['video_session_duration'] = ast.literal_eval(self.video_session_duration)
-        self.exp_settings_dict['calibration_duration'] = ast.literal_eval(self.calibration_session_duration)
+        self.exp_settings_dict['video_session_duration'] = _safe_literal_eval(self.video_session_duration)
+        self.exp_settings_dict['calibration_duration'] = _safe_literal_eval(self.calibration_session_duration)
         self.exp_settings_dict['ethernet_network'] = self.ethernet_network
 
         self.exp_settings_dict['conduct_tracking_calibration'] = self.conduct_tracking_calibration_cb_bool
