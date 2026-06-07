@@ -167,8 +167,13 @@ class FindMouseVocalizations:
         das_dir.mkdir(parents=True, exist_ok=True)
 
         # move annotation files to save directory
-        for one_file in hpss_dir.iterdir():
-            if f".{save_format}" in one_file.name:
+        # NB: materialize the directory listing before moving — moving entries
+        # out of `hpss_dir` while its iterator is live can skip files on some
+        # filesystems. The suffix is matched with `endswith` (not a substring)
+        # so only true `.{save_format}` outputs are moved, never a name that
+        # merely contains that token.
+        for one_file in sorted(hpss_dir.iterdir()):
+            if one_file.name.endswith(f".{save_format}"):
                 shutil.move(src=one_file, dst=das_dir / one_file.name)
 
     def summarize_das_findings(self) -> None:
@@ -494,13 +499,70 @@ class FindMouseVocalizations:
                     file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
                 )
 
+            elif n_usv == 1:
+                # A lone USV has no descriptor distribution to filter against, so
+                # the statistical noise rejection above is skipped. The detection
+                # is nonetheless real: compute its peak/mean amplitude channels
+                # directly and still emit the summary CSV, rather than silently
+                # dropping it and zeroing the session USV count (which is what
+                # the bare `n_usv > 1` gate used to do).
+                audio_file_loc = first_match_or_raise(
+                    root=pathlib.Path(self.root_directory) / "audio" / "hpss_filtered",
+                    pattern="*.mmap",
+                    label="concatenated audio mmap",
+                )
+                audio_file_name = audio_file_loc.name
+                data_type, channel_num, sample_num, audio_sampling_rate = (
+                    audio_file_name.split("_")[-1][:-5],
+                    int(audio_file_name.split("_")[-2]),
+                    int(audio_file_name.split("_")[-3]),
+                    int(audio_file_name.split("_")[-4]),
+                )
+                audio_file_data = np.memmap(
+                    filename=audio_file_loc,
+                    mode="r",
+                    dtype=data_type,
+                    shape=(sample_num, channel_num),
+                )
+                lone_usv = merged[0]
+                start_usv = int(np.floor(lone_usv['start'] * audio_sampling_rate))
+                stop_usv = int(np.ceil(lone_usv['stop'] * audio_sampling_rate))
+                peak_amp_ch = np.unravel_index(
+                    np.argmax(audio_file_data[start_usv:stop_usv, :]),
+                    audio_file_data.shape,
+                )[1]
+                mean_amp_ch = np.argmax(
+                    np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0)
+                )
+                lone_usv['peak_amp_ch'] = int(peak_amp_ch)
+                lone_usv['mean_amp_ch'] = int(mean_amp_ch)
+
+                self.message_output(
+                    f"In this session, {len(merged)} USVs were detected."
+                )
+
+                # save the summary file
+                pls.DataFrame({
+                    "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
+                    "start": [u['start'] for u in merged],
+                    "stop": [u['stop'] for u in merged],
+                    "duration": [u['stop'] - u['start'] for u in merged],
+                    "peak_amp_ch": [float(u['peak_amp_ch']) for u in merged],
+                    "mean_amp_ch": [float(u['mean_amp_ch']) for u in merged],
+                    "chs_count": [float(u['chs_count']) for u in merged],
+                    "chs_detected": [str(u['chs_detected']) for u in merged],
+                    "emitter": [None] * len(merged),
+                }).write_csv(
+                    file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
+                )
+
             # load metadata
             metadata, metadata_path = load_session_metadata(
                 root_directory=self.root_directory,
                 logger=self.message_output
             )
             if metadata is not None:
-                metadata['Session']['session_usv_count'] = len(merged) if n_usv > 1 else 0
+                metadata['Session']['session_usv_count'] = len(merged)
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
         except (IndexError, FileNotFoundError) as exc:

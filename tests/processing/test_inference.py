@@ -482,6 +482,45 @@ def test_summarize_das_findings_skips_unknown_channel_filename(
     assert any("unrecognized device/channel" in m for m in msgs)
 
 
+def test_summarize_das_findings_single_usv_writes_csv_and_counts_it(
+    processing_settings, tmp_path, mocker
+):
+    """A session with exactly one merged USV must still write the summary CSV
+    (one row, with peak/mean amplitude channels filled in) and record
+    session_usv_count == 1.
+
+    The statistical noise filtering needs a distribution of per-USV descriptors,
+    so it is legitimately skipped for a lone USV; but the previous bare
+    `n_usv > 1` gate also skipped the CSV write and zeroed the count, silently
+    discarding a real detection. This pins the single-USV branch that preserves
+    it. No histogram is produced (there is no distribution to plot)."""
+    _make_summary_fixture(tmp_path, n_usv=1, channels=("ch01",))
+
+    metadata = {"Session": {}}
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(metadata, tmp_path / "meta.yaml"))
+    saved = mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    )
+    fmv.summarize_das_findings()
+
+    audio_dir = tmp_path / "audio"
+    summaries = list(audio_dir.glob("*_usv_summary.csv"))
+    assert len(summaries) == 1
+    df = pls.read_csv(str(summaries[0]))
+    assert df.height == 1
+    # The lone USV is counted (not zeroed) and the metadata is saved.
+    assert metadata["Session"]["session_usv_count"] == 1
+    saved.assert_called_once()
+    # No correlation/variance histogram for a single USV.
+    assert list(audio_dir.glob("*_histogram.svg")) == []
+
+
 def test_summarize_das_findings_missing_mmap_reports_real_cause(
     processing_settings, tmp_path, mocker
 ):
