@@ -83,6 +83,20 @@ def find_mouse_names(root_directory: str = None,
                     elif one_key.endswith("cage_ID_m2"):
                         metadata_key_dict["cage_ID_m2"] = one_key
 
+                # The first animal is mandatory in this legacy layout; if its
+                # cage/mouse keys are absent the metadata is malformed and a
+                # bare KeyError downstream would be cryptic, so fail loudly here.
+                missing_m1_keys = [
+                    expected_key
+                    for expected_key in ("cage_ID_m1", "mouse_ID_m1")
+                    if expected_key not in metadata_key_dict
+                ]
+                if missing_m1_keys:
+                    raise KeyError(
+                        f"Legacy imgstore metadata in '{sub_directory.name}' is missing "
+                        f"required key(s) {missing_m1_keys}; cannot resolve mouse names."
+                    )
+
                 if user_meta_data[metadata_key_dict["mouse_ID_m1"]] != "":
                     track_names.append(
                         f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}_{user_meta_data[metadata_key_dict['mouse_ID_m1']]}"
@@ -90,12 +104,18 @@ def find_mouse_names(root_directory: str = None,
                 else:
                     track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m1']]}")
 
-                if user_meta_data[metadata_key_dict["mouse_ID_m2"]] != "":
-                    if user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
+                # The second animal is optional (single-mouse sessions leave it
+                # blank). Mirror the m1 logic so a present mouse_ID_m2 is never
+                # silently dropped just because its cage field happens to be
+                # empty (the previous nested `if` skipped that case entirely).
+                if "mouse_ID_m2" in metadata_key_dict and user_meta_data[metadata_key_dict["mouse_ID_m2"]] != "":
+                    if "cage_ID_m2" in metadata_key_dict and user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
                         track_names.append(
                             f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}_{user_meta_data[metadata_key_dict['mouse_ID_m2']]}"
                         )
-                elif user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
+                    else:
+                        track_names.append(f"{user_meta_data[metadata_key_dict['mouse_ID_m2']]}")
+                elif "cage_ID_m2" in metadata_key_dict and user_meta_data[metadata_key_dict["cage_ID_m2"]] != "":
                     track_names.append(f"{user_meta_data[metadata_key_dict['cage_ID_m2']]}")
                 break
 
@@ -480,13 +500,16 @@ class ConvertTo3D:
             if not self.input_parameter_dict["conduct_anipose_triangulation"][
                 "triangulate_arena_points_bool"
             ]:
-                none_hyperparam_bool = False
-                if (
-                    self.input_parameter_dict["conduct_anipose_triangulation"][
-                        "frame_restriction"
-                    ]
-                    is None
-                ):
+                # Resolve the frame restriction into a local variable instead of
+                # mutating the shared settings dict in place. The previous code
+                # wrote the computed [0, N] back into self.input_parameter_dict
+                # and reset it to None only *after* triangulate returned, so a
+                # raised triangulate left the stale value behind and contaminated
+                # the next session in a batch run.
+                frame_restriction_value = self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["frame_restriction"]
+                if frame_restriction_value is None:
                     with open(
                         first_match_or_raise(
                             root=pathlib.Path(self.root_directory) / 'video',
@@ -495,22 +518,15 @@ class ConvertTo3D:
                         )
                     ) as frame_count_infile:
                         camera_frame_count_dict = json.load(frame_count_infile)
-                        self.input_parameter_dict["conduct_anipose_triangulation"][
-                            "frame_restriction"
-                        ] = [
+                        frame_restriction_value = [
                             0,
                             int(camera_frame_count_dict["total_frame_number_least"]),
                         ]
-                        none_hyperparam_bool = True
 
                 sleap_anipose.triangulate(
                     p2d=str(self.session_root_joint_date_dir),
                     calib=str(calibration_toml_file),
-                    frames=tuple(
-                        self.input_parameter_dict["conduct_anipose_triangulation"][
-                            "frame_restriction"
-                        ]
-                    ),
+                    frames=tuple(frame_restriction_value),
                     excluded_views=tuple(
                         self.input_parameter_dict["conduct_anipose_triangulation"][
                             "excluded_views"
@@ -549,32 +565,21 @@ class ConvertTo3D:
                     ]["n_deriv_smooth"],
                 )
 
-                if none_hyperparam_bool:
-                    self.input_parameter_dict["conduct_anipose_triangulation"][
-                        "frame_restriction"
-                    ] = None
-
             else:
-                none_hyperparam_bool = False
-                if (
-                    self.input_parameter_dict["conduct_anipose_triangulation"][
-                        "frame_restriction"
-                    ]
-                    is None
-                ):
-                    self.input_parameter_dict["conduct_anipose_triangulation"][
-                        "frame_restriction"
-                    ] = [0, 1]
-                    none_hyperparam_bool = True
+                # Resolve the frame restriction locally (see the note in the
+                # non-arena branch above): never mutate the shared settings dict,
+                # so a raised triangulate cannot leak a stale value into the next
+                # session of a batch run.
+                frame_restriction_value = self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["frame_restriction"]
+                if frame_restriction_value is None:
+                    frame_restriction_value = [0, 1]
 
                 sleap_anipose.triangulate(
                     p2d=str(self.session_root_joint_date_dir),
                     calib=str(calibration_toml_file),
-                    frames=tuple(
-                        self.input_parameter_dict["conduct_anipose_triangulation"][
-                            "frame_restriction"
-                        ]
-                    ),
+                    frames=tuple(frame_restriction_value),
                     excluded_views=tuple(
                         self.input_parameter_dict["conduct_anipose_triangulation"][
                             "excluded_views"
@@ -588,11 +593,6 @@ class ConvertTo3D:
                         "conduct_anipose_triangulation"
                     ]["reprojection_error_threshold"],
                 )
-
-                if none_hyperparam_bool:
-                    self.input_parameter_dict["conduct_anipose_triangulation"][
-                        "frame_restriction"
-                    ] = None
 
     def translate_rotate_metric(self, **kwargs) -> None:
         """
@@ -869,13 +869,32 @@ class ConvertTo3D:
                     2,
                 ] = 0
 
+            # Validate session_idx against the configured experimental_codes
+            # before consuming it, so an out-of-range index fails with a clear
+            # message here rather than as a bare IndexError inside the metadata
+            # update / h5 write below. Only the animal branch records the code.
+            experimental_codes = self.input_parameter_dict["translate_rotate_metric"][
+                "experimental_codes"
+            ]
+            if not 0 <= session_idx < len(experimental_codes):
+                raise IndexError(
+                    f"session_idx {session_idx} is out of range for "
+                    f"{len(experimental_codes)} configured experimental_codes."
+                )
+            session_experiment_code = experimental_codes[session_idx]
+
             # load metadata
             metadata, metadata_path = load_session_metadata(
                 root_directory=self.root_directory,
                 logger=self.message_output
             )
             if metadata is not None:
-                metadata['Session']['session_experiment_code'] = self.input_parameter_dict["translate_rotate_metric"]["experimental_codes"][session_idx]
+                if "Session" not in metadata:
+                    raise KeyError(
+                        "session metadata is missing the required 'Session' block; "
+                        "cannot record the experiment code / 3D-tracking flag."
+                    )
+                metadata['Session']['session_experiment_code'] = session_experiment_code
                 metadata['Session']['session_tracking_3D'] = True
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
@@ -890,9 +909,7 @@ class ConvertTo3D:
                 h5_file_write.create_dataset(name="track_names", data=mouse_track_names)
                 h5_file_write.create_dataset(
                     name="experimental_code",
-                    data=self.input_parameter_dict["translate_rotate_metric"][
-                        "experimental_codes"
-                    ][session_idx],
+                    data=session_experiment_code,
                 )
                 h5_file_write.create_dataset(
                     name="recording_frame_rate", data=recording_frame_rate

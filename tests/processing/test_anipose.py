@@ -18,7 +18,7 @@ import h5py
 import numpy as np
 import pytest
 
-from usv_playpen.processing.anipose_operations import ConvertTo3D
+from usv_playpen.processing.anipose_operations import ConvertTo3D, find_mouse_names
 
 
 # ---------------------------------------------------------------------------
@@ -523,3 +523,195 @@ def test_translate_rotate_metric_animal_branch_writes_transformed_mouse(
     assert not (session_dir / "20260101120000_points3d.h5").exists(), (
         "original mouse H5 should be deleted when delete_original_h5=True"
     )
+
+
+# find_mouse_names — legacy imgstore metadata branch (no cage/subject keys)
+def test_find_mouse_names_legacy_keeps_present_m2_with_empty_cage(tmp_path, mocker):
+    """
+    Description
+    -----------
+    In the legacy imgstore-metadata layout (no flat `cage`/`subject` keys, only
+    suffixed `..._cage_ID_mN` / `..._mouse_ID_mN` keys), a second animal whose
+    `mouse_ID_m2` is populated must never be silently dropped just because its
+    `cage_ID_m2` field happens to be empty. The previous nested `if` skipped
+    exactly that case; the fix mirrors the m1 logic and falls back to the bare
+    mouse ID.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to stub the imgstore `new_for_filename` factory.
+
+    Returns
+    -------
+    None
+    """
+
+    sub = tmp_path / "video" / "20260101_1200.imgstore"
+    sub.mkdir(parents=True)
+    store = MagicMock()
+    store.user_metadata = {
+        "p_cage_ID_m1": "c1", "p_mouse_ID_m1": "m1",
+        "p_cage_ID_m2": "",   "p_mouse_ID_m2": "m2",
+    }
+    mocker.patch(
+        "usv_playpen.processing.anipose_operations.new_for_filename",
+        return_value=store,
+    )
+    assert find_mouse_names(root_directory=str(tmp_path), metadata=None) == [
+        "c1_m1",
+        "m2",
+    ]
+
+
+def test_find_mouse_names_legacy_missing_m1_keys_raises(tmp_path, mocker):
+    """
+    Description
+    -----------
+    If the mandatory first-animal keys (`..._cage_ID_m1` / `..._mouse_ID_m1`)
+    are absent from the legacy imgstore metadata, `find_mouse_names` must fail
+    with a clear KeyError naming the missing keys, rather than raising a bare,
+    cryptic KeyError from the downstream dictionary lookup.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to stub the imgstore `new_for_filename` factory.
+
+    Returns
+    -------
+    None
+    """
+
+    sub = tmp_path / "video" / "20260101_1200.imgstore"
+    sub.mkdir(parents=True)
+    store = MagicMock()
+    store.user_metadata = {"p_cage_ID_m2": "c2", "p_mouse_ID_m2": "m2"}
+    mocker.patch(
+        "usv_playpen.processing.anipose_operations.new_for_filename",
+        return_value=store,
+    )
+    with pytest.raises(KeyError, match="missing required key"):
+        find_mouse_names(root_directory=str(tmp_path), metadata=None)
+
+
+# conduct_anipose_triangulation — frame_restriction must not leak on error
+def test_conduct_anipose_triangulation_error_keeps_frame_restriction_none(
+    processing_settings, session_with_video_dir, mocker, tmp_path
+):
+    """
+    Description
+    -----------
+    When `sleap_anipose.triangulate` raises, the shared settings dict's
+    `frame_restriction` must remain `None`. The old code wrote the computed
+    `[0, N]` back into the dict and only reset it *after* a successful
+    triangulate, so a raised triangulate left the stale value behind and
+    contaminated the next session in a batch run; the fix resolves the range
+    into a local variable and never mutates the shared dict.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package settings fixture.
+    session_with_video_dir (tuple)
+        (root, session_dir) scaffolding fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to force triangulate to raise and to no-op smart_wait.
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+
+    Returns
+    -------
+    None
+    """
+
+    root, _ = session_with_video_dir
+    fc_path = root / "video" / "x_camera_frame_count_dict.json"
+    fc_path.write_text(
+        json.dumps({"total_frame_number_least": 5000, "median_empirical_camera_sr": 150.0})
+    )
+    calib_dir = tmp_path / "calib"
+    (calib_dir / "video").mkdir(parents=True)
+    (calib_dir / "video" / "session_calibration.toml").write_text("[cameras]\n")
+
+    cfg = processing_settings["anipose_operations"]["ConvertTo3D"]
+    cfg["conduct_anipose_triangulation"]["calibration_file_loc"] = str(calib_dir)
+    cfg["conduct_anipose_triangulation"]["triangulate_arena_points_bool"] = False
+    cfg["conduct_anipose_triangulation"]["frame_restriction"] = None
+
+    mocker.patch(
+        "usv_playpen.processing.anipose_operations.sleap_anipose.triangulate",
+        side_effect=RuntimeError("boom"),
+    )
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
+
+    converter = ConvertTo3D(
+        root_directory=str(root),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        converter.conduct_anipose_triangulation()
+
+    assert cfg["conduct_anipose_triangulation"]["frame_restriction"] is None
+
+
+# translate_rotate_metric — session_idx bounds guard
+def test_translate_rotate_metric_session_idx_out_of_range_raises(
+    processing_settings, tmp_path, mocker
+):
+    """
+    Description
+    -----------
+    In the animal branch, an out-of-range `session_idx` (here 5 against a single
+    configured experimental code) must raise a clear IndexError before the
+    metadata update / h5 write, rather than a bare positional IndexError deep
+    inside those writes.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package settings fixture.
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op smart_wait.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    (video_dir / "sess_camera_frame_count_dict.json").write_text(
+        json.dumps({"median_empirical_camera_sr": 150.0})
+    )
+    (tmp_path / "sess_metadata.yaml").write_text(
+        "Session:\n  id: s001\nSubjects:\n  - subject_id: m1\n"
+    )
+    session_dir = video_dir / "20260101120000"
+    session_dir.mkdir()
+    mouse_tracks = np.zeros((5, 1, 15, 3), dtype="float64")
+    with h5py.File(session_dir / "20260101120000_points3d.h5", "w") as f:
+        f.create_dataset("tracks", data=mouse_tracks)
+
+    arena_dir = tmp_path / "arena_src"
+    _write_arena_h5(arena_dir)
+
+    settings = _trm_settings(
+        processing_settings, arena_dir, mode="animal",
+        exp_codes=["E2MF"], delete=False,
+    )
+    converter = ConvertTo3D(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    with pytest.raises(IndexError, match="out of range"):
+        converter.translate_rotate_metric(session_idx=5)
