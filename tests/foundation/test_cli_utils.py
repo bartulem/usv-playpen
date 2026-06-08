@@ -13,6 +13,7 @@ import pytest
 from usv_playpen.cli_utils import (
     StringTuple,
     _convert_value,
+    find_nested_key_paths,
     modify_settings_json_for_cli,
     override_toml_values,
     set_nested_key,
@@ -38,6 +39,36 @@ def test_set_nested_key_not_found_returns_false():
     d = {"a": {"b": 1}}
     assert set_nested_key(d, "missing", 5) is False
     assert d == {"a": {"b": 1}}  # untouched
+
+
+# find_nested_key_paths
+
+def test_find_nested_key_paths_single_match():
+    d = {"outer": {"inner": {"target": 0}}}
+    assert find_nested_key_paths(d, "target") == ["outer.inner.target"]
+
+
+def test_find_nested_key_paths_absent():
+    assert find_nested_key_paths({"a": {"b": 1}}, "missing") == []
+
+
+def test_find_nested_key_paths_lists_all_in_set_nested_key_order():
+    """Both blocks carry the same leaf key; index 0 must be the path that
+    set_nested_key actually updates (so the ambiguity warning names the right
+    chosen block)."""
+    d = {"a": {"target": 1}, "b": {"target": 2}}
+    assert find_nested_key_paths(d, "target") == ["a.target", "b.target"]
+    set_nested_key(d, "target", 99)
+    assert d["a"]["target"] == 99 and d["b"]["target"] == 2  # first match won
+
+
+def test_find_nested_key_paths_top_level_wins_over_deeper():
+    """set_nested_key sets a current-level key before descending into siblings;
+    paths[0] reflects that ordering."""
+    d = {"x": {"k": 1}, "k": 5}
+    assert find_nested_key_paths(d, "k") == ["k", "x.k"]
+    set_nested_key(d, "k", 7)
+    assert d["k"] == 7 and d["x"]["k"] == 1
 
 
 # set_nested_value_by_path
@@ -129,3 +160,20 @@ def test_modify_settings_warns_on_unmatched_param(capsys):
     assert bogus in err
     assert "did not match" in err
     assert isinstance(result, dict)
+
+
+def test_modify_settings_warns_on_ambiguous_param(capsys):
+    """playback_seed exists in both playback blocks of analyses_settings.json,
+    so a short --set is ambiguous: it must warn (naming both locations) and
+    apply the value to the first match only, leaving the second untouched."""
+    ctx = SimpleNamespace(params={"playback_seed": 7})
+    result = modify_settings_json_for_cli(
+        ctx, provided_params=["playback_seed"], settings_dict="analyses_settings",
+    )
+    err = capsys.readouterr().err
+    assert "ambiguous" in err
+    assert "create_naturalistic_usv_playback_wav.playback_seed" in err
+    assert "create_usv_playback_wav.playback_seed" in err
+    # Applied to the first match (naturalistic) only; the other block is untouched.
+    assert result["create_naturalistic_usv_playback_wav"]["playback_seed"] == 7
+    assert result["create_usv_playback_wav"]["playback_seed"] != 7

@@ -104,6 +104,52 @@ def set_nested_key(d: dict, target_key: str, value: Any = None) -> bool:
     return False
 
 
+def find_nested_key_paths(d: dict, target_key: str) -> list[str]:
+    """
+    Description
+    -----------
+    Returns the dot-separated paths of every location at which ``target_key``
+    occurs in a nested dictionary. This is the lookup companion to
+    ``set_nested_key``: because that setter silently updates only the *first*
+    match it finds, a short CLI option that happens to name a key present in
+    more than one settings block would update one block and silently ignore the
+    others. Collecting all paths lets the caller detect and warn about that
+    ambiguity.
+
+    The traversal mirrors ``set_nested_key`` exactly — a match at the current
+    dictionary level is recorded before descending, and children are visited in
+    insertion order — so the first element of the returned list is always the
+    path that ``set_nested_key`` would actually set.
+
+    Parameters
+    ----------
+    d (dict)
+        The dictionary to search within.
+    target_key (str)
+        The key to find.
+
+    Returns
+    -------
+    (list[str])
+        Every dot-separated path at which ``target_key`` occurs, in the same
+        order ``set_nested_key`` would encounter them (so index 0 is the one it
+        would update). Empty if the key is absent.
+    """
+
+    paths: list[str] = []
+
+    def _walk(sub: dict, prefix: str) -> None:
+        # record a match at this level before descending, matching set_nested_key
+        if target_key in sub:
+            paths.append(f"{prefix}.{target_key}" if prefix else target_key)
+        for key, val in sub.items():
+            if isinstance(val, dict):
+                _walk(val, f"{prefix}.{key}" if prefix else key)
+
+    _walk(d, "")
+    return paths
+
+
 def modify_settings_json_for_cli(
     ctx: click.Context,
     provided_params: list,
@@ -119,6 +165,12 @@ def modify_settings_json_for_cli(
     A provided parameter that does not match any key in the loaded settings
     dictionary (e.g. a typo'd, renamed or stale CLI option) is reported on
     stderr and skipped, rather than being dropped silently as before.
+
+    A provided parameter whose (short) name matches a key in more than one
+    settings block is ambiguous: it is applied to the first match (the block
+    ``set_nested_key`` reaches first) and the ambiguity is reported on stderr,
+    naming every location and the one chosen, so the user can switch to the
+    explicit dot-path override form to target a specific block.
 
     Parameters
     ----------
@@ -155,12 +207,25 @@ def modify_settings_json_for_cli(
         else:
             param_value = [ctx.params[param_name]]
 
-        if not set_nested_key(settings_parameter_dict, param_name, param_value):
+        matching_paths = find_nested_key_paths(settings_parameter_dict, param_name)
+        if not matching_paths:
             print(
                 f"Warning: CLI option '{param_name}' did not match any key in "
                 f"'{settings_dict}.json'; its value was not applied.",
                 file=sys.stderr,
             )
+            continue
+
+        if len(matching_paths) > 1:
+            print(
+                f"Warning: CLI option '{param_name}' is ambiguous in "
+                f"'{settings_dict}.json' — it occurs at {matching_paths}. "
+                f"Applying it to '{matching_paths[0]}'; use the explicit "
+                f"dot-path override to target a specific block.",
+                file=sys.stderr,
+            )
+
+        set_nested_key(settings_parameter_dict, param_name, param_value)
 
     return settings_parameter_dict
 
