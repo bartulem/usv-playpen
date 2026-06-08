@@ -16,12 +16,6 @@ video_session_duration = 20
 disable_ethernet = true
 ethernet_network = "Ethernet 5"
 
-# How this host mounts the lab CUP shares (read by os_utils, the recording GUI,
-# and behavioral_experiments). Store only the tokens: 'windows' is the drive
-# LETTER, 'darwin'/'linux'/'cluster' are the mount PARENTS; the share 'name' is
-# appended (and ':' added for Windows) to form each full root, and 'name' feeds
-# \\<file_server>\<name>. First entry is the default (find_base_path). Edit a
-# drive/mount here to remap.
 [[lab_shares]]
 name = "falkner"
 windows = "F"
