@@ -244,10 +244,16 @@ messages_control.disable = [
 #   - pymdown-extensions>=10.21.3 fixes a regression in pymdownx.snippets
 #     where sibling-prefix path traversal bypasses restrict_base_path
 #     (GHSA, Dependabot #40); pulled in transitively via marimo.
+#   - starlette>=1.0.1 validates the HTTP Host header against the RFC 9112
+#     §3.2 / RFC 3986 §3.2.2 grammar before reconstructing request.url, fixing
+#     a path-based authorization bypass where a malformed Host poisons
+#     request.url.path (GHSA, Dependabot #42); pulled in transitively via
+#     marimo.
 constraint-dependencies = [
     "mistune>=3.2.1",
     "idna>=3.15",
     "pymdown-extensions>=10.21.3",
+    "starlette>=1.0.1",
 ]
 
 [tool.uv.sources]
