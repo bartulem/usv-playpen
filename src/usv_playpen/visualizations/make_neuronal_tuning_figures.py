@@ -400,7 +400,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         self._segmentation_path = (
             pathlib.Path(__file__).parent.parent
             / "_config"
-            / "vocal_umap_segmentation.npz"
+            / "usv_latent_embedding_segmentation.npz"
         )
         self._segmentation_cache: dict | None = None
 
@@ -411,7 +411,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Lazy-load the bundled UMAP segmentation file
-        (`_config/vocal_umap_segmentation.npz`) used to render the
+        (`_config/usv_latent_embedding_segmentation.npz`) used to render the
         section-(c) categorical watersheds. Returns an empty dict if
         the file is absent. Cached on first call.
 

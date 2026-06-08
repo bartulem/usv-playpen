@@ -1171,7 +1171,7 @@ class NeuronalTuning(FeatureZoo):
         self._segmentation_path = (
             pathlib.Path(__file__).parent.parent
             / "_config"
-            / "vocal_umap_segmentation.npz"
+            / "usv_latent_embedding_segmentation.npz"
         )
 
     # pkl merge helper (used by both paths)
