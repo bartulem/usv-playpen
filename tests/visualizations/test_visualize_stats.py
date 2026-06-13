@@ -1482,9 +1482,6 @@ def test_plot_category_local_fatigue_heatmap_empty_sex_and_no_smoothing():
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-@pytest.mark.filterwarnings(
-    "ignore::matplotlib._api.deprecation.MatplotlibDeprecationWarning"
-)
 @pytest.mark.parametrize("plot_type", ["density", "scatter"])
 def test_plot_category_prevalence_and_embedding(plot_type):
     """
