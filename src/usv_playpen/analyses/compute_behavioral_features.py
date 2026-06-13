@@ -1654,8 +1654,10 @@ class FeatureZoo:
         allo_yaw-nose, nose-allo_yaw, allo_yaw-TTI, TTI-allo_yaw plus
         the matching allo_pitch-nose, nose-allo_pitch, allo_pitch-TTI,
         TTI-allo_pitch. The orofacial and anogenital social engagement
-        indices are computed via `calculate_sei`, which now uses the
-        same egocentric (yaw, pitch) decomposition for its gaze gate.
+        indices are computed via `calculate_sei`, whose gaze gate uses a
+        3D cosine similarity; the egocentric yaw/pitch columns above are
+        emitted separately but do not drive the gate (see the history
+        note in `calculate_sei`).
 
         The full table is materialized as a `polars.DataFrame`,
         feature-by-feature feature distributions are computed via

@@ -371,9 +371,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Initialize the per-cluster figure maker. Loads `FeatureZoo`
         feature definitions (vocal boundaries / vocal labels / display
         units), validates and stashes the keyword arguments as attributes,
-        records GUI-vs-CLI context, pins the path of the bundled UMAP
-        segmentation file used by section (c), and primes a lazy
-        segmentation cache.
+        records GUI-vs-CLI context, pins the path of the bundled
+        latent-embedding segmentation file used by section (c), and primes
+        a lazy segmentation cache.
 
         Parameters
         ----------
@@ -410,7 +410,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Lazy-load the bundled UMAP segmentation file
+        Lazy-load the bundled latent-embedding segmentation file
         (`_config/usv_latent_embedding_segmentation.npz`) used to render the
         section-(c) categorical watersheds. Returns an empty dict if
         the file is absent. Cached on first call.
@@ -2783,10 +2783,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             line per region in its palette color, for direct
             comparison of skew across regions.
 
-        Bins span [−1, 1] uniformly. Best-session VMI per unit is the
-        same definition as fig 1: the largest absolute-VMI per-session
-        entry across both modality directions and both conditions,
-        gated by the pickle's `vmi_min_bouts` floor.
+        Bins span [−1, 1] uniformly. One signed VMI value per unit (good
+        + somatic) via `_collect_vmi_distribution_per_unit`: non-sig units
+        use their per-session median, sig +VMI-only units the maximum of
+        their sig +VMI sessions, sig −VMI-only units the minimum of their
+        sig −VMI sessions, and sig-both units collapse onto the direction
+        with the larger absolute effect. No `vmi_min_bouts` gating is
+        applied here.
 
         Parameters
         ----------
@@ -2969,7 +2972,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Walk the unit-triage pickle and, for every good + somatic unit
-        with at least two significant `usv_peth_self_excit` sessions
+        with at least two significant `usv_peth_self_{direction}` sessions
         whose `peak_t` values cluster within `tol_s` (largest
         in-tolerance subset of size `k_min` or more, optionally
         accounting for at least 50 % of the unit's sig sessions),
@@ -2983,8 +2986,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
           * `n_sig` — number of significant sessions.
           * `k` — size of the largest in-tolerance peak_t cluster.
 
-        Excit-only — suppress sessions are ignored. The consistency
-        rule is the package agreed on for PETH:
+        The `direction` argument selects the modality scanned
+        (`usv_peth_self_excit` or `usv_peth_self_suppress`). The
+        consistency rule is the package agreed on for PETH:
         `±tol_s/2` window AND `k >= k_min` AND (optional) majority.
 
         Parameters
@@ -2994,6 +2998,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to `unit_catalog.csv`. Defaults to the
             `catalog_path` field embedded in the triage pickle.
+        direction (str)
+            Which PETH modality to scan: `'excit'` or `'suppress'`
+            (validated; selects `usv_peth_self_{direction}`). Defaults
+            to `'excit'`.
         tol_s (float)
             Full-width tolerance for the largest-in-tolerance subset
             (so a 100 ms window = ±50 ms either side of the cluster
@@ -3322,7 +3330,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
           * `n_sig` — number of significant sessions.
           * `k` — size of the largest in-tolerance peak-value cluster.
 
-        Same rule shape as `_collect_consistent_peth_excit`, with the
+        Same rule shape as `_collect_consistent_peth`, with the
         anchor swapped from `peak_t` (time) to `peak_bin_value`
         (property value). `tol` defaults to `USV_PROPERTY_META[property_name]["tol"]`
         when unset.
@@ -5780,7 +5788,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Filtered (post `vae_supercategory != 0`) USV summary if
             available; required for the bout raster.
         segmentation (dict)
-            Loaded UMAP segmentation per categorical feature.
+            Loaded latent-embedding segmentation per categorical feature.
         viz_params (dict)
             `neuronal_tuning_figures` settings block.
         save_fig (Callable[[Figure, str], None])
@@ -6356,7 +6364,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         cluster_data (dict)
             Per-cluster pkl payload.
         segmentation (dict)
-            Loaded UMAP segmentation per categorical feature.
+            Loaded latent-embedding segmentation per categorical feature.
         viz_params (dict)
             `neuronal_tuning_figures` settings block.
         save_fig (Callable[[Figure, str], None])
@@ -6570,7 +6578,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render a watershed-style imshow of per-category values over the
-        bundled UMAP segmentation grid. Pixels with no cluster-side
+        bundled latent-embedding segmentation grid. Pixels with no cluster-side
         category get a hatched fill; per-category 1-NN boundaries are
         contour-drawn in `COLOR_BLACK`. When `annotate_categories=True`,
         each region's category ID is overlaid at its centroid (or a

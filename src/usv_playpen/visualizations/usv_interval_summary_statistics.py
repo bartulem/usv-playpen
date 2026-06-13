@@ -1212,8 +1212,8 @@ def plot_bootstrap_lrt_panel(
             if need_break:
                 # Two side-by-side axes inside this cell, sharing the
                 # y-axis. Left axes covers the null bulk; right axes
-                # covers LR_obs (plus any 95%/99% lines that landed
-                # past the break).
+                # covers LR_obs (plus the 99% line if it landed past
+                # the break).
                 inner = outer[row, col].subgridspec(1, 2, width_ratios=[3, 1], wspace=0.05)
                 ax_l = f.add_subplot(inner[0, 0])
                 ax_r = f.add_subplot(inner[0, 1], sharey=ax_l)

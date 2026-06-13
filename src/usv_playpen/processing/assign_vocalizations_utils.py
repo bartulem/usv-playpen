@@ -295,7 +295,7 @@ def compute_covs_6d(raw_outputs: np.ndarray, arena_dims: np.ndarray) -> np.ndarr
     L = np.zeros((raw_outputs.shape[0], n_dims, n_dims))
     idxs = np.tril_indices(n_dims)
     L[:, idxs[0], idxs[1]] = raw_outputs[:, n_dims:]
-    new_diagonals = softplus(np.diagonal(L, axis1=-2, axis2=-1))  # (batch, 2)
+    new_diagonals = softplus(np.diagonal(L, axis1=-2, axis2=-1))  # (batch, 6)
     L[:, np.arange(n_dims), np.arange(n_dims)] = new_diagonals
     scale = 0.5 * arena_dims.max()
     L = L * scale

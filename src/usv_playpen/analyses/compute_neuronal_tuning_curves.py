@@ -1143,8 +1143,8 @@ class NeuronalTuning(FeatureZoo):
         feature definitions (boundaries / labels / vocal segmentation
         metadata), validates and stashes the keyword arguments as attributes,
         records GUI-vs-CLI execution context, and pins the path of the
-        bundled UMAP segmentation file used by the categorical vocal
-        compute.
+        bundled USV latent-embedding segmentation file used by the
+        categorical vocal compute.
 
         Parameters
         ----------

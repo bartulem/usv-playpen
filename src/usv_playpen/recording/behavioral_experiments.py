@@ -1284,12 +1284,13 @@ class ExperimentController:
         #     knobs, unbuffered I/O for large files, and visible exit
         #     codes. powershell Move-Item blocked in uninterruptible SMB
         #     I/O with no timeout, producing the "stuck transfer" symptom.
-        #   - /J      unbuffered I/O — much better for multi-GB files
-        #             over SMB; avoids the Windows cache manager holding
-        #             pages while the server is slow to ACK.
-        #   - /R:1    one retry on per-file failure (default: 1,000,000).
-        #   - /W:5    5 s wait between retries (default: 30 s).
+        #   - /R:60   up to 60 retries on per-file failure (default:
+        #             1,000,000); see the EXECUTE-phase note below for why
+        #             this is far higher than the original /R:1.
+        #   - /W:10   10 s wait between retries (default: 30 s).
         #   - /MOV    delete source after a successful copy.
+        #   (NB: /J unbuffered I/O was deliberately dropped — see the
+        #    EXECUTE-phase note below for the rationale.)
         #   - /NP /NFL /NDL /NJH /NJS  quiet output (progress, file list,
         #             dir list, job header, job summary all suppressed;
         #             subprocess stdout/stderr is still captured below).
@@ -1302,21 +1303,12 @@ class ExperimentController:
         #     an instant same-volume metadata operation — it cannot
         #     itself hang the way a network move can.
         if self.exp_settings_dict['conduct_audio_recording']:
-            # The transfer runs in two phases so robocopy concurrency
-            # is capped:
-            #   1. PLAN -- for every channel file we want to move,
-            #      glob it, prefix-rename it locally (instant same-
-            #      volume metadata op), and record the (ch_dir,
-            #      prefixed_name) pair in ``planned``.
-            #   2. EXECUTE -- iterate ``planned`` in fixed-size
-            #      batches; each batch spawns at most
-            #      ``BATCH_SIZE`` robocopy processes and waits for
-            #      them before the next batch starts.
-            # Capping the concurrency at 2 keeps the SMB destination
-            # from being hammered by 8 simultaneous unbuffered (/J)
-            # streams, which is what caused the slave-channel (s_)
-            # files to fail under the previous all-parallel design
-            # even with the bumped /R:8 /W:10 retry budget.
+            # PLAN phase: for every channel file to move, glob it and
+            # prefix-rename it locally (an instant same-volume metadata
+            # op), recording the (ch_dir, prefixed_name) pair in
+            # ``planned``. The EXECUTE phase below then spawns the moves
+            # (see the note there for the all-parallel / no-/J / /R:60
+            # /W:10 design and why it superseded the earlier attempts).
             planned: list[tuple[pathlib.Path, str]] = []
             if self.exp_settings_dict['audio']['general']['total'] == 0:
                 dest_dir = pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original'

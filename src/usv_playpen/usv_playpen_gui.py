@@ -1080,7 +1080,7 @@ class Credentials(QWidget):
         """
         Description
         -----------
-        Initializes the Record class.
+        Initializes the Credentials class.
 
         Parameters
         ----------
@@ -1793,7 +1793,7 @@ class USVPlaypenWindow(QMainWindow):
         """
         Description
         -----------
-        Initializes the usv-playpen Main window.
+        Initializes the usv-playpen Credentials window.
 
         Parameters
         ----------

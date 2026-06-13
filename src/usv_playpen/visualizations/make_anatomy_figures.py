@@ -21,9 +21,10 @@ Current coverage:
           buckets (PAG, MRN, VTA, MB, CENT, SC, other) using the
           palette from `visualizations_settings.json["brain_area_colors"]`.
 
-  (b) 3D unit positions  - reserved for a future method.
+  (b) 3D unit positions  - `make_unit_positions_figure` /
+      `build_unit_positions_figure` / `make_unit_positions_video`.
 
-  (c) probe + raw-trace overlay  - reserved for a future method.
+  (c) probe + raw-trace overlay  - `make_unit_waveform_figure`.
 
 The catalog's raw `brain_area` acronyms (e.g. `SCdw`, `CENT2`) are
 pooled to the seven canonical display buckets via
@@ -302,7 +303,7 @@ class AnatomyFigureMaker:
         Read `unit_catalog.csv` and decorate each row with the two
         derived columns the figure methods rely on:
           * `bucket`    -> pooled brain-area bucket (one of seven)
-          * `cell_type` -> one of `SU somatic`, `SU non-somatic`, `MUA`
+          * `cell_type` -> one of `Somatic`, `Non-somatic`, `Multi-unit`
 
         Parameters
         ----------
@@ -1069,19 +1070,15 @@ class AnatomyFigureMaker:
             Number of top-amplitude clusters to render (left to right).
         waveform_width_um (float)
             Lateral-axis width allocated to each waveform.
-        voltage_uv_scale (float)
-            Multiplier mapping raw Kilosort template units to axial µm.
-            One fixed value across all rendered units, so peak
+        peak_amplitude_target_um (float)
+            Axial-µm height that the largest rendered unit's peak
+            amplitude maps to. One fixed scale across all units, so peak
             amplitudes vary visibly across the row.
         opacity_sigma_um (float)
             Gaussian σ for opacity vs probe-local distance from peak.
         n_neighbors_each_side (int)
             Number of nearest same-shank channels above and below the
             peak (peak's row sibling is added separately).
-        zoom_axial_um (float)
-            Half-extent (µm) above and below the peak channel.
-        zoom_lateral_um (float)
-            Half-extent (µm) left and right of the peak channel.
         fig_size_inches (tuple[float, float])
             Figure size in inches.
         fig_format (str)
@@ -1492,12 +1489,9 @@ class AnatomyFigureMaker:
         # Scale bar in the LOWER-LEFT corner of shank 1 (axes[0] is
         # always shank 1 regardless of which side the schematic is
         # on). Vertical line = the height every unit's peak channel
-        # is rendered at (`peak_amplitude_target_um`); horizontal
-        # line = one waveform's full time span (61 samples /
-        # sample_rate ≈ 2 ms). Label `Vp-p` (peak-to-peak) instead of
-        # "peak" because in extracellular ephys the spike has both a
-        # trough and a rebound peak — `Vp-p` is the unambiguous term
-        # for the full swing the bar represents.
+        # is rendered at (`peak_amplitude_target_um`), labelled
+        # "norm µV"; horizontal line spans 30 samples (= 1 ms at
+        # 30 kHz), labelled "1 ms".
         # Lock the shared y-axis BEFORE drawing the scale bar so its
         # data-coordinate y values land in the right place (the bar
         # would otherwise be positioned against matplotlib's auto-
