@@ -31,14 +31,11 @@ import toml
 # look-alike substrings elsewhere in the path are never touched, and additional
 # shares (murthy, ...) are handled by construction, not special-casing.
 #
-# The token values below are a hardcoded fallback, used only when the host config
-# is absent or unparseable (e.g. isolated tests), so translation never breaks.
+# These tokens are read once and expanded by ``_host_lab_shares``; if that config
+# is missing/unparseable or lacks a ``lab_shares`` / ``file_server`` entry, path
+# translation raises rather than guessing -- a broken or incomplete host config
+# should fail loud, not silently fall back to assumed shares.
 _OS_KEYS = {"Windows": "windows", "Darwin": "darwin", "Linux": "linux"}
-_LAB_SHARES_FALLBACK: tuple[dict[str, str], ...] = (
-    {"name": "falkner", "windows": "F", "darwin": "/Volumes", "linux": "/mnt", "cluster": "/mnt/cup/labs"},
-    {"name": "murthy",  "windows": "M", "darwin": "/Volumes", "linux": "/mnt", "cluster": "/mnt/cup/labs"},
-)
-_FILE_SERVER_FALLBACK = "cup"
 
 
 def expand_lab_share(share: dict, file_server: str) -> dict:
@@ -136,10 +133,10 @@ def _host_lab_shares() -> tuple[tuple[dict[str, str], ...], str]:
     drive letters / mount roots are defined, also consumed by the recording GUI
     and behavioral_experiments -- and expanded into full leading roots via
     ``expand_lab_share`` so ``configure_path``/``find_base_path``/
-    ``to_cluster_path`` see ready-to-use mount roots. If that file or its
-    ``lab_shares`` entry is absent or unparseable, the hardcoded token fallback is
-    used so path translation and the test-suite keep working with no config
-    present.
+    ``to_cluster_path`` see ready-to-use mount roots. If that file is missing or
+    unparseable, or lacks a ``lab_shares`` / ``file_server`` entry, a clear error
+    is raised rather than falling back to assumed shares -- a broken or incomplete
+    host config fails loud at the first path translation.
 
     Parameters
     ----------
@@ -157,16 +154,30 @@ def _host_lab_shares() -> tuple[tuple[dict[str, str], ...], str]:
     if _HOST_SHARES_CACHE:
         return _HOST_SHARES_CACHE[0]
 
-    raw_shares = _LAB_SHARES_FALLBACK
-    file_server = _FILE_SERVER_FALLBACK
     try:
         host_config = toml.load(_HOST_CONFIG_PATH)
-        if "lab_shares" in host_config and host_config["lab_shares"]:
-            raw_shares = tuple(host_config["lab_shares"])
-        if "file_server" in host_config:
-            file_server = host_config["file_server"]
-    except (OSError, toml.TomlDecodeError):
-        pass
+    except (OSError, toml.TomlDecodeError) as exc:
+        msg = (
+            f"Cannot read the host config '{_HOST_CONFIG_PATH}' required to resolve "
+            f"the lab CUP shares for path translation: {type(exc).__name__}: {exc}"
+        )
+        raise RuntimeError(msg) from exc
+
+    if "lab_shares" not in host_config or not host_config["lab_shares"]:
+        msg = (
+            f"Host config '{_HOST_CONFIG_PATH}' has no non-empty 'lab_shares' table; "
+            "cannot resolve the lab CUP share mount roots."
+        )
+        raise KeyError(msg)
+    if "file_server" not in host_config:
+        msg = (
+            f"Host config '{_HOST_CONFIG_PATH}' has no 'file_server' entry; "
+            "cannot form the file-server UNC roots."
+        )
+        raise KeyError(msg)
+
+    raw_shares = tuple(host_config["lab_shares"])
+    file_server = host_config["file_server"]
 
     expanded = tuple(expand_lab_share(share, file_server) for share in raw_shares)
     _HOST_SHARES_CACHE.append((expanded, file_server))

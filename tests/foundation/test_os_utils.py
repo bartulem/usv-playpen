@@ -53,15 +53,40 @@ def test_host_lab_shares_reads_from_host_config(monkeypatch):
     assert shares[0]["unc"] == r"\\cup\falkner"
 
 
-def test_host_lab_shares_falls_back_when_config_absent(monkeypatch, tmp_path):
-    """A missing/unparseable host config falls back to the hardcoded token table,
-    expanded, so path translation and tests keep working with no config present."""
+def test_host_lab_shares_raises_when_config_missing(monkeypatch, tmp_path):
+    """A missing host config raises (no silent fallback): path translation fails
+    loud on an absent/broken config rather than guessing assumed shares."""
     monkeypatch.setattr(os_utils, "_HOST_SHARES_CACHE", [])
     monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
-    shares, file_server = os_utils._host_lab_shares()
-    assert file_server == os_utils._FILE_SERVER_FALLBACK
-    assert [s["name"] for s in shares] == ["falkner", "murthy"]
-    assert shares[0]["windows"] == "F:" and shares[0]["linux"] == "/mnt/falkner"
+    with pytest.raises(RuntimeError, match="Cannot read the host config"):
+        os_utils._host_lab_shares()
+
+
+def test_host_lab_shares_raises_when_lab_shares_missing(monkeypatch, tmp_path):
+    """A host config that parses but has no 'lab_shares' table raises KeyError."""
+    cfg = tmp_path / "host.toml"
+    cfg.write_text('file_server = "cup"\n')
+    monkeypatch.setattr(os_utils, "_HOST_SHARES_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", cfg)
+    with pytest.raises(KeyError, match="lab_shares"):
+        os_utils._host_lab_shares()
+
+
+def test_host_lab_shares_raises_when_file_server_missing(monkeypatch, tmp_path):
+    """A host config with 'lab_shares' but no 'file_server' raises KeyError."""
+    cfg = tmp_path / "host.toml"
+    cfg.write_text(
+        '[[lab_shares]]\n'
+        'name = "falkner"\n'
+        'windows = "F"\n'
+        'darwin = "/Volumes"\n'
+        'linux = "/mnt"\n'
+        'cluster = "/mnt/cup/labs"\n'
+    )
+    monkeypatch.setattr(os_utils, "_HOST_SHARES_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", cfg)
+    with pytest.raises(KeyError, match="file_server"):
+        os_utils._host_lab_shares()
 
 
 def test_expand_lab_share_builds_full_roots_from_tokens():
