@@ -339,6 +339,16 @@ def test_extract_information_solo_recording_with_estrus():
     assert out["mouse_estrus"] == ["estrus"]
 
 
+def test_extract_information_multi_digit_mouse_number():
+    # `\d+` must capture the full count, not just the first digit (>= 10 animals).
+    assert extract_information("BG12")["mouse_number"] == 12
+
+
+def test_extract_information_no_digit_defaults_to_zero():
+    # a code with no digit must default mouse_number to 0, not raise AttributeError.
+    assert extract_information("BCFM")["mouse_number"] == 0
+
+
 def test_extract_information_lighting_decoded():
     light = extract_information("E1L")
     assert light is not None

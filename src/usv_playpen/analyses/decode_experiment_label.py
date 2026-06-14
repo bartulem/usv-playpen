@@ -85,7 +85,7 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
 
         search_patterns_dict = {
             "experiment_type": r"[AEHOPBVUQCXYLD]",
-            "mouse_number": r"\d",
+            "mouse_number": r"\d+",
             "mouse_sex": r"[MF]",
             "mouse_housing": r"[SG]",
             "mouse_estrus": r"[pemd]",
@@ -104,9 +104,10 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
                 for item in re.findall(search_patterns_dict[key], experiment_code):
                     output_dict[key].append(decoding_dict[item])
             else:
-                output_dict[key] = int(
-                    re.search(search_patterns_dict[key], experiment_code).group(0)
-                )
+                # `\d+` captures multi-digit counts (>= 10 animals); a code with
+                # no digit leaves the default 0 rather than raising AttributeError.
+                number_match = re.search(search_patterns_dict[key], experiment_code)
+                output_dict[key] = int(number_match.group(0)) if number_match else 0
 
         return output_dict
 
