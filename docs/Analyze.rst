@@ -267,6 +267,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file holds the gat
 
 The notebook is a thin wrapper: edit ``CONDITION_TO_SESSION_LIST`` to point at the ``.txt`` lists, optionally adjust ``THRESHOLDS``, and run all cells. The pickle it produces is the input to all downstream cross-session plotting.
 
+The cross-session figure half of the notebook additionally honours two unit-selection knobs in the **Parameters** cell: ``UNIT_KSLABELS`` (the Kilosort curation labels to include, e.g. ``("good",)`` or ``("good", "mua")``) and ``UNIT_SOMATIC_FILTER`` (one of ``"somatic"`` / ``"non_somatic"`` / ``"both"``). Both default to the historical good + somatic scope (``("good",)`` + ``"somatic"``). Because the aggregator pickle always holds *every* unit, changing these knobs simply re-filters the figures — no pickle rebuild is needed — and every figure caption reflects the active filter.
+
 Compute inter-vocalization-interval (inter-USV interval) distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 This analysis pools same-emitter inter-vocalization intervals (inter-USV intervals) across one or more cohorts and (optionally) sweeps a 1D Gaussian Mixture Model (GMM) on the log-transformed inter-USV intervals to identify behavioral regimes (e.g. "short" intra-bout intervals vs "long" inter-bout intervals). Unlike the other analyses on this page, this one is **not** driven by the *Root directories* GUI field — it is driven by one or more **session-list text files**, each containing one session root per line. This lets multi-cohort comparisons be assembled by simply pointing at additional list files (each session is tagged with the list file it came from for downstream grouping).
