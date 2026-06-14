@@ -54,7 +54,6 @@ from usv_playpen.cli_utils import (
     StringTuple,
     _convert_value,
     override_toml_values,
-    set_nested_key,
     set_nested_value_by_path,
 )
 import io
@@ -1023,31 +1022,6 @@ def test_wait_for_subprocesses_timeout_no_raise_returns_none_slot():
         if procs[0].poll() is None:
             procs[0].kill()
             procs[0].wait()
-
-
-def test_set_nested_key_top_level():
-    d = {"a": 1, "b": 2}
-    assert set_nested_key(d, "a", 99) is True
-    assert d == {"a": 99, "b": 2}
-
-
-def test_set_nested_key_descends_into_dicts():
-    d = {"outer": {"inner": {"target": "old"}}}
-    assert set_nested_key(d, "target", "new") is True
-    assert d["outer"]["inner"]["target"] == "new"
-
-
-def test_set_nested_key_returns_false_when_missing():
-    d = {"a": {"b": 1}}
-    assert set_nested_key(d, "nonexistent", 0) is False
-    assert d == {"a": {"b": 1}}
-
-
-def test_set_nested_key_stops_at_first_match():
-    d = {"x": "shallow", "wrap": {"x": "deep"}}
-    set_nested_key(d, "x", "updated")
-    assert d["x"] == "updated"
-    assert d["wrap"]["x"] == "deep"
 
 
 def test_set_nested_value_by_path_sets_leaf():
