@@ -493,7 +493,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             feat_o = sum(final_data[feat][s]['other_feature_arr'].shape[0] for s in final_data[feat])
             print(f"{i:3}. {feat:<45} | {len(final_data[feat]):<6} | {feat_t:<10} | {feat_o:<10} | {feat_t + feat_o:<8}")
         print("-" * 105)
-        print(f"PROJECT-WIDE CATEGORY TALLY:")
+        print("PROJECT-WIDE CATEGORY TALLY:")
         print(f"  > Total unique features:        {len(final_features)}")
         print(f"  > Total sessions:               {len(all_sessions)}")
         print(f"  > Total target USVs ({target_category}):        {total_target}")
@@ -743,7 +743,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             ('target_feature_arr') and negative ('other_feature_arr') classes.
         basis_matrix : np.ndarray | None
             The projection matrix [lags, bases] used for dimensionality reduction in Sklearn.
-            Must be None if `model_type` is 'pygam'.
+            Must be None if `model_engine` is 'pygam'.
 
         Returns
         -------
@@ -913,8 +913,17 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 except Exception as e:
                     print(f"Fit error {feature_name} ({strat}), fold {split_idx}: {e}")
 
-        mean_auc_act = np.nanmean(results['actual']['auc'])
-        mean_auc_null = np.nanmean(results['null']['auc'])
+        # `results[*]['auc']` is pre-filled with NaN per split; a strategy that
+        # produced no valid fold (e.g. a starved `null_other` condition) leaves
+        # an all-NaN array, where `np.nanmean` emits a "Mean of empty slice"
+        # RuntimeWarning and returns NaN. Under a strict `filterwarnings=error`
+        # run that warning is promoted to an error and swallowed by the caller's
+        # try/except, silently dropping the output pickle. Only average when a
+        # finite value exists so the headline never trips the warning.
+        act_auc = np.asarray(results['actual']['auc'], dtype=float)
+        null_auc = np.asarray(results['null']['auc'], dtype=float)
+        mean_auc_act = float(np.nanmean(act_auc)) if np.any(np.isfinite(act_auc)) else float('nan')
+        mean_auc_null = float(np.nanmean(null_auc)) if np.any(np.isfinite(null_auc)) else float('nan')
         print(f"  Feature {feature_name}: Mean AUC={mean_auc_act:.3f} (Null={mean_auc_null:.3f})")
 
         return feature_name, results

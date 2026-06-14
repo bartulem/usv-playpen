@@ -502,7 +502,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         grand_total_none = sum(modeling_final_data_dict[first_feat][s]['no_usv_feature_arr'].shape[0] for s in all_sessions)
 
         print("\n" + "=" * 105)
-        print(f"MODELING INPUT: GLOBAL AGGREGATE SUMMARY")
+        print("MODELING INPUT: GLOBAL AGGREGATE SUMMARY")
         print("=" * 105)
         print(f"{'#':<4} {'Feature Name':<40} | {'Sess':<6} | {'USV Bouts':<12} | {'No-USV Bouts':<12} | {'Total N'}")
         print("-" * 105)
@@ -514,7 +514,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             print(f"{i:3}. {feat:<40} | {len(modeling_final_data_dict[feat]):<6} | {feat_usv_bouts:<12} | {feat_none_bouts:<12} | {feat_usv_bouts + feat_none_bouts:<8}")
 
         print("-" * 105)
-        print(f"PROJECT-WIDE TOTAL TALLY:")
+        print("PROJECT-WIDE TOTAL TALLY:")
         print(f"  > Total Unique Features:        {total_covariates}")
         print(f"  > Total Sessions:               {grand_total_sessions}")
         print(f"  > Total USV Bouts:              {grand_total_usv}")
@@ -645,7 +645,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train, X_neg_train)
 
                 if X_pos_train_bal.shape[0] == 0:
-                    print(f"Warning: No balanced training data for a 'mixed' split. Skipping.")
+                    print("Warning: No balanced training data for a 'mixed' split. Skipping.")
                     continue
 
                 X_train, y_train = concat_two_class_with_labels(X_pos_train_bal, X_neg_train_bal)

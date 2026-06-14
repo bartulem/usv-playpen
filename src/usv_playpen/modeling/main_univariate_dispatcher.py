@@ -83,7 +83,7 @@ def get_basis_matrix_standardized(
     -------
     basis_matrix : np.ndarray or None
         A matrix of shape (history_frames, n_basis_functions). Returns None
-        if the current model_type is 'pygam' (which uses internal splines).
+        if the current model_engine is 'pygam' (which uses internal splines).
     """
     model_cfg = settings['model_params']
 
@@ -123,6 +123,7 @@ def get_basis_matrix_standardized(
             laplacian_pyramid(
                 width=w,
                 levels=p['levels'],
+                step=p['step'],
                 fwhm=p['fwhm']
             )
         )

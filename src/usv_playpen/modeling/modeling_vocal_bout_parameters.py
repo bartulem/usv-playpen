@@ -444,7 +444,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             print(f"{i:3}. {feat:<45} | {feat_n:<10} | {feat_sess:<10} | {status}{guard}")
 
         print("-" * 105)
-        print(f"PROJECT-WIDE REGRESSION TALLY:")
+        print("PROJECT-WIDE REGRESSION TALLY:")
         print(f"  > Total Unique Covariates:      {total_covariates}")
         print(f"  > Total Sessions Included:      {unique_sess_count}")
         print(f"  > Total Bouts Across Project:   {total_n}")
@@ -453,7 +453,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         if not alignment_passed:
             print(f"  [!] ALERT: Dimensional or Grouping mismatch in: {mismatched_features}")
-            print(f"      (This will cause the model to misalign behavioral predictors with USV targets!)")
+            print("      (This will cause the model to misalign behavioral predictors with USV targets!)")
         print("=" * 105 + "\n")
 
         save_dir = Path(self.modeling_settings['io']['save_directory'])

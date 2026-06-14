@@ -1,7 +1,7 @@
 """
 @author: bartulem
-Cluster-geometry helpers for downstream saliency / region-of-interest
-analyses on USV manifold embeddings.
+Acoustic-manifold geometry helpers for downstream saliency /
+region-of-interest analyses on USV manifold embeddings.
 
 Three concerns live here, and only here, so the same logic is shared
 between the CNN saliency phase, the linear-univariate post-hocs, and any

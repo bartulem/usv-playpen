@@ -48,7 +48,6 @@ import matplotlib.patches as patches
 import matplotlib.mlab as mlab
 import matplotlib.transforms as mtransforms
 from matplotlib.colors import ListedColormap
-from matplotlib.path import Path
 from matplotlib.patches import Patch, Rectangle, ConnectionPatch
 from matplotlib.lines import Line2D
 import numpy as np
@@ -71,8 +70,8 @@ from scipy.ndimage import gaussian_filter1d
 from .auxiliary_plot_functions import create_colormap
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
-from ..os_utils import configure_path
-from ..plot_style import apply_plot_style
+from ..os_utils import configure_path, find_base_path
+from .plot_style import apply_plot_style
 
 
 apply_plot_style()
@@ -88,26 +87,25 @@ with (_PKG_ROOT / "_parameter_settings" / "visualizations_settings.json").open()
     _VIZ_SETTINGS = json.load(_vf)
 
 # Global color definitions
-male_color = _VIZ_SETTINGS.get("male_colors", ["#9AC0CD"])[0]
-female_color = _VIZ_SETTINGS.get("female_colors", ["#FF6347"])[0]
-DYADIC_COLOR = _VIZ_SETTINGS.get("social_colors", ["#5A6470"])[0]
+male_color = _VIZ_SETTINGS["male_colors"][0]
+female_color = _VIZ_SETTINGS["female_colors"][0]
+DYADIC_COLOR = _VIZ_SETTINGS["social_colors"][0]
 NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
+MISSING_AUDIO_COLOR = "#FF0000"     # "Audio Missing" placeholder title (was 'red')
+REFERENCE_LINE_COLOR = "#808080"    # dashed zero / chance reference lines (was 'gray')
 
 # Timescale-audit palette overrides: zero / axis lines stay black, so
 # social/dyadic gets the canonical social colour (distinct from the
-# axis lines and from the male/female sex colors). SEI features are
-# coloured as a pastel version of the observer's sex (= the predictor /
-# partner), obtained by blending the observer's hex colour with white.
+# axis lines and from the male/female sex colors).
 TIMESCALE_SOCIAL_COLOR = DYADIC_COLOR
 TIMESCALE_AXIS_COLOR = "#000000"   # zero / spine reference lines (was 'black')
 TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'gray')
-_PASTEL_BLEND_WITH_WHITE = 0.55
 
 # Global default colormap — shared with `figures.cmap` so the
 # multinomial / continuous heatmap defaults match the rest of the repo.
-_GLOBAL_CMAP = _VIZ_SETTINGS.get("figures", {}).get("cmap", "inferno")
+_GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
 
 # Initialize custom colormaps (for males and females)
 female_cmap = create_colormap(input_parameter_dict={
@@ -198,7 +196,10 @@ def plot_vocalization_embedding_space(
     y_range : tuple, optional
         The (min, max) boundaries for the target UMAP Y-axis region. Use None for open bounds.
     target_subdirs : list of str, optional
-        Directories to search for the metadata CSV files and .mmap audio files.
+        Directories (relative to the host's falkner CUP-share mount root,
+        resolved per-OS from ``behavioral_experiments_settings.toml`` via
+        ``os_utils.find_base_path``) to search for the metadata CSV files and
+        .mmap audio files.
     csv_category_column_id : str, default 'usv_supercategory'
         The specific column in the CSV file to use for category labels.
     grid_res : int, default 600
@@ -236,6 +237,14 @@ def plot_vocalization_embedding_space(
     if target_subdirs is None:
         target_subdirs = ["Liza/data", "Jinrun/Data", "Bartul/Data"]
 
+    # Resolve the falkner CUP-share mount root for the host OS from the
+    # single source of truth (`behavioral_experiments_settings.toml`) rather
+    # than hardcoding `/mnt/falkner`; this is `/Volumes/falkner` on macOS,
+    # `/mnt/falkner` on Linux, `F:\` on Windows. `None` on an unrecognised
+    # platform, in which case no session directory can be discovered and the
+    # function falls through to the "No valid coordinates" early return.
+    base_root = find_base_path()
+
     all_coordinates = []
     all_categories = []
     candidate_usvs = []
@@ -257,7 +266,9 @@ def plot_vocalization_embedding_space(
             usv_csv_file = None
 
             for subdir in target_subdirs:
-                current_search_root = pathlib.Path('/mnt/falkner') / subdir
+                if base_root is None:
+                    break
+                current_search_root = pathlib.Path(base_root) / subdir
                 if current_search_root.exists():
                     for path in current_search_root.glob(f"*{search_term}"):
                         if path.is_dir():
@@ -464,7 +475,7 @@ def plot_vocalization_embedding_space(
 
             audio_loc = mmap_cache[sess]
             if audio_loc is None or not audio_loc.exists():
-                ax.set_title("Audio Missing", fontsize=8, color='red')
+                ax.set_title("Audio Missing", fontsize=8, color=MISSING_AUDIO_COLOR)
                 ax.axis('off')
                 continue
 
@@ -542,7 +553,6 @@ def plot_vocalization_embedding_space(
 
         ax_umap.add_artist(con1)
 
-    import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning, message="This figure includes Axes that are not compatible with tight_layout")
         plt.tight_layout()
@@ -561,12 +571,6 @@ def plot_vocalization_embedding_space(
         print(f"Plot saved to: {save_path}")
 
     plt.show()
-
-
-def gauss(mu=0, sigma=1) -> float:
-    """Returns a single random number from Gaussian distribution for plotting jitter."""
-    x = np.random.normal(mu, sigma, 1)
-    return x[0]
 
 
 def plot_feature_ranking(
@@ -1210,7 +1214,7 @@ def plot_significant_filters_grid(
         ax.plot(time_axis_sec, data['mean'], color=data['color'], lw=1.5, alpha=1.0)
         ax.fill_between(time_axis_sec, data['lower'], data['upper'], color=data['color'], alpha=0.3, lw=0)
 
-        ax.axhline(0, color='gray', linestyle='--', lw=0.7)
+        ax.axhline(0, color=REFERENCE_LINE_COLOR, linestyle='--', lw=0.7)
         ax.set_title(f"{data['name']}\n{metric.upper()}: {data['metric_val']:.2f}", fontsize=8, color='#000000')
 
         tick_locs = [-filter_history_sec, -filter_history_sec / 2, 0.0]
@@ -1418,7 +1422,7 @@ def plot_raw_feature_difference(
     data_min = np.nanpercentile(np.concatenate([sorted_target, sorted_other]), 1)
     data_max = np.nanpercentile(np.concatenate([sorted_target, sorted_other]), 99)
 
-    im1 = axes_heat[0].imshow(
+    axes_heat[0].imshow(
         sorted_target, aspect='auto', cmap='binary',
         vmin=data_min, vmax=data_max,
         interpolation="gaussian",
@@ -1574,7 +1578,7 @@ def plot_model_selection_results(
     if len(selection_steps) > 1:
         last_data = selection_steps[-1]
         if last_data.get('selected_feature') is None:
-            print(f"Last step was a rejection. Excluding it from trajectory plots.")
+            print("Last step was a rejection. Excluding it from trajectory plots.")
             valid_steps_for_plot = selection_steps[:-1]
 
     # --- 2. Process Trajectory Data ---
@@ -2308,7 +2312,7 @@ def plot_univariate_multinomial_performance(
 
         if 'score' in key.lower() or 'accuracy' in label.lower():
             n_classes = len(modeling_data[valid_features[0]]['actual']['classes'])
-            ax.axhline(1 / n_classes, ls='--', color='gray', alpha=0.5, label='Chance', zorder=0)
+            ax.axhline(1 / n_classes, ls='--', color=REFERENCE_LINE_COLOR, alpha=0.5, label='Chance', zorder=0)
 
     # Define Legend Elements (Fixes NameError)
     legend_elements = [
@@ -2556,7 +2560,7 @@ def plot_univariate_multinomial_filters_grid(
 
         max_amp = np.max(np.abs(weights))
 
-        im = ax.imshow(weights, aspect='auto', cmap=cmap, vmin=-max_amp, vmax=max_amp, interpolation='nearest')
+        ax.imshow(weights, aspect='auto', cmap=cmap, vmin=-max_amp, vmax=max_amp, interpolation='nearest')
 
         n_time_bins = weights.shape[1]
         tick_times = np.arange(-int(history_window_sec), 1)
@@ -3517,9 +3521,7 @@ def plot_multinomial_selection_diagnosis(
     else:
         condition = 'unknown'
 
-    # =========================================================== #
     # Figure 1 -- pairwise binary AUC, lower triangle + diagonal
-    # =========================================================== #
     fig_auc, ax = plt.subplots(figsize=(4.0, 3.6), dpi=300)
     fig_auc.patch.set_facecolor(BG_COLOR)
     ax.set_facecolor(BG_COLOR)
@@ -3576,9 +3578,7 @@ def plot_multinomial_selection_diagnosis(
                         facecolor=BG_COLOR, transparent=False)
         print(f"Pairwise AUC figure saved to: {out_dir / fname}")
 
-    # =========================================================== #
     # Figure 2 -- per-class recall (log y-axis, bars touch)
-    # =========================================================== #
     fig_rec, ax_r = plt.subplots(figsize=(3.6, 2.2), dpi=300)
     fig_rec.patch.set_facecolor(BG_COLOR)
     ax_r.set_facecolor(BG_COLOR)
@@ -3739,9 +3739,6 @@ def plot_manifold_selection_trajectory(
         'euclidean_mae', 'euclidean_rmse', 'euclidean_mae_weighted',
         'euclidean_mae_raw', 'mahalanobis_mae', 'mae_x', 'mae_y',
         'mse', 'rmse',
-    }
-    higher_is_better_set = {
-        'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
     }
     is_minimization_primary = metric_primary in lower_is_better_set
     is_minimization_secondary = metric_secondary in lower_is_better_set
@@ -4525,7 +4522,6 @@ class DeepResultsVisualizer:
                              for _ in range(n_bootstraps)]
         null_dist_skill = [np.mean(np.random.choice(null_skill_dist, size=len(null_skill_dist), replace=True))
                            for _ in range(n_bootstraps)]
-        threshold_skill = np.percentile(null_dist_skill, 99.5)
 
         # 3. Plotting Physics: GridSpec for 4 subplots (2 rows of broken axes)
         fig = plt.figure(figsize=figsize, facecolor='#FFFFFF')
@@ -4559,9 +4555,7 @@ class DeepResultsVisualizer:
             right_ax.spines['left'].set_visible(False)
             right_ax.tick_params(axis='y', which='both', left=False, labelleft=False)
 
-        # ==========================================
         # PANEL A: EUCLIDEAN ERROR (TOP ROW)
-        # ==========================================
         # --- EXACTLY AS IN SUBPLOT 1 ---
         # Actual Model (ax1)
         ax1.hist(actual_dist, bins=30, histtype='step', fill=True, color=c_act, alpha=0.5, edgecolor=c_act, linewidth=1.5)
@@ -4589,9 +4583,7 @@ class DeepResultsVisualizer:
         pad_null = (max(null_dist) - min(null_dist)) * 0.5
         ax2.set_xlim(min(null_dist) - pad_null, max(null_dist) + pad_null)
 
-        # ==========================================
         # PANEL B: SKILL SCORE (BOTTOM ROW)
-        # ==========================================
         ax3.hist(null_dist_skill, bins=50, histtype='step', fill=True, color=null_color, alpha=0.5, edgecolor=null_color, linewidth=1.5, range=(-0.02, 0.02))
         ax3.axvline(np.percentile(null_dist_skill, q=99.5), color=threshold_color, linewidth=1.0, linestyle='--')
         ax3.text(0.0, 1.02, '0.00', color=null_color,
@@ -4611,9 +4603,7 @@ class DeepResultsVisualizer:
         if pad_skill == 0: pad_skill = 0.05
         ax4.set_xlim(min(actual_dist_skill) - pad_skill, max(actual_dist_skill) + pad_skill)
 
-        # ==========================================
         # SHARED DECORATION & WRAP-UP
-        # ==========================================
         # Diagonal break marks (//) for both rows
         d_x1, d_x2, d_y = 0.02, 0.01, 0.03
         kwargs = dict(color=text_color, clip_on=False, lw=1.5)
@@ -4955,7 +4945,20 @@ class DeepResultsVisualizer:
 
             # Local Prediction Density
             p_subset = Y_pred[patch['indices']]
-            kde = gaussian_kde(p_subset.T)
+            # gaussian_kde needs >= 2 points with a non-degenerate covariance;
+            # a single-point or all-identical patch raises "singular data
+            # covariance matrix" and would crash the whole figure. Skip the
+            # density overlay (the scatter + bin border are already drawn) for
+            # such degenerate patches.
+            try:
+                kde = gaussian_kde(p_subset.T)
+            except (np.linalg.LinAlgError, ValueError):
+                ax.set_title(f"n={p_subset.shape[0]} (no KDE)",
+                             fontsize=panel_fontsize, color='#000000')
+                ax.set_axis_off()
+                ax.set_xlim(global_x_min, global_x_max)
+                ax.set_ylim(global_y_min, global_y_max)
+                continue
 
             # Alignment Grid
             xi_grid, yi_grid = np.mgrid[global_x_min:global_x_max:100j, global_y_min:global_y_max:100j]
@@ -4974,8 +4977,13 @@ class DeepResultsVisualizer:
             if plot_type.lower() == 'contour':
                 z_flat_sorted = np.sort(zi_grid.flatten())[::-1]
                 z_cumsum = np.cumsum(z_flat_sorted) / np.sum(z_flat_sorted)
-                levels = sorted([z_flat_sorted[np.searchsorted(z_cumsum, p)] for p in [0.50, 0.75, 0.90]])
-                ax.contour(xi_grid, yi_grid, zi_grid, levels=levels, cmap=white_inferno, linewidths=1.2, zorder=5)
+                # De-duplicate so the levels are strictly increasing: a
+                # degenerate (near-flat) density maps several percentiles to the
+                # same z value, which makes `ax.contour` raise "Contour levels
+                # must be increasing".
+                levels = sorted({z_flat_sorted[np.searchsorted(z_cumsum, p)] for p in [0.50, 0.75, 0.90]})
+                if levels:
+                    ax.contour(xi_grid, yi_grid, zi_grid, levels=levels, cmap=white_inferno, linewidths=1.2, zorder=5)
 
             elif plot_type.lower() == 'density':
                 zi_norm = (zi_grid - zi_grid.min()) / (zi_grid.max() - zi_grid.min() + 1e-10)
@@ -5151,17 +5159,31 @@ class DeepResultsVisualizer:
             p_subset = Y_pred[mask]
             tiled = np.vstack([p_subset + np.array(off, dtype=float)
                                for off in tile_offsets])
-            kde = gaussian_kde(tiled.T)
+            # Identical / collinear predictions give a singular covariance and
+            # crash gaussian_kde; skip the density overlay for such patches
+            # (tiling a single point 9x is still rank-deficient, so the
+            # n_in >= min_samples guard above does not catch this case).
+            try:
+                kde = gaussian_kde(tiled.T)
+            except (np.linalg.LinAlgError, ValueError):
+                ax.set_title(f"n={n_in} (no KDE)", fontsize=panel_fontsize - 2)
+                ax.set_xlim(0, period); ax.set_ylim(0, period)
+                ax.set_aspect('equal')
+                ax.set_xticks([]); ax.set_yticks([])
+                continue
             zi = kde(grid_pts).reshape(xi.shape)
             zi_norm = (zi - zi.min()) / (zi.max() - zi.min() + 1e-12)
 
             if plot_type.lower() == 'contour':
                 z_flat_sorted = np.sort(zi.flatten())[::-1]
                 z_cumsum = np.cumsum(z_flat_sorted) / np.sum(z_flat_sorted)
-                levels = sorted([z_flat_sorted[np.searchsorted(z_cumsum, p)]
-                                 for p in [0.50, 0.75, 0.90]])
-                ax.contour(xi, yi, zi, levels=levels, cmap=white_inferno,
-                           linewidths=1.0, zorder=5)
+                # De-duplicate so levels are strictly increasing (see the
+                # euclidean precision grid for the rationale).
+                levels = sorted({z_flat_sorted[np.searchsorted(z_cumsum, p)]
+                                 for p in [0.50, 0.75, 0.90]})
+                if levels:
+                    ax.contour(xi, yi, zi, levels=levels, cmap=white_inferno,
+                               linewidths=1.0, zorder=5)
             else:
                 ax.imshow(zi_norm.T, cmap=white_inferno,
                           interpolation='bilinear', origin='lower',
@@ -5722,28 +5744,8 @@ class DeepResultsVisualizer:
         plt.show()
 
 
-# ---------------------------------------------------------------------------
 # Predictor diagnostics: plotting for the audits in
 # `modeling.modeling_collinearity_audit`.
-# ---------------------------------------------------------------------------
-
-def _pastel_hex(hex_color: str, blend: float = _PASTEL_BLEND_WITH_WHITE) -> str:
-    """
-    Return a pastel version of a `#RRGGBB` colour by blending with white.
-
-    `blend = 0.0` returns the input unchanged; `blend = 1.0` returns pure
-    white; `blend = 0.55` (the default) is a comfortably washed-out
-    pastel that keeps the hue identifiable while reducing saturation.
-    """
-
-    r = int(hex_color[1:3], 16)
-    g = int(hex_color[3:5], 16)
-    b = int(hex_color[5:7], 16)
-    r2 = int(round(r * (1.0 - blend) + 255 * blend))
-    g2 = int(round(g * (1.0 - blend) + 255 * blend))
-    b2 = int(round(b * (1.0 - blend) + 255 * blend))
-    return f"#{r2:02X}{g2:02X}{b2:02X}"
-
 
 def _classify_predictor_feature(fname: str) -> int:
     """
@@ -6993,19 +6995,18 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         if 'signal_min_run_seconds' in payload else 0.2
     source = payload['source_pickle']
 
-    # ACF circular-shift null (per-feature, per-lag): mean curve and
-    # 0.5/99.5 percentile band, computed by random circular shifts in
-    # `[shuffle_min_seconds, shuffle_max_seconds]` per session.
-    acf_null_mean = np.asarray(payload['acf_null_mean'])
+    # ACF circular-shift null (per-feature, per-lag): 0.5/99.5 percentile
+    # band, computed by random circular shifts in
+    # `[shuffle_min_seconds, shuffle_max_seconds]` per session. Only the band
+    # is drawn (no null-mean curve), so the mean is not loaded here.
     acf_null_lo = np.asarray(payload['acf_null_p0_5'])
     acf_null_hi = np.asarray(payload['acf_null_p99_5'])
 
     # Per-session SEM around the actual cross-correlation curve.
     rho_signal_sem = np.asarray(payload['rho_signal_per_session_sem'])
 
-    # Cross-correlation circular-shift null (per-feature, per-lag):
-    # mean curve and 0.5/99.5 percentile band.
-    rho_signal_null_mean = np.asarray(payload['rho_signal_null_mean'])
+    # Cross-correlation circular-shift null (per-feature, per-lag): 0.5/99.5
+    # percentile band only (no null-mean curve is drawn, so it is not loaded).
     rho_signal_null_lo = np.asarray(payload['rho_signal_null_p0_5'])
     rho_signal_null_hi = np.asarray(payload['rho_signal_null_p99_5'])
 

@@ -5,33 +5,6 @@ Pools data from different sessions and normalizes them together.
 
 import polars as pls
 
-def cap_series_values_to_nan(series: pls.Series,
-                             theoretical_min: float,
-                             theoretical_max: float) -> pls.Series:
-    """
-    Replaces values in a Polars Series that are outside theoretical min/max
-    bounds with NaN, returning a Series.
-
-    Args:
-        series: The input Polars Series.
-        theoretical_min: The minimum allowed value.
-        theoretical_max: The maximum allowed value.
-
-    Returns:
-        A new Polars Series with values outside bounds replaced by NaN.
-    """
-
-    temp_df = series.to_frame(name=series.name)
-
-    capped_df = temp_df.with_columns(
-        pls.when((pls.col(series.name) >= theoretical_min) & (pls.col(series.name) <= theoretical_max))
-        .then(pls.col(series.name))
-        .otherwise(pls.lit(None))
-        .alias(series.name)
-    )
-
-    return capped_df[series.name]
-
 
 def zscore_different_sessions_together(data_dict: dict,
                                        feature_lst: list,

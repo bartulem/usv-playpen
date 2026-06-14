@@ -58,6 +58,7 @@ from .load_input_files import load_behavioral_feature_data, find_usv_categories
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
+    RESERVED_METADATA_KEYS,
 )
 from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
@@ -374,7 +375,6 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   smoothness_derivative_order: int,
                                   huber_delta: float,
                                   learning_rate: float,
-                                  max_iter: int,
                                   inner_max_iter: int,
                                   tol: float,
                                   random_state: int,
@@ -447,16 +447,12 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         points per cluster as the outer run.
     huber_delta, learning_rate, tol, random_state, verbose :
         Passed through to `regressor_cls` on every inner fit.
-    max_iter : int
-        Iteration cap for the *outer* fit (unused here — kept in the
-        signature so callers can share a single settings block across
-        both the outer and inner paths).
     inner_max_iter : int
         Iteration cap used for every inner-CV fit. Typically smaller
-        than `max_iter` (e.g., 2500 vs. 10000) — the inner CV only
-        needs a usable score to rank regularisation pairs, not the
-        final fully-converged weights. Reduces tuning wall time by
-        `max_iter / inner_max_iter` per pair per fold.
+        than the outer fit's iteration cap (e.g., 2500 vs. 10000) — the
+        inner CV only needs a usable score to rank regularisation pairs,
+        not the final fully-converged weights. Reduces tuning wall time
+        relative to running every inner fit to the outer iteration cap.
     regressor_cls : callable
         The estimator class (injected so the function is unit-testable
         without importing the JAX estimator at module scope).
@@ -1104,7 +1100,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             total_samples = len(all_Y)
 
             print("\n" + "=" * 60)
-            print(f"CONTINUOUS PROBABILISTIC EXTRACTION SUMMARY")
+            print("CONTINUOUS PROBABILISTIC EXTRACTION SUMMARY")
             print("=" * 60)
             print(f"Total Unique Features:  {n_feats}")
             print(f"Total Valid Sessions:   {n_sessions}")
@@ -1276,8 +1272,7 @@ class ContinuousModelRunner:
         # filter, the underscore-prefixed reserved keys
         # (`_input_metadata` etc.) would be treated as feature names and
         # the per-session array indexing below would raise.
-        from .modeling_metadata import RESERVED_METADATA_KEYS as _RES_KEYS
-        feature_keys = [k for k in raw_data.keys() if k not in _RES_KEYS]
+        feature_keys = [k for k in raw_data.keys() if k not in RESERVED_METADATA_KEYS]
 
         if feature_filter is None:
             sorted_features = sorted(feature_keys)
@@ -1729,7 +1724,6 @@ class ContinuousModelRunner:
                             smoothness_derivative_order=smoothness_order,
                             huber_delta=huber_delta,
                             learning_rate=lr,
-                            max_iter=max_iter,
                             inner_max_iter=inner_max_iter,
                             tol=tol,
                             random_state=random_seed + fold_idx,
@@ -1820,7 +1814,7 @@ class ContinuousModelRunner:
             'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
         }
 
-        print(f"\n" + "=" * 90)
+        print("\n" + "=" * 90)
         print(f"FINAL STATISTICAL SUMMARY: {feat_name}")
         print("=" * 90)
 

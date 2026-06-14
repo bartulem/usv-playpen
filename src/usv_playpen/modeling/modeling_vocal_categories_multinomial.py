@@ -36,6 +36,7 @@ from .load_input_files import load_behavioral_feature_data, find_usv_categories
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
+    RESERVED_METADATA_KEYS,
 )
 from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
@@ -349,7 +350,6 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
                                      focal_gamma: float,
                                      uniform_class_weights: bool,
                                      learning_rate: float,
-                                     max_iter: int,
                                      inner_max_iter: int,
                                      tol: float,
                                      random_state: int,
@@ -395,8 +395,8 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
     Parameters mirror the manifold tuner; the `regressor_cls` injection
     keeps the function unit-testable without importing JAX at module
     scope. `inner_max_iter` caps iterations on every inner fit — kept
-    smaller than the outer `max_iter` so the tuner produces usable
-    ranking scores without paying full-convergence wall time per pair.
+    smaller than the outer-fit iteration budget so the tuner produces
+    usable ranking scores without paying full-convergence wall time per pair.
 
     Returns
     -------
@@ -710,7 +710,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         )
 
         # extract multinomial targets (integer USV category labels) across sessions
-        print(f"Extracting multinomial targets (all USV categories)...")
+        print("Extracting multinomial targets (all USV categories)...")
         multinomial_targets = {}
 
         for sess_id in list(beh_data_dict.keys()):
@@ -978,7 +978,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             unique_cats, cat_counts = np.unique(all_y, return_counts=True)
 
             print("\n" + "=" * 60)
-            print(f"MULTINOMIAL EXTRACTION SUMMARY")
+            print("MULTINOMIAL EXTRACTION SUMMARY")
             print("=" * 60)
             print(f"Total Unique Features:  {n_feats}")
             print(f"Total Valid Sessions:   {n_sessions}")
@@ -1166,8 +1166,7 @@ class MultinomialModelRunner:
         # filter, the underscore-prefixed reserved keys (`_input_metadata`
         # etc.) would be treated as feature names and the per-session
         # array indexing below would raise.
-        from .modeling_metadata import RESERVED_METADATA_KEYS as _RES_KEYS
-        feature_keys = [k for k in raw_data.keys() if k not in _RES_KEYS]
+        feature_keys = [k for k in raw_data.keys() if k not in RESERVED_METADATA_KEYS]
 
         if feature_filter is None:
             sorted_features = sorted(feature_keys)
@@ -1388,7 +1387,7 @@ class MultinomialModelRunner:
         null_rng = np.random.default_rng(base_seed + 9_973)
 
         for strategy in strategies:
-            print(f"\n" + "=" * 60)
+            print("\n" + "=" * 60)
             print(f"FEATURE: {feat_name} | STRATEGY: {strategy.upper()}")
             print("=" * 60)
 
@@ -1525,7 +1524,6 @@ class MultinomialModelRunner:
                             focal_gamma=effective_focal_gamma,
                             uniform_class_weights=use_uniform_weights,
                             learning_rate=hp['learning_rate'],
-                            max_iter=hp['max_iter'],
                             inner_max_iter=inner_max_iter,
                             tol=hp['tol'],
                             random_state=hp['random_state'] + fold,

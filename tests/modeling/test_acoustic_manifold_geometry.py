@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from usv_playpen.modeling.cluster_geometry import (
+from usv_playpen.modeling.acoustic_manifold_geometry import (
     derive_cluster_centers_empirically,
     derive_cluster_geometry,
     usv_in_circle,
@@ -190,7 +190,7 @@ class TestDeriveClusterCenters:
         rng = np.random.default_rng(0)
         Y = rng.normal(loc=[0.5, 0.5], scale=0.05, size=(200, 2))
         labels = np.full(200, 1)
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match='manifold_metric must be one of'):
             derive_cluster_centers_empirically(Y, labels, metric='spherical')
 
 

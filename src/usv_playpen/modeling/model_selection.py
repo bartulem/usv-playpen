@@ -1181,7 +1181,7 @@ def vocal_category_model_selection(
 
     Engine Flexibility:
     -------------------
-    Reads the user-defined `model_type` from the JSON settings to dynamically build models:
+    Reads the user-defined `model_engine` from the JSON settings to dynamically build models:
     - 'sklearn': Utilizes `LogisticRegressionCV` combined with linear basis projection
                  (e.g., raised_cosines, b-splines) to rapidly isolate temporal predictors.
     - 'pygam': Utilizes `LogisticGAM` with unrolled tensor product splines to capture
@@ -1332,7 +1332,7 @@ def vocal_category_model_selection(
     history_frames = int(np.floor(camera_rate * filter_history_sec))
 
     model_ops = settings['model_params']
-    model_type = model_ops['model_type']
+    model_type = model_ops['model_engine']
     n_splits = model_ops['split_num']
     test_prop = model_ops['test_proportion']
     split_strategy = model_ops['split_strategy']
@@ -1375,9 +1375,9 @@ def vocal_category_model_selection(
             'tol': float(pygam_params['tol_val']),
             'lam': pygam_params['lam_penalty']
         }
-        print(f"Engine: PyGAM LogisticGAM with Tensor Splines.")
+        print("Engine: PyGAM LogisticGAM with Tensor Splines.")
     else:
-        raise ValueError("model_type in settings must be either 'sklearn' or 'pygam'.")
+        raise ValueError("model_engine in settings must be either 'sklearn' or 'pygam'.")
 
     print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Strategy: {split_strategy}")
 
@@ -1948,7 +1948,7 @@ def bout_parameter_model_selection(
 
     Engine Flexibility:
     -------------------
-    Reads `model_type` from JSON settings to dynamically construct models:
+    Reads `model_engine` from JSON settings to dynamically construct models:
     - 'sklearn': Utilizes `RidgeCV` combined with linear basis projection. To satisfy
                  normality and homoscedasticity assumptions, the target variable (y)
                  is log-transformed prior to fitting, and predictions are back-transformed.
@@ -2121,7 +2121,7 @@ def bout_parameter_model_selection(
 
     # Strict Dictionary Lookup
     model_ops = settings['model_params']
-    model_type = model_ops['model_type']
+    model_type = model_ops['model_engine']
     split_strategy = model_ops['split_strategy']
     n_splits = model_ops['split_num']
     test_prop = model_ops['test_proportion']
@@ -2166,7 +2166,7 @@ def bout_parameter_model_selection(
             'lam': pygam_params['lam_penalty']
         }
     else:
-        raise ValueError("model_type in settings must be either 'sklearn' or 'pygam'.")
+        raise ValueError("model_engine in settings must be either 'sklearn' or 'pygam'.")
 
     # 3. Target Quantile Binning for Stratification
     n_bins = max(2, min(10, len(y_global) // n_splits))
@@ -2980,7 +2980,6 @@ def multinomial_vocal_category_model_selection(
             focal_gamma=model_focal_gamma,
             uniform_class_weights=model_uniform_weights,
             learning_rate=hp['learning_rate'],
-            max_iter=hp['max_iter'],
             inner_max_iter=inner_max_iter_mn,
             tol=hp['tol'],
             random_state=hp['random_state'] + fold_idx_,
@@ -3369,10 +3368,10 @@ def multinomial_vocal_category_model_selection(
                     pickle.dump(_wrap_step(step_1_res), f)
                 step_counter = 2
             else:
-                print(f"  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
+                print("  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
         else:
             print(
-                f"  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
+                "  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
             )
 
     # Main Forward Selection Loop
@@ -4271,7 +4270,6 @@ def continuous_vocal_manifold_model_selection(
             smoothness_derivative_order=smoothness_order,
             huber_delta=hp['huber_delta'],
             learning_rate=hp['learning_rate'],
-            max_iter=hp['max_iter'],
             inner_max_iter=inner_max_iter,
             tol=hp['tol'],
             random_state=hp['random_state'] + fold_idx_,
@@ -4383,10 +4381,10 @@ def continuous_vocal_manifold_model_selection(
                     pickle.dump(_wrap_step(step_1_res), f)
                 step_counter = 2
             else:
-                print(f"  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
+                print("  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
         else:
             print(
-                f"  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
+                "  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
             )
 
     # Forward stepwise selection loop

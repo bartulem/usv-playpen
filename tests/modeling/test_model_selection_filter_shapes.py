@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 
-def _make_fake_gam_class(history_frames: int, n_features: int):
+def _make_fake_gam_class(n_features: int):
     """
     Build a fake ``LogisticGAM`` class whose ``.fit(...).predict_mu(grid)``
     returns a deterministic function of the grid columns so the
@@ -59,7 +59,7 @@ def test_compute_filter_shapes_per_fold_returns_one_dict_per_fold(mocker):
     feature_names = [f"feat_{i}" for i in range(n_features)]
     n_folds = 4
 
-    fake_gam_cls = _make_fake_gam_class(history_frames, n_features)
+    fake_gam_cls = _make_fake_gam_class(n_features)
     mocker.patch(
         'usv_playpen.modeling.model_selection.LogisticGAM',
         fake_gam_cls,

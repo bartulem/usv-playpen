@@ -661,103 +661,7 @@ def _binary_event_trace(event_times: np.ndarray, n_frames: int, fps: float) -> n
     return trace
 
 
-def _binary_vocalizing_trace(starts: np.ndarray,
-                             stops: np.ndarray,
-                             n_frames: int,
-                             fps: float) -> np.ndarray:
-    """
-    Renders per-USV start/stop intervals into a binary "is-vocalizing"
-    trace at the camera frame rate. Every frame falling inside a USV
-    interval `[start, stop)` is set to `1.0`; all other frames are
-    `0.0`. Sub-frame USVs (where `stop` and `start` round to the same
-    integer frame) still produce one `1.0` so the USV is not silently
-    dropped.
-
-    Parameters
-    ----------
-    starts : np.ndarray
-        Per-USV start times in seconds.
-    stops : np.ndarray
-        Per-USV stop times in seconds. Must be the same length as
-        `starts`, with `stops[i] >= starts[i]`.
-    n_frames : int
-        Length of the output trace (in frames).
-    fps : float
-        Camera sampling rate.
-
-    Returns
-    -------
-    np.ndarray
-        `float32` binary trace of shape `(n_frames,)`. `1.0` whenever a
-        USV is occurring, `0.0` during silence.
-    """
-
-    trace = np.zeros(n_frames, dtype=np.float32)
-    if starts is None or stops is None or len(starts) == 0:
-        return trace
-    starts = np.asarray(starts, dtype=np.float64)
-    stops = np.asarray(stops, dtype=np.float64)
-    s_idx = np.clip(np.floor(starts * fps).astype(int), 0, n_frames)
-    e_idx = np.clip(np.ceil(stops * fps).astype(int), 0, n_frames)
-    for s, e in zip(s_idx, e_idx):
-        if e > s:
-            trace[s:e] = 1.0
-        elif s < n_frames:
-            # Sub-frame USV: at minimum mark one frame so the event
-            # is not silently lost.
-            trace[s] = 1.0
-    return trace
-
-
-def _spearman_at_lag(X_ranks: np.ndarray,
-                     Y_ranks: np.ndarray,
-                     lag: int) -> np.ndarray:
-    """
-    Computes Spearman ρ between every column of `X_ranks` shifted by
-    `lag` frames and `Y_ranks`, in a single vectorised pass.
-
-    Operates on rank-transformed arrays so the per-call cost reduces to
-    a centred dot product divided by the norms — vastly faster than
-    calling `scipy.stats.spearmanr` once per (feature, lag) pair, which
-    re-ranks both arrays every time.
-
-    Parameters
-    ----------
-    X_ranks : np.ndarray
-        Rank-transformed feature matrix of shape `(n_frames, n_features)`.
-    Y_ranks : np.ndarray
-        Rank-transformed event indicator of shape `(n_frames,)`.
-    lag : int
-        Number of frames to shift `X` *backward* relative to `Y`. The
-        comparison aligns `X[:-lag]` with `Y[lag:]`, so a positive lag
-        measures `corr(X(t-lag), Y(t))`.
-
-    Returns
-    -------
-    np.ndarray
-        Per-feature Spearman ρ at the supplied lag, shape `(n_features,)`.
-    """
-
-    if lag == 0:
-        Xs = X_ranks
-        Ys = Y_ranks
-    else:
-        Xs = X_ranks[:-lag]
-        Ys = Y_ranks[lag:]
-
-    Xs = Xs - Xs.mean(axis=0, keepdims=True)
-    Ys = Ys - Ys.mean()
-    denom_x = np.sqrt(np.sum(Xs ** 2, axis=0))
-    denom_y = float(np.sqrt(np.sum(Ys ** 2)))
-    denom = denom_x * denom_y
-    rho = np.zeros(Xs.shape[1], dtype=np.float64)
-    valid = denom > 0
-    rho[valid] = (Xs[:, valid].T @ Ys) / denom[valid]
-    return rho
-
-
 def audit_predictor_timescales(processed_beh_dict: dict,
-                               event_times_per_session: dict,
                                mouse_names_dict: dict,
                                target_idx: int,
                                predictor_idx: int,
@@ -810,10 +714,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     frame index of each onset (one `1.0` per event, no within-event
     duty cycle).
 
-    The previous "is-vocalizing" definition (`1` throughout every
-    `[start, stop)`) is preserved as `_binary_vocalizing_trace` for
-    is-occurring-now analyses but is not currently wired in. The
-    pooled `positive_events ∪ negative_events` definition was
+    The pooled `positive_events ∪ negative_events` definition was
     explicitly removed because it mixed bout-start frames with
     silence-sample frames into a single `1.0` marker, which is not
     a valid vocal indicator.
@@ -869,12 +770,6 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     ----------
     processed_beh_dict : dict
         Mapping `session_id -> polars.DataFrame` after z-scoring.
-    event_times_per_session : dict
-        Mapping `session_id -> np.ndarray`. Only used here for the
-        `_input_metadata` provenance (so the artifact records the same
-        event-keys the collinearity audit ran against). Not consulted
-        for `Y` construction or for IBI percentiles, which both go
-        through `event_intervals_per_session` exclusively.
     mouse_names_dict : dict
         Mapping `session_id -> list[mouse_name]`.
     target_idx, predictor_idx : int
@@ -988,9 +883,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     # All sessions are recorded at the same fps in this project; pull the
     # canonical value and warn loudly if heterogeneity ever appears. The
     # reported `lags_seconds` axis uses a single fps; `_per_session_acf`
-    # and `_binary_vocalizing_trace` still use each session's own fps
-    # internally, but a mixed-fps run would render the artifact's
-    # `lags_seconds` axis ambiguous. Treat as a known limitation.
+    # still uses each session's own fps internally, but a mixed-fps run
+    # would render the artifact's `lags_seconds` axis ambiguous. Treat
+    # as a known limitation.
     fps_values = {camera_fps_dict[s] for s in session_blocks if s in camera_fps_dict}
     fps = float(next(iter(fps_values)))
     if len(fps_values) > 1:
@@ -1458,15 +1353,23 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     )
     signal_abs = np.abs(rho_for_peak)
     if signal_abs.size and np.any(np.isfinite(signal_abs)):
-        # Use nan-aware argmax / max so all-NaN rows don't crash the headline.
+        # A feature held constant across *every* session has an all-NaN signal
+        # row; `np.nanargmax(..., axis=1)` raises `ValueError: All-NaN slice`
+        # on such a row even when other features are fine, which would crash
+        # the whole audit. Fill non-finite entries with -inf so the per-row
+        # argmax never sees an all-NaN slice (those rows resolve to lag-index 0
+        # and carry an all-NaN `peak_abs`, which the nan-aware global argmax
+        # below skips). `np.nanmax` on an all-NaN row only warns (not raises),
+        # so keep the RuntimeWarning suppression for it.
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
-            peak_lag_idx_per_feature = np.nanargmax(signal_abs, axis=1)
+            safe_signal_abs = np.where(np.isfinite(signal_abs), signal_abs, -np.inf)
+            peak_lag_idx_per_feature = np.argmax(safe_signal_abs, axis=1)
             peak_abs_per_feature = np.nanmax(signal_abs, axis=1)
         peak_signed_per_feature = np.array([
             rho_for_peak[i, peak_lag_idx_per_feature[i]] for i in range(n_features)
         ], dtype=np.float32)
-        global_max_idx = int(np.argmax(peak_abs_per_feature))
+        global_max_idx = int(np.nanargmax(peak_abs_per_feature))
         peak_feat = feature_names[global_max_idx]
         peak_rho = float(peak_signed_per_feature[global_max_idx])
         peak_lag_s = float(signal_lag_grid_seconds[peak_lag_idx_per_feature[global_max_idx]])

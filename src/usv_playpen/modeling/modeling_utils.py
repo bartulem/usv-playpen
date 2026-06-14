@@ -25,43 +25,37 @@ E. `build_vocal_signal_columns`   — materialize the per-mouse vocal signal
                                      self-autocorrelation guard.
 F. `identify_empty_event_sessions`— list sessions where the target mouse has
                                      zero events for a given event key.
-G. `collect_predictor_suffixes`   — compute the union of non-numeric column
-                                     suffixes across per-session DataFrames.
-H. `zero_fill_missing_feature_columns` — fill in missing columns across
-                                     sessions with zeros so every session has
-                                     the same feature set, respecting vocal
-                                     exclusion rules for target/partner mice.
-I. `harmonize_session_columns`    — dyad-rename + project-wide existence-map
+G. `harmonize_session_columns`    — dyad-rename + project-wide existence-map
                                      USV gating + zero-fill, used by the
                                      Category/Multinomial/Continuous pipelines
                                      (returns the harmonized dict and its
                                      unified suffix list).
-J. `zscore_features_across_sessions`   — thin wrapper around
+H. `zscore_features_across_sessions`   — thin wrapper around
                                      `zscore_different_sessions_together`
                                      for API symmetry with the other helpers.
-K. `pool_session_arrays`          — concatenate two-class per-session arrays
+I. `pool_session_arrays`          — concatenate two-class per-session arrays
                                      (positive/negative) across a list of
                                      sessions, parameterized by the pair of
                                      dict keys (used by Onset and Category).
-L. `balance_two_class_arrays`     — down-sample the majority class of a
+J. `balance_two_class_arrays`     — down-sample the majority class of a
                                      two-class dataset to match the minority
                                      class size (used by Onset and Category).
-M. `unroll_history_matrix`        — reshape a `(n_samples, n_frames)` feature-
+K. `unroll_history_matrix`        — reshape a `(n_samples, n_frames)` feature-
                                      history matrix into the two-column
                                      `(n_samples * n_frames, 2)` layout
                                      consumed by the pygam tensor-product
                                      spline fits (used by Onset, Bout, and
                                      Category).
-N. `concat_two_class_with_labels` — vertically stack positive/negative feature
+L. `concat_two_class_with_labels` — vertically stack positive/negative feature
                                      arrays and emit the matching label vector
                                      (1.0 for positives, 0.0 for negatives).
                                      Shared by the Onset and Category
                                      splitters.
-O. `shuffle_train_test_arrays`    — apply independent NumPy permutations to
+M. `shuffle_train_test_arrays`    — apply independent NumPy permutations to
                                      the train and test blocks at the final
                                      yield step of a split generator. Shared
                                      by the Onset and Category splitters.
-P. `bounded_test_proportion`      — clamp `test_proportion` up to the minimum
+N. `bounded_test_proportion`      — clamp `test_proportion` up to the minimum
                                      fraction required to keep
                                      `min_test_sessions` sessions in the test
                                      fold, used when the session count is
@@ -472,146 +466,6 @@ def identify_empty_event_sessions(usv_data_dict: dict,
     return sessions_to_remove
 
 
-def collect_predictor_suffixes(processed_beh_dict: dict) -> list:
-    """
-    Collects the union of non-numeric column suffixes across sessions.
-
-    The suffix is the segment after the last `.` in a column name. Purely
-    numeric suffixes are skipped (they correspond to vocal-category integer
-    labels attached elsewhere and are not generic predictor suffixes).
-
-    Parameters
-    ----------
-    processed_beh_dict : dict
-        Mapping from `session_id` to a polars DataFrame of kept features.
-
-    Returns
-    -------
-    list of str
-        Sorted list of unique feature suffixes.
-    """
-
-    suffixes = set()
-    for sess_df in processed_beh_dict.values():
-        for col in sess_df.columns:
-            suffix = col.split('.')[-1]
-            if suffix.isdigit():
-                continue
-            suffixes.add(suffix)
-    return sorted(list(suffixes))
-
-
-def zero_fill_missing_feature_columns(processed_beh_dict: dict,
-                                      mouse_names_dict: dict,
-                                      target_idx: int,
-                                      predictor_idx: int,
-                                      suffixes: list,
-                                      voc_settings: dict,
-                                      session_list_file: str = None,
-                                      skip_dyadic_suffixes: bool = True,
-                                      usv_self_exclude: tuple = ('usv_rate', 'usv_event')) -> dict:
-    """
-    Standardizes the column set across sessions by filling missing columns with zeros.
-
-    For every `(mouse, suffix)` combination that is expected based on the
-    supplied `suffixes` list but not already present in a session DataFrame,
-    this function appends a zero-filled float32 column. The result is that
-    every session DataFrame has the same egocentric column set after the
-    call.
-
-    Vocal exclusion rules
-    ---------------------
-    When the suffix starts with `usv_` (vocal signal), additional rules apply:
-
-    - For the *target* mouse, never add `usv_*` zero columns when
-      `voc_settings['usv_predictor_partner_only']` is True OR when the
-      suffix is in `usv_self_exclude` (default: `('usv_rate', 'usv_event')`).
-      These are the same self-autocorrelation guards enforced by
-      `build_vocal_signal_columns`.
-
-    - For the *partner* mouse, when a `session_list_file` is supplied and its
-      basename contains the token `'mute'`, never add `usv_*` zero columns —
-      the partner is muted in that experimental condition, so zero-filling
-      would falsely suggest vocal activity channels existed.
-
-    Dyadic suffixes
-    ---------------
-    When `skip_dyadic_suffixes` is True (default), suffixes containing a `-`
-    are skipped entirely: dyadic columns carry a `{male}-{female}` prefix,
-    not a single-mouse prefix, so the `{mouse}.{dyadic-suffix}` construction
-    would produce meaningless column names. Set this flag to False only to
-    preserve legacy behavior of callers that used to do this unconditionally.
-
-    The function mutates `processed_beh_dict` in place and also returns it.
-
-    Parameters
-    ----------
-    processed_beh_dict : dict
-        Mapping from `session_id` to a polars DataFrame. Modified in place.
-    mouse_names_dict : dict
-        Mapping from `session_id` to an ordered list of mouse track names.
-    target_idx : int
-        The target mouse slot.
-    predictor_idx : int
-        The predictor mouse slot.
-    suffixes : list of str
-        The union of predictor suffixes (typically from
-        `collect_predictor_suffixes`).
-    voc_settings : dict
-        Must contain `usv_predictor_partner_only` (bool).
-    session_list_file : str, optional
-        The path (or basename) of the session-list file; consulted only to
-        decide the partner-mute rule. Ignored when None.
-    skip_dyadic_suffixes : bool, optional
-        If True (default), suffixes containing `-` are skipped.
-    usv_self_exclude : tuple of str, optional
-        Signal keys that must NEVER receive a target-mouse zero column.
-        Default: `('usv_rate', 'usv_event')`.
-
-    Returns
-    -------
-    dict
-        The same `processed_beh_dict` (returned for call-chaining convenience).
-    """
-
-    partner_only = voc_settings['usv_predictor_partner_only']
-    mute_partner = (session_list_file is not None
-                    and 'mute' in Path(session_list_file).name)
-
-    for sess_id in processed_beh_dict:
-        df = processed_beh_dict[sess_id]
-        existing_cols = set(df.columns)
-        new_zeros = []
-
-        t_name = mouse_names_dict[sess_id][target_idx]
-        p_name = mouse_names_dict[sess_id][predictor_idx]
-
-        for pred_suffix in suffixes:
-            if skip_dyadic_suffixes and '-' in pred_suffix:
-                continue
-
-            for m_name in (t_name, p_name):
-                expected_col = f"{m_name}.{pred_suffix}"
-                if expected_col in existing_cols:
-                    continue
-
-                is_vocal = 'usv_' in pred_suffix
-                if is_vocal:
-                    if m_name == t_name:
-                        if partner_only or pred_suffix in usv_self_exclude:
-                            continue
-                    else:
-                        if mute_partner:
-                            continue
-
-                new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
-
-        if new_zeros:
-            processed_beh_dict[sess_id] = df.with_columns(new_zeros)
-
-    return processed_beh_dict
-
-
 def harmonize_session_columns(processed_beh_dict: dict,
                               mouse_names_dict: dict,
                               target_idx: int,
@@ -716,11 +570,10 @@ def harmonize_session_columns(processed_beh_dict: dict,
                     generic_key = f"{prefix}.{suffix}"
 
                     if expected_col not in existing_cols:
-                        # Use the same `'usv_'` substring test as
-                        # `zero_fill_missing_feature_columns` so the two
-                        # helpers gate vocal suffixes identically (no risk
-                        # of a non-vocal suffix that happens to contain the
-                        # bare `'usv'` substring being silently gated).
+                        # Gate vocal suffixes with the `'usv_'` substring test
+                        # (no risk of a non-vocal suffix that happens to
+                        # contain the bare `'usv'` substring being silently
+                        # gated).
                         if 'usv_' in suffix:
                             if generic_key in generic_existence_map:
                                 new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
@@ -752,7 +605,7 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         Mapping from `session_id` to a polars DataFrame of kept features.
     suffixes : list of str
         The union of feature suffixes (typically from
-        `collect_predictor_suffixes`).
+        `harmonize_session_columns`).
     feature_bounds : dict
         Optional per-feature clipping bounds (may be empty).
     abs_features : list of str, optional
@@ -1835,7 +1688,6 @@ def run_predictor_audits(processed_beh_dict: dict,
 
             audit_predictor_timescales(
                 processed_beh_dict=processed_beh_dict,
-                event_times_per_session=event_times_per_session,
                 mouse_names_dict=mouse_names_dict,
                 target_idx=target_idx,
                 predictor_idx=predictor_idx,

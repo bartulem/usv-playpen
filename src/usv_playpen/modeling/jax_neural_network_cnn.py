@@ -45,7 +45,7 @@ from datetime import datetime
 from functools import partial
 from typing import Dict, Any, List, Tuple
 
-from .cluster_geometry import (
+from .acoustic_manifold_geometry import (
     derive_cluster_centers_empirically,
     derive_cluster_geometry,
     usv_in_circle,
@@ -75,9 +75,7 @@ class HashableDict(dict):
 
         return hash(tuple(sorted((k, make_hashable(v)) for k, v in self.items())))
 
-# =============================================================================
 # PHASE 1: UTILITIES & DATA AUGMENTATION
-# =============================================================================
 
 def apply_kinematic_masking(x_seq: np.ndarray, mask_prob: float, mask_length: int,
                             rng: np.random.Generator | None = None) -> np.ndarray:
@@ -103,7 +101,9 @@ def apply_kinematic_masking(x_seq: np.ndarray, mask_prob: float, mask_length: in
         The duration (in frames) of the masked chunk.
     rng : np.random.Generator, optional
         Seeded NumPy generator used for both the mask-decision draws and the start-index
-        draws. If None, a fresh default-seeded generator is created (non-reproducible).
+        draws. If None, a deterministic generator seeded with 0 is created so standalone
+        calls are reproducible; the production training loop always threads its own live
+        seeded generator (derived from ``self.random_seed``), which advances across batches.
 
     Returns
     -------
@@ -111,7 +111,7 @@ def apply_kinematic_masking(x_seq: np.ndarray, mask_prob: float, mask_length: in
         The augmented 3D tensor with random temporal chunks zeroed out.
     """
     if rng is None:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(0)
 
     batch_size, n_feats, n_bins = x_seq.shape
     masked_batch = x_seq.copy()
@@ -217,7 +217,9 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
         Exponent of the density-scaling rule described above.
     rng : np.random.Generator, optional
         Seeded NumPy generator used for the per-cell `choice` draws. If None,
-        a fresh default-seeded generator is created (non-reproducible).
+        a deterministic generator seeded with 0 is created so standalone calls are
+        reproducible; the production training loop always threads its own live seeded
+        generator (derived from ``self.random_seed``), which advances across batches.
 
     Returns
     -------
@@ -227,7 +229,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     """
 
     if rng is None:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(0)
 
     x_bins = np.linspace(Y_vals[:, 0].min(), Y_vals[:, 0].max(), grid_size)
     y_bins = np.linspace(Y_vals[:, 1].min(), Y_vals[:, 1].max(), grid_size)
@@ -257,9 +259,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     return np.concatenate(sampled_indices)
 
 
-# =============================================================================
 # PHASE 2: PURE JAX RESNET-1D ARCHITECTURE
-# =============================================================================
 
 # Number of manifold axes the CNN regresses. The whole pipeline (Y,
 # Y_center, Y_scale, fold metrics, saliency centroids) is hard-coded
@@ -388,12 +388,12 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
 
             # Pointwise mixes parallel scales (N_kernels * in_channels -> c_out)
             pw_in_dim = c_in * len(inc_kernels)
-            params[f'b0_pw_w'] = jax.random.normal(k[10], (c_out, pw_in_dim, 1)) * jnp.sqrt(2.0 / pw_in_dim)
-            params[f'b0_pw_b'] = jnp.zeros((1, c_out, 1))
+            params['b0_pw_w'] = jax.random.normal(k[10], (c_out, pw_in_dim, 1)) * jnp.sqrt(2.0 / pw_in_dim)
+            params['b0_pw_b'] = jnp.zeros((1, c_out, 1))
 
             # Shortcut matches scale and channel expansion
-            params[f'b0_sc_w'] = jax.random.normal(k[11], (c_out, c_in, 1)) * jnp.sqrt(2.0 / c_in)
-            params[f'b0_sc_b'] = jnp.zeros((1, c_out, 1))
+            params['b0_sc_w'] = jax.random.normal(k[11], (c_out, c_in, 1)) * jnp.sqrt(2.0 / c_in)
+            params['b0_sc_b'] = jnp.zeros((1, c_out, 1))
         else:
             # === Standard Blocks (Or Block 0 if Inception is False) ===
             # 1. Depthwise Conv Weights
@@ -595,9 +595,9 @@ def cnn_forward(params: Dict[str, jax.Array],
             path_a = jnp.concatenate(branches, axis=1)
 
             path_a = jax.lax.conv_general_dilated(
-                lhs=path_a, rhs=params[f'b0_pw_w'], window_strides=(1,), padding='VALID',
+                lhs=path_a, rhs=params['b0_pw_w'], window_strides=(1,), padding='VALID',
                 dimension_numbers=dimension_numbers, feature_group_count=1
-            ) + params[f'b0_pw_b']
+            ) + params['b0_pw_b']
         else:
             # Standard single-scale Depthwise -> Pointwise
             path_a = jax.lax.conv_general_dilated(
@@ -697,9 +697,7 @@ def cnn_forward(params: Dict[str, jax.Array],
     return predictions, new_state
 
 
-# =============================================================================
 # PHASE 3: LEARNING RATE SCHEDULER
-# =============================================================================
 
 def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int) -> optax.Schedule:
     """
@@ -747,9 +745,7 @@ def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int) -
     return schedule
 
 
-# =============================================================================
 # PHASE 4: THE TRAINING ENGINE
-# =============================================================================
 
 class NeuralContinuousCNNRunner:
     """
@@ -1249,9 +1245,6 @@ class NeuralContinuousCNNRunner:
         # Pull training dials directly from dict (Passivity Check: No .get())
         n_folds = self.hp['n_folds']
         batch_size = self.hp['batch_size']
-        total_epochs = self.hp['epochs']
-        grid_size = self.hp['grid_size']
-        samples_per_cell = self.hp['samples_per_cell']
         warp_range = self.hp['warp_range']
         perm_iters = self.hp['permutation_iterations']
 
@@ -1391,9 +1384,7 @@ class NeuralContinuousCNNRunner:
             preds_raw = jnp.concatenate(preds, axis=0)
             return _decode_predictions_for_eval(preds_raw)
 
-        # ---------------------------------------------------------
         # TRI-STRATEGY EXECUTION
-        # ---------------------------------------------------------
         strategies = ['null_model_free', 'null', 'actual']
 
         # Single seeded NumPy generator threaded through every stochastic path in
@@ -1434,7 +1425,7 @@ class NeuralContinuousCNNRunner:
 
             X_tr, X_te = X_seq[train_idx], X_seq[test_idx]
             Y_tr_base, Y_te = Y[train_idx], Y[test_idx]
-            w_tr, w_te = w[train_idx], w[test_idx]
+            w_tr = w[train_idx]
 
             fold_results = {'fold_idx': fold, 'test_indices': test_idx, 'Y_true': Y_te}
 
@@ -1659,9 +1650,7 @@ class NeuralContinuousCNNRunner:
         # the ~hour of CNN training that just finished.
         _checkpoint_deep_storage("post-Phase-1")
 
-        # ---------------------------------------------------------
         # PHASE 2: POST-HOC PERMUTATION FEATURE IMPORTANCE
-        # ---------------------------------------------------------
         print("\n" + "=" * 50)
         print(" PHASE 2: POST-HOC PERMUTATION FEATURE IMPORTANCE")
         print("=" * 50)
@@ -1733,9 +1722,7 @@ class NeuralContinuousCNNRunner:
         # captured the trained weights too.
         _checkpoint_deep_storage("post-Phase-2")
 
-        # ---------------------------------------------------------
         # PHASE 3: INPUT-GRADIENT SALIENCY EXTRACTION
-        # ---------------------------------------------------------
         print("\n" + "=" * 50)
         print(" PHASE 3: INPUT-GRADIENT SALIENCY EXTRACTION")
         print("=" * 50)
@@ -1858,9 +1845,7 @@ class NeuralContinuousCNNRunner:
                     'n_dual_filter_pass': int(keep.sum()),
                 }
 
-        # ---------------------------------------------------------
         # SERIALIZATION
-        # ---------------------------------------------------------
         print("\nConverting JAX device arrays to NumPy and saving Deep Storage...")
         numpy_storage = jax.device_get(deep_storage)
 
