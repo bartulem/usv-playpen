@@ -54,6 +54,16 @@ from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     _skaggs_sparsity,
     _spatial_coherence,
     _ramp_index,
+    _bin_property_indices,
+    _bin_count_for_property,
+    _gaussian_smooth_1d,
+    _gaussian_smooth_2d,
+    _generate_shuffle_offsets,
+    _circular_shift_spike_times,
+    _percentiles_block,
+    _within_usv_validity,
+    _latest_other_stop_before_anchor,
+    _anchor_bin_validity_grid,
 )
 from usv_playpen.analyses.unit_triage_aggregator import (
     _to_jsonable,
@@ -3022,3 +3032,177 @@ def test_get_back_angles_handles_multi_frame_input():
     out = get_back_angles(back)
     assert out.shape == (3, 2)
     assert np.all(np.isfinite(out))
+
+
+# compute_neuronal_tuning_curves — pure-helper edge branches -----------------
+
+
+def test_bin_property_indices_nan_and_degenerate_range():
+    vals = np.array([0.0, 5.0, 10.0, np.nan])
+    out = _bin_property_indices(vals, [0.0, 10.0], 5)
+    assert out[3] == -1                      # NaN -> sentinel
+    assert out[0] == 0 and out[2] == 4       # clipped into range
+    # all-NaN -> all sentinel
+    assert np.all(_bin_property_indices(np.array([np.nan, np.nan]), [0.0, 1.0], 4) == -1)
+    # degenerate (zero-width) range -> all sentinel
+    assert np.all(_bin_property_indices(vals, [3.0, 3.0], 5) == -1)
+
+
+def test_bin_count_for_property_mask_vs_default():
+    assert _bin_count_for_property("duration", 36) == 36
+    assert _bin_count_for_property("mask_number", 36) != 36
+
+
+def test_gaussian_smooth_1d_sigma_nonpositive_returns_input():
+    data = np.arange(5, dtype=float)
+    assert _gaussian_smooth_1d(data, sigma=0.0) is data
+
+
+def test_gaussian_smooth_1d_nan_aware():
+    data = np.array([1.0, np.nan, 3.0, 4.0])
+    out = _gaussian_smooth_1d(data, sigma=1.0, preserve_nan=True)
+    assert np.isnan(out[1])                   # NaN restored
+    assert np.all(np.isfinite(out[[0, 2, 3]]))
+    filled = _gaussian_smooth_1d(data, sigma=1.0, preserve_nan=False)
+    assert np.isfinite(filled[1])             # NaN filled by neighbours
+
+
+def test_gaussian_smooth_2d_sigma_nonpositive_and_nan():
+    arr = np.array([[1.0, np.nan], [3.0, 4.0]])
+    assert _gaussian_smooth_2d(arr, sigma=0.0) is arr
+    out = _gaussian_smooth_2d(arr, sigma=1.0, preserve_nan=True)
+    assert np.isnan(out[0, 1]) and np.isfinite(out[0, 0])
+
+
+def test_longest_run_empty_all_false_all_true_circular():
+    assert _longest_run(np.array([], dtype=bool)) == (-1, -1, 0)
+    assert _longest_run(np.array([False, False])) == (-1, -1, 0)
+    s, e, length = _longest_run(np.array([True, True, True]))
+    assert length == 3
+    # wrap: True at the two ends -> one length-2 circular run
+    s, e, length = _longest_run(np.array([True, False, False, True]), circular=True)
+    assert length == 2 and e < s
+
+
+def test_peak_z_info_all_invalid_returns_nan():
+    rate = np.array([1.0, 2.0])
+    pa, pi, ps = _peak_z_info(rate, np.array([0.0, 0.0]), np.array([0.0, 0.0]))
+    assert np.isnan(pa) and pi == -1 and np.isnan(ps)
+
+
+def test_run_analysis_circular_wrap_and_suppress():
+    rate = np.array([10.0, 1.0, 1.0, 1.0, 10.0, 10.0])
+    low = np.zeros(6)
+    high = np.full(6, 2.0)
+    mean = np.ones(6)
+    std = np.ones(6)
+    out = _run_analysis(rate, low, high, mean, std, circular=True)
+    assert out["excit"]["max_run"] == 3       # indices 4,5,0 wrap
+    # suppression side
+    rate_s = np.array([0.0, 0.0, 0.0, 5.0, 5.0, 5.0])
+    out_s = _run_analysis(rate_s, np.full(6, 1.0), np.full(6, 9.0), mean, std)
+    assert out_s["suppress"]["max_run"] == 3
+
+
+def test_run_analysis_all_nan_z_in_run():
+    rate = np.array([10.0, 10.0, 10.0])
+    out = _run_analysis(
+        rate, np.zeros(3), np.full(3, 2.0), np.full(3, np.nan), np.zeros(3)
+    )
+    assert out["excit"]["max_run"] == 3
+    assert np.isnan(out["excit"]["peak_z"])
+
+
+def test_selectivity_index_edges():
+    assert np.isnan(_selectivity_index(np.array([np.nan, np.nan])))
+    assert np.isnan(_selectivity_index(np.array([0.0, 0.0])))
+    assert _selectivity_index(np.array([0.0, 4.0])) == 1.0
+
+
+def test_monotonicity_spearman_too_few_finite():
+    assert np.isnan(_monotonicity_spearman(np.array([1.0, np.nan])))
+
+
+def test_skaggs_info_and_sparsity_edges():
+    rate = np.array([0.0, 0.0, 4.0, 0.0])
+    occ = np.array([1.0, 1.0, 1.0, 1.0])
+    assert _skaggs_info_rate_bps(rate, occ) > 0
+    assert 0 < _skaggs_sparsity(rate, occ) <= 1
+    # no occupancy -> NaN
+    assert np.isnan(_skaggs_info_rate_bps(rate, np.zeros(4)))
+    # no positive rate -> NaN (R <= 0) for both
+    assert np.isnan(_skaggs_info_rate_bps(np.zeros(4), occ))
+    assert np.isnan(_skaggs_sparsity(np.zeros(4), occ))
+
+
+def test_spatial_coherence_edges():
+    assert np.isnan(_spatial_coherence(np.array([1.0, 2.0, 3.0])))   # not 2D
+    nan_map = np.full((3, 3), np.nan)
+    assert np.isnan(_spatial_coherence(nan_map))                     # <3 valid
+    grad = np.arange(9, dtype=float).reshape(3, 3)
+    assert np.isfinite(_spatial_coherence(grad))
+
+
+def test_ramp_index_edges():
+    centers = np.linspace(-2.0, 0.0, 40)
+    rate = np.linspace(1.0, 2.0, 40)
+    assert np.isfinite(_ramp_index(rate, centers))
+    # window not spanning the -1.5 anchor -> NaN (coverage guard)
+    narrow = np.linspace(-1.0, 0.0, 20)
+    assert np.isnan(_ramp_index(np.ones(20), narrow))
+    # size mismatch -> NaN
+    assert np.isnan(_ramp_index(np.ones(5), centers))
+
+
+def test_circular_shift_spike_times_modulo_wrap():
+    spikes = np.array([0.1, 0.5, 0.9])
+    shifted = _circular_shift_spike_times(spikes, duration_seconds=1.0, shift_seconds=2.7)
+    assert np.all((shifted >= 0.0) & (shifted < 1.0))
+    assert np.all(np.diff(shifted) >= 0)     # re-sorted
+
+
+def test_generate_shuffle_offsets_seeded_and_in_range():
+    a = _generate_shuffle_offsets(8, 1.0, 3.0, seed=7)
+    b = _generate_shuffle_offsets(8, 1.0, 3.0, seed=7)
+    assert a.shape == (8,)
+    assert np.array_equal(a, b)
+    assert np.all((a >= 1.0) & (a < 3.0))
+
+
+def test_percentiles_block_keys_and_values():
+    arr = np.array([[0.0, 10.0], [2.0, 20.0], [4.0, 30.0]])
+    out = _percentiles_block(arr)
+    assert set(out) == {
+        "null_mean", "null_std", "null_p0_5", "null_p2_5", "null_p97_5", "null_p99_5",
+    }
+    assert np.allclose(out["null_mean"], [2.0, 20.0])
+
+
+def test_within_usv_validity_overlap_vs_clean():
+    starts = np.array([0.0, 1.0, 2.0])
+    stops = np.array([0.5, 1.5, 2.5])
+    assert _within_usv_validity(np.array([1]), starts, stops)[0]      # clean
+    starts_o = np.array([0.0, 1.0])
+    stops_o = np.array([2.0, 1.5])
+    assert not _within_usv_validity(np.array([1]), starts_o, stops_o)[0]  # USV0 overlaps
+
+
+def test_latest_other_stop_before_anchor():
+    starts = np.array([0.0, 1.0, 2.0])
+    stops = np.array([0.5, 1.5, 2.5])
+    out = _latest_other_stop_before_anchor(np.array([2]), starts, stops)
+    assert out[0] == 1.5
+    # no earlier USV -> -inf
+    assert _latest_other_stop_before_anchor(np.array([0]), starts, stops)[0] == -np.inf
+
+
+def test_anchor_bin_validity_grid_post_and_prior():
+    starts = np.array([0.0, 1.0, 2.0])
+    stops = np.array([0.5, 1.5, 2.5])
+    grid = _anchor_bin_validity_grid(
+        np.array([1]), starts, stops, duration_seconds=10.0,
+        rel_bin_lo=np.array([-0.5, -1.0]), rel_bin_hi=np.array([0.0, -0.5]),
+        require_clean_post=True, require_clean_prior=True,
+    )
+    assert grid.shape == (1, 2)
+    assert grid.dtype == bool

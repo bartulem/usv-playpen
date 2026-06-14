@@ -1072,3 +1072,89 @@ def test_aggregator_defaults_to_settings_json_thresholds(tmp_path):
         cfg = json.load(fh)
     expected = cfg["detect_interesting_tuning_neurons"]
     assert out["thresholds_used"] == expected
+
+
+# Aggregator edge branches ---------------------------------------------------
+
+
+def test_aggregate_modality_stats_empty_per_session_yields_none():
+    """
+    Description
+    -----------
+    Every modality-stats branch must return its scalar keys with `None`
+    values (never raise) when the per-session evidence list is empty.
+    """
+
+    for key in (
+        "vmi_self_excit",
+        "spatial_0ms_self_xy",
+        "usv_category_self_cat",
+        "usv_peth_self_excit",
+    ):
+        agg = _aggregate_modality_stats(key, [])
+        assert agg and all(v is None for v in agg.values())
+
+
+def test_flag_one_cluster_skips_non_dict_blocks():
+    """
+    Description
+    -----------
+    `flag_one_cluster` must skip (not crash) when a modality block or
+    its inner payload is not a dict — both the emitter-level and the
+    property/feature/direction-level guards.
+    """
+
+    outer = {"triage_stats": {
+        "vmi": {"e1": "x"},
+        "usv_peth": {"e1": "x"},
+        "usv_property_tuning": {"e1": "x"},
+        "usv_category_tuning": {"e1": "x"},
+        "usv_category_peth": {"e1": "x"},
+        "behavioral": {"off0": "x"},
+        "spatial": {"off0": "x"},
+    }}
+    assert flag_one_cluster(outer, **DEFAULT_THRESHOLDS) == {}
+
+    inner = {"triage_stats": {
+        "usv_peth": {"e1": {"excit": "x"}},          # direction block not a dict
+        "usv_property_tuning": {"e1": {"dur": "x"}},  # prop payload not a dict
+        "usv_category_tuning": {"e1": {"cat": "x"}},  # cat payload not a dict
+        "usv_category_peth": {"e1": {"cat": "x"}},
+        "behavioral": {"off0": {"feat": "x"}},
+        "spatial": {"off0": {"feat": "x"}},
+    }}
+    assert flag_one_cluster(inner, **DEFAULT_THRESHOLDS) == {}
+
+
+def test_aggregator_logs_and_skips_bad_sessions(tmp_path):
+    """
+    Description
+    -----------
+    The three "skip with a logged reason" branches must all fire and be
+    recorded under `sessions_skipped`: an unparseable date prefix, a
+    rec_date absent from the catalog, and a `tuning_curves` dir with no
+    pkls. No unit is produced.
+    """
+
+    data_root = tmp_path / "data"
+    (data_root / "badname" / "ephys" / "tuning_curves").mkdir(parents=True)
+    (data_root / "20240505_100000" / "ephys" / "tuning_curves").mkdir(parents=True)
+    (data_root / "20240101_100000" / "ephys" / "tuning_curves").mkdir(parents=True)
+
+    catalog = tmp_path / "catalog.csv"
+    _write_catalog(catalog, [("M01", 20240101, "imec0_cl0001_ch100_good", "PAG")])
+    lst = tmp_path / "intact.txt"
+    lst.write_text("badname\n20240505_100000\n20240101_100000\n")
+
+    out_path = aggregate_units_across_conditions(
+        condition_to_session_list={"intact_female": lst},
+        catalog_path=catalog,
+        out_dir=tmp_path / "out",
+        data_root=data_root,
+        **DEFAULT_THRESHOLDS,
+    )
+    with out_path.open("rb") as fh:
+        out = pickle.load(fh)
+    skipped = set(out["sessions_skipped"]["intact_female"])
+    assert {"badname", "20240505_100000", "20240101_100000"} <= skipped
+    assert out["n_units_total"] == 0

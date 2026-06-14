@@ -2242,6 +2242,129 @@ def test_unit_passes_filter(tmp_path):
         _maker(somatic_filter="bogus")
 
 
+def test_compute_behavioral_bucket_flags_no_condition(tmp_path):
+    """
+    Description
+    -----------
+    A unit with no block for the requested condition yields all-False
+    bucket flags (the early-return guard), not a crash.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory (throwaway maker root).
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _aggregate_maker(tmp_path)
+    unit = {
+        "mouse_id": "M1", "rec_date": 1, "unit_id": "u",
+        "kslabel": "good", "anatomy_region": "PAG",
+        "conditions": {"intact_female": {"sessions_tested": [], "modalities": {}}},
+    }
+    flags = maker._compute_behavioral_bucket_flags(
+        unit, recorded_mouse_id="M1", condition="mute_female",
+        k_min=2, require_majority=True,
+    )
+    assert flags == {"pose": False, "movement": False, "social": False}
+
+
+def test_compute_behavioral_bucket_flags_dyadic_pooling(tmp_path):
+    """
+    Description
+    -----------
+    Two dyadic (social) modality keys for the same `(feat, direction)`
+    but different partners — each `n_tested=1` — must be pooled before
+    the consistency gate, so the social bucket flips True while pose /
+    movement stay False.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory (throwaway maker root).
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _aggregate_maker(tmp_path)
+    mods = {
+        "behavioral_beh_offset=0s_M1-pA.nose_excit": {"n_significant": 1, "n_tested": 1},
+        "behavioral_beh_offset=0s_M1-pB.nose_excit": {"n_significant": 1, "n_tested": 1},
+    }
+    unit = {
+        "mouse_id": "M1", "rec_date": 1, "unit_id": "u",
+        "kslabel": "good", "anatomy_region": "PAG",
+        "conditions": {"intact_female": {"sessions_tested": [], "modalities": mods}},
+    }
+    flags = maker._compute_behavioral_bucket_flags(
+        unit, recorded_mouse_id="M1", condition="intact_female",
+        k_min=2, require_majority=True,
+    )
+    assert flags["social"] is True
+    assert flags["pose"] is False and flags["movement"] is False
+
+
+def test_collect_vmi_consistency_below_n_tested_min(tmp_path):
+    """
+    Description
+    -----------
+    A unit with only one valid VMI session is dropped by
+    `_collect_vmi_consistency` (`n_tested < n_tested_min`), leaving every
+    region group empty.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory for the hand-built triage + catalog.
+
+    Returns
+    -------
+    None
+    """
+
+    units = {
+        "M1_1_u": {
+            "mouse_id": "M1", "rec_date": 1, "unit_id": "u",
+            "kslabel": "good", "anatomy_region": "PAG",
+            "conditions": {
+                "intact_female": {
+                    "sessions_tested": [],
+                    "modalities": {
+                        "vmi_self_excit": {"per_session": [
+                            {"session": "s1", "vmi": 0.5, "p": 0.001,
+                             "n_bouts": 20, "significant": True},
+                        ]},
+                    },
+                },
+            },
+        },
+    }
+    catalog_path = tmp_path / "catalog.csv"
+    catalog_path.write_text(
+        "mouse_id,rec_date,unit_id,somatic\nM1,1,u,True\n"
+    )
+    triage_path = tmp_path / "unit_triage_min.pkl"
+    with triage_path.open("wb") as fh:
+        pickle.dump({
+            "catalog_path": str(catalog_path),
+            "thresholds_used": {"vmi_alpha": 0.01, "vmi_min_bouts": 10},
+            "units": units,
+        }, fh)
+
+    maker = _aggregate_maker(tmp_path)
+    per_group = maker._collect_vmi_consistency(
+        triage_pkl_path=triage_path,
+        catalog_csv_path=catalog_path,
+        n_tested_min=2,
+    )
+    assert all(len(v) == 0 for v in per_group.values())
+
+
 def test_consistent_peth_majority_is_strict(tmp_path):
     """
     Description
