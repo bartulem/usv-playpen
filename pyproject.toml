@@ -16,6 +16,7 @@ classifiers = [
   "Development Status :: 1 - Planning",
   "Intended Audience :: Science/Research",
   "Intended Audience :: Developers",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
@@ -115,34 +116,34 @@ docs = [
 
 [project.scripts]
 usv-playpen = "usv_playpen.usv_playpen_gui:main"
-conduct-calibration = "usv_playpen.behavioral_experiments:conduct_calibration_cli"
-conduct-recording = "usv_playpen.behavioral_experiments:conduct_recording_cli"
-concatenate-video-files = "usv_playpen.preprocess_data:concatenate_video_files_cli"
-rectify-video-fps = "usv_playpen.preprocess_data:rectify_video_fps_cli"
-multichannel-to-single-ch = "usv_playpen.preprocess_data:multichannel_to_channel_audio_cli"
-crop-wav-files = "usv_playpen.preprocess_data:crop_wav_files_to_video_cli"
-av-sync-check = "usv_playpen.preprocess_data:av_sync_check_cli"
-ev-sync-check = "usv_playpen.preprocess_data:ev_sync_check_cli"
-hpss-audio = "usv_playpen.preprocess_data:hpss_audio_cli"
-bp-filter-audio = "usv_playpen.preprocess_data:bp_filter_audio_files_cli"
-concatenate-audio-files = "usv_playpen.preprocess_data:concatenate_audio_files_cli"
-sleap-to-h5 = "usv_playpen.preprocess_data:sleap_file_conversion_cli"
-anipose-calibrate = "usv_playpen.preprocess_data:conduct_anipose_calibration_cli"
-anipose-triangulate = "usv_playpen.preprocess_data:conduct_anipose_triangulation_cli"
-anipose-trm = "usv_playpen.preprocess_data:translate_rotate_metric_cli"
-das-infer = "usv_playpen.preprocess_data:das_command_line_inference_cli"
-das-summarize = "usv_playpen.preprocess_data:summarize_das_findings_cli"
-prepare-vcl-assign = "usv_playpen.preprocess_data:prepare_vcl_assign_cli"
-vcl-assign = "usv_playpen.preprocess_data:vcl_assign_cli"
-concatenate-ephys-files = "usv_playpen.preprocess_data:concatenate_binary_files_cli"
-split-clusters = "usv_playpen.preprocess_data:split_clusters_to_sessions_cli"
-generate-beh-features = "usv_playpen.analyze_data:generate_beh_features_cli"
-generate-usv-playback = "usv_playpen.analyze_data:generate_usv_playback_cli"
-generate-naturalistic-usv-playback = "usv_playpen.analyze_data:generate_naturalistic_usv_playback_cli"
-generate-rm = "usv_playpen.analyze_data:generate_rm_files_cli"
-generate-usv-interval-distributions = "usv_playpen.analyze_data:generate_usv_interval_distributions_cli"
-generate-rm-figs = "usv_playpen.visualize_data:generate_rm_figures_cli"
-generate-viz = "usv_playpen.visualize_data:visualize_3D_data_cli"
+conduct-calibration = "usv_playpen.recording.behavioral_experiments:conduct_calibration_cli"
+conduct-recording = "usv_playpen.recording.behavioral_experiments:conduct_recording_cli"
+concatenate-video-files = "usv_playpen.processing.preprocess_data:concatenate_video_files_cli"
+rectify-video-fps = "usv_playpen.processing.preprocess_data:rectify_video_fps_cli"
+multichannel-to-single-ch = "usv_playpen.processing.preprocess_data:multichannel_to_channel_audio_cli"
+crop-wav-files = "usv_playpen.processing.preprocess_data:crop_wav_files_to_video_cli"
+av-sync-check = "usv_playpen.processing.preprocess_data:av_sync_check_cli"
+ev-sync-check = "usv_playpen.processing.preprocess_data:ev_sync_check_cli"
+hpss-audio = "usv_playpen.processing.preprocess_data:hpss_audio_cli"
+bp-filter-audio = "usv_playpen.processing.preprocess_data:bp_filter_audio_files_cli"
+concatenate-audio-files = "usv_playpen.processing.preprocess_data:concatenate_audio_files_cli"
+sleap-to-h5 = "usv_playpen.processing.preprocess_data:sleap_file_conversion_cli"
+anipose-calibrate = "usv_playpen.processing.preprocess_data:conduct_anipose_calibration_cli"
+anipose-triangulate = "usv_playpen.processing.preprocess_data:conduct_anipose_triangulation_cli"
+anipose-trm = "usv_playpen.processing.preprocess_data:translate_rotate_metric_cli"
+das-infer = "usv_playpen.processing.preprocess_data:das_command_line_inference_cli"
+das-summarize = "usv_playpen.processing.preprocess_data:summarize_das_findings_cli"
+prepare-vcl-assign = "usv_playpen.processing.preprocess_data:prepare_vcl_assign_cli"
+vcl-assign = "usv_playpen.processing.preprocess_data:vcl_assign_cli"
+concatenate-ephys-files = "usv_playpen.processing.preprocess_data:concatenate_binary_files_cli"
+split-clusters = "usv_playpen.processing.preprocess_data:split_clusters_to_sessions_cli"
+generate-beh-features = "usv_playpen.analyses.analyze_data:generate_beh_features_cli"
+generate-usv-playback = "usv_playpen.analyses.analyze_data:generate_usv_playback_cli"
+generate-naturalistic-usv-playback = "usv_playpen.analyses.analyze_data:generate_naturalistic_usv_playback_cli"
+generate-rm = "usv_playpen.analyses.analyze_data:generate_rm_files_cli"
+generate-usv-interval-distributions = "usv_playpen.analyses.analyze_data:generate_usv_interval_distributions_cli"
+generate-rm-figs = "usv_playpen.visualizations.visualize_data:generate_rm_figures_cli"
+generate-viz = "usv_playpen.visualizations.visualize_data:visualize_3D_data_cli"
 npx-meta-to-coords = "usv_playpen.neuropixels.sglx_meta_to_coords:main"
 
 
@@ -246,23 +247,17 @@ messages_control.disable = [
 ]
 
 [tool.uv]
-# Pin transitive dependencies to versions that resolve known security
-# vulnerabilities. Constraints narrow the resolver's acceptable version
-# range without making the package a direct dependency of usv-playpen.
-#   - mistune>=3.2.1 fixes a ReDoS in LINK_TITLE_RE (GHSA, Dependabot #32);
-#     mistune is pulled in transitively via jupyterlab -> nbconvert.
-#   - idna>=3.15 fixes a denial-of-service in idna.encode() where
-#     specially-crafted inputs bypass the CVE-2024-3651 length check
-#     before valid_contexto runs (GHSA, Dependabot #41); idna is
-#     pulled in transitively via requests, jupyterlab, librosa, etc.
-#   - pymdown-extensions>=10.21.3 fixes a regression in pymdownx.snippets
-#     where sibling-prefix path traversal bypasses restrict_base_path
-#     (GHSA, Dependabot #40); pulled in transitively via marimo.
-constraint-dependencies = [
-    "mistune>=3.2.1",
-    "idna>=3.15",
-    "pymdown-extensions>=10.21.3",
-]
+# Transitive-dependency security floors live here. When a Dependabot alert
+# fires on a transitive package, pin it as `"<pkg>>=<patched>"` to force uv's
+# sticky lock to bump it. Prune a pin once the ecosystem catches up and the
+# package resolves to a patched version on its own (verify with
+# `uv lock --upgrade`): a redundant floor is just clutter.
+#
+# Last pruned 2026-06-13 -- the mistune (#32), idna (#41), pymdown-extensions
+# (#40), starlette (#42) and tornado (#43) floors were all redundant (their
+# requiring deps now mandate patched versions) and removed; the lockfile still
+# resolves each to a patched release.
+constraint-dependencies = []
 
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }

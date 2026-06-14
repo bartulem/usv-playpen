@@ -28,7 +28,7 @@ import numpy as np
 import polars as pls
 
 from ..os_utils import configure_path
-from ..visualizations.usv_summary_statistics import (
+from ._usv_io import (
     extract_session_metadata,
     load_and_filter_usv_data,
 )
@@ -522,10 +522,10 @@ class InterUSVIntervalCalculator:
         """
         Description
         -----------
-        Initialises the InterUSVIntervalCalculator. All keyword arguments are
-        captured into ``self.__dict__`` verbatim so the instance
-        exposes every supplied kwarg as an attribute (no whitelisting),
-        matching the convention used by :class:`FeatureZoo`.
+        Initialises the InterUSVIntervalCalculator. The keyword arguments are
+        validated against the keys the class consumes (an unknown key raises
+        ``TypeError``) and then captured into ``self.__dict__``, matching the
+        convention used by :class:`FeatureZoo`.
 
         Parameters
         ----------
@@ -540,6 +540,12 @@ class InterUSVIntervalCalculator:
         None
         """
 
+        expected_kwargs = {'input_parameter_dict', 'message_output'}
+        unexpected_kwargs = set(kwargs) - expected_kwargs
+        if unexpected_kwargs:
+            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+                            f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 

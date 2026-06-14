@@ -106,7 +106,7 @@ jobs:
           --durations=20
 
       - name: Upload coverage report
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         # Don't fail the whole job if Codecov is unreachable or the token
         # isn't configured -- the test pass/fail signal is what drives the
         # README badge and that should not depend on Codecov availability.

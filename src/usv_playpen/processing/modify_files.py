@@ -1,0 +1,917 @@
+"""
+@author: bartulem
+Different functions for modifying files:
+(1a) break from multi to single channel
+(1b) perform harmonic-percussive source separation
+(1c) perform band-pass filtering
+(1d) concatenate single channel audio (e.g., wav) files
+(2a) concatenate video (e.g., mp4) files
+(2b) change video (e.g., mp4) sampling rate (fps)
+(3a) concatenate e-phys binary files
+(3b) split manually curated clusters into sessions
+"""
+
+from __future__ import annotations
+
+import configparser
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+from collections.abc import Callable
+from datetime import datetime
+
+import librosa
+import numpy as np
+import polars as pls
+from imgstore import new_for_filename
+from scipy.io import wavfile
+from tqdm import tqdm
+
+from ..os_utils import (
+    configure_path,
+    ephys_base_for_data_root,
+    first_match_or_raise,
+    wait_for_subprocesses,
+)
+from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import load_session_metadata, save_session_metadata
+from .load_audio_files import DataLoader
+
+
+class Operator:
+
+    def __init__(self, root_directory: str | list[str] = None,
+                 input_parameter_dict: dict = None,
+                 message_output: Callable | None = None):
+        """
+        Description
+        -----------
+        Initializes the Operator class.
+
+        Parameters
+        ----------
+        root_directory (str / list of str)
+            Root directory for data; defaults to None.
+        input_parameter_dict (dict)
+            Processing parameters; defaults to None.
+        message_output (function)
+            Defines output messages; defaults to None.
+
+        Returns
+        -------
+        None
+        """
+
+        if input_parameter_dict is None or root_directory is None:
+            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
+                _settings = json.load(json_file)
+
+        if input_parameter_dict is not None:
+            self.input_parameter_dict = input_parameter_dict['modify_files']['Operator']
+            self.input_parameter_dict_2 = input_parameter_dict['synchronize_files']['Synchronizer']
+        else:
+            self.input_parameter_dict = _settings['modify_files']['Operator']
+            self.input_parameter_dict_2 = _settings['synchronize_files']['Synchronizer']
+
+        self.root_directory = root_directory if root_directory is not None else _settings['modify_files']['root_directory']
+        self.message_output = message_output if message_output is not None else print
+
+        self.app_context_bool = is_gui_context()
+
+    def split_clusters_to_sessions(self) -> None:
+        """
+        Description
+        -----------
+        This method converts every spike sample time into seconds,
+        relative to tracking start and splits spikes back into
+        individual sessions (if binary files were concatenated).
+
+        NB: If you have recorded multiple sessions in one day,
+        it is sufficient to put only one root directory for that day,
+        e.g., the first one. The script will find EPHYS root directory,
+        and split spikes from all probes into sessions based on the
+        inputs in the changepoints JSON file.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+         spike times (np.ndarray)
+            Arrays that contain spike times: seconds (row 0) and frames (row 1).;
+            saved as .npy files in a separate directory.
+        """
+
+        self.message_output(f"Splitting clusters to sessions started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        # read headstage sampling rates
+        calibrated_sr_config = configparser.ConfigParser()
+        calibrated_sr_config.read(pathlib.Path(__file__).parent.parent / '_config/calibrated_sample_rates_imec.ini')
+
+        for one_root_dir in self.root_directory:
+            _ephys_base = ephys_base_for_data_root(one_root_dir) / pathlib.Path(one_root_dir).name.split('_')[0]
+            for ephys_dir in sorted(_ephys_base.parent.glob(f"{_ephys_base.name}_imec*")):
+
+                probe_id = re.search(r'imec\d', ephys_dir.name).group()
+
+                self.message_output(f"Working on getting spike times from clusters in: {ephys_dir}, started at {datetime.now()}.")
+
+                # load the changepoint .json file
+                with open(
+                    first_match_or_raise(
+                        root=ephys_dir,
+                        pattern='changepoints_info_*.json',
+                        label="ephys changepoints_info JSON",
+                    ),
+                    'r',
+                ) as binary_info_input_file:
+                    binary_files_info = json.load(binary_info_input_file)
+
+                    for session_key in binary_files_info.keys():
+                        binary_files_info[session_key]['root_directory'] = configure_path(pa=binary_files_info[session_key]['root_directory'])
+
+                # get info about session start
+                se_dict = {}
+                esr_dict = {}
+                frame_least_dict = {}
+                root_dict = {}
+                unit_count_dict = {'noise': 0, 'unsorted': 0}
+                for session_key in binary_files_info.keys():
+
+                    unit_count_dict[session_key] = {'good': 0, 'mua': 0}
+
+                    # load info from camera_frame_count_dict
+                    with open(
+                        first_match_or_raise(
+                            root=pathlib.Path(binary_files_info[session_key]['root_directory']),
+                            pattern='video/*_camera_frame_count_dict.json',
+                            label=f"camera frame count JSON for session '{session_key}'",
+                        ),
+                        'r',
+                    ) as frame_count_infile:
+                        camera_frame_info = json.load(frame_count_infile)
+                        esr_dict[session_key] = camera_frame_info['median_empirical_camera_sr']
+                        frame_least_dict[session_key] = camera_frame_info['total_frame_number_least']
+                        root_dict[session_key] = binary_files_info[session_key]['root_directory']
+
+                    if any(np.isnan(value) for value in binary_files_info[session_key]['tracking_start_end']):
+                        se_dict[session_key] = binary_files_info[session_key]['session_start_end']
+                    else:
+                        se_dict[session_key] = binary_files_info[session_key]['tracking_start_end']
+
+                    (pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data').mkdir(parents=True, exist_ok=True)
+
+                # load the Kilosort output files
+                ks_dir = ephys_dir / f"kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}"
+                phy_curation_bool = (ks_dir / 'cluster_info.tsv').is_file()
+                spike_clusters = np.load(ks_dir / 'spike_clusters.npy')
+                spike_times = np.load(ks_dir / 'spike_times.npy')
+
+                if phy_curation_bool:
+                    cluster_info = pls.read_csv(source=str(ks_dir / 'cluster_info.tsv'),
+                                                separator='\t')
+                else:
+                    self.message_output("Phy2 curation has not been done for this session, no cluster_info.tsv file exists.")
+                    continue
+
+                smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+                for idx in tqdm(range(cluster_info.shape[0])):
+                    if cluster_info[idx, 'group'] in ('good', 'mua'):
+
+                        # collect all spikes for any given cluster
+                        cluster_indices = np.sort(np.where(spike_clusters == cluster_info[idx, 'cluster_id'])[0])
+                        spike_events = np.take(spike_times, cluster_indices)
+
+                        # filter spikes for each session
+                        for session_key in binary_files_info.keys():
+                            session_spikes_sec = ((spike_events[(spike_events >= se_dict[session_key][0]) & (spike_events < se_dict[session_key][1])] - se_dict[session_key][0]) /
+                                                  float(calibrated_sr_config['CalibratedHeadStages'][binary_files_info[session_key]['headstage_sn']]))
+
+                            session_spikes_fps = np.round(session_spikes_sec * esr_dict[session_key])
+                            session_spikes_fps[session_spikes_fps == frame_least_dict[session_key]] = frame_least_dict[session_key]-1
+
+                            session_spikes = np.vstack((session_spikes_sec, session_spikes_fps))
+
+                            # save spiking data
+                            if session_spikes_sec.shape[0] > self.input_parameter_dict['get_spike_times']['min_spike_num']:
+                                cluster_id = f"{probe_id}_cl{cluster_info[idx, 'cluster_id']:04d}_ch{cluster_info[idx, 'ch']:03d}_{cluster_info[idx, 'group']}"
+                                np.save(file=pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data' / cluster_id, arr=session_spikes)
+
+                                unit_count_dict[session_key][cluster_info[idx, 'group']] += 1
+
+                    elif cluster_info[idx, 'group'] == 'noise':
+                        unit_count_dict['noise'] += 1
+
+                    else:
+                        unit_count_dict['unsorted'] += 1
+
+                self.message_output(f"For {ephys_dir}, there were {unit_count_dict['noise']} noise clusters and {unit_count_dict['unsorted']} unsorted clusters.")
+                for session_key in binary_files_info.keys():
+                    self.message_output(f"For {root_dict[session_key]} probe {probe_id}, there were {unit_count_dict[session_key]['good']} good and {unit_count_dict[session_key]['mua']} MUA clusters.")
+
+    def concatenate_binary_files(self) -> None:
+        """
+        Description
+        -----------
+        This method concatenates binary files from Neuropixels recordings into one
+        .bin file (can be used from "ap" or "lf" files). It goes through all root
+        directories and concatenates all binary files for any given probe, say "imec0",
+        into one binary file.
+
+        NB: If you have recorded multiple sessions in one day,
+        it is necessary to list all of their root directories
+        to conduct concatenation. The script operates by first
+        locating all available probes in the root directories,
+        and then concatenates all binary files for each probe.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        binary_files_info (.json)
+            Dictionary w/ information about changepoints and binary file lengths.
+        concatenated (.bin)
+           Concatenated binary file.
+        """
+
+        self.message_output(f"E-phys file concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}. "
+                            f"Please be patient - this could take >1 hour.")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        # read headstage sampling rates
+        calibrated_sr_config = configparser.ConfigParser()
+        calibrated_sr_config.read(pathlib.Path(__file__).parent.parent / '_config/calibrated_sample_rates_imec.ini')
+
+        # create list of directories to save concatenated files in
+        concat_save_dir = []
+        available_probes = []
+        for ord_idx, one_root_dir in enumerate(self.root_directory):
+            ephys_save_dir_base = str(ephys_base_for_data_root(one_root_dir) / pathlib.Path(one_root_dir).name.split('_')[0])
+            for one_probe_dir in sorted((pathlib.Path(one_root_dir) / 'ephys').iterdir()):
+                if one_probe_dir.is_dir() and 'imec' in one_probe_dir.name:
+                    if one_probe_dir.name not in available_probes:
+                        available_probes.append(one_probe_dir.name)
+                    if not any(one_probe_dir.name in one_concat_dir for one_concat_dir in concat_save_dir):
+                        concat_save_dir.append(f'{ephys_save_dir_base}_{one_probe_dir.name}')
+
+        npx_file_type = self.input_parameter_dict_2['validate_ephys_video_sync']['npx_file_type']
+        # create dictionary to store information about binary files and generate stitching command
+        for probe_idx, probe_id in enumerate(available_probes):
+            binary_files_info = {}
+            changepoints = [0]
+            concatenation_command = 'copy /b ' if os.name == 'nt' else 'cat '
+            total_size_bytes = 0
+            total_time_secs = 0.0
+            for ord_idx, one_root_dir in enumerate(self.root_directory):
+                ephys_probe_dir = pathlib.Path(one_root_dir) / 'ephys' / probe_id
+                if ephys_probe_dir.is_dir():
+                    for one_file, one_meta in zip(sorted(ephys_probe_dir.glob(f"*{npx_file_type}.bin*")),
+                                                  sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))):
+                        if one_file.is_file() and one_meta.is_file():
+
+                            # parse metadata file for channel and headstage information
+                            with open(one_meta) as meta_data_file:
+                                for line in meta_data_file:
+                                    key, value = line.strip().split("=")
+                                    if key == 'acqApLfSy':
+                                        total_num_channels = int(value.split(',')[0]) + int(value.split(',')[-1])
+                                    elif key == 'imDatHs_sn':
+                                        headstage_sn = value
+                                        spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
+                                    elif key == 'imDatPrb_sn':
+                                        imec_probe_sn = value
+                                    elif key == 'fileSizeBytes':
+                                        total_size_bytes += int(value)
+                                    elif key == 'fileTimeSecs':
+                                        total_time_secs += float(value)
+
+                            binary_file_info_id = one_file.name[:-7]
+                            binary_files_info[binary_file_info_id] = {'session_start_end': [np.nan, np.nan],
+                                                                      'tracking_start_end': [np.nan, np.nan],
+                                                                      'largest_camera_break_duration': np.nan,
+                                                                      'file_duration_samples': np.nan,
+                                                                      'root_directory': str(pathlib.Path(one_root_dir)),
+                                                                      'total_num_channels': total_num_channels,
+                                                                      'headstage_sn': headstage_sn,
+                                                                      'imec_probe_sn': imec_probe_sn}
+
+                            one_recording = np.memmap(filename=one_file, mode='r', dtype='int16', order='C')
+
+                            self.message_output(f"File {pathlib.Path(one_file).name}, recorded with hs #{headstage_sn} & probe #{imec_probe_sn} has total length {one_recording.shape[0]}, or {one_recording.shape[0] // total_num_channels} "
+                                                f"samples on {total_num_channels} channels, totaling {round((one_recording.shape[0] // total_num_channels) / (spike_glx_sr * 60), 2)} minutes of recording.")
+
+                            binary_files_info[binary_file_info_id]['file_duration_samples'] = int(one_recording.shape[0] // total_num_channels)
+
+                            if len(changepoints) == 1:
+                                binary_files_info[binary_file_info_id]['session_start_end'][0] = 0
+                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording.shape[0] // total_num_channels)
+                                changepoints.append(int(one_recording.shape[0] // total_num_channels))
+                                concatenation_command += '{} '.format(one_file)
+                            else:
+                                binary_files_info[binary_file_info_id]['session_start_end'][0] = changepoints[-1]
+                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording.shape[0] // total_num_channels) + changepoints[-1]
+                                changepoints.append(int(one_recording.shape[0] // total_num_channels) + changepoints[-1])
+                                if os.name == 'nt':
+                                    concatenation_command += '+ {} '.format(one_file)
+                                else:
+                                    concatenation_command += '{} '.format(one_file)
+
+            # create save directory if one doesn't exist already
+            concat_save_path = pathlib.Path(concat_save_dir[probe_idx])
+            concat_save_path.mkdir(parents=True, exist_ok=True)
+
+            # save concatenated META file
+            concatenated_meta_file = concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.meta"
+            if not concatenated_meta_file.is_file():
+                src_meta_file = first_match_or_raise(
+                    root=ephys_probe_dir,
+                    pattern=f"*{npx_file_type}.meta*",
+                    label=f"source .{npx_file_type}.meta for concatenation",
+                )
+                with open(src_meta_file, 'r', encoding='utf-8') as f_in, \
+                        open(concatenated_meta_file, 'w', encoding='utf-8') as f_out:
+                    for line in f_in:
+                        if line.strip().startswith('fileSizeBytes='):
+                            f_out.write(f"fileSizeBytes={total_size_bytes}\n")
+                        elif line.strip().startswith('fileTimeSecs='):
+                            f_out.write(f"fileTimeSecs={total_time_secs}\n")
+                        else:
+                            f_out.write(line)
+
+            if os.name == 'nt':
+                concatenation_command += f'"{concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.bin"}"'
+            else:
+                concatenation_command += f'> {concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.bin"}'
+
+            # save changepoint information in JSON file
+            changepoints_json = concat_save_path / f'changepoints_info_{concat_save_path.name}.json'
+            if not changepoints_json.exists():
+                with open(changepoints_json, 'w') as binary_info_output_file:
+                    json.dump(binary_files_info, binary_info_output_file, indent=4)
+            else:
+                with open(changepoints_json, 'r') as existing_json_file:
+                    changepoint_info_data = json.load(existing_json_file)
+
+                for file_key in binary_files_info.keys():
+                    if file_key not in changepoint_info_data:
+                        changepoint_info_data[file_key] = binary_files_info[file_key]
+                    else:
+                        for component_key in changepoint_info_data[file_key].keys():
+                            if component_key != 'tracking_start_end' and component_key != 'largest_camera_break_duration' and component_key != 'root_directory' and changepoint_info_data[file_key][component_key] != binary_files_info[file_key][component_key]:
+                                changepoint_info_data[file_key][component_key] = binary_files_info[file_key][component_key]
+                            elif component_key == 'tracking_start_end' and changepoint_info_data[file_key][component_key] != [np.nan, np.nan]:
+                                changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] + binary_files_info[file_key]['session_start_end'][0]
+                                changepoint_info_data[file_key][component_key][1] = changepoint_info_data[file_key][component_key][1] + binary_files_info[file_key]['session_start_end'][0]
+
+                with open(changepoints_json, 'w') as binary_info_output_file:
+                    json.dump(changepoint_info_data, binary_info_output_file, indent=4)
+
+            smart_wait(app_context_bool=self.app_context_bool, seconds=2)
+
+            # run command in shell
+            #
+            # shell=True is required here: the command relies on shell I/O
+            # redirection ('cat ... > out.bin' on POSIX) and the 'copy /b'
+            # cmd.exe builtin on Windows, neither of which works with a plain
+            # argv list. The arguments are the session's own .bin file paths,
+            # not externally supplied input.
+            #
+            # No timeout is imposed on .wait(): concatenating ~10 multi-hour
+            # e-phys recordings can legitimately run for hours or overnight,
+            # and terminating a live 'cat'/'copy' would leave a truncated,
+            # silently-corrupt .bin. We do, however, inspect the exit code so a
+            # failed concatenation (e.g. full disk, unreadable source) is
+            # surfaced loudly instead of being mistaken for a clean run by the
+            # downstream stages that read this binary.
+            concat_process = subprocess.Popen(args=concatenation_command,
+                                              shell=True,
+                                              stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.STDOUT,
+                                              cwd=concat_save_dir[probe_idx])
+            concat_return_code = concat_process.wait()
+            if concat_return_code != 0:
+                self.message_output(f"WARNING: binary concatenation in {concat_save_dir[probe_idx]} exited with "
+                                    f"non-zero status {concat_return_code}; the concatenated .bin may be "
+                                    f"incomplete or corrupt and should not be trusted downstream.")
+
+    def multichannel_to_channel_audio(self) -> None:
+        """
+        Description
+        -----------
+        This method splits multichannel audio file into single channel files and
+        concatenates single channel files via Sox, since multichannel files where
+        split due to a size limitation.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        wave_file (.wav files)
+            Concatenated single channel wave files.
+        """
+
+        self.message_output(f"Multichannel to single channel audio conversion started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        (pathlib.Path(self.root_directory) / 'audio' / 'temp').mkdir(parents=True, exist_ok=True)
+
+        # separate each channel of every multichannel audio file
+        mc_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / 'original_mc').glob('*.wav'))
+        for mc_audio_file in mc_audio_files:
+            separate_ch_subprocesses = []
+            for ch in range(1, 13):
+                output_file = str(pathlib.Path(self.root_directory) / 'audio' / 'temp' / f'{mc_audio_file.stem}_ch{ch:02d}.wav')
+                sep_ch_subp = subprocess.Popen(args=["static_sox", mc_audio_file.name, output_file, "remix", str(ch)],
+                                               cwd=pathlib.Path(self.root_directory) / 'audio' / 'original_mc',
+                                               stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.STDOUT,
+                                               shell=False)
+
+                separate_ch_subprocesses.append(sep_ch_subp)
+
+            wait_for_subprocesses(
+                subps=separate_ch_subprocesses,
+                max_seconds=2 * 60 * 60,
+                label="multichannel channel-separation",
+                poll_interval_s=5,
+                message_output=self.message_output,
+                raise_on_nonzero=False,
+                raise_on_timeout=False,
+            )
+
+        smart_wait(app_context_bool=self.app_context_bool, seconds=2)
+
+        # derive name_origin from the master MC file stem (strip the 'm_' device
+        # prefix). stable regardless of (1) how many channels are in audio/temp,
+        # (2) glob ordering, and (3) whether the avisoft filename contains
+        # internal underscores. the previous approach — split('_')[2] on a
+        # per-channel temp file — was an off-by-one that landed on the channel
+        # suffix ('chNN.wav') whenever the MC stem had only two underscore-
+        # separated tokens (the normal 'm_<datetime>' case), corrupting every
+        # downstream filename (cropped_to_video, hpss, filtered, concatenated).
+        master_mc_files = sorted(
+            (pathlib.Path(self.root_directory) / 'audio' / 'original_mc').glob('m_*.wav')
+        )
+        if not master_mc_files:
+            raise FileNotFoundError(
+                f"master multichannel .wav for naming: no 'm_*.wav' files found under "
+                f"'{pathlib.Path(self.root_directory) / 'audio' / 'original_mc'}'."
+            )
+        name_origin = master_mc_files[0].stem[2:]
+
+        # concatenate single channel files for master/slave
+        separation_subprocesses = []
+        for device_id in ['m', 's']:
+            for ch in range(1, 13):
+                partial_input_files = [p.name for p in sorted((pathlib.Path(self.root_directory) / 'audio' / 'temp').glob(f'{device_id}_*_ch{ch:02d}.wav'))]
+                output_file = str(pathlib.Path(self.root_directory) / 'audio' / 'original' / f'{device_id}_{name_origin}_ch{ch:02d}.wav')
+                command_args = ['static_sox', *partial_input_files, '-q', output_file]
+                mc_to_sc_subp = subprocess.Popen(args=command_args,
+                                                 cwd=pathlib.Path(self.root_directory) / 'audio' / 'temp',
+                                                 stdout=subprocess.DEVNULL,
+                                                 stderr=subprocess.STDOUT,
+                                                 shell=False)
+
+                separation_subprocesses.append(mc_to_sc_subp)
+
+        wait_for_subprocesses(
+            subps=separation_subprocesses,
+            max_seconds=2 * 60 * 60,
+            label="master/slave single-channel concatenation",
+            poll_interval_s=5,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
+
+        # delete temp directory (w/ all files in it)
+        shutil.rmtree(pathlib.Path(self.root_directory) / 'audio' / 'temp')
+
+    def hpss_audio(self) -> None:
+        """
+        Description
+        -----------
+        This function performs the harmonic/percussive source separation (HPSS)
+        on the provided audio (WAV) files. The harmonic component is then converted
+        back to the time domain and saved as a new WAV file.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        harmonic_data_clipped (.wav file)
+            Output audio file w/ only the harmonics component.
+        """
+
+        self.message_output(f"Harmonic-percussive source separation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        wav_file_lst = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('*.wav'))
+
+        for one_wav_file in wav_file_lst:
+            self.message_output(f"Working on file: {one_wav_file}")
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+            # read the audio file (use Scipy, not Librosa because Librosa performs scaling)
+            sampling_rate_audio, audio_data = wavfile.read(one_wav_file)
+
+            # convert to float32 because librosa.stft() requires float32
+            audio_data = np.array(audio_data, dtype='float32')
+
+            # perform Short-Time Fourier Transform (STFT) on the audio data
+            spectrogram_data = librosa.stft(y=audio_data,
+                                            n_fft=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][0],
+                                            hop_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][1])
+
+            # perform HPSS on the spectrogram data
+            D_harmonic, D_percussive = librosa.decompose.hpss(S=spectrogram_data,
+                                                              kernel_size=self.input_parameter_dict['hpss_audio']['kernel_size'],
+                                                              power=self.input_parameter_dict['hpss_audio']['hpss_power'],
+                                                              mask=False,
+                                                              margin=self.input_parameter_dict['hpss_audio']['margin'])
+
+            # convert the harmonic component back to the time domain
+            harmonic_data = librosa.istft(stft_matrix=D_harmonic,
+                                          length=audio_data.shape[0],
+                                          win_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][0],
+                                          hop_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][1])
+
+            # ensure the float values are within the range of 16-bit integers
+            # clip values outside the range to the minimum and maximum representable values
+            harmonic_data_clipped = np.clip(a=harmonic_data,
+                                            a_min=-32768,
+                                            a_max=32767).astype('int16')
+
+            # save the harmonic component as a new WAV file
+            hpss_dir = pathlib.Path(self.root_directory) / 'audio' / 'hpss'
+            hpss_dir.mkdir(parents=True, exist_ok=True)
+
+            wavfile.write(filename=hpss_dir / f'{one_wav_file.stem}_hpss.wav',
+                          rate=sampling_rate_audio,
+                          data=harmonic_data_clipped)
+
+    def filter_audio_files(self) -> None:
+        """
+        Description
+        -----------
+        This method filters audio files via Sox.
+
+        It applies a sinc kaiser-windowed low-pass, high-pass, band-pass, or band-reject filter
+        to the signal. The freqHP and freqLP parameters give the frequencies of the 6dB points
+        of a high-pass and low-pass filter that may be invoked individually, or together. If
+        both are given, then freqHP less than freqLP creates a band-pass filter, freqHP greater
+        than freqLP creates a band-reject filter. For example, the invocations:
+           sinc 3k
+           sinc -4k
+           sinc 3k-4k
+           sinc 4k-3k
+        create a high-pass, low-pass, band-pass, and band-reject filter respectively.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        wave_file (.wav file)
+            Filtered wave file.
+        """
+
+        freq_lp = self.input_parameter_dict['filter_audio_files']['filter_freq_bounds'][0]
+        freq_hp = self.input_parameter_dict['filter_audio_files']['filter_freq_bounds'][1]
+
+        self.message_output(f"Filtering out signal between {freq_lp} and {freq_hp} Hz in audio files started at: "
+                            f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        for one_dir in self.input_parameter_dict['filter_audio_files']['filter_dirs']:
+
+            filter_output_dir = pathlib.Path(self.root_directory) / 'audio' / f'{one_dir}_filtered'
+            filter_output_dir.mkdir(parents=True, exist_ok=True)
+
+            filter_subprocesses = []
+            all_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / one_dir).glob(f"*.{self.input_parameter_dict['filter_audio_files']['filter_audio_format']}"))
+
+            if len(all_audio_files) > 0:
+                for one_file in all_audio_files:
+                    filter_subp = subprocess.Popen(args=["static_sox", "--ignore-length", one_file.name, str(filter_output_dir / f'{one_file.stem}_filtered.wav'), "sinc", f"{freq_hp}-{freq_lp}"],
+                                                   cwd=pathlib.Path(self.root_directory) / 'audio' / one_dir,
+                                                   stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.STDOUT,
+                                                   shell=False)
+
+                    filter_subprocesses.append(filter_subp)
+
+            wait_for_subprocesses(
+                subps=filter_subprocesses,
+                max_seconds=2 * 60 * 60,
+                label="audio band-pass filtering",
+                poll_interval_s=5,
+                message_output=self.message_output,
+                raise_on_nonzero=False,
+                raise_on_timeout=False,
+            )
+
+    def concatenate_audio_files(self) -> None:
+        """
+        Description
+        -----------
+        This method concatenates audio files into a memmap array.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        memmap file
+            Concatenated wave file (shape: n_channels X n_samples).
+        """
+
+        self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        for audio_file_type in self.input_parameter_dict['concatenate_audio_files']['concat_dirs']:
+
+            audio_type_dir = pathlib.Path(self.root_directory) / 'audio' / audio_file_type
+            all_audio_files = sorted(audio_type_dir.glob(f"*.{self.input_parameter_dict['concatenate_audio_files']['concatenate_audio_format']}"))
+
+            if len(all_audio_files) > 1:
+
+                data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [str(audio_type_dir)],
+                                                             'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
+
+                name_origin = list(data_dict.keys())[0].split('_')[1]
+                dim_1 = data_dict[list(data_dict.keys())[0]]['wav_data'].shape[0]
+                dim_2 = len(data_dict.keys())
+                sr = data_dict[list(data_dict.keys())[0]]['sampling_rate']
+                complete_mm_file_name = str(audio_type_dir / f"{name_origin}_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_int16.mmap")
+
+                audio_mm_arr = np.memmap(filename=complete_mm_file_name,
+                                         dtype='int16',
+                                         mode='w+',
+                                         shape=(dim_1, dim_2))
+
+                for file_idx, one_file in enumerate(data_dict.keys()):
+                    audio_mm_arr[:, file_idx] = data_dict[one_file]['wav_data']
+
+                audio_mm_arr.flush()
+
+            else:
+                self.message_output(f"There are <2 audio files per provided directory: '{pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video'}', "
+                                    f"so concatenation impossible.")
+
+    def concatenate_video_files(self) -> None:
+        """
+        Description
+        -----------
+        This method concatenates video files via ffmpeg.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        concatenated_temp (.mp4 file)
+            Concatenated video file.
+        """
+
+        self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+
+        subprocesses = []
+
+        for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
+            if 'calibration' not in sub_directory.name \
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['concatenate_camera_serial_num']:
+
+                current_working_dir = sub_directory
+
+                vid_name = f"{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.name.split('.')[-1]}"
+                vid_extension = self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']
+                all_video_files = sorted(current_working_dir.glob(f'*.{vid_extension}'))
+
+                if len(all_video_files) > 1:
+
+                    # create .txt file with video files to concatenate
+                    with open(current_working_dir / f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt", 'w', encoding="utf-8") as concat_txt_file:
+                        for file_path in all_video_files:
+                            concat_txt_file.write(f"file '{file_path.name}'\n")
+
+                    # concatenate videos
+                    one_subprocess = subprocess.Popen(args=["ffmpeg", "-loglevel", "warning", "-f", "concat", "-i", f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt", "-c", "copy", f"{vid_name}.{vid_extension}"],
+                                                      stdout=subprocess.DEVNULL,
+                                                      stderr=subprocess.STDOUT,
+                                                      cwd=current_working_dir,
+                                                      shell=False)
+
+                    subprocesses.append(one_subprocess)
+
+        wait_for_subprocesses(
+            subps=subprocesses,
+            max_seconds=3 * 60 * 60,
+            label="video concatenation",
+            poll_interval_s=5,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
+
+        #  copy files over to video directory
+        for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
+            if 'calibration' not in sub_directory.name \
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['concatenate_camera_serial_num']:
+                current_working_dir = sub_directory
+                cam_serial = sub_directory.name.split('.')[-1]
+                concat_name = self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']
+                vid_ext = self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']
+
+                (current_working_dir / f"file_concatenation_list_{cam_serial}.txt").unlink()
+                shutil.move(src=current_working_dir / f"{concat_name}_{cam_serial}.{vid_ext}",
+                            dst=pathlib.Path(self.root_directory) / 'video' / f"{concat_name}_{cam_serial}.{vid_ext}")
+
+    def rectify_video_fps(self, conduct_concat: bool = True) -> None:
+        """
+        Description
+        -----------
+        This method changes video sampling rate via ffmpeg.
+
+        Parameters
+        ----------
+        conduct_concat (bool)
+            If True, concatenation was conducted prior to running this.
+
+        Returns
+        -------
+        fps_corrected_video (.mp4 file)
+            FPS modified video file.
+        camera_frame_count_dict (.json file)
+            Dictionary with camera frame counts,
+            empirical capture rates and total video time.
+        """
+
+        self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+
+        video_dir = pathlib.Path(self.root_directory) / 'video'
+        non_hidden_files = [p.name for p in video_dir.iterdir() if p.is_file() and not p.name.startswith('.')]
+
+        if not conduct_concat and len(non_hidden_files) == 0:
+            for sub_directory in video_dir.iterdir():
+                if 'calibration' not in sub_directory.name \
+                        and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']:
+                    cam_serial = sub_directory.name.split('.')[-1]
+                    target_file = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
+                    vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
+
+                    shutil.copy(src=sub_directory / f"{target_file}.{vid_ext}",
+                                dst=video_dir / f"{target_file}_{cam_serial}.{vid_ext}")
+
+        # load metadata
+        metadata, metadata_path = load_session_metadata(
+            root_directory=self.root_directory,
+            logger=self.message_output
+        )
+
+        date_joint = ''
+        total_frame_number = None
+        total_video_time = None
+        camera_frame_count_dict = {}
+        empirical_camera_sr = np.zeros(len(self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']))
+        empirical_camera_sr[:] = np.nan
+        camera_idx = 0
+
+        fsp_subprocesses = []
+        for sd_idx, sub_directory in enumerate(sorted(video_dir.iterdir())):
+            if (sub_directory.is_dir()
+                    and '.' in sub_directory.name
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
+
+                cam_serial = sub_directory.name.split('.')[-1]
+                if camera_idx == 0:
+                    date_joint = sub_directory.name.split('.')[0].split('_')[-2] + sub_directory.name.split('.')[0].split('_')[-1]
+
+                # get frame count and empirical sampling rate
+                img_store = new_for_filename(str(sub_directory / 'metadata.yaml'))
+                total_frame_num = img_store.frame_count
+                last_frame_num = img_store.frame_max
+                frame_times = img_store.get_frame_metadata()['frame_time']
+                video_duration = frame_times[-1] - frame_times[0]
+                esr = round(number=total_frame_num / video_duration, ndigits=4)
+                if 'calibration' not in sub_directory.name:
+                    empirical_camera_sr[camera_idx] = esr
+                    camera_frame_count_dict[cam_serial] = (total_frame_num, esr)
+                    if total_frame_num == last_frame_num:
+                        self.message_output(f"Camera {cam_serial} has {total_frame_num} total frames, no dropped frames, "
+                                            f"video duration of {video_duration:.4f} seconds, and sampling rate of {esr} fps.")
+                        if total_frame_number is None or total_frame_num < total_frame_number:
+                            total_frame_number = total_frame_num
+                        if total_video_time is None or video_duration < total_video_time:
+                            total_video_time = video_duration
+
+                        if metadata is not None:
+                            metadata['Session']['session_duration'] = round(video_duration, 3)
+                            save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
+                    else:
+                        self.message_output(f"WARNING: The last frame on camera {cam_serial} is {last_frame_num}, which is more than {total_frame_num} in total, "
+                                            f"suggesting dropped frames. The video duration is {video_duration:.4f} seconds")
+                    camera_idx += 1
+
+                crf = self.input_parameter_dict['rectify_video_fps']['constant_rate_factor']
+                enc_preset = self.input_parameter_dict['rectify_video_fps']['encoding_preset']
+                vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
+                conv_target = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
+
+                current_working_dir = video_dir
+                if 'calibration' not in sub_directory.name:
+                    target_file = f"{conv_target}_{cam_serial}.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}.{vid_ext}"
+                else:
+                    current_working_dir = sub_directory
+                    target_file = f"000000.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}-calibration.{vid_ext}"
+
+                # change video sampling rate
+                fps_subp = subprocess.Popen(args=["ffmpeg", "-loglevel", "warning", "-y", "-r", str(esr), "-i", target_file, "-fps_mode", "passthrough", "-crf", str(crf), "-preset", enc_preset, new_file],
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.STDOUT,
+                                            cwd=current_working_dir,
+                                            shell=False)
+
+                fsp_subprocesses.append(fps_subp)
+
+        wait_for_subprocesses(
+            subps=fsp_subprocesses,
+            max_seconds=6 * 60 * 60,
+            label="video re-encoding (fps/crf)",
+            poll_interval_s=5,
+            message_output=self.message_output,
+            raise_on_nonzero=False,
+            raise_on_timeout=False,
+        )
+
+        # move files to special directory
+        for sd_idx, sub_directory in enumerate(sorted(video_dir.iterdir())):
+            if (sub_directory.is_dir()
+                    and '.' in sub_directory.name
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
+
+                cam_serial = sub_directory.name.split('.')[-1]
+                vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
+                conv_target = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
+                dest_base = video_dir / date_joint / cam_serial
+                (dest_base / 'calibration_images').mkdir(parents=True, exist_ok=True)
+
+                current_working_dir = video_dir
+                if 'calibration' not in sub_directory.name:
+                    target_file = f"{conv_target}_{cam_serial}.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}.{vid_ext}"
+
+                    shutil.move(src=current_working_dir / new_file,
+                                dst=dest_base / new_file)
+                else:
+                    current_working_dir = sub_directory
+                    target_file = f"000000.{vid_ext}"
+                    new_file = f"{cam_serial}-{date_joint}-calibration.{vid_ext}"
+
+                    shutil.move(src=current_working_dir / new_file,
+                                dst=dest_base / 'calibration_images' / new_file)
+
+                # clean video directory of all unnecessary files
+                if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
+                    if (current_working_dir / f"{conv_target}_{cam_serial}.{vid_ext}").is_file():
+                        (current_working_dir / target_file).unlink()
+
+        # save camera_frame_count_dict to a file
+        # If no camera produced a clean (no-dropped-frames) recording, there is
+        # no trustworthy "least" frame count / duration. Downstream stages
+        # (anipose_operations, synchronize_files) read these strictly as numbers
+        # via int()/arithmetic, so writing None would crash them. Warn loudly
+        # and fall back to the historical numeric sentinel so the failure is
+        # visible instead of silently propagating a fabricated count.
+        if total_frame_number is None:
+            self.message_output("WARNING: no camera produced a clean (no-dropped-frames) recording for this session; "
+                                "total_frame_number_least/total_video_time_least fall back to a sentinel and should "
+                                "not be trusted downstream.")
+            total_frame_number = int(1e9)
+            total_video_time = 1e9
+        camera_frame_count_dict['total_frame_number_least'] = total_frame_number
+        camera_frame_count_dict['total_video_time_least'] = total_video_time
+        # Use nanmedian so a single missing/failed camera (whose pre-allocated
+        # slot stays NaN) does not collapse the whole session's median to NaN
+        # and poison the frame rate that every downstream stage
+        # (assign_vocalizations, anipose_operations, synchronize_files) reads.
+        # Only the pathological all-cameras-missing case stays NaN, which we
+        # surface explicitly rather than silently writing a misleading number.
+        if np.all(np.isnan(empirical_camera_sr)):
+            self.message_output("WARNING: no empirical camera sampling rates were recorded for this session; "
+                                "median_empirical_camera_sr written as NaN.")
+            camera_frame_count_dict['median_empirical_camera_sr'] = float('nan')
+        else:
+            camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.nanmedian(empirical_camera_sr), ndigits=4)
+        with open(video_dir / f'{date_joint}_camera_frame_count_dict.json', 'w') as frame_count_outfile:
+            json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)

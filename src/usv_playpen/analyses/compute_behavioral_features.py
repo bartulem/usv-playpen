@@ -47,7 +47,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import minimize
 
 from ..os_utils import first_match_or_raise
-from ..plot_style import apply_plot_style
+from ..visualizations.plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.auxiliary_plot_functions import (
     choose_animal_colors,
@@ -1295,27 +1295,23 @@ class FeatureZoo:
         -----------
         Initializes the FeatureZoo class.
 
-        All keyword arguments are captured into `self.__dict__` verbatim,
-        so the instance exposes every supplied kwarg as an attribute (no
-        whitelisting). The visualizations parameter dictionary is loaded
-        from `_parameter_settings/visualizations_settings.json` (relative
-        to the package root) and stored in
-        `self.visualizations_parameter_dict`. The boolean
-        `self.app_context_bool` records whether the current process is
-        running inside the GUI context; downstream methods use it to
-        decide whether to call `smart_wait` interactively or in
-        headless mode.
-
-        The kwargs documented below are the ones the rest of the class
-        actually consumes; other kwargs are accepted for forward
-        compatibility but are not used here.
+        The keyword arguments are validated against the keys the class
+        consumes (an unknown key raises ``TypeError``) and then captured into
+        `self.__dict__`, so each valid kwarg is exposed as an attribute. The
+        visualizations parameter dictionary is loaded from
+        `_parameter_settings/visualizations_settings.json` (relative to the
+        package root) and stored in `self.visualizations_parameter_dict`. The
+        boolean `self.app_context_bool` records whether the current process is
+        running inside the GUI context; downstream methods use it to decide
+        whether to call `smart_wait` interactively or in headless mode.
 
         Parameters
         ----------
         root_directory (str)
             Root directory for data; defaults to None.
-        neuronal_tuning_figures_dict (dict)
-            Analyzes parameters; defaults to None.
+        behavioral_parameters_dict (dict)
+            The ``compute_behavioral_features`` analyses-settings block;
+            defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
 
@@ -1324,6 +1320,12 @@ class FeatureZoo:
         None
         """
 
+        expected_kwargs = {'root_directory', 'behavioral_parameters_dict', 'message_output'}
+        unexpected_kwargs = set(kwargs) - expected_kwargs
+        if unexpected_kwargs:
+            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+                            f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
@@ -1652,8 +1654,10 @@ class FeatureZoo:
         allo_yaw-nose, nose-allo_yaw, allo_yaw-TTI, TTI-allo_yaw plus
         the matching allo_pitch-nose, nose-allo_pitch, allo_pitch-TTI,
         TTI-allo_pitch. The orofacial and anogenital social engagement
-        indices are computed via `calculate_sei`, which now uses the
-        same egocentric (yaw, pitch) decomposition for its gaze gate.
+        indices are computed via `calculate_sei`, whose gaze gate uses a
+        3D cosine similarity; the egocentric yaw/pitch columns above are
+        emitted separately but do not drive the gate (see the history
+        note in `calculate_sei`).
 
         The full table is materialized as a `polars.DataFrame`,
         feature-by-feature feature distributions are computed via
