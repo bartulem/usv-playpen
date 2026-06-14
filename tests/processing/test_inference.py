@@ -25,6 +25,7 @@ matplotlib.use("Agg")
 
 from usv_playpen.processing.das_inference import FindMouseVocalizations, _DAS_ANNOTATION_FILE_RE
 from usv_playpen.processing.assign_vocalizations import Vocalocator
+from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf_set
 
 
 @pytest.mark.parametrize("name,expected", [
@@ -843,3 +844,43 @@ def test_run_vocalocator_ssl_full_path_writes_emitter_column(
     assert out_df["emitter"].to_list() == ["M", "F", None]
     assert metadata["Session"]["session_usv_assigned"] is True
     assert save_mock.call_count == 1
+
+
+def test_are_points_in_conf_set_angle_binning():
+    """
+    Description
+    -----------
+    Lock the angular-bin convention shared by `estimate_angle_pdf` (a 45-bin
+    histogram with edges `linspace(-pi, pi, 46, endpoint=True)`) and
+    `are_points_in_conf_set` (which digitizes head->nose yaw against
+    `linspace(-pi, pi, 45, endpoint=False)` — exactly the 45 left edges of those
+    same bins). A point is reported in-set iff the matching 4D-confidence-set
+    cell is True, guarding against a future divergence of the two binnings
+    (which would silently mis-assign vocalizations by angle).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    arena = np.array([100.0, 100.0])
+    points = np.zeros((1, 2, 3))
+    points[0, 0, :2] = [10.0, 20.0]   # nose (node 0)
+    points[0, 1, :2] = [0.0, 0.0]     # head (node 1)
+
+    # replicate exactly the indexing are_points_in_conf_set performs
+    yaw = np.arctan2(20.0, 10.0)
+    y_idx = int(np.digitize(20.0, np.linspace(-50.0, 50.0, 100)) - 1)
+    x_idx = int(np.digitize(10.0, np.linspace(-50.0, 50.0, 100)) - 1)
+    a_idx = int(np.digitize(yaw, np.linspace(-np.pi, np.pi, 45, endpoint=False)) - 1)
+    assert 0 <= a_idx <= 44
+
+    conf = np.zeros((1, 100, 100, 45), dtype=bool)
+    conf[0, y_idx, x_idx, a_idx] = True
+    assert bool(are_points_in_conf_set(conf, points, arena)[0]) is True
+
+    conf[0, y_idx, x_idx, a_idx] = False
+    assert bool(are_points_in_conf_set(conf, points, arena)[0]) is False
