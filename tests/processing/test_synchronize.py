@@ -463,6 +463,57 @@ def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_sett
     assert rec["total_num_channels"] == 5
 
 
+def test_gather_px_information_writes_led_memmap(tmp_path, processing_settings):
+    """
+    Description
+    -----------
+    `gather_px_information` decodes a real (generated) video, locates the three
+    sync-LED centroids via the Otsu/moments path, and writes the per-frame
+    `sync_px_*` LED-intensity memmap. A 15-frame 1280x720 clip with bright
+    blobs at the camera's known LED coordinates exercises the cv2 read +
+    centroid + memmap-write path.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    import cv2
+
+    serial = "21372315"
+    coords = list(Synchronizer._build_led_px_dict()["current"][serial].values())  # [y, x] each
+    h, w = 720, 1280
+    video_name = f"{serial}-ts.mp4"
+    video_path = tmp_path / video_name
+
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (w, h))
+    if not writer.isOpened():
+        pytest.skip("cv2 mp4v VideoWriter unavailable in this environment")
+    for _ in range(15):
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        for (y, x) in coords:
+            frame[y - 5:y + 6, x - 5:x + 6] = 255      # bright LED blob
+        writer.write(frame)
+    writer.release()
+
+    (tmp_path / "sync").mkdir()
+    sync = _make_sync(tmp_path, processing_settings)
+    sync.gather_px_information(video_of_interest=str(video_path), sync_camera_fps=10,
+                              camera_id=serial, video_name=video_name, total_frame_number=10)
+
+    mm = np.memmap(tmp_path / "sync" / f"sync_px_{serial}-ts", dtype=np.uint8,
+                   mode="r", shape=(10, 3, 3))
+    assert mm.shape == (10, 3, 3)
+    assert int(mm.max()) > 0      # LED pixels sampled as bright
+
+
 def _processing_settings_full():
     """
     Description
