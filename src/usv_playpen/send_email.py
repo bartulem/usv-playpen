@@ -7,13 +7,22 @@ from __future__ import annotations
 
 import configparser
 import smtplib
-import sys
 from collections.abc import Callable
 from email.message import EmailMessage
 from pathlib import Path
 
 
 class Messenger:
+    """
+    Description
+    -----------
+    Sends pipeline status / completion e-mails over SMTP_SSL using lab
+    credentials read from an INI file. ``send_message`` returns ``True`` on a
+    successful send, ``False`` on an SMTP/credentials error (logged via
+    ``message_output``, never raised, so a failed notification cannot abort the
+    pipeline), and ``None`` when no receivers are configured.
+    """
+
     def __init__(
         self,
         receivers: list | None = None,
@@ -59,22 +68,37 @@ class Messenger:
 
         Parameters
         ----------
+        None
 
         Returns
         -------
         email_host (str), email_port (str), email_address (str), email_password (str)
             Lab e-mail address and password.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the credentials file does not exist. send_message() calls this
+            inside its try/except, so it is reported via message_output and the
+            send returns False, rather than terminating the whole process.
+        KeyError
+            If the credentials file is missing the required ``[email]``
+            section (clearer than a raw missing-key error); also caught by
+            send_message().
         """
 
-        config = configparser.ConfigParser()
-
         if not Path(self.credentials_file).is_file():
-            print(self.credentials_file)  # noqa: T201
-            print("E-mail config file not found. Try again!")  # noqa: T201
-            sys.exit(1)
-        else:
-            config.read(self.credentials_file)
-            return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'], config['email']['email_password']
+            raise FileNotFoundError(
+                f"E-mail config file not found: '{self.credentials_file}'."
+            )
+        config = configparser.ConfigParser()
+        config.read(self.credentials_file)
+        if not config.has_section('email'):
+            raise KeyError(
+                f"E-mail config '{self.credentials_file}' is missing the "
+                "required [email] section."
+            )
+        return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'], config['email']['email_password']
 
     def send_message(self, subject: str | None = None, message: str | None = None) -> bool | None:
         """
@@ -111,13 +135,6 @@ class Messenger:
             try:
                 email_host, email_port, email_address, email_password = self.get_email_params()
 
-                if email_address is None or email_password is None:
-                    # no email address or password
-                    self.message_output(
-                        "Did you set the e-mail address and password correctly?"
-                    )
-                    sys.exit()
-
                 # create email
                 msg = EmailMessage()
                 msg["Subject"] = subject
@@ -126,7 +143,7 @@ class Messenger:
                 msg.set_content(message)
 
                 # send email
-                with smtplib.SMTP_SSL(host=email_host, port=email_port) as smtp:
+                with smtplib.SMTP_SSL(host=email_host, port=int(email_port)) as smtp:
                     smtp.login(email_address, email_password)
                     smtp.send_message(msg)
                 return True

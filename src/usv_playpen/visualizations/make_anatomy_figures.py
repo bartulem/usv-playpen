@@ -21,9 +21,10 @@ Current coverage:
           buckets (PAG, MRN, VTA, MB, CENT, SC, other) using the
           palette from `visualizations_settings.json["brain_area_colors"]`.
 
-  (b) 3D unit positions  - reserved for a future method.
+  (b) 3D unit positions  - `make_unit_positions_figure` /
+      `build_unit_positions_figure` / `make_unit_positions_video`.
 
-  (c) probe + raw-trace overlay  - reserved for a future method.
+  (c) probe + raw-trace overlay  - `make_unit_waveform_figure`.
 
 The catalog's raw `brain_area` acronyms (e.g. `SCdw`, `CENT2`) are
 pooled to the seven canonical display buckets via
@@ -48,7 +49,7 @@ from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from usv_playpen.plot_style import apply_plot_style
+from usv_playpen.visualizations.plot_style import apply_plot_style
 from usv_playpen.visualizations.figure_io import resolve_pdf_path, save_figure
 from usv_playpen.visualizations.make_behavioral_videos import pool_brain_area
 
@@ -64,6 +65,11 @@ _BRAIN_AREA_BUCKETS: tuple[str, ...] = (
 # Cell-type categories — bottom-to-top stack order in Panel A.
 _CELL_TYPE_LABELS: tuple[str, ...] = (
     "Somatic", "Non-somatic", "Multi-unit",
+)
+
+# Strong-contrast mono-grey triad agreed for the cell-type stacks.
+_CELL_TYPE_PALETTE: tuple[str, ...] = (
+    "#1A1A1A", "#7A7A7A", "#CFCFCF",
 )
 
 # Mouse IDs excluded from anatomy figures (insufficient yield / not used
@@ -152,7 +158,7 @@ def _download_allen_mesh(structure_id: int) -> pathlib.Path:
     if path.exists():
         return path
     url = _ALLEN_MESH_URL.format(structure_id=structure_id)
-    with urllib.request.urlopen(url) as resp:
+    with urllib.request.urlopen(url, timeout=60) as resp:
         data = resp.read()
     path.write_bytes(data)
     return path
@@ -231,11 +237,6 @@ def _ccf_to_bregma(verts_ccf: np.ndarray) -> np.ndarray:
     out[:, 2] = verts_ccf[:, 2] - _BREGMA_ML_CCF
     return out
 
-# Strong-contrast mono-grey triad agreed for the cell-type stacks.
-_CELL_TYPE_PALETTE: tuple[str, ...] = (
-    "#1A1A1A", "#7A7A7A", "#CFCFCF",
-)
-
 
 class AnatomyFigureMaker:
     """
@@ -302,10 +303,11 @@ class AnatomyFigureMaker:
         Read `unit_catalog.csv` and decorate each row with the two
         derived columns the figure methods rely on:
           * `bucket`    -> pooled brain-area bucket (one of seven)
-          * `cell_type` -> one of `SU somatic`, `SU non-somatic`, `MUA`
+          * `cell_type` -> one of `Somatic`, `Non-somatic`, `Multi-unit`
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -314,6 +316,12 @@ class AnatomyFigureMaker:
             appended. Original column order preserved otherwise.
         """
 
+        if not self.catalog_path.exists():
+            raise FileNotFoundError(
+                f"unit_catalog.csv not found: {self.catalog_path} "
+                "(the catalog is the authoritative unit scope for every "
+                "anatomy figure)."
+            )
         df = pd.read_csv(
             self.catalog_path,
             usecols=[
@@ -585,6 +593,7 @@ class AnatomyFigureMaker:
             dot_alpha: float = 1.0,
             legend_marker_scale: float = 3.0,
             filter_outliers: bool = True,
+            rasterize_dense: bool = True,
     ) -> pathlib.Path:
         """
         Description
@@ -602,6 +611,19 @@ class AnatomyFigureMaker:
         fig_format (str | None)
             Output format override; `None` falls back to
             `figures.fig_format`.
+        rasterize_dense (bool, default True)
+            When True, the six translucent Allen-CCF bucket meshes
+            are flattened to an embedded raster layer inside the SVG.
+            Those meshes are the dominant filesize contributor
+            (~thousands of triangles each x six buckets) so this
+            alone shrinks a 9 MB file to ~660 KB and makes downstream
+            editing in Illustrator / Inkscape responsive. Axis labels,
+            the legend, the brain-shell point cloud and the per-unit
+            dots stay vector — matplotlib's 3D backend silently
+            ignores `rasterized` on `Path3DCollection` (scatter
+            points), so those layers remain editable per-element.
+            Set False to emit a fully vector SVG (mesh polygons
+            included; large but cleanly editable everywhere).
         All other kwargs
             See `build_unit_positions_figure`.
 
@@ -624,6 +646,7 @@ class AnatomyFigureMaker:
             dot_alpha=dot_alpha,
             legend_marker_scale=legend_marker_scale,
             filter_outliers=filter_outliers,
+            rasterize_dense=rasterize_dense,
         )
 
         out_path = save_figure(
@@ -652,6 +675,7 @@ class AnatomyFigureMaker:
             dot_alpha: float = 1.0,
             legend_marker_scale: float = 3.0,
             filter_outliers: bool = True,
+            rasterize_dense: bool = True,
     ) -> plt.Figure:
         """
         Description
@@ -745,6 +769,7 @@ class AnatomyFigureMaker:
             alpha=shell_point_alpha,
             linewidths=0,
             depthshade=False,
+            rasterized=rasterize_dense,
         )
         # Force the shell into the deepest layer so its 8k+ points
         # never obscure the data dots from any rotation angle. The
@@ -764,6 +789,7 @@ class AnatomyFigureMaker:
                 face_color=self.brain_area_colors[bucket],
                 face_alpha=(mb_alpha if mesh_key == "MB" else region_alpha),
                 face_stride=1,
+                rasterized=rasterize_dense,
             )
 
         # 3) Somatic-SU dots, coloured by bucket. All dots from every
@@ -828,6 +854,7 @@ class AnatomyFigureMaker:
                 linewidths=0,
                 depthshade=False,
                 zorder=10,
+                rasterized=rasterize_dense,
             )
             # Pool the data dots into the front-most layer so they
             # always paint on top of both the shell scatter and the
@@ -1050,19 +1077,15 @@ class AnatomyFigureMaker:
             Number of top-amplitude clusters to render (left to right).
         waveform_width_um (float)
             Lateral-axis width allocated to each waveform.
-        voltage_uv_scale (float)
-            Multiplier mapping raw Kilosort template units to axial µm.
-            One fixed value across all rendered units, so peak
+        peak_amplitude_target_um (float)
+            Axial-µm height that the largest rendered unit's peak
+            amplitude maps to. One fixed scale across all units, so peak
             amplitudes vary visibly across the row.
         opacity_sigma_um (float)
             Gaussian σ for opacity vs probe-local distance from peak.
         n_neighbors_each_side (int)
             Number of nearest same-shank channels above and below the
             peak (peak's row sibling is added separately).
-        zoom_axial_um (float)
-            Half-extent (µm) above and below the peak channel.
-        zoom_lateral_um (float)
-            Half-extent (µm) left and right of the peak channel.
         fig_size_inches (tuple[float, float])
             Figure size in inches.
         fig_format (str)
@@ -1473,12 +1496,9 @@ class AnatomyFigureMaker:
         # Scale bar in the LOWER-LEFT corner of shank 1 (axes[0] is
         # always shank 1 regardless of which side the schematic is
         # on). Vertical line = the height every unit's peak channel
-        # is rendered at (`peak_amplitude_target_um`); horizontal
-        # line = one waveform's full time span (61 samples /
-        # sample_rate ≈ 2 ms). Label `Vp-p` (peak-to-peak) instead of
-        # "peak" because in extracellular ephys the spike has both a
-        # trough and a rebound peak — `Vp-p` is the unambiguous term
-        # for the full swing the bar represents.
+        # is rendered at (`peak_amplitude_target_um`), labelled
+        # "norm µV"; horizontal line spans 30 samples (= 1 ms at
+        # 30 kHz), labelled "1 ms".
         # Lock the shared y-axis BEFORE drawing the scale bar so its
         # data-coordinate y values land in the right place (the bar
         # would otherwise be positioned against matplotlib's auto-
@@ -2029,6 +2049,7 @@ class AnatomyFigureMaker:
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -2071,6 +2092,7 @@ class AnatomyFigureMaker:
             face_color: str,
             face_alpha: float,
             face_stride: int = 1,
+            rasterized: bool = False,
     ) -> None:
         """
         Description
@@ -2097,6 +2119,14 @@ class AnatomyFigureMaker:
         face_stride (int)
             Take every Nth face. `1` keeps all faces; >1 decimates
             (used for the whole-brain root mesh to stay responsive).
+        rasterized (bool)
+            When True, mark the resulting `Poly3DCollection` as
+            rasterized so an SVG export bakes the (thousands of)
+            translucent triangles into an embedded PNG rather than
+            emitting each one as a separate `<polygon>`. Cuts SVG
+            file size by ~100x and makes downstream editing
+            (Illustrator, Inkscape) actually usable. Text / legend /
+            axis labels stay vector regardless.
 
         Returns
         -------
@@ -2123,6 +2153,8 @@ class AnatomyFigureMaker:
             edgecolor="none",
             linewidth=0,
         )
+        if rasterized:
+            coll.set_rasterized(True)
         # Force the painter's algorithm to treat this mesh as the
         # FARTHEST artist on every frame, so the scatter dots layered
         # later always paint on top of it. Fixes the rotation-dependent

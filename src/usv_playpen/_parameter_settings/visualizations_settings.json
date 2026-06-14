@@ -22,11 +22,11 @@
   },
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
-    "make_behavioral_videos_bool": false,
+    "make_behavioral_videos_bool": true,
     "make_usv_spectrograms_bool": false
   },
   "visualize_data": {
-    "root_directories": []
+    "root_directories": ["/mnt/falkner/Bartul/Data/20250909_151929"]
   },
   "send_email": {
     "visualizations_pc_list": [
@@ -62,35 +62,34 @@
     "apply_mask": true
   },
   "make_behavioral_videos": {
-    "arena_directory": "",
+    "arena_directory": "/mnt/falkner/Bartul/Data/20250909_142042",
     "speaker_audio_file": "",
     "sequence_audio_file": "",
     "animate_bool": true,
-    "video_start_time": 750.0,
-    "video_duration": 5.0,
+    "video_start_time": 37.0,
+    "video_duration": 10.0,
     "plot_theme": "dark",
     "save_fig": true,
     "view_angle": "top",
     "side_azimuth_start": 45,
     "rotate_side_view_bool": false,
-    "rotation_speed": 5,
+    "rotation_speed": 20,
     "history_bool": false,
     "speaker_bool": false,
-    "spectrogram_bool": false,
+    "spectrogram_bool": true,
     "spectrogram_ch": 0,
-    "raster_plot_bool": false,
+    "raster_plot_bool": true,
     "raster_selection_criteria": {
       "brain_areas": [],
       "other": ["good"]
     },
     "raster_special_units": [""],
     "spike_sound_bool": false,
-    "beh_features_bool": false,
+    "beh_features_bool": true,
     "beh_features_to_plot": [],
     "special_beh_features": [],
     "general_figure_specs": {
       "fig_format": "png",
-      "fig_dpi": 600,
       "animation_codec": "h264_nvenc",
       "animation_codec_preset_flag": "p5",
       "animation_codec_tune_flag": "hq",
@@ -128,8 +127,8 @@
     "subplot_specs": {
       "beh_features_window_size": 10,
       "raster_window_size": 1,
-      "raster_lw": 0.1,
-      "raster_ll": 0.9,
+      "raster_lw": 0.3,
+      "raster_ll": 10.9,
       "spectrogram_cbar_bool": true,
       "spectrogram_plot_window_size": 1,
       "spectrogram_power_limit": [-60, 0],
