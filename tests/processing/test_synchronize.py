@@ -603,3 +603,90 @@ def test_crop_wav_files_to_video_single_device(tmp_path, mocker):
     assert (root / "sync" / "m_video_frames_in_audio_samples.txt").is_file()
     cropped = list((root / "audio" / "cropped_to_video").glob("*_cropped_to_video.wav"))
     assert cropped, "static_sox did not produce a cropped WAV"
+
+
+def _triggerbox_wav(path, edges, sr=250000):
+    """
+    Description
+    -----------
+    Write a triggerbox-channel WAV whose LSB carries a camera-frame TTL train:
+    a single odd sample at each edge index produces a 0->1 LSB rising edge for
+    `find_lsb_changes` (lsb_bool=True).
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Output WAV path.
+    edges (list[int])
+        Sample indices of the rising edges.
+    sr (int)
+        Sampling rate.
+
+    Returns
+    -------
+    None
+    """
+
+    data = np.zeros(edges[-1] + 10, dtype=np.int16)
+    for e in edges:
+        data[e] = 1
+    wavfile.write(path, sr, data)
+
+
+def test_crop_wav_files_to_video_both_devices_tempo_adjust(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Two-device ("both") crop where the master tracking window is longer than the
+    slave's: exercises the `m_longer` branch that resamples (SoX `tempo`) the
+    master files down to the slave duration, writes per-device offset files and
+    the sync-info JSON for both devices, and crops every original WAV.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    root = tmp_path
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": 5,
+        "total_video_time_least": 0.001,
+    }))
+    (root / "sync").mkdir()
+    audio_orig = root / "audio" / "original"
+    audio_orig.mkdir(parents=True)
+
+    # master: post-break edges spaced 10 -> window 200..250 (longer);
+    # slave: spaced 5 -> window 200..225 (shorter) -> m_longer branch.
+    _triggerbox_wav(audio_orig / "m_240101_ch04.wav",
+                    [10, 20, 30, 200, 210, 220, 230, 240, 250])
+    _triggerbox_wav(audio_orig / "s_240101_ch04.wav",
+                    [10, 20, 30, 200, 205, 210, 215, 220, 225])
+
+    settings = _processing_settings_full()
+    crop = settings["synchronize_files"]["Synchronizer"]["crop_wav_files_to_video"]
+    crop["device_receiving_input"] = "both"
+    crop["triggerbox_ch_receiving_input"] = 4
+
+    sync = Synchronizer(
+        root_directory=str(root),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    sync.crop_wav_files_to_video()
+
+    info = json.loads((root / "audio" / "audio_triggerbox_sync_info.json").read_text())
+    assert info["m"]["duration_samples"] > info["s"]["duration_samples"]   # m_longer path
+    assert (root / "sync" / "m_video_frames_in_audio_samples.txt").is_file()
+    assert (root / "sync" / "s_video_frames_in_audio_samples.txt").is_file()
+    cropped = list((root / "audio" / "cropped_to_video").glob("*_cropped_to_video.wav"))
+    assert len(cropped) >= 2      # both devices cropped
