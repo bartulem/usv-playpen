@@ -38,7 +38,7 @@ echo "" >> "$JOB_SCRIPT"
 echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
 echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "generate-usv-playback --exp_id $EXP_ID --num_usv_files $NUM_USV_FILES" >> "$JOB_SCRIPT"
+echo "generate-usv-playback --exp-id \"$EXP_ID\" --num-usv-files $NUM_USV_FILES" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

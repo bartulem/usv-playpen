@@ -53,6 +53,13 @@ class AudioGenerator:
         None
         """
 
+        expected_kwargs = {'exp_id', 'root_directory', 'create_playback_settings_dict',
+                           'freq_shift_settings_dict', 'message_output'}
+        unexpected_kwargs = set(kwargs) - expected_kwargs
+        if unexpected_kwargs:
+            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+                            f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
@@ -125,7 +132,13 @@ class AudioGenerator:
         total_acceptable_playback_time = self.create_playback_settings_dict['total_acceptable_naturalistic_playback_time']
 
         gmm = _GMM_PARAMS['female'] if 'female' in prefix.lower() else _GMM_PARAMS['male']
-        rng = np.random.default_rng()
+        # `playback_seed` is None by default (fresh entropy, non-reproducible);
+        # set it to an integer to generate a documented, repeatable stimulus
+        # set. A local random.Random is used instead of the global `random`
+        # module so the draw is reproducible without mutating global state.
+        playback_seed = self.create_playback_settings_dict['playback_seed']
+        rng = np.random.default_rng(playback_seed)
+        py_rng = random.Random(playback_seed)
 
         for _ in range(self.create_playback_settings_dict['num_naturalistic_usv_files']):
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
@@ -176,7 +189,7 @@ class AudioGenerator:
                     usv_seq_length = int(np.clip(round(rng.normal(13, 5)), 3, 23))
                     for usv_idx in range(usv_seq_length):
                         # pick USV file
-                        random_wav_file = random.choice(wav_files_list)
+                        random_wav_file = py_rng.choice(wav_files_list)
                         _, random_wav_file_data = wavfile.read(random_wav_file)
                         total_playback_time_created += (random_wav_file_data.shape[0] / (wav_sampling_rate * 1e3))
 
@@ -227,8 +240,9 @@ class AudioGenerator:
 
         Parameters
         ----------
-        spock_cluster_bool (bool)
-            If True, the code is run on Spock.
+        None
+            Inputs are read from ``self.create_playback_settings_dict`` (the
+            ``create_usv_playback_wav`` settings block) and ``self.exp_id``.
 
         Returns
         -------
@@ -253,6 +267,11 @@ class AudioGenerator:
         wav_sampling_rate = self.create_playback_settings_dict['wav_sampling_rate']
         total_usv_number = self.create_playback_settings_dict['total_usv_number']
 
+        # `playback_seed` is None by default (fresh entropy, non-reproducible);
+        # set it to an integer for a documented, repeatable stimulus set. A
+        # local random.Random avoids mutating the global `random` module state.
+        py_rng = random.Random(self.create_playback_settings_dict['playback_seed'])
+
         for _ in range(self.create_playback_settings_dict['num_usv_files']):
 
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
@@ -271,7 +290,7 @@ class AudioGenerator:
                        'w+') as usv_id_txt_file):
                 replay_txt_file.write(f'{ipi_duration_samples} \n')
                 for usv_num in tqdm(range(total_usv_number)):
-                    random_wav_file = random.choice(wav_files_list)
+                    random_wav_file = py_rng.choice(wav_files_list)
                     _, random_wav_file_data = wavfile.read(random_wav_file)
                     replay_wav_arr = np.concatenate((replay_wav_arr, random_wav_file_data, arr_start_with_ipi))
                     replay_txt_file.write(f'{random_wav_file_data.shape[0]} \n')

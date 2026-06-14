@@ -7,15 +7,28 @@ avisoft_config_directory = "C:\\Users\\FalknerLab\\Documents\\Avisoft Bioacousti
 coolterm_basedirectory = "D:\\CoolTerm"
 arduino_sync_port = "COM7"
 credentials_directory = "/Users/bmimica/Library/Application Support/usv_playpen/.credentials_Bartul"
-recording_files_destination_linux = [ "/mnt/falkner/Bartul/Data",]
-recording_files_destination_win = [ "F:\\Bartul\\Data",]
-recording_files_destinations_all = [ "falkner", "murthy",]
+file_server = "cup"
+selected_labs = [ "falkner",]
 conduct_audio_recording = true
 conduct_tracking_calibration = false
 calibration_duration = 3
 video_session_duration = 20
 disable_ethernet = true
 ethernet_network = "Ethernet 5"
+
+[[lab_shares]]
+name = "falkner"
+windows = "F"
+darwin = "/Volumes"
+linux = "/mnt"
+cluster = "/mnt/cup/labs"
+
+[[lab_shares]]
+name = "murthy"
+windows = "M"
+darwin = "/Volumes"
+linux = "/mnt"
+cluster = "/mnt/cup/labs"
 
 [audio]
 usgh_devices_sync = false

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import collections
 import json
 import pathlib
 from pathlib import Path
 from typing import Any
 
-import h5py
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
@@ -19,6 +19,11 @@ import seaborn as sns
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
+# The USV/session loaders live in analyses/_usv_io.py (moved there to break the
+# analyses<->visualizations near-cycle); re-imported here so this module and its
+# importers keep using them unchanged.
+from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_data
 
 
 # Load the project-wide default cmap from `visualizations_settings.json`
@@ -35,101 +40,37 @@ try:
 except FileNotFoundError:
     _GLOBAL_CMAP = "inferno"
 
+# Fixed seed for the purely cosmetic figure randomness in this module -- the
+# strip/swarm x-jitter and the KDE point subsampling -- so that re-rendering a
+# figure yields pixel-identical output instead of a slightly different cloud /
+# density estimate each run.
+_FIGURE_RNG_SEED = 0
 
-def extract_session_metadata(session_root: str) -> dict[str, Any]:
+
+def _figure_rng() -> np.random.Generator:
     """
     Description
     -----------
-    This method extracts core experimental metadata from a session directory, including
-    mouse track names, recording frame rate, and experimental codes.
+    Return a fresh NumPy random Generator seeded with the module-wide
+    ``_FIGURE_RNG_SEED`` so every figure that draws cosmetic randomness (point
+    jitter, KDE subsampling) renders identically across runs.
 
-    It searches for the metric H5 tracking file within the provided
-    directory and extracts identity strings for the animals involved. It is
-    specifically designed for social interaction sessions (male-female).
-
-    Parameters
-    ----------
-    session_root (str)
-        The absolute path to the session directory containing the .h5 tracking files.
-
-    Returns
-    -------
-    metadata (dict)
-        Contains 'male_id', 'female_id', 'frame_rate', 'experiment_code', and 'tracking_file'.
-    """
-
-    session_path = Path(session_root)
-    tracking_file = next(session_path.glob('**/*_points3d_translated_rotated_metric.h5'), None)
-
-    if tracking_file is None:
-        msg = f"No tracking file found in {session_root}"
-        raise FileNotFoundError(msg)
-
-    with h5py.File(name=str(tracking_file), mode='r') as h5_file:
-        track_names = [item.decode('utf-8') for item in list(h5_file['track_names'])]
-        if len(track_names) < 2:
-            msg = f"Session {session_root} does not contain two animal tracks."
-            raise IndexError(msg)
-
-        return {
-            'male_id': track_names[0],
-            'female_id': track_names[1],
-            'frame_rate': float(h5_file['recording_frame_rate'][()]),
-            'experiment_code': h5_file['experimental_code'][()].decode("utf-8"),
-            'tracking_file': tracking_file
-        }
-
-def load_and_filter_usv_data(
-    session_root: str,
-    frame_rate: float,
-    noise_col_id: str,
-    noise_categories: list[int]
-) -> pls.DataFrame:
-    """
-    Description
-    -----------
-    This method loads USV summary CSV data using Polars and appends calculated frame
-    indices based on the provided recording frame rate.
-
-    The function filters the entire dataset to remove noise based on the provided
-    noise column and a list of noise categories. The remaining valid vocalizations
-    (male, female, and unassigned) are retained and returned.
+    Create ONE Generator per figure and draw from it sequentially — do NOT
+    re-create it inside a loop, or each iteration restarts the same seeded
+    stream and the draws become correlated rather than independent.
 
     Parameters
     ----------
-    session_root (str)
-        The absolute path to the session directory.
-    frame_rate (float)
-        The sampling rate of the video recording used to synchronize USVs with behavioral frames.
-    noise_col_id (str)
-        The name of the column in the CSV that dictates the noise classification.
-    noise_categories (list[int])
-        A list of specific integer values in the noise column that identify a row as noise to be excluded.
+    None
 
     Returns
     -------
-    usv_info (pls.DataFrame)
-        Contains USV starts, durations, emitters, and a newly calculated 'frame_index',
-        with all identified noise removed.
+    (np.random.Generator)
+        A Generator seeded with ``_FIGURE_RNG_SEED``.
     """
 
-    session_path = Path(session_root)
-    usv_file = next(session_path.glob('**/*_usv_summary.csv'), None)
+    return np.random.default_rng(_FIGURE_RNG_SEED)
 
-    if usv_file is None:
-        msg = f"USV summary file missing in {session_root}"
-        raise FileNotFoundError(msg)
-
-    usv_info = pls.read_csv(str(usv_file))
-
-    # Remove noise across all categories provided in the list
-    usv_info_clean = usv_info.filter(
-        ~pls.col(noise_col_id).is_in(noise_categories)
-    )
-
-    return usv_info_clean.with_columns(
-        (pls.col("start") * frame_rate).floor().cast(pls.UInt32).alias("frame_index")
-    )
 
 def extract_category_embedding_data(
     session_roots: list[str],
@@ -178,8 +119,12 @@ def extract_category_embedding_data(
     for session_root in session_roots:
         try:
             metadata = extract_session_metadata(session_root)
-            male_id = metadata['male_id']
-            female_id = metadata['female_id']
+            # Strip null-byte padding / whitespace off the H5 track names so the
+            # emitter match below is normalized on both sides (matching
+            # build_master_usv_dataframe); a padded ID would otherwise send every
+            # USV to 'unassigned'.
+            male_id = str(metadata['male_id']).strip('\x00').strip()
+            female_id = str(metadata['female_id']).strip('\x00').strip()
 
             # Filter noise
             usv_info = load_and_filter_usv_data(
@@ -195,9 +140,10 @@ def extract_category_embedding_data(
                 continue
 
             # Map sex and select target columns
+            emitter_norm = pls.col("emitter").cast(pls.Utf8).str.strip_chars('\x00').str.strip_chars()
             usv_processed = usv_info.with_columns([
-                pls.when(pls.col("emitter") == male_id).then(pls.lit("male"))
-                .when(pls.col("emitter") == female_id).then(pls.lit("female"))
+                pls.when(emitter_norm == male_id).then(pls.lit("male"))
+                .when(emitter_norm == female_id).then(pls.lit("female"))
                 .otherwise(pls.lit("unassigned"))
                 .alias("sex")
             ]).select([
@@ -237,7 +183,7 @@ def get_session_behavioral_features(session_root: str) -> pls.DataFrame:
     """
 
     session_path = Path(session_root)
-    features_file = next(session_path.glob('**/*_behavioral_features.csv'), None)
+    features_file = next(iter(sorted(session_path.glob('**/*_behavioral_features.csv'))), None)
 
     if features_file is None:
         msg = f"Behavioral features file missing in {session_root}"
@@ -310,6 +256,19 @@ def merge_usv_and_behavioral_features(
 
     return usv_subset.join(behavioral_subset, on="frame_index", how="inner")
 
+# Continuous per-USV acoustic features quantified in the *_usv_summary.csv,
+# carried through the master DataFrame (null-filled for older sessions whose CSV
+# predates a column) so any downstream analysis can use them without re-reading.
+_CONTINUOUS_ACOUSTIC_FEATURES = (
+    "mean_freq_hz",
+    "peak_freq_hz",
+    "freq_bandwidth_hz",
+    "mean_amplitude",
+    "max_amplitude",
+    "spectral_entropy",
+)
+
+
 def build_master_usv_dataframe(
     session_roots: list[str],
     noise_col_id: str,
@@ -336,7 +295,16 @@ def build_master_usv_dataframe(
 
     The returned 'usv_df' has one row per vocalization. Animal IDs are stripped
     of null bytes and leading/trailing whitespace to ensure consistent identity
-    matching across sessions.
+    matching across sessions; the CSV 'emitter' value is stripped the same way
+    before being matched against them, so null-byte-padded H5 track names do not
+    silently route every vocalization to 'unassigned'. The per-USV continuous
+    acoustic features quantified in the summary CSV (mean / peak frequency,
+    frequency bandwidth, mean / max amplitude, spectral entropy) are carried
+    through as well, null-filled for any session whose CSV predates a column.
+
+    Sessions skipped for missing tracking files, missing summary CSVs, or a
+    missing category column are tallied by reason and reported once at the end,
+    rather than dropped silently.
 
     The returned 'background_df' has one row per video frame for sessions that
     have a behavioral features file, and provides the spatial occupancy baseline
@@ -369,12 +337,18 @@ def build_master_usv_dataframe(
         A tidy Polars DataFrame with one row per non-noise vocalization across all
         sessions. Columns: 'session_id', 'date', 'hour', 'male_id', 'female_id',
         'experiment_code', 'emitter', 'sex', 'category', 'start', 'duration',
-        'frame_index', 'distance', 'mf_angle', 'fm_angle'. The last three columns
-        are null for sessions missing a behavioral features file.
+        'frame_index', the continuous acoustic features ('mean_freq_hz',
+        'peak_freq_hz', 'freq_bandwidth_hz', 'mean_amplitude', 'max_amplitude',
+        'spectral_entropy'), and 'distance', 'mf_angle', 'fm_angle'. The acoustic
+        columns are null for sessions whose CSV predates them; the last three
+        spatial columns are null for sessions missing a behavioral features file.
     background_df (pls.DataFrame)
         A tidy Polars DataFrame with one row per video frame for each session that
         has a behavioral features file. Columns: 'session_id', 'distance',
         'mf_angle', 'fm_angle'. Used as the occupancy baseline in polar KDE plots.
+        When no session has a behavioral features file it is returned empty but
+        with this schema, so 'distance'/'mf_angle'/'fm_angle' column access does
+        not raise.
     total_noise_filtered (int)
         The total number of rows removed across all sessions based on noise_categories.
     """
@@ -382,6 +356,7 @@ def build_master_usv_dataframe(
     all_usv_rows: list[pls.DataFrame] = []
     all_bg_rows: list[pls.DataFrame] = []
     total_noise_filtered = 0
+    skipped_sessions: collections.Counter[str] = collections.Counter()
 
     for session_root in session_roots:
         session_path = Path(session_root)
@@ -389,6 +364,7 @@ def build_master_usv_dataframe(
         try:
             metadata = extract_session_metadata(session_root)
         except (FileNotFoundError, IndexError):
+            skipped_sessions['missing or invalid tracking file'] += 1
             continue
 
         raw_male_id = metadata['male_id']
@@ -398,33 +374,47 @@ def build_master_usv_dataframe(
         frame_rate = metadata['frame_rate']
         experiment_code = metadata['experiment_code']
 
-        usv_file = next(session_path.glob('**/*_usv_summary.csv'), None)
+        usv_file = next(iter(sorted(session_path.glob('**/*_usv_summary.csv'))), None)
         if usv_file is None:
+            skipped_sessions['missing USV summary CSV'] += 1
             continue
 
+        # Read the summary CSV once and derive the noise count, the noise-filtered
+        # rows, and the video-synchronized frame index from that single read
+        # (previously the file was read twice: once here for the count and again
+        # inside load_and_filter_usv_data).
         raw_data = pls.read_csv(str(usv_file))
-        total_noise_filtered += raw_data.filter(pls.col(noise_col_id).is_in(noise_categories)).height
+        usv_clean = raw_data.filter(~pls.col(noise_col_id).is_in(noise_categories))
+        total_noise_filtered += raw_data.height - usv_clean.height
+        usv_info = usv_clean.with_columns(
+            (pls.col('start') * frame_rate).floor().cast(pls.UInt32).alias('frame_index')
+        )
+
+        if usv_category_col not in usv_info.columns:
+            skipped_sessions[f"missing '{usv_category_col}' column"] += 1
+            continue
 
         session_id = usv_file.stem.replace('_usv_summary', '')
         date_str = session_id.split('_')[0]
         hour_int = int(session_id.split('_')[1][0:2])
 
-        try:
-            usv_info = load_and_filter_usv_data(
-                session_root=session_root,
-                frame_rate=frame_rate,
-                noise_col_id=noise_col_id,
-                noise_categories=noise_categories
-            )
-        except FileNotFoundError:
-            continue
+        # Match the emitter against the *normalized* IDs: H5 track names can carry
+        # trailing null-byte padding / whitespace (hence the strip on the stored
+        # *_id columns), so strip the CSV emitter the same way before comparing --
+        # otherwise a padded ID silently sends every USV to 'unassigned'.
+        emitter_norm = pls.col('emitter').cast(pls.Utf8).str.strip_chars('\x00').str.strip_chars()
 
-        if usv_category_col not in usv_info.columns:
-            continue
+        # Carry every continuous acoustic feature present in this CSV; null-fill the
+        # rest so the master schema is identical across sessions.
+        acoustic_exprs = [
+            pls.col(feature) if feature in usv_info.columns
+            else pls.lit(None).cast(pls.Float64).alias(feature)
+            for feature in _CONTINUOUS_ACOUSTIC_FEATURES
+        ]
 
         usv_processed = usv_info.with_columns([
-            pls.when(pls.col('emitter') == raw_male_id).then(pls.lit('male'))
-            .when(pls.col('emitter') == raw_female_id).then(pls.lit('female'))
+            pls.when(emitter_norm == male_id).then(pls.lit('male'))
+            .when(emitter_norm == female_id).then(pls.lit('female'))
             .otherwise(pls.lit('unassigned'))
             .alias('sex'),
             pls.lit(session_id).alias('session_id'),
@@ -433,10 +423,12 @@ def build_master_usv_dataframe(
             pls.lit(male_id).alias('male_id'),
             pls.lit(female_id).alias('female_id'),
             pls.lit(experiment_code).alias('experiment_code'),
-            pls.col(usv_category_col).alias('category')
+            pls.col(usv_category_col).alias('category'),
+            *acoustic_exprs,
         ]).select([
             'session_id', 'date', 'hour', 'male_id', 'female_id', 'experiment_code',
-            'emitter', 'sex', 'category', 'start', 'duration', 'frame_index'
+            'emitter', 'sex', 'category', 'start', 'duration', 'frame_index',
+            *_CONTINUOUS_ACOUSTIC_FEATURES,
         ])
 
         has_behavioral = False
@@ -479,6 +471,16 @@ def build_master_usv_dataframe(
 
         all_usv_rows.append(usv_processed)
 
+    # Report skipped sessions once, by reason, rather than dropping them silently.
+    if skipped_sessions:
+        reason_summary = ', '.join(
+            f"{count}x {reason}" for reason, count in skipped_sessions.items()
+        )
+        print(
+            f"build_master_usv_dataframe skipped {sum(skipped_sessions.values())} of "
+            f"{len(session_roots)} session(s): {reason_summary}."
+        )
+
     if not all_usv_rows:
         msg = (
             f"build_master_usv_dataframe loaded 0 sessions out of {len(session_roots)} "
@@ -491,7 +493,19 @@ def build_master_usv_dataframe(
         raise RuntimeError(msg)
 
     usv_df = pls.concat(all_usv_rows)
-    background_df = pls.concat(all_bg_rows) if all_bg_rows else pls.DataFrame()
+    # Return an empty-but-typed background frame so downstream column access
+    # ('distance'/'mf_angle'/'fm_angle') does not raise when no session carried
+    # behavioral features.
+    background_df = (
+        pls.concat(all_bg_rows)
+        if all_bg_rows
+        else pls.DataFrame(schema={
+            'session_id': pls.Utf8,
+            'distance': pls.Float64,
+            'mf_angle': pls.Float64,
+            'fm_angle': pls.Float64,
+        })
+    )
 
     return usv_df, background_df, total_noise_filtered
 
@@ -639,10 +653,11 @@ def plot_assignment_summary_panel(
     fig, (ax_scatter, ax_violin, ax_bar) = plt.subplots(nrows=3, ncols=1, figsize=(6, 9))
 
     # Panel 1: Scatter plot
+    rng = _figure_rng()
     for category, pos in x_positions.items():
         subset = df_long.filter(pls.col('category') == category)
         counts = subset['count'].to_numpy()
-        jittered_x = np.random.normal(loc=pos, scale=jitter_strength, size=len(counts))
+        jittered_x = rng.normal(loc=pos, scale=jitter_strength, size=len(counts))
         ax_scatter.scatter(jittered_x, counts, color=colors[category], label=category, alpha=0.7, s=50)
 
     ax_scatter.set_xticks(list(x_positions.values()))
@@ -684,11 +699,11 @@ def plot_assignment_summary_panel(
         stats_dict[f'{cat}_iqr'] = float(iqr)
         stats_text_lines.append(f"{cat.capitalize()}: {median:.2f} ± {iqr:.2f}")
 
-    bbox_props = dict(boxstyle='round,pad=0.5', facecolor='#202020', alpha=0.6, edgecolor='grey')
+    bbox_props = dict(boxstyle='round,pad=0.5', facecolor='#202020', alpha=0.6, edgecolor='#808080')
     ax_violin.text(0.95, 0.05, "\n".join(stats_text_lines),
                    transform=ax_violin.transAxes, fontsize=9,
                    verticalalignment='bottom', horizontalalignment='right',
-                   bbox=bbox_props, color='white')
+                   bbox=bbox_props, color='#FFFFFF')
 
     # Panel 3: Stacked proportions bar
     totals_df = df_long.group_by('category').agg(pls.sum('count').alias('total_count'))
@@ -714,9 +729,9 @@ def plot_assignment_summary_panel(
         'unassigned_proportion': float(unassigned_prop)
     })
 
-    ax_bar.barh(0, male_total, color=colors['male'], edgecolor='white', height=0.4)
-    ax_bar.barh(0, female_total, left=male_total, color=colors['female'], edgecolor='white', height=0.4)
-    ax_bar.barh(0, unassigned_total, left=male_total + female_total, color=colors['unassigned'], edgecolor='white', height=0.4)
+    ax_bar.barh(0, male_total, color=colors['male'], edgecolor='#FFFFFF', height=0.4)
+    ax_bar.barh(0, female_total, left=male_total, color=colors['female'], edgecolor='#FFFFFF', height=0.4)
+    ax_bar.barh(0, unassigned_total, left=male_total + female_total, color=colors['unassigned'], edgecolor='#FFFFFF', height=0.4)
 
     text_y_offset = 0.1
     ax_bar.text(male_total / 2, text_y_offset, f'{male_total}', ha='center', va='center', fontsize=9)
@@ -899,12 +914,13 @@ def plot_polar_kde_distance_angle(
 
     stats_dict = {'n_usv_points': len(filt_usv_dist), 'n_all_points': len(filt_all_dist)}
 
-    # 2. Subsample for performance
+    # 2. Subsample for performance (one Generator, drawn for each array in turn)
+    rng = _figure_rng()
     if len(filt_usv_dist) > max_kde_points:
-        idx = np.random.choice(len(filt_usv_dist), max_kde_points, replace=False)
+        idx = rng.choice(len(filt_usv_dist), max_kde_points, replace=False)
         filt_usv_dist, abs_usv_rad = filt_usv_dist[idx], abs_usv_rad[idx]
     if len(filt_all_dist) > max_kde_points:
-        idx = np.random.choice(len(filt_all_dist), max_kde_points, replace=False)
+        idx = rng.choice(len(filt_all_dist), max_kde_points, replace=False)
         filt_all_dist, abs_all_rad = filt_all_dist[idx], abs_all_rad[idx]
 
     fig = plt.figure(figsize=(10, 4))
@@ -1028,6 +1044,8 @@ def plot_behavior_duration_regressions(
         Draws a seaborn regplot of y_col vs x_col, computes the Pearson correlation,
         stores the resulting r and p values in the enclosing stats_dict under
         '{prefix}_r' and '{prefix}_p', and annotates the axes with the statistics.
+        The plot/stats are skipped (axis cosmetics still applied) when fewer than
+        two valid (x, y) pairs remain after dropping NaNs.
 
         Parameters
         ----------
@@ -1050,20 +1068,22 @@ def plot_behavior_duration_regressions(
             Side effects: mutates ax and stats_dict.
         """
 
-        sns.regplot(data=data, x=x_col, y=y_col, ax=ax,
-                    scatter_kws={'color': color, 'alpha': 0.5, 's': 15},
-                    line_kws={'color': line_color})
+        valid = data[[x_col, y_col]].dropna()
+        if len(valid) >= 2:
+            sns.regplot(data=valid, x=x_col, y=y_col, ax=ax,
+                        scatter_kws={'color': color, 'alpha': 0.5, 's': 15},
+                        line_kws={'color': line_color})
 
-        r, p = pearsonr(data[x_col], data[y_col])
-        stats_dict[f'{prefix}_r'] = float(r)
-        stats_dict[f'{prefix}_p'] = float(p)
+            r, p = pearsonr(valid[x_col], valid[y_col])
+            stats_dict[f'{prefix}_r'] = float(r)
+            stats_dict[f'{prefix}_p'] = float(p)
 
-        p_text = f'p = {p:.3f}' if p >= 0.001 else 'p < .001'
-        stat_text = f'r = {r:.2f}, {p_text}'
+            p_text = f'p = {p:.3f}' if p >= 0.001 else 'p < .001'
+            stat_text = f'r = {r:.2f}, {p_text}'
 
-        x_pos = ax.get_xlim()[0] + (ax.get_xlim()[1] - ax.get_xlim()[0]) * 0.01
-        y_pos = ax.get_ylim()[1] - (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.01
-        ax.text(x_pos, y_pos, stat_text, fontsize=9, verticalalignment='top')
+            x_pos = ax.get_xlim()[0] + (ax.get_xlim()[1] - ax.get_xlim()[0]) * 0.01
+            y_pos = ax.get_ylim()[1] - (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.01
+            ax.text(x_pos, y_pos, stat_text, fontsize=9, verticalalignment='top')
 
         ax.grid(False)
         ax.minorticks_off()
@@ -1169,7 +1189,7 @@ def plot_distance_by_assignment_kde_anova(
         if p_value_anova < 0.05:
             tukey = pairwise_tukeyhsd(endog=df_plot['distance'], groups=df_plot['category'], alpha=0.05)
             tukey_df = pd.DataFrame(data=tukey._results_table.data[1:], columns=tukey._results_table.data[0])
-            significant_pairs = tukey_df[tukey_df['reject'] == True]
+            significant_pairs = tukey_df[tukey_df['reject']]
 
             stats_dict['tukey_significant'] = significant_pairs.to_dict('records')
 
@@ -1200,7 +1220,7 @@ def plot_distance_by_assignment_kde_anova(
     fig, ax = plt.subplots(figsize=(10, 6))
     sns.kdeplot(data=df_plot, x='distance', hue='category', palette=colors, fill=True, alpha=0.5, common_norm=False, bw_adjust=1.5, ax=ax)
 
-    bbox_props = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.7, edgecolor='grey')
+    bbox_props = dict(boxstyle='round,pad=0.5', facecolor='#FFFFFF', alpha=0.7, edgecolor='#808080')
     ax.text(0.95, 0.98, full_stats_text, transform=ax.transAxes, fontsize=12, verticalalignment='top', horizontalalignment='right', bbox=bbox_props, color='#202020')
 
     ax.set_xlabel('Nose-Nose distance (cm)', fontsize=14)
@@ -1274,7 +1294,8 @@ def plot_unassigned_proportion_vs_distance_jointplot(
         p_text = f'p = {p:.3f}' if p >= 0.001 else 'p < .001'
         stat_text = f'r = {r:.2f}, {p_text}'
 
-        g.ax_joint.text(4.0, 0.12, stat_text, fontsize=12, color=line_color)
+        g.ax_joint.text(0.05, 0.95, stat_text, transform=g.ax_joint.transAxes,
+                        fontsize=12, color=line_color, va='top')
 
     g.set_axis_labels('Median Nose-Nose Distance', 'Proportion of Unassigned Calls', fontsize=12)
     g.figure.suptitle('Correlation between Distance and Unassigned Calls', y=1.02, fontsize=14)
@@ -1338,7 +1359,7 @@ def plot_duration_histograms_by_sex(
         stats_dict['male_mean'] = float(male_mean)
         stats_dict['male_median'] = float(male_median)
 
-        axes[0].hist(male_durations, bins=bins, color=male_color, alpha=0.8, edgecolor='white', linewidth=0.5)
+        axes[0].hist(male_durations, bins=bins, color=male_color, alpha=0.8, edgecolor='#FFFFFF', linewidth=0.5)
         axes[0].axvline(male_mean, color='#202020', linestyle='--', linewidth=1.5, label=f'Mean ({male_mean:.1f} ms)')
         axes[0].axvline(male_median, color='#202020', linestyle=':', linewidth=1.5, label=f'Median ({male_median:.1f} ms)')
         axes[0].legend(fontsize=12)
@@ -1355,7 +1376,7 @@ def plot_duration_histograms_by_sex(
         stats_dict['female_mean'] = float(female_mean)
         stats_dict['female_median'] = float(female_median)
 
-        axes[1].hist(female_durations, bins=bins, color=female_color, alpha=0.8, edgecolor='white', linewidth=0.5)
+        axes[1].hist(female_durations, bins=bins, color=female_color, alpha=0.8, edgecolor='#FFFFFF', linewidth=0.5)
         axes[1].axvline(female_mean, color='#202020', linestyle='--', linewidth=1.5, label=f'Mean ({female_mean:.1f} ms)')
         axes[1].axvline(female_median, color='#202020', linestyle=':', linewidth=1.5, label=f'Median ({female_median:.1f} ms)')
         axes[1].legend(fontsize=12)
@@ -1456,7 +1477,7 @@ def plot_hourly_regressions(
 
             x_pos = ax.get_xlim()[0] + (ax.get_xlim()[1] - ax.get_xlim()[0]) * 0.01
             y_pos = ax.get_ylim()[1] - (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.02
-            ax.text(x_pos, y_pos, stat_text, fontsize=9, verticalalignment='top')
+            ax.text(x_pos, y_pos, stat_text, fontsize=9, verticalalignment='top', color=line_color)
 
     # Male
     if not male_df.empty:
@@ -1777,6 +1798,11 @@ def plot_estrous_ratio_scatter(
     global_min = float('inf')
     global_max = float('-inf')
 
+    # One Generator for all stages, drawn sequentially so each stage's jitter is
+    # independent (do not re-create it inside the loop, or every stage restarts
+    # the same seeded stream and the jitter repeats).
+    rng = _figure_rng()
+
     for idx, category in enumerate(category_order):
         # Extract and filter NaNs
         raw_values = np.array(ratio_dict.get(category, []))
@@ -1789,39 +1815,83 @@ def plot_estrous_ratio_scatter(
             global_max = max(global_max, values.max())
 
         if n == 0:
-            stats_dict[category] = {'n': 0, 'mean': float('nan'), 'sem': float('nan')}
+            stats_dict[category] = {
+                'n': 0,
+                'mean': float('nan'), 'sem': float('nan'),
+                'geom_mean': float('nan'), 'log_sem': float('nan'),
+                'ci_lower': float('nan'), 'ci_upper': float('nan'),
+            }
             continue
 
-        # Descriptive Statistics
-        mean_val = float(np.mean(values))
+        # Arithmetic descriptive stats (always computed for backwards-
+        # compatibility of the returned stats_dict).
+        arith_mean = float(np.mean(values))
+        arith_sem = float(sem(values)) if n > 1 else float('nan')
         if n > 1:
-            sem_val = float(sem(values))
             t_crit = t.ppf((1 + confidence_level) / 2, n - 1)
-            ci_margin = t_crit * sem_val
-            ci_lower, ci_upper = mean_val - ci_margin, mean_val + ci_margin
-            stats_text = f"{mean_val:.2f} ± {sem_val:.2f}"
+            ci_margin = t_crit * arith_sem
+            ci_lower, ci_upper = arith_mean - ci_margin, arith_mean + ci_margin
         else:
-            sem_val, ci_lower, ci_upper = float('nan'), float('nan'), float('nan')
-            stats_text = f"Mean: {mean_val:.2f}"
+            ci_lower, ci_upper = float('nan'), float('nan')
+
+        # Geometric mean + log-space SEM, used as the plotted summary
+        # when the y-axis is logarithmic. Per-session ratios are right-
+        # skewed and unbounded above, so the arithmetic mean is biased
+        # upward by sessions with very small denominators; the eye reads
+        # the cloud's centre on a log axis, which corresponds to the
+        # geometric mean. Restrict to strictly positive values, since
+        # log10 is undefined elsewhere.
+        pos_values = values[values > 0]
+        n_pos = len(pos_values)
+        if n_pos >= 1:
+            log_vals = np.log10(pos_values)
+            log_mean = float(np.mean(log_vals))
+            log_sem_val = float(sem(log_vals)) if n_pos > 1 else 0.0
+            geom_mean = float(10.0 ** log_mean)
+        else:
+            log_mean, log_sem_val, geom_mean = float('nan'), float('nan'), float('nan')
+
+        # Choose what to draw based on use_log_scale.
+        if use_log_scale and not np.isnan(geom_mean):
+            center = geom_mean
+            if n_pos > 1:
+                lo = 10.0 ** (log_mean - log_sem_val)
+                hi = 10.0 ** (log_mean + log_sem_val)
+                yerr_arr = np.array([[center - lo], [hi - center]])
+                mult_factor = 10.0 ** log_sem_val
+                stats_text = f"G={geom_mean:.1f}  ×÷ {mult_factor:.2f}"
+            else:
+                yerr_arr = None
+                stats_text = f"G={geom_mean:.1f}"
+        else:
+            center = arith_mean
+            if n > 1:
+                yerr_arr = arith_sem
+                stats_text = f"{arith_mean:.2f} ± {arith_sem:.2f}"
+            else:
+                yerr_arr = None
+                stats_text = f"Mean: {arith_mean:.2f}"
 
         stats_dict[category] = {
-            'n': n, 'mean': mean_val, 'sem': sem_val,
-            'ci_lower': ci_lower, 'ci_upper': ci_upper
+            'n': n,
+            'mean': arith_mean, 'sem': arith_sem,
+            'geom_mean': geom_mean, 'log_sem': log_sem_val,
+            'ci_lower': ci_lower, 'ci_upper': ci_upper,
         }
 
         # Jitter and Plot Points
         cloud_center_x = idx
-        x_positions = np.random.uniform(cloud_center_x - jitter_width, cloud_center_x + jitter_width, size=n)
+        x_positions = rng.uniform(cloud_center_x - jitter_width, cloud_center_x + jitter_width, size=n)
 
         ax.scatter(x_positions, values, color=scatter_colors[idx], alpha=0.4, s=15, zorder=5)
 
-        # Plot Mean and SEM
-        ax.hlines(y=mean_val, xmin=cloud_center_x - mean_line_width, xmax=cloud_center_x + mean_line_width,
-                  color=line_color, linewidth=2.5, zorder=10)
-
-        if not np.isnan(sem_val):
-            ax.errorbar(cloud_center_x, mean_val, yerr=sem_val, fmt='none',
-                        color=line_color, elinewidth=1.5, capsize=0, zorder=9)
+        # Plot summary statistic (geometric or arithmetic mean) + SE marker.
+        if not np.isnan(center):
+            ax.hlines(y=center, xmin=cloud_center_x - mean_line_width, xmax=cloud_center_x + mean_line_width,
+                      color=line_color, linewidth=2.5, zorder=10)
+            if yerr_arr is not None:
+                ax.errorbar(cloud_center_x, center, yerr=yerr_arr, fmt='none',
+                            color=line_color, elinewidth=1.5, capsize=0, zorder=9)
 
         # Statistical Text Labels
         ax.text(cloud_center_x, -0.15, stats_text, transform=ax.get_xaxis_transform(),
@@ -2001,7 +2071,7 @@ def plot_estrous_stage_pie_chart(
     )
 
     # Add center circle for donut effect
-    centre_circle = plt.Circle((0, 0), 0.70, fc='white')
+    centre_circle = plt.Circle((0, 0), 0.70, fc='#FFFFFF')
     ax.add_artist(centre_circle)
 
     ax.axis('equal')
@@ -2047,7 +2117,7 @@ def plot_category_prevalence_and_embedding(
         Visual style for the embedding space. Must be 'density' or 'scatter'.
     boundary_color : str, default '#00FF00'
         Hex color for the territorial boundary lines overlaid on the embedding.
-    log_scale_bars : bool, default True
+    log_scale_bars : bool, default False
         If True, applies a base-10 logarithmic scale to the y-axis of the raw count bar charts.
     grid_res : int, default 300
         The resolution of the internal meshgrid. Higher values produce smoother
@@ -2093,7 +2163,7 @@ def plot_category_prevalence_and_embedding(
     # Build a custom "white-base" gradient by taking the project-wide
     # default colormap (`figures.cmap`) and pre-pending a smooth ramp
     # from white into its low-end colours.
-    base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
+    base_cmap = plt.get_cmap(_GLOBAL_CMAP)
     cmap_colors = base_cmap(np.linspace(0, 1, 256))
     white = np.array([1, 1, 1, 1])
     cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
@@ -2256,8 +2326,10 @@ def plot_category_global_fatigue_heatmap(
     Parameters
     ----------
     global_usv_df : pls.DataFrame
-        Consolidated Polars DataFrame containing 'session_id', 'sex', 'category',
-        'hour', and 'len' (vocal count).
+        Consolidated Polars DataFrame with one row per vocalization, containing
+        at least 'session_id', 'sex', 'category', and 'hour' (the raw per-USV
+        hour). The per-(session, sex, category, 2-hour-bin) count is computed
+        internally.
     smoothing_sigma : float
         Standard deviation for the Gaussian kernel applied along the 2-hour
         time bins (X-axis).
@@ -2530,6 +2602,12 @@ def plot_category_estrous_ratio_grid(
     mean_line_width = 0.2
     stats_dict = {}
 
+    # One Generator for every jittered cloud across both figures, drawn
+    # sequentially so each cloud's jitter is independent (do not re-create it
+    # inside the loops, or every cloud restarts the same seeded stream and the
+    # jitter repeats).
+    rng = _figure_rng()
+
     # Figure 1: Category facets
     n_cats = len(categories)
     cols = 3
@@ -2543,26 +2621,42 @@ def plot_category_estrous_ratio_grid(
 
         for idx, stage in enumerate(valid_stages):
             ratios = np.array(estrous_data[cat]['male_female_ratios'].get(stage, []))
-            ratios = ratios[np.isfinite(ratios)]
+            ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
             n = len(ratios)
 
             if n > 0:
                 # Jittered scatter
-                rng = np.random.default_rng()
                 x_jit = rng.normal(idx, 0.08, size=n)
                 ax.scatter(x_jit, ratios, color=scatter_colors[idx], alpha=0.5, s=20, zorder=5)
 
-                # Statistics
-                m = np.mean(ratios)
-                s = sem(ratios) if n > 1 else 0
+                # Geometric mean and log-space SEM (the y-axis is log10,
+                # so the arithmetic mean is dominated by low-denominator
+                # outliers and does not represent the visual centre of
+                # the cloud).
+                log_vals = np.log10(ratios)
+                log_mean = float(np.mean(log_vals))
+                log_sem_val = float(sem(log_vals)) if n > 1 else 0.0
+                geom_mean = float(10.0 ** log_mean)
+                arith_mean = float(np.mean(ratios))
+                arith_sem = float(sem(ratios)) if n > 1 else 0.0
+
+                # Asymmetric error bar in linear units corresponding to
+                # ±1 SE in log10 space.
+                lo = 10.0 ** (log_mean - log_sem_val)
+                hi = 10.0 ** (log_mean + log_sem_val)
+                yerr_arr = np.array([[geom_mean - lo], [hi - geom_mean]])
 
                 # Black statistical overlay
-                ax.hlines(y=m, xmin=idx - mean_line_width, xmax=idx + mean_line_width,
+                ax.hlines(y=geom_mean, xmin=idx - mean_line_width, xmax=idx + mean_line_width,
                           color='#202020', linewidth=2.0, zorder=10)
-                ax.errorbar(idx, m, yerr=s, fmt='none', color='#202020',
+                ax.errorbar(idx, geom_mean, yerr=yerr_arr, fmt='none', color='#202020',
                             elinewidth=0.5, capsize=0, zorder=9)
 
-                cat_stats[stage] = {'mean': float(m), 'sem': float(s), 'n': n}
+                cat_stats[stage] = {
+                    'mean': arith_mean, 'sem': arith_sem,
+                    'geom_mean': geom_mean, 'log_sem': log_sem_val,
+                    'n': n,
+                }
 
         ax.set_yscale('log')
         ax.axhline(1.0, color='#202020', linestyle='--', alpha=0.3, linewidth=1)
@@ -2588,23 +2682,28 @@ def plot_category_estrous_ratio_grid(
 
         for cat_idx, cat_id in enumerate(categories):
             ratios = np.array(estrous_data[cat_id]['male_female_ratios'].get(stage_char, []))
-            ratios = ratios[np.isfinite(ratios)]
+            ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
             n = len(ratios)
 
             if n > 0:
                 # Jittered scatter
-                rng = np.random.default_rng()
                 x_jit = rng.normal(cat_idx, 0.08, size=n)
                 ax.scatter(x_jit, ratios, color=scatter_colors[idx], alpha=0.5, s=20, zorder=5)
 
-                # Use pre-calculated stats from Figure 1 loop
-                m = stats_dict[cat_id][stage_char]['mean']
-                s = stats_dict[cat_id][stage_char]['sem']
+                # Reuse the log-space stats computed in the category
+                # facet loop above; render the asymmetric error bar in
+                # linear units (±1 SE in log10 space).
+                geom_mean = stats_dict[cat_id][stage_char]['geom_mean']
+                log_sem_val = stats_dict[cat_id][stage_char]['log_sem']
+                log_mean = float(np.log10(geom_mean))
+                lo = 10.0 ** (log_mean - log_sem_val)
+                hi = 10.0 ** (log_mean + log_sem_val)
+                yerr_arr = np.array([[geom_mean - lo], [hi - geom_mean]])
 
                 # Black Statistical Overlay
-                ax.hlines(y=m, xmin=cat_idx - mean_line_width, xmax=cat_idx + mean_line_width,
+                ax.hlines(y=geom_mean, xmin=cat_idx - mean_line_width, xmax=cat_idx + mean_line_width,
                           color='#202020', linewidth=2.0, zorder=10)
-                ax.errorbar(cat_idx, m, yerr=s, fmt='none', color='#202020',
+                ax.errorbar(cat_idx, geom_mean, yerr=yerr_arr, fmt='none', color='#202020',
                             elinewidth=1.5, capsize=0, zorder=9)
 
         ax.set_yscale('log')
@@ -2736,7 +2835,7 @@ def plot_category_polar_kde_grid(
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4),
                              subplot_kw={'projection': 'polar'})
 
-    axes_flat = axes.flatten() if n_cats > 1 else [axes]
+    axes_flat = axes.flatten()
     stats_dict = {'global_vmax': global_vmax, 'sex_plotted': sex_key}
 
     for i, cat in enumerate(categories):
@@ -2881,7 +2980,7 @@ def plot_estrous_category_kde_grid(
     bg_angle_f = bg_angle_rad[valid_bg]
 
     if len(bg_dist_f) > max_kde_points:
-        rng = np.random.default_rng()
+        rng = _figure_rng()
         idx = rng.choice(len(bg_dist_f), max_kde_points, replace=False)
         bg_dist_f, bg_angle_f = bg_dist_f[idx], bg_angle_f[idx]
 
@@ -2962,17 +3061,21 @@ def plot_estrous_category_kde_grid(
             ax.set_rlabel_position(90)
             ax.tick_params(axis='both', labelsize=7)
 
-            norm_dens = cell_densities.get((cat, stage))
+            norm_dens = cell_densities[(cat, stage)]
             if norm_dens is not None:
                 ax.contourf(ag, rg, np.clip(norm_dens, 0, global_vmax), cmap=colormap, levels=50)
             else:
                 ax.text(np.pi / 2, max_distance / 2, "N/A", ha='center', va='center', fontsize=9)
 
             if r == 0:
-                ax.set_title(stage_label_map.get(stage, stage), fontsize=12, pad=15)
+                ax.set_title(stage_label_map[stage], fontsize=12, pad=15)
 
             if c == 0:
-                ax.set_ylabel(f"Cat {int(cat)}", fontsize=10, labelpad=30)
+                try:
+                    cat_label = int(float(cat))
+                except (ValueError, TypeError):
+                    cat_label = cat
+                ax.set_ylabel(f"Cat {cat_label}", fontsize=10, labelpad=30)
 
     fig.suptitle(
         f'{sex_key.capitalize()} Spatial Likelihood: Category × Estrous Stage',

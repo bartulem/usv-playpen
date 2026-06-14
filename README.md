@@ -7,7 +7,7 @@
 [![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 ![shields.io-issues](https://img.shields.io/github/issues/bartulem/usv-playpen)
 [![Release](https://img.shields.io/github/v/release/bartulem/usv-playpen)](https://img.shields.io/github/v/release/bartulem/usv-playpen)
-[![MIT Licence](https://img.shields.io/github/license/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/blob/main/LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](https://github.com/bartulem/usv-playpen/blob/main/LICENSE)
 [![All Contributors](https://img.shields.io/badge/all_contributors-2-orange.svg?style=flat-square)](https://img.shields.io/badge/all_contributors-2-orange.svg?style=flat-square)
 [![GitHub stars](https://img.shields.io/github/stars/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
 [![GitHub forks](https://img.shields.io/github/forks/bartulem/usv-playpen?style=social)](https://github.com/bartulem/usv-playpen/)
