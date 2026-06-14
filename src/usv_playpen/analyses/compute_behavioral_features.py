@@ -1289,6 +1289,111 @@ class FeatureZoo:
         "mask_number": "few -- (count) -- many",
     }
 
+    # Canonical short display labels for modeling figures, keyed by the
+    # GENERIC (sex-neutral) feature base name. Egocentric bases carry no sex
+    # word here -- `resolve_feature_label` prepends the per-mouse sex for
+    # `self.<base>` / `other.<base>` keys. Dyadic-angle labels embed a
+    # `{self}` placeholder (the partner side stays the literal word
+    # "partner"); dyadic distances are sex-neutral. Single source of truth
+    # consumed by `visualizations.modeling_plots` so plot labels stay
+    # consistent and cohort-correct (male- vs female-target) without
+    # per-figure override dicts.
+    feature_display_names = {
+        # egocentric (rendered with a leading {self}/{other} sex word)
+        "speed": "speed",
+        "acceleration": "acceleration",
+        "neck_elevation": "neck elevation",
+        "allo_roll": "head roll",
+        "allo_pitch": "head pitch",
+        "allo_yaw": "head yaw",
+        "ego_yaw": "head yaw",
+        "back_pitch": "back pitch",
+        "back_yaw": "back yaw",
+        "body_dir": "body direction",
+        "tail_curvature": "tail curvature",
+        # dyadic distances (sex-neutral)
+        "nose-nose": "nose-nose distance",
+        "TTI-TTI": "TTI-TTI distance",
+        "nose-TTI": "nose-TTI distance",
+        "TTI-nose": "TTI-nose distance",
+        # dyadic angles (self -> partner; reverse orientation is partner -> self)
+        "allo_yaw-nose": "{self}-partner yaw",
+        "allo_yaw-TTI": "{self}-partner yaw",
+        "allo_pitch-nose": "{self}-partner pitch",
+        "allo_pitch-TTI": "{self}-partner pitch",
+        "nose-allo_yaw": "partner-{self} yaw",
+        "TTI-allo_yaw": "partner-{self} yaw",
+        "nose-allo_pitch": "partner-{self} pitch",
+        "TTI-allo_pitch": "partner-{self} pitch",
+        # dyadic engagement (Social Engagement Index)
+        "orofacial-sei": "orofacial SEI",
+        "anogenital-sei": "anogenital SEI",
+    }
+
+    @classmethod
+    def resolve_feature_label(cls, generic_key, self_sex=None, other_sex=None):
+        """
+        Description
+        -----------
+        Resolves a generic modeling feature key into a human-readable display
+        label, using `feature_display_names` as the single source of truth.
+
+        Handles, in order: a trailing `_1st_der` / `_2nd_der` derivative
+        suffix (re-appended as " (1st derivative)" / " (2nd derivative)"); the
+        per-mouse `self.` / `other.` egocentric prefixes (the matching sex word
+        is prepended); and `{self}` / `{other}` placeholders embedded in the
+        canonical label (filled with the cohort sexes -- used by the dyadic
+        angle labels). When the sexes are not supplied the literal words
+        "self" / "other" are used. An unrecognised key is returned verbatim so
+        the caller never crashes on a feature outside the zoo.
+
+        Parameters
+        ----------
+        generic_key (str)
+            Generic feature key as it appears in a modeling artifact, e.g.
+            `'self.speed'`, `'other.neck_elevation'`, `'nose-nose'`,
+            `'allo_yaw-nose'`, `'self.speed_1st_der'`.
+        self_sex (str)
+            Sex word for the target ("self") mouse, e.g. `'male'`. When None,
+            the literal `'self'` is used.
+        other_sex (str)
+            Sex word for the predictor ("other" / partner) mouse. When None,
+            the literal `'other'` is used.
+
+        Returns
+        -------
+        label (str)
+            Human-readable label, or `generic_key` verbatim if no canonical
+            entry matches.
+        """
+
+        self_word = self_sex if self_sex else 'self'
+        other_word = other_sex if other_sex else 'other'
+
+        key = generic_key
+        derivative = ''
+        for suffix, suffix_label in (('_1st_der', ' (1st derivative)'),
+                                     ('_2nd_der', ' (2nd derivative)')):
+            if key.endswith(suffix):
+                key = key[:-len(suffix)]
+                derivative = suffix_label
+                break
+
+        if key.startswith('self.'):
+            template = cls.feature_display_names.get(key[len('self.'):])
+            label = f"{self_word} {template}" if template is not None else None
+        elif key.startswith('other.'):
+            template = cls.feature_display_names.get(key[len('other.'):])
+            label = f"{other_word} {template}" if template is not None else None
+        else:
+            label = cls.feature_display_names.get(key)
+
+        if label is None:
+            return generic_key
+
+        label = label.replace('{self}', self_word).replace('{other}', other_word)
+        return label + derivative
+
     def __init__(self, **kwargs):
         """
         Description
