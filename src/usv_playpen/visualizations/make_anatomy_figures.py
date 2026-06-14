@@ -67,6 +67,11 @@ _CELL_TYPE_LABELS: tuple[str, ...] = (
     "Somatic", "Non-somatic", "Multi-unit",
 )
 
+# Strong-contrast mono-grey triad agreed for the cell-type stacks.
+_CELL_TYPE_PALETTE: tuple[str, ...] = (
+    "#1A1A1A", "#7A7A7A", "#CFCFCF",
+)
+
 # Mouse IDs excluded from anatomy figures (insufficient yield / not used
 # in any downstream analysis).
 _EXCLUDED_MOUSE_IDS: frozenset[str] = frozenset({"147366"})
@@ -153,7 +158,7 @@ def _download_allen_mesh(structure_id: int) -> pathlib.Path:
     if path.exists():
         return path
     url = _ALLEN_MESH_URL.format(structure_id=structure_id)
-    with urllib.request.urlopen(url) as resp:
+    with urllib.request.urlopen(url, timeout=60) as resp:
         data = resp.read()
     path.write_bytes(data)
     return path
@@ -232,11 +237,6 @@ def _ccf_to_bregma(verts_ccf: np.ndarray) -> np.ndarray:
     out[:, 2] = verts_ccf[:, 2] - _BREGMA_ML_CCF
     return out
 
-# Strong-contrast mono-grey triad agreed for the cell-type stacks.
-_CELL_TYPE_PALETTE: tuple[str, ...] = (
-    "#1A1A1A", "#7A7A7A", "#CFCFCF",
-)
-
 
 class AnatomyFigureMaker:
     """
@@ -307,6 +307,7 @@ class AnatomyFigureMaker:
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -2042,6 +2043,7 @@ class AnatomyFigureMaker:
 
         Parameters
         ----------
+        None
 
         Returns
         -------

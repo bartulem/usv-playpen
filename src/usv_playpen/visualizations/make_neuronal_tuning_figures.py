@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import math
 import pathlib
 import pickle
 import warnings
@@ -34,6 +35,7 @@ from matplotlib import colors as mcolors
 from matplotlib import gridspec
 from matplotlib import patheffects as mpe
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.patches import Circle, Patch
 from scipy.stats import gaussian_kde, spearmanr
 from tqdm import tqdm
 
@@ -150,7 +152,6 @@ USV_CATEGORY_N_CLASSES: dict[str, int] = {
     "qlvm_category":     12,
 }
 
-# ---------------------------------------------------------------------- #
 # Behavioral tuning-summary bucket definitions.
 #
 # The behavioral modalities in the unit-triage pickle are keyed as
@@ -170,7 +171,6 @@ USV_CATEGORY_N_CLASSES: dict[str, int] = {
 # sessions AND (when `require_majority` is True) those significant
 # sessions form a majority of `n_tested`. The bucket flag is set if
 # >= 1 feature in the bucket is tuned by that criterion.
-# ---------------------------------------------------------------------- #
 BEHAVIORAL_POSE_FEATURES: frozenset[str] = frozenset({
     "allo_pitch", "allo_roll", "allo_yaw",
     "back_pitch", "back_yaw",
@@ -417,6 +417,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -488,6 +489,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -2118,7 +2120,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # fill so the convention reads independent of region; the
         # sig-both swatch is a hatched white rectangle (matplotlib
         # `Patch`) so it matches the bar style exactly.
-        from matplotlib.patches import Patch
 
         leg_handles = [
             plt.Line2D(
@@ -2751,8 +2752,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 bucket["sig_pos"].append(per_unit_value)
             elif overlay == "sig_neg":
                 bucket["sig_neg"].append(per_unit_value)
-
-        return per_group
 
         return per_group
 
@@ -3822,8 +3821,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
         modality_key = f"usv_category_self_{segmentation}"
 
-        from collections import Counter
-
         for u in triage["units"].values():
             key = (u["mouse_id"], int(u["rec_date"]), u["unit_id"])
             if key not in cat_lookup:
@@ -3854,7 +3851,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                         continue
                     best_cats.append(int(bc))
                     peak_zs.append(float(psz))
-                    n_sigs.append(int(e.get("n_sig_categories", 0) or 0))
+                    n_sigs.append(int(e.get("n_sig_categories", 0)))
                     sel = e.get("selectivity")
                     selects.append(float(sel) if sel is not None else float("nan"))
             n_sig_up = len(best_cats)
@@ -4161,7 +4158,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             # line is purely a visual aid for the negative trend.
             rho_str = ""
             if x.size >= 5 and np.unique(x).size >= 2:
-                from scipy.stats import spearmanr
                 rho, p_val = spearmanr(x, y)
                 if np.isfinite(rho):
                     rho_str = f"  ρ={rho:+.2f}"
@@ -4298,9 +4294,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ))
         return out_paths
 
-    # ------------------------------------------------------------------ #
     # behavioral tuning summary (pose / movement / social tier matrix)
-    # ------------------------------------------------------------------ #
 
     def _compute_behavioral_bucket_flags(
             self,
@@ -4404,8 +4398,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             prefix, feat, direction = parsed
             if not isinstance(payload, dict):
                 continue
-            n_sig = int(payload.get("n_significant", 0) or 0)
-            n_test = int(payload.get("n_tested", 0) or 0)
+            n_sig = int(payload.get("n_significant", 0))
+            n_test = int(payload.get("n_tested", 0))
 
             if "-" in prefix:
                 # Pool dyadic across partner identities.
@@ -4563,8 +4557,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 continue
             if not any(mkey.startswith(px) for px in self._VOCAL_MODALITY_PREFIXES):
                 continue
-            n_sig = int(payload.get("n_significant", 0) or 0)
-            n_test = int(payload.get("n_tested", 0) or 0)
+            n_sig = int(payload.get("n_significant", 0))
+            n_test = int(payload.get("n_tested", 0))
             if n_sig < k_min:
                 continue
             if require_majority and n_test > 0 and (n_sig / n_test) <= 0.5:
@@ -4750,7 +4744,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 counts[r, c] = k
                 fractions[r, c] = k / total
 
-        # ------- render -------
+        # render
         fig, ax = plt.subplots(figsize=(7.5, 3.5))
         cmap_name = self.visualizations_parameter_dict.get(
             "figures", {}
@@ -4828,9 +4822,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         plt.close(fig)
         return out_path
 
-    # ------------------------------------------------------------------ #
     # behavioral / social / vocal overlap (3-set Venn)
-    # ------------------------------------------------------------------ #
 
     def _collect_three_set_overlap_counts(
             self,
@@ -4968,9 +4960,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -------
         None
         """
-
-        import math
-        from matplotlib.patches import Circle
 
         # Equilateral triangle of unit-radius circles, centroid at
         # the origin.
