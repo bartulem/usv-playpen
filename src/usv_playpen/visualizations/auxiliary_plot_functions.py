@@ -6,7 +6,6 @@ Creates perceptually uniform colormaps (per Crameri, F. et al., Nat. Commun. (20
 from __future__ import annotations
 
 import colorsys
-import json
 
 import numpy as np
 from matplotlib.colors import ListedColormap
@@ -172,18 +171,15 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
         A colormap object.
     """
 
-    # load .json parameters
     if input_parameter_dict is None:
-        with open("../input_parameters.json") as json_file:
-            input_parameter_dict = json.load(json_file)["auxiliary_plot_functions"][
-                "create_colormap"
-            ]
+        msg = "create_colormap requires an input_parameter_dict (got None)."
+        raise ValueError(msg)
 
     # change luminance|saturation
     if (
         input_parameter_dict["equalize_luminance"] is True
-        or type(input_parameter_dict["equalize_luminance"]) == float
-        or type(input_parameter_dict["change_saturation"]) == float
+        or isinstance(input_parameter_dict["equalize_luminance"], float)
+        or isinstance(input_parameter_dict["change_saturation"], float)
     ):
         if input_parameter_dict["cm_type"] == "diverging":
             input_parameter_dict["cm_start"], input_parameter_dict["cm_start_div"] = (
