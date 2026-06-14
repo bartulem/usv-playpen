@@ -240,7 +240,7 @@ def test_send_message_success(monkeypatch, credentials_file):
     out = m.send_message(subject='Subject', message='Body text')
     assert out is True
     assert sent['host'] == 'smtp.example.com'
-    assert sent['port'] == '465'
+    assert sent['port'] == 465      # send_email int()-coerces the config port for SMTP_SSL
     assert sent['login'] == ('alice@example.com', 'hunter2')
     msg: EmailMessage = sent['msg']
     assert msg['Subject'] == 'Subject'
