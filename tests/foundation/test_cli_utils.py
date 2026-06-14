@@ -16,29 +16,8 @@ from usv_playpen.cli_utils import (
     find_nested_key_paths,
     modify_settings_json_for_cli,
     override_toml_values,
-    set_nested_key,
     set_nested_value_by_path,
 )
-
-
-# set_nested_key
-
-def test_set_nested_key_top_level():
-    d = {"a": 1, "b": 2}
-    assert set_nested_key(d, "a", 99) is True
-    assert d["a"] == 99
-
-
-def test_set_nested_key_nested():
-    d = {"outer": {"inner": {"target": 0}}}
-    assert set_nested_key(d, "target", 5) is True
-    assert d["outer"]["inner"]["target"] == 5
-
-
-def test_set_nested_key_not_found_returns_false():
-    d = {"a": {"b": 1}}
-    assert set_nested_key(d, "missing", 5) is False
-    assert d == {"a": {"b": 1}}  # untouched
 
 
 # find_nested_key_paths
@@ -52,22 +31,24 @@ def test_find_nested_key_paths_absent():
     assert find_nested_key_paths({"a": {"b": 1}}, "missing") == []
 
 
-def test_find_nested_key_paths_lists_all_in_set_nested_key_order():
+def test_find_nested_key_paths_lists_all_in_write_order():
     """Both blocks carry the same leaf key; index 0 must be the path that
-    set_nested_key actually updates (so the ambiguity warning names the right
-    chosen block)."""
+    modify_settings_json_for_cli writes to via set_nested_value_by_path (so the
+    ambiguity warning names the right chosen block)."""
     d = {"a": {"target": 1}, "b": {"target": 2}}
-    assert find_nested_key_paths(d, "target") == ["a.target", "b.target"]
-    set_nested_key(d, "target", 99)
+    paths = find_nested_key_paths(d, "target")
+    assert paths == ["a.target", "b.target"]
+    set_nested_value_by_path(d, paths[0], 99)
     assert d["a"]["target"] == 99 and d["b"]["target"] == 2  # first match won
 
 
 def test_find_nested_key_paths_top_level_wins_over_deeper():
-    """set_nested_key sets a current-level key before descending into siblings;
-    paths[0] reflects that ordering."""
+    """A current-level key is recorded before descending into siblings, so
+    paths[0] is the shallow one and that is what the write targets."""
     d = {"x": {"k": 1}, "k": 5}
-    assert find_nested_key_paths(d, "k") == ["k", "x.k"]
-    set_nested_key(d, "k", 7)
+    paths = find_nested_key_paths(d, "k")
+    assert paths == ["k", "x.k"]
+    set_nested_value_by_path(d, paths[0], 7)
     assert d["k"] == 7 and d["x"]["k"] == 1
 
 
