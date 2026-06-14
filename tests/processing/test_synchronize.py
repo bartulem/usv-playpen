@@ -299,6 +299,97 @@ def test_find_video_sync_trains_matches_led_pulse_train(tmp_path, processing_set
     assert ipi_starts.size > 0
 
 
+def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    End-to-end happy path for `validate_ephys_video_sync`: a synthetic
+    SpikeGLX `*.ap.bin` (5 channels int16, last = SY sync TTL) carries a
+    camera-frame pulse train with one large break followed by
+    `total_frame_number_least + 1` evenly-spaced edges. The recovered
+    tracking window's duration is made to equal `total_video_time_least`
+    (zero divergence), so the method writes the `changepoints_info_*.json`
+    into the mirrored EPHYS tree.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir; session is rooted at `<tmp>/Data/<id>` so the
+        EPHYS mirror resolves to `<tmp>/EPHYS`.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    import configparser
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+
+    # SR for the headstage SN we put in the synthetic .meta (must be in the ini).
+    import usv_playpen
+    ini = configparser.ConfigParser()
+    ini.read(Path(usv_playpen.__file__).parent / "_config" / "calibrated_sample_rates_imec.ini")
+    headstage_sn = "23280356"
+    sr = float(ini["CalibratedHeadStages"][headstage_sn])
+
+    total_frames = 5
+    spacing = 6000
+    # rising-edge sample positions: 3 pre-break edges, a 50000-sample break,
+    # then total_frames + 1 post-break edges spaced `spacing` apart.
+    pre = [100, 200, 300]
+    first_post = 50300
+    post = [first_post + i * spacing for i in range(total_frames + 1)]
+    edges = pre + post
+    n_samples = edges[-1] + 10
+
+    # sync channel: isolated 5-sample-wide pulses -> one rising edge each.
+    sync_ch = np.zeros(n_samples, dtype=np.int16)
+    for e in edges:
+        sync_ch[e + 1:e + 6] = 1000
+
+    # interleave into a (n_samples, 5) int16 frame so reshape((5, n), 'F')[-1]
+    # recovers the sync channel as the last row.
+    n_ch = 5
+    frame = np.zeros((n_samples, n_ch), dtype=np.int16)
+    frame[:, -1] = sync_ch
+
+    root = tmp_path / "Data" / "20250919_155842"
+    imec_dir = root / "ephys" / "imec0"
+    imec_dir.mkdir(parents=True)
+    frame.tofile(imec_dir / "20250919_155842.imec0.ap.bin")
+    (imec_dir / "20250919_155842.imec0.ap.meta").write_text(
+        f"acqApLfSy=4,0,1\nimDatHs_sn={headstage_sn}\nimDatPrb_sn=22420014283\n"
+    )
+
+    # tracking window = ttl[hop+total]-ttl[hop] = total_frames*spacing samples;
+    # set the video duration to the same so divergence is ~0.
+    tracking_samples = total_frames * spacing
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": total_frames,
+        "total_video_time_least": tracking_samples / sr,
+    }))
+
+    sync = Synchronizer(
+        root_directory=str(root),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    sync.validate_ephys_video_sync()
+
+    cp = root.parent.parent / "EPHYS" / "20250919_imec0" / "changepoints_info_20250919_imec0.json"
+    assert cp.is_file(), "changepoints JSON was not written to the EPHYS mirror"
+    info = json.loads(cp.read_text())
+    rec = info["20250919_155842.imec0"]
+    assert rec["tracking_start_end"] == [50301, 50301 + tracking_samples]
+    assert rec["total_num_channels"] == 5
+
+
 def _processing_settings_full():
     """
     Description
