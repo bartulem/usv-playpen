@@ -557,3 +557,96 @@ def test_visualize_in_video_static_render(tmp_path, mocker):
         message_output=lambda *_a, **_k: None,
     )
     maker.visualize_in_video()      # should render the static figure without raising
+
+
+class _FakeAnim:
+    """
+    Description
+    -----------
+    Stand-in for `matplotlib.animation.FuncAnimation` that records the frame
+    callback and, on `save`, invokes it for the first couple of frames — so the
+    per-frame `animate()` render path is exercised without any ffmpeg encoding.
+
+    Parameters
+    ----------
+    fig, func, frames, interval
+        Mirror the real `FuncAnimation` signature (only `func`/`frames` used).
+
+    Returns
+    -------
+    None
+    """
+
+    def __init__(self, fig=None, func=None, frames=None, interval=None):
+        self._func = func
+        self._frames = list(frames) if frames is not None else []
+
+    def save(self, *_a, **_k):
+        for fr in self._frames[:2]:
+            self._func(fr)
+
+
+def test_visualize_in_video_animate_path(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Drive `visualize_in_video` through its animated path with `FuncAnimation`
+    replaced by a no-encode stand-in, so the `animate()` per-frame callback +
+    the writer/save branch run without ffmpeg. Panels stay off to keep the
+    fixture to the two 3D-points `.h5` files.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        No-ops `smart_wait` and swaps in the fake animator.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.smart_wait")
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.FuncAnimation", _FakeAnim)
+
+    with (pathlib.Path(usv_playpen.__file__).parent / "_parameter_settings"
+          / "visualizations_settings.json").open() as f:
+        viz = json.load(f)
+    mbv = viz["make_behavioral_videos"]
+    mbv.update({
+        "animate_bool": True, "save_fig": False, "speaker_bool": False,
+        "spectrogram_bool": False, "beh_features_bool": False,
+        "raster_plot_bool": False, "spike_sound_bool": False,
+        "view_angle": "top", "video_start_time": 0.0, "video_duration": 0.05,
+        "history_point": "Trunk", "raster_special_units": [""],
+        "sequence_audio_file": "", "rotate_side_view_bool": False,
+    })
+
+    n_frames, fr = 60, 150.0
+    rng = np.random.default_rng(1)
+    root = tmp_path / "Data" / "20250919_155842"
+    (root / "video" / "sess").mkdir(parents=True)
+    arena_dir = tmp_path / "Data" / "20250919_155842_calib"
+    (arena_dir / "video" / "sess").mkdir(parents=True)
+
+    _write_tracks_h5(
+        arena_dir / "video" / "sess" / "arena_points3d_translated_rotated_metric.h5",
+        np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
+    )
+    _write_tracks_h5(
+        root / "video" / "sess" / "mouse_points3d_translated_rotated_metric.h5",
+        rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
+        _VIS_MOUSE_NODES, track_names=["m1", "m2"],
+        exp_code="BCL2FSmFSm", frame_rate=fr,
+    )
+
+    maker = Create3DVideo(
+        exp_id="20250919_155842",
+        root_directory=str(root),
+        arena_directory=str(arena_dir),
+        speaker_audio_file="",
+        visualizations_parameter_dict=viz,
+        message_output=lambda *_a, **_k: None,
+    )
+    maker.visualize_in_video()      # animate() callback runs via the fake animator
