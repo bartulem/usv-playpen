@@ -239,6 +239,66 @@ def test_find_video_sync_trains_no_video_dir_returns_empty(processing_settings,
     assert sync_dict == {}
 
 
+def test_find_video_sync_trains_matches_led_pulse_train(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    End-to-end happy path for `find_video_sync_trains`: a pre-written
+    `sync_px_*` LED-brightness memmap (so the cv2 `gather_px_information`
+    step is skipped) carries a four-pulse train of equal dark gaps, and a
+    CoolTerm log supplies the matching Arduino IPI sequence. The method must
+    detect the pulses, match them within tolerance, and return non-empty
+    start frames + a per-camera sequence dict.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    serial = processing_settings["synchronize_files"]["Synchronizer"]["find_video_sync_trains"]["sync_camera_serial_num"][0]
+    video_name = f"{serial}-20260421185830.mp4"
+
+    # session layout: an underscore-free video subdir -> camera-serial dir -> mp4
+    cam_dir = tmp_path / "video" / "20260421185830" / serial
+    cam_dir.mkdir(parents=True)
+    (cam_dir / video_name).write_bytes(b"\x00")          # dummy; never decoded (sync_px exists)
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+
+    # LED brightness train: ON=250 / OFF=5, four equal 45-frame dark gaps.
+    segs = [(250, 50), (5, 45), (250, 45), (5, 45), (250, 45),
+            (5, 45), (250, 45), (5, 45), (250, 50)]
+    brightness = np.concatenate([np.full(n, v, dtype=np.uint8) for v, n in segs])
+    n_frames = brightness.size
+    mm = np.memmap(sync_dir / f"sync_px_{video_name[:-4]}", dtype=np.uint8,
+                   mode="w+", shape=(n_frames, 3, 3))
+    mm[:] = brightness[:, None, None]                     # all 3 LEDs x RGB = brightness
+    mm.flush()
+
+    # CoolTerm log: 3 header lines, then the Arduino IPIs (ms). 45 dark frames
+    # at 150 fps ~= 300 ms; constant gaps match any detected sub-window.
+    (sync_dir / "CoolTerm Capture test.txt").write_text(
+        "header0\nheader1\nheader2\n" + "\n".join(["300"] * 6) + "\n"
+    )
+
+    sync = _make_sync(tmp_path, processing_settings)
+    ipi_starts, sync_seq = sync.find_video_sync_trains(camera_fps=[150.0],
+                                                       total_frame_number=n_frames)
+    assert len(sync_seq) == 1
+    assert any(Path(k).name == serial for k in sync_seq)   # keyed by camera dir
+    assert ipi_starts.size > 0
+
+
 def _processing_settings_full():
     """
     Description
