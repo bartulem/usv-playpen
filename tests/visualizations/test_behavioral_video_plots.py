@@ -13,6 +13,10 @@ backend without writing any video.
 
 from __future__ import annotations
 
+import json
+import pathlib
+
+import h5py
 import numpy as np
 import polars as pls
 import pytest
@@ -21,6 +25,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import usv_playpen
 from usv_playpen.visualizations.make_behavioral_videos import (
     plot_mouse_data,
     plot_speaker_data,
@@ -28,6 +33,7 @@ from usv_playpen.visualizations.make_behavioral_videos import (
     plot_raster,
     plot_behavioral_features,
     plot_arena_corners_mics,
+    Create3DVideo,
 )
 
 
@@ -432,3 +438,122 @@ def test_plot_behavioral_features_accent_transparent_and_remove_axes():
         assert set(plot_axes.keys()) == {3, 4, 5}
     finally:
         plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Create3DVideo.visualize_in_video — static (non-animated) full-figure render
+# ---------------------------------------------------------------------------
+
+_VIS_MOUSE_NODES = [
+    "Nose", "Ear_L", "Ear_R", "Head", "Neck", "Shoulder_left", "Shoulder_right",
+    "Trunk", "Haunch_left", "Haunch_right", "TTI", "Tail_0", "Tail_1", "Tail_2",
+    "TailTip",
+]
+_VIS_ARENA_NODES = ["North", "East", "South", "West"] + [f"ch_{i}" for i in range(24)]
+
+
+def _write_tracks_h5(path, tracks, node_names, *, track_names=None,
+                     exp_code=None, frame_rate=None):
+    """
+    Description
+    -----------
+    Write a minimal SLEAP-style 3D-points `.h5` (the
+    `*_points3d_translated_rotated_metric.h5` shape `load_h5_file` reads):
+    a `tracks` array + byte-encoded `node_names`, optionally `track_names`,
+    a scalar `experimental_code`, and `recording_frame_rate`.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Output `.h5` path.
+    tracks (np.ndarray)
+        `(n_frames, n_tracks, n_nodes, 3)` (mouse) or `(1, 1, n_nodes, 3)`
+        (arena) point array.
+    node_names (list[str])
+        Node label strings.
+    track_names (list[str] | None)
+        Per-track labels (mouse file only).
+    exp_code (str | None)
+        Experimental code scalar (mouse file only).
+    frame_rate (float | None)
+        Recording frame rate (mouse file only).
+
+    Returns
+    -------
+    None
+    """
+
+    with h5py.File(path, "w") as f:
+        f.create_dataset("tracks", data=np.asarray(tracks, dtype=float))
+        f.create_dataset("node_names", data=np.array([n.encode() for n in node_names]))
+        if track_names is not None:
+            f.create_dataset("track_names", data=np.array([t.encode() for t in track_names]))
+        if exp_code is not None:
+            f["experimental_code"] = np.bytes_(exp_code.encode())
+        if frame_rate is not None:
+            f["recording_frame_rate"] = float(frame_rate)
+
+
+def test_visualize_in_video_static_render(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Drive `Create3DVideo.visualize_in_video` through its static (non-animated)
+    full-figure path: synthetic arena + two-mouse 3D-points `.h5` files, all
+    companion panels (spectrogram / behavioral features / raster / speaker)
+    and animation disabled, so the method builds the 3D scene + arena +
+    per-mouse skeletons for the first frame without any ffmpeg/opencv work.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.smart_wait")
+
+    with (pathlib.Path(usv_playpen.__file__).parent / "_parameter_settings"
+          / "visualizations_settings.json").open() as f:
+        viz = json.load(f)
+    mbv = viz["make_behavioral_videos"]
+    mbv.update({
+        "animate_bool": False, "save_fig": False, "speaker_bool": False,
+        "spectrogram_bool": False, "beh_features_bool": False,
+        "raster_plot_bool": False, "spike_sound_bool": False,
+        "view_angle": "top", "video_start_time": 0.0, "video_duration": 0.1,
+        "history_point": "Trunk", "raster_special_units": [""],
+    })
+
+    n_frames, fr = 60, 150.0
+    rng = np.random.default_rng(0)
+    root = tmp_path / "Data" / "20250919_155842"
+    (root / "video" / "sess").mkdir(parents=True)
+    arena_dir = tmp_path / "Data" / "20250919_155842_calib"
+    (arena_dir / "video" / "sess").mkdir(parents=True)
+
+    _write_tracks_h5(
+        arena_dir / "video" / "sess" / "arena_points3d_translated_rotated_metric.h5",
+        np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
+    )
+    _write_tracks_h5(
+        root / "video" / "sess" / "mouse_points3d_translated_rotated_metric.h5",
+        rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
+        _VIS_MOUSE_NODES, track_names=["m1", "m2"],
+        exp_code="BCL2FSmFSm", frame_rate=fr,
+    )
+
+    maker = Create3DVideo(
+        exp_id="20250919_155842",
+        root_directory=str(root),
+        arena_directory=str(arena_dir),
+        speaker_audio_file="",
+        visualizations_parameter_dict=viz,
+        message_output=lambda *_a, **_k: None,
+    )
+    maker.visualize_in_video()      # should render the static figure without raising
