@@ -70,56 +70,21 @@ class StringTuple(click.ParamType):
             )
 
 
-def set_nested_key(d: dict, target_key: str, value: Any = None) -> bool:
-    """
-    Description
-    -----------
-    Recursively finds a key in a nested dictionary and sets its value.
-
-    Parameters
-    ----------
-    d (dict)
-        The dictionary to search within.
-    target_key (str)
-        The key to find.
-    value (typing.Any)
-        The new value to set for the target_key.
-
-    Returns
-    -------
-    (bool)
-        True if the key was found and updated, False otherwise.
-    """
-    # change key if it exists at the current level of the dictionary
-    if target_key in d:
-        d[target_key] = value
-        return True
-
-    # keep searching nested dictionaries.
-    for key, val in d.items():
-        if isinstance(val, dict):
-            if set_nested_key(val, target_key, value):
-                return True
-
-    return False
-
-
 def find_nested_key_paths(d: dict, target_key: str) -> list[str]:
     """
     Description
     -----------
     Returns the dot-separated paths of every location at which ``target_key``
-    occurs in a nested dictionary. This is the lookup companion to
-    ``set_nested_key``: because that setter silently updates only the *first*
-    match it finds, a short CLI option that happens to name a key present in
-    more than one settings block would update one block and silently ignore the
-    others. Collecting all paths lets the caller detect and warn about that
-    ambiguity.
+    occurs in a nested dictionary. This is the name-to-path resolver used by
+    ``modify_settings_json_for_cli``: a short CLI option names a bare settings
+    key, which may occur in more than one settings block. Collecting all paths
+    lets the caller detect and warn about that ambiguity, then perform the actual
+    write against a single explicit path via ``set_nested_value_by_path``.
 
-    The traversal mirrors ``set_nested_key`` exactly — a match at the current
-    dictionary level is recorded before descending, and children are visited in
-    insertion order — so the first element of the returned list is always the
-    path that ``set_nested_key`` would actually set.
+    The traversal records a match at the current dictionary level before
+    descending, and visits children in insertion order, so the first element of
+    the returned list is always the shallowest, earliest match — the path
+    ``modify_settings_json_for_cli`` selects when an option is ambiguous.
 
     Parameters
     ----------
@@ -131,15 +96,15 @@ def find_nested_key_paths(d: dict, target_key: str) -> list[str]:
     Returns
     -------
     (list[str])
-        Every dot-separated path at which ``target_key`` occurs, in the same
-        order ``set_nested_key`` would encounter them (so index 0 is the one it
-        would update). Empty if the key is absent.
+        Every dot-separated path at which ``target_key`` occurs, in traversal
+        order (so index 0 is the one ``modify_settings_json_for_cli`` writes to).
+        Empty if the key is absent.
     """
 
     paths: list[str] = []
 
     def _walk(sub: dict, prefix: str) -> None:
-        # record a match at this level before descending, matching set_nested_key
+        # record a match at this level before descending (shallowest/earliest wins)
         if target_key in sub:
             paths.append(f"{prefix}.{target_key}" if prefix else target_key)
         for key, val in sub.items():
@@ -168,7 +133,7 @@ def modify_settings_json_for_cli(
 
     A provided parameter whose (short) name matches a key in more than one
     settings block is ambiguous: it is applied to the first match (the block
-    ``set_nested_key`` reaches first) and the ambiguity is reported on stderr,
+    ``find_nested_key_paths`` lists first) and the ambiguity is reported on stderr,
     naming every location and the one chosen, so the user can switch to the
     explicit dot-path override form to target a specific block.
 
@@ -225,7 +190,9 @@ def modify_settings_json_for_cli(
                 file=sys.stderr,
             )
 
-        set_nested_key(settings_parameter_dict, param_name, param_value)
+        set_nested_value_by_path(
+            settings_parameter_dict, matching_paths[0], param_value
+        )
 
     return settings_parameter_dict
 
