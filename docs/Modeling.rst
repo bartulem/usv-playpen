@@ -94,20 +94,32 @@ differ only in *what gets predicted*:
 
     from usv_playpen.modeling.modeling_vocal_onsets import VocalOnsetModelingPipeline
     from usv_playpen.modeling.modeling_vocal_bout_parameters import BoutParameterPipeline
-    from usv_playpen.modeling.modeling_vocal_categories_multinomial import MultinomialModelingPipeline
-    from usv_playpen.modeling.modeling_usv_manifold_position import ContinuousModelingPipeline
+    from usv_playpen.modeling.modeling_vocal_categories_multinomial import (
+        MultinomialModelingPipeline,
+    )
+    from usv_playpen.modeling.modeling_usv_manifold_position import (
+        ContinuousModelingPipeline,
+    )
 
     # Bout onsets (binary: is this frame a bout start?)
-    VocalOnsetModelingPipeline(modeling_settings_dict=None).extract_and_save_modeling_input_data()
+    VocalOnsetModelingPipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_modeling_input_data()
 
     # Bout parameters (continuous regression: duration / complexity / intensity)
-    BoutParameterPipeline(modeling_settings_dict=None).extract_and_save_modeling_input_data()
+    BoutParameterPipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_modeling_input_data()
 
     # Vocal categories (multinomial, one-vs-rest across GMM categories)
-    MultinomialModelingPipeline(modeling_settings_dict=None).extract_and_save_multinomial_input_data()
+    MultinomialModelingPipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_multinomial_input_data()
 
     # Continuous manifold position (2-D UMAP regression)
-    ContinuousModelingPipeline(modeling_settings_dict=None).extract_and_save_continuous_data()
+    ContinuousModelingPipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_continuous_data()
 
 Every extraction call writes three artifacts to ``io.save_directory``:
 
@@ -137,8 +149,8 @@ cross-referenced by row position and hue across all three:
         plot_collinearity_audit,
     )
 
-    timescale_pkl = configure_path('/mnt/falkner/Bartul/modeling/..._timescales.pkl')
-    collinearity_pkl = timescale_pkl.replace('_timescales.pkl', '_collinearity.pkl')
+    timescale_pkl = configure_path("/mnt/falkner/Bartul/modeling/..._timescales.pkl")
+    collinearity_pkl = timescale_pkl.replace("_timescales.pkl", "_collinearity.pkl")
 
     # Per-feature ACF + cross-correlation horizons (run first; ground truth).
     plot_timescale_audit_per_feature(timescale_pkl, save_plot_bool=False)
@@ -183,9 +195,9 @@ Run on a single node from the notebook:
     )
 
     bout_onset_model_selection(
-        univariate_results_path='/mnt/falkner/Bartul/modeling/univariate_<...>.pkl',
-        input_data_path='/mnt/falkner/Bartul/modeling/modeling_<...>_bout_hist4s.pkl',
-        output_directory='/mnt/falkner/Bartul/modeling/model_selection_results/<...>',
+        univariate_results_path="/mnt/falkner/Bartul/modeling/univariate_<...>.pkl",
+        input_data_path="/mnt/falkner/Bartul/modeling/modeling_<...>_bout_hist4s.pkl",
+        output_directory="/mnt/falkner/Bartul/modeling/model_selection_results/<...>",
         use_top_rank_as_anchor=True,
         p_val=0.01,
     )
@@ -213,13 +225,20 @@ the top of the consolidated artifact, and emit a self-describing filename:
 
 .. code-block:: python
 
-    from usv_playpen.modeling.consolidate_univariate_results import consolidate as consolidate_univariate
-    from usv_playpen.modeling.consolidate_model_selection_results import consolidate as consolidate_model_selection
+    from usv_playpen.modeling.consolidate_univariate_results import (
+        consolidate as consolidate_univariate,
+    )
+    from usv_playpen.modeling.consolidate_model_selection_results import (
+        consolidate as consolidate_model_selection,
+    )
 
-    consolidate_univariate(input_dir='/mnt/falkner/Bartul/modeling/<univariate_dir>',
-                           delete_individuals_after=False)
-    consolidate_model_selection(input_dir='/mnt/falkner/Bartul/modeling/<selection_dir>',
-                                move_to_steps_subdir=False)
+    consolidate_univariate(
+        input_dir="/mnt/falkner/Bartul/modeling/<univariate_dir>",
+        delete_individuals_after=False,
+    )
+    consolidate_model_selection(
+        input_dir="/mnt/falkner/Bartul/modeling/<selection_dir>", move_to_steps_subdir=False
+    )
 
 The consolidated filenames are self-describing, e.g.:
 
@@ -257,7 +276,9 @@ writes a ``cnn_*_predictions_*.pkl`` artifact:
     from usv_playpen.modeling.jax_neural_network_cnn import NeuralContinuousCNNRunner
 
     runner = NeuralContinuousCNNRunner(modeling_settings=None)
-    data_blocks = runner.load_multivariate_data_blocks(pkl_path='/mnt/falkner/Bartul/modeling/modeling_manifold_<...>.pkl')
+    data_blocks = runner.load_multivariate_data_blocks(
+        pkl_path="/mnt/falkner/Bartul/modeling/modeling_manifold_<...>.pkl"
+    )
     runner.run_cnn_training(data_blocks=data_blocks)
 
 The trained-network diagnostics (permutation test, feature importance,
