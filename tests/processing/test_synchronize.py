@@ -239,16 +239,60 @@ def test_find_video_sync_trains_no_video_dir_returns_empty(processing_settings,
     assert sync_dict == {}
 
 
+def _write_video_sync_fixture(root, serial) -> int:
+    """
+    Description
+    -----------
+    Write the LED-brightness `sync_px_*` memmap + a dummy `.mp4` + a CoolTerm
+    Arduino-IPI log into a session root, so `find_video_sync_trains` can run its
+    full detection/match pipeline without decoding a real video (the memmap
+    pre-exists, so `gather_px_information` is skipped). The pulse train is four
+    equal 45-frame dark gaps -> ~300 ms IPIs at 150 fps.
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Session root directory.
+    serial (str)
+        Sync-camera serial number.
+
+    Returns
+    -------
+    n_frames (int)
+        Number of frames in the synthetic LED memmap.
+    """
+
+    video_name = f"{serial}-20260421185830.mp4"
+    cam_dir = root / "video" / "20260421185830" / serial
+    cam_dir.mkdir(parents=True)
+    (cam_dir / video_name).write_bytes(b"\x00")          # dummy; never decoded
+    sync_dir = root / "sync"
+    sync_dir.mkdir(exist_ok=True)
+
+    segs = [(250, 50), (5, 45), (250, 45), (5, 45), (250, 45),
+            (5, 45), (250, 45), (5, 45), (250, 50)]
+    brightness = np.concatenate([np.full(n, v, dtype=np.uint8) for v, n in segs])
+    n_frames = brightness.size
+    mm = np.memmap(sync_dir / f"sync_px_{video_name[:-4]}", dtype=np.uint8,
+                   mode="w+", shape=(n_frames, 3, 3))
+    mm[:] = brightness[:, None, None]                     # all 3 LEDs x RGB = brightness
+    mm.flush()
+    # exactly four IPIs (== the four detected dark gaps) so a single arduino
+    # window matches; a longer log would ravel multiple matching windows and
+    # inflate the returned sequence length.
+    (sync_dir / "CoolTerm Capture test.txt").write_text(
+        "header0\nheader1\nheader2\n" + "\n".join(["300"] * 4) + "\n"
+    )
+    return n_frames
+
+
 def test_find_video_sync_trains_matches_led_pulse_train(tmp_path, processing_settings, mocker):
     """
     Description
     -----------
-    End-to-end happy path for `find_video_sync_trains`: a pre-written
-    `sync_px_*` LED-brightness memmap (so the cv2 `gather_px_information`
-    step is skipped) carries a four-pulse train of equal dark gaps, and a
-    CoolTerm log supplies the matching Arduino IPI sequence. The method must
-    detect the pulses, match them within tolerance, and return non-empty
-    start frames + a per-camera sequence dict.
+    End-to-end happy path for `find_video_sync_trains`: the LED memmap +
+    CoolTerm log fixture drives pulse detection + sequence matching, returning
+    non-empty start frames and a per-camera sequence dict.
 
     Parameters
     ----------
@@ -266,30 +310,7 @@ def test_find_video_sync_trains_matches_led_pulse_train(tmp_path, processing_set
 
     mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
     serial = processing_settings["synchronize_files"]["Synchronizer"]["find_video_sync_trains"]["sync_camera_serial_num"][0]
-    video_name = f"{serial}-20260421185830.mp4"
-
-    # session layout: an underscore-free video subdir -> camera-serial dir -> mp4
-    cam_dir = tmp_path / "video" / "20260421185830" / serial
-    cam_dir.mkdir(parents=True)
-    (cam_dir / video_name).write_bytes(b"\x00")          # dummy; never decoded (sync_px exists)
-    sync_dir = tmp_path / "sync"
-    sync_dir.mkdir()
-
-    # LED brightness train: ON=250 / OFF=5, four equal 45-frame dark gaps.
-    segs = [(250, 50), (5, 45), (250, 45), (5, 45), (250, 45),
-            (5, 45), (250, 45), (5, 45), (250, 50)]
-    brightness = np.concatenate([np.full(n, v, dtype=np.uint8) for v, n in segs])
-    n_frames = brightness.size
-    mm = np.memmap(sync_dir / f"sync_px_{video_name[:-4]}", dtype=np.uint8,
-                   mode="w+", shape=(n_frames, 3, 3))
-    mm[:] = brightness[:, None, None]                     # all 3 LEDs x RGB = brightness
-    mm.flush()
-
-    # CoolTerm log: 3 header lines, then the Arduino IPIs (ms). 45 dark frames
-    # at 150 fps ~= 300 ms; constant gaps match any detected sub-window.
-    (sync_dir / "CoolTerm Capture test.txt").write_text(
-        "header0\nheader1\nheader2\n" + "\n".join(["300"] * 6) + "\n"
-    )
+    n_frames = _write_video_sync_fixture(tmp_path, serial)
 
     sync = _make_sync(tmp_path, processing_settings)
     ipi_starts, sync_seq = sync.find_video_sync_trains(camera_fps=[150.0],
@@ -297,6 +318,58 @@ def test_find_video_sync_trains_matches_led_pulse_train(tmp_path, processing_set
     assert len(sync_seq) == 1
     assert any(Path(k).name == serial for k in sync_seq)   # keyed by camera dir
     assert ipi_starts.size > 0
+
+
+def test_find_audio_sync_trains_matches_video(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    End-to-end happy path for `find_audio_sync_trains`: the video LED fixture
+    (four ~300 ms IPIs) plus a `_ch02` cropped WAV whose LSB carries four
+    matching ~300 ms OFF gaps. The audio IPI durations match the video
+    sequence within tolerance, so the returned discrepancy dict carries the
+    per-file `ipi_discrepancy_ms` result.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    serial = processing_settings["synchronize_files"]["Synchronizer"]["find_video_sync_trains"]["sync_camera_serial_num"][0]
+    n_frames = _write_video_sync_fixture(tmp_path, serial)
+
+    (tmp_path / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        serial: [n_frames, 150.0],
+        "total_frame_number_least": n_frames,
+        "total_video_time_least": n_frames / 150.0,
+    }))
+
+    # _ch02 cropped WAV: LSB pulse train with four ~300 ms OFF gaps at 250 kHz
+    # (75000 OFF samples -> 300.004 ms, rounds to the video's 300 ms IPIs).
+    sr = 250000
+    on = np.ones(1000, dtype=np.int16)        # LSB = 1 (pulse ON)
+    off = np.zeros(75000, dtype=np.int16)     # LSB = 0 (IPI gap)
+    data = np.concatenate([on] + [np.concatenate([off, on]) for _ in range(4)])
+    cropped = tmp_path / "audio" / "cropped_to_video"
+    cropped.mkdir(parents=True)
+    wavfile.write(cropped / "m_240101_ch02_cropped_to_video.wav", sr, data)
+
+    sync = _make_sync(tmp_path, processing_settings)
+    result = sync.find_audio_sync_trains()
+
+    key = "m_240101_ch02_cropped_to_video"
+    assert key in result
+    assert "ipi_discrepancy_ms" in result[key]
 
 
 def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_settings, mocker):
