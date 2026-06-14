@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 
-def extract_information(experiment_code: str | None = None) -> dict | None | None:
+def extract_information(experiment_code: str | None = None) -> dict | None:
     """
     Description
     -----------
@@ -57,7 +57,7 @@ def extract_information(experiment_code: str | None = None) -> dict | None | Non
         experiment type, mouse number, mouse sex, mouse housing and mouse estrus.
     """
 
-    if experiment_code is not None and type(experiment_code) == str:
+    if experiment_code is not None and isinstance(experiment_code, str):
         decoding_dict = {
             "A": "ablation",
             "E": "ephys",

@@ -89,7 +89,7 @@ def luminance_equalizer(
     )
 
     # match luminance
-    if luminance is True or type(luminance) == float:
+    if luminance is True or isinstance(luminance, float):
         if match_by == "max":
             luminance_start, luminance_end = np.repeat(
                 np.max([hls_start[1], hls_end[1]]), 2
@@ -114,7 +114,7 @@ def luminance_equalizer(
         luminance_start = hls_start[1]
         luminance_end = hls_end[1]
 
-    if type(saturation) == float:
+    if isinstance(saturation, float):
         saturation_start = saturation
         saturation_end = saturation
     else:
