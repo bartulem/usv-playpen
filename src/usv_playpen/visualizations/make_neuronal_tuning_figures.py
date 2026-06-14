@@ -362,6 +362,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         the `neuronal_tuning_figures` block.
     message_output (Callable)
         Logger; defaults to print.
+    kslabels (collection[str])
+        Kilosort curation labels to include (e.g. `("good",)` or
+        `("good", "mua")`). Optional; defaults to `("good",)`.
+    somatic_filter (str)
+        Somatic-annotation filter; one of `"somatic"`, `"non_somatic"`,
+        `"both"`. Optional; defaults to `"somatic"`. The `kslabels` +
+        `somatic_filter` defaults reproduce the historical good + somatic
+        unit scope.
     """
 
     def __init__(self, **kwargs):
@@ -378,9 +386,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Parameters
         ----------
         **kwargs
-            The expected keys are `root_directory`,
-            `visualizations_parameter_dict` and `message_output`; each is set
-            as an attribute and any other key raises ``TypeError``.
+            Required keys: `root_directory`, `visualizations_parameter_dict`,
+            `message_output`. Optional unit-filter keys: `kslabels` (default
+            `("good",)`) and `somatic_filter` (default `"somatic"`). Each
+            recognised key is set as an attribute; any other key raises
+            ``TypeError``.
 
         Returns
         -------
@@ -388,7 +398,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         FeatureZoo.__init__(self)
-        expected_kwargs = {'root_directory', 'visualizations_parameter_dict', 'message_output'}
+        expected_kwargs = {
+            'root_directory', 'visualizations_parameter_dict', 'message_output',
+            'kslabels', 'somatic_filter',
+        }
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
             raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
@@ -397,6 +410,21 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
         self.app_context_bool = is_gui_context()
+
+        # Unit-selection filter (applied at the figure layer; the aggregator
+        # pickle holds every unit). Defaults reproduce the historical
+        # good + somatic scope.
+        self.kslabels = frozenset(kwargs.get("kslabels", ("good",)))
+        if not self.kslabels:
+            raise ValueError(
+                "kslabels must be a non-empty collection of Kilosort labels."
+            )
+        self.somatic_filter = kwargs.get("somatic_filter", "somatic")
+        if self.somatic_filter not in ("somatic", "non_somatic", "both"):
+            raise ValueError(
+                "somatic_filter must be one of 'somatic', 'non_somatic', "
+                f"'both'; got {self.somatic_filter!r}."
+            )
         self._segmentation_path = (
             pathlib.Path(__file__).parent.parent
             / "_config"
@@ -472,6 +500,69 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if sex == "male":
             return self.visualizations_parameter_dict["male_colors"][0]
         return self.visualizations_parameter_dict["female_colors"][0]
+
+    # unit-selection filter
+
+    def _unit_passes_filter(self, unit: dict, catalog_row: dict) -> bool:
+        """
+        Description
+        -----------
+        Decide whether one unit is included in the cross-session figures,
+        applying the configured `kslabels` + `somatic_filter` (set on the
+        constructor). Shared by every `_collect_*` method so the same
+        unit-selection rule applies across the whole figure suite.
+
+        Parameters
+        ----------
+        unit (dict)
+            One entry from `triage["units"]`; reads `kslabel`.
+        catalog_row (dict)
+            The matching `unit_catalog.csv` row (from the per-collector
+            catalog lookup); reads `somatic` (a CSV-native truthy string).
+
+        Returns
+        -------
+        passes (bool)
+            True iff `unit["kslabel"]` is in `self.kslabels` AND the unit's
+            somatic annotation matches `self.somatic_filter` (`"somatic"` /
+            `"non_somatic"` / `"both"`).
+        """
+
+        if unit["kslabel"] not in self.kslabels:
+            return False
+        is_somatic = str(catalog_row["somatic"]).strip().lower() == "true"
+        if self.somatic_filter == "somatic":
+            return is_somatic
+        if self.somatic_filter == "non_somatic":
+            return not is_somatic
+        return True
+
+    def _unit_filter_label(self) -> str:
+        """
+        Description
+        -----------
+        Human-readable description of the active unit filter, for figure
+        captions/subtitles (so a non-default run does not mislabel itself
+        as "good + somatic").
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        label (str)
+            E.g. `"good + somatic"` (default), `"good+mua + both"`,
+            `"good + non-somatic"`.
+        """
+
+        labels = "+".join(sorted(self.kslabels))
+        soma = {
+            "somatic": "somatic",
+            "non_somatic": "non-somatic",
+            "both": "somatic & non-somatic",
+        }[self.somatic_filter]
+        return f"{labels} + {soma}"
 
     # main entry point
 
@@ -640,7 +731,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic unit,
+        Walk the unit-triage pickle and, for every unit passing the
+        configured unit filter (default good + somatic),
         find the "best" per-session VMI test (the session with the
         largest |VMI| among sessions that passed the `vmi_min_bouts`
         floor recorded in the pickle). Returns one entry per unit,
@@ -701,9 +793,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -947,7 +1037,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig.text(
             0.5, 0.005,
             f"one dot per unit, best-session by |VMI|  ·  min n_bouts={min_bouts}"
-            f"  ·  good + somatic only",
+            f"  ·  {self._unit_filter_label()} only",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
 
@@ -971,7 +1061,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic unit
+        Walk the unit-triage pickle and, for every unit passing the
+        configured unit filter (default good + somatic)
         that has at least one valid per-session VMI test in BOTH
         `cond_a` AND `cond_b`, summarise the unit's signed VMI in each
         condition as the median of its per-session VMI values (across
@@ -1028,9 +1119,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
             if cond_a not in u["conditions"] or cond_b not in u["conditions"]:
                 continue
@@ -1414,7 +1503,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig.text(
             0.5, 0.005,
             f"one dot per unit, median signed VMI across sessions  ·  "
-            f"good + somatic, present in both {cond_a.replace('_', ' ')} "
+            f"{self._unit_filter_label()}, present in both {cond_a.replace('_', ' ')} "
             f"and {cond_b.replace('_', ' ')}  ·  "
             r"dot area $\propto$ $\log_{10}$ FRbase",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
@@ -1440,7 +1529,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic unit
+        Walk the unit-triage pickle and, for every unit passing the
+        configured unit filter (default good + somatic)
         with at least `n_tested_min` valid sessions, summarise its
         cross-session VMI evidence as `(max |VMI|, consistency,
         n_tested)`. Per-session entries from both modality directions
@@ -1498,9 +1588,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -1833,7 +1921,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         fig.text(
             0.5, 0.005,
-            f"one dot per unit  ·  good + somatic, "
+            f"one dot per unit  ·  {self._unit_filter_label()}, "
             f"$n_{{\\mathrm{{tested}}}}\\geq{n_tested_min}$  ·  "
             r"dot area $\propto$ $n_\mathrm{tested}$",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
@@ -1858,7 +1946,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic unit
+        Walk the unit-triage pickle and, for every unit passing the
+        configured unit filter (default good + somatic)
         with at least `n_tested_min` valid per-session VMI tests,
         count which categorical tier it falls into based on the SIGN
         of its significant sessions across both modality keys
@@ -1928,9 +2017,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -2154,7 +2241,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         fig.text(
             0.5, 0.02,
-            f"good + somatic, $n_{{\\mathrm{{tested}}}}\\geq{n_tested_min}$  ·  "
+            f"{self._unit_filter_label()}, $n_{{\\mathrm{{tested}}}}\\geq{n_tested_min}$  ·  "
             f"per-session $\\alpha={alpha_disp:.2f}$  ·  "
             "annotations above bars = sig-both fraction",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
@@ -2178,8 +2265,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic PAG
-        unit, pull its best-session signed VMI (the per-session entry
+        Walk the unit-triage pickle and, for every PAG unit passing the
+        configured unit filter (default good + somatic), pull its
+        best-session signed VMI (the per-session entry
         with the largest `|VMI|` across both modality directions,
         gated by the pickle's `vmi_min_bouts` floor and `vmi_alpha`)
         together with its Allen-CCF anatomical position (`loc_ap`,
@@ -2225,9 +2313,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             # Anatomical coords. Drop units missing any of the three —
@@ -2594,7 +2680,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         fig.text(
             0.5, 0.01,
-            f"PAG good + somatic  ·  N={n_total}  ·  "
+            f"PAG {self._unit_filter_label()}  ·  N={n_total}  ·  "
             "best-session signed VMI per unit",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
@@ -2690,9 +2776,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -2942,7 +3026,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         fig.text(
             0.5, 0.005,
-            "good + somatic  ·  one data point per unit  ·  "
+            f"{self._unit_filter_label()}  ·  one data point per unit  ·  "
             "non-sig: per-unit median; sig+: max sig+ session; sig-: min sig- session  "
             "(sig-both assigned to dominant direction)",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
@@ -2970,7 +3054,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic unit
+        Walk the unit-triage pickle and, for every unit passing the
+        configured unit filter (default good + somatic)
         with at least two significant `usv_peth_self_{direction}` sessions
         whose `peak_t` values cluster within `tol_s` (largest
         in-tolerance subset of size `k_min` or more, optionally
@@ -3009,7 +3094,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Minimum number of sig sessions that must agree within
             `tol_s` for the unit to count as consistent.
         require_majority (bool)
-            When True, additionally requires `k / n_sig >= 0.5` —
+            When True, additionally requires `k / n_sig > 0.5` —
             protects against units with many sig sessions where only
             `k_min` happen to align.
 
@@ -3081,9 +3166,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -3108,7 +3191,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             k = _largest_in_tol(pks)
             if k < k_min:
                 continue
-            if require_majority and (k / n_sig) < 0.5:
+            if require_majority and (k / n_sig) <= 0.5:
                 continue
 
             per_group[group].append({
@@ -3281,10 +3364,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Bottom caption.
         fig.text(
             0.5, 0.015,
-            f"good + somatic, consistent {direction} only  ·  "
+            f"{self._unit_filter_label()}, consistent {direction} only  ·  "
             f"consistency = $\\geq${k_min} sig {direction} sessions within "
             f"±{int(1000*tol_s/2)} ms"
-            f"{' AND >=50% majority' if require_majority else ''}  ·  "
+            f"{' AND >50% majority' if require_majority else ''}  ·  "
             f"per-unit anchors = medians across all sig {direction} sessions  ·  "
             "histogram x = signed peak_t (linear); scatter x = |peak_t| (log, USV on the right)",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
@@ -3313,7 +3396,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic unit
+        Walk the unit-triage pickle and, for every unit passing the
+        configured unit filter (default good + somatic)
         with at least two significant `usv_property_self_<property>_excit`
         sessions whose `peak_bin_value` values cluster within `tol`
         (largest in-tolerance subset of size `k_min` or more, optionally
@@ -3352,7 +3436,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Minimum number of sig sessions that must agree within
             `tol` for the unit to count as consistent.
         require_majority (bool)
-            When True, additionally requires `k / n_sig >= 0.5`.
+            When True, additionally requires `k / n_sig > 0.5`.
 
         Returns
         -------
@@ -3429,9 +3513,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -3456,7 +3538,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             k = _largest_in_tol(pvs)
             if k < k_min:
                 continue
-            if require_majority and (k / n_sig) < 0.5:
+            if require_majority and (k / n_sig) <= 0.5:
                 continue
 
             per_group[group].append({
@@ -3658,10 +3740,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         unit_tail = f" {unit_label}" if unit_label else ""
         fig.text(
             0.5, 0.01,
-            f"good + somatic, consistent {direction} only  ·  "
+            f"{self._unit_filter_label()}, consistent {direction} only  ·  "
             f"consistency = $\\geq${k_min} sig {direction} sessions within "
             f"±{tol_disp/2:g}{unit_tail}"
-            f"{' AND >=50% majority' if require_majority else ''}  ·  "
+            f"{' AND >50% majority' if require_majority else ''}  ·  "
             f"per-unit anchor = median peak_bin_value across all sig {direction} sessions",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
@@ -3743,7 +3825,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and, for every good + somatic unit
+        Walk the unit-triage pickle and, for every unit passing the
+        configured unit filter (default good + somatic)
         with at least two significantly-UP sessions of
         `usv_category_self_<segmentation>` (i.e. sessions with
         `peak_abs_z >= z_threshold` AND `peak_signed_z > 0`) whose
@@ -3786,7 +3869,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Minimum mode count (number of sig sessions agreeing on
             `best_cat`) for the unit to count as consistent.
         require_majority (bool)
-            When True, also requires `mode_count / n_sig_up >= 0.5`.
+            When True, also requires `mode_count / n_sig_up > 0.5`.
 
         Returns
         -------
@@ -3826,9 +3909,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -3861,7 +3942,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             mode_cat, mode_count = counter.most_common(1)[0]
             if mode_count < k_min:
                 continue
-            if require_majority and (mode_count / n_sig_up) < 0.5:
+            if require_majority and (mode_count / n_sig_up) <= 0.5:
                 continue
 
             sel_arr = np.array([s for s in selects if not np.isnan(s)])
@@ -3915,7 +3996,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         k_min (int)
             Minimum mode count for consistency.
         require_majority (bool)
-            Whether to also require `mode_count / n_sig_up >= 0.5`.
+            Whether to also require `mode_count / n_sig_up > 0.5`.
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -4016,9 +4097,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig.text(
             0.5, 0.005,
-            f"{segmentation}  ·  good + somatic, consistent (sig + up) only  ·  "
+            f"{segmentation}  ·  {self._unit_filter_label()}, consistent (sig + up) only  ·  "
             f"consistency = $\\geq${k_min} sig-up sessions agree on best_cat"
-            f"{' AND >=50% majority' if require_majority else ''}",
+            f"{' AND >50% majority' if require_majority else ''}",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
 
@@ -4227,9 +4308,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig.text(
             0.5, 0.005,
-            f"{segmentation}  ·  good + somatic, consistent (sig + up) only  ·  "
+            f"{segmentation}  ·  {self._unit_filter_label()}, consistent (sig + up) only  ·  "
             f"consistency = $\\geq${k_min} sig-up sessions agree on best_cat"
-            f"{' AND >=50% majority' if require_majority else ''}  ·  "
+            f"{' AND >50% majority' if require_majority else ''}  ·  "
             r"dot area $\propto$ median peak_signed_z",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
@@ -4608,8 +4689,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             absent from a region simply do not appear in its
             `Counter` (the caller pads with 0).
         n_eligible (int)
-            Total number of units that passed the good + somatic
-            filter across all regions; used by the caption.
+            Total number of units that passed the configured unit filter
+            (default good + somatic) across all regions; used by the caption.
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
@@ -4637,9 +4718,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -4790,7 +4869,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax.tick_params(top=False, bottom=False, left=False, right=False)
 
         cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
-        cbar.set_label("fraction of region's good+somatic units", fontsize=7)
+        cbar.set_label(f"fraction of region's {self._unit_filter_label()} units", fontsize=7)
         cbar.ax.tick_params(labelsize=6)
 
         majority_tag = "majority" if require_majority else "no-majority"
@@ -4802,7 +4881,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Light, breaking visual consistency with the rest of the suite.
         fig.suptitle(
             f"behavioral tuning tier matrix · {condition.replace('_', ' ')} · "
-            f"N={n_eligible} good+somatic units",
+            f"N={n_eligible} {self._unit_filter_label()} units",
             fontsize=10, y=0.99, fontweight="light",
         )
         ax.set_title(
@@ -4835,8 +4914,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Walk the unit-triage pickle and tally how many good + somatic
-        units fall into each of the eight `(behavioral, social,
+        Walk the unit-triage pickle and tally how many filtered units
+        (default good + somatic) fall into each of the eight `(behavioral, social,
         vocal)` boolean triples. "Behavioral" = `pose OR movement`
         flag from `_compute_behavioral_bucket_flags`; "social" = the
         same helper's social flag; "vocal" = `_compute_vocal_flag`.
@@ -4864,7 +4943,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             number of units falling in that disjoint tier. All eight
             tuples appear as keys (zero-padded by caller).
         n_eligible (int)
-            Total good + somatic units that passed the catalog filter.
+            Total units that passed the configured unit filter (default
+            good + somatic).
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
@@ -4886,9 +4966,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             flags = self._compute_behavioral_bucket_flags(
@@ -5111,7 +5189,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig.suptitle(
             f"Kinematics / Social Features / Vocal overlap · "
             f"{condition.replace('_', ' ')} · "
-            f"N={n_eligible} good+somatic units · "
+            f"N={n_eligible} {self._unit_filter_label()} units · "
             f"k_min={k_min}, {majority_tag}",
             fontsize=10, y=0.99, fontweight="light",
         )
@@ -5137,7 +5215,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Per-region variant of `_collect_three_set_overlap_counts`.
-        Walks every good + somatic unit, classifies into the
+        Walks every unit passing the configured filter (default good +
+        somatic), classifies into the
         `(behavioral, social, vocal)` triple using the same helpers,
         and bins the count under the unit's canonical brain-area
         bucket from `VMI_REGION_GROUPS`. Returns one `Counter` per
@@ -5185,9 +5264,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if key not in cat_lookup:
                 continue
             cat_row = cat_lookup[key]
-            if u["kslabel"] != "good":
-                continue
-            if str(cat_row["somatic"]).strip().lower() != "true":
+            if not self._unit_passes_filter(u, cat_row):
                 continue
 
             anatomy = u["anatomy_region"]
@@ -5292,7 +5369,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig.suptitle(
             f"Kinematics / Social Features / Vocal overlap · "
             f"{condition.replace('_', ' ')} · "
-            f"per brain area  ·  N={n_total} good+somatic units · "
+            f"per brain area  ·  N={n_total} {self._unit_filter_label()} units · "
             f"k_min={k_min}, {majority_tag}",
             fontsize=11, y=0.995, fontweight="light",
         )

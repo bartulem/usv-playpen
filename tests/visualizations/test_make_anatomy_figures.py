@@ -726,3 +726,63 @@ def test_draw_single_unit_waveforms_in_brain_space_returns_positions(tmp_path, v
         assert len(ax.collections) >= 1
     finally:
         plt.close(fig)
+
+
+def test_download_allen_mesh_uses_cache_without_network(tmp_path, monkeypatch) -> None:
+    """
+    Description
+    -----------
+    `_download_allen_mesh` must return an already-cached OBJ without
+    touching the network: with the structure's `.obj` present under the
+    (redirected) cache directory, `urlopen` must never be called.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory (stand-in mesh cache).
+    monkeypatch (pytest.MonkeyPatch)
+        Redirects the cache dir and traps `urlopen`.
+
+    Returns
+    -------
+    None
+    """
+
+    monkeypatch.setattr(maf, "_ALLEN_MESH_CACHE", tmp_path)
+    cached = tmp_path / "997.obj"
+    cached.write_text("v 0 0 0\n")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("urlopen must not be called when the mesh is cached")
+
+    monkeypatch.setattr(maf.urllib.request, "urlopen", _boom)
+    assert maf._download_allen_mesh(997) == cached
+
+
+def test_anatomy_maker_raises_on_missing_catalog(tmp_path, viz_settings) -> None:
+    """
+    Description
+    -----------
+    The catalog is the authoritative unit scope, so constructing an
+    `AnatomyFigureMaker` against a non-existent `unit_catalog.csv` must
+    fail loud with a clear `FileNotFoundError` rather than a deep pandas
+    traceback.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory.
+    viz_settings (dict)
+        Visualizations-parameter dict fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    with pytest.raises(FileNotFoundError, match="unit_catalog.csv not found"):
+        AnatomyFigureMaker(
+            catalog_path=tmp_path / "does_not_exist.csv",
+            visualizations_parameter_dict=viz_settings,
+            message_output=lambda *a, **k: None,
+        )

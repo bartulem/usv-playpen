@@ -2195,6 +2195,176 @@ def test_collectors_skip_non_good_and_non_somatic_units(triage_fixture):
     )
 
 
+def test_unit_passes_filter(tmp_path):
+    """
+    Description
+    -----------
+    Direct contract check on the configurable unit filter
+    (`_unit_passes_filter`): the default `("good",)` + `"somatic"`
+    keeps only good somatic units, `("good", "mua")` + `"both"` admits
+    everything, `"non_somatic"` inverts the somatic test, and an invalid
+    `somatic_filter` is rejected at construction.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory (throwaway root).
+
+    Returns
+    -------
+    None
+    """
+
+    viz = _make_aggregate_visualizations_parameters()
+
+    def _maker(**kw):
+        return NeuronalTuningFigureMaker(
+            root_directory=str(tmp_path),
+            visualizations_parameter_dict=viz,
+            message_output=lambda *a, **k: None,
+            **kw,
+        )
+
+    default = _maker()
+    assert default._unit_passes_filter({"kslabel": "good"}, {"somatic": "True"})
+    assert not default._unit_passes_filter({"kslabel": "good"}, {"somatic": "False"})
+    assert not default._unit_passes_filter({"kslabel": "mua"}, {"somatic": "True"})
+
+    both = _maker(kslabels=("good", "mua"), somatic_filter="both")
+    assert both._unit_passes_filter({"kslabel": "mua"}, {"somatic": "False"})
+    assert both._unit_passes_filter({"kslabel": "good"}, {"somatic": "True"})
+
+    non_somatic = _maker(somatic_filter="non_somatic")
+    assert non_somatic._unit_passes_filter({"kslabel": "good"}, {"somatic": "False"})
+    assert not non_somatic._unit_passes_filter({"kslabel": "good"}, {"somatic": "True"})
+
+    with pytest.raises(ValueError):
+        _maker(somatic_filter="bogus")
+
+
+def test_consistent_peth_majority_is_strict(tmp_path):
+    """
+    Description
+    -----------
+    The `require_majority` gate is **strict** (`> 0.5`): a unit whose
+    largest in-tolerance peak_t cluster is exactly half of its
+    significant sessions (`k / n_sig == 0.5`) is NOT consistent, while a
+    unit just above half (2/3) is. Locks the harmonised strict-majority
+    boundary shared by the PETH / property / category collectors.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temp directory for the hand-built triage + catalog.
+
+    Returns
+    -------
+    None
+    """
+
+    def _peth_unit(unit_id, peak_ts):
+        per_session = [
+            {"significant": True, "peak_t": t, "peak_z": 5.0} for t in peak_ts
+        ]
+        return {
+            "unit_uid": f"M01_20240101_{unit_id}",
+            "mouse_id": "M01", "rec_date": 20240101, "unit_id": unit_id,
+            "imec": 0, "cluster_num": 1, "peak_channel": 1,
+            "kslabel": "good", "anatomy_region": "PAG",
+            "conditions": {
+                "intact_female": {
+                    "sessions_tested": [],
+                    "modalities": {
+                        "usv_peth_self_excit": {"per_session": per_session},
+                    },
+                },
+            },
+        }
+
+    # Unit A: largest in-tol cluster k=2 of n_sig=4 -> k/n_sig == 0.5 -> EXCLUDED.
+    unit_a = _peth_unit("imec0_cl01_ch1_good", [0.00, 0.05, 0.50, 0.55])
+    # Unit B: k=2 of n_sig=3 -> 0.667 > 0.5 -> INCLUDED.
+    unit_b = _peth_unit("imec0_cl02_ch1_good", [0.00, 0.05, 0.50])
+    units = {u["unit_uid"]: u for u in (unit_a, unit_b)}
+
+    catalog_path = tmp_path / "catalog.csv"
+    catalog_path.write_text(
+        "mouse_id,rec_date,unit_id,somatic\n"
+        "M01,20240101,imec0_cl01_ch1_good,True\n"
+        "M01,20240101,imec0_cl02_ch1_good,True\n"
+    )
+    triage_path = tmp_path / "unit_triage_strictmaj.pkl"
+    with triage_path.open("wb") as fh:
+        pickle.dump({"catalog_path": str(catalog_path), "units": units}, fh)
+
+    maker = _aggregate_maker(tmp_path)
+    per_group = maker._collect_consistent_peth(
+        triage_pkl_path=triage_path,
+        catalog_csv_path=catalog_path,
+        direction="excit",
+        tol_s=0.100,
+        k_min=2,
+        require_majority=True,
+    )
+
+    pag = per_group["PAG"]
+    assert len(pag) == 1, "only the >0.5-majority unit should survive strict majority"
+    assert pag[0]["n_sig"] == 3
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_collectors_honor_configurable_filter(triage_fixture, tmp_path):
+    """
+    Description
+    -----------
+    A maker configured with `kslabels=("good", "mua")` + `"both"` must
+    re-admit the two units the default filter skips (one `kslabel='mua'`,
+    one `somatic='False'`), so its eligible count is exactly two larger
+    than the default good + somatic count over the same pickle.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+    tmp_path (pathlib.Path)
+        Pytest temp directory (throwaway root for the permissive maker).
+
+    Returns
+    -------
+    None
+    """
+
+    default_maker, triage_path, catalog_path, _out_dir = triage_fixture
+    _c0, n_default = default_maker._collect_three_set_overlap_counts(
+        triage_pkl_path=triage_path,
+        catalog_csv_path=catalog_path,
+        condition=_COND_A,
+        k_min=2,
+        require_majority=True,
+    )
+
+    permissive = NeuronalTuningFigureMaker(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
+        message_output=lambda *a, **k: None,
+        kslabels=("good", "mua"),
+        somatic_filter="both",
+    )
+    _c1, n_permissive = permissive._collect_three_set_overlap_counts(
+        triage_pkl_path=triage_path,
+        catalog_csv_path=catalog_path,
+        condition=_COND_A,
+        k_min=2,
+        require_majority=True,
+    )
+
+    assert n_permissive == n_default + 2, (
+        f"permissive filter eligible count {n_permissive} should be the "
+        f"default {n_default} plus the two re-admitted skip units"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-cluster behavioral-page rendering: the `make_neuronal_tuning_figures`
 # dispatcher's non-PDF (one-file-per-page) save path, plus the social /

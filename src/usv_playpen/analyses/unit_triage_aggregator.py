@@ -1022,11 +1022,16 @@ def aggregate_units_across_conditions(
     FileNotFoundError
         If `catalog_path` or `analyses_settings.json` is missing, or if
         any condition `.txt` does not exist.
+    ValueError
+        If `unit_catalog.csv` maps any `rec_date` to more than one
+        `mouse_id` (the one-date-one-mouse invariant the per-session
+        `mouse_id` lookup relies on).
     KeyError
-        If a pkl on disk has no catalog row for its
-        `(mouse_id, rec_date, unit_id)` tuple. This is treated as a
-        hard error because the catalog is the authoritative scope —
-        an orphan pkl indicates a stale catalog or a stray file.
+        If any pkl on disk has no catalog row for its
+        `(mouse_id, rec_date, unit_id)` tuple. The catalog is the
+        authoritative scope, so an orphan pkl (stale catalog or stray
+        file) is a hard error; all orphans are collected and reported
+        together at the end rather than aborting on the first.
     """
 
     # 1. Resolve thresholds (kwargs > analyses_settings.json defaults).
@@ -1074,7 +1079,21 @@ def aggregate_units_across_conditions(
         (row.mouse_id, row.rec_date, row.unit_id): row.brain_area
         for row in catalog.itertuples(index=False)
     }
-    # rec_date -> mouse_id (each date maps to exactly one mouse; verified upstream)
+    # rec_date -> mouse_id (each date maps to exactly one mouse). Enforce the
+    # invariant rather than silently taking the first: a date mapping to more
+    # than one mouse would mis-attribute every unit recorded that day.
+    date_mouse_counts = catalog.groupby("rec_date")["mouse_id"].nunique()
+    ambiguous_dates = date_mouse_counts[date_mouse_counts > 1]
+    if not ambiguous_dates.empty:
+        details = "; ".join(
+            f"{int(d)} -> "
+            f"{sorted(catalog.loc[catalog['rec_date'] == d, 'mouse_id'].unique())}"
+            for d in ambiguous_dates.index
+        )
+        raise ValueError(
+            "unit_catalog.csv maps a rec_date to multiple mouse_ids "
+            f"(expected one-date-one-mouse): {details}"
+        )
     date_to_mouse: dict[int, str] = (
         catalog.groupby("rec_date")["mouse_id"].first().to_dict()
     )
@@ -1098,6 +1117,7 @@ def aggregate_units_across_conditions(
     data_root = pathlib.Path(data_root)
     units: dict[str, dict] = {}
     sessions_skipped: dict[str, list[str]] = {c: [] for c in condition_sessions}
+    orphan_pkls: list[tuple[str, int, str, pathlib.Path]] = []
     n_pkls_processed = 0
 
     for cond, sessions in condition_sessions.items():
@@ -1137,12 +1157,11 @@ def aggregate_units_across_conditions(
                 unit_id = pkl.stem.replace("_tuning_curves_data", "")
                 key = (mouse_id, rec_date, unit_id)
                 if key not in catalog_lookup:
-                    raise KeyError(
-                        f"pkl {pkl} has no catalog row for "
-                        f"(mouse_id={mouse_id!r}, rec_date={rec_date}, "
-                        f"unit_id={unit_id!r}); aborting (refusing to "
-                        "silently drop a unit unknown to the catalog)."
-                    )
+                    # Collect every orphan (pkl with no catalog row) and fail
+                    # at the end with the full list, rather than aborting the
+                    # whole multi-condition run on the first one.
+                    orphan_pkls.append((mouse_id, rec_date, unit_id, pkl))
+                    continue
                 anatomy_region = catalog_lookup[key]
 
                 with pkl.open("rb") as fh:
@@ -1189,6 +1208,18 @@ def aggregate_units_across_conditions(
                     mod_block["per_session"].append(entry)
 
                 n_pkls_processed += 1
+
+    if orphan_pkls:
+        details = "\n".join(
+            f"  - {pkl} (mouse_id={mid!r}, rec_date={rd}, unit_id={uid!r})"
+            for mid, rd, uid, pkl in orphan_pkls
+        )
+        raise KeyError(
+            f"{len(orphan_pkls)} pkl(s) have no catalog row (refusing to "
+            "silently drop units unknown to the catalog); the catalog is the "
+            "authoritative scope, so a stale catalog or stray pkl must be "
+            f"resolved:\n{details}"
+        )
 
     # 5. Compute per-modality aggregates across the per_session lists.
     for unit in units.values():

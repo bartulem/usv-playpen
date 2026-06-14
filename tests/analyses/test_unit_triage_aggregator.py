@@ -961,19 +961,48 @@ def test_aggregator_raises_on_orphan_pkl(tmp_path):
     The catalog is the authoritative scope: a pkl whose
     `(mouse_id, rec_date, unit_id)` triple has no catalog row is an
     integrity error, not something to silently drop. The aggregator
-    must raise `KeyError`. We simulate this by writing an extra pkl
-    with a `unit_id` the catalog does not know about.
+    must raise `KeyError` — and it collects ALL orphans and reports them
+    together rather than aborting on the first, so writing two unknown
+    pkls must yield one error naming both.
     """
 
     fx = _build_aggregator_tree(tmp_path)
-    # Write an extra cluster pkl on day 1 that the catalog does not list.
+    # Write TWO extra cluster pkls the catalog does not list, so the run
+    # must reach both before failing (proves fail-at-end, not abort-on-first).
     sess_a = fx["data_root"] / "20240101_100000" / "ephys" / "tuning_curves"
-    _write_cluster_pkl(
-        sess_a,
-        "imec0_cl9999_ch300_good",
-        _full_triage_stats(),
-    )
-    with pytest.raises(KeyError):
+    _write_cluster_pkl(sess_a, "imec0_cl9999_ch300_good", _full_triage_stats())
+    _write_cluster_pkl(sess_a, "imec0_cl8888_ch400_good", _full_triage_stats())
+    with pytest.raises(KeyError) as exc_info:
+        aggregate_units_across_conditions(
+            condition_to_session_list={
+                "intact_female": fx["intact_list"],
+                "mute_female": fx["mute_list"],
+            },
+            catalog_path=fx["catalog"],
+            out_dir=fx["out_dir"],
+            data_root=fx["data_root"],
+            **DEFAULT_THRESHOLDS,
+        )
+    msg = str(exc_info.value)
+    assert "2 pkl(s)" in msg
+    assert "cl9999" in msg and "cl8888" in msg
+
+
+def test_aggregator_raises_on_date_mapped_to_multiple_mice(tmp_path):
+    """
+    Description
+    -----------
+    The per-session `mouse_id` lookup assumes each `rec_date` maps to
+    exactly one mouse. A catalog that maps a date to two mice would
+    mis-attribute every unit recorded that day, so the aggregator must
+    raise `ValueError` rather than silently taking the first mouse.
+    """
+
+    fx = _build_aggregator_tree(tmp_path)
+    # Append a row giving 20240101 a SECOND mouse, violating the invariant.
+    with open(fx["catalog"], "a") as fh:
+        fh.write("M99,20240101,imec0_cl0003_ch300_good,PAG\n")
+    with pytest.raises(ValueError, match="one-date-one-mouse"):
         aggregate_units_across_conditions(
             condition_to_session_list={
                 "intact_female": fx["intact_list"],

@@ -316,6 +316,12 @@ class AnatomyFigureMaker:
             appended. Original column order preserved otherwise.
         """
 
+        if not self.catalog_path.exists():
+            raise FileNotFoundError(
+                f"unit_catalog.csv not found: {self.catalog_path} "
+                "(the catalog is the authoritative unit scope for every "
+                "anatomy figure)."
+            )
         df = pd.read_csv(
             self.catalog_path,
             usecols=[
