@@ -115,19 +115,41 @@ def generate_ratemaps(
     camera_fr (int / float)
         Camera frame rate.
     space_bool (bool)
-        Boolean indicating if feature is spatial.
+        Boolean indicating if feature is spatial. When True, the feature is
+        binned into a (bins_in_one_dir x bins_in_one_dir) grid with
+        bins_in_one_dir = ceil(sqrt(num_bins)), so the effective bin count is
+        bins_in_one_dir**2 (>= num_bins; equal only when num_bins is a perfect
+        square).
 
     Returns
     -------
+    The return tuple differs by mode (see the `space_bool` flag):
+
+    Non-spatial (`space_bool=False`) -> 4-tuple:
     ratemap (np.ndarray)
-        A (n_bins, 2) shape ndarray containing spike counts and occupancy (in seconds)
-        for each feature bin (first column spike counts, second column occ).
+        A (num_bins, 2) shape ndarray containing spike counts and occupancy
+        (in seconds) for each feature bin (first column spike counts, second
+        column occupancy in seconds).
     sh_counts (np.ndarray)
-        A (n_bins) shape ndarray containing shuffled spike counts.
+        A (n_shuffles, num_bins) shape ndarray containing shuffled spike counts
+        (one row per shuffle); the shuffled null rate per bin is
+        sh_counts / ratemap[:, 1].
     bin_centers (np.ndarray)
-        A (n_bins) shape ndarray containing bin centers for given feature.
+        A (num_bins,) shape ndarray containing bin centers for given feature.
     bin_edges (np.ndarray)
-        A (n_bins) shape ndarray containing bin edges for given feature.
+        A (num_bins + 1,) shape ndarray containing bin edges for given feature.
+
+    Spatial (`space_bool=True`) -> 3-tuple (no shuffled counts; spatial
+    significance is gated on an absolute Skaggs information rate, not a
+    shuffle z-score, so `shuffled_spike_arr` is ignored in this mode):
+    ratemap (np.ndarray)
+        A (bins_in_one_dir, bins_in_one_dir, 2) shape ndarray of spike counts
+        ([:, :, 0]) and occupancy in seconds ([:, :, 1]), where
+        bins_in_one_dir = ceil(sqrt(num_bins)).
+    bin_centers (np.ndarray)
+        A (bins_in_one_dir,) shape ndarray containing per-axis bin centers.
+    bin_edges (np.ndarray)
+        A (bins_in_one_dir + 1,) shape ndarray containing per-axis bin edges.
     """
 
     if space_bool:
@@ -272,9 +294,10 @@ def _circular_shift_spike_times(
         Sorted (1D) array of shifted spike times.
     """
 
-    shifted = spike_times + shift_seconds
-    over_mask = shifted >= duration_seconds
-    shifted[over_mask] = shifted[over_mask] - duration_seconds
+    # modulo wrap so the shift is correct for any offset magnitude (parity
+    # with the frame-based `shuffle_spikes`; a single-subtraction wrap would
+    # leave spikes out of [0, duration_seconds) whenever shift exceeds it).
+    shifted = np.mod(spike_times + shift_seconds, duration_seconds)
     shifted.sort()
     return shifted
 
@@ -808,6 +831,22 @@ def _run_analysis(
 
     Parameters
     ----------
+    rate (np.ndarray, shape (n_bins,))
+        Observed per-bin firing rate (spikes/s).
+    null_p_low (np.ndarray, shape (n_bins,))
+        Per-bin lower shuffle-percentile bound (e.g. 0.5th pct); a bin is
+        "suppression" when `rate < null_p_low`.
+    null_p_high (np.ndarray, shape (n_bins,))
+        Per-bin upper shuffle-percentile bound (e.g. 99.5th pct); a bin is
+        "excitation" when `rate > null_p_high`.
+    null_mean (np.ndarray, shape (n_bins,))
+        Per-bin mean of the shuffled null rate, used for z-scoring.
+    null_std (np.ndarray, shape (n_bins,))
+        Per-bin std of the shuffled null rate, used for z-scoring; bins with
+        non-finite or zero std get z = NaN.
+    circular (bool, keyword-only)
+        If True, the longest-run search wraps the array boundary (for circular
+        features such as head direction).
 
     Returns
     -------
@@ -1091,6 +1130,12 @@ def _ramp_index(rate: np.ndarray, bin_centers_s: np.ndarray) -> float:
     centers = np.asarray(bin_centers_s, dtype=float).ravel()
     if rate.size != centers.size or rate.size == 0:
         return float("nan")
+    # Coverage guard: the anchors are hardcoded, so bail out (NaN) when the
+    # PETH window does not actually span them — otherwise argmin would clamp
+    # to an edge bin and silently compute the ramp over the wrong interval.
+    lo, hi = float(centers.min()), float(centers.max())
+    if not (lo <= -1.5 <= hi and lo <= -0.1 <= hi):
+        return float("nan")
     near_idx = int(np.argmin(np.abs(centers - (-0.1))))
     far_idx = int(np.argmin(np.abs(centers - (-1.5))))
     rn = rate[near_idx]
@@ -1241,6 +1286,7 @@ class NeuronalTuning(FeatureZoo):
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -1296,6 +1342,7 @@ class NeuronalTuning(FeatureZoo):
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -1382,6 +1429,7 @@ class NeuronalTuning(FeatureZoo):
 
         Parameters
         ----------
+        None
 
         Returns
         -------
@@ -1510,7 +1558,7 @@ class NeuronalTuning(FeatureZoo):
         behavioral_data = beh_inputs["behavioral_data"]
         animal_ids = beh_inputs["animal_ids"]
         empirical_camera_sr = beh_inputs["empirical_camera_sr"]
-        smoothing_sd = float(params.get("smoothing_sd", 0.0))
+        smoothing_sd = float(params["smoothing_sd"])
 
         cluster_data_frames_original = np.load(file=cluster_file)[1, :]
         partial: dict = {}
@@ -1909,7 +1957,7 @@ class NeuronalTuning(FeatureZoo):
         None
         """
 
-        circular_set = set(params.get("circular_features", []))
+        circular_set = set(params["circular_features"])
         partial.setdefault("triage_stats", {})
         partial["triage_stats"].setdefault("behavioral", {})
         partial["triage_stats"].setdefault("spatial", {})
@@ -2355,9 +2403,13 @@ class NeuronalTuning(FeatureZoo):
         -------
         dict
             Keys: `vmi`, `fr_baseline`, `fr_usv`, `wilcoxon_statistic`,
-            `wilcoxon_pvalue`, `n_bouts`, `fr_baseline_per_bout`,
-            `fr_usv_per_bout`. Scalars are NaN when the per-bout arrays
-            have no finite entries.
+            `wilcoxon_pvalue`, `n_bouts`, `n_valid_pairs`,
+            `fr_baseline_per_bout`, `fr_usv_per_bout`. Scalars are NaN when
+            the per-bout arrays have no finite entries. `n_valid_pairs` is
+            the number of bouts with BOTH a finite baseline and a finite USV
+            firing rate — i.e. the paired observations that actually enter
+            the Wilcoxon test (<= `n_bouts`); downstream significance gating
+            should use it in preference to the total `n_bouts`.
         """
 
         if em_starts.size == 0:
@@ -2368,6 +2420,7 @@ class NeuronalTuning(FeatureZoo):
                 "wilcoxon_statistic": np.nan,
                 "wilcoxon_pvalue": np.nan,
                 "n_bouts": 0,
+                "n_valid_pairs": 0,
                 "fr_baseline_per_bout": np.empty(0, dtype=float),
                 "fr_usv_per_bout": np.empty(0, dtype=float),
             }
@@ -2443,6 +2496,7 @@ class NeuronalTuning(FeatureZoo):
             "wilcoxon_statistic": w_stat,
             "wilcoxon_pvalue": w_p,
             "n_bouts": n_bouts,
+            "n_valid_pairs": n_valid,
             "fr_baseline_per_bout": fr_baseline_per_bout,
             "fr_usv_per_bout": fr_usv_per_bout,
         }
@@ -2492,7 +2546,7 @@ class NeuronalTuning(FeatureZoo):
         prop_min_occ_s = float(params["usv_property_min_occupancy_seconds"])
         n_min_category = int(params["n_usv_min_category"])
         bout_quiet_s = float(params["bout_quiet_seconds"])
-        smoothing_sd = float(params.get("smoothing_sd", 0.0))
+        smoothing_sd = float(params["smoothing_sd"])
         require_post = bool(params["vocal_require_clean_post_anchor"])
         require_prior = bool(params["vocal_require_clean_prior_anchor"])
         duration_seconds = voc_inputs["duration_seconds"]

@@ -52,7 +52,7 @@ def _to_jsonable(o: Any) -> Any:
     ----------
     o (Any)
         Value to coerce. Handled types: `np.integer`, `np.floating`,
-        `np.bool_`, `np.ndarray`, `pathlib.Path`. Everything else is
+        `np.bool_`, `np.ndarray`, `pathlib.PurePath`. Everything else is
         passed through and will hit `json.dump`'s default error.
 
     Returns
@@ -125,17 +125,21 @@ def _extract_vmi_metrics(payload: dict) -> dict:
     Returns
     -------
     metrics (dict)
-        `{vmi, p, n_bouts, fr_baseline, fr_usv}` with floats coerced via
-        `_safe_float` (NaN / non-finite → None) and integers coerced to
-        Python `int`.
+        `{vmi, p, n_bouts, n_valid_pairs, fr_baseline, fr_usv}` with floats
+        coerced via `_safe_float` (NaN / non-finite → None) and integers
+        coerced to Python `int`. `n_valid_pairs` (the number of bouts that
+        actually entered the Wilcoxon test) is `None` for legacy pkls written
+        before the field existed; gating falls back to `n_bouts` in that case.
     """
 
+    _n_valid = payload.get("n_valid_pairs")
     return {
-        "vmi": _safe_float(payload.get("vmi")),
-        "p": _safe_float(payload.get("wilcoxon_pvalue")),
-        "n_bouts": int(payload.get("n_bouts", 0) or 0),
-        "fr_baseline": _safe_float(payload.get("fr_baseline")),
-        "fr_usv": _safe_float(payload.get("fr_usv")),
+        "vmi": _safe_float(payload["vmi"]),
+        "p": _safe_float(payload["wilcoxon_pvalue"]),
+        "n_bouts": int(payload["n_bouts"]),
+        "n_valid_pairs": int(_n_valid) if _n_valid is not None else None,
+        "fr_baseline": _safe_float(payload["fr_baseline"]),
+        "fr_usv": _safe_float(payload["fr_usv"]),
     }
 
 
@@ -200,12 +204,13 @@ def _extract_categorical_metrics(payload: dict) -> dict:
         selectivity}` with the usual numeric coercions.
     """
 
+    _best_cat = payload["best_cat"]
     return {
-        "peak_abs_z": _safe_float(payload.get("peak_abs_z")),
-        "peak_signed_z": _safe_float(payload.get("peak_signed_z")),
-        "best_cat": int(payload.get("best_cat", -1) or -1),
-        "n_sig_categories": int(payload.get("n_sig_categories", 0) or 0),
-        "selectivity": _safe_float(payload.get("selectivity")),
+        "peak_abs_z": _safe_float(payload["peak_abs_z"]),
+        "peak_signed_z": _safe_float(payload["peak_signed_z"]),
+        "best_cat": int(_best_cat) if _best_cat is not None else -1,
+        "n_sig_categories": int(payload["n_sig_categories"]),
+        "selectivity": _safe_float(payload["selectivity"]),
     }
 
 
@@ -229,13 +234,15 @@ def _extract_spatial_metrics(payload: dict) -> dict:
         peak_col}` with the usual numeric coercions.
     """
 
+    _peak_row = payload["peak_row"]
+    _peak_col = payload["peak_col"]
     return {
-        "info_rate_bps": _safe_float(payload.get("info_rate_bps")),
-        "sparsity": _safe_float(payload.get("sparsity")),
-        "coherence": _safe_float(payload.get("coherence")),
-        "peak_rate_sps": _safe_float(payload.get("peak_rate_sps")),
-        "peak_row": int(payload.get("peak_row", -1) or -1),
-        "peak_col": int(payload.get("peak_col", -1) or -1),
+        "info_rate_bps": _safe_float(payload["info_rate_bps"]),
+        "sparsity": _safe_float(payload["sparsity"]),
+        "coherence": _safe_float(payload["coherence"]),
+        "peak_rate_sps": _safe_float(payload["peak_rate_sps"]),
+        "peak_row": int(_peak_row) if _peak_row is not None else -1,
+        "peak_col": int(_peak_col) if _peak_col is not None else -1,
     }
 
 
@@ -250,9 +257,14 @@ def _flag_vmi(
     -----------
     Decide whether a cluster's VMI block crosses the significance
     gate. A cluster is flagged when:
-      * `n_bouts >= min_bouts`
+      * `n_valid_pairs >= min_bouts`
       * `wilcoxon_pvalue < alpha`
       * `vmi` is finite
+
+    The bout-count gate uses `n_valid_pairs` (the bouts that actually
+    entered the Wilcoxon test) when the payload carries it, and falls back
+    to the total `n_bouts` for legacy pkls written before that field
+    existed.
 
     The sign of `vmi` selects the flag direction (`excit` for vmi > 0,
     `suppress` for vmi < 0).
@@ -264,7 +276,7 @@ def _flag_vmi(
     alpha (float)
         Wilcoxon p-value threshold (e.g. 0.01).
     min_bouts (int)
-        Minimum number of bouts for VMI to be considered meaningful.
+        Minimum number of paired bouts for VMI to be considered meaningful.
 
     Returns
     -------
@@ -275,7 +287,12 @@ def _flag_vmi(
     """
 
     metrics = _extract_vmi_metrics(vmi_payload)
-    if metrics["n_bouts"] < min_bouts:
+    n_for_gate = (
+        metrics["n_valid_pairs"]
+        if metrics["n_valid_pairs"] is not None
+        else metrics["n_bouts"]
+    )
+    if n_for_gate < min_bouts:
         return None, None
     vmi = metrics["vmi"]
     p = metrics["p"]
@@ -561,11 +578,8 @@ def flag_one_cluster(
         if vmi is None or not math.isfinite(vmi):
             continue
         inferred_dir = "excit" if vmi > 0 else "suppress"
-        significant = (
-            metrics["n_bouts"] >= vmi_min_bouts
-            and metrics["p"] is not None
-            and metrics["p"] < vmi_alpha
-        )
+        flagged_dir, _ = _flag_vmi(payload, alpha=vmi_alpha, min_bouts=vmi_min_bouts)
+        significant = flagged_dir is not None
         key = f"vmi_{role}_{inferred_dir}"
         records[key] = {
             "tested": True,
@@ -586,14 +600,9 @@ def flag_one_cluster(
                 continue
             metrics = _extract_run_metrics(block)
             metrics["ramp_index"] = ramp_index
-            max_run = metrics.get("max_run")
-            peak_z = metrics.get("peak_z")
-            significant = (
-                max_run is not None
-                and max_run >= min_consecutive_bins
-                and peak_z is not None
-                and abs(peak_z) >= z_threshold
-            )
+            significant = _flag_runs(
+                block, z_threshold=z_threshold, min_run=min_consecutive_bins
+            ) is not None
             key = f"usv_peth_{role}_{direction}"
             records[key] = {
                 "tested": True,
@@ -619,14 +628,9 @@ def flag_one_cluster(
                 metrics = _extract_run_metrics(block)
                 metrics["selectivity"] = selectivity
                 metrics["monotonicity"] = monotonicity
-                max_run = metrics.get("max_run")
-                peak_z = metrics.get("peak_z")
-                significant = (
-                    max_run is not None
-                    and max_run >= min_consecutive_bins
-                    and peak_z is not None
-                    and abs(peak_z) >= z_threshold
-                )
+                significant = _flag_runs(
+                    block, z_threshold=z_threshold, min_run=min_consecutive_bins
+                ) is not None
                 key = f"usv_property_{role}_{prop}_{direction}"
                 records[key] = {
                     "tested": True,
@@ -645,8 +649,7 @@ def flag_one_cluster(
             if not isinstance(payload, dict):
                 continue
             metrics = _extract_categorical_metrics(payload)
-            pz = metrics["peak_abs_z"]
-            significant = pz is not None and pz >= z_threshold
+            significant = _flag_categorical(payload, z_threshold=z_threshold) is not None
             key = f"usv_category_{role}_{cat_feat}"
             records[key] = {
                 "tested": True,
@@ -664,7 +667,8 @@ def flag_one_cluster(
         for cat_feat, payload in cats.items():
             if not isinstance(payload, dict):
                 continue
-            best_cat = int(payload.get("best_cat", -1) or -1)
+            _best_cat = payload.get("best_cat")
+            best_cat = int(_best_cat) if _best_cat is not None else -1
             best_t = _safe_float(payload.get("best_t"))
             for direction_name, key_tag in (
                 ("best_excit", "excit"),
@@ -676,14 +680,9 @@ def flag_one_cluster(
                 metrics = _extract_run_metrics(block)
                 metrics["best_cat"] = best_cat
                 metrics["best_t"] = best_t
-                max_run = metrics.get("max_run")
-                peak_z = metrics.get("peak_z")
-                significant = (
-                    max_run is not None
-                    and max_run >= min_consecutive_bins
-                    and peak_z is not None
-                    and abs(peak_z) >= z_threshold
-                )
+                significant = _flag_runs(
+                    block, z_threshold=z_threshold, min_run=min_consecutive_bins
+                ) is not None
                 key = f"usv_category_peth_{role}_{cat_feat}_{key_tag}"
                 records[key] = {
                     "tested": True,
@@ -711,14 +710,9 @@ def flag_one_cluster(
                 metrics["selectivity"] = selectivity
                 metrics["monotonicity"] = monotonicity
                 metrics["is_circular"] = is_circular
-                max_run = metrics.get("max_run")
-                peak_z = metrics.get("peak_z")
-                significant = (
-                    max_run is not None
-                    and max_run >= min_consecutive_bins
-                    and peak_z is not None
-                    and abs(peak_z) >= z_threshold
-                )
+                significant = _flag_runs(
+                    block, z_threshold=z_threshold, min_run=min_consecutive_bins
+                ) is not None
                 key = f"behavioral_{offset_key}_{feat_key}_{direction}"
                 records[key] = {
                     "tested": True,
@@ -736,8 +730,9 @@ def flag_one_cluster(
             if not isinstance(payload, dict):
                 continue
             metrics = _extract_spatial_metrics(payload)
-            info = metrics["info_rate_bps"]
-            significant = info is not None and info >= spatial_info_bps_threshold
+            significant = _flag_spatial(
+                payload, info_threshold=spatial_info_bps_threshold
+            ) is not None
             key = f"spatial_{offset_key}_{feat_key}"
             records[key] = {
                 "tested": True,
@@ -1201,7 +1196,7 @@ def aggregate_units_across_conditions(
             for mod_block in cond_block["modalities"].values():
                 ps = mod_block["per_session"]
                 n_tested = len(ps)
-                n_significant = sum(1 for e in ps if e.get("significant"))
+                n_significant = sum(1 for e in ps if e["significant"])
                 mod_block["n_tested"] = n_tested
                 mod_block["n_significant"] = n_significant
                 mod_block["consistency"] = (
@@ -1226,12 +1221,13 @@ def aggregate_units_across_conditions(
                 )
 
     # 6. Assemble output dict.
+    now = datetime.now()
     n_units_per_condition = {
         cond: sum(1 for u in units.values() if cond in u["conditions"])
         for cond in condition_sessions
     }
     out: dict = {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": now.isoformat(timespec="seconds"),
         "thresholds_used": thresholds,
         "catalog_path": str(catalog_path),
         "data_root": str(data_root),
@@ -1245,7 +1241,7 @@ def aggregate_units_across_conditions(
     # 7. Write pickle.
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"unit_triage_{timestamp}.pkl"
     with atomic_output_path(out_path) as tmp_path, tmp_path.open("wb") as fh:
         pickle.dump(out, fh)

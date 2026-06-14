@@ -1308,6 +1308,26 @@ def test_flag_vmi_nan_pvalue_rejected():
     assert _flag_vmi(payload, alpha=0.01, min_bouts=10) == (None, None)
 
 
+def test_flag_vmi_gates_on_n_valid_pairs_over_n_bouts():
+    # plenty of total bouts, but only 5 paired observations entered the
+    # Wilcoxon -> the n_valid_pairs gate (5 < 10) must reject it even though
+    # n_bouts (20) would have passed.
+    payload = {
+        "vmi": 0.5, "wilcoxon_pvalue": 0.001, "n_bouts": 20,
+        "n_valid_pairs": 5, "fr_baseline": 1.0, "fr_usv": 3.0,
+    }
+    assert _flag_vmi(payload, alpha=0.01, min_bouts=10) == (None, None)
+
+
+def test_flag_vmi_n_valid_pairs_passes():
+    payload = {
+        "vmi": 0.5, "wilcoxon_pvalue": 0.001, "n_bouts": 20,
+        "n_valid_pairs": 15, "fr_baseline": 1.0, "fr_usv": 3.0,
+    }
+    direction, info = _flag_vmi(payload, alpha=0.01, min_bouts=10)
+    assert direction == "excit" and info["n_valid_pairs"] == 15
+
+
 # _flag_runs ----------------------------------------------------------------
 
 
