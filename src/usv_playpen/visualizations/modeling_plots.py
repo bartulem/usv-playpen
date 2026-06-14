@@ -70,6 +70,7 @@ from scipy.ndimage import gaussian_filter1d
 from .auxiliary_plot_functions import create_colormap
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
+from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import configure_path, find_base_path
 from .plot_style import apply_plot_style
 
@@ -1484,6 +1485,64 @@ def plot_raw_feature_difference(
         fig_heat.savefig(heat_path, bbox_inches='tight', dpi=300)
 
 
+def _resolve_cohort_sexes(selection_metadata: dict | None) -> tuple:
+    """
+    Returns the ``(target_mouse_sex, predictor_mouse_sex)`` pair from a
+    loaded selection artifact's metadata blocks, or ``(None, None)`` when
+    the ``_input_metadata`` block (or its sex fields) is absent — e.g. a
+    legacy artifact. The sexes drive the per-cohort fill of the canonical
+    feature labels (``FeatureZoo.resolve_feature_label``).
+
+    Parameters
+    ----------
+    selection_metadata : dict or None
+        The metadata-blocks dict returned by ``load_selection_results``
+        (its third element).
+
+    Returns
+    -------
+    tuple
+        ``(self_sex, other_sex)``; either element may be ``None``.
+    """
+
+    input_metadata = (selection_metadata or {}).get('_input_metadata') or {}
+    return input_metadata.get('target_mouse_sex'), input_metadata.get('predictor_mouse_sex')
+
+
+def _make_feature_pretty(feature_label_overrides: dict | None,
+                         selection_metadata: dict | None):
+    """
+    Builds the feature-name -> display-label function used by the
+    selection plotters. A per-call ``feature_label_overrides`` entry wins;
+    otherwise the label comes from the single source of truth,
+    ``FeatureZoo.resolve_feature_label``, filled with the cohort sexes read
+    from the artifact's ``_input_metadata`` (so labels are consistent and
+    cohort-correct — male- vs female-target — without per-figure dicts).
+
+    Parameters
+    ----------
+    feature_label_overrides : dict or None
+        Optional ``{generic_key: label}`` overrides; take priority.
+    selection_metadata : dict or None
+        Metadata blocks from ``load_selection_results`` (for the sexes).
+
+    Returns
+    -------
+    callable
+        ``_pretty(fname: str) -> str``.
+    """
+
+    overrides = feature_label_overrides if feature_label_overrides is not None else {}
+    self_sex, other_sex = _resolve_cohort_sexes(selection_metadata)
+
+    def _pretty(fname: str) -> str:
+        if fname in overrides:
+            return overrides[fname]
+        return FeatureZoo.resolve_feature_label(fname, self_sex, other_sex)
+
+    return _pretty
+
+
 def plot_model_selection_results(
         selection_results_path: str,
         metric_secondary: str = 'auc',
@@ -1560,7 +1619,7 @@ def plot_model_selection_results(
     # `selection_*.pkl` artifact in the directory, falls back to legacy
     # `*_step_*.pkl` glob. `display_name` keeps the substring-based sex
     # inference below working in both modes.
-    selection_steps, display_name, _ = load_selection_results(selection_results_path)
+    selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
 
     if not selection_steps:
         print(f"No step data found in {selection_results_path}")
@@ -1707,13 +1766,7 @@ def plot_model_selection_results(
         b = int(round(b + (255 - b) * factor))
         return f"#{r:02x}{g:02x}{b:02x}"
 
-    label_map = feature_label_overrides if feature_label_overrides is not None else {}
-
-    def _pretty(fname: str) -> str:
-        """Return the override label if present, else the raw name."""
-        if fname in label_map:
-            return label_map[fname]
-        return fname
+    _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
     # ----- Left-panel data: NLL trajectory -----
     # The selector's primary metric is NLL (minimization). The chance
@@ -2696,7 +2749,7 @@ def plot_multinomial_selection_trajectory(
 
     BG_COLOR = '#FFFFFF'
 
-    selection_steps, display_name, _ = load_selection_results(selection_results_path)
+    selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
 
     if not selection_steps:
         print(f"No multinomial step data found in {selection_results_path}")
@@ -2862,10 +2915,7 @@ def plot_multinomial_selection_trajectory(
         b = int(round(b + (255 - b) * factor))
         return f"#{r:02x}{g:02x}{b:02x}"
 
-    label_map = feature_label_overrides if feature_label_overrides is not None else {}
-
-    def _pretty(fname: str) -> str:
-        return label_map[fname] if fname in label_map else fname
+    _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
     cum_prim = [d['prim_mean'] for d in steps_data]
     cum_sec = [d['sec_mean'] for d in steps_data]
@@ -3398,17 +3448,13 @@ def plot_multinomial_selection_diagnosis(
     selection_results_path = configure_path(str(selection_results_path))
     if output_dir is not None:
         output_dir = configure_path(str(output_dir))
-    label_map = feature_label_overrides if feature_label_overrides is not None else {}
-
-    def _pretty(fname: str) -> str:
-        return label_map[fname] if fname in label_map else fname
-
     BG_COLOR = '#FFFFFF'
 
-    selection_steps, display_name, _ = load_selection_results(selection_results_path)
+    selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
     if not selection_steps:
         print(f"No multinomial step data found in {selection_results_path}")
         return
+    _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
     # Final accepted step = last step with a real (non-null) winner;
     # skip a rejected last step if present.
@@ -3720,7 +3766,7 @@ def plot_manifold_selection_trajectory(
 
     BG_COLOR = '#FFFFFF'
 
-    selection_steps, display_name, _ = load_selection_results(selection_results_path)
+    selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
 
     if not selection_steps:
         print(f"No manifold selection step data found in {selection_results_path}")
@@ -3863,10 +3909,7 @@ def plot_manifold_selection_trajectory(
         b = int(round(b + (255 - b) * factor))
         return f"#{r:02x}{g:02x}{b:02x}"
 
-    label_map = feature_label_overrides if feature_label_overrides is not None else {}
-
-    def _pretty(fname: str) -> str:
-        return label_map[fname] if fname in label_map else fname
+    _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
     cum_prim = [d['prim_mean'] for d in steps_data]
     cum_sec = [d['sec_mean'] for d in steps_data]
