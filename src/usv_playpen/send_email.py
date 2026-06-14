@@ -13,6 +13,16 @@ from pathlib import Path
 
 
 class Messenger:
+    """
+    Description
+    -----------
+    Sends pipeline status / completion e-mails over SMTP_SSL using lab
+    credentials read from an INI file. ``send_message`` returns ``True`` on a
+    successful send, ``False`` on an SMTP/credentials error (logged via
+    ``message_output``, never raised, so a failed notification cannot abort the
+    pipeline), and ``None`` when no receivers are configured.
+    """
+
     def __init__(
         self,
         receivers: list | None = None,
@@ -71,6 +81,10 @@ class Messenger:
             If the credentials file does not exist. send_message() calls this
             inside its try/except, so it is reported via message_output and the
             send returns False, rather than terminating the whole process.
+        KeyError
+            If the credentials file is missing the required ``[email]``
+            section (clearer than a raw missing-key error); also caught by
+            send_message().
         """
 
         if not Path(self.credentials_file).is_file():
@@ -79,6 +93,11 @@ class Messenger:
             )
         config = configparser.ConfigParser()
         config.read(self.credentials_file)
+        if not config.has_section('email'):
+            raise KeyError(
+                f"E-mail config '{self.credentials_file}' is missing the "
+                "required [email] section."
+            )
         return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'], config['email']['email_password']
 
     def send_message(self, subject: str | None = None, message: str | None = None) -> bool | None:
@@ -124,7 +143,7 @@ class Messenger:
                 msg.set_content(message)
 
                 # send email
-                with smtplib.SMTP_SSL(host=email_host, port=email_port) as smtp:
+                with smtplib.SMTP_SSL(host=email_host, port=int(email_port)) as smtp:
                     smtp.login(email_address, email_password)
                     smtp.send_message(msg)
                 return True

@@ -607,7 +607,8 @@ def newest_match_or_raise(
             f"{label or pattern}: search root '{root}' does not exist."
         )
     if key is None:
-        key = lambda p: p.stat().st_ctime
+        def key(p):
+            return p.stat().st_ctime
     matches = list(root.rglob(pattern) if recursive else root.glob(pattern))
     if not matches:
         kind = "rglob" if recursive else "glob"

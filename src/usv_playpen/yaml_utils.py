@@ -120,6 +120,8 @@ def load_session_metadata(root_directory: str, logger: Callable = print) -> tupl
     ----------
     root_directory (str)
         The directory to search for the metadata file.
+    logger (Callable)
+        Message sink for status/error output; defaults to ``print``.
 
     Returns
     -------
@@ -469,6 +471,8 @@ def save_session_metadata(data: dict, filepath: Path, logger: Callable = print) 
         The metadata to save.
     filepath (Path)
         The path to the metadata file.
+    logger (Callable)
+        Message sink for error output; defaults to ``print``.
 
     Returns
     -------
