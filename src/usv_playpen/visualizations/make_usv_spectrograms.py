@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 
 from collections.abc import Callable
 
@@ -118,17 +119,39 @@ class USVSpectrogramPlotter:
         Parameters
         ----------
         **kwargs
-            Forwarded as-is to ``self.__dict__``. Expected keys:
-            ``root_directory``, ``visualizations_parameter_dict``,
-            ``message_output``.
+            Forwarded as-is to ``self.__dict__``. ``root_directory`` and
+            ``visualizations_parameter_dict`` are REQUIRED (a missing one
+            raises ``ValueError``); ``message_output`` and
+            ``cmap_override`` are optional and default to ``print`` /
+            ``None`` respectively.
 
         Returns
         -------
         None
+
+        Raises
+        ------
+        ValueError
+            If either ``root_directory`` or
+            ``visualizations_parameter_dict`` was not supplied.
         """
 
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
+
+        # The pass-through above deliberately keeps the constructor open to
+        # the optional keys (``message_output``, ``cmap_override``) so callers
+        # need not pass them, but the two keys every rendering method reads
+        # unconditionally MUST be present. Validate them here so a forgotten
+        # keyword fails immediately with a clear message instead of surfacing
+        # as an ``AttributeError`` deep inside ``plot_*``.
+        for required_kw in ("root_directory", "visualizations_parameter_dict"):
+            if not hasattr(self, required_kw):
+                msg = (
+                    f"USVSpectrogramPlotter requires the {required_kw!r} keyword "
+                    f"argument."
+                )
+                raise ValueError(msg)
 
         if hasattr(self, "root_directory") and isinstance(self.root_directory, str):
             self.root_directory = configure_path(self.root_directory)
@@ -200,9 +223,27 @@ class USVSpectrogramPlotter:
             label="concatenated int16 audio memmap",
         )
         file_basename = audio_loc.name
-        channel_num = int(file_basename.split("_")[-2])
-        sample_num = int(file_basename.split("_")[-3])
-        sampling_rate = int(file_basename.split("_")[-4])
+        # Parse the sampling-rate / sample-count / channel-count triple out
+        # of the trailing ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` segment with
+        # a single anchored, keyed regex rather than three positional
+        # ``split("_")[-2/-3/-4]`` lookups. The positional form silently
+        # mis-parses (or raises an opaque ``ValueError: invalid literal``)
+        # the moment any earlier ``_``-delimited token count changes; the
+        # anchored regex instead fails loudly with the offending basename.
+        meta_match = re.search(
+            r"_(?P<sr>\d+)_(?P<n_samples>\d+)_(?P<n_ch>\d+)_int16\.mmap",
+            file_basename,
+        )
+        if meta_match is None:
+            msg = (
+                f"Cannot parse sampling rate / sample count / channel count "
+                f"from audio memmap basename {file_basename!r}; expected a "
+                f"trailing '_<sr>_<n_samples>_<n_ch>_int16.mmap' segment."
+            )
+            raise ValueError(msg)
+        sampling_rate = int(meta_match["sr"])
+        sample_num = int(meta_match["n_samples"])
+        channel_num = int(meta_match["n_ch"])
 
         audio_data = np.memmap(
             filename=audio_loc,
@@ -420,7 +461,14 @@ class USVSpectrogramPlotter:
         )
         ax.tick_params(axis="y", length=0)
 
+        # Pin the auto-chosen tick positions with a FixedLocator (via
+        # ``set_xticks``) BEFORE relabeling them, otherwise matplotlib
+        # warns that ``set_xticklabels`` is being used against a non-fixed
+        # locator (and, under the test suite's ``filterwarnings=error``,
+        # that warning becomes a hard failure). The positions are
+        # unchanged; only the labels gain the window-start offset.
         xtick_locs = ax.get_xticks()
+        ax.set_xticks(xtick_locs)
         ax.set_xticklabels([f"{xt + start_time_sec:.2f}" for xt in xtick_locs])
 
         if plot_cbar:
@@ -3056,7 +3104,6 @@ def plot_umap_with_category_thumbnails(
                     w_target = int(unstretched_x_max)
                     pad_total = max(0, w_target - dur)
                     pad_left = pad_total // 2
-                    pad_right = pad_total - pad_left
                     spec_padded = np.zeros(
                         (n_freq, w_target), dtype=spec_valid.dtype,
                     )
