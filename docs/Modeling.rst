@@ -302,10 +302,6 @@ Interactive notebook
 The ``modeling_analyses.ipynb`` notebook is the recommended interactive
 entry point. It runs the whole workflow above in order — every path,
 toggle, and threshold lives in a single **Parameters** cell near the top
-(grouped by section), so a run is configured in one place. The full notebook
-is embedded below:
-
-.. toctree::
-   :maxdepth: 1
-
-   modeling_analyses
+(grouped by section), so a run is configured in one place. The full
+notebook lives in the repository at `modeling_analyses.ipynb
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/modeling_analyses.ipynb>`_.
