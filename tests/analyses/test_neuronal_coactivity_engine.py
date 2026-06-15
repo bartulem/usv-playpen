@@ -170,9 +170,16 @@ def test_circular_shuffle_is_seed_reproducible():
     kwargs = dict(total_duration=100.0, window_s=5.0, n_shuffles=12)
     a = engine.perform_circular_shuffle(onsets, _neural_data(), seed=7, **kwargs)
     b = engine.perform_circular_shuffle(onsets, _neural_data(), seed=7, **kwargs)
+    c = engine.perform_circular_shuffle(onsets, _neural_data(), seed=8, **kwargs)
     for key in ("r_sc", "similarity", "pop_corr"):
         np.testing.assert_array_equal(a[key], b[key])
         assert a[key].shape == (12,)
+    # A different seed must produce a different null (at least one metric),
+    # otherwise the seed is not actually driving the shuffle.
+    assert any(
+        not np.array_equal(a[key], c[key])
+        for key in ("r_sc", "similarity", "pop_corr")
+    )
 
 
 @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
@@ -196,8 +203,11 @@ def test_chained_circular_shuffle_is_seed_reproducible():
     )
     a = engine.perform_chained_circular_shuffle(seed=3, **kwargs)
     b = engine.perform_chained_circular_shuffle(seed=3, **kwargs)
+    c = engine.perform_chained_circular_shuffle(seed=4, **kwargs)
     for key in a:
         np.testing.assert_array_equal(a[key], b[key])
+    # A different seed must diverge on at least one metric.
+    assert any(not np.array_equal(a[key], c[key]) for key in a)
 
 
 @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
@@ -217,6 +227,7 @@ def test_label_permutation_test_structure_and_reproducibility():
     counts_b = engine.extract_snippet_matrix(np.array([20.0, 40.0, 60.0, 80.0]), nd, 5.0)
     a = engine.perform_label_permutation_test(counts_a, counts_b, n_permutations=20, seed=11)
     b = engine.perform_label_permutation_test(counts_a, counts_b, n_permutations=20, seed=11)
+    c = engine.perform_label_permutation_test(counts_a, counts_b, n_permutations=20, seed=12)
     for key in ("r_sc", "similarity", "pop_corr"):
         entry = a[key]
         assert set(entry) >= {
@@ -225,6 +236,11 @@ def test_label_permutation_test_structure_and_reproducibility():
         assert entry["null"].shape == (20,)
         assert 0.0 <= entry["p_a_gt_b"] <= 1.0
         np.testing.assert_array_equal(entry["null"], b[key]["null"])
+    # A different seed must produce a different null on at least one metric.
+    assert any(
+        not np.array_equal(a[key]["null"], c[key]["null"])
+        for key in ("r_sc", "similarity", "pop_corr")
+    )
 
 
 def _sessions_for_sampling():
@@ -264,6 +280,22 @@ def test_sample_onsets_across_sessions_is_seed_reproducible():
         np.testing.assert_array_equal(arr_a, arr_b)
         np.testing.assert_array_equal(arr_a, np.sort(arr_a))
     assert sum(arr.size for arr in a) == 4
+    # A different seed must redistribute the onsets differently. The pool is
+    # small, so guard against a coincidental match by requiring at least one
+    # of several alternative seeds to diverge.
+    a_flat = np.concatenate([np.sort(arr) for arr in a])
+    assert any(
+        not np.array_equal(
+            a_flat,
+            np.concatenate([
+                np.sort(arr)
+                for arr in engine.sample_onsets_across_sessions(
+                    sessions, "group", n_total=4, seed=alt_seed
+                )
+            ]),
+        )
+        for alt_seed in (6, 7, 8, 9)
+    )
 
 
 def test_sample_onsets_across_sessions_rejects_oversized_request():

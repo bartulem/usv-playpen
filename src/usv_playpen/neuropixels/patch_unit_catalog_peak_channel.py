@@ -338,7 +338,7 @@ def patch_unit_catalog_peak_channel(
     -------
     summary (dict)
         Keys ``n_total``, ``n_closest_ch_changed``,
-        ``n_brain_area_changed``, ``n_loc_changed``,
+        ``n_brain_area_changed``, ``n_loc_rows_changed``,
         ``brain_area_transitions`` (``{'from->to': count}``), and
         ``backup_path`` (or ``None``).
     """
@@ -432,11 +432,6 @@ def patch_unit_catalog_peak_channel(
 
     n_closest_ch_changed = int((df["closest_ch"] != original_closest_ch).sum())
     n_brain_area_changed = int((df["brain_area"] != original_brain_area).sum())
-    n_loc_changed = int(
-        (df["loc_ap"] != original_loc_ap).any()
-        or (df["loc_ml"] != original_loc_ml).any()
-        or (df["loc_dv"] != original_loc_dv).any()
-    )
     n_loc_rows_changed = int(
         (
             (df["loc_ap"] != original_loc_ap)

@@ -219,7 +219,7 @@ def sort_template_and_locations(template, channel_locations, depth_direction="y"
 
 def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs):
     """
-    Compute the exponential decay of the template amplitude over distance in units um/s.
+    Compute the exponential decay constant of the template amplitude over distance (units: 1/um).
 
     Parameters
     ----------
@@ -228,7 +228,7 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
     channel_locations: numpy.ndarray
         The channel locations (num_channels, 2)
     sampling_frequency : float
-        The sampling frequency of the template
+        Unused; retained for signature compatibility with SpikeInterface.
     **kwargs: Required kwargs:
         - exp_peak_function: the function to use to compute the peak amplitude for the exp decay ("ptp" or "min")
         - min_r2_exp_decay: the minimum r2 to accept the exp decay fit
@@ -288,7 +288,7 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
 
 def get_spread(template, channel_locations, sampling_frequency, **kwargs) -> float:
     """
-    Compute the spread of the template amplitude over distance in units um/s.
+    Compute the spread (depth extent) of the template amplitude over distance (units: um).
 
     Parameters
     ----------
@@ -297,11 +297,11 @@ def get_spread(template, channel_locations, sampling_frequency, **kwargs) -> flo
     channel_locations: numpy.ndarray
         The channel locations (num_channels, 2)
     sampling_frequency : float
-        The sampling frequency of the template
+        Unused; retained for signature compatibility with SpikeInterface.
     **kwargs: Required kwargs:
-        - depth_direction: the direction to compute velocity above and below ("x", "y", or "z")
+        - depth_direction: the direction to compute the spread above and below ("x", "y", or "z")
         - spread_threshold: the threshold to compute the spread
-        - column_range: the range in um in the x-direction to consider channels for velocity
+        - column_range: the range in um in the x-direction to consider channels for the spread
 
     Returns
     -------

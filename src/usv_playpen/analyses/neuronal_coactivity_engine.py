@@ -459,8 +459,14 @@ def perform_label_permutation_test(
         obs = observed_delta[k]
         null_mean = float(np.nanmean(null))
         null_std = float(np.nanstd(null))
-        p_a_gt_b = float(np.mean(null >= obs))   # right-tailed: a > b
-        p_two = float(np.mean(np.abs(null) >= abs(obs)))
+        # Monte-Carlo permutation p-values with the standard +1/(n+1) bias
+        # correction: the observed statistic is itself one valid arrangement
+        # of the labels, so the count and total each gain 1. This keeps the
+        # p-value from ever being exactly 0 for a finite permutation count
+        # (which would be anticonservative).
+        n_perm = int(null.size)
+        p_a_gt_b = float((np.sum(null >= obs) + 1) / (n_perm + 1))   # right-tailed: a > b
+        p_two = float((np.sum(np.abs(null) >= abs(obs)) + 1) / (n_perm + 1))
         z = (obs - null_mean) / null_std if null_std > 0 else 0.0
         results[k] = {
             "observed_delta": float(obs),
@@ -512,7 +518,7 @@ def compute_sliding_coactivity(
         # Shift the onsets forward for this specific bin
         current_onsets = onsets + offset
 
-        # Reuse your existing extraction and computation logic
+        # Reuse the same snippet extraction and metric computation per bin.
         matrix = extract_snippet_matrix(current_onsets, neural_data, window_s)
         metrics = compute_coactivity_metrics(matrix)
 

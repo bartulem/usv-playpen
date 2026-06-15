@@ -460,7 +460,6 @@ class IBLAlignmentExporter:
         self.sample_rate = float(self.meta['imSampRate'])
         self.sample2v = sample_to_volts_ap(self.meta)
         self.imro_rows = parse_imro_table(self.meta['imroTbl'])
-        self.geom_rows = parse_imro_table(self.meta['snsGeomMap'])
 
     def write_xyz_picks(self) -> list[Path]:
         """
@@ -808,12 +807,6 @@ class IBLAlignmentExporter:
         ``templates.amps.npy``, ``templates.waveforms.npy``,
         ``templates.waveformsChannels.npy``.
 
-        Caches ``templates_amps_au`` (per-template arbitrary-unit
-        amplitudes derived from the unwhitened template waveforms) on
-        ``self`` so that the cluster pass in
-        :meth:`_write_cluster_outputs` can reuse them without
-        recomputing the unwhitening.
-
         Algorithm (matches phylib's ``get_amplitudes_true(use=
         'templates')`` for the dense / non-sparse case):
 
@@ -896,10 +889,6 @@ class IBLAlignmentExporter:
         np.save(self.ephys_out_path / 'templates.waveforms.npy', templates_waveforms.astype(np.float32))
         np.save(self.ephys_out_path / 'templates.waveformsChannels.npy', templates_inds.astype(np.int32))
 
-        self._templates_amps_au = templates_amps_au
-        self._templates_channels = templates_channels
-        self._templates_volts_full = templates_volts
-
         spike_depths = self._compute_spike_depths(ks)
         np.save(self.ephys_out_path / 'spikes.depths.npy', spike_depths.astype(np.float32))
 
@@ -946,7 +935,6 @@ class IBLAlignmentExporter:
         channel_positions = ks['channel_positions']
 
         n_clusters = int(spike_clusters.max()) + 1
-        n_templates = templates.shape[0]
         n_samples_waveforms = templates.shape[1]
         n_channels = templates.shape[2]
 

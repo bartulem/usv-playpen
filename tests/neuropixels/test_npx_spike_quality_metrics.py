@@ -421,8 +421,6 @@ def test_constructor_raises_on_multiple_meta(tmp_path):
         )
 
 
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
-@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_compute_template_metrics_populates_all_keys():
     """
     Description
@@ -459,8 +457,6 @@ def test_compute_template_metrics_populates_all_keys():
     assert isinstance(metrics['somatic'], bool)
 
 
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
-@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_compute_amplitude_metrics_returns_per_unit_frame():
     """
     Description
