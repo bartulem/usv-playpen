@@ -65,7 +65,6 @@ app = marimo.App(width="full")
 @app.cell
 def _imports():
     import base64
-    import math
     from io import BytesIO
     from pathlib import Path
 
@@ -74,7 +73,6 @@ def _imports():
     import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
-    import polars as pls
 
     alt.data_transformers.disable_max_rows()
 
