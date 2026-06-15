@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import scipy.optimize
 
 from usv_playpen.neuropixels.monopolar_triangulation import (
     _data_at_3d,
@@ -187,3 +188,45 @@ def test_log_objective_is_zero_at_the_true_source():
 
     err = estimate_distance_error_with_log_3d(source, wf, contacts, max_data)
     assert err == pytest.approx(0.0, abs=1e-9)
+
+
+def test_least_square_returns_nan_sentinel_on_optimizer_failure(monkeypatch):
+    """
+    Description
+    -----------
+    When ``scipy.optimize.least_squares`` raises, the solver swallows
+    the exception (logging it) and returns the four-NaN sentinel so a
+    single failed unit doesn't abort a batch.
+    """
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("forced optimiser failure")
+
+    monkeypatch.setattr(scipy.optimize, "least_squares", _boom)
+    contacts = _contact_cloud()
+    wf = _synthetic_waveform(contacts, np.array([16.0, 100.0, 7.0]), alpha=1000.0)
+    result = solve_monopolar_triangulation_3d(wf, contacts, 1000.0, "least_square")
+    assert len(result) == 4
+    assert all(np.isnan(c) for c in result)
+
+
+def test_minimize_with_log_penality_returns_nan_sentinel_on_optimizer_failure(monkeypatch):
+    """
+    Description
+    -----------
+    When ``scipy.optimize.minimize`` raises, the
+    ``minimize_with_log_penality`` branch returns the three-NaN
+    sentinel rather than propagating the exception.
+    """
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("forced optimiser failure")
+
+    monkeypatch.setattr(scipy.optimize, "minimize", _boom)
+    contacts = _contact_cloud()
+    wf = _synthetic_waveform(contacts, np.array([16.0, 100.0, 7.0]), alpha=1000.0)
+    result = solve_monopolar_triangulation_3d(
+        wf, contacts, 1000.0, "minimize_with_log_penality"
+    )
+    assert len(result) == 3
+    assert all(np.isnan(c) for c in result)

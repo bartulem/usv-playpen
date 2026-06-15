@@ -18,6 +18,7 @@ from usv_playpen.neuropixels.spikeinterface_helpers import (
     _closest_channel_mask,
     sparsity_around_phy_peak,
     is_somatic,
+    transform_column_range,
     get_exp_decay,
     get_spread,
     compute_amplitude_cv,
@@ -335,3 +336,169 @@ def test_compute_sd_ratio_template_correction_subtracts_template_variance():
         template_best_channel=np.ones(4), n_spikes_full=10, n_samples_total=1000,
         sampling_frequency=1000.0, correct_for_template_itself=True)
     assert sd_ratio == pytest.approx(np.sqrt(2.0))
+
+
+def test_transform_column_range_restricts_to_columns_near_peak():
+    """
+    Description
+    -----------
+    With a non-``None`` ``column_range`` the template and locations are
+    restricted to channels whose column coordinate is within that range
+    of the peak channel's column. On a two-column layout (x = 0 / 50)
+    with the peak at x = 0 and range 10, only the two x = 0 channels
+    survive.
+    """
+
+    template = np.zeros((5, 4))
+    template[0, 0], template[4, 0] = -5.0, 5.0     # channel 0 is the peak
+    channel_locations = np.array([[0.0, 0.0], [0.0, 20.0], [50.0, 0.0], [50.0, 20.0]])
+
+    t_out, loc_out = transform_column_range(template, channel_locations, column_range=10.0)
+    assert t_out.shape == (5, 2)
+    np.testing.assert_array_equal(loc_out[:, 0], [0.0, 0.0])
+
+
+def test_get_exp_decay_min_peak_function_recovers_decay():
+    """
+    Description
+    -----------
+    With ``exp_peak_function="min"`` the per-channel amplitude is the
+    absolute trough; a template whose troughs decay as
+    ``A * exp(-decay * d)`` recovers the known decay constant.
+    """
+
+    n_channels = 20
+    ys = np.arange(n_channels) * 30.0
+    channel_locations = np.column_stack([np.zeros(n_channels), ys])
+    decay_true = 0.01
+    amplitudes = 100.0 * np.exp(-decay_true * ys)
+    template = np.vstack([np.zeros(n_channels), -amplitudes])
+
+    decay = get_exp_decay(template, channel_locations,
+                          exp_peak_function="min", min_r2_exp_decay=0.5)
+    assert decay == pytest.approx(decay_true, rel=0.05)
+
+
+def test_get_exp_decay_is_nan_when_fit_is_poor():
+    """
+    Description
+    -----------
+    A flat (no-decay) amplitude profile cannot be explained by an
+    exponential, so the fit's R² falls below ``min_r2_exp_decay`` (or
+    the fit fails outright) and the function returns NaN.
+    """
+
+    n_channels = 12
+    ys = np.arange(n_channels) * 30.0
+    channel_locations = np.column_stack([np.zeros(n_channels), ys])
+    template = np.vstack([np.zeros(n_channels), np.full(n_channels, 100.0)])
+
+    decay = get_exp_decay(template, channel_locations,
+                          exp_peak_function="ptp", min_r2_exp_decay=0.99)
+    assert np.isnan(decay)
+
+
+def test_get_spread_applies_gaussian_smoothing():
+    """
+    Description
+    -----------
+    With ``spread_smooth_um > 0`` the depth amplitude profile is
+    Gaussian-smoothed before thresholding; the function still returns a
+    finite non-negative spread.
+    """
+
+    depths = np.array([0.0, 20.0, 40.0, 60.0, 80.0, 100.0])
+    channel_locations = np.column_stack([np.zeros(6), depths])
+    amplitudes = np.array([1.0, 2.0, 8.0, 10.0, 3.0, 1.0])
+    template = np.vstack([np.zeros(6), amplitudes])
+
+    spread = get_spread(template, channel_locations, _FS,
+                        depth_direction="y", spread_threshold=0.2,
+                        spread_smooth_um=10.0, column_range=None)
+    assert np.isfinite(spread)
+    assert spread >= 0.0
+
+
+def test_compute_amplitude_cv_empty_amplitudes_is_nan():
+    """
+    Description
+    -----------
+    With no spikes the coefficient-of-variation pair is ``(NaN, NaN)``.
+    """
+
+    cv_median, cv_range = compute_amplitude_cv(
+        np.array([]), np.array([]), n_samples_total=1000,
+        sampling_frequency=1000.0, average_num_spikes_per_bin=5, min_num_bins=10)
+    assert np.isnan(cv_median) and np.isnan(cv_range)
+
+
+def test_compute_amplitude_cv_sub_sample_bin_is_nan():
+    """
+    Description
+    -----------
+    When the firing rate is so high that the temporal bin shrinks below
+    one sample, the binning is degenerate and the function returns
+    ``(NaN, NaN)``: 20 spikes over a 10-sample recording with one spike
+    per bin gives a sub-sample bin.
+    """
+
+    amplitudes = np.full(20, 5.0)
+    sample_indices = np.arange(20) % 10
+    cv_median, cv_range = compute_amplitude_cv(
+        amplitudes, sample_indices, n_samples_total=10,
+        sampling_frequency=1000.0, average_num_spikes_per_bin=1, min_num_bins=10)
+    assert np.isnan(cv_median) and np.isnan(cv_range)
+
+
+def test_compute_sd_ratio_empty_amplitudes_is_nan():
+    """
+    Description
+    -----------
+    With no spikes the SD ratio is ``NaN``.
+    """
+
+    sd_ratio = compute_sd_ratio(
+        np.array([]), np.array([]), noise_level=1.0,
+        template_best_channel=np.zeros(4), n_spikes_full=0, n_samples_total=1000,
+        sampling_frequency=1000.0)
+    assert np.isnan(sd_ratio)
+
+
+def test_compute_sd_ratio_single_surviving_spike_is_zero():
+    """
+    Description
+    -----------
+    When all but one spike are removed as duplicates within the
+    censored period, a single amplitude survives and the SD ratio is
+    exactly ``0.0`` (no spread on one sample). Two spikes 2 samples
+    apart fall inside the 4-sample censored window at 1 kHz.
+    """
+
+    sd_ratio = compute_sd_ratio(
+        np.array([5.0, 5.0]), np.array([0, 2]), noise_level=1.0,
+        template_best_channel=np.zeros(4), n_spikes_full=2, n_samples_total=1000,
+        sampling_frequency=1000.0)
+    assert sd_ratio == 0.0
+
+
+def test_compute_sd_ratio_without_drift_correction_uses_plain_std():
+    """
+    Description
+    -----------
+    With ``correct_for_drift=False`` and no template correction the
+    unit amplitude SD is the plain ``std`` of the (uncensored)
+    amplitudes; choosing ``noise_level`` equal to that std makes the SD
+    ratio exactly ``1.0``. Spikes are spaced beyond the censored
+    period, so none are removed.
+    """
+
+    amplitudes = np.array([0.0, 2.0] * 10 + [0.0])
+    sample_indices = np.arange(21) * 10
+    plain_std = float(np.std(amplitudes))
+
+    sd_ratio = compute_sd_ratio(
+        amplitudes, sample_indices, noise_level=plain_std,
+        template_best_channel=np.zeros(4), n_spikes_full=21, n_samples_total=10000,
+        sampling_frequency=1000.0, correct_for_drift=False,
+        correct_for_template_itself=False)
+    assert sd_ratio == pytest.approx(1.0)
