@@ -27,6 +27,7 @@ failure.
 
 from __future__ import annotations
 
+import json
 import pathlib
 
 import h5py
@@ -1334,6 +1335,28 @@ def test_plot_umap_thumbnails_explicit_centers(tmp_path):
         cluster_centers_xy={1: (1.0, -1.0), 2: (2.0, -2.0)},
         category_colors={1: "#FF0000", 2: "#00FF00"},
         spiral_radius_abs=0.5,
+        pooled_df=pooled,
+        message_output=lambda *_: None,
+    )
+    assert isinstance(fig, plt.Figure)
+
+
+@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
+    """A QLVM provenance JSON supplies the spiral cluster centers via
+    direct key access on its ``cluster_centers`` list."""
+    pooled = _make_pooled_df("sessD", n_per_cat=5)
+    h5_path = tmp_path / "store.h5"
+    _write_consolidated_h5(h5_path, "sessD", n_usvs=10, n_freq=16, n_time=18)
+    prov = tmp_path / "qlvm_provenance.json"
+    prov.write_text(json.dumps({"cluster_centers": [[1.0, -1.0], [2.0, -2.0]]}))
+    fig = plot_umap_with_category_thumbnails(
+        sessions_txt_path="unused",
+        consolidated_h5_path=str(h5_path),
+        n_samples_per_category=3,
+        sampling_method="spiral",
+        cluster_centers_json_path=str(prov),
         pooled_df=pooled,
         message_output=lambda *_: None,
     )

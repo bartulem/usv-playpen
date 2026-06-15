@@ -49,15 +49,18 @@ from ..time_utils import is_gui_context
 # at module import. Used as the default for the module-level
 # `plot_umap_with_category_thumbnails` helper's `cmap=` arguments (was
 # two hard-coded `'inferno'` literals). Class instances continue to
-# resolve their cmap via `_resolve_spectrogram_cmap` (also reads from
-# `figures.cmap`).
+# resolve their cmap via `_resolve_cmap` (also reads `figures.cmap`).
+# The `figures.cmap` entry is a required field of the packaged settings
+# file, so it is read by direct key access; only the file-not-found
+# case (e.g. a partial install) falls back to a literal so the module
+# can still be imported.
 _VIZ_SETTINGS_PATH = (
     pathlib.Path(__file__).parent.parent
     / "_parameter_settings" / "visualizations_settings.json"
 )
 try:
     with _VIZ_SETTINGS_PATH.open() as _vf:
-        _GLOBAL_CMAP = json.load(_vf).get("figures", {}).get("cmap", "inferno")
+        _GLOBAL_CMAP = json.load(_vf)["figures"]["cmap"]
 except FileNotFoundError:
     _GLOBAL_CMAP = "inferno"
 
@@ -172,10 +175,11 @@ class USVSpectrogramPlotter:
         ``cmap_override`` was passed to the constructor (typically a
         ``matplotlib.colors.Colormap`` instance produced by
         ``visualizations.auxiliary_plot_functions.create_colormap``)
-        that takes precedence over the string name in the
-        ``make_usv_spectrograms.spectrogram_cmap`` settings entry.
-        Either form is accepted by matplotlib's ``imshow`` /
-        ``specshow`` ``cmap=`` argument.
+        that takes precedence over the string name in the project-wide
+        ``figures.cmap`` settings entry (read by direct key access — it
+        is a required field of the settings dict). Either form is
+        accepted by matplotlib's ``imshow`` / ``specshow`` ``cmap=``
+        argument.
 
         Returns
         -------
@@ -185,9 +189,7 @@ class USVSpectrogramPlotter:
 
         if getattr(self, "cmap_override", None) is not None:
             return self.cmap_override
-        return self.visualizations_parameter_dict.get(
-            "figures", {}
-        ).get("cmap", "inferno")
+        return self.visualizations_parameter_dict["figures"]["cmap"]
 
     def _load_audio_memmap(self) -> tuple[np.memmap, int, int, int, str]:
         """
@@ -2581,10 +2583,13 @@ def plot_umap_with_category_thumbnails(
         for i, c in enumerate(centers_arr):
             cluster_centers_resolved[i + 1] = (float(c[0]), float(c[1]))
     elif cluster_centers_json_path is not None:
-        import json as _json
         with open(configure_path(cluster_centers_json_path)) as _f:
-            _prov = _json.load(_f)
-        for i, c in enumerate(_prov.get("cluster_centers", [])):
+            _prov = json.load(_f)
+        # Direct key access: a provenance JSON explicitly handed in via
+        # ``cluster_centers_json_path`` is asserted to carry the
+        # ``cluster_centers`` list, so a missing key should surface
+        # loudly rather than silently resolving zero centers.
+        for i, c in enumerate(_prov["cluster_centers"]):
             cluster_centers_resolved[i + 1] = (float(c[0]), float(c[1]))
 
     # Downsample for the scatter visualisation BEFORE picks so the
