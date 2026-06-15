@@ -112,16 +112,19 @@ requested; it is formatted per channel.
 
     # LaVision: stack a flat directory of OME-TIFF Z-planes
     stack_lightsheet_volume(
-        raw_dir='/mnt/lightsheet/.../251015_bmimica_178621-dv-lv-1_09-44-40',
-        output_path='/mnt/falkner/.../178621_{wavelength_nm}nm_fullsize.tif',
-        xy_flip='none', z_flip=False, skip_first=True,
+        raw_dir="/mnt/lightsheet/.../251015_bmimica_178621-dv-lv-1_09-44-40",
+        output_path="/mnt/falkner/.../178621_{wavelength_nm}nm_fullsize.tif",
+        xy_flip="none",
+        z_flip=False,
+        skip_first=True,
     )
 
     # SmartSPIM: stitch a tiled acquisition
     stitch_smartspim_tiles(
-        raw_dir='/mnt/lightsheet/.../20251118_..._181321_1x_vd_ss_1',
-        output_path='/mnt/falkner/.../181321_{wavelength_nm}nm_stitched.tif',
-        z_flip=True, feather_pixels=64,
+        raw_dir="/mnt/lightsheet/.../20251118_..._181321_1x_vd_ss_1",
+        output_path="/mnt/falkner/.../181321_{wavelength_nm}nm_stitched.tif",
+        z_flip=True,
+        feather_pixels=64,
     )
 
 Two independent orientation knobs are set by trial-and-error per dataset:
@@ -158,18 +161,18 @@ independently.
         IBLAlignmentExporter,
     )
 
-    probe_to_hemisphere = {'imec0': 'R', 'imec1': 'L'}  # from settings
+    probe_to_hemisphere = {"imec0": "R", "imec1": "L"}  # from settings
     for probe_id, hemisphere in probe_to_hemisphere.items():
         exporter = IBLAlignmentExporter(
-            os_cup_loc='/mnt/falkner/Bartul',
-            mouse_id='164335_0',
-            session_date='20250912',
+            os_cup_loc="/mnt/falkner/Bartul",
+            mouse_id="164335_0",
+            session_date="20250912",
             probe_id=probe_id,
             hemisphere=hemisphere,
-            kilosort_version='4',
+            kilosort_version="4",
         )
-        exporter.write_xyz_picks()      # xyz_picks_shank{n}.json per shank
-        exporter.write_alf_outputs()    # full ALF layout in ibl_{H}H/
+        exporter.write_xyz_picks()  # xyz_picks_shank{n}.json per shank
+        exporter.write_alf_outputs()  # full ALF layout in ibl_{H}H/
 
 ``write_xyz_picks`` converts each shank's brainreg track point cloud
 (Allen CCF apdvml voxel-origin µm) into the IBL mlapdv (bregma-origin)
@@ -199,13 +202,13 @@ Two pure-JSON steps consume the GUI's per-shank output:
 
     for probe_id, hemisphere in probe_to_hemisphere.items():
         exporter = IBLAlignmentExporter(
-            os_cup_loc='/mnt/falkner/Bartul',
-            mouse_id='181322_2',
-            session_date='20251012',
+            os_cup_loc="/mnt/falkner/Bartul",
+            mouse_id="181322_2",
+            session_date="20251012",
             probe_id=probe_id,
             hemisphere=hemisphere,
         )
-        exporter.remap_channel_ids_to_raw()         # per-shank 0..m-1 -> raw ids
+        exporter.remap_channel_ids_to_raw()  # per-shank 0..m-1 -> raw ids
         exporter.write_unified_channel_locations()  # one channel_locations.json
 
 ``remap_channel_ids_to_raw`` re-keys each per-shank JSON from the GUI's
@@ -238,15 +241,15 @@ workflow used for ``spike_amplitudes``).
 
     for probe_id, hemisphere in probe_to_hemisphere.items():
         extractor = SpikeQualityMetricsExtractor(
-            os_cup_loc='/mnt/falkner/Bartul',
-            mouse_id='158112_0',
-            session_date='20241107',
+            os_cup_loc="/mnt/falkner/Bartul",
+            mouse_id="158112_0",
+            session_date="20241107",
             probe_id=probe_id,
             hemisphere=hemisphere,
             num_channels_sparsity=7,
             shank_width_microns=70,
             shank_spacing_microns=250,
-            job_kwargs={'n_jobs': 16, 'chunk_duration': '1s', 'progress_bar': True},
+            job_kwargs={"n_jobs": 16, "chunk_duration": "1s", "progress_bar": True},
         )
         catalog = extractor.run()
 
@@ -307,15 +310,20 @@ the public SpikeGLX / Imec documentation. Run it as a GUI via the
 
     from pathlib import Path
     from usv_playpen.neuropixels.sglx_meta_to_coords import (
-        OutputFormat, parse_spikeglx_meta, coords_from_meta, write_coords_file,
+        OutputFormat,
+        parse_spikeglx_meta,
+        coords_from_meta,
+        write_coords_file,
     )
 
-    meta = parse_spikeglx_meta(Path('/path/to/run.imec0.ap.meta'))
-    coords = coords_from_meta(meta)   # auto-picks snsGeomMap vs snsShankMap
+    meta = parse_spikeglx_meta(Path("/path/to/run.imec0.ap.meta"))
+    coords = coords_from_meta(meta)  # auto-picks snsGeomMap vs snsShankMap
     write_coords_file(
-        meta=meta, coords=coords,
+        meta=meta,
+        coords=coords,
         output_format=OutputFormat.KILOSORT_MAT,
-        save_dir=Path('/some/dir'), base_name='run.imec0.ap',
+        save_dir=Path("/some/dir"),
+        base_name="run.imec0.ap",
     )
 
 .. _histology-notebook:
