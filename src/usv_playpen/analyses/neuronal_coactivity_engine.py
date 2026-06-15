@@ -113,7 +113,8 @@ def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
 def bootstrap_coactivity_distribution(
     count_matrix: np.ndarray,
     n_target: int,
-    n_iterations: int = 1000
+    n_iterations: int = 1000,
+    seed: int | None = None
 ) -> dict[str, np.ndarray]:
     """
     Performs trial-level bootstrap resampling of a coactivity count
@@ -143,6 +144,11 @@ def bootstrap_coactivity_distribution(
         group is sampled down to match.
     n_iterations : int, optional
         Number of bootstrap iterations. Defaults to 1000.
+    seed : int | None, optional
+        Seed for the NumPy random generator driving the trial
+        resampling. Pass a fixed integer to make the bootstrap
+        distribution reproducible across runs; leave as `None`
+        (the default) for fresh entropy on every call.
 
     Returns
     -------
@@ -158,7 +164,7 @@ def bootstrap_coactivity_distribution(
     boot_pop = np.zeros(n_iterations)
 
     num_trials = count_matrix.shape[1]
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
 
     for i in range(n_iterations):
         # Sample trial indices with replacement to match n_target
@@ -227,7 +233,8 @@ def perform_circular_shuffle(
     window_s: float,
     min_shift_s: float = 20.0,
     max_shift_s: float = 60.0,
-    n_shuffles: int = 1000
+    n_shuffles: int = 1000,
+    seed: int | None = None
 ) -> dict[str, np.ndarray]:
     """
     Orchestrates a joint circular temporal shuffle to generate null
@@ -257,6 +264,11 @@ def perform_circular_shuffle(
         The maximum allowable random time shift, by default 60.0.
     n_shuffles : int, optional
         The number of shuffle iterations to perform, by default 1000.
+    seed : int | None, optional
+        Seed for the NumPy random generator that draws the per-shuffle
+        circular offsets. Pass a fixed integer to make the null
+        distribution reproducible across runs; leave as `None` (the
+        default) for fresh entropy on every call.
 
     Returns
     -------
@@ -274,7 +286,7 @@ def perform_circular_shuffle(
 
     results = {key: np.zeros(n_shuffles) for key in metric_keys}
 
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
 
     for i in range(n_shuffles):
         # 1. Generate a single random shift for the entire population
@@ -308,7 +320,8 @@ def perform_chained_circular_shuffle(
     window_s: float,
     min_shift_s: float = 20.0,
     max_shift_s: float = 60.0,
-    n_shuffles: int = 1000
+    n_shuffles: int = 1000,
+    seed: int | None = None
 ) -> dict[str, np.ndarray]:
     """
     Performs a circular shuffle across multiple independent sessions.
@@ -330,6 +343,11 @@ def perform_chained_circular_shuffle(
         Analysis window size in seconds.
     n_shuffles : int
         Number of global shuffle iterations.
+    seed : int | None, optional
+        Seed for the NumPy random generator that draws each session's
+        per-shuffle circular offset. Pass a fixed integer to make the
+        chained null distribution reproducible across runs; leave as
+        `None` (the default) for fresh entropy on every call.
 
     Returns
     -------
@@ -346,7 +364,7 @@ def perform_chained_circular_shuffle(
     metric_keys = compute_coactivity_metrics(combined_dummy).keys()
     results = {key: np.zeros(n_shuffles) for key in metric_keys}
 
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
 
     for i in range(n_shuffles):
         shuffled_mats_to_combine = []
@@ -372,6 +390,7 @@ def perform_label_permutation_test(
     counts_a: np.ndarray,
     counts_b: np.ndarray,
     n_permutations: int = 1000,
+    seed: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
     Direct two-group comparison of coactivity via trial-label permutation.
@@ -398,6 +417,12 @@ def perform_label_permutation_test(
         of cells); only the trial axis differs.
     n_permutations : int, optional
         Number of trial-label permutations. Defaults to 1000.
+    seed : int | None, optional
+        Seed for the NumPy random generator that permutes the pooled
+        trial labels. Pass a fixed integer to make the permutation
+        null (and therefore the p-values / z-scores) reproducible
+        across runs; leave as `None` (the default) for fresh entropy
+        on every call.
 
     Returns
     -------
@@ -409,7 +434,6 @@ def perform_label_permutation_test(
     """
 
     n_a = counts_a.shape[1]
-    n_b = counts_b.shape[1]
     combined = np.hstack([counts_a, counts_b])
     n_total = combined.shape[1]
 
@@ -420,7 +444,7 @@ def perform_label_permutation_test(
 
     # Null distribution: shuffle trial labels, recompute delta.
     null_dists = {k: np.zeros(n_permutations) for k in m_a}
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     for i in range(n_permutations):
         perm = rng.permutation(n_total)
         idx_a = perm[:n_a]
@@ -504,7 +528,8 @@ def compute_sliding_coactivity(
 def sample_onsets_across_sessions(
     sessions_list: list[dict[str, Any]],
     category_key: str,
-    n_total: int
+    n_total: int,
+    seed: int | None = None
 ) -> list[np.ndarray]:
     """
     Samples a total of N onsets across multiple sessions, maintaining
@@ -524,6 +549,11 @@ def sample_onsets_across_sessions(
         (e.g., 'group_a_df' or 'group_b_df').
     n_total : int
         The total number of onsets to sample across the entire dataset.
+    seed : int | None, optional
+        Seed for the NumPy random generator that draws the onset
+        subset from the global pool. Pass a fixed integer to make the
+        sampled onset set reproducible across runs; leave as `None`
+        (the default) for fresh entropy on every call.
 
     Returns
     -------
@@ -545,7 +575,7 @@ def sample_onsets_across_sessions(
         raise ValueError(msg)
 
     # 2. Sample N unique onsets from the global pool
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     selected_indices = rng.choice(len(all_indices), size=n_total, replace=False)
     sampled_points = [all_indices[i] for i in selected_indices]
 
