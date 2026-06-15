@@ -911,7 +911,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     shuffle_min_frames = int(np.floor(shuffle_min_seconds * fps))
     shuffle_max_frames = int(np.floor(shuffle_max_seconds * fps))
 
-    # ----------------- ACF + circular-shift null -----------------
+    # ACF + circular-shift null
     # The circular-shift null preserves the autocorrelation structure
     # of `x` (we shift, we don't permute) while breaking the alignment
     # at lag 0. Because `xcorr(x, x_shifted_by_S)[k] = ACF(k + S)`, we
@@ -1004,7 +1004,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                   f"({elapsed:.0f}s elapsed, ETA {eta:.0f}s)")
     del acf_long_stack
 
-    # ----------------- Signal correlation -----------------
+    # Signal correlation
     print(f"[audit]   Signal correlation: pooling sessions, "
           f"{n_shuffles} shuffles for null, lags ±{max_lag_seconds:.1f} s")
 
@@ -1052,7 +1052,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         n_total_bouts = 0
         n_total_usvs = 0
     else:
-        # ----- Per-session signal correlation (actual + circular-shift null) -----
+        # Per-session signal correlation (actual + circular-shift null)
         # For every (session × feature) pair we compute a single
         # FFT-based cross-correlation at all positive true lags
         # `[0, n_pad_sess − 1]` once. Two views of that single curve

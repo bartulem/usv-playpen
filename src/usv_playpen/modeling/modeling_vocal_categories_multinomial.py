@@ -1603,12 +1603,14 @@ class MultinomialModelRunner:
 
                 try:
                     f_brier = brier_score_multi(y_test, probs_canonical, canonical_classes)
-                except Exception:
+                except Exception as e:
                     f_brier = np.nan
+                    print(f"[warn] fold diagnostic metric could not be recorded: {e}")
                 try:
                     f_ece = expected_calibration_error(y_test, predictions, probs_canonical, n_bins=10)
-                except Exception:
+                except Exception as e:
                     f_ece = np.nan
+                    print(f"[warn] fold diagnostic metric could not be recorded: {e}")
                 f_mcc = safe_matthews_corrcoef(y_test, predictions)
 
                 f_met = strategy_data['folds']['metrics']

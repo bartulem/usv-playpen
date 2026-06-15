@@ -1197,7 +1197,7 @@ def vocal_category_model_selection(
         - Starts with an empty model (or the top-ranked anchor).
         - Iteratively tests adding every remaining candidate feature.
         - Calculates and saves raw lists of metrics (Log-Loss, AUC, F1,
-          Balanced Accuracy, Precision, Recall) for every fold for every candidate.
+          Balanced Accuracy, Recall) for every fold for every candidate.
     5.  Decision rule: Adopts the one-standard-error (1SE) rule.
     6.  Final Refit: Computes filter shapes for visualization depending on the chosen
         engine (back-projection for sklearn, partial dependence for pygam).

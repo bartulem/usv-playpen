@@ -832,8 +832,9 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         try:
                             fold_n_iter = float(np.max(lr_actual.n_iter_))
                             fold_converged = bool(fold_n_iter < lr_params['max_iter'])
-                        except Exception:
+                        except Exception as e:
                             fold_n_iter, fold_converged = np.nan, None
+                            print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
                         if strat == 'actual':
                             results['actual']['coefs_projected'][split_idx, :] = lr_actual.coef_.flatten()
@@ -894,8 +895,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         results[key]['brier'][split_idx] = float(brier_score_loss(y_te, y_prob))
                         try:
                             results[key]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[warn] fold diagnostic metric could not be recorded: {e}")
                         results[key]['mcc'][split_idx] = safe_matthews_corrcoef(y_te, y_pred)
                         results[key]['confusion_matrix'][split_idx] = safe_confusion_matrix(
                             y_te, y_pred, labels=np.array([0, 1])

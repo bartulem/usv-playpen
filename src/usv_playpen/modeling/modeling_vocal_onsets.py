@@ -874,7 +874,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             - `filter_shapes` : reconstructed temporal filters across splits.
             - `coefs_projected` : raw weights in the basis space.
             - `optimal_C` : regularisation strength selected by `LogisticRegressionCV`.
-            - `auc` : threshold-free ranking quality (macro one-vs-rest ROC-AUC);
+            - `auc` : threshold-free ranking quality (binary ROC-AUC);
               imbalance-robust but blind to calibration.
             - `score` : balanced accuracy (mean per-class recall).
             - `recall` : positive-class recall; kept because macro-F1 already
@@ -978,8 +978,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 try:
                     results['actual']['n_iter'][split_idx] = float(np.max(lr_actual.n_iter_))
                     results['actual']['converged'][split_idx] = float(results['actual']['n_iter'][split_idx] < lr_max_iter)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[warn] fold diagnostic metric could not be recorded: {e}")
                 results['actual']['fit_time'][split_idx] = fit_time
 
                 if len(np.unique(y_test)) > 1:
@@ -991,8 +991,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_actual, y_proba_actual])
                         results['actual']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_actual, y_proba_2d, n_bins=10)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
             except Exception as e:
                 print(f"  ERROR during ACTUAL model fit/predict for {feature_name}, split {split_idx}: {e}")
@@ -1034,8 +1034,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 try:
                     results['null']['n_iter'][split_idx] = float(np.max(lr_shuffled.n_iter_))
                     results['null']['converged'][split_idx] = float(results['null']['n_iter'][split_idx] < lr_max_iter)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[warn] fold diagnostic metric could not be recorded: {e}")
                 results['null']['fit_time'][split_idx] = fit_time
 
                 if len(np.unique(y_test)) > 1:
@@ -1047,8 +1047,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_shuffled, y_proba_shuffled])
                         results['null']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_shuffled, y_proba_2d, n_bins=10)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
             except Exception as e:
                 print(f"  ERROR during NULL model fit/predict for {feature_name}, split {split_idx}: {e}")
@@ -1122,7 +1122,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                keys (the 'null' branch holds the label-shuffled control), each
                holding arrays of metrics:
                - `filter_shapes` : 1D partial-dependence filter per split.
-               - `auc` : macro one-vs-rest ROC-AUC (threshold-free ranking).
+               - `auc` : binary ROC-AUC (threshold-free ranking).
                - `score` : balanced accuracy.
                - `recall`, `f1` : standard imbalance-robust summaries.
                - `ll` : log-loss (strictly proper probabilistic score).
@@ -1266,8 +1266,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_mean_epoch, y_proba_mean_epoch])
                             results['actual']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_mean_epoch, y_proba_2d, n_bins=10)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
                     print(f"    > ACTUAL Fold {split_idx} (Train N={len(y_train)}, Test N={len(y_test)}): "
                           f"AUC={results['actual']['auc'][split_idx]:.3f}, "
@@ -1324,8 +1324,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_shuffled_mean, y_proba_shuffled_mean])
                             results['null']['ece'][split_idx] = expected_calibration_error(y_test_int_null, y_pred_shuffled_mean, y_proba_2d, n_bins=10)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
                 except Exception as e:
                     print(f"  ERROR during NULL [pygam] fit/predict for {feature_name}, split {split_idx}: {e}")

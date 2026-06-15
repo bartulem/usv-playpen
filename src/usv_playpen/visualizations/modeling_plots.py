@@ -252,7 +252,7 @@ def plot_vocalization_embedding_space(
 
     print("Extracting coordinates, metadata, and matching supercategories...")
 
-    # --- 1. Data Extraction & Alignment ---
+    # 1. Data Extraction & Alignment
     with h5py.File(umap_position_file_path, mode='r') as umap_position_file, \
             h5py.File(cluster_category_file_path, mode='r') as super_category_h5_file:
 
@@ -319,7 +319,7 @@ def plot_vocalization_embedding_space(
                 except Exception:
                     pass
 
-    # --- 2. Aggregation & Boundary Math ---
+    # 2. Aggregation & Boundary Math
 
     if len(all_coordinates) == 0:
         print("No valid coordinates extracted. Exiting plot generation.")
@@ -340,7 +340,7 @@ def plot_vocalization_embedding_space(
 
     Z = griddata(all_coordinates, cat_indices, (xx, yy), method='nearest')
 
-    # --- 3. Figure Setup ---
+    # 3. Figure Setup
     TEXT_COLOR = '#000000'
     BG_COLOR = '#FFFFFF'
     HIGHLIGHT_COLOR = '#000000'
@@ -402,7 +402,7 @@ def plot_vocalization_embedding_space(
     for text in leg.get_texts():
         text.set_color(TEXT_COLOR)
 
-    # --- 4. Spectrogram Inset Processing ---
+    # 4. Spectrogram Inset Processing
     if is_dual_panel:
         rows, cols = grid_dims
 
@@ -412,7 +412,7 @@ def plot_vocalization_embedding_space(
         rect_y_min = y_range[0] if y_range[0] is not None else all_coordinates[:, 1].min()
         rect_y_max = y_range[1] if y_range[1] is not None else all_coordinates[:, 1].max()
 
-        # --- Grid Mapping Nearest Neighbor Algorithm ---
+        # Grid Mapping Nearest Neighbor Algorithm
         ideal_x = np.linspace(rect_x_min, rect_x_max, cols)
         ideal_y = np.linspace(rect_y_max, rect_y_min, rows)  # Top to bottom for natural mapping
 
@@ -1257,7 +1257,8 @@ def plot_raw_feature_difference(
         subset_fraction: float = 0.05,
         n_bootstraps: int = 1000,
         save_plots: bool = False,
-        output_dir: str = None
+        output_dir: str = None,
+        value_sanity_cap: float | None = 90.0
 ) -> None:
     """
     Visualizes the raw difference of a specific feature between two conditions.
@@ -1292,6 +1293,12 @@ def plot_raw_feature_difference(
     output_dir : str, optional
         The directory where plots will be saved. If None, defaults to the
         parent directory of the input pickle file.
+    value_sanity_cap : float or None, default 90.0
+        Per-frame values that exceed this cap are replaced with NaN before
+        the mean/CI so extreme outliers don't bias the estimate. The default
+        of 90 suits angular features measured in
+        degrees; pass a feature-appropriate cap for non-angular features, or
+        ``None`` to disable the filter entirely.
 
     Returns
     -------
@@ -1364,12 +1371,14 @@ def plot_raw_feature_difference(
     target_subset = target_subset[~np.all(np.isnan(target_subset), axis=1)]
     other_subset = other_subset[~np.all(np.isnan(other_subset), axis=1)]
 
-    # Sanity filter: values above 90 (typically angular features in degrees
-    # or extreme outliers) are replaced with NaN so they don't bias the
-    # per-frame mean/CI. TODO: make this threshold a parameter or feature-
-    # dependent; the current cap implicitly assumes an angular feature.
-    target_subset[target_subset > 90] = np.nan
-    other_subset[other_subset > 90] = np.nan
+    # Sanity filter: values above ``value_sanity_cap`` (extreme outliers, or
+    # for angular features in degrees anything beyond the meaningful range)
+    # are replaced with NaN so they don't bias the per-frame mean/CI. The cap
+    # is caller-configurable (default 90, suited to angular features); pass
+    # ``None`` to disable it for features where large values are legitimate.
+    if value_sanity_cap is not None:
+        target_subset[target_subset > value_sanity_cap] = np.nan
+        other_subset[other_subset > value_sanity_cap] = np.nan
 
     boot_target_means = np.zeros((n_bootstraps, n_time_points))
     boot_other_means = np.zeros((n_bootstraps, n_time_points))
@@ -1632,7 +1641,7 @@ def plot_model_selection_results(
     else:
         self_color, other_color = male_color, female_color
 
-    # --- 1. Determine Valid Steps for Trajectory Plot ---
+    # 1. Determine Valid Steps for Trajectory Plot
     valid_steps_for_plot = list(selection_steps)
     if len(selection_steps) > 1:
         last_data = selection_steps[-1]
@@ -1640,7 +1649,7 @@ def plot_model_selection_results(
             print("Last step was a rejection. Excluding it from trajectory plots.")
             valid_steps_for_plot = selection_steps[:-1]
 
-    # --- 2. Process Trajectory Data ---
+    # 2. Process Trajectory Data
     steps_data = []
     print(f"Processing {len(valid_steps_for_plot)} steps for trajectory...")
 
@@ -1707,7 +1716,7 @@ def plot_model_selection_results(
         print("No valid step data extracted.")
         return
 
-    # --- 3. Summary figure: NLL trajectory (left) + score bars (right) ---
+    # 3. Summary figure: NLL trajectory (left) + score bars (right)
     # Left panel: horizontal bars per accepted step, growing LEFTWARD
     # from the chance NLL baseline (right side of the axis) toward 0
     # as features are added. Light base = previous cumulative NLL,
@@ -1768,7 +1777,7 @@ def plot_model_selection_results(
 
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
-    # ----- Left-panel data: NLL trajectory -----
+    # Left-panel data: NLL trajectory
     # The selector's primary metric is NLL (minimization). The chance
     # baseline is the null-model NLL stored in step 0's
     # ``baseline_score``; for a balanced binary classifier that is
@@ -1779,7 +1788,7 @@ def plot_model_selection_results(
         chance_nll = float(np.log(2.0))
     cum_nlls = [float(d['prim_mean']) for d in steps_data]
 
-    # ----- Right-panel data: secondary-metric bars -----
+    # Right-panel data: secondary-metric bars
     chance_secondary = 0.5
     first_step = valid_steps_for_plot[0]
     if 'candidates_summary' in first_step:
@@ -1843,7 +1852,7 @@ def plot_model_selection_results(
                     'll_mean': rej_ll_mean,
                 }
 
-    # ----- Figure layout -----
+    # Figure layout
     n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
     fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
     fig_traj, (ax_traj, ax_bars) = plt.subplots(
@@ -1855,7 +1864,7 @@ def plot_model_selection_results(
     ax_traj.set_facecolor(BG_COLOR)
     ax_bars.set_facecolor(BG_COLOR)
 
-    # ----- Left panel: NLL trajectory bars (grow leftward) -----
+    # Left panel: NLL trajectory bars (grow leftward)
     bar_height = 0.88
     y_positions = list(range(len(steps_data)))
     rej_y = len(steps_data) + 0.4 if rejection_row is not None else None
@@ -1942,7 +1951,7 @@ def plot_model_selection_results(
     for spine in ax_traj.spines.values():
         spine.set_edgecolor(TEXT_COLOR)
 
-    # ----- Right panel: 3 vertical bars on the held-out accuracy axis ---
+    # Right panel: 3 vertical bars on the held-out accuracy axis
     # Bar 1 (best univariate) is a single solid bar in that feature's
     # category colour. Bars 2 and 3 are stacked: each segment is the
     # marginal accuracy contribution of an accepted feature, coloured
@@ -2040,7 +2049,7 @@ def plot_model_selection_results(
 
     plt.show()
 
-    # --- 4. Filter Grid Visualization ---
+    # 4. Filter Grid Visualization
     # Always inspect the LAST step (even if it was a rejection) to try and
     # find filter shapes; fall back to the second-to-last step when the
     # rejection step lacks a fitted final model.
@@ -2923,7 +2932,7 @@ def plot_multinomial_selection_trajectory(
     for i in range(1, len(cum_sec)):
         sec_marginals.append(cum_sec[i] - cum_sec[i - 1])
 
-    # ---- Figure layout ----
+    # Figure layout
     n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
     fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
     fig_traj, (ax_traj, ax_bars) = plt.subplots(
@@ -3052,7 +3061,7 @@ def plot_multinomial_selection_trajectory(
     for spine in ax_traj.spines.values():
         spine.set_edgecolor(TEXT_COLOR)
 
-    # ---- Right panel: 2 vertical bars (best univariate, final) ----
+    # Right panel: 2 vertical bars (best univariate, final)
     bar_width = 0.6
     bar_x_positions = [0, 1]
     bar_group_labels = ['best univariate', 'final model']
@@ -3262,7 +3271,6 @@ def plot_multinomial_multivariate_filters(
         print(f"No step data found in {selection_results_path}")
         return
 
-    # --- BULLETPROOF DATA EXTRACTION ---
     # Find the last step that actually selected a feature (ignores the final rejection step)
     valid_data = None
     for data in reversed(selection_steps):
@@ -3309,7 +3317,7 @@ def plot_multinomial_multivariate_filters(
     ncols = 3
     nrows = math.ceil(n_feats / ncols)
 
-    # --- MANUAL LAYOUT (Absolute Figure Coordinates) ---
+    # MANUAL LAYOUT (Absolute Figure Coordinates)
     fig = plt.figure(figsize=(18, 5 * nrows), dpi=300)
     fig.patch.set_facecolor('#FFFFFF')
 
@@ -3478,7 +3486,7 @@ def plot_multinomial_selection_diagnosis(
     K = len(classes)
     final_features = list(final_step.get('final_model_features') or [])
 
-    # --- Pool every valid fold's predictions for the AUC matrix ----
+    # Pool every valid fold's predictions for the AUC matrix
     def _concat_finite(key: str) -> Optional[np.ndarray]:
         parts = []
         for v in folds[key]:
@@ -3525,7 +3533,7 @@ def plot_multinomial_selection_diagnosis(
             except ValueError:
                 continue
 
-    # --- Per-class recall from pooled confusion matrix ---
+    # Per-class recall from pooled confusion matrix
     summed_cms = []
     for cm in folds['confusion_matrix']:
         if cm is None:
@@ -3550,7 +3558,7 @@ def plot_multinomial_selection_diagnosis(
         )
     chance = 1.0 / K
 
-    # --- Save-path resolver shared by both figures ---
+    # Save-path resolver shared by both figures
     def _resolve_out_dir() -> pathlib.Path:
         if output_dir is None:
             _fallback = pathlib.Path(selection_results_path)
@@ -3917,7 +3925,7 @@ def plot_manifold_selection_trajectory(
     for i in range(1, len(cum_sec)):
         sec_marginals.append(cum_sec[i] - cum_sec[i - 1])
 
-    # ---- Figure layout ----
+    # Figure layout
     n_rows_total = len(steps_data) + (1 if rejection_row is not None else 0)
     fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
     fig_traj, (ax_traj, ax_bars) = plt.subplots(
@@ -4042,7 +4050,7 @@ def plot_manifold_selection_trajectory(
     for spine in ax_traj.spines.values():
         spine.set_edgecolor(TEXT_COLOR)
 
-    # ---- Right panel: 2 vertical bars (best univariate, final) ----
+    # Right panel: 2 vertical bars (best univariate, final)
     bar_width = 0.6
     bar_x_positions = [0, 1]
     bar_group_labels = ['best univariate', 'final model']
@@ -4599,7 +4607,6 @@ class DeepResultsVisualizer:
             right_ax.tick_params(axis='y', which='both', left=False, labelleft=False)
 
         # PANEL A: EUCLIDEAN ERROR (TOP ROW)
-        # --- EXACTLY AS IN SUBPLOT 1 ---
         # Actual Model (ax1)
         ax1.hist(actual_dist, bins=30, histtype='step', fill=True, color=c_act, alpha=0.5, edgecolor=c_act, linewidth=1.5)
         ax1.axvline(actual_mean, color=c_act, linewidth=1.0, linestyle='-')
@@ -4750,11 +4757,11 @@ class DeepResultsVisualizer:
         actual_means = np.array([imp_data['means'][f] for f in feats])
         actual_stds = np.array([imp_data['stds'][f] for f in feats])
 
-        # --- Dynamic SNR Calculation & Thresholding ---
+        # Dynamic SNR Calculation & Thresholding
         snrs = np.where(actual_stds > 1e-8, actual_means / actual_stds, 0.0)
         significant_mask = snrs > snr_threshold
 
-        # --- Color Mapping Logic ---
+        # Color Mapping Logic
         norm = plt.Normalize(vmin=actual_means.min(), vmax=actual_means.max())
         mapper = plt.get_cmap(cmap)
         lowest_color = mapper(0.0)
@@ -4763,7 +4770,7 @@ class DeepResultsVisualizer:
         bar_colors = [mapper(norm(val)) if sig else lowest_color
                       for val, sig in zip(actual_means, significant_mask)]
 
-        # --- Visualization ---
+        # Visualization
         fig, ax = plt.subplots(figsize=figsize, facecolor='#FFFFFF')
         ax.set_facecolor('#FFFFFF')
         ax.grid(False)
@@ -4797,7 +4804,7 @@ class DeepResultsVisualizer:
 
         plt.tight_layout()
 
-        # --- Save Logic (with sex-specific naming) ---
+        # Save Logic (with sex-specific naming)
         pkl_path = getattr(self, 'results_pkl_path', '')
         if "male_mute_partner" in pkl_path:
             sex_mod = "male_mute_partner"
@@ -4819,7 +4826,7 @@ class DeepResultsVisualizer:
                                     patch_size: Optional[float] = None,
                                     min_samples: int = 50,
                                     bg_pt_color: str = '#E0E0E0',
-                                    peak_pt_color: str = 'cyan',
+                                    peak_pt_color: str = '#00FFFF',
                                     square_edge_color: str = '#000000',
                                     panel_fontsize: int = 9,
                                     figsize_unit: float = 3.0,
@@ -4857,7 +4864,7 @@ class DeepResultsVisualizer:
             Minimum number of data points required inside a patch.
         bg_pt_color : str, default '#E0E0E0'
             Hex code for the background global UMAP coordinates.
-        peak_pt_color : str, default 'cyan'
+        peak_pt_color : str, default '#00FFFF'
             Color of the crosshair ('+') marking the peak density of predictions.
         square_edge_color : str, default '#000000'
             Color of the border representing the true spatial bin.
@@ -4902,7 +4909,7 @@ class DeepResultsVisualizer:
         if patch_size is None:
             patch_size = 2.5
 
-        # --- 1. Data Preparation (Aggregating Across CNN Folds) ---
+        # 1. Data Preparation (Aggregating Across CNN Folds)
         # Filter out placeholder folds emitted by the runner's
         # `restrict_to_fold_indices` recovery path — they carry only
         # `Y_true` / `test_indices` and would `KeyError` on
@@ -4912,14 +4919,14 @@ class DeepResultsVisualizer:
         Y_true = np.vstack([np.array(f['Y_true']) for f in cv_folds])
         Y_pred = np.vstack([np.array(f['Y_pred_actual']) for f in cv_folds])
 
-        # --- 2. Custom White-Base derived from the global cmap ---
+        # 2. Custom White-Base derived from the global cmap
         base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
         cmap_colors = base_cmap(np.linspace(0, 1, 256))
         white = np.array([1, 1, 1, 1])
         cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
         white_inferno = ListedColormap(cmap_colors)
 
-        # --- 3. K-Means Guided Search (Ensures Island Capture) ---
+        # 3. K-Means Guided Search (Ensures Island Capture)
         print(f"Identifying {n_patches} representative neighborhoods using K-Means...")
         kmeans = KMeans(n_clusters=n_patches, n_init=10, random_state=42)
         kmeans.fit(Y_true)
@@ -4961,7 +4968,7 @@ class DeepResultsVisualizer:
 
         selected_patches = sorted(selected_patches, key=lambda x: x['density'], reverse=True)
 
-        # --- 4. Tiled Visualization ---
+        # 4. Tiled Visualization
         n = len(selected_patches)
         cols = 5
         rows = int(np.ceil(n / cols))
@@ -5047,7 +5054,7 @@ class DeepResultsVisualizer:
         for i in range(n, len(axes)): fig.delaxes(axes[i])
         plt.tight_layout()
 
-        # --- 5. Updated Save Logic ---
+        # 5. Updated Save Logic
         pkl_path = getattr(self, 'results_pkl_path', '')
         if "male_mute_partner" in pkl_path:
             sex_mod = "male_mute_partner"
@@ -5103,7 +5110,7 @@ class DeepResultsVisualizer:
 
         period = float(self.manifold_period)
 
-        # ---- defaults specific to the torus branch ----
+        # defaults specific to the torus branch
         if patch_size is None:
             patch_size = 0.20 * period
         if grid_shape is None:
@@ -5111,26 +5118,26 @@ class DeepResultsVisualizer:
         nx, ny = int(grid_shape[0]), int(grid_shape[1])
         half_s = patch_size / 2.0
 
-        # ---- pool predictions across successfully-fit folds ----
+        # pool predictions across successfully-fit folds
         cv_folds = [f for f in self.data['cross_validation']
                     if not f.get('skipped')]
         Y_true = np.vstack([np.asarray(f['Y_true']) for f in cv_folds])
         Y_pred = np.vstack([np.asarray(f['Y_pred_actual']) for f in cv_folds])
 
-        # ---- white-base inferno cmap (matches Euclidean branch) ----
+        # white-base inferno cmap (matches Euclidean branch)
         base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
         cmap_colors = base_cmap(np.linspace(0, 1, 256))
         white = np.array([1, 1, 1, 1])
         cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
         white_inferno = ListedColormap(cmap_colors)
 
-        # ---- uniform grid centres on the unit cell ----
+        # uniform grid centres on the unit cell
         x_centres = (np.arange(nx) + 0.5) / nx * period
         y_centres = (np.arange(ny) + 0.5) / ny * period
         # Row-major top-to-bottom: reverse y so figure-top = torus-top.
         centres = [(cx, cy) for cy in y_centres for cx in x_centres]
 
-        # ---- figure ----
+        # figure
         # No explicit ``dpi=`` here so the inline-notebook display
         # matches the Euclidean branch's call (which also omits dpi
         # and inherits the inline backend's default ~100). Setting
@@ -5321,7 +5328,7 @@ class DeepResultsVisualizer:
             Format for the saved file.
         """
 
-        # --- 1. Data Preparation (Aggregating Across CNN Folds) ---
+        # 1. Data Preparation (Aggregating Across CNN Folds)
         # Filter out placeholder folds emitted by the runner's
         # `restrict_to_fold_indices` recovery path — they carry only
         # `Y_true` / `test_indices` and would `KeyError` on
@@ -5348,7 +5355,7 @@ class DeepResultsVisualizer:
         # Delta E: Positive means the Model is better (lower error) than the Null
         error_diff = errors_null - errors_act
 
-        # --- 2. Visualization ---
+        # 2. Visualization
         fig, axes = plt.subplots(1, 2, figsize=figsize, facecolor='#FFFFFF')
 
         # Panel 1: Absolute Error
@@ -5396,7 +5403,7 @@ class DeepResultsVisualizer:
 
         plt.tight_layout()
 
-        # --- 3. Save Logic ---
+        # 3. Save Logic
         pkl_path = getattr(self, 'results_pkl_path', '')
         if "male_mute_partner" in pkl_path:
             sex_mod = "male_mute_partner"
@@ -5501,15 +5508,15 @@ class DeepResultsVisualizer:
         None
         """
 
-        # --- 0. COLOR MANAGEMENT ---
+        # 0. COLOR MANAGEMENT
         # Reliably pull the color index 0 mapped in __init__
         if highlight_color is None:
             highlight_color = getattr(self, 'default_color', '#9AC0CD')
 
-        # --- 1. DISPLAY TITLE ---
+        # 1. DISPLAY TITLE
         display_title = category_name if category_name is not None else region_key
 
-        # --- 2. DATA AGGREGATION ---
+        # 2. DATA AGGREGATION
         imp_data = self.data['feature_importance']
         best_fold_idx = imp_data['best_fold_idx']
         fold_res = self.data['cross_validation'][best_fold_idx]
@@ -5522,7 +5529,7 @@ class DeepResultsVisualizer:
         num_bins = self.metadata['n_time_bins']
         num_features = len(features_list)
 
-        # --- 3. SALIENCY EXTRACTION + REGION DEFINITION ---
+        # 3. SALIENCY EXTRACTION + REGION DEFINITION
         # Region geometry now comes from the stored saliency entry --
         # the same circle the saliency runner used to assemble the
         # contrastive map.
@@ -5555,7 +5562,7 @@ class DeepResultsVisualizer:
             )
         radius = effective_radius
 
-        # --- 4. SPATIAL FILTERING (circle, wrap-aware on torus) ---
+        # 4. SPATIAL FILTERING (circle, wrap-aware on torus)
         # Distances are computed with the same manifold metric the
         # CNN used at training so torus wrap is honoured automatically
         # when applicable.
@@ -5581,7 +5588,7 @@ class DeepResultsVisualizer:
             metric=self.manifold_metric, period=self.manifold_period,
         )
 
-        # --- 5. VISUALIZATION PIPELINE ---
+        # 5. VISUALIZATION PIPELINE
         text_color = '#000000'
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, facecolor='#FFFFFF',
                                        gridspec_kw={'width_ratios': [1, 1.2]})
@@ -5611,7 +5618,6 @@ class DeepResultsVisualizer:
         # blew the SVG up to tens of MB without adding information.
         y_p_region = Y_pred[r_idx]
 
-        # --- FULLY RESTORED PREDICTION PLOT TYPE LOGIC ---
         if prediction_plot_type.lower() == 'contour':
             try:
                 kde = gaussian_kde(y_p_region.T)
@@ -6323,7 +6329,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[0, 1])
 
-    # --- Left panel: ρ heatmap -----------------------------------------
+    # Left panel: ρ heatmap
     im = ax1.imshow(rho_ord, cmap=cmap, vmin=-1.0, vmax=1.0, aspect='equal')
     ax1.set_xticks(np.arange(n_features))
     ax1.set_yticks(np.arange(n_features))
@@ -6382,7 +6388,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
         fontsize=10,
     )
 
-    # --- Right panel: VIF horizontal bars -----------------------------
+    # Right panel: VIF horizontal bars
     color_by_name = {name: c for name, c in zip(names_ord, colors_ord)}
     finite_mask = np.isfinite(vif)
     finite_vif = np.where(finite_mask, vif, np.nan)

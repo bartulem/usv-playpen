@@ -582,8 +582,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         Statistical Framework:
         1. Gamma distribution & log link: Fits the model assuming y ~ Gamma. The log-link
-           function (ln(mu) = X/beta) ensures that predicted bout parameters remain
-           strictly positive ($exp(X/beta)) and accounts for the heteroscedasticity
+           function (ln(mu) = X·beta) ensures that predicted bout parameters remain
+           strictly positive (mu = exp(X·beta)) and accounts for the heteroscedasticity
            where variance increases with the mean.
         2. Permutation test (shuffled control): To establish a baseline for null
            predictability, the method executes a parallel "shuffled" analysis. In this
@@ -873,14 +873,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
            ensuring the resulting temporal filters (kernels) are smooth and interpretable.
         3. L2 regularization (RidgeCV): Fits the model ln(y) = Phi\beta + \alpha||\beta||_2,
            where Phi is the basis-projected feature matrix. The optimal regularization
-           strength (alpha) is determined via internal leave-one-out cross-validation (LOOCV).
+           strength (alpha) is determined via internal cross-validation (the ``cv`` scheme from settings).
 
         Evaluation and permutation control:
         - Original scale metrics: Predictions are back-transformed via exp(\hat{y}_{log}).
           Performance is evaluated using Spearman's Rank Correlation (to assess monotonic
           ranking accuracy independent of scale) and Mean Squared Logarithmic Error
-          (MSLE, to assess magnitude accuracy in the log-space relevant to the distribution),
-          alongside R-squared (R^2).
+          (MSLE, to assess magnitude accuracy in the log-space relevant to the distribution).
         - Permutation test: Parallel to the actual model, a "shuffled" control is executed
           by permuting the target labels. This provides a null distribution for these
           metrics to verify that the behavioral history contains more predictive information
