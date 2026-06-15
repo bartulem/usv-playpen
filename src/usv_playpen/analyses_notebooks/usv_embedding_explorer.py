@@ -10,7 +10,7 @@ Install the ``dev`` dependency group (it carries ``marimo`` and
 
 From the ``src/usv_playpen/analyses_notebooks`` directory:
 
-    marimo edit embedding_explorer.py
+    marimo edit usv_embedding_explorer.py
 
 Architecture
 ------------

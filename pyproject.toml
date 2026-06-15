@@ -248,7 +248,7 @@ constraint-dependencies = []
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }
 
-# Lift marimo's per-cell output cap so the embedding-explorer notebook
+# Lift marimo's per-cell output cap so the usv-embedding-explorer notebook
 # can embed up to ~10 K base64-encoded spectrogram thumbnails inside
 # its altair vconcat chart spec without hitting "Your output is too
 # large". 30 MB is generous; raise further if needed.
