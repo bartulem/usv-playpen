@@ -385,3 +385,22 @@ Parameters specific to subplots include:
           "usv_segments_lw": 1.25
         }
     }
+
+Render USV spectrograms and embedding maps
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Beyond the GUI functions above, the ``usv_playpen.visualizations.make_usv_spectrograms`` module renders publication figures for ultrasonic vocalizations (USVs) directly from the processed session artifacts. It is driven from the ``usv_spectrogram_analyses.ipynb`` notebook (embedded below) rather than the GUI, and exposes:
+
+- ``USVSpectrogramPlotter`` — single-channel, all-channel and stitched session-timeline spectrograms read from a session's concatenated ``*_int16.mmap`` audio. The single / all modes show a dB amplitude scale over a user-defined ``time_window``; the stitched mode places the pre-computed ``[0, 1]``-normalized per-USV spectrograms from the consolidated HDF5 store at their true on-session times on a linear normalized-amplitude canvas.
+- ``plot_usv_property_histograms`` — five pooled per-USV property histograms (duration, mean amplitude, mean frequency, frequency bandwidth, spectral entropy) across every session listed in a text file.
+- ``plot_session_type_usv_counts`` — mean USVs per session compared across the male-female, female-female and lone-male session types, with SEM error bars on each bar.
+- ``plot_session_usv_timeline`` — every non-noise USV in one session drawn as a colored interval on a horizontal strip, keyed to the male / female / unassigned emitter.
+- ``plot_umap_with_category_thumbnails`` — a two-panel figure pairing a UMAP (VAE or QLVM) scatter — colored by call category and overlaid with kNN cluster boundaries — against a per-category grid of spectrogram thumbnails sampled from the consolidated SAM2 + spectrogram store.
+
+The rendering knobs for the spectrogram plotter live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar limits and the save options); the module-level helpers take their inputs as function arguments, all surfaced in the notebook's single **Parameters** cell.
+
+The ``usv_spectrogram_analyses.ipynb`` notebook is the recommended entry point: it imports every function above, collects all data paths and styling toggles in one **Parameters** cell near the top, and runs each figure in its own independent cell. The full notebook is embedded below:
+
+.. toctree::
+   :maxdepth: 1
+
+   usv_spectrogram_analyses
