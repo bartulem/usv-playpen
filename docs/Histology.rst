@@ -334,9 +334,6 @@ The ``npx_histology_unit_quality_processing.ipynb`` notebook is the
 recommended entry point. It runs the whole workflow above in order — every
 acquisition path and session identifier lives in a single **Parameters**
 cell near the top (grouped by section), so a run is configured in one
-place. The full notebook is embedded below:
-
-.. toctree::
-   :maxdepth: 1
-
-   npx_histology_unit_quality_processing
+place. The full notebook lives in the repository at
+`npx_histology_unit_quality_processing.ipynb
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/npx_histology_unit_quality_processing.ipynb>`_.
