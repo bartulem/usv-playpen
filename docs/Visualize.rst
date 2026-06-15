@@ -398,9 +398,4 @@ Beyond the GUI functions above, the ``usv_playpen.visualizations.make_usv_spectr
 
 The rendering knobs for the spectrogram plotter live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar limits and the save options); the module-level helpers take their inputs as function arguments, all surfaced in the notebook's single **Parameters** cell.
 
-The ``usv_spectrogram_analyses.ipynb`` notebook is the recommended entry point: it imports every function above, collects all data paths and styling toggles in one **Parameters** cell near the top, and runs each figure in its own independent cell. The full notebook is embedded below:
-
-.. toctree::
-   :maxdepth: 1
-
-   usv_spectrogram_analyses
+The ``usv_spectrogram_analyses.ipynb`` notebook is the recommended entry point: it imports every function above, collects all data paths and styling toggles in one **Parameters** cell near the top, and runs each figure in its own independent cell. The full notebook lives in the repository at `usv_spectrogram_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_spectrogram_analyses.ipynb>`_.
