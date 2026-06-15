@@ -83,6 +83,11 @@ with warnings.catch_warnings():
     from usv_playpen.modeling.model_selection import (
         continuous_vocal_manifold_model_selection,
     )
+    from usv_playpen.modeling.manifold_metric import (
+        circular_mean,
+        signed_diff,
+        total_dispersion,
+    )
 
 
 # Tiny-data geometry shared across the extraction tests. The continuous
@@ -585,6 +590,72 @@ class TestManifoldModelSelection:
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
+
+    def test_step0_baseline_r2_is_metric_aware(self):
+        """
+        Contract guard for the Step-0 spatial-centroid baseline in
+        ``continuous_vocal_manifold_model_selection`` (the
+        ``baseline_data`` fold loop). The baseline centroid, residuals and
+        dispersion now flow through ``circular_mean`` / ``signed_diff`` /
+        ``total_dispersion`` parameterized by the run's manifold metric, so
+        the baseline ``r2_spatial`` is computed on the SAME metric as the
+        active models it is compared against.
+
+        This reproduces the exact baseline formula the selector uses and
+        checks two things on a cluster that straddles the wrap boundary:
+        (1) on ``euclidean`` it equals the original flat computation (so
+        euclidean runs are unchanged — the end-to-end euclidean path is
+        additionally covered by ``test_selection_writes_step_pickles_on_signal_data``);
+        (2) on ``torus`` the circular centroid lands inside the dense cluster
+        near the wrap boundary instead of the flat arithmetic mean in the
+        empty middle of the circle, giving a materially different (correct)
+        baseline score. A regression to flat math would collapse the two.
+        """
+
+        period = 1.0
+        # Train cluster straddling the 0/period seam: 0.95 and 0.05 are 0.1
+        # apart on the torus but ~0.9 apart on the flat line.
+        Y_tr = np.array(
+            [[0.95, 0.95], [0.05, 0.05], [0.00, 0.00], [0.90, 0.90]],
+            dtype=np.float64,
+        )
+        Y_te = np.array([[0.98, 0.98], [0.02, 0.02]], dtype=np.float64)
+        w_tr = np.ones(len(Y_tr), dtype=np.float64)
+
+        def _baseline(metric):
+            mu = circular_mean(Y_tr, metric=metric, period=period, weights=w_tr)
+            resid = signed_diff(Y_te, mu[None, :], metric=metric, period=period)
+            sse = float(np.sum(resid ** 2))
+            denom = total_dispersion(Y_te, metric=metric, period=period)
+            r2 = (1.0 - sse / denom) if denom > 0 else 0.0
+            return r2, mu
+
+        # Reference: the original FLAT baseline formula (arithmetic centroid,
+        # flat residuals, flat per-axis SST) the code used before the fix.
+        mu_flat = np.average(Y_tr, axis=0, weights=w_tr)
+        dx = Y_te[:, 0] - mu_flat[0]
+        dy = Y_te[:, 1] - mu_flat[1]
+        sse_flat = np.sum(dx ** 2 + dy ** 2)
+        denom_flat = (
+            np.sum((Y_te[:, 0] - np.mean(Y_te[:, 0])) ** 2)
+            + np.sum((Y_te[:, 1] - np.mean(Y_te[:, 1])) ** 2)
+        )
+        r2_flat = (1.0 - sse_flat / denom_flat) if denom_flat > 0 else 0.0
+
+        r2_eucl, mu_eucl = _baseline('euclidean')
+        r2_torus, mu_torus = _baseline('torus')
+
+        # (1) Euclidean baseline is byte-equivalent to the old flat formula.
+        assert np.allclose(mu_eucl, mu_flat)
+        assert np.isclose(r2_eucl, r2_flat)
+
+        # (2) Torus centroid sits in the dense cluster near the seam (~0 or
+        # ~period), not at the flat arithmetic mean (~0.475).
+        assert mu_torus[0] < 0.1 or mu_torus[0] > period - 0.1
+        assert 0.4 < mu_eucl[0] < 0.55
+        # The two metrics therefore give materially different baseline scores;
+        # a revert to flat math would make them identical.
+        assert not np.isclose(r2_torus, r2_eucl)
 
 
 def _spatial_blob(n_clusters: int, per_cluster: int, seed: int = 0):

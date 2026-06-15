@@ -38,7 +38,7 @@ from .modeling_vocal_categories_multinomial import (
     _log_spaced_grid_multinomial,
     _tune_multinomial_regularization,
 )
-from .manifold_metric import resolve_manifold_metric
+from .manifold_metric import circular_mean, resolve_manifold_metric, signed_diff, total_dispersion
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable,
     _log_spaced_grid,
@@ -4091,24 +4091,42 @@ def continuous_vocal_manifold_model_selection(
             Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
             w_tr, w_te = w_global[tr_idx], w_global[te_idx]
 
-            mu = np.average(Y_tr, axis=0, weights=w_tr)
+            # Metric-aware centroid baseline. On `metric='euclidean'` the
+            # three helpers below reduce *exactly* to the weighted arithmetic
+            # mean, flat residuals and flat sum-of-squares dispersion, so
+            # euclidean runs are byte-identical to before. On `metric='torus'`
+            # they switch to the circular mean, shortest-wrap residuals and
+            # wrap-aware dispersion — so the baseline `r2_spatial` is computed
+            # on the SAME metric as the active models it is compared against.
+            # (Previously this block was hardcoded flat: on a torus the flat
+            # centroid of a wrapped cluster lands in the empty middle of the
+            # circle, making the baseline spuriously bad and biasing selection
+            # toward over-accepting the first candidate.)
+            mu = circular_mean(
+                Y_tr, metric=manifold_metric, period=manifold_period, weights=w_tr
+            )
 
-            dx = Y_te[:, 0] - mu[0]
-            dy = Y_te[:, 1] - mu[1]
+            residual = signed_diff(
+                Y_te, mu[None, :], metric=manifold_metric, period=manifold_period
+            )
+            dx = residual[:, 0]
+            dy = residual[:, 1]
             euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
-            sse = np.sum(dx ** 2 + dy ** 2)
-            ss_tot_x = np.sum((Y_te[:, 0] - np.mean(Y_te[:, 0])) ** 2)
-            ss_tot_y = np.sum((Y_te[:, 1] - np.mean(Y_te[:, 1])) ** 2)
-            denom = ss_tot_x + ss_tot_y
+            sse = float(np.sum(dx ** 2 + dy ** 2))
+            denom = total_dispersion(
+                Y_te, metric=manifold_metric, period=manifold_period
+            )
 
-            # Mahalanobis MAE under the KDE-weighted training covariance
-            # of Y_tr — matches the regressor's convention so the baseline
-            # and the active models compete on the same distance metric.
+            # Mahalanobis MAE under the KDE-weighted training covariance of
+            # the (metric-aware) training residuals — matches the regressor's
+            # convention so the baseline and the active models compete on the
+            # same distance metric.
             w_cov = w_tr / (np.sum(w_tr) + 1e-12)
-            diff_tr = Y_tr - mu
+            diff_tr = signed_diff(
+                Y_tr, mu[None, :], metric=manifold_metric, period=manifold_period
+            )
             cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
             cov_inv = np.linalg.pinv(cov_tr)
-            residual = np.stack([dx, dy], axis=1)
             quad = np.einsum('ij,jk,ik->i', residual, cov_inv, residual)
             mahalanobis_mae_val = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
 
