@@ -152,3 +152,6 @@ Thumbs.db
 
 # setuptools_scm
 src/*/_version.py
+
+# Build-time copies of package notebooks embedded by docs/conf.py (see Visualize.rst toctree)
+docs/usv_spectrogram_analyses.ipynb

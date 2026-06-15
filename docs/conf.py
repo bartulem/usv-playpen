@@ -2,9 +2,12 @@
 # https://stackoverflow.com/questions/66495200/is-it-possible-to-include-external-rst-files-in-my-documentation
 from __future__ import annotations
 
+import shutil
+
 from contextlib import suppress
 from importlib import metadata
 from importlib.util import find_spec
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlretrieve
 
@@ -14,6 +17,22 @@ with suppress(URLError, OSError):
         url="https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/README.md",
         filename="README.md",
     )
+
+# Copy analysis notebooks that live in the package tree into ``docs/`` at
+# build time so nbsphinx can embed them (Sphinx only renders documents
+# under the source dir). The copies are gitignored and regenerated on
+# every build -- the single source of truth stays in
+# ``src/usv_playpen/analyses_notebooks/`` -- mirroring the README
+# fetch above. Paths are anchored on this file rather than the cwd so the
+# copy works regardless of where Sphinx is invoked from.
+_DOCS_DIR = Path(__file__).parent
+_NOTEBOOKS_DIR = _DOCS_DIR.parent / "src" / "usv_playpen" / "analyses_notebooks"
+for _embedded_notebook in ("usv_spectrogram_analyses.ipynb",):
+    with suppress(OSError):
+        shutil.copyfile(
+            _NOTEBOOKS_DIR / _embedded_notebook,
+            _DOCS_DIR / _embedded_notebook,
+        )
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
