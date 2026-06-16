@@ -185,6 +185,7 @@ def _build_signal_continuous_pickle(
         input_metadata: dict,
         n_per_session: int = 60,
         seed: int = 0,
+        target_kind: str = 'linear',
 ) -> Path:
     """
     Description
@@ -234,6 +235,16 @@ def _build_signal_continuous_pickle(
         Number of vocal events per session.
     seed (int)
         Base seed for the per-cell RNG.
+    target_kind (str)
+        ``'linear'`` (default) writes the original ``Y = [2*base, -1.5*base]``
+        coordinate signal the euclidean coordinate model recovers. ``'wound_torus'``
+        writes a target that *winds* around the torus: each axis is the wrapped
+        ``atan2`` of two fixed (cross-session) linear projections of the signal
+        feature's history, so the 4-D embedding is linear in ``X`` and the convex
+        embedding ridge recovers it while the coordinate model cannot. The
+        winding construction is exact (noise-free) so it clears the torus
+        screening gate; it is meaningful only when the caller disables temporal
+        binning (``bin_resizing_factor=1``) so the full-width projection survives.
 
     Returns
     -------
@@ -251,15 +262,28 @@ def _build_signal_continuous_pickle(
             artifact[feature][sess] = {'X': X, 'Y': None, 'w': None}
 
     target_rng = np.random.default_rng(seed + 99)
+    # Fixed (cross-session) linear projections for the wound-torus target so the
+    # same X -> Y relationship holds globally and the embedding ridge can learn
+    # it; for the linear target these are unused.
+    proj_x1, proj_x2 = target_rng.standard_normal(history_frames), target_rng.standard_normal(history_frames)
+    proj_y1, proj_y2 = target_rng.standard_normal(history_frames), target_rng.standard_normal(history_frames)
     for sess in session_ids:
         signal_X = artifact[feature_names[0]][sess]['X']
-        base = signal_X.mean(axis=1)
-        Y = np.stack(
-            [2.0 * base, -1.5 * base], axis=1
-        ).astype(np.float32) + 0.05 * target_rng.standard_normal(
-            (len(base), 2)
-        ).astype(np.float32)
-        w = np.ones(len(base), dtype=np.float32)
+        if target_kind == 'wound_torus':
+            theta_x = np.arctan2(signal_X @ proj_x2, signal_X @ proj_x1)
+            theta_y = np.arctan2(signal_X @ proj_y2, signal_X @ proj_y1)
+            Y = np.stack(
+                [(theta_x / (2.0 * np.pi)) % 1.0, (theta_y / (2.0 * np.pi)) % 1.0],
+                axis=1,
+            ).astype(np.float32)
+        else:
+            base = signal_X.mean(axis=1)
+            Y = np.stack(
+                [2.0 * base, -1.5 * base], axis=1
+            ).astype(np.float32) + 0.05 * target_rng.standard_normal(
+                (len(base), 2)
+            ).astype(np.float32)
+        w = np.ones(len(Y), dtype=np.float32)
         for feature in feature_names:
             artifact[feature][sess]['Y'] = Y
             artifact[feature][sess]['w'] = w
@@ -491,6 +515,48 @@ class TestContinuousModelRunner:
         # The 3-point lambda_smooth x 1-point l2 grid yields three scored pairs.
         assert len(audit['grid_scores']) == 3
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_run_univariate_training_torus_metric(self, tmp_path):
+        """
+        With ``vocal_features.usv_manifold_metric='torus'`` the runner resolves
+        the convex closed-form ``SmoothTorusManifoldRegression`` via the
+        ``resolve_manifold_regressor_cls`` factory and fits it per outer fold
+        (and inside the inner-CV tuner). The full per-fold loop completes for all
+        three strategies; the two modelled strategies record the 4-D sin-cos
+        embedding filter (``coef_`` width 4, not the coordinate model's 2) and a
+        single closed-form iteration that is always converged, while the decoded
+        predictions remain valid 2-D torus coordinates. This is the end-to-end
+        proof that the univariate runner is fully functional on a torus run.
+        """
+
+        settings, save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=2, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_continuous_data()
+        input_pkl = str(next(save_dir.glob('modeling_manifold_*.pkl')))
+
+        runner = ContinuousModelRunner(pipeline)
+        results = runner.run_univariate_training(input_pkl, 'self.speed')
+
+        assert set(results.keys()) == {'actual', 'null', 'null_model_free'}
+        n_splits = settings['model_params']['split_num']
+        for strategy in ('actual', 'null'):
+            folds = results[strategy]['folds']
+            assert len(folds['weights']) == n_splits
+            for w in folds['weights']:
+                # Torus path: the filter targets the 4-D sin-cos embedding,
+                # unlike the coordinate model's 2-wide (x, y) filter.
+                assert w.ndim == 2 and w.shape[1] == 4
+            # Closed-form solve -> exactly one "iteration", always converged.
+            assert all(it == 1 for it in folds['n_iter'])
+            assert all(folds['converged'])
+            for pred in folds['y_pred_xy']:
+                assert pred.ndim == 2 and pred.shape[1] == 2
+        # The model-free centroid baseline is unaffected (still a 0-iter "fit").
+        assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
+
 
 class TestManifoldModelSelection:
     """The real forward-stepwise ``continuous_vocal_manifold_model_selection``."""
@@ -587,6 +653,92 @@ class TestManifoldModelSelection:
         # The anchored search never shrinks the accepted feature set.
         assert accepted_counts == sorted(accepted_counts)
         # The signal feature must have been picked up as the anchor.
+        with step_pkls[-1].open('rb') as fh:
+            final_step = pickle.load(fh)
+        assert 'self.speed' in final_step['current_features']
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_metric_runs_forward_search(self, tmp_path):
+        """
+        The same end-to-end forward search on a ``metric='torus'`` run: with the
+        signal target generated as a wound torus coordinate (``atan2`` of two
+        linear projections of the signal feature, wrapped into ``[0, 1)``), the
+        convex embedding ridge recovers it, clears the screening gate, and the
+        selector runs Step-0 / anchor / forward-selection to finalization exactly
+        as in the euclidean case. This is the end-to-end proof that the
+        model-selection forward search is fully functional on a torus run; both
+        the univariate ranking and every candidate fit construct the torus
+        estimator via the factory and pass ``metric``/``period``.
+        """
+
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=6, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        # No temporal binning: the wound-torus target is built from the full-width
+        # projection, so the model must see the full-width design matrix to
+        # recover it. The closed-form embedding ridge is fast at full width.
+        settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
+        history_frames = HISTORY_FRAMES
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_supercategory',
+                'manifold_metric': 'torus',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=history_frames,
+            input_metadata=input_md,
+            target_kind='wound_torus',
+        ))
+
+        runner = ContinuousModelRunner(
+            ContinuousModelingPipeline(modeling_settings_dict=settings)
+        )
+        combined = {}
+        for feature in feature_names:
+            combined[feature] = runner.run_univariate_training(input_pkl, feature)
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path),
+            input_data_path=input_pkl,
+            output_directory=str(ms_dir),
+            settings_path=str(settings_json),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+
+        step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
+        assert len(step_pkls) >= 2, "expected the Step-0 baseline plus at least one forward step"
+
+        saw_null_model_free = False
+        for p in step_pkls:
+            with p.open('rb') as fh:
+                step = pickle.load(fh)
+            for key in ('current_features', 'baseline_score',
+                        'candidates_summary', 'selected_feature'):
+                assert key in step
+            if step['selected_feature'] == 'null_model_free':
+                saw_null_model_free = True
+        assert saw_null_model_free
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
