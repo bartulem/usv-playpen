@@ -484,6 +484,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         'r2_spatial',
         'pearson_x', 'pearson_y',
         'spearman_x', 'spearman_y',
+        'predictive_correlation',
     }
     higher_is_better = inner_cv_scoring_metric in higher_is_better_metrics
 
@@ -1473,6 +1474,13 @@ class ContinuousModelRunner:
         # sin-cos embedding ridge (wound-aware); euclidean runs keep the
         # unchanged coordinate model, so they stay byte-identical.
         regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
+        if manifold_metric == 'torus':
+            # Score the univariate fit and its inner-CV regularisation tuning by
+            # predictive_correlation on the torus: r2_spatial is blind to the
+            # multimodal/categorical behaviour -> position signal there (see
+            # SmoothBivariateRegression.evaluate_metrics). Euclidean runs keep
+            # whatever inner_cv_scoring_metric the settings configured.
+            inner_cv_scoring_metric = 'predictive_correlation'
 
         print("Generating deterministic, spatially-stratified folds...")
         folds = get_stratified_spatial_splits_stable(
@@ -1507,6 +1515,7 @@ class ContinuousModelRunner:
             'pearson_y',
             'spearman_x',
             'spearman_y',
+            'predictive_correlation',
         ]
 
         results = {}
@@ -1686,6 +1695,11 @@ class ContinuousModelRunner:
                         'pearson_y': float('nan'),
                         'spearman_x': float('nan'),
                         'spearman_y': float('nan'),
+                        # A constant centroid prediction has, by construction,
+                        # exactly zero predictive correlation (not nan): this is
+                        # the principled floor the torus selection screens
+                        # against ("actual correlation > 0").
+                        'predictive_correlation': 0.0,
                     }
 
                     fold_weights, fold_intercepts = None, None
@@ -1816,6 +1830,7 @@ class ContinuousModelRunner:
         # accordingly.
         higher_is_better = {
             'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
+            'predictive_correlation',
         }
 
         print("\n" + "=" * 90)

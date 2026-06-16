@@ -656,6 +656,8 @@ class TestManifoldModelSelection:
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
+        # Euclidean manifolds keep r2_spatial as the selection score.
+        assert final_step['_run_metadata']['selection_metric'] == 'r2_spatial'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_metric_runs_forward_search(self, tmp_path):
@@ -742,6 +744,119 @@ class TestManifoldModelSelection:
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
+        # The torus path screens/scores on predictive_correlation, not r2_spatial.
+        assert final_step['_run_metadata']['selection_metric'] == 'predictive_correlation'
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_stale_ranking_raises(self, tmp_path):
+        """
+        On a torus run the selection screens on `predictive_correlation`. A
+        univariate ranking produced before that metric existed (only
+        `r2_spatial`) must raise a clear, actionable error rather than silently
+        skipping every feature and mis-reporting the schema mismatch as "no
+        significant features found" (a misleading false null).
+        """
+
+        settings, _ = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=2,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        # A pre-`predictive_correlation` ranking: r2_spatial only.
+        ranking = {
+            'self.speed': {
+                'actual': {'folds': {'metrics': {'r2_spatial': [0.1, 0.2]}}},
+                'null_model_free': {'folds': {'metrics': {'r2_spatial': [0.0, 0.0]}}},
+            },
+            '_input_metadata': {'analysis_specific': {'manifold_metric': 'torus'}},
+        }
+        ranking_pkl = tmp_path / 'univariate_combined.pkl'
+        with ranking_pkl.open('wb') as fh:
+            pickle.dump(ranking, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        with pytest.raises(ValueError, match="predates it"):
+            continuous_vocal_manifold_model_selection(
+                univariate_results_path=str(ranking_pkl),
+                input_data_path=str(tmp_path / 'does_not_need_to_exist.pkl'),
+                output_directory=str(ms_dir),
+                settings_path=str(settings_json),
+                use_top_rank_as_anchor=True,
+                p_val=0.05,
+            )
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_resume_metric_mismatch_restarts_fresh(self, tmp_path, capsys):
+        """
+        Resuming a checkpoint scored on a different selection metric (the
+        manifold metric was flipped between runs, so r2_spatial and
+        predictive_correlation live on different scales) must discard it and
+        restart fresh rather than compare incompatible scores. Run the torus
+        selection, tamper the latest checkpoint's recorded selection_metric to
+        'r2_spatial', re-run, and assert the resume announces the mismatch and
+        finalises afresh on predictive_correlation.
+        """
+
+        settings, _ = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=6, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_supercategory',
+                'manifold_metric': 'torus', 'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names, session_ids=session_ids,
+            history_frames=HISTORY_FRAMES, input_metadata=input_md,
+            target_kind='wound_torus',
+        ))
+        runner = ContinuousModelRunner(
+            ContinuousModelingPipeline(modeling_settings_dict=settings)
+        )
+        combined = {f: runner.run_univariate_training(input_pkl, f) for f in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        def _run():
+            continuous_vocal_manifold_model_selection(
+                univariate_results_path=str(combined_path), input_data_path=input_pkl,
+                output_directory=str(ms_dir), settings_path=str(settings_json),
+                use_top_rank_as_anchor=True, p_val=0.5,
+            )
+
+        _run()
+        steps = sorted(ms_dir.glob('*_step_*.pkl'))
+        assert steps
+        # Tamper the latest checkpoint to look like a euclidean (r2_spatial) run.
+        with steps[-1].open('rb') as fh:
+            payload = pickle.load(fh)
+        payload['_run_metadata']['selection_metric'] = 'r2_spatial'
+        with steps[-1].open('wb') as fh:
+            pickle.dump(payload, fh)
+
+        capsys.readouterr()  # clear captured output
+        _run()
+        out = capsys.readouterr().out
+        assert "different scales" in out and "starting fresh" in out
+        final = sorted(ms_dir.glob('*_step_*.pkl'))[-1]
+        with final.open('rb') as fh:
+            assert pickle.load(fh)['_run_metadata']['selection_metric'] == 'predictive_correlation'
 
     def test_step0_baseline_r2_is_metric_aware(self):
         """

@@ -3737,6 +3737,20 @@ def continuous_vocal_manifold_model_selection(
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
 
+    # Geometry-conditional selection score. The QLVM torus is multimodal, so the
+    # squared-geodesic `r2_spatial` is blind to its (categorical) behaviour ->
+    # position signal — it stays ~0/negative even where the signal is real and
+    # highly significant. `predictive_correlation` (see
+    # SmoothBivariateRegression.evaluate_metrics for the full rationale +
+    # validation) recovers it on the torus. Euclidean (VAE/UMAP) manifolds have
+    # no far-wrong-cluster penalty, so `r2_spatial` is well-behaved there and
+    # remains the score. The substitution is therefore torus-only and drives
+    # the screen, the inner-CV tuning, and every candidate/baseline score below.
+    _selection_manifold_metric, _ = resolve_manifold_metric(settings)
+    SELECTION_SCORE_KEY = (
+        'predictive_correlation' if _selection_manifold_metric == 'torus' else 'r2_spatial'
+    )
+
     num_features = len(univariate_data)
     alpha_corrected = p_val / num_features
     candidates = []
@@ -3766,7 +3780,33 @@ def continuous_vocal_manifold_model_selection(
     #       `null` strategy is still computed by the univariate runner
     #       and saved to the pickle; this screen just no longer uses
     #       it.
-    SCREENING_METRIC = 'r2_spatial'
+    # On the torus this is `predictive_correlation`, on Euclidean it is
+    # `r2_spatial` (see the SELECTION_SCORE_KEY note above). For correlation the
+    # `null_model_free` baseline carries the principled value 0.0 (a constant
+    # centroid prediction has zero predictive correlation), so the paired
+    # Wilcoxon below reduces to the one-sided "actual correlation > 0" test that
+    # the permutation analysis validated — no special-casing of the gate needed.
+    SCREENING_METRIC = SELECTION_SCORE_KEY
+
+    # Schema guard: a univariate ranking produced before `predictive_correlation`
+    # existed lacks the key, so on the torus path the screen below would skip
+    # every feature and mis-report the schema mismatch as "no significant
+    # features" (a misleading false null). Detect the absence up front and fail
+    # loudly with the fix instead of silently aborting.
+    _screen_metric_present = False
+    for _payload in univariate_data.values():
+        _res = _payload[1] if isinstance(_payload, tuple) and len(_payload) == 2 else _payload
+        if isinstance(_res, dict) and 'actual' in _res \
+                and SCREENING_METRIC in _res['actual']['folds']['metrics']:
+            _screen_metric_present = True
+            break
+    if num_features > 0 and not _screen_metric_present:
+        raise ValueError(
+            f"None of the univariate results carry the screening metric "
+            f"'{SCREENING_METRIC}'. This ranking predates it — re-run the "
+            f"univariate stage (modeling_usv_manifold_position) so the ranking "
+            f"is regenerated with the '{SCREENING_METRIC}' metric."
+        )
 
     print(f"Screening {num_features} features (Bonferroni alpha = {alpha_corrected:.2e})...")
     for feat_name, payload in univariate_data.items():
@@ -3900,6 +3940,11 @@ def continuous_vocal_manifold_model_selection(
     )
     inner_cv_folds = tune_params['inner_cv_folds']
     inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
+    if _selection_manifold_metric == 'torus':
+        # Tune regularisation against the torus selection score as well, so the
+        # chosen (lambda_smooth, l2) maximises `predictive_correlation` rather
+        # than the torus-blind `r2_spatial`.
+        inner_cv_scoring_metric = SELECTION_SCORE_KEY
     inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
     inner_max_iter = tune_params['inner_max_iter']
     use_lax_loop = hp['use_lax_loop']
@@ -3966,7 +4011,7 @@ def continuous_vocal_manifold_model_selection(
     _run_md = build_selection_metadata(
         modeling_settings=settings,
         selection_function='continuous_vocal_manifold_model_selection',
-        selection_metric='r2_spatial',
+        selection_metric=SELECTION_SCORE_KEY,
         n_splits_selection=int(n_splits),
         test_proportion=float(test_prop),
         split_strategy=split_strategy,
@@ -4003,14 +4048,30 @@ def continuous_vocal_manifold_model_selection(
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
 
-            # Filter to candidates with a finite mean score. An entry
-            # whose mean is non-finite (or an entirely empty
-            # candidates_summary) is the same broken-fold artifact and
-            # should not look like convergence to the resume logic.
-            cand_dict = {
-                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
-                if isinstance(s, dict) and np.isfinite(s.get('mean_r2', float('nan')))
-            }
+            # Metric-compatibility guard: if this checkpoint was scored on a
+            # different selection metric (usv_manifold_metric was flipped
+            # between runs, e.g. euclidean `r2_spatial` <-> torus
+            # `predictive_correlation`) its scores live on a different scale
+            # and must not be compared against this run's `best_current_score`
+            # / accept rule. Discard and fall through to the fresh-start path.
+            _saved_metric = (last_res.get('_run_metadata') or {}).get('selection_metric')
+            if _saved_metric is not None and _saved_metric != SELECTION_SCORE_KEY:
+                print(
+                    f"[RESUME] Step {last_step} was scored on '{_saved_metric}' but this "
+                    f"run uses '{SELECTION_SCORE_KEY}' (usv_manifold_metric changed); the "
+                    "scores are on different scales. Ignoring checkpoint and starting fresh."
+                )
+                existing_steps = []
+                cand_dict = {}
+            else:
+                # Filter to candidates with a finite mean score. An entry
+                # whose mean is non-finite (or an entirely empty
+                # candidates_summary) is the same broken-fold artifact and
+                # should not look like convergence to the resume logic.
+                cand_dict = {
+                    n: s for n, s in (last_res.get('candidates_summary') or {}).items()
+                    if isinstance(s, dict) and np.isfinite(s.get('mean_r2', float('nan')))
+                }
 
             if not cand_dict:
                 # Stale / broken checkpoint: every saved candidate
@@ -4021,10 +4082,13 @@ def continuous_vocal_manifold_model_selection(
                 # through silently with `step_counter` left at its
                 # initial value, producing a misleading "Restoring from
                 # Step N" banner followed by a Step 0 forward selection.
-                print(
-                    f"[RESUME] Step {last_step} has no scored candidates "
-                    "(stale checkpoint); ignoring and starting fresh."
-                )
+                # Guarded by `existing_steps` so we do not double-log when the
+                # metric-mismatch branch above already explained the discard.
+                if existing_steps:
+                    print(
+                        f"[RESUME] Step {last_step} has no scored candidates "
+                        "(stale checkpoint); ignoring and starting fresh."
+                    )
                 existing_steps = []
             else:
                 current_model_features = last_res['current_features']
@@ -4066,6 +4130,7 @@ def continuous_vocal_manifold_model_selection(
         'pearson_y',
         'spearman_x',
         'spearman_y',
+        'predictive_correlation',
     ]
 
     # Calculate Model-Free Baseline (Step 0) if starting fresh.
@@ -4154,6 +4219,9 @@ def continuous_vocal_manifold_model_selection(
             f_met['pearson_y'].append(float('nan'))
             f_met['spearman_x'].append(float('nan'))
             f_met['spearman_y'].append(float('nan'))
+            # Constant centroid prediction -> exactly zero predictive
+            # correlation (the principled torus-selection baseline floor).
+            f_met['predictive_correlation'].append(0.0)
 
             y_pred_xy = np.tile(mu.astype(np.float32), (len(Y_te), 1))
 
@@ -4175,7 +4243,7 @@ def continuous_vocal_manifold_model_selection(
             baseline_data['folds']['hyperparams_tuned'].append(False)
 
         baseline_scores = np.asarray(
-            baseline_data['folds']['metrics']['r2_spatial'], dtype=float
+            baseline_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
         )
         valid_scores = baseline_scores[~np.isnan(baseline_scores)]
         best_current_score = (
@@ -4186,7 +4254,7 @@ def continuous_vocal_manifold_model_selection(
             if valid_scores.size > 1 else 0.0
         )
 
-        print(f"  Baseline R^2 (centroid) established at: {best_current_score:.4f}")
+        print(f"  Baseline {SELECTION_SCORE_KEY} (centroid) established at: {best_current_score:.4f}")
 
         baseline_data['mean_r2'] = best_current_score
         baseline_data['se_r2'] = best_current_se
@@ -4373,7 +4441,7 @@ def continuous_vocal_manifold_model_selection(
                 _append_failed_fold(cand_data)
 
         valid_scores = np.asarray(
-            cand_data['folds']['metrics']['r2_spatial'], dtype=float
+            cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
         )
         valid_scores = valid_scores[np.isfinite(valid_scores)]
         if valid_scores.size:
@@ -4390,7 +4458,7 @@ def continuous_vocal_manifold_model_selection(
             # accepted only when its mean score beats the current best by
             # more than one SE of its own per-fold distribution.
             if (mean_anc - best_current_score) > se_anc:
-                print(f"  *** ANCHOR ACCEPTED: R^2 rose to {mean_anc:.4f} ***")
+                print(f"  *** ANCHOR ACCEPTED: {SELECTION_SCORE_KEY} rose to {mean_anc:.4f} ***")
                 best_current_score = mean_anc
                 best_current_se = se_anc
                 current_model_features = [anchor]
@@ -4413,7 +4481,7 @@ def continuous_vocal_manifold_model_selection(
     # Forward stepwise selection loop
     print("\n--- Starting Forward Selection ---")
     while True:
-        print(f"\n=== Step {step_counter} === Best R^2: {best_current_score:.5f}")
+        print(f"\n=== Step {step_counter} === Best {SELECTION_SCORE_KEY}: {best_current_score:.5f}")
         step_results = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'candidates_summary': {},
@@ -4497,7 +4565,7 @@ def continuous_vocal_manifold_model_selection(
                     _append_failed_fold(cand_data)
 
             valid_scores = np.asarray(
-                cand_data['folds']['metrics']['r2_spatial'], dtype=float
+                cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
             )
             valid_scores = valid_scores[np.isfinite(valid_scores)]
             if not valid_scores.size:
@@ -4510,7 +4578,7 @@ def continuous_vocal_manifold_model_selection(
                 if valid_scores.size > 1 else 0.0
             )
             mean_mae = float(np.nanmean(cand_data['folds']['metrics']['euclidean_mae']))
-            print(f" R^2: {mean_score:.4f} | MAE: {mean_mae:.4f}")
+            print(f" {SELECTION_SCORE_KEY}: {mean_score:.4f} | MAE: {mean_mae:.4f}")
 
             cand_data['mean_r2'] = mean_score
             cand_data['se_r2'] = se_score

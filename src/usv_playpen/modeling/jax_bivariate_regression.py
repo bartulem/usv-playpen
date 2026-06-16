@@ -805,6 +805,35 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           snapped predictions and truth.
         - `pearson_x`, `pearson_y` : per-axis linear correlation on the
           natural scale.
+        - `predictive_correlation` : the mean of `pearson_x` and `pearson_y`
+          — a single signed scalar summarising how strongly the prediction
+          co-varies with the truth. **This is the feature-selection score on
+          the TORUS (`metric='torus'`); `r2_spatial` remains the score on
+          Euclidean (VAE/UMAP) manifolds.** The reason is geometric. The QLVM
+          torus is *multimodal* — the repertoire forms discrete supercategory
+          clusters — and the behaviour -> position relationship is effectively
+          *categorical*: behaviour shifts *which* cluster is likely while only
+          weakly constraining the exact within-cluster coordinate. `r2_spatial`
+          is a *squared-geodesic* score, so on a multimodal manifold a weak
+          predictor occasionally lands in a far-wrong cluster; those large
+          squared errors make the centroid baseline practically unbeatable and
+          pin `r2_spatial` at ~0 / slightly negative even when a real,
+          significant relationship exists. The same linear model's predictions
+          are nonetheless *correlated* with the truth, and correlation is robust
+          to that squared-error blow-up. Empirically (grouped-by-session CV,
+          200-permutation null on the QLVM data) the headline behavioural
+          features — neck elevation, nose-nose distance, allo-yaw, orofacial —
+          clear the null at z = +8 to +14 on this metric (and the `usv_cat`
+          controls stay non-significant) while every one of them reads
+          `r2_spatial` < 0; the linear-multinomial classifier independently
+          confirms the signal is real. On a *continuous* Euclidean manifold
+          there are no far-wrong-cluster penalties, so `r2_spatial` is
+          well-behaved there and stays the score — hence this is a torus-only
+          substitution. A constant predictor (the `null_model_free` centroid
+          baseline) has, by construction, exactly zero predictive correlation,
+          so screening "actual `predictive_correlation` > baseline" reduces to
+          the one-sided "actual correlation > 0" test the permutation analysis
+          validated.
 
         Parameters
         ----------
@@ -915,6 +944,15 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         spearman_x = _spearman(Y_true[:, 0], Y_pred[:, 0])
         spearman_y = _spearman(Y_true[:, 1], Y_pred[:, 1])
 
+        # Single signed correlation summary, the torus-manifold selection
+        # score (see the metrics glossary). Average only the finite axes so a
+        # degenerate per-axis correlation (a constant prediction on one axis)
+        # does not nuke the other; an all-constant prediction yields nan,
+        # which the `null_model_free` baseline builders override to the
+        # principled 0.0 (a constant predictor has zero predictive correlation).
+        _finite_corr = [v for v in (pearson_x, pearson_y) if np.isfinite(v)]
+        predictive_correlation = float(np.mean(_finite_corr)) if _finite_corr else float('nan')
+
         # `r2_spatial` numerator: sum of squared wrap-aware residuals.
         # Denominator: total wrap-aware dispersion of `Y_true` around
         # its own (metric-aware) centroid. Computing both terms under
@@ -938,4 +976,5 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             'pearson_y': pearson_y,
             'spearman_x': spearman_x,
             'spearman_y': spearman_y,
+            'predictive_correlation': predictive_correlation,
         }
