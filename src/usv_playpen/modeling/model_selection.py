@@ -45,7 +45,7 @@ from .modeling_usv_manifold_position import (
     _tune_manifold_regularization,
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
-from .jax_bivariate_regression import SmoothBivariateRegression
+from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .modeling_metadata import (
     build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
 )
@@ -3922,6 +3922,10 @@ def continuous_vocal_manifold_model_selection(
     # behind the spatial splitter operates on the canonical 4-D
     # embedding so cluster boundaries respect the wrap.
     manifold_metric, manifold_period = resolve_manifold_metric(settings)
+    # Geometry selects the estimator for every candidate fit and the inner-CV
+    # tuner: torus runs use the convex closed-form sin-cos embedding ridge
+    # (wound-aware), euclidean runs keep the unchanged coordinate model.
+    manifold_regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
 
     cv_folds = get_stratified_spatial_splits_stable(
         groups=groups_global,
@@ -4301,7 +4305,7 @@ def continuous_vocal_manifold_model_selection(
             # outer-fit call below still honours the user setting where
             # lax_loop is appropriate.
             use_lax_loop=False,
-            regressor_cls=SmoothBivariateRegression,
+            regressor_cls=manifold_regressor_cls,
             metric=manifold_metric,
             period=manifold_period,
         )
@@ -4329,7 +4333,7 @@ def continuous_vocal_manifold_model_selection(
                     )
                 )
 
-                model = SmoothBivariateRegression(
+                model = manifold_regressor_cls(
                     n_features=1, n_time_bins=n_time_bins,
                     lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
                     smoothness_derivative_order=smoothness_order,
@@ -4337,6 +4341,7 @@ def continuous_vocal_manifold_model_selection(
                     learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                     tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
                     _use_lax_loop=use_lax_loop,
+                    metric=manifold_metric, period=manifold_period,
                 )
                 model.fit(X_tr, Y_tr, sample_weight=w_tr)
 
@@ -4452,7 +4457,7 @@ def continuous_vocal_manifold_model_selection(
                         )
                     )
 
-                    model = SmoothBivariateRegression(
+                    model = manifold_regressor_cls(
                         n_features=n_trial_feats, n_time_bins=n_time_bins,
                         lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
                         smoothness_derivative_order=smoothness_order,
@@ -4460,6 +4465,7 @@ def continuous_vocal_manifold_model_selection(
                         learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                         tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
                         _use_lax_loop=use_lax_loop,
+                        metric=manifold_metric, period=manifold_period,
                     )
                     model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr)
 

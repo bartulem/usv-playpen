@@ -70,7 +70,7 @@ from .modeling_utils import (
     zscore_features_across_sessions,
     run_predictor_audits,
 )
-from .jax_bivariate_regression import SmoothBivariateRegression
+from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .manifold_metric import (
     signed_diff,
     circular_mean,
@@ -1469,6 +1469,10 @@ class ContinuousModelRunner:
         # settings flip produces consistent torus / euclidean behaviour
         # end-to-end.
         manifold_metric, manifold_period = resolve_manifold_metric(self.modeling_settings)
+        # Geometry selects the estimator: torus runs use the convex closed-form
+        # sin-cos embedding ridge (wound-aware); euclidean runs keep the
+        # unchanged coordinate model, so they stay byte-identical.
+        regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
 
         print("Generating deterministic, spatially-stratified folds...")
         folds = get_stratified_spatial_splits_stable(
@@ -1738,7 +1742,7 @@ class ContinuousModelRunner:
                             # fit (a few lines below) still honours the
                             # user `use_lax_loop` setting.
                             use_lax_loop=False,
-                            regressor_cls=SmoothBivariateRegression,
+                            regressor_cls=regressor_cls,
                             metric=manifold_metric,
                             period=manifold_period,
                         )
@@ -1755,7 +1759,7 @@ class ContinuousModelRunner:
                         }
                         fold_tuned_flag = False
 
-                    model = SmoothBivariateRegression(
+                    model = regressor_cls(
                         n_features=1,
                         n_time_bins=n_time_bins,
                         lambda_smooth=fold_lambda_smooth,
