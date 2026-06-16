@@ -135,7 +135,7 @@
       "bivariate": {
         "bin_resizing_factor": 1,
         "lambda_smooth_fixed": 1.0,
-        "l2_reg_fixed": 0.001,
+        "l2_reg_fixed": 0.01,
         "smoothness_derivative_order": 2,
         "huber_delta": 1.0,
         "learning_rate": 0.005,
@@ -147,7 +147,7 @@
         "tune_regularization_bool": true,
         "tune_regularization_params": {
           "lambda_smooth_decades_each_side": 3,
-          "l2_reg_decades_each_side": 2,
+          "l2_reg_decades_each_side": 4,
           "inner_cv_folds": 5,
           "inner_cv_scoring_metric": "r2_spatial",
           "inner_cv_use_one_se_rule": true,
@@ -159,7 +159,7 @@
         "balance_train_bool": false,
         "bin_resizing_factor": 1,
         "lambda_smooth_fixed": 1.0,
-        "l2_reg_fixed": 0.001,
+        "l2_reg_fixed": 0.01,
         "smoothness_derivative_order": 2,
         "learning_rate": 0.005,
         "max_iter": 20000,
@@ -171,7 +171,7 @@
         "tune_regularization_bool": true,
         "tune_regularization_params": {
           "lambda_smooth_decades_each_side": 3,
-          "l2_reg_decades_each_side": 2,
+          "l2_reg_decades_each_side": 4,
           "inner_cv_folds": 5,
           "inner_cv_scoring_metric": "auc",
           "inner_cv_use_one_se_rule": true,
