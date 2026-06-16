@@ -1163,9 +1163,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         gam_kwargs_shuffled = {
             'max_iter': max_iterations,
-            'tol': tol_val,
-            'lam': lam_penalty
+            'tol': tol_val
         }
+
+        if lam_penalty is not None:
+            gam_kwargs_shuffled['lam'] = lam_penalty
 
         def _scalar():
             return np.full(n_splits, np.nan)
