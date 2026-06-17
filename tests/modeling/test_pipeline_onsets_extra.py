@@ -14,19 +14,16 @@ targets the *alternate* branches of ``modeling_vocal_onsets.py`` directly:
   ``feature_boundaries`` capture, the ``history_frames`` ``KeyError`` guard,
   and the ``**kwargs`` attribute injection.
 
-* ``TestDataSplitStrategies`` — every branch of the four-way
+* ``TestDataSplitStrategies`` — every branch of the two-way
   ``create_data_splits`` generator that the smoke suite never reaches:
   ``strategy_override``, the ``mixed`` empty-class and no-balanced-train
   early-outs, the ``session`` too-high-test-proportion and no-balanced-train
-  skips, the full ``null_control`` and ``session_null_control`` strategies
-  (both the in-budget and sample-with-replacement sub-branches), and the
-  unknown-strategy ``ValueError``.
+  skips, and the unknown-strategy ``ValueError``.
 
 * ``TestPygamEngine`` — the entire ``_run_model_for_feature_pygam`` method
   (never touched by the sklearn-only smoke suite), under both the ``mixed``
-  split strategy (so the ``null_control`` null splitter is selected) and the
-  ``session`` strategy (so the ``session_null_control`` null splitter is
-  selected).
+  and ``session`` split strategies; the null is a per-split label-shuffle of
+  the training labels in both cases.
 
 * ``TestExtractionGuards`` — the data-prep guard / error paths in
   ``extract_and_save_modeling_input_data``: the empty-target-bout session
@@ -257,7 +254,7 @@ class TestInitBranches:
 
 
 class TestDataSplitStrategies:
-    """Every branch of the four-way ``create_data_splits`` generator."""
+    """Every branch of the two-way ``create_data_splits`` generator."""
 
     def test_mixed_strategy_yields_balanced_train_natural_test(self, tmp_path):
         """
@@ -347,77 +344,6 @@ class TestDataSplitStrategies:
         for X_train, y_train, X_test, y_test in splits:
             assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
 
-    def test_null_control_strategy_runs(self, tmp_path):
-        """
-        The ``null_control`` strategy mirrors ``mixed``'s per-split sizes/ratios
-        but draws *all* samples from the No-Bout pool, so every yielded fold is
-        a No-Bout-vs-No-Bout control. With a large negative pool the in-budget
-        ``permutation`` sub-branch is taken; the training fold is still balanced
-        50/50 and the test fold preserves the natural rate.
-        """
-
-        pipeline = _pipeline(tmp_path, split_strategy='null_control', split_num=2)
-        feature_data = _make_feature_data(
-            [f'session_{i}' for i in range(3)], n_usv=20, n_no_usv=120,
-        )
-        splits = _drain(pipeline.create_data_splits(feature_data))
-        assert len(splits) == 2
-        for X_train, y_train, X_test, y_test in splits:
-            assert X_train.shape[1] == HISTORY_FRAMES
-            assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
-
-    def test_null_control_samples_with_replacement_when_short(self, tmp_path):
-        """
-        When the No-Bout pool is smaller than the size the null control needs,
-        ``null_control`` falls back to sampling *with replacement* (the
-        ``n_neg_total < n_total_needed`` sub-branch). A tiny negative pool with
-        many positives forces that path; the run still yields folds.
-        """
-
-        pipeline = _pipeline(tmp_path, split_strategy='null_control', split_num=2)
-        feature_data = _make_feature_data(
-            [f'session_{i}' for i in range(2)], n_usv=40, n_no_usv=12,
-        )
-        splits = _drain(pipeline.create_data_splits(feature_data))
-        assert len(splits) >= 1
-
-    def test_session_null_control_strategy_runs(self, tmp_path):
-        """
-        The ``session_null_control`` strategy splits sessions, then builds a
-        fake balanced training set and a fake natural-rate test set entirely
-        from each side's No-Bout data, matching the actual ``session`` sizes.
-        Covers the full session-split null branch including the per-split
-        ``default_rng`` draws.
-        """
-
-        pipeline = _pipeline(
-            tmp_path, split_strategy='session_null_control', split_num=2,
-            test_proportion=0.5,
-        )
-        feature_data = _make_feature_data(
-            [f'session_{i}' for i in range(4)], n_usv=20, n_no_usv=120,
-        )
-        splits = _drain(pipeline.create_data_splits(feature_data))
-        assert len(splits) >= 1
-        for X_train, y_train, X_test, y_test in splits:
-            assert X_train.shape[1] == HISTORY_FRAMES
-            assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
-
-    def test_session_null_control_too_high_proportion_skips(self, tmp_path):
-        """
-        With a single session the ``session_null_control`` strategy hits the
-        same ``n_sessions * (1 - test_proportion) < 1`` guard as ``session`` and
-        returns without yielding.
-        """
-
-        pipeline = _pipeline(
-            tmp_path, split_strategy='session_null_control', split_num=2,
-            test_proportion=0.9,
-        )
-        feature_data = _make_feature_data(['session_0'])
-        splits = _drain(pipeline.create_data_splits(feature_data))
-        assert splits == []
-
     def test_unknown_strategy_raises_value_error(self, tmp_path):
         """
         An unrecognized ``split_strategy`` falls through to the terminal
@@ -487,8 +413,9 @@ class TestPygamEngine:
     def test_pygam_mixed_strategy_produces_branch_metrics(self, tmp_path):
         """
         ``_run_model_for_feature_pygam`` under the ``mixed`` split strategy fits
-        a tensor-product-spline ``LogisticGAM`` per split and selects the
-        ``null_control`` null splitter (because the strategy is not ``session``).
+        a tensor-product-spline ``LogisticGAM`` per split, with the null fit on
+        a per-split label-shuffle of the training labels (the same
+        permutation-test null the sklearn engine uses).
         Asserts the returned ``actual`` / ``null`` branches carry the expected
         scalar-metric arrays sized to ``split_num`` and the per-split filter
         shapes sized to ``HISTORY_FRAMES``, with at least one finite fitted fold.
@@ -509,13 +436,12 @@ class TestPygamEngine:
         assert np.isfinite(results['actual']['auc']).any()
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
-    def test_pygam_session_strategy_uses_session_null_control(self, tmp_path):
+    def test_pygam_session_strategy_produces_branch_metrics(self, tmp_path):
         """
-        Under the ``session`` split strategy the pygam runner selects the
-        ``session_null_control`` null splitter (the
-        ``'session_null_control' if current_strategy == 'session'`` branch).
-        Asserts the run completes and the actual branch has at least one finite
-        fitted fold.
+        Under the ``session`` split strategy the pygam runner fits the actual
+        GAM on session-held-out folds and the null on a per-split label-shuffle
+        of the training labels. Asserts the run completes and the actual branch
+        has at least one finite fitted fold.
         """
 
         pipeline = _pipeline(

@@ -896,8 +896,8 @@ def bounded_test_proportion(test_proportion: float,
     Clamps `test_proportion` up to the minimum fraction required to retain
     at least `min_test_sessions` sessions in the test fold.
 
-    In session-held-out splitting (used by the Onset `session` and
-    `session_null_control` strategies), the raw `test_proportion` read from
+    In session-held-out splitting (used by the Onset `session` strategy),
+    the raw `test_proportion` read from
     the modeling settings can correspond to a test fold size below one
     session when the total session count is small — e.g. `test_proportion
     = 0.2` across 3 sessions rounds down to 0 test sessions under

@@ -126,12 +126,11 @@ class VocalCategoryModelingPipeline(FeatureZoo):
        and serializes the resulting `{feature: {session: {target_feature_arr,
        other_feature_arr}}}` dictionary to disk.
     2. **Cross-validation splitting**: the `create_category_splits` generator
-       implements two strategies ('session' and 'mixed') plus a size- and
-       ratio-matched `'null_other'` condition that draws pseudo-classes from
-       the negative pool. All strategies honour the canonical "balanced train
-       / natural-rate test" invariant — training is down-sampled to 50/50
-       so gradient updates see both classes, while the test fold preserves
-       the natural base rate so reported metrics reflect real imbalance.
+       implements two split strategies ('session' and 'mixed'), both honouring
+       the canonical "balanced train / natural-rate test" invariant — training
+       is down-sampled to 50/50 so gradient updates see both classes, while the
+       test fold preserves the natural base rate so reported metrics reflect
+       real imbalance.
     3. **Univariate model fitting**: `_run_modeling_category` fits either a
        basis-projected `LogisticRegressionCV` (sklearn engine) or a
        tensor-product-spline `LogisticGAM` (pygam engine) per feature and
@@ -551,15 +550,11 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         1.  Identifies sessions containing both target (positive) and other (negative) classes.
         2.  Executes the selected split strategy ('session' or 'mixed') to generate base
             training and testing data pools at the natural class prior.
-        3.  Executes the selected condition ('actual' or 'null_other'):
-            - 'actual': Balances the training Target vs. Other data 50/50; test
-              data is passed through at the natural class prior.
-            - 'null_other': Uses ONLY 'other' data to construct pseudo-classes.
-              The pseudo-training set is balanced 50/50 and sized to the 'actual'
-              balanced training size for this split. The pseudo-test set is
-              size- and ratio-matched to the 'actual' natural-rate test set,
-              preventing sample-size or prior mismatches between real and null
-              comparisons.
+        3.  Builds the real Target-vs-Other condition: balances the training
+            Target vs. Other data 50/50; test data is passed through at the
+            natural class prior. The null model is produced downstream by
+            label-shuffling the training labels of these same splits (in
+            `_run_modeling_category`), not by a separate pseudo-class splitter.
 
         Parameters
         ----------
@@ -567,10 +562,9 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             The data dictionary for a single feature, containing 'target_feature_arr'
             and 'other_feature_arr' for each session.
         strategy : str, optional
-            The experimental condition strategy to use:
-            - 'actual': Target (1) vs. Other (0).
-            - 'null_other': Other (Pseudo-1) vs. Other (Pseudo-0).
-            Default is 'actual'.
+            Retained for API compatibility; only 'actual' (Target vs. Other) is
+            supported. The null is a label-shuffle of these splits' training
+            labels, performed by the caller. Default is 'actual'.
 
         Yields
         ------
@@ -579,6 +573,15 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             represented as NumPy arrays. X_train/y_train are class-balanced;
             X_test/y_test preserve the natural class prior of the source data.
         """
+
+        # Only the real Target-vs-Other condition is built; the null is a
+        # label-shuffle of these splits' training labels, done by the caller.
+        # Guard up front so an invalid condition always raises, even when no
+        # fold survives the per-split data checks below.
+        if strategy != 'actual':
+            raise ValueError(
+                f"Unknown category-split strategy: {strategy!r}. Only 'actual' is supported."
+            )
 
         all_sessions = list(feature_data.keys())
         valid_sessions = []
@@ -648,40 +651,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             if n_tr_limit == 0 or (n_te_target + n_te_other) == 0:
                 continue
 
-            if strategy == 'actual':
-                # Balance training 50/50; test passes through at natural rate.
-                X_tr_A, X_tr_B = balance_two_class_arrays(X_tr_targ, X_tr_other)
-                X_te_A = X_te_targ
-                X_te_B = X_te_other
-
-            elif strategy == 'null_other':
-                # Pseudo-train: balanced 50/50, matching 'actual' train size (n_tr_limit per half).
-                # Pseudo-test: size- and ratio-matched to 'actual' test (n_te_target + n_te_other
-                # drawn from Other pool, split according to the natural-rate target/other shares).
-                # Seeded per-split Generator so pseudo-class draws are
-                # reproducible and do not leak ambient global RNG state.
-                null_rng = np.random.default_rng(rand_seed + split_num)
-
-                def draw_pseudo_train(X, limit):
-                    needed = limit * 2
-                    if len(X) < needed:
-                        return None, None
-                    X_sub = X[null_rng.choice(len(X), needed, replace=False)]
-                    return X_sub[:limit], X_sub[limit:]
-
-                def draw_pseudo_test(X, n_pseudo_pos, n_pseudo_neg):
-                    needed = n_pseudo_pos + n_pseudo_neg
-                    if needed == 0 or len(X) == 0:
-                        return np.empty((0,) + X.shape[1:]), np.empty((0,) + X.shape[1:])
-                    replace = len(X) < needed
-                    X_sub = X[null_rng.choice(len(X), needed, replace=replace)]
-                    return X_sub[:n_pseudo_pos], X_sub[n_pseudo_pos:]
-
-                X_tr_A, X_tr_B = draw_pseudo_train(X_tr_other, n_tr_limit)
-                X_te_A, X_te_B = draw_pseudo_test(X_te_other, n_te_target, n_te_other)
-
-                if X_tr_A is None:
-                    continue
+            # Balance training 50/50; test passes through at natural rate.
+            # (Only the real 'actual' condition reaches here; the strategy guard
+            # at the top of this generator rejects anything else.)
+            X_tr_A, X_tr_B = balance_two_class_arrays(X_tr_targ, X_tr_other)
+            X_te_A = X_te_targ
+            X_te_B = X_te_other
 
             X_train, y_train = concat_two_class_with_labels(X_tr_A, X_tr_B)
             X_test, y_test = concat_two_class_with_labels(X_te_A, X_te_B)
@@ -695,15 +670,16 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         This method acts as the computational core for category-specific modeling. It evaluates
         the predictive power of a behavioral or vocal feature by attempting to distinguish
         the 'target' category (positive class) from a pooled 'other' category (negative class).
-        The analysis implements rigorous statistical controls, including size-matched null
-        distributions and cross-validated regularized regression.
+        The analysis implements rigorous statistical controls, including a label-shuffle
+        permutation null and cross-validated regularized regression.
 
         The computational workflow includes:
-        1.  Dual-strategy splitting:
-            - 'actual': Trains on true target vs. other labels to identify behavioral predictors.
-            - 'null': Trains on pseudo-classes derived solely from 'other' epochs. Crucially,
-               this null distribution is forced to match the exact sample size and class
-               ratio of the actual data to eliminate sample-size bias in performance metrics.
+        1.  Dual-strategy fitting (both on the real Target-vs-Other splits):
+            - 'actual': Trains on the true target vs. other labels to identify behavioral
+              predictors.
+            - 'null': Trains on the SAME splits with the training labels permuted (a
+              label-shuffle permutation test), evaluated against the real test labels —
+              the chance-level floor the actual model must beat.
         2. Linear basis projection (sklearn engine):
             - Reduces high-dimensional temporal history (N_lags) into a compressed basis
               representation (N_bases).
@@ -783,15 +759,25 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             results['actual']['coefs_projected'] = np.full((n_splits, n_bases), np.nan)
             results['actual']['optimal_C'] = np.full(n_splits, np.nan)
 
-        strategies = ['actual', 'null_other']
+        strategies = ['actual', 'null']
         time_indices = np.arange(self.history_frames, dtype=np.float32)
 
         for strat in strategies:
-            splitter = self.create_category_splits(feature_data, strategy=strat)
-            key = 'actual' if strat == 'actual' else 'null'
+            # Both passes use the real Target-vs-Other splits; the `null` pass
+            # permutes the training labels per split (a label-shuffle permutation
+            # test), evaluated against the real test labels. This replaced the
+            # former `null_other` (Other-vs-Other pseudo-class) baseline.
+            splitter = self.create_category_splits(feature_data, strategy='actual')
+            key = strat
 
             for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
                 if split_idx >= n_splits: break
+
+                if strat == 'null':
+                    null_rng = np.random.default_rng(
+                        self.modeling_settings['model_params']['random_seed'] + split_idx + 1
+                    )
+                    y_tr = null_rng.permutation(y_tr)
 
                 print(f"    Processing {strat.upper()} split {split_idx + 1}/{n_splits}...")
 
@@ -915,7 +901,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     print(f"Fit error {feature_name} ({strat}), fold {split_idx}: {e}")
 
         # `results[*]['auc']` is pre-filled with NaN per split; a strategy that
-        # produced no valid fold (e.g. a starved `null_other` condition) leaves
+        # produced no valid fold (e.g. a split with no usable data) leaves
         # an all-NaN array, where `np.nanmean` emits a "Mean of empty slice"
         # RuntimeWarning and returns NaN. Under a strict `filterwarnings=error`
         # run that warning is promoted to an error and swallowed by the caller's

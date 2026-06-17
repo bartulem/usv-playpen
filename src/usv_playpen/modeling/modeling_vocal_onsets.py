@@ -61,8 +61,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
        and serializes the resulting `{feature: {session: {usv_feature_arr,
        no_usv_feature_arr}}}` dictionary to disk.
     2. **Cross-validation splitting**: the `create_data_splits` generator
-       implements four strategies ('mixed', 'session', 'null_control',
-       'session_null_control') with the canonical "balanced train / natural-rate
+       implements two strategies ('mixed', 'session') with the canonical
+       "balanced train / natural-rate
        test" invariant — the training fold is always down-sampled to 50/50 so
        gradient updates see both classes, while the test fold preserves the
        natural base rate so reported metrics reflect real imbalance.
@@ -580,16 +580,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
           `n_splits` times using `ShuffleSplit`. The training data (pooled from
           training sessions) is balanced per split to 50/50; the test data
           (pooled from test sessions) retains the natural class prior.
-        - 'null_control': Pools all *No-Bout* epochs and runs `StratifiedShuffleSplit`
-          on fake labels matched to the per-split train/test sizes and class
-          ratios produced by 'mixed'. The training fold is balanced 50/50; the
-          test fold mirrors 'mixed's natural-rate test (same N and same ratio).
-        - 'session_null_control': (Like 'session') Splits sessions into
-          train/test. Builds a fake balanced training set from the *training
-          sessions'* No-Bout data matching the exact size of the *actual*
-          balanced training set, and a fake unbalanced test set from the *test
-          sessions'* No-Bout data matching the exact size and class ratio of
-          the *actual* test set.
 
         Parameters
         ----------
@@ -687,139 +677,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                 yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
 
-        ### Strategy 3: 'null_control' (pooled no-bout, matching new 'mixed' shape per split)
-        elif split_strategy == 'null_control':
-            print("--- Using 'null_control' (pooled) strategy (No-Bout vs. No-Bout) ---")
-
-            if n_pos_total == 0 or n_neg_total == 0:
-                print(f"Warning: Missing class data (pos={n_pos_total}, neg={n_neg_total}). Skipping null control.")
-                return
-
-            # Mirror 'mixed': stratified split on the natural-rate pool to discover the
-            # per-split train/test sizes and class ratios, then build fake arrays from
-            # No-Bout data that match those sizes/ratios. Training is balanced 50/50,
-            # test preserves the natural class prior.
-            X_real, y_real = concat_two_class_with_labels(X_pos_all, X_neg_all)
-            sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_proportion, random_state=random_state)
-
-            for split_num, (train_idx, test_idx) in enumerate(sss.split(X_real, y_real)):
-                y_train_real = y_real[train_idx]
-                y_test_real = y_real[test_idx]
-
-                n_pos_train_nat = int(np.sum(y_train_real == 1))
-                n_neg_train_nat = int(np.sum(y_train_real == 0))
-                n_balanced_train_half = min(n_pos_train_nat, n_neg_train_nat)
-
-                n_test_pos_target = int(np.sum(y_test_real == 1))
-                n_test_neg_target = int(np.sum(y_test_real == 0))
-
-                if n_balanced_train_half == 0:
-                    print("Warning: No balanced training data available for a 'null_control' split. Skipping.")
-                    continue
-
-                n_total_needed = (2 * n_balanced_train_half) + n_test_pos_target + n_test_neg_target
-
-                # Seeded per split so the null-control draw is reproducible and
-                # does not inherit whatever state prior code left on the global
-                # NumPy RNG.
-                null_rng = np.random.default_rng(random_state + split_num)
-                if n_neg_total < n_total_needed:
-                    print(f"Warning: Not enough No-Bout samples ({n_neg_total}) for null control of size "
-                          f"{n_total_needed}. Sampling with replacement.")
-                    draw = null_rng.choice(n_neg_total, size=n_total_needed, replace=True)
-                else:
-                    draw = null_rng.permutation(n_neg_total)[:n_total_needed]
-
-                c1 = n_balanced_train_half
-                c2 = c1 + n_balanced_train_half
-                c3 = c2 + n_test_pos_target
-                c4 = c3 + n_test_neg_target
-
-                X_fake_pos_train = X_neg_all[draw[:c1]]
-                X_fake_neg_train = X_neg_all[draw[c1:c2]]
-                X_fake_pos_test = X_neg_all[draw[c2:c3]]
-                X_fake_neg_test = X_neg_all[draw[c3:c4]]
-
-                X_train, y_train = concat_two_class_with_labels(X_fake_pos_train, X_fake_neg_train)
-                X_test, y_test = concat_two_class_with_labels(X_fake_pos_test, X_fake_neg_test)
-
-                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
-
-        ### Strategy 4: 'session_null_control' (session-split no-bout, matching 'session' size)
-        elif split_strategy == 'session_null_control':
-            print("--- Using 'session_null_control' (session-split) strategy ---")
-            all_sessions_array = np.array(all_sessions)
-            n_sessions = len(all_sessions_array)
-
-            actual_test_proportion = bounded_test_proportion(test_proportion, n_sessions)
-            if n_sessions * (1 - actual_test_proportion) < 1:
-                print(f"Warning: test_proportion ({test_proportion}) too high for {n_sessions} sessions. Skipping.")
-                return
-
-            ss = ShuffleSplit(n_splits=n_splits, test_size=actual_test_proportion, random_state=random_state)
-
-            split_num = 0
-            for train_session_idx, test_session_idx in ss.split(all_sessions_array):
-                split_num += 1
-                train_session_list = all_sessions_array[train_session_idx]
-                test_session_list = all_sessions_array[test_session_idx]
-
-                # Pool actual bout / no-bout data once per session list — the
-                # "pool only No-Bout" duplicate call below is redundant since
-                # `pool_session_arrays` already returns both classes.
-                X_pos_train_actual, X_neg_train_all = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
-                X_pos_test_actual, X_neg_test_all = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
-
-                # Find the target sizes from the actual data
-                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train_actual, X_neg_train_all)
-
-                n_balanced_train_half = X_pos_train_bal.shape[0]
-                n_total_train_needed = n_balanced_train_half * 2
-
-                n_test_pos_target = X_pos_test_actual.shape[0]
-                n_test_neg_target = X_neg_test_all.shape[0]
-
-                if n_balanced_train_half == 0:
-                    print(f"Warning: No *actual* balanced training data for split {split_num}. Cannot match size. Skipping.")
-                    continue
-
-                # Create fake balanced training set, matching 'session' size.
-                # The per-split `default_rng` keeps every draw reproducible and
-                # independent of whatever global RNG state prior calls left.
-                null_rng = np.random.default_rng(random_state + split_num)
-                n_train_neg_available = X_neg_train_all.shape[0]
-
-                if n_train_neg_available < n_total_train_needed:
-                    print(f"Warning: Not enough No-Bout samples ({n_train_neg_available}) in train sessions to create null control of size {n_total_train_needed}. Sampling with replacement.")
-                    train_neg_indices = null_rng.choice(n_train_neg_available, size=n_total_train_needed, replace=True)
-                else:
-                    train_neg_indices = null_rng.permutation(n_train_neg_available)
-
-                X_fake_pos_train = X_neg_train_all[train_neg_indices[:n_balanced_train_half]]
-                X_fake_neg_train = X_neg_train_all[train_neg_indices[n_balanced_train_half: n_total_train_needed]]
-
-                X_train, y_train = concat_two_class_with_labels(X_fake_pos_train, X_fake_neg_train)
-
-                # Create fake UNBALANCED test set, matching 'session' size AND ratio
-                n_test_neg_available = X_neg_test_all.shape[0]
-
-                if n_test_neg_available == 0:
-                    print(f"Warning: No No-Bout test samples available for split {split_num}. Skipping.")
-                    continue
-
-                fake_pos_indices = null_rng.choice(n_test_neg_available, size=n_test_pos_target, replace=True)
-                fake_neg_indices = null_rng.choice(n_test_neg_available, size=n_test_neg_target, replace=True)
-
-                X_fake_pos_test = X_neg_test_all[fake_pos_indices]
-                X_fake_neg_test = X_neg_test_all[fake_neg_indices]
-
-                X_test, y_test = concat_two_class_with_labels(X_fake_pos_test, X_fake_neg_test)
-
-                # Shuffle the final arrays before yielding
-                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
-
         else:
-            raise ValueError(f"Unknown split_strategy: {split_strategy}. Must be 'mixed', 'session', 'null_control', or 'session_null_control'.")
+            raise ValueError(f"Unknown split_strategy: {split_strategy}. Must be 'mixed' or 'session'.")
 
     def _run_model_for_feature_sklearn(self,
                                      feature_name: str,
@@ -1088,9 +947,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         This function runs two models in parallel within a single loop for each split:
         1.  Fits a model using the `split_strategy` from settings
             (e.g., 'session') on the real "Bout vs. No-Bout" data.
-        2.  Fits a *null control* model by forcing the
-            `create_data_splits` function to use a null strategy
-            (e.g., 'session_null_control') on "No-Bout vs. No-Bout" data.
+        2.  Fits a *null* model on the SAME training epochs with the
+            training labels permuted (a label-shuffle permutation test),
+            evaluated against the real test labels.
 
         Tho code covers the following steps:
         1.  It fits a `pygam.LogisticGAM` model. The core of
@@ -1206,13 +1065,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         actual_data_splitter = self.create_data_splits(feature_data, strategy_override=None)
 
-        current_strategy = self.modeling_settings['model_params']['split_strategy']
-        null_strategy = 'session_null_control' if current_strategy == 'session' else 'null_control'
-        shuffled_data_splitter = self.create_data_splits(feature_data, strategy_override=null_strategy)
-
         split_has_data_actual = False
 
-        for split_idx, (actual_split, shuffled_split) in enumerate(zip(actual_data_splitter, shuffled_data_splitter)):
+        for split_idx, actual_split in enumerate(actual_data_splitter):
 
             if split_idx >= n_splits:
                 break
@@ -1288,24 +1143,42 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 except Exception as e:
                     print(f"  ERROR during ACTUAL [pygam] fit/predict for {feature_name}, split {split_idx}: {e}")
 
-            if shuffled_split and shuffled_split[0].shape[0] > 0 and shuffled_split[2].shape[0] > 0:
-                (X_train_null, y_train_null, X_test_null, y_test_null) = shuffled_split
-                print(f"  NULL Split {split_idx}: Train={X_train_null.shape}, Test={X_test_null.shape}")
-
-                y_train_tiled_null = np.repeat(y_train_null.astype(np.float32), history_frames)
-                y_test_int_null = y_test_null.astype(int)
-                X_train_gam_null = unroll_data_for_gam(X_train_null.astype(np.float32))
-                X_test_gam_null = unroll_data_for_gam(X_test_null.astype(np.float32))
+            if actual_split and actual_split[0].shape[0] > 0 and actual_split[2].shape[0] > 0:
+                # Null model: refit on a LABEL-PERMUTED copy of the same training
+                # epochs (reusing the actual split's `X_train_gam` / `X_test_gam`),
+                # evaluated against the real `y_test`. This is the canonical
+                # permutation test — "does this feature's history carry genuine
+                # bout-onset information beyond the marginal rate" — and mirrors
+                # the sklearn engine's `y_train_shuffled` null. Seeded per split so
+                # the permutation is reproducible and independent of global RNG.
+                #
+                # IMPORTANT — only LOG-LOSS (`ll`) is a valid actual-vs-null
+                # comparison for this null, and `bout_onset_model_selection`
+                # screens on `ll` for exactly that reason. The null's reported
+                # `auc` / `score` (balanced accuracy) are NOT interpretable: the
+                # GAM on shuffled labels predicts probabilities tightly clustered
+                # around 0.5, and a tiny finite-sample residual correlation with
+                # the feature makes those near-0.5 probabilities monotone in it,
+                # which rank-based AUC and the 0.5-threshold balanced accuracy
+                # blow up to ~0 or ~1 (sign set by the residual). Log-loss is a
+                # proper scoring rule and correctly reads the ~0.5 null as chance.
+                shuffle_rng = np.random.default_rng(
+                    self.modeling_settings['model_params']['random_seed'] + split_idx + 1
+                )
+                y_train_tiled_null = np.repeat(
+                    shuffle_rng.permutation(y_train).astype(np.float32), history_frames
+                )
+                print(f"  NULL (label-shuffle) Split {split_idx}: Train={X_train.shape}, Test={X_test.shape}")
 
                 try:
                     fit_start = time.perf_counter()
                     gam_shuffled = LogisticGAM(
                         te(0, 1, n_splines=[n_splines_value, n_splines_time]), **gam_kwargs_shuffled
-                    ).fit(X_train_gam_null, y_train_tiled_null)
+                    ).fit(X_train_gam, y_train_tiled_null)
                     fit_time = float(time.perf_counter() - fit_start)
 
-                    y_proba_shuffled_tiled = gam_shuffled.predict_proba(X_test_gam_null)
-                    y_proba_shuffled_mean = np.mean(y_proba_shuffled_tiled.reshape(X_test_null.shape), axis=1)
+                    y_proba_shuffled_tiled = gam_shuffled.predict_proba(X_test_gam)
+                    y_proba_shuffled_mean = np.mean(y_proba_shuffled_tiled.reshape(X_test.shape), axis=1)
                     y_pred_shuffled_mean = (y_proba_shuffled_mean > 0.5).astype(int)
 
                     grid_X_0_null = np.stack([np.zeros(history_frames, dtype=np.float32), time_indices], axis=1)
@@ -1316,25 +1189,25 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     filter_shape_null = (prob_1_null - prob_0_null).flatten()
                     results['null']['filter_shapes'][split_idx, :] = filter_shape_null
 
-                    results['null']['score'][split_idx] = balanced_accuracy_score(y_test_int_null, y_pred_shuffled_mean)
-                    results['null']['recall'][split_idx] = recall_score(y_test_int_null, y_pred_shuffled_mean, zero_division=0.0)
-                    results['null']['f1'][split_idx] = f1_score(y_test_int_null, y_pred_shuffled_mean, average='binary', zero_division=0.0)
-                    results['null']['mcc'][split_idx] = safe_matthews_corrcoef(y_test_int_null, y_pred_shuffled_mean)
+                    results['null']['score'][split_idx] = balanced_accuracy_score(y_test_int, y_pred_shuffled_mean)
+                    results['null']['recall'][split_idx] = recall_score(y_test_int, y_pred_shuffled_mean, zero_division=0.0)
+                    results['null']['f1'][split_idx] = f1_score(y_test_int, y_pred_shuffled_mean, average='binary', zero_division=0.0)
+                    results['null']['mcc'][split_idx] = safe_matthews_corrcoef(y_test_int, y_pred_shuffled_mean)
                     results['null']['confusion_matrix'][split_idx] = safe_confusion_matrix(
-                        y_test_int_null, y_pred_shuffled_mean, labels=np.array([0, 1])
+                        y_test_int, y_pred_shuffled_mean, labels=np.array([0, 1])
                     )
                     null_diffs = gam_shuffled.logs_['diffs']
                     results['null']['n_iter'][split_idx] = float(len(null_diffs))
                     results['null']['converged'][split_idx] = float(bool(null_diffs and null_diffs[-1] < tol_val))
                     results['null']['fit_time'][split_idx] = fit_time
 
-                    if len(np.unique(y_test_int_null)) > 1:
-                        results['null']['auc'][split_idx] = roc_auc_score(y_test_int_null, y_proba_shuffled_mean)
-                        results['null']['ll'][split_idx] = log_loss(y_test_int_null, np.clip(y_proba_shuffled_mean, 1e-15, 1 - 1e-15))
-                        results['null']['brier'][split_idx] = float(brier_score_loss(y_test_int_null, y_proba_shuffled_mean))
+                    if len(np.unique(y_test_int)) > 1:
+                        results['null']['auc'][split_idx] = roc_auc_score(y_test_int, y_proba_shuffled_mean)
+                        results['null']['ll'][split_idx] = log_loss(y_test_int, np.clip(y_proba_shuffled_mean, 1e-15, 1 - 1e-15))
+                        results['null']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_shuffled_mean))
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_shuffled_mean, y_proba_shuffled_mean])
-                            results['null']['ece'][split_idx] = expected_calibration_error(y_test_int_null, y_pred_shuffled_mean, y_proba_2d, n_bins=10)
+                            results['null']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_shuffled_mean, y_proba_2d, n_bins=10)
                         except Exception as e:
                             print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -1348,7 +1221,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             mean_auc_actual = np.nanmean(results['actual']['auc'])
             print_msg = f"  --- Finished {feature_name} [pygam]. Mean Actual AUC: {mean_auc_actual:.4f}"
             mean_auc_null = np.nanmean(results['null']['auc'])
-            print_msg += f", Mean Null (Null Control) AUC: {mean_auc_null:.4f}"
+            print_msg += f", Mean Null AUC: {mean_auc_null:.4f}"
             print(print_msg)
         else:
             print(f"  --- No valid splits processed for feature: {feature_name} [pygam] ---")

@@ -14,7 +14,7 @@ modules rather than isolated helpers:
   and the ``{feature: {session: {target_feature_arr, other_feature_arr}}}``
   serialization), plus the univariate ``_run_modeling_category`` fit (both
   the ``create_category_splits`` 'mixed' and 'session' strategies, the
-  actual / null_other conditions, and the sklearn basis-projected
+  actual condition plus the label-shuffle null, and the sklearn basis-projected
   ``LogisticRegressionCV`` engine).
 
 * ``model_selection.vocal_category_model_selection`` — the binary
@@ -206,10 +206,7 @@ def _write_category_usv_summary(
 
     # One in every four syllables is the target category; the rest are "other".
     # The deliberate ~1:3 target:other imbalance keeps the natural-rate test
-    # folds non-trivial AND gives the size-matched ``null_other`` condition
-    # enough surplus "other" rows to draw its pseudo-classes from (it needs the
-    # other pool to be at least twice the balanced training size, which a 50/50
-    # split could never satisfy).
+    # folds non-trivial (the null is a label-shuffle of these same splits).
     flip = 0
     for b in range(n_bouts):
         bout_origin = warmup + b * bout_spacing
@@ -356,10 +353,9 @@ def _write_category_input_pickle(
     carry a *strong, class-dependent mean offset* so a logistic model finds
     clearly above-chance structure on the target-vs-other contrast — this is
     what lets the model-selection candidate screen (which keeps features whose
-    actual log-loss beats the size-matched ``null_other`` null) admit
-    candidates and run the forward search. The deliberate ``n_other`` >>
-    ``n_target`` imbalance leaves the ``null_other`` condition enough surplus
-    "other" rows to draw its size-matched pseudo-classes from.
+    actual log-loss beats the label-shuffle null) admit candidates and run the
+    forward search. The deliberate ``n_other`` >> ``n_target`` imbalance keeps
+    the natural-rate test folds non-trivial.
 
     Parameters
     ----------
@@ -716,8 +712,9 @@ class TestUnivariateCategoryDispatcher:
         one per-feature pickle per feature index, each carrying ``_run_metadata``
         and ``_input_metadata`` blocks plus the actual / null results branches
         with the full scalar-metric key set and the per-fold ``filter_shapes``
-        array. This exercises both the 'mixed' split strategy and the actual /
-        null_other conditions inside ``create_category_splits``.
+        array. This exercises the 'mixed' split strategy and the actual
+        condition inside ``create_category_splits`` (the null is a label-shuffle
+        of the same splits).
         """
 
         settings, save_dir = _build_category_settings(
@@ -1190,8 +1187,8 @@ def _category_feature_data(history_frames: int, n_target=24, n_other=72, n_sessi
     ``_run_modeling_category`` consume, with a strong class-dependent mean
     offset so a logistic / GAM fit finds clearly above-chance structure on the
     target-vs-other contrast. The deliberate ``n_other`` >> ``n_target``
-    imbalance leaves the size-matched ``null_other`` condition surplus rows to
-    draw its pseudo-classes from.
+    imbalance keeps the natural-rate test folds non-trivial (the null is a
+    label-shuffle of these splits).
 
     Parameters
     ----------
@@ -1286,7 +1283,7 @@ class TestCollectCategoryWindows:
 
 
 class TestCreateCategorySplitsBranches:
-    """Guard / strategy / null_other branches in ``create_category_splits``."""
+    """Guard / strategy branches in ``create_category_splits``."""
 
     def test_fewer_than_two_valid_sessions_returns_empty(self):
         """
@@ -1322,44 +1319,20 @@ class TestCreateCategorySplitsBranches:
         with pytest.raises(ValueError, match="Unknown split_strategy"):
             list(pipeline.create_category_splits(feature_data, strategy='actual'))
 
-    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
-    def test_null_other_draw_branches_yield_pseudo_classes(self):
+    def test_unknown_condition_strategy_raises(self):
         """
-        The ``strategy='null_other'`` condition exercises the seeded pseudo-class
-        draw helpers: ``draw_pseudo_train`` (balanced 50/50 from the Other pool)
-        and ``draw_pseudo_test`` (size- and ratio-matched to the actual test).
-        With a generous Other surplus every split yields a valid pseudo-fold, so
-        the generator produces at least one ``(X_tr, y_tr, X_te, y_te)`` tuple.
+        ``create_category_splits`` builds only the real ``'actual'``
+        Target-vs-Other condition; any other condition strategy (e.g. the
+        removed ``'null_other'`` pseudo-class baseline) hits the terminal
+        ``ValueError``. The null is now a label-shuffle of the actual splits,
+        performed by ``_run_modeling_category``.
         """
 
         settings = _minimal_category_settings(split_strategy='mixed', split_num=2)
         pipeline = VocalCategoryModelingPipeline(modeling_settings_dict=settings)
         feature_data = _category_feature_data(HISTORY_FRAMES, n_target=12, n_other=120)
-        folds = list(pipeline.create_category_splits(feature_data, strategy='null_other'))
-        assert len(folds) >= 1
-        X_tr, y_tr, _X_te, _y_te = folds[0]
-        # Pseudo-train is balanced 50/50 across the two pseudo-classes.
-        assert set(np.unique(y_tr)).issubset({0, 1})
-        assert X_tr.shape[1] == HISTORY_FRAMES
-
-    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
-    def test_null_other_starved_other_pool_skips_split(self):
-        """
-        When the Other pool is too small to source a size-matched pseudo-train
-        (its per-split count is below ``2 * n_tr_limit``), ``draw_pseudo_train``
-        returns ``(None, None)`` and the per-split ``if X_tr_A is None: continue``
-        skips that fold. With every split starved this way the ``null_other``
-        generator yields nothing.
-        """
-
-        settings = _minimal_category_settings(split_strategy='mixed', split_num=2)
-        pipeline = VocalCategoryModelingPipeline(modeling_settings_dict=settings)
-        # A near-balanced, small Other pool: after the stratified split the
-        # train-Other count cannot reach 2 * n_tr_limit, so every pseudo-train
-        # draw bails out.
-        feature_data = _category_feature_data(HISTORY_FRAMES, n_target=8, n_other=9)
-        folds = list(pipeline.create_category_splits(feature_data, strategy='null_other'))
-        assert folds == []
+        with pytest.raises(ValueError, match="Only 'actual' is supported"):
+            list(pipeline.create_category_splits(feature_data, strategy='null_other'))
 
 
 class TestRunModelingCategoryHandlers:
