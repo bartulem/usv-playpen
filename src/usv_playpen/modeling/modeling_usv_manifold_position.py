@@ -31,8 +31,9 @@ Key scientific capabilities:
     acoustic regions are proportionally represented in every train / test
     fold.
 4.  Rigorous null baselines: compares model performance against a
-    within-session **X-history shuffle** (`null`) and the KDE-weighted
-    training-set centroid (`null_model_free`). The X-history shuffle is
+    within-session **X-history shuffle** (`null`) and an empirical-density
+    draw from the training-set `Y` (`null_model_free`, the chance floor).
+    The X-history shuffle is
     the canonical permutation test for regression: trial `i`'s Y stays
     where it is, but its kinematic history is replaced with the history
     of another trial from the same session. This preserves session-level
@@ -74,9 +75,9 @@ from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .manifold_metric import (
     signed_diff,
     circular_mean,
-    total_dispersion,
     torus_embed,
     resolve_manifold_metric,
+    manifold_prediction_metrics,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 
@@ -419,9 +420,10 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     includes the full grid of mean scores *and* the argmax pair so a
     reader can see how much the 1-SE rule softened the choice.
 
-    The scoring direction is inferred from the metric name: `r2_spatial`,
-    `pearson_*`, and `spearman_*` are higher-is-better; everything else is
-    treated as lower-is-better (MAE / RMSE / Mahalanobis variants).
+    The scoring direction is inferred from the metric name: `dcor_xy`,
+    `r2_spatial`, `pearson_*`, and `spearman_*` are higher-is-better;
+    everything else is treated as lower-is-better (MAE / RMSE / Mahalanobis
+    variants).
 
     Parameters
     ----------
@@ -484,7 +486,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         'r2_spatial',
         'pearson_x', 'pearson_y',
         'spearman_x', 'spearman_y',
-        'predictive_correlation',
+        'dcor_xy',
     }
     higher_is_better = inner_cv_scoring_metric in higher_is_better_metrics
 
@@ -1145,8 +1147,9 @@ class ContinuousModelRunner:
        descent.
     2. Experimental control: evaluates features against an `actual`
        framework, a within-session shuffled `null` framework, and a
-       `null_model_free` spatial-centroid baseline (weighted training-set
-       mean, matching the marginal prior used by the KDE weighting).
+       `null_model_free` empirical-density baseline (a uniform draw from
+       the training-set `Y` — the chance floor, sampling the observed
+       repertoire independent of kinematics).
     3. Spatial validation: uses deterministic K-Means geographic clustering
        to build spatially fair cross-validation folds.
     4. Deep metadata storage: persists fold-level predictions `(y_pred_xy)`,
@@ -1157,7 +1160,14 @@ class ContinuousModelRunner:
     so the active model and both baselines are evaluated on the same
     support:
     - `r2_spatial` — pooled spatial variance explained by the predictions;
-      bounded above by 1. **Selection score** (higher is better).
+      bounded above by 1. **Selection score on Euclidean / VAE / UMAP
+      manifolds** (higher is better).
+    - `dcor_xy` — wrap-aware distance correlation between the decoded
+      prediction and the truth (subsampled; see
+      `manifold_metric.dcor_prediction_truth`). **Selection score on the
+      TORUS manifold** (higher is better); `nan` on Euclidean manifolds.
+      Used because the QLVM torus is near-uniform and periodic, where the
+      centroid-referenced `r2_spatial` is structurally inverted.
     - `euclidean_mae` — mean Euclidean distance between snapped predictions
       and truth, in native UMAP units. Interpretable headline error.
     - `euclidean_rmse` — root-mean-squared Euclidean distance; a large
@@ -1333,21 +1343,36 @@ class ContinuousModelRunner:
            the null accidentally. The test fold is left untouched so the
            null estimator is evaluated on the same real `(X_test,
            Y_test)` pairing as the actual model.
-        3. `null_model_free` — bypasses modelling entirely and predicts the
-           KDE-weighted training centroid for every test trial. This is
-           the "no-kinematics, no-session-structure" floor that any model
-           with genuine signal must beat.
+        3. `null_model_free` — bypasses modelling entirely and predicts a
+           uniform random draw from the training `Y` for every test trial.
+           This is the chance floor (sampling the observed repertoire,
+           ignoring kinematics) that any model with genuine signal must beat.
 
         Selection score
         ---------------
-        `r2_spatial` (pooled-axis coefficient of determination against the
-        test-fold marginal mean) is the headline score — directly
-        comparable across features and sex groups. All other metrics are
-        reported as diagnostics (see the class docstring).
+        The headline score is geometry-dependent: `r2_spatial` (pooled-axis
+        coefficient of determination against the test-fold marginal mean) on
+        Euclidean / VAE / UMAP manifolds, and `dcor_xy` (wrap-aware distance
+        correlation between the decoded prediction and the truth) on the
+        near-uniform periodic TORUS manifold, where the centroid-referenced
+        `r2_spatial` is structurally inverted. Both are directly comparable
+        across features and sex groups; all other metrics are reported as
+        diagnostics (see the class docstring).
 
         Hyperparameter tuning
         ---------------------
-        Reads `hyperparameters.jax_linear.bivariate.tune_regularization_bool`:
+        On the TORUS manifold the inner-loop CV is **unnecessary and is
+        unconditionally disabled** (`tune_regularization_bool` is forced to
+        `False` regardless of the settings value): `dcor_xy` is
+        scale/regularisation-invariant via the `atan2` decode, so the score
+        is provably flat across the `(lambda_smooth, l2_reg)` grids — tuning
+        only spends compute to land back on the fixed centre. Use the advised
+        fixed defaults `lambda_smooth_fixed = 1.0` and `l2_reg_fixed = 0.01`;
+        these no longer move the selection score, but `lambda_smooth` still
+        shapes the (interpretable) published filter, so it is not a free
+        parameter for visualisation. On Euclidean manifolds the pipeline
+        instead honours
+        `hyperparameters.jax_linear.bivariate.tune_regularization_bool`:
 
         - `false` (default): every outer fold uses the fixed settings-
           level `lambda_smooth_fixed` and `l2_reg_fixed` values.
@@ -1475,12 +1500,15 @@ class ContinuousModelRunner:
         # unchanged coordinate model, so they stay byte-identical.
         regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
         if manifold_metric == 'torus':
-            # Score the univariate fit and its inner-CV regularisation tuning by
-            # predictive_correlation on the torus: r2_spatial is blind to the
-            # multimodal/categorical behaviour -> position signal there (see
-            # SmoothBivariateRegression.evaluate_metrics). Euclidean runs keep
-            # whatever inner_cv_scoring_metric the settings configured.
-            inner_cv_scoring_metric = 'predictive_correlation'
+            # The torus selection score is wrap-aware distance correlation
+            # (`dcor_xy`), which is decode-/scale-invariant and therefore
+            # insensitive to the regularisation strength (verified: dCor is flat
+            # across l2 in [1e-3, 1e6] and lambda_smooth in [0, 1e8], far past
+            # where they bite the data term). Tuning would only fit subsample
+            # noise on a flat surface, so it is disabled on the torus path: the
+            # fixed settings-level lambda_smooth / l2 are used as-is
+            # (lambda_smooth shapes the interpretable filter, not the score).
+            tune_regularization_bool = False
 
         print("Generating deterministic, spatially-stratified folds...")
         folds = get_stratified_spatial_splits_stable(
@@ -1515,7 +1543,7 @@ class ContinuousModelRunner:
             'pearson_y',
             'spearman_x',
             'spearman_y',
-            'predictive_correlation',
+            'dcor_xy',
         ]
 
         results = {}
@@ -1583,8 +1611,8 @@ class ContinuousModelRunner:
                     # Deterministic (x, y) predictions for every test trial —
                     # shape `(n_test, 2)`. Predictions are manifold-snapped
                     # to the nearest training UMAP point for the active and
-                    # `null` strategies; `null_model_free` predicts the
-                    # training centroid (already inside the manifold hull).
+                    # `null` strategies; `null_model_free` predicts a uniform
+                    # draw from the training `Y` (an on-manifold sample).
                     'y_pred_xy': [],
                     # Per-fold optimiser diagnostics. `converged=False`
                     # flags folds that terminated at `max_iter` without
@@ -1637,73 +1665,35 @@ class ContinuousModelRunner:
                     X_train = _shuffle_X_within_groups(X_train, groups_train, shuffle_rng)
 
                 if strategy == 'null_model_free':
-                    # Spatial-centroid baseline: predict the KDE-weighted
-                    # training centroid for every test trial — the
-                    # absolute floor before any kinematic signal enters.
-                    # On torus the centroid is the per-axis circular mean
-                    # (so two clusters straddling the wrap boundary
-                    # return a centroid in the actual cluster, not on
-                    # the antipode) and every distance / dispersion is
-                    # built from wrap-aware signed differences. R^2's
-                    # numerator and denominator are both wrap-aware
-                    # variances, keeping the score interpretable across
-                    # the boundary.
+                    # Empirical-density baseline: for every test trial predict a
+                    # uniform random draw from the training `Y` ("vocalise from
+                    # the observed repertoire, ignoring kinematics"). This is the
+                    # chance floor shared with the CNN runner. Unlike a centroid
+                    # the draw has real geometry, so the per-axis correlations
+                    # and `dcor_xy` come out at the genuine finite-sample chance
+                    # level rather than the degenerate `dcor_xy = 0` a constant
+                    # prediction produces. The metric-aware training centroid /
+                    # covariance are still computed, purely to supply the
+                    # `mahalanobis_mae` inverse-covariance (matching the fitted
+                    # strategies' convention).
                     w_cov = w_train / (np.sum(w_train) + 1e-12)
                     mu = circular_mean(Y_train, metric=manifold_metric, period=manifold_period, weights=w_cov)
-                    y_pred_xy = np.tile(mu.astype(np.float32), (len(Y_test), 1))
-
-                    residual = signed_diff(Y_test, mu[None, :], metric=manifold_metric, period=manifold_period)
-                    dx = residual[:, 0]
-                    dy = residual[:, 1]
-                    euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
-                    sse = float(np.sum(dx ** 2 + dy ** 2))
-
-                    # Denominator of `r2_spatial`: total wrap-aware
-                    # dispersion of `Y_test` around its own centroid.
-                    denom = total_dispersion(
-                        Y_test, metric=manifold_metric, period=manifold_period,
-                    )
-
-                    # Mahalanobis MAE using the KDE-weighted training
-                    # covariance. Built from wrap-aware residuals around
-                    # the (metric-aware) centroid so the metric is
-                    # internally consistent with the rest of the bundle.
                     diff_tr = signed_diff(Y_train, mu[None, :], metric=manifold_metric, period=manifold_period)
                     cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
                     cov_inv = np.linalg.pinv(cov_tr)
-                    quad = np.einsum('ij,jk,ik->i', residual, cov_inv, residual)
-                    mahalanobis_mae = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
 
-                    # Constant predictions: per-axis correlations are
-                    # mathematically undefined → NaN, matching the
-                    # estimator's NaN-safe convention. The centroid is
-                    # already on-manifold so the raw / snapped MAE are
-                    # identical.
-                    mae_val = float(np.mean(euclidean_dist))
-                    metrics = {
-                        'r2_spatial': float(1.0 - (sse / denom)) if denom > 0 else 0.0,
-                        'euclidean_mae': mae_val,
-                        'euclidean_rmse': float(np.sqrt(np.mean(euclidean_dist ** 2))),
-                        'euclidean_mae_weighted': float(
-                            np.sum(w_test * euclidean_dist) / (np.sum(w_test) + 1e-12)
-                        ),
-                        'euclidean_mae_raw': mae_val,
-                        'mahalanobis_mae': mahalanobis_mae,
-                        'mae_x': float(np.mean(np.abs(dx))),
-                        'mae_y': float(np.mean(np.abs(dy))),
-                        'pearson_x': float('nan'),
-                        'pearson_y': float('nan'),
-                        'spearman_x': float('nan'),
-                        'spearman_y': float('nan'),
-                        # A constant centroid prediction has, by construction,
-                        # exactly zero predictive correlation (not nan): this is
-                        # the principled floor the torus selection screens
-                        # against ("actual correlation > 0").
-                        'predictive_correlation': 0.0,
-                    }
+                    draw_rng = np.random.default_rng(random_seed + fold_idx + 2)
+                    draw_idx = draw_rng.choice(len(Y_train), size=len(Y_test), replace=True)
+                    y_pred_xy = Y_train[draw_idx].astype(np.float32)
+
+                    metrics = manifold_prediction_metrics(
+                        Y_test, y_pred_xy, w_test,
+                        metric=manifold_metric, period=manifold_period,
+                        train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
+                    )
 
                     fold_weights, fold_intercepts = None, None
-                    # The centroid "fit" is closed-form and instantaneous.
+                    # The draw "fit" is closed-form and instantaneous.
                     fold_n_iter = 0
                     fold_converged = True
                     fold_fit_time = 0.0
@@ -1830,7 +1820,7 @@ class ContinuousModelRunner:
         # accordingly.
         higher_is_better = {
             'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
-            'predictive_correlation',
+            'dcor_xy',
         }
 
         print("\n" + "=" * 90)
@@ -1839,6 +1829,12 @@ class ContinuousModelRunner:
 
         for metric in metric_keys:
             act_vals = np.asarray(results['actual']['folds']['metrics'][metric], dtype=float)
+            if act_vals.size == 0 or np.all(np.isnan(act_vals)):
+                # Metric not live on this manifold geometry (`dcor_xy` is the
+                # selection score on the torus and `nan` on Euclidean); skip
+                # the all-NaN summary row, which would otherwise emit a
+                # nanmean RuntimeWarning and a swallowed Wilcoxon ValueError.
+                continue
             null_vals = np.asarray(results['null']['folds']['metrics'][metric], dtype=float)
             mf_vals = np.asarray(results['null_model_free']['folds']['metrics'][metric], dtype=float)
 

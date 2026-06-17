@@ -27,7 +27,7 @@ os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 # Disable aggressive XLA auto-tuning to prevent cuDNN/Triton compilation hangs
 os.environ['XLA_FLAGS'] = '--xla_gpu_autotune_level=0'
 
-# NEW: Silence non-critical XLA, Triton, and Abseil optimization warnings (E0324... timestamps)
+# Silence non-critical XLA, Triton, and Abseil optimization warnings (E0324... timestamps)
 # TF_CPP_MIN_LOG_LEVEL suppresses JAX info/warning logs.
 # GLOG_minloglevel suppresses C++ level logs (0=INFO, 1=WARN, 2=ERROR, 3=FATAL).
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -437,7 +437,6 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
         flattened_size += channels[-1]
 
     padded_flat_size = 1 << (flattened_size - 1).bit_length()
-    hidden_dim = hp['hidden_dim']
 
     params['dense1_w'] = jax.random.normal(k[-2], (padded_flat_size, hidden_dim)) * jnp.sqrt(2.0 / padded_flat_size)
     params['dense1_b'] = jnp.zeros(hidden_dim)
@@ -1384,6 +1383,76 @@ class NeuralContinuousCNNRunner:
             preds_raw = jnp.concatenate(preds, axis=0)
             return _decode_predictions_for_eval(preds_raw)
 
+        # Forward + backward pass, hoisted ABOVE the fold / strategy loops and
+        # jitted once per `fit` call. It closes over only fit-invariant state
+        # (`Y_center` / `Y_scale`, the hyperparameter dict, and the torus
+        # output / period config) and is always called on fixed-size
+        # `batch_size` batches, so this conv-heavy graph is traced and compiled
+        # a SINGLE time and reused across every fold and strategy. Only the
+        # small optimiser-update graph (`_apply_update` below), which depends on
+        # the per-fold LR schedule, is re-jitted per fold — avoiding a full
+        # forward / backward recompile on every fold and strategy.
+        @jax.jit
+        def _compute_grads(p, s, xs, yt, rng_key):
+            # Split the key: use one half for this step's dropout, keep the
+            # other for the next step.
+            rng_key, drop_key = jax.random.split(rng_key)
+
+            def loss_fn(weights, current_state):
+                preds, new_state = cnn_forward(
+                    weights, current_state, xs, Y_center, Y_scale, self.hp,
+                    rng_key=drop_key, is_training=True
+                )
+
+                if torus_sin_cos:
+                    # Torus `sin_cos` head: the network emits raw
+                    # per-axis `(sin, cos)` and the loss is the
+                    # plain Euclidean residual against the
+                    # `(sin 2pi y, cos 2pi y)` encoding of the
+                    # target. There is no wrap to apply — the
+                    # `(sin, cos)` representation is intrinsically
+                    # periodic, which is the whole point of
+                    # the encoding (it removes the wrap-aware
+                    # MSE degeneracy where every constant
+                    # prediction has identical loss on a uniform
+                    # torus target).
+                    target_sc = sin_cos_encode_jax(yt, manifold_period_jax)
+                    residual = preds - target_sc
+                else:
+                    # Wrap-aware residual on the legacy torus
+                    # `'raw'` head and on euclidean: plain
+                    # `yt - preds` on euclidean, folded into
+                    # `(-period/2, period/2]` on torus. Captured
+                    # at trace time so the JIT graph specialises
+                    # on the metric tag.
+                    residual = signed_diff_jax(
+                        yt, preds,
+                        metric=self.manifold_metric, period=self.manifold_period,
+                    )
+
+                # Evaluate strictly based on the dictionary configuration
+                if self.hp['loss_function'] == 'huber':
+                    delta = self.hp['huber_delta']
+                    abs_diff = jnp.abs(residual)
+
+                    # Piecewise Huber: 0.5 * x^2 for small errors, linear for outliers
+                    huber_elements = jnp.where(
+                        abs_diff <= delta,
+                        0.5 * (abs_diff ** 2),
+                        delta * (abs_diff - 0.5 * delta)
+                    )
+                    loss = jnp.mean(jnp.sum(huber_elements, axis=-1))
+                else:
+                    # Standard Mean Squared Error
+                    loss = jnp.mean(jnp.sum(residual ** 2, axis=-1))
+
+                return loss, new_state
+
+            grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+            (loss, s_new), grads = grad_fn(p, s)
+
+            return grads, s_new, rng_key
+
         # TRI-STRATEGY EXECUTION
         strategies = ['null_model_free', 'null', 'actual']
 
@@ -1497,68 +1566,18 @@ class NeuralContinuousCNNRunner:
                 )
                 opt_state = optimizer.init(params)
 
-                # Pure Functional Update Step (Now handles splitting the dropout key)
+                # Optimiser-update step. A small graph (AdamW update + apply)
+                # that depends on the per-fold LR schedule baked into
+                # `optimizer`, so it is cheap to re-jit per fold / strategy; the
+                # expensive conv forward / backward lives in the once-compiled
+                # `_compute_grads` hoisted above the fold loop. Closes over the
+                # per-fold `optimizer`, so it must be defined here (after the
+                # optimiser is rebuilt) rather than hoisted.
                 @jax.jit
-                def update_step(p, s, o_state, xs, yt, rng_key):
-                    # Split the key: use one for this step's dropout, keep the other for the next step
-                    rng_key, drop_key = jax.random.split(rng_key)
-
-                    def loss_fn(weights, current_state):
-                        preds, new_state = cnn_forward(
-                            weights, current_state, xs, Y_center, Y_scale, self.hp,
-                            rng_key=drop_key, is_training=True
-                        )
-
-                        if torus_sin_cos:
-                            # Torus `sin_cos` head: the network emits raw
-                            # per-axis `(sin, cos)` and the loss is the
-                            # plain Euclidean residual against the
-                            # `(sin 2pi y, cos 2pi y)` encoding of the
-                            # target. There is no wrap to apply — the
-                            # `(sin, cos)` representation is intrinsically
-                            # periodic, which is the whole point of
-                            # the encoding (it removes the wrap-aware
-                            # MSE degeneracy where every constant
-                            # prediction has identical loss on a uniform
-                            # torus target).
-                            target_sc = sin_cos_encode_jax(yt, manifold_period_jax)
-                            residual = preds - target_sc
-                        else:
-                            # Wrap-aware residual on the legacy torus
-                            # `'raw'` head and on euclidean: plain
-                            # `yt - preds` on euclidean, folded into
-                            # `(-period/2, period/2]` on torus. Captured
-                            # at trace time so the JIT graph specialises
-                            # on the metric tag.
-                            residual = signed_diff_jax(
-                                yt, preds,
-                                metric=self.manifold_metric, period=self.manifold_period,
-                            )
-
-                        # Evaluate strictly based on the dictionary configuration
-                        if self.hp['loss_function'] == 'huber':
-                            delta = self.hp['huber_delta']
-                            abs_diff = jnp.abs(residual)
-
-                            # Piecewise Huber: 0.5 * x^2 for small errors, linear for outliers
-                            huber_elements = jnp.where(
-                                abs_diff <= delta,
-                                0.5 * (abs_diff ** 2),
-                                delta * (abs_diff - 0.5 * delta)
-                            )
-                            loss = jnp.mean(jnp.sum(huber_elements, axis=-1))
-                        else:
-                            # Standard Mean Squared Error
-                            loss = jnp.mean(jnp.sum(residual ** 2, axis=-1))
-
-                        return loss, new_state
-
-                    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-                    (loss, s_new), grads = grad_fn(p, s)
+                def _apply_update(p, o_state, grads):
                     updates, o_state_new = optimizer.update(grads, o_state, p)
                     p_new = optax.apply_updates(p, updates)
-
-                    return p_new, s_new, o_state_new, rng_key
+                    return p_new, o_state_new
 
                 best_err = float('inf')
                 best_params, best_state = None, None
@@ -1593,10 +1612,11 @@ class NeuralContinuousCNNRunner:
                                 rng=rng
                             )
 
-                        # 3. Pass to JAX Update Step
-                        params, state, opt_state, dropout_rng = update_step(
-                            params, state, opt_state, jnp.array(X_batch), jnp.array(Y_tr[idx]), dropout_rng
+                        # 3. Forward / backward (once-compiled) then optimiser step
+                        grads, state, dropout_rng = _compute_grads(
+                            params, state, jnp.array(X_batch), jnp.array(Y_tr[idx]), dropout_rng
                         )
+                        params, opt_state = _apply_update(params, opt_state, grads)
 
                     if epoch % 5 == 0:
                         Y_pred_te = evaluate_batched(params, state, jnp.array(X_te))

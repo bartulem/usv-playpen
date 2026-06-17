@@ -1434,9 +1434,9 @@ def run_predictor_audits(processed_beh_dict: dict,
         is trained on.
     """
 
-    diagnostics_cfg = settings['diagnostics'] if 'diagnostics' in settings else {}
-    do_collinearity = diagnostics_cfg['collinearity_audit'] if 'collinearity_audit' in diagnostics_cfg else True
-    do_timescale = diagnostics_cfg['timescale_audit'] if 'timescale_audit' in diagnostics_cfg else True
+    diagnostics_cfg = settings['diagnostics']
+    do_collinearity = diagnostics_cfg['collinearity_audit']
+    do_timescale = diagnostics_cfg['timescale_audit']
 
     if not (do_collinearity or do_timescale):
         return
@@ -1564,9 +1564,9 @@ def run_predictor_audits(processed_beh_dict: dict,
                 else:
                     ibi_thresholds[sex] = float('nan')
 
-            max_lag = float(diagnostics_cfg['timescale_max_lag_seconds']) if 'timescale_max_lag_seconds' in diagnostics_cfg else 10.0
-            n_shuffles = int(diagnostics_cfg['timescale_n_shuffles']) if 'timescale_n_shuffles' in diagnostics_cfg else 1000
-            shuffle_range_raw = diagnostics_cfg['timescale_shuffle_range'] if 'timescale_shuffle_range' in diagnostics_cfg else [20.0, 60.0]
+            max_lag = float(diagnostics_cfg['timescale_max_lag_seconds'])
+            n_shuffles = int(diagnostics_cfg['timescale_n_shuffles'])
+            shuffle_range_raw = diagnostics_cfg['timescale_shuffle_range']
             if not (isinstance(shuffle_range_raw, (list, tuple)) and len(shuffle_range_raw) == 2):
                 raise ValueError(
                     f"`diagnostics.timescale_shuffle_range` must be a 2-element list of "
@@ -1583,11 +1583,7 @@ def run_predictor_audits(processed_beh_dict: dict,
             # locating the outer-run marker; this prevents the very-near-zero
             # null dips (e.g. `other.speed`) from anchoring the marker too
             # close to lag 0.
-            signal_floor_seconds = (
-                float(diagnostics_cfg['timescale_signal_floor_seconds'])
-                if 'timescale_signal_floor_seconds' in diagnostics_cfg
-                else 0.5
-            )
+            signal_floor_seconds = float(diagnostics_cfg['timescale_signal_floor_seconds'])
             if signal_floor_seconds < 0:
                 raise ValueError(
                     f"`diagnostics.timescale_signal_floor_seconds` must be "
@@ -1603,11 +1599,7 @@ def run_predictor_audits(processed_beh_dict: dict,
             # fragments) are not promoted to markers, while
             # preserving real sustained runs (≥ 213 bins / 1.4 s on
             # `self.back_yaw`, 636 bins / 4.2 s on `self.ego_yaw`).
-            signal_min_run_seconds = (
-                float(diagnostics_cfg['timescale_signal_min_run_seconds'])
-                if 'timescale_signal_min_run_seconds' in diagnostics_cfg
-                else 0.2
-            )
+            signal_min_run_seconds = float(diagnostics_cfg['timescale_signal_min_run_seconds'])
             if signal_min_run_seconds <= 0:
                 raise ValueError(
                     f"`diagnostics.timescale_signal_min_run_seconds` must be "

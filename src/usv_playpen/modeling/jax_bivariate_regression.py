@@ -51,7 +51,7 @@ over `Y_train_`, cached in a `scipy.spatial.cKDTree`). Training targets
 and their kd-tree are stored on the fitted model, so `predict(snap=True)`
 returns only coordinates that the training manifold actually contained.
 This matters for the fairness of comparisons against the baselines:
-`null_model_free` predicts the weighted training centroid and the
+`null_model_free` predicts a uniform draw from the training `Y` and the
 candidate X-history shuffled `null` predicts on the same manifold
 support, so the active model must not be allowed to gain apparent
 accuracy by extrapolating off-manifold and then being penalised by a
@@ -63,7 +63,10 @@ Outputs
 - `predict(X, snap=True)` -> (n_samples, 2) snapped UMAP coordinates, or
   the raw linear prediction when `snap=False`.
 - `evaluate_metrics(X, Y_true, weights=None)` returns a metric bundle
-  containing `r2_spatial` (the selection score), `euclidean_mae` /
+  containing `r2_spatial` (the selection score on Euclidean / VAE / UMAP
+  manifolds), `dcor_xy` (wrap-aware distance correlation between the
+  decoded prediction and the truth -- the selection score on the TORUS
+  manifold, `nan` on this Euclidean path), `euclidean_mae` /
   `euclidean_rmse` / `euclidean_mae_weighted` (native-scale
   interpretable errors on the *snapped* predictions), `euclidean_mae_raw`
   (unsnapped diagnostic), `mahalanobis_mae` (dimensionless error in the
@@ -89,6 +92,7 @@ from .manifold_metric import (
     circular_mean,
     total_dispersion,
     torus_embed,
+    dcor_prediction_truth,
     _validate_metric_period,
 )
 
@@ -805,35 +809,34 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           snapped predictions and truth.
         - `pearson_x`, `pearson_y` : per-axis linear correlation on the
           natural scale.
-        - `predictive_correlation` : the mean of `pearson_x` and `pearson_y`
-          — a single signed scalar summarising how strongly the prediction
-          co-varies with the truth. **This is the feature-selection score on
-          the TORUS (`metric='torus'`); `r2_spatial` remains the score on
-          Euclidean (VAE/UMAP) manifolds.** The reason is geometric. The QLVM
-          torus is *multimodal* — the repertoire forms discrete supercategory
-          clusters — and the behaviour -> position relationship is effectively
-          *categorical*: behaviour shifts *which* cluster is likely while only
-          weakly constraining the exact within-cluster coordinate. `r2_spatial`
-          is a *squared-geodesic* score, so on a multimodal manifold a weak
-          predictor occasionally lands in a far-wrong cluster; those large
-          squared errors make the centroid baseline practically unbeatable and
-          pin `r2_spatial` at ~0 / slightly negative even when a real,
-          significant relationship exists. The same linear model's predictions
-          are nonetheless *correlated* with the truth, and correlation is robust
-          to that squared-error blow-up. Empirically (grouped-by-session CV,
-          200-permutation null on the QLVM data) the headline behavioural
-          features — neck elevation, nose-nose distance, allo-yaw, orofacial —
-          clear the null at z = +8 to +14 on this metric (and the `usv_cat`
-          controls stay non-significant) while every one of them reads
-          `r2_spatial` < 0; the linear-multinomial classifier independently
-          confirms the signal is real. On a *continuous* Euclidean manifold
-          there are no far-wrong-cluster penalties, so `r2_spatial` is
-          well-behaved there and stays the score — hence this is a torus-only
-          substitution. A constant predictor (the `null_model_free` centroid
-          baseline) has, by construction, exactly zero predictive correlation,
-          so screening "actual `predictive_correlation` > baseline" reduces to
-          the one-sided "actual correlation > 0" test the permutation analysis
-          validated.
+        - `dcor_xy` : wrap-aware **distance correlation** between the decoded
+          prediction and the truth (subsampled; see
+          `manifold_metric.dcor_prediction_truth`). **This is the
+          feature-selection score on the TORUS (`metric='torus'`);
+          `r2_spatial` remains the score on Euclidean (VAE/UMAP) manifolds, so
+          it is computed only on the torus path and is `nan` otherwise.** The
+          reason is geometric. The QLVM torus is a *near-uniform, fully-covered
+          periodic* latent space (a Quasi-Monte-Carlo / Fibonacci-lattice code,
+          not a UMAP scatter): one axis is essentially uniform, the other only
+          mildly structured, with density modulations but no spatial gaps. On
+          such a target the circular centroid is ill-defined and the total
+          dispersion is near-maximal, so `r2_spatial` — a centroid-referenced
+          *squared-geodesic* score — is structurally inverted: a weak predictor
+          that commits to a coordinate is punished *harder* than the do-nothing
+          centroid, so real signal reads more negative than junk. Distance
+          correlation instead measures *dependence* between the prediction and
+          truth (any linear or non-linear association), is robust to that
+          squared-error pathology, and — because it is scale-invariant and the
+          prediction is `atan2`-decoded — is insensitive to ridge magnitude, so
+          no regularisation tuning is needed on this path. Validated on the real
+          100-fold cluster output (neck, nose-nose, allo-yaw clear a
+          within-session-shuffle null at p<1e-4 .. 3e-4 under Wilcoxon +
+          Bonferroni; `usv_cat` controls fail) — the same predictions on which
+          `r2_spatial` found nothing. The screen therefore compares the torus
+          `dcor_xy` against the **`null` (within-session-shuffle)** strategy,
+          not the `null_model_free` empirical-density draw (which is
+          independent of the per-trial truth, so its `dcor_xy` is only the
+          finite-sample chance floor, not a confound-controlled baseline).
 
         Parameters
         ----------
@@ -944,14 +947,20 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         spearman_x = _spearman(Y_true[:, 0], Y_pred[:, 0])
         spearman_y = _spearman(Y_true[:, 1], Y_pred[:, 1])
 
-        # Single signed correlation summary, the torus-manifold selection
-        # score (see the metrics glossary). Average only the finite axes so a
-        # degenerate per-axis correlation (a constant prediction on one axis)
-        # does not nuke the other; an all-constant prediction yields nan,
-        # which the `null_model_free` baseline builders override to the
-        # principled 0.0 (a constant predictor has zero predictive correlation).
-        _finite_corr = [v for v in (pearson_x, pearson_y) if np.isfinite(v)]
-        predictive_correlation = float(np.mean(_finite_corr)) if _finite_corr else float('nan')
+        # Wrap-aware distance correlation between the decoded prediction and
+        # the truth — the torus-manifold selection score (see the metrics
+        # glossary). Computed ONLY on the torus path (it is O(n^2) and
+        # subsampled); on euclidean it is `nan` and `r2_spatial` is the score.
+        # The `null_model_free` baseline is an empirical-density draw (not a
+        # constant centroid), so its `dcor_xy` is computed the same way and
+        # lands at the finite-sample chance floor.
+        if self.metric == 'torus':
+            dcor_xy = dcor_prediction_truth(
+                Y_pred, Y_true, metric=self.metric, period=self.period,
+                random_state=self.random_state,
+            )
+        else:
+            dcor_xy = float('nan')
 
         # `r2_spatial` numerator: sum of squared wrap-aware residuals.
         # Denominator: total wrap-aware dispersion of `Y_true` around
@@ -976,5 +985,5 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             'pearson_y': pearson_y,
             'spearman_x': spearman_x,
             'spearman_y': spearman_y,
-            'predictive_correlation': predictive_correlation,
+            'dcor_xy': dcor_xy,
         }

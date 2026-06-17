@@ -6,10 +6,10 @@ Clemens-lab GLM basis utilities).
 
 These bases tile a temporal-filter window for GLM/GAM fits, so the
 properties that matter downstream are structural: column-normalised
-raised cosines, block-diagonal multi-feature expansion, the flipped
-identity time ordering, and the regular 1-entry pattern of the
-subsampling comb. Each test asserts such an analytic invariant on a
-small synthetic window rather than pinning a frozen matrix.
+raised cosines, the flipped identity time ordering, and the
+multi-resolution Gaussian levels of the Laplacian pyramid. Each test
+asserts such an analytic invariant on a small synthetic window rather
+than pinning a frozen matrix.
 """
 
 from __future__ import annotations
@@ -23,12 +23,9 @@ from usv_playpen.modeling.modeling_bases_functions import (
     _nlin,
     _normalizecols,
     bsplines,
-    comb,
     identity,
     laplacian_pyramid,
-    multifeature_basis,
     raised_cosine,
-    trivial_spacing,
 )
 
 
@@ -154,37 +151,7 @@ class TestBSplines:
         np.testing.assert_allclose(interior, np.ones_like(interior), atol=1e-6)
 
 
-# multifeature_basis
-
-
-class TestMultifeatureBasis:
-
-    def test_block_diagonal_structure(self):
-        """Expanding a single-feature basis over ``nb_features`` tiles it
-        down the diagonal; off-diagonal blocks are exactly zero and the
-        shape is ``(T*F, K*F)``."""
-
-        B = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        F = 3
-        big = multifeature_basis(B, nb_features=F)
-        assert big.shape == (B.shape[0] * F, B.shape[1] * F)
-        # Top-right off-diagonal block must be all zeros.
-        assert np.all(big[:B.shape[0], B.shape[1]:] == 0.0)
-        # Each diagonal block reproduces B.
-        for f in range(F):
-            r0, c0 = f * B.shape[0], f * B.shape[1]
-            np.testing.assert_allclose(
-                big[r0:r0 + B.shape[0], c0:c0 + B.shape[1]], B,
-            )
-
-    def test_single_feature_is_identity_on_block(self):
-        """With ``nb_features=1`` the result is just ``B`` itself."""
-
-        B = np.array([[1.0, 0.0], [0.0, 1.0]])
-        np.testing.assert_allclose(multifeature_basis(B, nb_features=1), B)
-
-
-# identity / trivial_spacing / comb
+# identity
 
 
 class TestIdentityBasis:
@@ -196,36 +163,6 @@ class TestIdentityBasis:
         out = identity(4)
         np.testing.assert_allclose(out, np.identity(4)[::-1, :])
         assert out.shape == (4, 4)
-
-
-class TestTrivialSpacing:
-
-    def test_one_hot_at_regular_intervals(self):
-        """Each column carries exactly one 1, placed at ``spacing``-frame
-        intervals counted back from the event (last row)."""
-
-        width, spacing = 12, 3
-        out = trivial_spacing(width, spacing)
-        assert out.shape == (width, width // spacing)
-        # Every column is a single one-hot.
-        assert np.all(out.sum(axis=0) == 1.0)
-        # First column's 1 sits at the last row (nearest the event).
-        assert out[-1, 0] == 1.0
-        # Second column's 1 sits ``spacing`` frames earlier.
-        assert out[-1 - spacing, 1] == 1.0
-
-    def test_comb_is_alias_of_trivial_spacing(self):
-        """``comb`` is a thin alias and must return identical output; the
-        shared output is the expected one-hot comb for this width/spacing —
-        a ``(12, 4)`` matrix whose single 1s march back from the event row in
-        ``spacing``-frame strides (rows 11, 8, 5, 2 for columns 0..3)."""
-
-        out = comb(12, 3)
-        np.testing.assert_allclose(out, trivial_spacing(12, 3))
-        assert out.shape == (12, 4)
-        assert out.sum() == 4.0
-        expected_ones = {(11, 0), (8, 1), (5, 2), (2, 3)}
-        assert {tuple(rc) for rc in np.argwhere(out == 1.0).tolist()} == expected_ones
 
 
 # laplacian_pyramid

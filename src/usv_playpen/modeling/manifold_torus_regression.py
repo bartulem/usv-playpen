@@ -19,8 +19,9 @@ is a **convex generalised ridge** (L2 + temporal-smoothness penalty) solved in
 **closed form** -- which also eliminates the convergence pathology and the
 L2-grid-ceiling sensitivity of the iterative coordinate model. Predictions are
 decoded back to ``(x, y)`` with ``atan2`` so every downstream metric (the
-wrap-aware ``r2_spatial`` bundle in :meth:`evaluate_metrics`) is computed on the
-native 2-D coordinates exactly as before.
+wrap-aware metric bundle in :meth:`evaluate_metrics`, including the
+``dcor_xy`` selection score) is computed on the native 2-D coordinates
+exactly as before.
 
 It is used ONLY for ``metric='torus'``. Euclidean / VAE runs continue to use the
 unchanged coordinate :class:`SmoothBivariateRegression`, so their results are
@@ -41,7 +42,6 @@ from .jax_bivariate_regression import SmoothBivariateRegression
 from .manifold_metric import (
     circular_mean,
     signed_diff,
-    torus_embed,
     _validate_metric_period,
 )
 
@@ -266,8 +266,9 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         # detect, snapping a near-centroid prediction to discrete observed
         # points only adds discretisation scatter and can flip a real positive
         # ``r2_spatial`` to negative. ``_train_kdtree = None`` makes the
-        # inherited :meth:`evaluate_metrics` and :meth:`predict` operate on the
-        # raw decoded coordinates (their ``snap`` branch is skipped).
+        # inherited :meth:`evaluate_metrics` operate on the raw decoded
+        # coordinates (its ``snap`` branch is skipped); the overridden
+        # :meth:`predict` returns them directly.
         y_train_np = np.asarray(y, dtype=np.float64)
         self.Y_train_ = y_train_np
         self._train_kdtree = None
@@ -287,19 +288,20 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         Description
         -----------
         Predict 2-D torus coordinates. The raw linear prediction is the 4-D
-        embedding ``X @ W + b``, decoded to ``(x, y)`` via ``atan2``. When
-        ``snap`` is True the decoded prediction is projected onto the nearest
-        observed training point (1-NN in the 4-D torus-embedding space, so the
-        nearest-neighbour respects wraparound), constraining the output to the
-        training manifold's support exactly as in the coordinate model.
+        embedding ``X @ W + b``, decoded to ``(x, y)`` via ``atan2``. The
+        decoded prediction is ALWAYS a valid coordinate in ``[0, period)``,
+        so -- unlike the coordinate model -- this estimator builds no snap
+        kd-tree (see :meth:`fit` for the rationale) and the decoded
+        prediction is returned unsnapped regardless of ``snap``.
 
         Parameters
         ----------
         X (np.ndarray)
             ``(n_samples, n_features*n_time_bins)`` design matrix.
         snap (bool)
-            Whether to snap the decoded prediction to the nearest training
-            point. Default True.
+            Retained only for signature parity with the coordinate model's
+            :meth:`predict` (callers pass ``snap=True``/``snap=False``); it
+            is inert here because no kd-tree is built. Default True.
 
         Returns
         -------
@@ -310,12 +312,7 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         check_is_fitted(self, ['coef_', 'intercept_'])
         X = check_array(X)
         raw_embedding = np.dot(X, self.coef_) + self.intercept_
-        decoded = self._decode(raw_embedding)
-
-        if snap and getattr(self, '_train_kdtree', None) is not None:
-            _, idx = self._train_kdtree.query(torus_embed(decoded, self.period), k=1)
-            return self.Y_train_[idx]
-        return decoded
+        return self._decode(raw_embedding)
 
 
 def resolve_manifold_regressor_cls(metric: str) -> type:

@@ -24,6 +24,9 @@ from usv_playpen.modeling.manifold_metric import (
     _validate_metric_period,
     angle_decode_jax,
     circular_mean,
+    dcor_prediction_truth,
+    distance_correlation,
+    manifold_prediction_metrics,
     pairwise_distance,
     resolve_manifold_metric,
     signed_diff,
@@ -366,3 +369,147 @@ class TestResolveManifoldMetric:
 
         with pytest.raises(KeyError):
             resolve_manifold_metric({'vocal_features': {'usv_manifold_metric': 'torus'}})
+
+
+# Distance correlation (the torus selection score)
+
+
+class TestDistanceCorrelation:
+    """`distance_correlation` + `dcor_prediction_truth` — the wrap-aware,
+    model-based score used for torus feature selection."""
+
+    @staticmethod
+    def _wound(n, seed):
+        """A target that winds around the torus: each axis is the wrapped
+        atan2 of two fixed linear projections of X, so X -> Y is a genuine
+        (non-linear, periodic) dependence."""
+
+        g = np.random.default_rng(seed)
+        X = g.standard_normal((n, 4))
+        w = g.standard_normal((4, 4))
+        thx = np.arctan2(X @ w[0], X @ w[1]); thy = np.arctan2(X @ w[2], X @ w[3])
+        Y = np.column_stack([(thx / (2 * np.pi)) % 1.0, (thy / (2 * np.pi)) % 1.0])
+        return X, Y
+
+    def test_distance_correlation_independent_vs_dependent(self):
+        """dCor is near-zero for independent variables and high for a
+        perfectly dependent (identical) one; a constant input gives 0."""
+
+        rng = np.random.default_rng(0)
+        from usv_playpen.modeling.manifold_metric import _geodesic_distance_matrix
+        A = rng.random((300, 2)); B = rng.random((300, 2))
+        da = _geodesic_distance_matrix(A, metric='torus', period=1.0)
+        db = _geodesic_distance_matrix(B, metric='torus', period=1.0)
+        assert distance_correlation(da, da) == pytest.approx(1.0, abs=1e-9)   # self
+        assert distance_correlation(da, db) < 0.15                            # independent (+ finite-n bias)
+        const = np.zeros((300, 300))
+        assert distance_correlation(da, const) == 0.0                         # degenerate -> 0
+
+    def test_dcor_prediction_truth_signal_vs_noise(self):
+        """On a wound torus target, a near-perfect prediction scores ~1 and an
+        independent prediction scores ~0."""
+
+        _, Y = self._wound(1500, 1)
+        rng = np.random.default_rng(2)
+        Y_perfect = (Y + 0.01 * rng.standard_normal(Y.shape)) % 1.0
+        Y_noise = rng.random(Y.shape)
+        d_good = dcor_prediction_truth(Y_perfect, Y, metric='torus', period=1.0, random_state=0)
+        d_bad = dcor_prediction_truth(Y_noise, Y, metric='torus', period=1.0, random_state=0)
+        assert d_good > 0.9
+        assert d_bad < 0.15
+
+    def test_distance_correlation_scale_invariant(self):
+        """dCor is invariant to scaling either distance matrix — the property
+        that ultimately makes the decoded score insensitive to ridge
+        magnitude-shrinkage (the atan2 embedding scale drops out)."""
+
+        rng = np.random.default_rng(3)
+        from usv_playpen.modeling.manifold_metric import _geodesic_distance_matrix
+        A = _geodesic_distance_matrix(rng.random((250, 2)), metric='euclidean', period=1.0)
+        B = _geodesic_distance_matrix(rng.random((250, 2)), metric='euclidean', period=1.0)
+        base = distance_correlation(A, B)
+        assert distance_correlation(7.0 * A, B) == pytest.approx(base, abs=1e-9)
+        assert distance_correlation(A, 0.013 * B) == pytest.approx(base, abs=1e-9)
+
+    def test_dcor_deterministic(self):
+        """A fixed `random_state` makes the subsampled estimate reproducible."""
+
+        _, Y = self._wound(1000, 5)
+        Yp = (Y + 0.05 * np.random.default_rng(6).standard_normal(Y.shape)) % 1.0
+        a = dcor_prediction_truth(Yp, Y, metric='torus', period=1.0, random_state=0)
+        b = dcor_prediction_truth(Yp, Y, metric='torus', period=1.0, random_state=0)
+        assert a == b
+
+
+class TestManifoldPredictionMetrics:
+    """`manifold_prediction_metrics` — the shared bundle scorer for the
+    non-fitted baselines (the `null_model_free` empirical-density draw and the
+    forward-selection Step-0 baseline)."""
+
+    _KEYS = {
+        'r2_spatial', 'euclidean_mae', 'euclidean_rmse', 'euclidean_mae_weighted',
+        'euclidean_mae_raw', 'mahalanobis_mae', 'mae_x', 'mae_y',
+        'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'dcor_xy',
+    }
+
+    def test_bundle_keys_and_raw_equals_mae(self):
+        """Returns exactly the fitted-strategy key set; with no snap, the raw
+        and snapped MAE coincide."""
+
+        rng = np.random.default_rng(0)
+        Y = rng.random((200, 2)); Yp = rng.random((200, 2))
+        bundle = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
+        assert set(bundle) == self._KEYS
+        assert bundle['euclidean_mae_raw'] == bundle['euclidean_mae']
+
+    def test_perfect_prediction(self):
+        """An exact prediction scores `r2_spatial == 1`, zero error, and unit
+        per-axis / distance correlation."""
+
+        rng = np.random.default_rng(1)
+        Y = rng.random((300, 2))
+        bundle = manifold_prediction_metrics(Y, Y.copy(), metric='torus', period=1.0)
+        assert bundle['r2_spatial'] == pytest.approx(1.0, abs=1e-9)
+        assert bundle['euclidean_mae'] == pytest.approx(0.0, abs=1e-9)
+        assert bundle['pearson_x'] == pytest.approx(1.0, abs=1e-9)
+        assert bundle['dcor_xy'] == pytest.approx(1.0, abs=1e-9)
+
+    def test_dcor_only_computed_on_torus(self):
+        """`dcor_xy` is the torus selection score; on euclidean it is `nan`."""
+
+        rng = np.random.default_rng(2)
+        Y = rng.random((200, 2)); Yp = rng.random((200, 2))
+        assert np.isnan(
+            manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)['dcor_xy']
+        )
+        assert np.isfinite(
+            manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)['dcor_xy']
+        )
+
+    def test_density_draw_correlations_are_finite(self):
+        """A uniform draw has real geometry, so the per-axis correlations and
+        `dcor_xy` are defined finite-sample chance values — unlike the old
+        constant-centroid baseline, whose correlations were NaN and whose
+        `dcor_xy` was a degenerate 0."""
+
+        rng = np.random.default_rng(3)
+        Y = rng.random((400, 2))
+        draw = Y[rng.choice(len(Y), size=len(Y), replace=True)]
+        bundle = manifold_prediction_metrics(Y, draw, metric='torus', period=1.0)
+        for key in ('pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'dcor_xy'):
+            assert np.isfinite(bundle[key])
+
+    def test_mahalanobis_requires_cov(self):
+        """`mahalanobis_mae` is `nan` without a training inverse-covariance and
+        finite once one is supplied."""
+
+        rng = np.random.default_rng(4)
+        Y = rng.random((100, 2)); Yp = rng.random((100, 2))
+        assert np.isnan(
+            manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)['mahalanobis_mae']
+        )
+        assert np.isfinite(
+            manifold_prediction_metrics(
+                Y, Yp, metric='euclidean', period=1.0, train_cov_inv=np.eye(2),
+            )['mahalanobis_mae']
+        )

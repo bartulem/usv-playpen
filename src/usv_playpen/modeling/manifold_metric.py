@@ -35,6 +35,7 @@ floating-point noise.
 
 import numpy as np
 import jax.numpy as jnp
+from scipy.stats import spearmanr
 
 
 VALID_METRICS = ('euclidean', 'torus')
@@ -180,6 +181,278 @@ def pairwise_distance(a: np.ndarray, b: np.ndarray, *,
     return np.sqrt(np.sum(diff ** 2, axis=-1))
 
 
+def _geodesic_distance_matrix(Y: np.ndarray, *, metric: str, period: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    Full ``(n, n)`` pairwise wrap-aware distance matrix for a set of manifold
+    coordinates, built by broadcasting :func:`signed_diff` over all pairs. On
+    the torus each per-axis difference is wrapped into ``(-period/2, period/2]``
+    before the Euclidean norm, so entry ``(i, j)`` is the shortest geodesic
+    distance between point ``i`` and point ``j``; on euclidean it reduces to
+    the ordinary pairwise Euclidean distance. This is the building block of the
+    distance-correlation statistic below.
+
+    Parameters
+    ----------
+    Y (np.ndarray)
+        ``(n, D)`` coordinate matrix.
+    metric (str)
+        ``'euclidean'`` or ``'torus'``.
+    period (float)
+        Per-axis wrap period.
+
+    Returns
+    -------
+    D (np.ndarray)
+        ``(n, n)`` symmetric distance matrix.
+    """
+
+    diff = signed_diff(Y[:, None, :], Y[None, :, :], metric=metric, period=period)
+    return np.sqrt(np.sum(diff ** 2, axis=-1))
+
+
+def distance_correlation(A: np.ndarray, B: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    Distance correlation (Szekely-Rizzo) between two precomputed ``(n, n)``
+    pairwise-distance matrices. Each matrix is double-centered (subtract its
+    row means and column means, add back the grand mean); the distance
+    covariance is the mean of the element-wise product of the two centered
+    matrices, and the distance correlation normalises it by the geometric mean
+    of the two distance variances. The statistic is ``0`` iff the two
+    underlying variables are statistically independent and lies in ``[0, 1]``;
+    it captures any (linear or non-linear) dependence and is invariant to
+    scaling and orthogonal transformations of either argument.
+
+    Parameters
+    ----------
+    A (np.ndarray)
+        ``(n, n)`` pairwise-distance matrix of the first variable.
+    B (np.ndarray)
+        ``(n, n)`` pairwise-distance matrix of the second variable.
+
+    Returns
+    -------
+    dcor (float)
+        Distance correlation in ``[0, 1]`` (``0.0`` if either variable is
+        constant, i.e. has a degenerate distance matrix).
+    """
+
+    def _double_center(M: np.ndarray) -> np.ndarray:
+        return M - M.mean(axis=0, keepdims=True) - M.mean(axis=1, keepdims=True) + M.mean()
+
+    a_c, b_c = _double_center(A), _double_center(B)
+    dcov2 = float((a_c * b_c).mean())
+    dvar_a = float((a_c * a_c).mean())
+    dvar_b = float((b_c * b_c).mean())
+    if dvar_a <= 0.0 or dvar_b <= 0.0:
+        return 0.0
+    ratio = dcov2 / np.sqrt(dvar_a * dvar_b)
+    return float(np.sqrt(ratio)) if ratio > 0.0 else 0.0
+
+
+def dcor_prediction_truth(Y_pred: np.ndarray, Y_true: np.ndarray, *,
+                          metric: str, period: float,
+                          n_sub: int = 2500, n_rep: int = 3,
+                          random_state: int = 0) -> float:
+    """
+    Description
+    -----------
+    Wrap-aware distance correlation between a model's predicted manifold
+    coordinates and the true coordinates, averaged over ``n_rep`` random
+    subsamples of ``n_sub`` points each. Distance correlation is ``O(n^2)`` in
+    memory and compute, so the subsampling keeps it tractable on large test
+    folds; averaging over repeats reduces the subsample variance.
+
+    This is the model-based feature-selection score on the **torus**: it
+    measures how strongly the decoded prediction co-varies with the truth on
+    the periodic manifold. Because the prediction is decoded with ``atan2`` its
+    overall scale is irrelevant (and the metric is scale-invariant anyway), and
+    because it scores *dependence* rather than squared geodesic error it stays
+    meaningful on the near-uniform, multimodal QLVM manifold where a centroid-
+    referenced ``r2_spatial`` is inverted. On euclidean the geometry simply
+    reduces to ordinary Euclidean distances.
+
+    Because distance correlation is non-negative and never zero for a
+    real predictor, it is *only* meaningful relative to a baseline: the
+    selection pipeline screens it against the within-session-shuffle
+    ``null`` strategy (refit on session-shuffled history), which removes
+    the session-level confound while leaving genuine trial-level
+    dependence to test. (The ``null_model_free`` empirical-density draw is
+    independent of the per-trial truth, so its ``dcor`` sits at the
+    finite-sample noise floor; it is the reported chance reference, not
+    the screening baseline.) See the ``dcor_xy`` entry in
+    ``jax_bivariate_regression.evaluate_metrics`` for the full geometric
+    rationale and the empirical validation on the 100-fold cluster output.
+
+    Parameters
+    ----------
+    Y_pred (np.ndarray)
+        ``(n, D)`` predicted coordinates.
+    Y_true (np.ndarray)
+        ``(n, D)`` true coordinates.
+    metric (str)
+        ``'euclidean'`` or ``'torus'`` (the distance geometry for both matrices).
+    period (float)
+        Per-axis wrap period.
+    n_sub (int)
+        Subsample size per repeat (capped at ``n``). The default ``2500``
+        keeps each ``O(n^2)`` distance matrix at ~6.25e6 entries -- small
+        enough to stay fast, large enough that the dCor estimate is stable
+        across draws on the production test folds.
+    n_rep (int)
+        Number of independent subsamples to average. The default ``3``
+        averages out most of the subsample-draw variance at negligible
+        extra cost.
+    random_state (int)
+        Seed for the deterministic subsample draws (reproducibility).
+
+    Returns
+    -------
+    dcor (float)
+        Mean distance correlation over the repeats, in ``[0, 1]``
+        (``nan`` only if ``n_rep < 1``).
+    """
+
+    Y_pred = np.asarray(Y_pred, dtype=np.float64)
+    Y_true = np.asarray(Y_true, dtype=np.float64)
+    if len(Y_pred) != len(Y_true):
+        raise ValueError(
+            f'dcor_prediction_truth received mismatched lengths: Y_pred has '
+            f'{len(Y_pred)} rows but Y_true has {len(Y_true)}; the subsample '
+            f'indices must address paired rows.'
+        )
+    n = len(Y_true)
+    rng = np.random.default_rng(random_state)
+    vals = []
+    for _ in range(int(n_rep)):
+        idx = rng.choice(n, size=min(int(n_sub), n), replace=False)
+        a_mat = _geodesic_distance_matrix(Y_pred[idx], metric=metric, period=period)
+        b_mat = _geodesic_distance_matrix(Y_true[idx], metric=metric, period=period)
+        vals.append(distance_correlation(a_mat, b_mat))
+    return float(np.mean(vals)) if vals else float('nan')
+
+
+def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
+                                weights: np.ndarray = None, *,
+                                metric: str, period: float,
+                                train_cov_inv: np.ndarray = None,
+                                random_state: int = 0) -> dict:
+    """
+    Description
+    -----------
+    Full per-fold metric bundle for a set of manifold-coordinate predictions
+    ``Y_pred`` evaluated against the truth ``Y_true`` under the wrap-aware
+    ``metric``. This is the shared scorer for the **non-fitted** baselines --
+    the ``null_model_free`` empirical-density draw in the univariate runner and
+    the forward-selection Step-0 baseline -- so they report exactly the same
+    metric keys as the fitted ``actual`` / ``null`` strategies. The fitted
+    strategies score through ``SmoothBivariateRegression.evaluate_metrics``,
+    which additionally distinguishes snapped vs. raw predictions; here
+    ``Y_pred`` is used directly, so ``euclidean_mae_raw`` equals
+    ``euclidean_mae``.
+
+    Every euclidean-named quantity is built from the wrap-aware signed
+    residual, so on ``metric='torus'`` it is the geodesic distance and on
+    ``metric='euclidean'`` it reduces to the ordinary plane distance.
+    ``dcor_xy`` is the wrap-aware distance correlation between prediction and
+    truth and is computed only on the torus (it is the torus selection score);
+    on euclidean it is ``nan`` and ``r2_spatial`` is the score.
+
+    Parameters
+    ----------
+    Y_true (np.ndarray)
+        ``(n, 2)`` true coordinates.
+    Y_pred (np.ndarray)
+        ``(n, 2)`` predicted coordinates.
+    weights (np.ndarray)
+        Length-``n`` weights for ``euclidean_mae_weighted`` (defaults to
+        uniform).
+    metric (str)
+        ``'euclidean'`` or ``'torus'``.
+    period (float)
+        Per-axis wrap period.
+    train_cov_inv (np.ndarray)
+        ``(2, 2)`` inverse training covariance for ``mahalanobis_mae``; the
+        metric is ``nan`` when ``None``.
+    random_state (int)
+        Seed for the subsampled ``dcor_xy`` draw (torus only).
+
+    Returns
+    -------
+    dict
+        The metric bundle: ``r2_spatial``, ``euclidean_mae``,
+        ``euclidean_rmse``, ``euclidean_mae_weighted``, ``euclidean_mae_raw``,
+        ``mahalanobis_mae``, ``mae_x``, ``mae_y``, ``pearson_x``,
+        ``pearson_y``, ``spearman_x``, ``spearman_y``, ``dcor_xy``.
+    """
+
+    Y_true = np.asarray(Y_true, dtype=np.float64)
+    Y_pred = np.asarray(Y_pred, dtype=np.float64)
+    if weights is None:
+        weights = np.ones(Y_true.shape[0])
+
+    residual = signed_diff(Y_true, Y_pred, metric=metric, period=period)
+    dx = residual[:, 0]
+    dy = residual[:, 1]
+    euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
+    euclidean_mae = float(np.mean(euclidean_dist))
+
+    if train_cov_inv is not None:
+        # Numerical noise in near-singular covariances can push tiny
+        # residuals slightly negative; clip before the sqrt.
+        quad = np.einsum('ij,jk,ik->i', residual, train_cov_inv, residual)
+        mahalanobis_mae = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
+    else:
+        mahalanobis_mae = float('nan')
+
+    def _pearson(a, b):
+        a_c = a - a.mean()
+        b_c = b - b.mean()
+        denom = np.sqrt(np.sum(a_c ** 2) * np.sum(b_c ** 2))
+        if denom <= 0:
+            return float('nan')
+        return float(np.dot(a_c, b_c) / denom)
+
+    def _spear(a, b):
+        try:
+            value = spearmanr(a, b)[0]
+        except ValueError:
+            return float('nan')
+        return float(value) if np.isfinite(value) else float('nan')
+
+    if metric == 'torus':
+        dcor_xy = dcor_prediction_truth(
+            Y_pred, Y_true, metric=metric, period=period, random_state=random_state,
+        )
+    else:
+        dcor_xy = float('nan')
+
+    ss_res = float(np.sum(dx ** 2 + dy ** 2))
+    denom = total_dispersion(Y_true, metric=metric, period=period)
+    r2_spatial = float(1.0 - (ss_res / denom)) if denom > 0 else 0.0
+
+    return {
+        'r2_spatial': r2_spatial,
+        'euclidean_mae': euclidean_mae,
+        'euclidean_rmse': float(np.sqrt(np.mean(euclidean_dist ** 2))),
+        'euclidean_mae_weighted': float(
+            np.sum(weights * euclidean_dist) / (np.sum(weights) + 1e-12)
+        ),
+        'euclidean_mae_raw': euclidean_mae,
+        'mahalanobis_mae': mahalanobis_mae,
+        'mae_x': float(np.mean(np.abs(dx))),
+        'mae_y': float(np.mean(np.abs(dy))),
+        'pearson_x': _pearson(Y_true[:, 0], Y_pred[:, 0]),
+        'pearson_y': _pearson(Y_true[:, 1], Y_pred[:, 1]),
+        'spearman_x': _spear(Y_true[:, 0], Y_pred[:, 0]),
+        'spearman_y': _spear(Y_true[:, 1], Y_pred[:, 1]),
+        'dcor_xy': dcor_xy,
+    }
+
+
 def circular_mean(Y: np.ndarray, *,
                   metric: str, period: float,
                   weights: np.ndarray = None) -> np.ndarray:
@@ -262,7 +535,10 @@ def total_dispersion(Y: np.ndarray, *,
     truth. Computing both numerator and denominator under the same
     metric is what keeps `r2_spatial` interpretable on a torus —
     using `np.var(Y)` against a sum-of-squared-wrap-residuals would
-    give nonsense near the boundary.
+    give nonsense near the boundary. On the torus `r2_spatial` is
+    retained only as a diagnostic (the selection score there is
+    `dcor_xy`), but its denominator is still produced for every
+    strategy, so this helper remains in use on both geometries.
 
     Parameters
     ----------

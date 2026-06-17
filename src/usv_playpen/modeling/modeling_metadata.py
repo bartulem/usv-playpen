@@ -1150,12 +1150,15 @@ def metadata_blocks_equal(a: dict, b: dict, ignore_keys: tuple = ()) -> bool:
     Structural equality check between two metadata blocks, optionally
     ignoring a tuple of top-level keys.
 
-    Two metadata blocks compare equal iff the union of their keys is
-    identical and every value compares equal under `==`. Lists and
-    dicts compare element-wise; numpy scalars are compared after a
-    `float()` / `int()` cast where applicable. Used by the consolidators
-    to assert that every per-feature / per-step pickle in a directory
-    agrees on the run-level configuration before merging.
+    Two metadata blocks compare equal iff (after dropping `ignore_keys`)
+    their key sets are identical and every value compares equal. Nested
+    dicts are recursed into; all other leaf values (strings, numbers,
+    lists, numpy scalars) are compared with `==`. Metadata blocks hold
+    only such JSON-like provenance, so no numpy-array special-casing is
+    performed (an array-valued leaf would raise on the ambiguous truth
+    value of `array != array`). Used by the consolidators to assert that
+    every per-feature / per-step pickle in a directory agrees on the
+    run-level configuration before merging.
 
     Parameters
     ----------

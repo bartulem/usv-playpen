@@ -1035,6 +1035,11 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     for sess_id, per_feature in session_blocks.items():
         if sess_id not in bout_onset_times_per_session:
             continue
+        if sess_id not in camera_fps_dict:
+            # The phase-1 loop below indexes ``camera_fps_dict[sess_id]``
+            # directly; exclude any session missing a recorded fps here
+            # rather than letting it raise a KeyError mid-loop.
+            continue
         if not per_feature:
             continue
         n_frames_sess = next(iter(per_feature.values())).size

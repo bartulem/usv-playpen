@@ -170,7 +170,8 @@ class TestFitPredictEvaluate:
         metrics = model.evaluate_metrics(X, y)
         for key in ('r2_spatial', 'euclidean_mae', 'euclidean_rmse',
                     'mahalanobis_mae', 'mae_x', 'mae_y',
-                    'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y'):
+                    'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
+                    'dcor_xy'):
             assert key in metrics
 
     def test_wrong_column_count_raises(self):

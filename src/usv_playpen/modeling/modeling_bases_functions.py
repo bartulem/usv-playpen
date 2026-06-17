@@ -7,7 +7,6 @@ https://github.com/janclemenslab/glm_utils/blob/master/src/glm_utils/bases.py
 
 import numpy as np
 import scipy.interpolate as si
-import scipy.linalg
 
 
 def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normalize: bool = True) -> np.ndarray:
@@ -230,29 +229,6 @@ def bsplines(width: int, positions: list, degree: int = 3, periodic: bool = Fals
     return B
 
 
-def multifeature_basis(B: np.ndarray, nb_features: int = 1) -> np.ndarray:
-    """
-    Creates a block diagonal basis matrix for multiple features.
-
-    Repeats the input basis matrix `B` along the diagonal, once for each feature,
-    to allow independent filtering of multiple behavioral predictors.
-
-    Parameters
-    ----------
-    B : np.ndarray
-        The 2D basis matrix for a single feature.
-    nb_features : int, optional
-        The number of features to expand the basis for. Defaults to 1.
-
-    Returns
-    -------
-    block_diagonal_basis : np.ndarray
-        A sparse-like block diagonal matrix.
-    """
-
-    return scipy.linalg.block_diag(*[B for _ in range(nb_features)])
-
-
 def identity(width: int) -> np.ndarray:
     """
     Returns an identity matrix as a basis.
@@ -271,49 +247,3 @@ def identity(width: int) -> np.ndarray:
         Identity matrix of shape [width, width].
     """
     return np.identity(width)[::-1, :]
-
-
-def comb(width: int, spacing: int) -> np.ndarray:
-    """
-    Alias for trivial_spacing. Samples equally spaced discrete time points.
-
-    Parameters
-    ----------
-    width : int
-        Total time span.
-    spacing : int
-        Interval between sampled points.
-
-    Returns
-    -------
-    basis_matrix : np.ndarray
-        A sparse basis matrix representing temporal subsampling.
-    """
-    return trivial_spacing(width, spacing)
-
-
-def trivial_spacing(width: int, spacing: int) -> np.ndarray:
-    """
-    Generates a basis for sampling equally spaced temporal points.
-
-    This basis matrix acts as a subsampling operator, selecting specific
-    discrete frames at regular intervals relative to the event.
-
-    Parameters
-    ----------
-    width : int
-        Total temporal span of the basis.
-    spacing : int
-        Frames between each sampled time point.
-
-    Returns
-    -------
-    basis_matrix : np.ndarray
-        Matrix of shape [time, bases] with 1s at sampled indices.
-    """
-
-    spaced_base = np.zeros((width, width // spacing))
-    for ii in range(width // spacing):
-        spaced_base[-ii * spacing - 1, ii] = 1
-
-    return spaced_base

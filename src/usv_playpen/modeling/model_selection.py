@@ -38,7 +38,7 @@ from .modeling_vocal_categories_multinomial import (
     _log_spaced_grid_multinomial,
     _tune_multinomial_regularization,
 )
-from .manifold_metric import circular_mean, resolve_manifold_metric, signed_diff, total_dispersion
+from .manifold_metric import circular_mean, manifold_prediction_metrics, resolve_manifold_metric, signed_diff
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable,
     _log_spaced_grid,
@@ -1359,7 +1359,7 @@ def vocal_category_model_selection(
             basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
         elif basis_type == 'laplacian_pyramid':
             p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
-            basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], fwhm=p['fwhm']))
+            basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], step=p['step'], fwhm=p['fwhm']))
         elif basis_type == 'identity':
             basis_matrix = identity(width=history_frames)
 
@@ -2150,7 +2150,7 @@ def bout_parameter_model_selection(
             basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
         elif basis_type == 'laplacian_pyramid':
             p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
-            basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], fwhm=p['fwhm']))
+            basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], step=p['step'], fwhm=p['fwhm']))
         elif basis_type == 'identity':
             basis_matrix = identity(width=history_frames)
 
@@ -3628,27 +3628,40 @@ def continuous_vocal_manifold_model_selection(
         p_val: float = 0.05
 ) -> None:
     """
-    Performs forward stepwise selection for continuous UMAP-position
-    prediction using the `SmoothBivariateRegression` estimator.
+    Performs forward stepwise selection for continuous manifold-position
+    prediction using the geometry-resolved estimator
+    (`SmoothBivariateRegression` on Euclidean / VAE / UMAP manifolds,
+    `SmoothTorusManifoldRegression` on the torus).
 
     The selector identifies the minimal set of behavioural features that
-    jointly predict the `(x, y)` UMAP coordinates of upcoming USVs.
-    Candidates are ranked by `r2_spatial` (the coefficient of
-    determination pooled across UMAP axes) — higher is better,
+    jointly predict the `(x, y)` manifold coordinates of upcoming USVs.
+    Candidates are ranked by the geometry-appropriate selection score
+    (`SELECTION_SCORE_KEY`): `r2_spatial` (the coefficient of
+    determination pooled across manifold axes — higher is better,
     interpretable as the fraction of test-fold spatial variance the
-    model explains above the test-fold marginal mean.
+    model explains above the test-fold marginal mean) on Euclidean /
+    VAE / UMAP manifolds, and wrap-aware distance correlation `dcor_xy`
+    on the near-uniform periodic TORUS manifold, where the centroid-
+    referenced `r2_spatial` is structurally inverted.
 
     Key algorithmic choices
     -----------------------
-    1. Manifold-bounded predictions. Every candidate prediction is
-       snapped to the nearest observed training UMAP point before
-       metrics are computed, so the active model and the baselines
-       compete on the same support and the metric magnitudes are
+    1. Manifold-bounded predictions. On Euclidean manifolds every
+       candidate prediction is snapped to the nearest observed training
+       point before metrics are computed, so the active model and the
+       baselines compete on the same support and the magnitudes are
        directly comparable (see `SmoothBivariateRegression.predict`).
+       The torus estimator decodes to a coordinate that is always on the
+       manifold, so it deliberately does not snap.
     2. Wilcoxon screening (higher-is-better). Candidates are ranked by a
        Bonferroni-corrected one-sided Wilcoxon signed-rank test on the
-       paired per-fold `r2_spatial` of `actual` vs. `null` (the within-
-       session X-history shuffle).
+       paired per-fold selection score of `actual` vs. the within-session
+       X-history shuffle `null` (`SCREEN_BASELINE_STRATEGY`) — on both
+       geometries. The shuffle removes the session-level confound while
+       leaving the trial-level dependence to test; on the torus it is the
+       only meaningful baseline anyway (a constant prediction's `dcor_xy`
+       is 0 by construction). A separate gate-1 (`score > 0`) keeps the
+       "beats the no-model mean" floor on euclidean.
     3. Spatial stratification. Folds come from
        `get_stratified_spatial_splits_stable`, which uses deterministic
        K-Means geographic clustering so rare acoustic satellites are
@@ -3657,19 +3670,28 @@ def continuous_vocal_manifold_model_selection(
     4. Inverse-density weighting. The pre-computed KDE spatial weights
        `w` are forwarded to the JAX optimiser so gradient updates give
        satellite vocalisations the same pull as dense-core bouts.
-    5. Spatial-centroid baseline (Step 0). `null_model_free` predicts
-       the KDE-weighted training centroid for every test trial — the
-       absolute floor any model with real signal must clear.
-    6. 1SE rule on R². Because R² is higher-is-better, a feature is
-       added only when `(best_cand_score - best_current_score) >
-       best_cand_se`, i.e. the candidate's mean score beats the current
-       best by more than one SE of its own per-fold distribution.
+    5. Empirical-density baseline (Step 0). `null_model_free` predicts a
+       uniform random draw from the training `Y` for every test trial —
+       the chance floor (a sample from the observed repertoire, ignoring
+       kinematics) reported alongside the screen.
+    6. 1SE rule on the selection score. Because the selection score is
+       higher-is-better on both geometries, a feature is added only when
+       `(best_cand_score - best_current_score) > best_cand_se`, i.e. the
+       candidate's mean score beats the current best by more than one SE
+       of its own per-fold distribution.
 
     Joint per-fold hyperparameter tuning
     ------------------------------------
-    When `hyperparameters.jax_linear.bivariate.tune_regularization_bool`
-    is `true`, every candidate fold (anchor + every forward-selection
-    trial) runs its own joint inner CV over the log-spaced
+    On the TORUS manifold the inner-loop CV is unnecessary and is
+    unconditionally disabled (`tune_regularization_bool` is forced to
+    `False`): `dcor_xy` is scale/regularisation-invariant via the `atan2`
+    decode, so the inner-CV score is flat across the grids. Use the advised
+    fixed defaults `lambda_smooth_fixed = 1.0` and `l2_reg_fixed = 0.01`
+    (`lambda_smooth` still shapes the interpretable filter even though it no
+    longer moves the score). On Euclidean manifolds, when
+    `hyperparameters.jax_linear.bivariate.tune_regularization_bool` is
+    `true`, every candidate fold (anchor + every forward-selection trial)
+    runs its own joint inner CV over the log-spaced
     `(lambda_smooth, l2_reg)` grids before the outer fit. The l2 grid is
     rescaled by `1 / sqrt(n_trial_features)` so the search window tracks
     the same effective regularisation strength as the fixed fallback
@@ -3737,62 +3759,61 @@ def continuous_vocal_manifold_model_selection(
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
 
-    # Geometry-conditional selection score. The QLVM torus is multimodal, so the
-    # squared-geodesic `r2_spatial` is blind to its (categorical) behaviour ->
-    # position signal — it stays ~0/negative even where the signal is real and
-    # highly significant. `predictive_correlation` (see
-    # SmoothBivariateRegression.evaluate_metrics for the full rationale +
-    # validation) recovers it on the torus. Euclidean (VAE/UMAP) manifolds have
-    # no far-wrong-cluster penalty, so `r2_spatial` is well-behaved there and
-    # remains the score. The substitution is therefore torus-only and drives
-    # the screen, the inner-CV tuning, and every candidate/baseline score below.
+    # Geometry-conditional selection score. The QLVM torus is a near-uniform,
+    # fully-covered periodic latent space, so the centroid-referenced
+    # squared-geodesic `r2_spatial` is structurally inverted there (real signal
+    # reads more negative than junk). Wrap-aware distance correlation `dcor_xy`
+    # (see SmoothBivariateRegression.evaluate_metrics / manifold_metric for the
+    # full rationale + validation) recovers it. Euclidean (VAE/UMAP) manifolds
+    # are well-behaved, so `r2_spatial` remains the score there. The substitution
+    # is torus-only and drives the screen and every candidate/baseline score
+    # below; on both geometries the score is screened against the within-session
+    # `null` (see SCREEN_BASELINE_STRATEGY below).
     _selection_manifold_metric, _ = resolve_manifold_metric(settings)
     SELECTION_SCORE_KEY = (
-        'predictive_correlation' if _selection_manifold_metric == 'torus' else 'r2_spatial'
+        'dcor_xy' if _selection_manifold_metric == 'torus' else 'r2_spatial'
     )
+    # The screen tests `actual` against the within-session-shuffle `null`
+    # baseline on BOTH geometries (gate 2 below): the shuffle preserves
+    # session-level structure and destroys the trial-level X->Y pairing, so
+    # beating it isolates genuine trial-level prediction from a session-level
+    # artefact. The `null_model_free` empirical-density draw is the reported
+    # chance floor, not the screening baseline.
+    SCREEN_BASELINE_STRATEGY = 'null'
 
     num_features = len(univariate_data)
     alpha_corrected = p_val / num_features
     candidates = []
 
-    # `r2_spatial` is the headline screening score: it's directly
-    # comparable across features / sex groups, bounded above by 1, and
-    # universally interpretable as "fraction of test-fold spatial
-    # variance explained above the marginal mean". A feature is kept
-    # for stepwise selection only if BOTH gates pass:
-    #   (1) mean(actual r2_spatial) across folds is strictly positive —
-    #       i.e. on average it beats the spatial-centroid (no-model)
-    #       baseline. The forward selector's 1-SE rule will demand this
-    #       anyway at the anchor / step-1 round, so this gate just
-    #       refuses to spend stepwise-tuning compute on features the
-    #       selector will reject regardless.
-    #   (2) one-sided Wilcoxon `actual > null_model_free` per fold,
-    #       Bonferroni-corrected at `alpha_corrected`. This used to test
-    #       `actual > null` (within-session X-history shuffle), which
-    #       only asks "does the time-locked structure of this feature
-    #       carry any information" — a feature can pass that test while
-    #       its absolute R² sits well below the centroid baseline
-    #       (typical on misspecified manifolds — both `actual` and
-    #       `null` are stuck in regularised-noise territory below
-    #       baseline). Comparing against `null_model_free` directly
-    #       asks the question that matters: "does this feature beat
-    #       the no-model centroid consistently across folds." The
-    #       `null` strategy is still computed by the univariate runner
-    #       and saved to the pickle; this screen just no longer uses
-    #       it.
-    # On the torus this is `predictive_correlation`, on Euclidean it is
-    # `r2_spatial` (see the SELECTION_SCORE_KEY note above). For correlation the
-    # `null_model_free` baseline carries the principled value 0.0 (a constant
-    # centroid prediction has zero predictive correlation), so the paired
-    # Wilcoxon below reduces to the one-sided "actual correlation > 0" test that
-    # the permutation analysis validated — no special-casing of the gate needed.
+    # The selection score (`SELECTION_SCORE_KEY`: `r2_spatial` on euclidean,
+    # `dcor_xy` on the torus) is the headline screening figure. A feature is
+    # kept for stepwise selection only if BOTH gates pass:
+    #   (1) mean(actual score) across folds is strictly positive. On euclidean
+    #       this is the metric-intrinsic "beats the no-model centroid" floor
+    #       (`r2_spatial > 0`); on the torus `dcor_xy` is always > 0 so this
+    #       gate is automatically satisfied (gate 2 is the operative bar). It
+    #       also refuses to spend stepwise-tuning compute on features the
+    #       forward selector's 1-SE rule would reject regardless.
+    #   (2) one-sided Wilcoxon `actual > null` per fold (the within-session
+    #       X-history shuffle, `SCREEN_BASELINE_STRATEGY`), Bonferroni-corrected
+    #       at `alpha_corrected`. The shuffle preserves session-level structure
+    #       and destroys the trial-level X->Y pairing, so clearing it shows
+    #       genuine trial-level behavioural prediction rather than a
+    #       session-level artefact.
+    # Both geometries screen against `null`. Gate (1) supplies the "beat the
+    # mean" safety net that a pure `actual > null` test lacks on euclidean (a
+    # feature could beat its own shuffle while still sitting below the centroid);
+    # on the torus the centroid is degenerate (`dcor_xy = 0`), so `null` is the
+    # only meaningful baseline anyway. The `null_model_free` empirical-density
+    # draw is the reported chance reference and is not used as a screening
+    # baseline.
     SCREENING_METRIC = SELECTION_SCORE_KEY
 
-    # Schema guard: a univariate ranking produced before `predictive_correlation`
-    # existed lacks the key, so on the torus path the screen below would skip
-    # every feature and mis-report the schema mismatch as "no significant
-    # features" (a misleading false null). Detect the absence up front and fail
-    # loudly with the fix instead of silently aborting.
+    # Schema guard: a univariate ranking produced before the current screening
+    # metric (`dcor_xy` on torus) existed lacks the key, so the screen below
+    # would skip every feature and mis-report the schema mismatch as "no
+    # significant features" (a misleading false null). Detect the absence up
+    # front and fail loudly with the fix instead of silently aborting.
     _screen_metric_present = False
     for _payload in univariate_data.values():
         _res = _payload[1] if isinstance(_payload, tuple) and len(_payload) == 2 else _payload
@@ -3815,11 +3836,11 @@ def continuous_vocal_manifold_model_selection(
         else:
             results = payload
 
-        if 'actual' not in results or 'null_model_free' not in results:
+        if 'actual' not in results or SCREEN_BASELINE_STRATEGY not in results:
             continue
 
         actual_metrics = results['actual']['folds']['metrics']
-        baseline_metrics = results['null_model_free']['folds']['metrics']
+        baseline_metrics = results[SCREEN_BASELINE_STRATEGY]['folds']['metrics']
         if SCREENING_METRIC not in actual_metrics or SCREENING_METRIC not in baseline_metrics:
             continue
 
@@ -3837,11 +3858,12 @@ def continuous_vocal_manifold_model_selection(
 
         mean_score = float(np.mean(valid_actual))
 
-        # Gate (1): must beat the centroid baseline on average.
+        # Gate (1): must beat the no-model mean on average (`r2_spatial > 0`;
+        # automatically satisfied on the torus where `dcor_xy` is always > 0).
         if mean_score <= 0:
             continue
 
-        # Gate (2): must beat the centroid baseline per fold (Wilcoxon).
+        # Gate (2): must beat the within-session `null` per fold (Wilcoxon).
         try:
             _, p_value = wilcoxon(valid_actual, valid_baseline, alternative='greater')
         except ValueError:
@@ -3941,10 +3963,12 @@ def continuous_vocal_manifold_model_selection(
     inner_cv_folds = tune_params['inner_cv_folds']
     inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
     if _selection_manifold_metric == 'torus':
-        # Tune regularisation against the torus selection score as well, so the
-        # chosen (lambda_smooth, l2) maximises `predictive_correlation` rather
-        # than the torus-blind `r2_spatial`.
-        inner_cv_scoring_metric = SELECTION_SCORE_KEY
+        # Disable regularisation tuning on the torus: the selection score
+        # `dcor_xy` is decode-/scale-invariant and verified flat across l2 and
+        # lambda_smooth, so tuning would only fit subsample noise on a flat
+        # surface (and running dCor in the inner-CV loop is needlessly
+        # expensive). The fixed settings-level lambda_smooth / l2 are used.
+        tune_regularization_bool = False
     inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
     inner_max_iter = tune_params['inner_max_iter']
     use_lax_loop = hp['use_lax_loop']
@@ -4050,9 +4074,9 @@ def continuous_vocal_manifold_model_selection(
 
             # Metric-compatibility guard: if this checkpoint was scored on a
             # different selection metric (usv_manifold_metric was flipped
-            # between runs, e.g. euclidean `r2_spatial` <-> torus
-            # `predictive_correlation`) its scores live on a different scale
-            # and must not be compared against this run's `best_current_score`
+            # between runs, e.g. euclidean `r2_spatial` <-> torus `dcor_xy`)
+            # its scores live on a different scale and must not be compared
+            # against this run's `best_current_score`
             # / accept rule. Discard and fall through to the fresh-start path.
             _saved_metric = (last_res.get('_run_metadata') or {}).get('selection_metric')
             if _saved_metric is not None and _saved_metric != SELECTION_SCORE_KEY:
@@ -4077,8 +4101,8 @@ def continuous_vocal_manifold_model_selection(
                 # Stale / broken checkpoint: every saved candidate
                 # crashed or was never scored. Discard it and fall
                 # through to the fresh-start path so the baseline block
-                # re-establishes the spatial-centroid prior and the
-                # auto-anchor re-fires. Previously this case slipped
+                # re-establishes the empirical-density Step-0 baseline and
+                # the auto-anchor re-fires. Previously this case slipped
                 # through silently with `step_counter` left at its
                 # initial value, producing a misleading "Restoring from
                 # Step N" banner followed by a Step 0 forward selection.
@@ -4130,12 +4154,12 @@ def continuous_vocal_manifold_model_selection(
         'pearson_y',
         'spearman_x',
         'spearman_y',
-        'predictive_correlation',
+        'dcor_xy',
     ]
 
     # Calculate Model-Free Baseline (Step 0) if starting fresh.
     if not existing_steps:
-        print("\n--- Establishing Absolute Baseline (Spatial-Centroid Prior) ---")
+        print("\n--- Establishing Absolute Baseline (Empirical-Density Draw) ---")
 
         baseline_data = {
             'folds': {
@@ -4143,10 +4167,10 @@ def continuous_vocal_manifold_model_selection(
                 'test_indices': [],
                 'y_true': [],
                 'w_test': [],
-                # `(x, y)` predictions per fold: the KDE-weighted centroid of
-                # the training set tiled across the test fold.
+                # `(x, y)` predictions per fold: a uniform random draw from
+                # the training set, one per test trial.
                 'y_pred_xy': [],
-                # Hyperparameter audit fields — the centroid baseline has
+                # Hyperparameter audit fields — the density-draw baseline has
                 # no model, so these are all NaN / empty / False. Kept so
                 # the saved schema is uniform across strategies.
                 'selected_lambda_smooth': [],
@@ -4160,70 +4184,39 @@ def continuous_vocal_manifold_model_selection(
             Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
             w_tr, w_te = w_global[tr_idx], w_global[te_idx]
 
-            # Metric-aware centroid baseline. On `metric='euclidean'` the
-            # three helpers below reduce *exactly* to the weighted arithmetic
-            # mean, flat residuals and flat sum-of-squares dispersion, so
-            # euclidean runs are byte-identical to before. On `metric='torus'`
-            # they switch to the circular mean, shortest-wrap residuals and
-            # wrap-aware dispersion — so the baseline `r2_spatial` is computed
-            # on the SAME metric as the active models it is compared against.
-            # (Previously this block was hardcoded flat: on a torus the flat
-            # centroid of a wrapped cluster lands in the empty middle of the
-            # circle, making the baseline spuriously bad and biasing selection
-            # toward over-accepting the first candidate.)
-            mu = circular_mean(
-                Y_tr, metric=manifold_metric, period=manifold_period, weights=w_tr
-            )
-
-            residual = signed_diff(
-                Y_te, mu[None, :], metric=manifold_metric, period=manifold_period
-            )
-            dx = residual[:, 0]
-            dy = residual[:, 1]
-            euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
-            sse = float(np.sum(dx ** 2 + dy ** 2))
-            denom = total_dispersion(
-                Y_te, metric=manifold_metric, period=manifold_period
-            )
-
-            # Mahalanobis MAE under the KDE-weighted training covariance of
-            # the (metric-aware) training residuals — matches the regressor's
-            # convention so the baseline and the active models compete on the
-            # same distance metric.
+            # Empirical-density Step-0 baseline: predict a uniform random draw
+            # from the training `Y` for every test trial ("vocalise from the
+            # observed repertoire, ignoring kinematics") — the chance floor
+            # shared with the univariate runner and the CNN. The metric-aware
+            # training centroid / covariance are still computed, purely to
+            # supply the `mahalanobis_mae` inverse-covariance (matching the
+            # regressor's convention so baseline and active models compete on
+            # the same distance metric). `manifold_prediction_metrics` produces
+            # exactly the same metric bundle as the fitted strategies; on
+            # `metric='euclidean'` every wrap-aware term reduces to the ordinary
+            # plane distance, on `metric='torus'` to the shortest-wrap geodesic.
             w_cov = w_tr / (np.sum(w_tr) + 1e-12)
+            mu = circular_mean(
+                Y_tr, metric=manifold_metric, period=manifold_period, weights=w_cov
+            )
             diff_tr = signed_diff(
                 Y_tr, mu[None, :], metric=manifold_metric, period=manifold_period
             )
             cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
             cov_inv = np.linalg.pinv(cov_tr)
-            quad = np.einsum('ij,jk,ik->i', residual, cov_inv, residual)
-            mahalanobis_mae_val = float(np.mean(np.sqrt(np.maximum(quad, 0.0))))
 
-            mae_val = float(np.mean(euclidean_dist))
-            f_met = baseline_data['folds']['metrics']
-            f_met['r2_spatial'].append(float(1.0 - (sse / denom)) if denom > 0 else 0.0)
-            f_met['euclidean_mae'].append(mae_val)
-            f_met['euclidean_rmse'].append(float(np.sqrt(np.mean(euclidean_dist ** 2))))
-            f_met['euclidean_mae_weighted'].append(
-                float(np.sum(w_te * euclidean_dist) / (np.sum(w_te) + 1e-12))
+            draw_rng = np.random.default_rng(random_seed + fold_idx + 2)
+            draw_idx = draw_rng.choice(len(Y_tr), size=len(Y_te), replace=True)
+            y_pred_xy = Y_tr[draw_idx].astype(np.float32)
+
+            bundle = manifold_prediction_metrics(
+                Y_te, y_pred_xy, w_te,
+                metric=manifold_metric, period=manifold_period,
+                train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
             )
-            # Centroid prediction is constant and already on-manifold, so
-            # raw and snapped MAE coincide.
-            f_met['euclidean_mae_raw'].append(mae_val)
-            f_met['mahalanobis_mae'].append(mahalanobis_mae_val)
-            f_met['mae_x'].append(float(np.mean(np.abs(dx))))
-            f_met['mae_y'].append(float(np.mean(np.abs(dy))))
-            # Constant predictions make per-axis correlations undefined;
-            # emit NaN to match the regressor's NaN-safe convention.
-            f_met['pearson_x'].append(float('nan'))
-            f_met['pearson_y'].append(float('nan'))
-            f_met['spearman_x'].append(float('nan'))
-            f_met['spearman_y'].append(float('nan'))
-            # Constant centroid prediction -> exactly zero predictive
-            # correlation (the principled torus-selection baseline floor).
-            f_met['predictive_correlation'].append(0.0)
-
-            y_pred_xy = np.tile(mu.astype(np.float32), (len(Y_te), 1))
+            f_met = baseline_data['folds']['metrics']
+            for _k, _v in bundle.items():
+                f_met[_k].append(_v)
 
             baseline_data['folds']['test_indices'].append(te_idx)
             baseline_data['folds']['y_true'].append(Y_te)
@@ -4254,7 +4247,7 @@ def continuous_vocal_manifold_model_selection(
             if valid_scores.size > 1 else 0.0
         )
 
-        print(f"  Baseline {SELECTION_SCORE_KEY} (centroid) established at: {best_current_score:.4f}")
+        print(f"  Baseline {SELECTION_SCORE_KEY} (density draw) established at: {best_current_score:.4f}")
 
         baseline_data['mean_r2'] = best_current_score
         baseline_data['se_r2'] = best_current_se

@@ -741,7 +741,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 results['actual']['converged'].append(converged_actual)
                 results['actual']['fit_time'].append(fit_time)
 
-                # ExtractsShapes
+                # Extract filter shapes
                 grid_0 = np.stack([np.zeros(hist_frames), time_indices], axis=1)
                 grid_1 = np.stack([np.ones(hist_frames), time_indices], axis=1)
                 shape = (gam.predict(grid_1) - gam.predict(grid_0)).flatten()

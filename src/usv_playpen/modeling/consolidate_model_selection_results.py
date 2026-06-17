@@ -206,14 +206,18 @@ def _build_default_output_filename(input_metadata: dict,
         tied to the run it summarises; omitted when the prefix has
         no such token (legacy layouts).
 
-    Falls back to bare `'unknown'` when an upstream block / key is
-    missing.
+    Falls back to bare `'unknown'` only when an upstream metadata BLOCK
+    is entirely absent (legacy artifacts with no `_input_metadata` /
+    `_run_metadata`). Required identity keys within a block that *is*
+    present are read directly and raise if missing, so a malformed
+    modern artifact fails loud rather than minting an `unknown`-tagged
+    filename indistinguishable from a correct one on disk.
     """
 
     if input_metadata is not None:
-        sex = input_metadata.get('target_mouse_sex', 'unknown')
-        cohort_raw = input_metadata.get('experimental_condition', 'unknown')
-        analysis_tag = input_metadata.get('analysis_tag', 'unknown')
+        sex = input_metadata['target_mouse_sex']
+        cohort_raw = input_metadata['experimental_condition']
+        analysis_tag = input_metadata['analysis_tag']
     else:
         sex = 'unknown'
         cohort_raw = 'unknown'
@@ -251,7 +255,7 @@ def _build_default_output_filename(input_metadata: dict,
                 analysis_tag = f"{analysis_tag}_{cat_col}"
 
     split_strategy = (
-        run_metadata.get('split_strategy', 'unknown')
+        run_metadata['split_strategy']
         if run_metadata is not None
         else 'unknown'
     )

@@ -756,6 +756,8 @@ class TestRunPredictorAudits:
                 'timescale_max_lag_seconds': 5.0,
                 'timescale_n_shuffles': 3,
                 'timescale_shuffle_range': [20.0, 60.0],
+                'timescale_signal_floor_seconds': 0.5,
+                'timescale_signal_min_run_seconds': 0.2,
             },
             'model_params': {
                 'random_seed': 0,

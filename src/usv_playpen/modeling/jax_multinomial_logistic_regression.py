@@ -516,7 +516,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             Y_onehot = np.hstack([1 - Y_onehot, Y_onehot])
 
         self.classes_ = self.lb_.classes_
-        n_samples, n_inputs = X.shape
+        _, n_inputs = X.shape
         n_classes = len(self.classes_)
 
         expected_inputs = self.n_features * self.n_time_bins

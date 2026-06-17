@@ -69,6 +69,21 @@ important blocks are:
 - ``hyperparameters`` — per-engine model hyperparameters, including the
   ``deep_learning.cnn_continuous`` block consumed by the CNN runner.
 
+.. note::
+
+   **Regularisation tuning on the torus manifold.** For the continuous
+   manifold target with ``manifold metric = 'torus'``, the inner-loop
+   regularisation CV is unnecessary and is switched off automatically: the
+   selection score (wrap-aware distance correlation ``dcor_xy``) is
+   regularisation-invariant through the ``atan2`` decode, so the pipeline
+   forces ``hyperparameters.jax_linear.bivariate.tune_regularization_bool``
+   to ``False`` regardless of its configured value. Leave tuning off and use
+   the advised fixed values ``lambda_smooth_fixed = 1.0`` and
+   ``l2_reg_fixed = 0.01`` — ``lambda_smooth`` no longer moves the score but
+   still shapes the interpretable published filter, so it is not a free
+   parameter for visualisation. On euclidean / VAE / UMAP manifolds (where
+   the score is ``r2_spatial``) tuning is honoured as configured.
+
 The session-list file is the single source of the cohort. List one session
 root per line:
 

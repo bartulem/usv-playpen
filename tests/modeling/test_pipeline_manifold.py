@@ -28,7 +28,7 @@ isolated helpers:
   multi-thousand-line ``model_selection.py``) on a strong-signal synthetic
   input pickle plus a freshly-computed univariate ranking. The signal feature
   drives the 2-D target linearly so it clears the ``r2_spatial`` screening
-  gate, the Step-0 spatial-centroid baseline is established, the auto-anchor
+  gate, the Step-0 empirical-density baseline is established, the auto-anchor
   fires, and the forward-selection loop runs to its finalization step. The
   per-step pickles are asserted to carry the documented structure.
 
@@ -193,7 +193,7 @@ def _build_signal_continuous_pickle(
     Serializes a controlled continuous-manifold input pickle directly, with a
     deliberate linear ``X -> Y`` signal on the *first* feature so the manifold
     model-selection screening gate (mean ``r2_spatial`` > 0 and a per-fold
-    Wilcoxon ``actual > null_model_free``) can be cleared and the full
+    Wilcoxon ``actual > null``) can be cleared and the full
     Step-0 / anchor / forward-selection machinery is exercised.
 
     The artifact matches the schema the continuous runner and
@@ -465,7 +465,7 @@ class TestContinuousModelRunner:
                 assert pred.ndim == 2 and pred.shape[1] == 2
 
         # The modelled strategies expose per-fold optimiser diagnostics; the
-        # closed-form centroid baseline records a zero-iteration "fit".
+        # empirical-density-draw baseline records a zero-iteration "fit".
         assert len(results['actual']['folds']['converged']) == n_splits
         assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
 
@@ -554,7 +554,7 @@ class TestContinuousModelRunner:
             assert all(folds['converged'])
             for pred in folds['y_pred_xy']:
                 assert pred.ndim == 2 and pred.shape[1] == 2
-        # The model-free centroid baseline is unaffected (still a 0-iter "fit").
+        # The model-free density-draw baseline is unaffected (still a 0-iter "fit").
         assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
 
 
@@ -567,12 +567,12 @@ class TestManifoldModelSelection:
         Running ``continuous_vocal_manifold_model_selection`` on a strong-signal
         synthetic input pickle (with a matching freshly-computed univariate
         ranking) clears the ``r2_spatial`` screening gate on the signal feature,
-        establishes the Step-0 spatial-centroid baseline, fires the auto-anchor,
+        establishes the Step-0 empirical-density baseline, fires the auto-anchor,
         and runs the forward-selection loop to its finalization step. The
         per-step pickles carry the ``current_features`` / ``baseline_score`` /
         ``candidates_summary`` / ``selected_feature`` structure the consolidator
         expects, the accepted feature set never shrinks, and the Step-0 pickle
-        records the ``null_model_free`` centroid baseline.
+        records the ``null_model_free`` empirical-density baseline.
         """
 
         # Six folds so the one-sided per-fold Wilcoxon can reach the screening
@@ -648,7 +648,7 @@ class TestManifoldModelSelection:
             if step['selected_feature'] == 'null_model_free':
                 saw_null_model_free = True
 
-        # The Step-0 spatial-centroid baseline must have been established.
+        # The Step-0 empirical-density baseline must have been established.
         assert saw_null_model_free
         # The anchored search never shrinks the accepted feature set.
         assert accepted_counts == sorted(accepted_counts)
@@ -744,24 +744,24 @@ class TestManifoldModelSelection:
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
-        # The torus path screens/scores on predictive_correlation, not r2_spatial.
-        assert final_step['_run_metadata']['selection_metric'] == 'predictive_correlation'
+        # The torus path screens/scores on dcor_xy, not r2_spatial.
+        assert final_step['_run_metadata']['selection_metric'] == 'dcor_xy'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_stale_ranking_raises(self, tmp_path):
         """
-        On a torus run the selection screens on `predictive_correlation`. A
-        univariate ranking produced before that metric existed (only
-        `r2_spatial`) must raise a clear, actionable error rather than silently
-        skipping every feature and mis-reporting the schema mismatch as "no
-        significant features found" (a misleading false null).
+        On a torus run the selection screens on `dcor_xy`. A univariate ranking
+        produced before that metric existed (only `r2_spatial`) must raise a
+        clear, actionable error rather than silently skipping every feature and
+        mis-reporting the schema mismatch as "no significant features found" (a
+        misleading false null).
         """
 
         settings, _ = _build_manifold_settings(
             tmp_path, split_strategy='mixed', split_num=2,
         )
         settings['vocal_features']['usv_manifold_metric'] = 'torus'
-        # A pre-`predictive_correlation` ranking: r2_spatial only.
+        # A pre-`dcor_xy` ranking: r2_spatial only.
         ranking = {
             'self.speed': {
                 'actual': {'folds': {'metrics': {'r2_spatial': [0.1, 0.2]}}},
@@ -791,12 +791,12 @@ class TestManifoldModelSelection:
     def test_selection_torus_resume_metric_mismatch_restarts_fresh(self, tmp_path, capsys):
         """
         Resuming a checkpoint scored on a different selection metric (the
-        manifold metric was flipped between runs, so r2_spatial and
-        predictive_correlation live on different scales) must discard it and
-        restart fresh rather than compare incompatible scores. Run the torus
-        selection, tamper the latest checkpoint's recorded selection_metric to
-        'r2_spatial', re-run, and assert the resume announces the mismatch and
-        finalises afresh on predictive_correlation.
+        manifold metric was flipped between runs, so r2_spatial and dcor_xy
+        live on different scales) must discard it and restart fresh rather than
+        compare incompatible scores. Run the torus selection, tamper the latest
+        checkpoint's recorded selection_metric to 'r2_spatial', re-run, and
+        assert the resume announces the mismatch and finalises afresh on
+        dcor_xy.
         """
 
         settings, _ = _build_manifold_settings(
@@ -856,20 +856,24 @@ class TestManifoldModelSelection:
         assert "different scales" in out and "starting fresh" in out
         final = sorted(ms_dir.glob('*_step_*.pkl'))[-1]
         with final.open('rb') as fh:
-            assert pickle.load(fh)['_run_metadata']['selection_metric'] == 'predictive_correlation'
+            assert pickle.load(fh)['_run_metadata']['selection_metric'] == 'dcor_xy'
 
-    def test_step0_baseline_r2_is_metric_aware(self):
+    def test_metric_aware_centroid_and_r2_math(self):
         """
-        Contract guard for the Step-0 spatial-centroid baseline in
-        ``continuous_vocal_manifold_model_selection`` (the
-        ``baseline_data`` fold loop). The baseline centroid, residuals and
-        dispersion now flow through ``circular_mean`` / ``signed_diff`` /
-        ``total_dispersion`` parameterized by the run's manifold metric, so
-        the baseline ``r2_spatial`` is computed on the SAME metric as the
-        active models it is compared against.
+        Contract guard for the **metric-aware centroid / dispersion math**
+        (``circular_mean`` / ``signed_diff`` / ``total_dispersion``) that
+        underpins ``r2_spatial`` (its centroid-referenced denominator and the
+        active / ``null`` strategies' residuals) and the ``null_model_free``
+        mahalanobis covariance, all parameterized by the run's manifold metric
+        so the score is computed on the SAME metric as the active models.
 
-        This reproduces the exact baseline formula the selector uses and
-        checks two things on a cluster that straddles the wrap boundary:
+        (The Step-0 ``null_model_free`` *prediction* is now an empirical-density
+        draw, not the centroid — see ``manifold_prediction_metrics``; this test
+        guards the centroid math that the draw's mahalanobis term and r2's
+        denominator still rely on.)
+
+        This reproduces the metric-aware centroid r2 formula and checks two
+        things on a cluster that straddles the wrap boundary:
         (1) on ``euclidean`` it equals the original flat computation (so
         euclidean runs are unchanged — the end-to-end euclidean path is
         additionally covered by ``test_selection_writes_step_pickles_on_signal_data``);

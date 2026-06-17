@@ -175,7 +175,18 @@ def get_stratified_group_splits_stable(
         # apply, so the per-fold class-coverage and class-distribution
         # invariants are enforced manually via rejection sampling.
         unique_sessions = np.unique(groups)
-        n_test_sessions = int(len(unique_sessions) * test_prop)
+        if len(unique_sessions) < 2:
+            raise ValueError(
+                f"Cross-session splitting needs at least 2 sessions, but only "
+                f"{len(unique_sessions)} unique session(s) were provided; a "
+                f"held-out test session cannot be formed."
+            )
+        # Floor the test-session count to >= 1: with few sessions
+        # `int(len * test_prop)` can round down to 0, which yields an empty
+        # test set and makes the class-coverage gate below loop until
+        # `max_total_attempts` and then raise a misleading "too few sessions"
+        # error rather than the real "test_prop too small for this cohort".
+        n_test_sessions = max(1, int(len(unique_sessions) * test_prop))
 
         # Calculate global distribution for fairness check
         _, global_counts = np.unique(y, return_counts=True)

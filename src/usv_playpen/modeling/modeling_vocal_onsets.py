@@ -897,10 +897,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             - `split_sizes` : metadata tracking the N for each training/test fold.
         """
 
-        # Initialize results structure with 'actual' and 'shuffled' keys
+        # Initialize results structure with 'actual' and 'null' keys
         n_splits = self.modeling_settings['model_params']['split_num']
         n_bases = basis_matrix.shape[1]
+        # The basis is built with `width=self.history_frames`, so its row
+        # count is the temporal-filter span; assert they agree so the
+        # `filter_shapes` array width and the projected dot products cannot
+        # silently diverge from the canonical `__init__` value.
         history_frames = basis_matrix.shape[0]
+        assert history_frames == self.history_frames, (
+            f"basis_matrix row count ({history_frames}) != self.history_frames "
+            f"({self.history_frames}); the basis width and the configured "
+            f"filter-history span have diverged."
+        )
 
         # Scalar per-split metrics. `precision` is dropped (recoverable from
         # the saved confusion matrix), Brier/ECE/MCC are added as calibration
@@ -1138,7 +1147,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         print(f"--- Running [pygam] analysis for feature: {feature_name} ---")
 
         n_splits = self.modeling_settings['model_params']['split_num']
-        history_frames = int(np.floor(self.modeling_settings['io']['camera_sampling_rate'] * self.modeling_settings['model_params']['filter_history']))
+        history_frames = self.history_frames
 
         try:
             pygam_params = self.modeling_settings['hyperparameters']['classical']['pygam']
