@@ -146,6 +146,38 @@ Every extraction call writes three artifacts to ``io.save_directory``:
 The two audit artifacts are visualised in the next section before any model
 is fit.
 
+.. note::
+
+   **Modeling onsets for a single USV category.** By default
+   ``VocalOnsetModelingPipeline`` pools *all* of the target mouse's USVs when
+   it derives positive onset events. When overall vocal output is too sparse
+   for bout-onset modeling but one category is plentiful — e.g. female
+   broadband vocalizations (BBVs) — you can restrict the positive onsets to a
+   single category by setting two knobs in ``model_params``:
+
+   - ``model_target_vocal_type = 'individual'`` — each qualifying USV onset
+     (rather than a clustered bout onset) becomes a positive event;
+   - ``onset_target_category = <int>`` — the category index to keep (e.g.
+     ``6`` for BBVs). The *column* this index refers to is the existing
+     ``vocal_features.usv_category_column_name``, so any of
+     ``vae_supercategory`` / ``qlvm_supercategory`` / ``vae_category`` /
+     ``qlvm_category`` can be targeted. Leave it ``null`` (default) to pool all
+     categories exactly as before.
+
+   Only the *positive* onsets are filtered: the behavioral / vocal predictors
+   and the silent-epoch (No-USV) negative reference are still computed over
+   **all** of the mouse's USVs, so the category choice changes only *which*
+   onsets count as events — never the predictors or the negatives. The filter
+   is honoured in ``'individual'`` mode only; in ``'bout'`` (and ``'state'``)
+   mode it is ignored, because the GMM inter-syllable-interval threshold used
+   for bout grouping is calibrated on the all-USV interval distribution and
+   would mis-group a category-sparsified sequence (a warning is printed if the
+   setting is combined with a non-individual mode). When active, the chosen
+   category column and index are embedded in the ``analysis_tag`` (e.g.
+   ``individual_cat_vae_supercategory_6``) and ``_input_metadata``, so VAE-vs-QLVM
+   and category-vs-supercategory are unambiguous in every downstream artifact
+   name and provenance block.
+
 .. _modeling-diagnostics:
 
 2. Predictor diagnostics
@@ -199,6 +231,30 @@ ranking, adding at each step the feature whose contribution most improves
 the held-out score (one-standard-error rule; see the source for the exact
 stopping criterion). ``use_top_rank_as_anchor=True`` seeds step 0 with the
 top univariate feature; ``p_val`` is the per-step acceptance threshold.
+
+.. note::
+
+   **Significance baseline for the discrete targets (bout onsets, binomial
+   USV categories).** Every univariate fit is evaluated against a
+   *label-shuffle permutation null*: the same estimator is re-fit on a copy of
+   the **training** labels permuted within each fold — breaking the
+   behaviour→vocalization association while preserving the marginal event rate
+   — and then scored against the real (unpermuted) **test** labels, seeded
+   reproducibly per fold from ``random_seed``. This replaced the earlier
+   pseudo-class controls (resampled No-Bout / Other-USV baselines), which
+   tested a weaker question. A feature is admitted to model selection only if
+   its mean held-out **log-loss** beats a Bonferroni-corrected lower percentile
+   of the null log-loss distribution (``q = p_val / n_features``). Log-loss is
+   the gate because it is the only *proper* scoring rule among the reported
+   metrics: under the null the fitted probabilities sit near chance with a tiny
+   feature-monotone residual, so rank / threshold statistics (AUC,
+   balanced-accuracy) amplify that residual into spurious ~0 / 1 values and
+   must **not** decide significance — they are retained for display only.
+   Each fit also reports ``deviance_explained`` (McFadden's D²,
+   ``1 − LL / ln 2``, where ``ln 2`` is the chance log-loss of the
+   balanced-trained intercept) as a fold- and target-comparable effect size.
+   Under H0 the actual and null log-loss coincide, so the screen does not
+   inflate false positives.
 
 Run on a single node from the notebook:
 
