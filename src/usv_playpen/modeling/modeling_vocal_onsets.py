@@ -200,6 +200,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             usv_bout_time=self.modeling_settings['model_params']['usv_bout_time'],
             min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
+            target_category=self.modeling_settings['model_params']['onset_target_category'],
             noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
         )
 
@@ -311,6 +312,21 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         target_vocal_type = self.modeling_settings['model_params']['model_target_vocal_type']
         gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
 
+        # Optional single-category onset target (e.g. broadband vocalizations =
+        # vae_supercategory 6). The category COLUMN is the existing
+        # `usv_category_column_name`; only the integer index lives in
+        # `onset_target_category`. Category filtering is honoured in
+        # 'individual' mode only (see `find_bout_epochs`): in 'bout'/'state'
+        # mode the setting is ignored and the run pools all USVs as before, so
+        # warn the user that their category choice has no effect there.
+        onset_cat = self.modeling_settings['model_params']['onset_target_category']
+        cat_col = self.modeling_settings['vocal_features']['usv_category_column_name']
+        onset_category_active = onset_cat is not None and target_vocal_type == 'individual'
+        if onset_cat is not None and target_vocal_type != 'individual':
+            print(f"Warning: 'onset_target_category' ({cat_col} == {onset_cat}) is applied only in "
+                  f"'individual' mode; 'model_target_vocal_type' is '{target_vocal_type}', so all USV "
+                  f"categories will be pooled (category filter ignored).")
+
         # Build the unified Level-1 filename — the analysis_tag identifies
         # the pipeline, the experimental_condition identifies the cohort,
         # and the rest of the historical fields (n_sessions, hist, gmm
@@ -320,8 +336,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # analysis_tag is the short canonical name that propagates
         # through every level of the file-naming chain (modeling input
         # pickle → univariate per-feature → univariate consolidated →
-        # model-selection consolidated). Keep it tight.
-        analysis_tag = target_vocal_type
+        # model-selection consolidated). Keep it tight. When a single onset
+        # target category is active, embed BOTH the category column name and
+        # the index (mirrors the binomial category pipeline's
+        # `category_<col>_<idx>` convention), so VAE-vs-QLVM and
+        # category-vs-supercategory are unambiguous in every downstream
+        # artifact name and provenance block.
+        if onset_category_active:
+            analysis_tag = f"{target_vocal_type}_cat_{cat_col}_{onset_cat}"
+        else:
+            analysis_tag = target_vocal_type
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name_ = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -382,6 +406,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 'model_target_vocal_type': target_vocal_type,
                 'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
                 'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
+                **({'onset_target_category': int(onset_cat),
+                    'usv_category_column_name': cat_col} if onset_category_active else {}),
             },
         )
 

@@ -637,7 +637,18 @@ def bout_onset_model_selection(univariate_results_path: str,
     target_condition = cond_match.group(1) if cond_match else "unknown"
     prediction_mode = settings['model_params']['model_target_vocal_type']
 
-    prefix = f"model_selection_{target_condition}_{prediction_mode}_{split_strategy}_step_"
+    # Mirror the Level-1 analysis_tag when a single onset target category is
+    # active ('individual' mode only): embed the category column name and index
+    # so step files for different categories (or VAE-vs-QLVM columns) never
+    # collide in the same model-selection directory.
+    onset_cat = settings['model_params']['onset_target_category']
+    if onset_cat is not None and prediction_mode == 'individual':
+        cat_col = settings['vocal_features']['usv_category_column_name']
+        cat_seg = f"_cat_{cat_col}_{onset_cat}"
+    else:
+        cat_seg = ""
+
+    prefix = f"model_selection_{target_condition}_{prediction_mode}{cat_seg}_{split_strategy}_step_"
 
     existing_steps = []
     if model_selection_dir.is_dir():

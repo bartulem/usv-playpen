@@ -449,6 +449,142 @@ class TestFindBoutEpochs:
         assert out['sess_B']['male']['start'].size == 0
         assert out['sess_B']['male']['positive_events'].size == 0
 
+    def test_target_category_filters_positives_individual(self, tmp_path):
+        """In 'individual' mode, ``target_category`` restricts the positive
+        onset events to USVs of that category; onsets of other categories are
+        excluded (the broadband-vocalization use case)."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 3.0, 4.0],
+            'stop': [2.05, 3.05, 4.05],
+            'usv_category': [6, 2, 6],
+            'usv_supercategory': [1, 1, 1],
+        }
+        kwargs = self._build(tmp_path, rows)
+        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+                               usv_bout_time=0.5, min_usv_per_bout=2,
+                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               target_category=6,
+                               **kwargs)
+        male = out['sess_B']['male']
+        # Only the category-6 onsets (2.0, 4.0) survive; the cat-2 onset (3.0) is gone.
+        np.testing.assert_allclose(male['positive_events'], [2.0, 4.0])
+
+    def test_target_category_negatives_unchanged(self, tmp_path):
+        """Negative (silent-epoch) events are sampled over ALL USVs and so are
+        identical whether or not a ``target_category`` filter is applied."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 3.0, 4.0],
+            'stop': [2.05, 3.05, 4.05],
+            'usv_category': [6, 2, 6],
+            'usv_supercategory': [1, 1, 1],
+        }
+        kwargs = self._build(tmp_path, rows)
+        common = dict(prediction_mode='individual', filter_history=1.0,
+                      usv_bout_time=0.5, min_usv_per_bout=2,
+                      proportion_smoothing_sd=None, gmm_params=_gmm_params())
+        # Both calls read the same (read-only) session tree.
+        out_all = find_bout_epochs(target_category=None, **common, **kwargs)
+        out_cat = find_bout_epochs(target_category=6, **common, **kwargs)
+        np.testing.assert_allclose(out_all['sess_B']['male']['negative_events'],
+                                   out_cat['sess_B']['male']['negative_events'])
+
+    def test_target_category_none_pools_all_categories(self, tmp_path):
+        """``target_category=None`` (the default) reproduces the original
+        all-USV behavior: every onset past ``filter_history`` is positive."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 3.0, 4.0],
+            'stop': [2.05, 3.05, 4.05],
+            'usv_category': [6, 2, 6],
+            'usv_supercategory': [1, 1, 1],
+        }
+        kwargs = self._build(tmp_path, rows)
+        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+                               usv_bout_time=0.5, min_usv_per_bout=2,
+                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               target_category=None,
+                               **kwargs)
+        np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0, 4.0])
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_target_category_predictors_unaffected(self, tmp_path):
+        """A ``target_category`` filter restricts the positive onsets but never
+        leaks into the predictor vocal signals: the non-target category's
+        'usv_cat_X' trace and the pooled 'usv_rate' are still emitted over the
+        mouse's full USV set."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'usv_category': [6, 7],
+            'usv_supercategory': [1, 1],
+        }
+        kwargs = self._build(tmp_path, rows)
+        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+                               usv_bout_time=0.5, min_usv_per_bout=2,
+                               proportion_smoothing_sd=2.0, gmm_params=_gmm_params(),
+                               vocal_output_type='all_rate', target_category=6,
+                               **kwargs)
+        male = out['sess_B']['male']
+        # Positives restricted to the cat-6 onset ...
+        np.testing.assert_allclose(male['positive_events'], [2.0])
+        # ... yet the predictor signals still carry the non-target cat-7 trace
+        # and a pooled rate computed over BOTH USVs.
+        signals = male['continuous_vocal_signals']
+        assert 'usv_cat_6' in signals
+        assert 'usv_cat_7' in signals
+        assert signals['usv_rate'].sum() > 0
+        assert male['usv_count'].sum() > 0
+
+    def test_target_category_ignored_in_bout_mode(self, tmp_path):
+        """``target_category`` is honoured only in 'individual' mode; in 'bout'
+        mode it is ignored (all categories pooled), so the positive events match
+        the unfiltered bout result."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 2.1, 2.2],
+            'stop': [2.05, 2.15, 2.25],
+            'usv_category': [6, 2, 6],
+            'usv_supercategory': [1, 1, 1],
+        }
+        kwargs = self._build(tmp_path, rows)
+        common = dict(prediction_mode='bout', filter_history=1.0, usv_bout_time=0.5,
+                      min_usv_per_bout=2, proportion_smoothing_sd=None,
+                      gmm_params=_gmm_params())
+        out_all = find_bout_epochs(target_category=None, **common, **kwargs)
+        out_cat = find_bout_epochs(target_category=6, **common, **kwargs)
+        np.testing.assert_allclose(out_all['sess_B']['male']['positive_events'],
+                                   out_cat['sess_B']['male']['positive_events'])
+        # The pooled 3-syllable cluster still forms exactly one bout onset.
+        assert out_cat['sess_B']['male']['positive_events'].size == 1
+
+    def test_target_category_missing_column_falls_back(self, tmp_path, capsys):
+        """If the requested category column is absent from the summary, the
+        filter is skipped (with a warning) and all USVs are pooled."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'usv_supercategory': [1, 1],
+        }
+        kwargs = self._build(tmp_path, rows)
+        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+                               usv_bout_time=0.5, min_usv_per_bout=2,
+                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               category_column='vae_supercategory', target_category=6,
+                               **kwargs)
+        # Column absent -> no filtering -> both onsets remain.
+        np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0])
+        assert "absent" in capsys.readouterr().out
+
     def test_missing_summary_csv_skips_session(self, tmp_path, capsys):
         """A session ROOT with no ``audio/*_usv_summary.csv`` is skipped with a
         warning, leaving its dict entry empty."""

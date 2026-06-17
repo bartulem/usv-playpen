@@ -51,6 +51,7 @@ plotting code is pulled in transitively.
 
 from __future__ import annotations
 
+import pickle
 import warnings
 from pathlib import Path
 
@@ -682,3 +683,56 @@ class TestExtractionGuards:
         pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
         with pytest.raises(ValueError, match='No features selected'):
             pipeline.extract_and_save_modeling_input_data()
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_extraction_category_tag_and_metadata(self, tmp_path):
+        """
+        With ``model_target_vocal_type='individual'`` and an
+        ``onset_target_category`` set, the saved input pickle's filename and
+        ``_input_metadata`` carry a category-aware ``analysis_tag`` that embeds
+        BOTH the category column name and the index (so VAE-vs-QLVM and
+        category-vs-supercategory are unambiguous downstream), and
+        ``analysis_specific`` records the category provenance. The synthetic
+        summaries write ``vae_supercategory == 1`` for every USV, so targeting
+        category 1 keeps every onset and both sessions survive.
+        """
+
+        session_roots = build_session_tree(
+            base_dir=tmp_path / 'sessions',
+            n_sessions=2,
+            n_frames=3600,
+            camera_fps=CAMERA_FPS,
+            filter_history=FILTER_HISTORY,
+            egocentric_features=['speed'],
+            n_bouts=8,
+            usv_per_bout=3,
+        )
+        list_file = write_session_list_file(session_roots, tmp_path / 'session_list.txt')
+        save_dir = tmp_path / 'out'
+        save_dir.mkdir(parents=True, exist_ok=True)
+        settings = build_modeling_settings(
+            session_list_file=list_file,
+            save_directory=save_dir,
+            camera_sampling_rate=CAMERA_FPS,
+            filter_history=FILTER_HISTORY,
+            egocentric_features=['speed'],
+        )
+        settings['model_params']['usv_bout_time'] = FILTER_HISTORY
+        settings['model_params']['model_target_vocal_type'] = 'individual'
+        settings['model_params']['onset_target_category'] = 1
+
+        pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_modeling_input_data()
+
+        pkls = list(save_dir.glob('modeling_*.pkl'))
+        assert len(pkls) == 1
+        expected_tag = 'individual_cat_vae_supercategory_1'
+        assert expected_tag in pkls[0].name
+
+        with pkls[0].open('rb') as fh:
+            artifact = pickle.load(fh)
+        md = artifact['_input_metadata']
+        assert md['analysis_tag'] == expected_tag
+        assert md['analysis_specific']['onset_target_category'] == 1
+        assert md['analysis_specific']['usv_category_column_name'] == 'vae_supercategory'

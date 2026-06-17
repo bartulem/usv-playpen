@@ -226,6 +226,7 @@ def find_bout_epochs(root_directories: list = None,
                      vocal_output_type: str = None,
                      noise_vocal_categories: list = None,
                      category_column: str = 'usv_category',
+                     target_category: int = None,
                      noise_column: str = 'usv_supercategory') -> dict:
     """
     Loads USV information data from a .csv file and samples epochs based on prediction mode.
@@ -274,6 +275,27 @@ def find_bout_epochs(root_directories: list = None,
         - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
     noise_vocal_categories : list, optional
         List of USV categories to ignore (e.g., [0, 19] for noise/background).
+    category_column : str, optional
+        Name of the per-USV category column in the summary .csv (e.g.
+        'vae_supercategory', 'qlvm_supercategory', 'vae_category',
+        'qlvm_category'). Used both for the per-category continuous predictor
+        signals and, when `target_category` is set, for the onset-target filter.
+    target_category : int, optional
+        If set (and `prediction_mode == 'individual'`), restricts the POSITIVE
+        onset events to USVs whose `category_column` value equals this category
+        (e.g. broadband vocalizations = `vae_supercategory` 6). The predictor
+        vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
+        (negative) reference are still computed over ALL of the mouse's USVs, so
+        the category choice changes only which onsets count as positive events.
+        Ignored in 'bout' and 'state' modes, because the GMM inter-syllable-
+        interval threshold used for bout grouping is calibrated on the all-USV
+        interval distribution and would mis-group a category-sparsified
+        sequence; in those modes all categories are pooled as before. If None
+        (default), all USV categories are pooled (original behavior).
+    noise_column : str, optional
+        Name of the supercategory column used for global noise filtering. Kept
+        separate from `category_column` so noise removal stays cohort-stable
+        regardless of which experimental category column is chosen.
 
     Returns
     -------
@@ -334,8 +356,25 @@ def find_bout_epochs(root_directories: list = None,
             # the upstream CSV row order — matches `find_usv_categories` and
             # `find_variable_length_bouts`.
             mouse_usvs_df = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
-            usv_data_dict[session_id][mouse_name]['start'] = np.array(mouse_usvs_df['start'])
-            usv_data_dict[session_id][mouse_name]['stop'] = np.array(mouse_usvs_df['stop'])
+
+            # Positive-event source. When a single target USV category is
+            # requested ('individual' mode only), restrict the USVs that become
+            # POSITIVE onsets to that category. The full `mouse_usvs_df` still
+            # drives the predictor vocal traces below, and the all-USV frame
+            # still drives the silent-epoch (negative) reference, so neither the
+            # predictors nor the negatives are affected by the category choice.
+            if target_category is not None and prediction_mode == 'individual':
+                if has_category:
+                    positive_source_df = mouse_usvs_df.filter(pls.col(category_column) == target_category)
+                else:
+                    print(f"Warning: category column '{category_column}' absent for {session_id}; "
+                          f"cannot restrict onsets to category {target_category}. Using all USVs.")
+                    positive_source_df = mouse_usvs_df
+            else:
+                positive_source_df = mouse_usvs_df
+
+            usv_data_dict[session_id][mouse_name]['start'] = np.array(positive_source_df['start'])
+            usv_data_dict[session_id][mouse_name]['stop'] = np.array(positive_source_df['stop'])
 
             # Get all USVs (this mouse + uncategorized) - this is important for clean epoch sampling
             all_usvs_df = usv_summary_data.filter((pls.col('emitter').is_null()) | (pls.col('emitter') == mouse_name)).sort('start')
@@ -346,13 +385,17 @@ def find_bout_epochs(root_directories: list = None,
             session_fps = camera_fps_dict[session_id]
             session_duration_frames = features_dict[session_id].shape[0]
 
-            # Compute local proportion of time spent vocalizing (Legacy/State Mode Support)
-            usv_frame_events = _generate_vocal_trace(usv_data_dict[session_id][mouse_name]['start'],
-                                                     usv_data_dict[session_id][mouse_name]['stop'],
+            # Compute local proportion of time spent vocalizing (Legacy/State Mode Support).
+            # These predictor traces are always derived from the full per-mouse
+            # USV set (`mouse_usvs_df`), never the category-filtered positive
+            # source, so an onset category filter cannot leak into the
+            # 'usv_rate'/'usv_count' predictors or the 'state'-mode labels.
+            usv_frame_events = _generate_vocal_trace(mouse_usvs_df['start'].to_numpy(),
+                                                     mouse_usvs_df['stop'].to_numpy(),
                                                      session_duration_frames, session_fps, smooth_sd=None)
 
-            usv_frame_rate = _generate_vocal_trace(usv_data_dict[session_id][mouse_name]['start'],
-                                                         usv_data_dict[session_id][mouse_name]['stop'],
+            usv_frame_rate = _generate_vocal_trace(mouse_usvs_df['start'].to_numpy(),
+                                                         mouse_usvs_df['stop'].to_numpy(),
                                                          session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd)
 
             usv_data_dict[session_id][mouse_name]['usv_count'] = usv_frame_events

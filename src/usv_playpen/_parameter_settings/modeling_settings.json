@@ -24,7 +24,8 @@
     "session_split_widen_step": 0.02,
     "session_split_widen_every": 1000,
     "usv_bout_time": 2,
-    "usv_per_bout_floor": 2
+    "usv_per_bout_floor": 2,
+    "onset_target_category": null
   },
 
   "kinematic_features": {
