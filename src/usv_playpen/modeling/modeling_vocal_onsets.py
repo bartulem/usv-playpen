@@ -784,7 +784,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 'optimal_C': _scalar(),
                 'score': _scalar(), 'recall': _scalar(),
                 'f1': _scalar(), 'auc': _scalar(),
-                'll': _scalar(),
+                'll': _scalar(), 'deviance_explained': _scalar(),
                 'brier': _scalar(), 'ece': _scalar(), 'mcc': _scalar(),
                 'confusion_matrix': np.full((n_splits, 2, 2), np.nan),
                 'n_iter': _scalar(), 'converged': _scalar(), 'fit_time': _scalar()
@@ -855,6 +855,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     epsilon = 1e-15
                     y_proba_actual_clipped = np.clip(y_proba_actual, epsilon, 1 - epsilon)
                     results['actual']['ll'][split_idx] = log_loss(y_test, y_proba_actual_clipped)
+                    # McFadden-style deviance explained: 1 - LL / LL_chance, where the
+                    # balanced-trained intercept model predicts 0.5 -> LL_chance = ln(2).
+                    # This is the proper-scoring-rule effect size the univariate plots
+                    # should rank / threshold on (balanced accuracy and AUC are improper
+                    # rank/threshold statistics and are NOT a valid significance basis).
+                    results['actual']['deviance_explained'][split_idx] = 1.0 - results['actual']['ll'][split_idx] / np.log(2)
                     results['actual']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_actual))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_actual, y_proba_actual])
@@ -911,6 +917,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     epsilon = 1e-15
                     y_proba_shuffled_clipped = np.clip(y_proba_shuffled, epsilon, 1 - epsilon)
                     results['null']['ll'][split_idx] = log_loss(y_test, y_proba_shuffled_clipped)
+                    results['null']['deviance_explained'][split_idx] = 1.0 - results['null']['ll'][split_idx] / np.log(2)
                     results['null']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_shuffled))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_shuffled, y_proba_shuffled])
@@ -1046,7 +1053,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 'coefs_projected': np.empty((n_splits, 0)),
                 'optimal_C': np.empty((n_splits, 0)),
                 'score': _scalar(), 'recall': _scalar(),
-                'f1': _scalar(), 'auc': _scalar(), 'll': _scalar(),
+                'f1': _scalar(), 'auc': _scalar(), 'll': _scalar(), 'deviance_explained': _scalar(),
                 'brier': _scalar(), 'ece': _scalar(), 'mcc': _scalar(),
                 'confusion_matrix': np.full((n_splits, 2, 2), np.nan),
                 'n_iter': _scalar(), 'converged': _scalar(), 'fit_time': _scalar()
@@ -1128,6 +1135,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     if len(np.unique(y_test_int)) > 1:
                         results['actual']['auc'][split_idx] = roc_auc_score(y_test_int, y_proba_mean_epoch)
                         results['actual']['ll'][split_idx] = log_loss(y_test_int, np.clip(y_proba_mean_epoch, 1e-15, 1 - 1e-15))
+                        results['actual']['deviance_explained'][split_idx] = 1.0 - results['actual']['ll'][split_idx] / np.log(2)
                         results['actual']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_mean_epoch))
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_mean_epoch, y_proba_mean_epoch])
@@ -1204,6 +1212,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     if len(np.unique(y_test_int)) > 1:
                         results['null']['auc'][split_idx] = roc_auc_score(y_test_int, y_proba_shuffled_mean)
                         results['null']['ll'][split_idx] = log_loss(y_test_int, np.clip(y_proba_shuffled_mean, 1e-15, 1 - 1e-15))
+                        results['null']['deviance_explained'][split_idx] = 1.0 - results['null']['ll'][split_idx] / np.log(2)
                         results['null']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_shuffled_mean))
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_shuffled_mean, y_proba_shuffled_mean])

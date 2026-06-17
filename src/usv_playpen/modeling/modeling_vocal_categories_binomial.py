@@ -737,7 +737,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # Scalar per-split metrics. `precision` is dropped because it is
         # derivable on demand from the saved confusion matrices and macro-F1
         # already summarizes the precision / recall trade-off.
-        metrics = ['auc', 'score', 'recall', 'f1', 'll', 'brier', 'ece', 'mcc']
+        metrics = ['auc', 'score', 'recall', 'f1', 'll', 'deviance_explained', 'brier', 'ece', 'mcc']
         results = {
             'actual': {m: np.full(n_splits, np.nan) for m in metrics},
             'null': {m: np.full(n_splits, np.nan) for m in metrics}
@@ -874,6 +874,11 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
                         results[key]['auc'][split_idx] = roc_auc_score(y_te, y_prob)
                         results[key]['ll'][split_idx] = log_loss(y_te, y_prob_clipped)
+                        # McFadden-style deviance explained: 1 - LL / LL_chance, where the
+                        # balanced-trained intercept model predicts 0.5 -> LL_chance = ln(2).
+                        # Proper-scoring-rule effect size for the univariate plots (balanced
+                        # accuracy / AUC are improper and not a valid significance basis).
+                        results[key]['deviance_explained'][split_idx] = 1.0 - results[key]['ll'][split_idx] / np.log(2)
 
                         results[key]['score'][split_idx] = balanced_accuracy_score(y_te, y_pred)
                         results[key]['recall'][split_idx] = recall_score(y_te, y_pred, zero_division=0.0)
