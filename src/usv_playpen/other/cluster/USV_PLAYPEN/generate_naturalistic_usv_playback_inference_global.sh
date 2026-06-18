@@ -19,9 +19,10 @@ SAMPLING_RATE=250
 SNIPPETS_DIR_PREFIX="female"
 TOTAL_PLAYBACK_TIME=1080
 
-INTER_SEQ_INTERVAL_DIST='{"2.5": 0.125, "5": 0.5, "7.5": 0.25, "10": 0.125}'
-USV_SEQ_LENGTH_DIST='{"5": 0.5, "10": 0.25, "20": 0.125, "40": 0.0625, "80": 0.0625}'
-INTER_USV_INTERVAL_DIST='{"0.02": 0.02, "0.04": 0.33, "0.06": 0.45, "0.08": 0.1, "0.1": 0.025, "0.15": 0.045, "0.2": 0.025, "0.25": 0.005}'
+# Inter-USV / inter-sequence interval distributions are no longer passed here:
+# they are reconstructed at generation time from the per-sex Student-t mixture
+# in the HDF5 interval archive (configured via naturalistic_iui_archive_h5 in
+# analyses_settings.json).
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
@@ -52,10 +53,7 @@ echo "generate-naturalistic-usv-playback \\
     --num-naturalistic-usv-files $NUM_USV_FILES \\
     --naturalistic-wav-sampling-rate $SAMPLING_RATE \\
     --naturalistic-playback-snippets-dir-prefix \"$SNIPPETS_DIR_PREFIX\" \\
-    --total-playback-time $TOTAL_PLAYBACK_TIME \\
-    --inter-seq-interval-dist '$INTER_SEQ_INTERVAL_DIST' \\
-    --usv-seq-length-dist '$USV_SEQ_LENGTH_DIST' \\
-    --inter-usv-interval-dist '$INTER_USV_INTERVAL_DIST'" >> "$JOB_SCRIPT"
+    --total-playback-time $TOTAL_PLAYBACK_TIME" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

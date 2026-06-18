@@ -480,12 +480,14 @@ To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no 
 
    <br>
 
-Inter-USV intervals (IUIs) and inter-sequence intervals (ISIs) are sampled from a sex-specific 3-component Gaussian mixture model (GMM) fit to log-transformed empirical interval data.
-Sex is inferred automatically from the ``naturalistic_playback_snippets_dir_prefix`` setting (e.g. ``"female"`` or ``"male"``). Specifically:
+Inter-USV intervals (IUIs) and inter-sequence intervals (ISIs) are sampled from a sex-specific log-space Student-t mixture model fit to the empirical end-to-start (``e2s``) inter-USV interval distribution. The fitted model is read live from the HDF5 interval archive produced by *Compute inter-USV interval distributions* (the ``naturalistic_iui_archive_h5`` setting); the number of components ``K`` is the per-sex value the archive's bootstrap-LRT step-up procedure selected (``K_selected_<sex>``), so no component counts or parameters are hardcoded.
+Sex is inferred automatically from the ``naturalistic_playback_snippets_dir_prefix`` setting (e.g. ``"female"`` or ``"male"``). The reconstructed mixture (components sorted ascending by log-mean) is split into two roles:
 
-* **IUI** is drawn from the *first* GMM component (shortest intervals, ~60 ms peak): ``exp(N(mean[0], sd[0]))``
-* **ISI** is drawn from the *third* GMM component (longest intervals, seconds-scale): ``exp(N(mean[2], sd[2]))``
+* **ISI** is drawn from the *slowest* (longest-interval) component only — the long quiet pause between sequences
+* **IUI** is drawn from the pool of *all remaining (faster) components* (weights renormalised) — the short within-sequence gaps; pooling rather than using only the fastest breathing-expiration component keeps the full within-sequence interval mass (e.g. the female ~0.9 s component, which carries most of her mass)
 * **Sequence length** is drawn from N(13, 5) clipped to [3, 23] USVs
+
+Because the low-degrees-of-freedom Student-t components have heavy tails (a raw draw, once exponentiated, can exceed the entire playback file), every draw is reject-resampled to a per-sex ``[100 - clip_pct, clip_pct]`` percentile band (``naturalistic_interval_clip_pct``) before being exponentiated, so a single draw cannot emit an absurdly long silence.
 
 The analysis results in the creation of three files: [1] WAV file containing playback vocalizations, [2] a *spacing* text file informing you of the duration of each vocalization in order, and [3] a *usvids* text file containing the identity of each vocalization snippet if you need to go back and look at what it was:
 
@@ -501,8 +503,11 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 * **num_naturalistic_usv_files** : number of naturalistic playback files to be created
 * **naturalistic_wav_sampling_rate** : sampling rate of the playback .WAV file in kHz
-* **naturalistic_playback_snippets_dir_prefix** : prefix of the subdirectory where the USV snippets are stored (the rest of the subdirectory name should be ``"_usv_playback_snippets"``); also determines which sex-specific GMM is used (``"female"`` or ``"male"``)
+* **naturalistic_playback_snippets_dir_prefix** : prefix of the subdirectory where the USV snippets are stored (the rest of the subdirectory name should be ``"_usv_playback_snippets"``); also determines which sex-specific Student-t model is used (``"female"`` or ``"male"``)
 * **total_acceptable_naturalistic_playback_time** : total acceptable duration of the playback file (in s)
+* **naturalistic_iui_archive_h5** : path to the HDF5 interval archive (``usv_interval_analysis_*.h5``) produced by *Compute inter-USV interval distributions*; the per-sex Student-t model is reconstructed from it at generation time
+* **naturalistic_interval_mode** : interval definition used for the gaps (``"e2s"`` = end-to-start, the physical silent gap between successive USVs)
+* **naturalistic_interval_clip_pct** : per-sex upper percentile for heavy-tail clipping, a ``{"male": ..., "female": ...}`` dict; each draw is reject-resampled into the ``[100 - clip_pct, clip_pct]`` percentile band of its sub-mixture
 * **playback_seed** : optional RNG seed for reproducible snippet selection and assembly; ``null`` draws a fresh random stimulus each run, an integer reproduces the same stimulus
 
 .. code-block:: json
@@ -512,6 +517,9 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "naturalistic_wav_sampling_rate": 250,
         "naturalistic_playback_snippets_dir_prefix": "female",
         "total_acceptable_naturalistic_playback_time": 1080,
+        "naturalistic_iui_archive_h5": "/mnt/falkner/Bartul/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
+        "naturalistic_interval_mode": "e2s",
+        "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
         "playback_seed": null
     }
 

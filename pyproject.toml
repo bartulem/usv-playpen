@@ -257,7 +257,23 @@ messages_control.disable = [
 # (#40), starlette (#42) and tornado (#43) floors were all redundant (their
 # requiring deps now mandate patched versions) and removed; the lockfile still
 # resolves each to a patched release.
-constraint-dependencies = []
+#
+# Re-added 2026-06-18 -- starlette (#44): marimo still allows 1.2.1, which is
+# vulnerable to request.url authority poisoning via an unvalidated request
+# path; patched in 1.3.0. Prune once marimo's floor mandates >=1.3.0.
+#
+# Added 2026-06-18 -- cryptography (#45): paramiko 4.0.0 pulls 46.0.7, whose
+# bundled OpenSSL has the 2026-06-09 advisory; patched in 48.0.1. Prune once
+# paramiko's floor mandates >=48.0.1.
+#
+# Added 2026-06-18 -- bleach (#46, #47): nbsphinx/jupyterlab pull 6.2.0, which
+# fails to sanitize disallowed URI schemes (Unicode-obfuscated and formaction);
+# patched in 6.4.0. Prune once the requiring deps mandate >=6.4.0.
+constraint-dependencies = [
+    "starlette>=1.3.0",
+    "cryptography>=48.0.1",
+    "bleach>=6.4.0",
+]
 
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }

@@ -483,13 +483,10 @@ Analyze
 
 .. code-block:: text
 
-    usage: generate-usv-playback [-h] --exp-id TEXT [--num-naturalistic-usv-files INTEGER]
-                                 [--naturalistic-wav-sampling-rate INTEGER]
-                                 [--total-playback-time INTEGER]
-                                 [--naturalistic-playback-snippets-dir-prefix TEXT]
-                                 [--inter-seq-interval-dist TEXT]
-                                 [--usv-seq-length-dist TEXT]
-                                 [--inter-usv-interval-dist TEXT]
+    usage: generate-naturalistic-usv-playback [-h] --exp-id TEXT [--num-naturalistic-usv-files INTEGER]
+                                              [--naturalistic-wav-sampling-rate INTEGER]
+                                              [--total-playback-time INTEGER]
+                                              [--naturalistic-playback-snippets-dir-prefix TEXT]
 
     required arguments:
         --exp-id                                      Experimenter ID.
@@ -500,9 +497,8 @@ Analyze
         --naturalistic-wav-sampling-rate              Sampling rate of the naturalistic playback .WAV file in kHz.
         --naturalistic-playback-snippets-dir-prefix   Prefix of the snippet subdirectory (the rest of its name should be "_usv_playback_snippets".
         --total-playback-time                         Total acceptable time of the playback time (in s).
-        --inter-seq-interval-dist                     Distribution of inter-sequence intervals (time (s) : probability (sums to 1).
-        --usv-seq-length-dist                         Distribution of USV sequence lengths (time (s) : probability (sums to 1).
-        --inter-usv-interval-dist                     Distribution of inter-USV intervals (time (s) : probability (sums to 1).
+
+The inter-USV / inter-sequence interval distributions are not CLI options: they are reconstructed at generation time from the per-sex Student-t mixture in the HDF5 interval archive (configured via ``naturalistic_iui_archive_h5`` in *analyses_settings.json*).
 
 ``generate-usv-interval-distributions``
 ``generate-usv-interval-distributions`` is the command-line interface for computing inter-vocalization-interval (inter-USV interval) distributions across one or more session-list text files and (optionally) sweeping a 1D Gaussian Mixture Model on the pooled log-inter-USV intervals.
