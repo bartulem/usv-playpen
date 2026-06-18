@@ -210,5 +210,30 @@
     "vcl_conda_env_name": "vcl-ssl",
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/conformer_smol_4.00",
     "vcl_version": "vcl-ssl"
+  },
+  "generate_spectrograms": {
+    "num_freq_bins": 128,
+    "num_time_bins": 128,
+    "nperseg": 2048,
+    "noverlap": 1792,
+    "min_freq": 30000,
+    "max_freq": 120000,
+    "hop_length": 512,
+    "window": "blackmanharris",
+    "offset": 0.0,
+    "normalize": true
+  },
+  "compute_usv_acoustic_features": {
+    "low_energy_frac": 0.05,
+    "high_energy_frac": 0.95
+  },
+  "build_qlvm_training_set": {
+    "length_threshold": 50.0,
+    "dataset_size_constraint": null,
+    "validation_split": 0.2,
+    "random_state": 42,
+    "full_dataset": false,
+    "target_shape": [128, 128],
+    "time_stretch": false
   }
 }
