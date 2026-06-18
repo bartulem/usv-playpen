@@ -903,6 +903,7 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
 @click.option('--freq-cutoff', 'low_freq_cutoff', type=int, default=None, required=False, help='Low frequency cutoff (Hz).')
 @click.option('--corr-cutoff', 'noise_corr_cutoff_min', type=float, default=None, required=False, help='Minimum noise correlation cutoff.')
 @click.option('--var-cutoff', 'noise_var_cutoff_max', type=float, default=None, required=False, help='Maximum noise variance cutoff.')
+@click.option('--filter-putative-noise/--no-filter-putative-noise', 'filter_putative_noise_bool', default=None, required=False, help='Run the Phase-4 amplitude/spectrogram noise rejection (default: enabled). Pass --no-filter-putative-noise to keep every merged detection and write the summary CSV as-is.')
 @click.pass_context
 def summarize_das_findings_cli(ctx, root_directory, **kwargs):
     """

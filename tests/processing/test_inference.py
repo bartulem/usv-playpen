@@ -455,6 +455,44 @@ def test_summarize_das_findings_writes_summary_csv_and_histogram(
     }
 
 
+def test_summarize_das_findings_no_filter_keeps_all_and_skips_quality_checks(
+    processing_settings, tmp_path, mocker
+):
+    """With filter_putative_noise_bool=False the Phase-4 amplitude/spectrogram
+    rejection is skipped entirely: every merged USV is kept and written to the
+    summary CSV as-is, no histogram figure is produced, and the peak/mean
+    amplitude channels stay at their 0.0 placeholders (never computed)."""
+    _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
+
+    processing_settings["usv_inference"]["FindMouseVocalizations"][
+        "summarize_das_findings"
+    ]["filter_putative_noise_bool"] = False
+
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    )
+    fmv.summarize_das_findings()
+
+    audio_dir = tmp_path / "audio"
+    # No histogram figure is written when filtering is disabled.
+    assert list(audio_dir.glob("*_usv_signal_correlation_histogram.svg")) == []
+    # Summary CSV is still written, with all 3 merged USVs retained.
+    summaries = list(audio_dir.glob("*_usv_summary.csv"))
+    assert len(summaries) == 1
+    df = pls.read_csv(str(summaries[0]))
+    assert df.height == 3
+    # Amplitude channels were never computed → all at the 0.0 placeholder.
+    assert df["peak_amp_ch"].to_list() == [0.0, 0.0, 0.0]
+    assert df["mean_amp_ch"].to_list() == [0.0, 0.0, 0.0]
+
+
 def test_summarize_das_findings_skips_unknown_channel_filename(
     processing_settings, tmp_path, mocker
 ):
