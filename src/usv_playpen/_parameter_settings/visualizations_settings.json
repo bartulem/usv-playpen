@@ -139,5 +139,14 @@
       "usv_segments_ypos": 120000,
       "usv_segments_lw": 1.25
     }
+  },
+  "qlvm_torus_traversal_video": {
+    "arrays_npz_path": "/mnt/falkner/Dexter/vocal_beh/models/example_qlvm_model/arrays.npz",
+    "specs_npz_path": "/mnt/falkner/Dexter/vocal_beh/models/example_qlvm_model/full_data.npz",
+    "frames_per_segment": 30,
+    "fps": 20,
+    "dpi": 150,
+    "path_curvature": 0.15,
+    "trail_length": 60
   }
 }

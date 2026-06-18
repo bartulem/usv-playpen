@@ -135,6 +135,7 @@ generate-usv-interval-distributions = "usv_playpen.analyses.analyze_data:generat
 infer-qlvm-latents = "usv_playpen.analyses.qlvm_latents:infer_qlvm_latents_cli"
 generate-rm-figs = "usv_playpen.visualizations.visualize_data:generate_rm_figures_cli"
 generate-viz = "usv_playpen.visualizations.visualize_data:visualize_3D_data_cli"
+qlvm-torus-traversal-video = "usv_playpen.visualizations.qlvm_torus_traversal_video:qlvm_torus_traversal_video_cli"
 
 
 [tool.hatch]
