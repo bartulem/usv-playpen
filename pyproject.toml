@@ -243,7 +243,11 @@ messages_control.disable = [
 # (#40), starlette (#42) and tornado (#43) floors were all redundant (their
 # requiring deps now mandate patched versions) and removed; the lockfile still
 # resolves each to a patched release.
-constraint-dependencies = []
+#
+# Re-added 2026-06-18 -- starlette (#44): marimo still allows 1.2.1, which is
+# vulnerable to request.url authority poisoning via an unvalidated request
+# path; patched in 1.3.0. Prune once marimo's floor mandates >=1.3.0.
+constraint-dependencies = ["starlette>=1.3.0"]
 
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }
