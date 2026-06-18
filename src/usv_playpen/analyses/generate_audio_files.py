@@ -18,6 +18,146 @@ from tqdm import tqdm
 
 from ..os_utils import find_base_path
 from ..time_utils import is_gui_context, smart_wait
+from .mixture_model_utils import TMixture, _sample_from_mixture
+from .usv_interval_archive import read_usv_interval_h5, reconstruct_best_model
+
+
+def _split_iui_isi(model: TMixture) -> tuple[TMixture, TMixture]:
+    """
+    Description
+    -----------
+    Splits a per-sex log-space Student-t interval mixture into the two
+    sub-models the naturalistic playback generator needs:
+
+    * the within-sequence inter-USV-interval (IUI) pool -- every component
+      EXCEPT the slowest, with mixing weights renormalised to sum to 1, and
+    * the between-sequence inter-sequence-interval (ISI) model -- the single
+      slowest (longest-interval) component.
+
+    The reconstructed model returned by :func:`reconstruct_best_model` is
+    pre-sorted in ascending log-mean order, so the slowest component is the
+    last one (index ``K - 1``); no re-sorting is performed here. Pooling every
+    non-slowest component into the IUI sub-model (rather than using only the
+    fastest breathing-expiration component) keeps the full within-sequence
+    interval mass -- this matters for sexes whose characteristic gap sits in a
+    middle component (e.g. the female ~0.9 s component carrying the bulk of the
+    mass) rather than in the fastest one.
+
+    Parameters
+    ----------
+    model (TMixture)
+        A fitted per-sex Student-t mixture (components ascending by log-mean).
+
+    Returns
+    -------
+    iui_model (TMixture)
+        Sub-mixture of all components except the slowest, weights renormalised.
+    isi_model (TMixture)
+        Single-component model holding the slowest component only.
+    """
+
+    K = model.n_components
+    if K < 2:
+        msg = (
+            "create_naturalistic_usv_playback_wav: need >= 2 Student-t "
+            f"components to separate IUI from ISI, but the model has K={K}."
+        )
+        raise ValueError(msg)
+
+    means = model.means_.ravel()
+    covariances = model.covariances_.ravel()
+    nus = model.nus_.ravel()
+    weights = model.weights_.ravel()
+
+    iui_weights = weights[:-1] / weights[:-1].sum()
+    iui_model = TMixture(
+        weights=iui_weights,
+        means=means[:-1],
+        covariances=covariances[:-1],
+        nus=nus[:-1],
+    )
+    isi_model = TMixture(
+        weights=np.array([1.0]),
+        means=means[-1:],
+        covariances=covariances[-1:],
+        nus=nus[-1:],
+    )
+    return iui_model, isi_model
+
+
+def _mixture_log_bounds(model: TMixture, clip_pct: float) -> tuple[float, float]:
+    """
+    Description
+    -----------
+    Estimates a symmetric log-space percentile band ``[100 - clip_pct,
+    clip_pct]`` for a Student-t mixture by sampling it once. The band is used
+    to reject-resample draws so the heavy tails of low-``nu`` components cannot
+    emit an absurdly long (or short) interval -- a raw draw from a ``nu ~ 3``
+    component, once exponentiated, can otherwise exceed the entire playback
+    duration.
+
+    A fixed-seed local generator is used so the bounds are deterministic for a
+    given model and do NOT perturb the caller's reproducible draw stream.
+
+    Parameters
+    ----------
+    model (TMixture)
+        The (sub-)mixture to bound.
+    clip_pct (float)
+        Upper percentile of the retained band (e.g. ``99.5``); the lower edge
+        is its complement (``100 - clip_pct``).
+
+    Returns
+    -------
+    lo_log (float)
+        Lower log-space bound (the ``100 - clip_pct`` percentile).
+    hi_log (float)
+        Upper log-space bound (the ``clip_pct`` percentile).
+    """
+
+    bound_rng = np.random.default_rng(0)
+    log_samples = _sample_from_mixture(model, 200000, bound_rng)
+    lo_log = float(np.percentile(log_samples, 100.0 - clip_pct))
+    hi_log = float(np.percentile(log_samples, clip_pct))
+    return lo_log, hi_log
+
+
+def _draw_bounded_seconds(
+    model: TMixture,
+    rng: np.random.Generator,
+    lo_log: float,
+    hi_log: float,
+) -> float:
+    """
+    Description
+    -----------
+    Draws a single interval (in seconds) from a log-space Student-t mixture,
+    reject-resampling until the log-space draw falls inside ``[lo_log,
+    hi_log]``, then exponentiating. This caps the heavy-tailed components
+    without distorting the bulk of the distribution.
+
+    Parameters
+    ----------
+    model (TMixture)
+        The (sub-)mixture to sample from.
+    rng (np.random.Generator)
+        The caller's random generator (seeded by ``playback_seed`` for
+        reproducible stimulus sets).
+    lo_log (float)
+        Lower log-space acceptance bound.
+    hi_log (float)
+        Upper log-space acceptance bound.
+
+    Returns
+    -------
+    interval_seconds (float)
+        The accepted draw, exponentiated from log-space into seconds.
+    """
+
+    while True:
+        draw = float(_sample_from_mixture(model, 1, rng)[0])
+        if lo_log <= draw <= hi_log:
+            return float(np.exp(draw))
 
 
 class AudioGenerator:
@@ -73,22 +213,40 @@ class AudioGenerator:
         intervals and sequence lengths from empirically derived distributions.
 
         Inter-USV intervals (IUI) and inter-sequence intervals (ISI) are sampled
-        from a sex-specific 3-component Gaussian mixture model (GMM) fit to
-        log-transformed empirical interval data:
-            - IUI: first Gaussian component (shortest intervals, ~60 ms peak)
-            - ISI: third Gaussian component (longest intervals, seconds-scale)
+        from a sex-specific log-space Student-t mixture model fit to the
+        empirical end-to-start (``e2s``) inter-USV interval distribution. The
+        fitted model is read live from the HDF5 interval archive
+        (``naturalistic_iui_archive_h5``); the number of components ``K`` is the
+        per-sex value selected by the archive's bootstrap-LRT step-up procedure
+        (``K_selected_<sex>``), so no component counts or parameters are
+        hard-coded here. The reconstructed mixture (components ascending by
+        log-mean) is split into two roles:
+            - ISI: the slowest (longest-interval) component only -- the long
+              quiet pause between sequences.
+            - IUI: the pool of all remaining (faster) components, weights
+              renormalised -- the short within-sequence gaps. Pooling rather
+              than using only the fastest breathing-expiration component keeps
+              the full within-sequence interval mass (e.g. the female ~0.9 s
+              component, which carries most of her mass).
+
+        Because the low-``nu`` Student-t components have heavy tails, every draw
+        is reject-resampled to the ``[100 - clip_pct, clip_pct]`` percentile band
+        of its sub-mixture before being exponentiated, so a single draw cannot
+        emit an absurdly long silence. The clip percentile is read per sex from
+        ``naturalistic_interval_clip_pct`` (a ``{'male': ..., 'female': ...}``
+        dict), since the sexes' within-sequence interval spreads differ.
 
         Sequence length is drawn from N(13, 5) clipped to [3, 23] USVs.
         Sex is inferred from naturalistic_playback_snippets_dir_prefix.
 
         The way the code works is as follows:
         (1) it finds all .wav files in the specified directory (female or male)
-        (2) it draws a long inter-sequence quiet interval (ISI) from the third
-            Gaussian of the sex-specific GMM in log space, then exponentiates
+        (2) it draws a long inter-sequence quiet interval (ISI) from the slowest
+            t-mixture component (bounded), then exponentiates
         (3) it draws a sequence length from N(13, 5) clipped to [3, 23]
         (4) it plays that many pseudo-randomly chosen USVs, each separated by
-            a short inter-USV interval (IUI) drawn from the first Gaussian
-            of the sex-specific GMM in log space, then exponentiated
+            a short inter-USV interval (IUI) drawn from the IUI sub-mixture
+            (bounded), then exponentiated
         (5) it goes back to (2) and repeats until exceeding total playback time
 
         NB: Run time for ~18 min .wav file is ~2 minutes.
@@ -101,17 +259,6 @@ class AudioGenerator:
         usv_playback (.wav file(s))
             Wave file(s) with naturalistic sequences of USVs.
         """
-
-        _GMM_PARAMS = {
-            'male': {
-                'means': [-2.78176965, -1.61892112, -0.62569187],
-                'sds':   [0.26162863,  0.77768956,  2.2298624],
-            },
-            'female': {
-                'means': [-2.76859759, -1.64223541,  1.88505038],
-                'sds':   [0.26499761,  1.07984569,   1.36805932],
-            },
-        }
 
         self.message_output(f"Creating naturalistic USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
@@ -131,7 +278,26 @@ class AudioGenerator:
         wav_sampling_rate = self.create_playback_settings_dict['naturalistic_wav_sampling_rate']
         total_acceptable_playback_time = self.create_playback_settings_dict['total_acceptable_naturalistic_playback_time']
 
-        gmm = _GMM_PARAMS['female'] if 'female' in prefix.lower() else _GMM_PARAMS['male']
+        # Reconstruct the sex-specific Student-t interval model live from the
+        # HDF5 archive (no hard-coded parameters), using the per-sex component
+        # count the archive's bootstrap-LRT selected. Split it into the
+        # within-sequence IUI pool and the between-sequence ISI component, then
+        # precompute per-sub-model percentile bounds for heavy-tail clipping.
+        sex = 'female' if 'female' in prefix.lower() else 'male'
+        interval_mode = self.create_playback_settings_dict['naturalistic_interval_mode']
+        clip_pct = self.create_playback_settings_dict['naturalistic_interval_clip_pct'][sex]
+        interval_archive = read_usv_interval_h5(self.create_playback_settings_dict['naturalistic_iui_archive_h5'])
+        mode_node = interval_archive['modes'][interval_mode]
+        k_selected = int(mode_node['attrs'][f'K_selected_{sex}'])
+        interval_model, _ = reconstruct_best_model(mode_node['gmm_fits'], sex, k_selected)
+        iui_model, isi_model = _split_iui_isi(interval_model)
+        iui_lo_log, iui_hi_log = _mixture_log_bounds(iui_model, clip_pct)
+        isi_lo_log, isi_hi_log = _mixture_log_bounds(isi_model, clip_pct)
+        self.message_output(
+            f"Loaded {interval_mode} Student-t interval model for '{sex}' (K={k_selected}) from archive; "
+            f"IUI pool = {iui_model.n_components} component(s), ISI = slowest component."
+        )
+
         # `playback_seed` is None by default (fresh entropy, non-reproducible);
         # set it to an integer to generate a documented, repeatable stimulus
         # set. A local random.Random is used instead of the global `random`
@@ -159,14 +325,11 @@ class AudioGenerator:
                   tqdm(total=total_acceptable_playback_time, desc="Generating Playback", unit="s") as pbar):
 
                 while total_playback_time_created < total_acceptable_playback_time:
-                    # inter-sequence interval: sample from third GMM component in log space,
-                    # clipped to mean ± 1 SD to prevent extreme silence at the tail
-                    isi_log = np.clip(
-                        rng.normal(gmm['means'][2], gmm['sds'][2]),
-                        gmm['means'][2] - gmm['sds'][2],
-                        gmm['means'][2] + gmm['sds'][2],
-                    )
-                    isi = np.exp(isi_log)
+                    # inter-sequence interval: draw the long between-sequence pause
+                    # from the slowest t-mixture component, reject-resampled to the
+                    # [100 - clip_pct, clip_pct] percentile band so a heavy tail cannot
+                    # emit an absurdly long silence
+                    isi = _draw_bounded_seconds(isi_model, rng, isi_lo_log, isi_hi_log)
 
                     # if this ISI alone would consume all remaining time, stop rather
                     # than filling the tail of the file with silence
@@ -197,8 +360,10 @@ class AudioGenerator:
                         usv_id_txt_file.write(f'{random_wav_file.name} \n')
 
                         if usv_idx < (usv_seq_length - 1):
-                            # inter-USV interval: sample from first GMM component in log space
-                            iui = np.exp(rng.normal(gmm['means'][0], gmm['sds'][0]))
+                            # inter-USV interval: draw the within-sequence gap from the
+                            # IUI sub-mixture (all components except the slowest),
+                            # reject-resampled to the percentile band
+                            iui = _draw_bounded_seconds(iui_model, rng, iui_lo_log, iui_hi_log)
                             iui_samples = int(np.ceil(iui * wav_sampling_rate * 1e3))
                             total_playback_time_created += iui
 

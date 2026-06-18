@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from usv_playpen.analyses.generate_audio_files import AudioGenerator
+from usv_playpen.analyses.mixture_model_utils import TMixture
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +290,8 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, prefix="male",
     exp_id (str)
         Experiment-id subdirectory under the file-server base.
     prefix (str)
-        Snippet-directory prefix selecting the sex-specific GMM ('male' /
-        'female').
+        Snippet-directory prefix selecting the sex-specific Student-t interval
+        model ('male' / 'female').
     total_time (int | float)
         Target naturalistic playback time (s).
     n_snippets (int)
@@ -320,6 +321,29 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, prefix="male",
                  return_value=(250, np.zeros(8, dtype=np.int16)))
     write_mock = mocker.patch("usv_playpen.analyses.generate_audio_files.wavfile.write")
 
+    # Inject a small synthetic 3-component Student-t interval model so the test
+    # does not depend on the real on-disk HDF5 archive. Components are sorted
+    # ascending by log-mean, so the slowest (mean=0.0 -> ~1 s median) becomes the
+    # ISI and the two faster ones (~0.06 s, ~0.37 s medians) form the IUI pool;
+    # a ~1 s ISI keeps at least one full sequence inside the small time budget.
+    synthetic_model = TMixture(
+        weights=np.array([0.6, 0.25, 0.15]),
+        means=np.array([-2.8, -1.0, 0.0]),
+        covariances=np.array([0.07, 0.1, 0.1]),
+        nus=np.array([30.0, 30.0, 30.0]),
+    )
+    mocker.patch(
+        "usv_playpen.analyses.generate_audio_files.read_usv_interval_h5",
+        return_value={"modes": {"e2s": {
+            "attrs": {"K_selected_male": 3, "K_selected_female": 3},
+            "gmm_fits": None,
+        }}},
+    )
+    mocker.patch(
+        "usv_playpen.analyses.generate_audio_files.reconstruct_best_model",
+        return_value=(synthetic_model, np.arange(3)),
+    )
+
     ag = AudioGenerator(
         exp_id=exp_id,
         create_playback_settings_dict={
@@ -327,6 +351,9 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, prefix="male",
             "total_acceptable_naturalistic_playback_time": total_time,
             "naturalistic_wav_sampling_rate": 250,
             "naturalistic_playback_snippets_dir_prefix": prefix,
+            "naturalistic_iui_archive_h5": "/dummy/archive.h5",
+            "naturalistic_interval_mode": "e2s",
+            "naturalistic_interval_clip_pct": {"male": 99.0, "female": 97.0},
             "playback_seed": seed,
         },
         message_output=lambda *_a, **_kw: None,
@@ -350,8 +377,9 @@ def test_create_naturalistic_usv_playback_wav_emits_sequences(tmp_path, mocker):
     silences (ISI) and seeded USV sequences (each separated by IUIs) until the
     target playback time is reached, logging both the per-segment sample counts
     (``spacing.txt``) and the chosen snippet / ISI / IUI labels
-    (``usvids.txt``), then writing a single WAV. The male GMM keeps the ISIs
-    short enough that at least one full sequence is emitted within the budget.
+    (``usvids.txt``), then writing a single WAV. The synthetic interval model
+    keeps the ISIs short enough that at least one full sequence is emitted
+    within the budget.
 
     Parameters
     ----------

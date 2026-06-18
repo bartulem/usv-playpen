@@ -1046,6 +1046,7 @@ The *usv_signal_correlation_histogram.svg* file contains a histogram of [1] mean
 
 The */usv-playpen/_parameter_settings/process_settings.json* file contains a section not modifiable in the GUI, but it can be modified manually:
 
+* **filter_putative_noise_bool** : whether to run the Phase-4 amplitude/spectrogram noise rejection; when ``false``, every merged detection is kept and the summary CSV is written as-is (peak/mean amplitude channels left at 0)
 * **len_win_signal** : STFT window length
 * **low_freq_cutoff** : frequency cutoff for filtering (in kHz)
 * **noise_corr_cutoff_min** : minimum correlation coefficient for noise
@@ -1054,6 +1055,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 .. code-block:: json
 
      "summarize_das_findings": {
+        "filter_putative_noise_bool": true,
         "len_win_signal": 512,
         "low_freq_cutoff": 30000,
         "noise_corr_cutoff_min": 0.15,

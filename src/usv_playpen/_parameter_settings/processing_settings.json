@@ -198,6 +198,7 @@
         "segment_fillgap": 0.015
       },
       "summarize_das_findings": {
+        "filter_putative_noise_bool": true,
         "len_win_signal": 512,
         "low_freq_cutoff": 30000,
         "noise_corr_cutoff_min": 0.15,

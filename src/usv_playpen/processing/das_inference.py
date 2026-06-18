@@ -299,8 +299,16 @@ class FindMouseVocalizations:
             )
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
+            # Whether to run the Phase-4 putative-noise rejection (amplitude +
+            # spectrogram correlation/variance checks). When False, every merged
+            # interval is kept and written to the summary CSV as-is.
+            filter_putative_noise_bool = self.input_parameter_dict[
+                "summarize_das_findings"
+            ]["filter_putative_noise_bool"]
+
             # Phase 4: amplitude + spectrogram quality checks
-            if n_usv > 1:
+            # (skipped entirely when filter_putative_noise_bool is False)
+            if filter_putative_noise_bool and n_usv > 1:
                 audio_file_loc = first_match_or_raise(
                     root=pathlib.Path(self.root_directory) / "audio" / "hpss_filtered",
                     pattern="*.mmap",
@@ -499,7 +507,7 @@ class FindMouseVocalizations:
                     file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
                 )
 
-            elif n_usv == 1:
+            elif filter_putative_noise_bool and n_usv == 1:
                 # A lone USV has no descriptor distribution to filter against, so
                 # the statistical noise rejection above is skipped. The detection
                 # is nonetheless real: compute its peak/mean amplitude channels
@@ -539,6 +547,32 @@ class FindMouseVocalizations:
 
                 self.message_output(
                     f"In this session, {len(merged)} USVs were detected."
+                )
+
+                # save the summary file
+                pls.DataFrame({
+                    "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
+                    "start": [u['start'] for u in merged],
+                    "stop": [u['stop'] for u in merged],
+                    "duration": [u['stop'] - u['start'] for u in merged],
+                    "peak_amp_ch": [float(u['peak_amp_ch']) for u in merged],
+                    "mean_amp_ch": [float(u['mean_amp_ch']) for u in merged],
+                    "chs_count": [float(u['chs_count']) for u in merged],
+                    "chs_detected": [str(u['chs_detected']) for u in merged],
+                    "emitter": [None] * len(merged),
+                }).write_csv(
+                    file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
+                )
+
+            elif not filter_putative_noise_bool and n_usv >= 1:
+                # Putative-noise filtering disabled: keep every merged interval
+                # without amplitude/spectrogram rejection. The intervals are
+                # already start-sorted (Phase 2 sorts the raw detections and the
+                # greedy merge preserves that order), so the peak/mean amplitude
+                # channels stay at their 0.0 placeholders and the summary CSV is
+                # written directly from the merged list.
+                self.message_output(
+                    f"Putative-noise filtering disabled; {len(merged)} USVs kept without amplitude/spectrogram checks."
                 )
 
                 # save the summary file
