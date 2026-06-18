@@ -229,9 +229,6 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.option('--naturalistic-wav-sampling-rate', 'naturalistic_wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in kHz).')
 @click.option('--naturalistic-playback-snippets-dir-prefix', 'naturalistic_playback_snippets_dir_prefix', type=str, default=None, required=False, help='Prefix of directory of the naturalistic USV playback snippets.')
 @click.option('--total-playback-time', 'total_acceptable_naturalistic_playback_time', type=int, default=None, required=False, help='Maximum amount of seconds for the duration of the naturalistic playback file.')
-@click.option('--inter-seq-interval-dist', 'inter_seq_interval_distribution', type=str, default=None, help='JSON string for inter-sequence interval distribution.')
-@click.option('--usv-seq-length-dist', 'usv_seq_length_distribution', type=str, default=None, help='JSON string for USV sequence length distribution.')
-@click.option('--inter-usv-interval-dist', 'inter_usv_interval_distribution', type=str, default=None, help='JSON string for inter-USV interval distribution.')
 @click.pass_context
 def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
@@ -246,13 +243,6 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     -------
     None
     """
-
-    for key, value in kwargs.items():
-        if isinstance(value, str) and value.strip().startswith('{'):
-            try:
-                ctx.params[key] = json.loads(value)
-            except json.JSONDecodeError as exc:
-                raise click.BadParameter(message=f"Option '--{key.replace('_', '-')}' has invalid JSON.", param_hint=key) from exc
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == click.core.ParameterSource.COMMANDLINE]
 
