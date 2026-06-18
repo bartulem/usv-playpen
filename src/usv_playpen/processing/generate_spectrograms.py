@@ -286,6 +286,9 @@ class SpectrogramGenerator:
             )
             return
 
+        # Clean linspace axis (30000..120000); the ~0.1% offset from the true
+        # band-limited STFT bin frequencies is sub-bin (rows span ~703 Hz) and
+        # matches the feature-extraction axis, so round numbers are kept.
         freq_bins = np.linspace(spec_params['min_freq'], spec_params['max_freq'], spec_params['num_freq_bins'])
 
         spectrograms_dir = root / "audio" / "spectrograms"
