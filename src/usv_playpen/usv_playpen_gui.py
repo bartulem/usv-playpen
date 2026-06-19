@@ -3767,7 +3767,7 @@ class USVPlaypenWindow(QMainWindow):
         self.assign_type_cb.activated.connect(partial(self._combo_box_vcl_version, variable_id='vcl_version'))
         self.assign_type_cb.move(column_three_x2, 580)
 
-        generate_usv_spectrograms_cb_label = QLabel('Generate USV spectrograms:', self.ProcessSettings)
+        generate_usv_spectrograms_cb_label = QLabel('Generate spectrograms:', self.ProcessSettings)
         generate_usv_spectrograms_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         generate_usv_spectrograms_cb_label.setStyleSheet(self.orange_label_style)
         generate_usv_spectrograms_cb_label.move(column_three_x1, 610)
@@ -3777,7 +3777,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generate_usv_spectrograms_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='generate_usv_spectrograms_cb_bool'))
         self.generate_usv_spectrograms_cb.move(column_three_x2, 610)
 
-        generate_usv_masks_cb_label = QLabel('Generate USV masks:', self.ProcessSettings)
+        generate_usv_masks_cb_label = QLabel('Generate masks:', self.ProcessSettings)
         generate_usv_masks_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         generate_usv_masks_cb_label.setStyleSheet(self.orange_label_style)
         generate_usv_masks_cb_label.move(column_three_x1, 640)
@@ -3787,7 +3787,7 @@ class USVPlaypenWindow(QMainWindow):
         self.generate_usv_masks_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='generate_usv_masks_cb_bool'))
         self.generate_usv_masks_cb.move(column_three_x2, 640)
 
-        compute_usv_acoustic_features_cb_label = QLabel('Compute USV acoustic feat.:', self.ProcessSettings)
+        compute_usv_acoustic_features_cb_label = QLabel('Compute USV features:', self.ProcessSettings)
         compute_usv_acoustic_features_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         compute_usv_acoustic_features_cb_label.setStyleSheet(self.orange_label_style)
         compute_usv_acoustic_features_cb_label.move(column_three_x1, 670)
