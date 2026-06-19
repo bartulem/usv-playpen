@@ -20,6 +20,8 @@ resolution-markers = [
 constraints = [
     { name = "bleach", specifier = ">=6.4.0" },
     { name = "cryptography", specifier = ">=48.0.1" },
+    { name = "jupyter-server", specifier = ">=2.20.0" },
+    { name = "marimo", specifier = ">=0.23.9" },
     { name = "starlette", specifier = ">=1.3.0" },
 ]
 overrides = [{ name = "opencv-python", marker = "python_full_version < '0'" }]
@@ -1652,7 +1654,7 @@ wheels = [
 
 [[package]]
 name = "jupyter-server"
-version = "2.18.2"
+version = "2.20.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1675,9 +1677,9 @@ dependencies = [
     { name = "traitlets" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/15/1eacb0fcb79ef86e8a0a79a708e6ad7435f6f223097dd29a4ce861fabc44/jupyter_server-2.18.2.tar.gz", hash = "sha256:06b4f40d8a7a00bb39d5216859c81374a0e7cfefe6d8a5a7facc5a5c37c679a7", size = 753177, upload-time = "2026-05-06T07:04:36.274Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/dc/db3a582633170186f8c8b31298d7eb26ad0eb031a1f53476c258b64eed05/jupyter_server-2.20.0.tar.gz", hash = "sha256:b5778ba337d8015a3dc2b80803ecdd5ac18d3797fddf61a50ea5fb472b4ebe14", size = 756523, upload-time = "2026-06-17T12:09:09.435Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/50/ecf4f70d65bdb7519b28a33d1b2fee8a4b4ba1ae1a92f15d97e877c5de21/jupyter_server-2.18.2-py3-none-any.whl", hash = "sha256:fa5e46539ded65791838035a2b6001f13e54d5f64b8b3752eb1e91fdd641a5b8", size = 391907, upload-time = "2026-05-06T07:04:34.014Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/71/8c002223e873a870f5c41dc69b0a7c922301123e4a31d5d01ecb700aef77/jupyter_server-2.20.0-py3-none-any.whl", hash = "sha256:c3b67c93c471e947c18b5026f04f21614218adb706df8f48227d3ee8e0a7cdcc", size = 393143, upload-time = "2026-06-17T12:09:07.234Z" },
 ]
 
 [[package]]
@@ -1957,31 +1959,32 @@ wheels = [
 
 [[package]]
 name = "marimo"
-version = "0.23.4"
+version = "0.23.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
+    { name = "click", marker = "sys_platform != 'emscripten'" },
     { name = "docutils" },
     { name = "itsdangerous" },
     { name = "jedi" },
-    { name = "loro" },
+    { name = "loro", marker = "sys_platform != 'android' and sys_platform != 'emscripten'" },
     { name = "markdown" },
     { name = "msgspec" },
     { name = "narwhals" },
     { name = "packaging" },
-    { name = "psutil" },
+    { name = "psutil", marker = "sys_platform != 'android' and sys_platform != 'emscripten'" },
     { name = "pygments" },
     { name = "pymdown-extensions" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
-    { name = "pyzmq" },
-    { name = "starlette" },
+    { name = "pyzmq", marker = "sys_platform != 'emscripten'" },
+    { name = "starlette", marker = "sys_platform != 'emscripten'" },
     { name = "tomlkit" },
-    { name = "uvicorn" },
-    { name = "websockets" },
+    { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
+    { name = "websockets", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/1a/79f8fc2af1be74283ba3b701cba77472ec4f30949ffa88a3166d4bb7e751/marimo-0.23.4.tar.gz", hash = "sha256:8e5f1bd78a73cb04d775e650473cfab745303be746f141a3654dcd246de2a4e6", size = 38403567, upload-time = "2026-04-28T18:01:51.14Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/a4/81ecd28a8b4301573524ab252f4359879cbdf2388144d63eb606c5e03ae5/marimo-0.23.10.tar.gz", hash = "sha256:ed74343462c88436ee81e48cf7b7f5cc0f05cab27fd6502797c65bd43b53bc40", size = 38586561, upload-time = "2026-06-18T19:06:35.821Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/13/c1c3d0f889115ad33e2122efd16c842f8588aab7e0d243f29125a0ee8ad5/marimo-0.23.4-py3-none-any.whl", hash = "sha256:67806cf1dc4f438624e4640debf80e0689173399b8ee17de7f879cb07f6fb476", size = 38824790, upload-time = "2026-04-28T18:01:47.909Z" },
+    { url = "https://files.pythonhosted.org/packages/18/26/a3370f436044fee49aee61114a8791d30a85dae7c88e1c3cb141b21b5f32/marimo-0.23.10-py3-none-any.whl", hash = "sha256:b8532492216103d4a9913a17676e3ea70f9c10389c2343ed8a833214ff27810c", size = 39030716, upload-time = "2026-06-18T19:06:31.317Z" },
 ]
 
 [[package]]
@@ -3643,6 +3646,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/29/bf/eca6a3d43db1dae7070f70e160ab20b807627ba953663ba07928cdd3dc58/python_json_logger-4.0.0.tar.gz", hash = "sha256:f58e68eb46e1faed27e0f574a55a0455eecd7b8a5b88b85a784519ba3cff047f", size = 17683, upload-time = "2025-10-06T04:15:18.984Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/51/e5/fecf13f06e5e5f67e8837d777d1bc43fac0ed2b77a676804df5c34744727/python_json_logger-4.0.0-py3-none-any.whl", hash = "sha256:af09c9daf6a813aa4cc7180395f50f2a9e5fa056034c9953aec92e381c5ba1e2", size = 15548, upload-time = "2025-10-06T04:15:17.553Z" },
+]
+
+[[package]]
+name = "python-multipart"
+version = "0.0.32"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
 ]
 
 [[package]]
