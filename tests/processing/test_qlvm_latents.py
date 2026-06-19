@@ -101,7 +101,6 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         "usv_id": [f"{i:04d}" for i in range(3)],
         "start": [0.1, 0.3, 0.5],
         "stop": [0.15, 0.35, 0.55],
-        "qlvm_umap1": [9.0, 9.0, 9.0],  # stale legacy column from a pre-rename run
     }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
 
     cfg = {
@@ -124,8 +123,6 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
 
     df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     assert set(ql.QLVM_COLUMNS).issubset(df.columns)
-    # re-running cleanly migrates: the stale legacy coordinate column is removed.
-    assert "qlvm_umap1" not in df.columns
     assert df.height == 3
     # rows 0 and 2 embedded; row 1 (no spec) is null.
     assert df["qlvm_dim1"][0] is not None

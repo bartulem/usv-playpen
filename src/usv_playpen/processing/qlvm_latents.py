@@ -44,9 +44,6 @@ from .qlvm_model import embed_data, gen_fib_basis, gen_korobov_basis, roberts_se
 
 # QLVM columns written into the USV summary CSV (consumed downstream).
 QLVM_COLUMNS = ("qlvm_dim1", "qlvm_dim2", "qlvm_category", "qlvm_supercategory")
-# Legacy coordinate column names (pre-rename); dropped on re-run so re-inferring a
-# session cleanly migrates an old CSV instead of leaving orphaned columns behind.
-_LEGACY_QLVM_COLUMNS = ("qlvm_umap1", "qlvm_umap2")
 
 
 def load_decoder_params(weights_npz_path: str) -> dict[str, jnp.ndarray]:
@@ -258,7 +255,7 @@ class QLVMLatentInference:
             label="USV summary CSV",
         )
         usv_df = pls.read_csv(source=str(usv_summary_loc))
-        usv_df = usv_df.drop([c for c in (*QLVM_COLUMNS, *_LEGACY_QLVM_COLUMNS) if c in usv_df.columns])
+        usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
         merged = usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row")
         merged.write_csv(file=str(usv_summary_loc))
