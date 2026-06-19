@@ -259,7 +259,8 @@
     "random_state": 42,
     "full_dataset": false,
     "target_shape": [128, 128],
-    "time_stretch": false
+    "time_stretch": false,
+    "masking_type": "sam"
   },
   "train_qlvm": {
     "n_epochs": 300,
@@ -274,5 +275,20 @@
     "val_freq": 10,
     "seed": 42,
     "num_workers": 0
+  },
+  "export_yolo_dataset": {
+    "label_source": "cc",
+    "validation_split": 0.2,
+    "random_state": 42,
+    "colormap": "viridis",
+    "manual_labels_directory": ""
+  },
+  "train_masks": {
+    "base_weights": "yolo11n.pt",
+    "n_epochs": 100,
+    "imgsz": 128,
+    "batch_size": 16,
+    "device": null,
+    "run_name": "usv_yolo_detector"
   }
 }

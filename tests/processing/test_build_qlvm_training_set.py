@@ -26,6 +26,7 @@ _CFG = {
     "full_dataset": False,
     "target_shape": [128, 128],
     "time_stretch": False,
+    "masking_type": "none",
 }
 
 
@@ -116,3 +117,51 @@ def test_build_full_dataset_single_npz(tmp_path, mocker):
     assert not (out_dir / "train_data.npz").exists()
     full = np.load(out_dir / "full_data.npz", allow_pickle=True)
     assert full["spectrograms"].shape == (5, 128, 128)
+
+
+def _write_session_h5_with_masks(path, session_id, n, n_f=32, n_t=40):
+    """Like _write_session_h5 but also writes a mask/<session> group: row 0 gets
+    two mask instances (a shared region), the remaining rows get none (so they
+    fall back to an all-ones mask)."""
+    rng = np.random.default_rng(abs(hash(session_id)) % (2**32))
+    seg0 = np.zeros((n_f, n_t), dtype=bool)
+    seg0[5:10, 2:8] = True
+    seg1 = np.zeros((n_f, n_t), dtype=bool)
+    seg1[12:15, 3:6] = True
+    with h5py.File(path, "w") as f:
+        f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
+        session_group = f.create_group(f"spectrogram/{session_id}")
+        session_group.create_dataset("spectrograms", data=rng.random((n, n_f, n_t)).astype(np.float32))
+        session_group.create_dataset("durations", data=np.full(n, n_t, dtype=np.int64))
+        mask_group = f.create_group(f"mask/{session_id}")
+        mask_group.create_dataset("segmentations", data=np.stack([seg0, seg1], axis=0))
+        mask_group.create_dataset("spectrogram_index", data=np.array([0, 0], dtype=np.int64))
+
+
+def test_build_sam_masking_applies_masks_and_counts(tmp_path, mocker):
+    """masking_type='sam' writes binary masks, masks the spectrograms (zeroed
+    outside the mask), and records per-row instance counts; rows with no detected
+    mask fall back to an all-ones mask."""
+    h5a = tmp_path / "20230119_155302_spectrograms.h5"
+    _write_session_h5_with_masks(h5a, "20230119_155302", n=3)
+    out_dir = tmp_path / "out_sam"
+
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
+    cfg = {**_CFG, "full_dataset": True, "masking_type": "sam"}
+    QLVMTrainingSetBuilder(
+        spectrogram_h5_paths=[str(h5a)],
+        output_directory=str(out_dir),
+        input_parameter_dict={"build_qlvm_training_set": cfg},
+        message_output=lambda *_a, **_kw: None,
+    ).build()
+
+    full = np.load(out_dir / "full_data.npz", allow_pickle=True)
+    masks = full["masks"]
+    specs = full["spectrograms"]
+    # Masks are binary, and the spectrogram is zeroed everywhere the mask is zero.
+    assert set(np.unique(masks).tolist()).issubset({0.0, 1.0})
+    assert np.all(specs[masks == 0] == 0)
+    # Row 0 had two mask instances; the fallback rows have a zero instance count.
+    assert full["masks_len"].tolist() == [2, 0, 0]
+    # The fallback rows keep signal (all-ones mask over the signal window).
+    assert specs[1].any()

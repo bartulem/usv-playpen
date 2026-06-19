@@ -9,17 +9,29 @@ subsamples, splits into train/val (or keeps one full set), resizes/time-stretche
 every spectrogram to ``target_shape``, and writes ``train_data.npz`` /
 ``val_data.npz`` (or ``full_data.npz``) plus a ``metadata.npz`` sidecar.
 
-This is the in-house, **mask-free**, torch-free (``.npz``) port of the external
-``preprocess_monolithic.py`` + ``data_utils`` resize/split logic. Models are
-retrained without masks, so no SAM/Otsu mask handling is performed; the saved
-``masks``/``masks_len`` arrays are all-zero, present only so the external trainer
-keeps a uniform key set. The external trainer reads ``.npz`` (no torch on this
-side of the boundary).
+This is the in-house, torch-free (``.npz``) port of the external
+``preprocess_monolithic.py`` + ``data_utils`` resize/split logic; the
+:mod:`train_qlvm` trainer reads the ``.npz`` directly (no torch on this side of
+the dataset boundary).
+
+Masking (``masking_type``):
+
+* ``"sam"`` (default) -- when a session's spectrogram H5 carries a
+  ``mask/<session>`` group (from :mod:`generate_masks`), each kept spectrogram's
+  2D region is the ``np.any`` union of its instance segmentations, resized with
+  the spectrogram and binarized, and the spectrogram is **masked**
+  (``spec *= mask``, background zeroed) -- exactly as the external
+  ``prepare_masked_datasets`` does. A kept USV with no detected mask (or a
+  session with no mask group) falls back to an all-ones mask, so its spectrogram
+  is kept unchanged rather than zeroed. ``masks_len`` is the per-spectrogram
+  instance count.
+* ``"none"`` -- no masking; raw spectrograms with all-zero ``masks``/``masks_len``
+  placeholders (kept so the key set is uniform).
 
 Each output ``.npz`` is row-aligned on dim 0 = N samples and holds:
-``spectrograms`` (N, F, T) float32, ``masks`` (N, F, T) float32 (all-zero),
-``masks_len`` (N,) int64 (all-zero), ``durations`` (N,) int64, and ``spec_id``
-(N,) str.
+``spectrograms`` (N, F, T) float32 (mask-applied under ``"sam"``), ``masks``
+(N, F, T) float32 (binarized region; all-zero under ``"none"``), ``masks_len``
+(N,) int64, ``durations`` (N,) int64, and ``spec_id`` (N,) str.
 """
 
 from __future__ import annotations
@@ -204,6 +216,66 @@ def stretch_specs(
     return resized
 
 
+def build_session_masks(
+    h5_file: h5py.File,
+    session_id: str,
+    selected_indices: np.ndarray,
+    n_freq: int,
+    n_time: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Builds per-spectrogram 2D region masks and instance counts for one session's
+    selected rows from its ``mask/<session>`` group (written by
+    :mod:`generate_masks`). Each selected row's mask is the boolean union
+    (``np.any``) of every ``segmentations`` row whose ``spectrogram_index`` equals
+    that row; a row with no mask instances (the detector found none) falls back to
+    an all-ones mask so its spectrogram is later kept unchanged rather than zeroed.
+    When the session has no ``mask/<session>`` group, every selected row gets an
+    all-ones mask and a zero instance count.
+
+    Parameters
+    ----------
+    h5_file (h5py.File)
+        Open per-session spectrogram H5.
+    session_id (str)
+        Session id naming the ``spectrogram/<session>`` / ``mask/<session>`` groups.
+    selected_indices (np.ndarray)
+        Sorted usv_summary row indices kept for this session.
+    n_freq (int)
+        Frequency-bin count ``F`` of each mask (mask height).
+    n_time (int)
+        Time-bin count ``T`` of each mask (mask width).
+
+    Returns
+    -------
+    masks (np.ndarray)
+        A ``(len(selected_indices), F, T)`` float32 array (1.0 inside the region,
+        0.0 outside; all-ones for rows that fall back).
+    masks_len (np.ndarray)
+        A ``(len(selected_indices),)`` int64 array of per-row instance counts.
+    """
+
+    n_selected = selected_indices.shape[0]
+    masks = np.ones((n_selected, n_freq, n_time), dtype=np.float32)
+    masks_len = np.zeros(n_selected, dtype=np.int64)
+
+    mask_group_key = f"mask/{session_id}"
+    if mask_group_key not in h5_file:
+        return masks, masks_len
+
+    mask_group = h5_file[mask_group_key]
+    segmentations = mask_group["segmentations"][:]
+    spectrogram_index = mask_group["spectrogram_index"][:]
+    for position, summary_row in enumerate(selected_indices):
+        mask_rows = np.flatnonzero(spectrogram_index == int(summary_row))
+        if mask_rows.size > 0:
+            masks[position] = np.any(segmentations[mask_rows], axis=0).astype(np.float32)
+            masks_len[position] = int(mask_rows.size)
+    return masks, masks_len
+
+
 class QLVMTrainingSetBuilder:
     """
     Description
@@ -276,6 +348,7 @@ class QLVMTrainingSetBuilder:
         full_dataset = cfg['full_dataset']
         target_shape = tuple(int(v) for v in cfg['target_shape'])
         time_stretch = cfg['time_stretch']
+        masking_type = cfg['masking_type']
 
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -301,9 +374,13 @@ class QLVMTrainingSetBuilder:
         # globally-unique spec_id. Spectrogram rows are 1:1 with usv_summary.csv,
         # so the selected row index IS the usv index; the cross-session spec_id is
         # f"{session_id}_{row_index}" (the format the external trainer expects).
+        # Under ``masking_type == "sam"`` the per-row SAM region masks + instance
+        # counts are read from the ``mask/<session>`` group at the same time.
         specs_list: list[np.ndarray] = []
         durations_list: list[np.ndarray] = []
         spec_id_list: list[np.ndarray] = []
+        masks_list: list[np.ndarray] = []
+        masks_len_list: list[np.ndarray] = []
         for h5_path in self.spectrogram_h5_paths:
             session_id = session_by_path[h5_path]
             idx = selected[session_id]
@@ -313,6 +390,13 @@ class QLVMTrainingSetBuilder:
                 session_group = h5_file[f"spectrogram/{session_id}"]
                 specs_list.append(session_group["spectrograms"][idx])
                 durations_list.append(session_group["durations"][idx])
+                n_freq, n_time = session_group["spectrograms"].shape[1:]
+                if masking_type == "sam":
+                    session_masks, session_masks_len = build_session_masks(
+                        h5_file, session_id, idx, n_freq, n_time
+                    )
+                    masks_list.append(session_masks)
+                    masks_len_list.append(session_masks_len)
             spec_id_list.append(np.array([f"{session_id}_{int(i)}" for i in idx]))
 
         if not specs_list:
@@ -322,28 +406,51 @@ class QLVMTrainingSetBuilder:
         all_specs = np.concatenate(specs_list)
         all_durations = np.concatenate(durations_list)
         all_spec_ids = np.concatenate(spec_id_list)
-
-        # Phases 5-6: split (or full) + resize + save.
-        if full_dataset:
-            splits = {"full_data.npz": (all_specs, all_durations, all_spec_ids)}
+        if masking_type == "sam":
+            all_masks = np.concatenate(masks_list)
+            all_masks_len = np.concatenate(masks_len_list)
         else:
-            train_specs, val_specs, train_dur, val_dur, train_ids, val_ids = train_test_split(
-                all_specs, all_durations, all_spec_ids,
+            all_masks = np.zeros_like(all_specs, dtype=np.float32)
+            all_masks_len = np.zeros(all_specs.shape[0], dtype=np.int64)
+        n_with_masks = int(np.count_nonzero(all_masks_len > 0))
+        self.message_output(
+            f"masking_type='{masking_type}': {n_with_masks}/{all_specs.shape[0]} kept spectrograms have "
+            f"a detected SAM mask (the rest keep an all-ones mask)."
+        )
+
+        # Phases 5-6: split (or full) + resize + (under "sam") binarize-and-apply + save.
+        if full_dataset:
+            splits = {"full_data.npz": (all_specs, all_masks, all_masks_len, all_durations, all_spec_ids)}
+        else:
+            (
+                train_specs, val_specs, train_masks, val_masks, train_ml, val_ml,
+                train_dur, val_dur, train_ids, val_ids,
+            ) = train_test_split(
+                all_specs, all_masks, all_masks_len, all_durations, all_spec_ids,
                 test_size=validation_split, random_state=random_state,
             )
             splits = {
-                "train_data.npz": (train_specs, train_dur, train_ids),
-                "val_data.npz": (val_specs, val_dur, val_ids),
+                "train_data.npz": (train_specs, train_masks, train_ml, train_dur, train_ids),
+                "val_data.npz": (val_specs, val_masks, val_ml, val_dur, val_ids),
             }
 
         written: dict[str, int] = {}
-        for filename, (split_specs, split_dur, split_ids) in splits.items():
+        for filename, (split_specs, split_masks, split_ml, split_dur, split_ids) in splits.items():
             resized = stretch_specs(split_specs, split_dur, target_shape, time_stretch)
+            if masking_type == "sam":
+                # Resize masks with the SAME per-row transform, binarize at 0.5, then
+                # mask the spectrogram (background zeroed) -- mirrors prepare_masked_datasets.
+                resized_masks = (stretch_specs(split_masks, split_dur, target_shape, time_stretch) >= 0.5).astype(np.float32)
+                out_specs = (resized * resized_masks).astype(np.float32)
+                out_masks = resized_masks
+            else:
+                out_specs = resized.astype(np.float32)
+                out_masks = np.zeros_like(resized, dtype=np.float32)
             np.savez(
                 output_dir / filename,
-                spectrograms=resized.astype(np.float32),
-                masks=np.zeros_like(resized, dtype=np.float32),
-                masks_len=np.zeros(resized.shape[0], dtype=np.int64),
+                spectrograms=out_specs,
+                masks=out_masks,
+                masks_len=split_ml.astype(np.int64),
                 durations=split_dur.astype(np.int64),
                 spec_id=split_ids,
             )
@@ -360,7 +467,7 @@ class QLVMTrainingSetBuilder:
             full_dataset=full_dataset,
             target_shape=np.array(target_shape),
             time_stretch=time_stretch,
-            masking_type="none",
+            masking_type=masking_type,
             **{f"n_{name.split('_')[0]}": count for name, count in written.items()},
         )
 
@@ -376,6 +483,7 @@ class QLVMTrainingSetBuilder:
 @click.option('--validation-split', 'validation_split', type=float, default=None, required=False, help='Fraction held out for validation.')
 @click.option('--full-dataset/--no-full-dataset', 'full_dataset', default=None, required=False, help='Write a single full_data.npz (no train/val split).')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Time-warp the signal window instead of center-resizing.')
+@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").')
 @click.pass_context
 def build_qlvm_training_set_cli(ctx, spectrogram_h5_paths, output_directory, **kwargs) -> None:
     """
