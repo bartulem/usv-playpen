@@ -47,7 +47,7 @@ import numpy as np
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise
+from ..os_utils import configure_path, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 
 
@@ -198,10 +198,14 @@ class MaskGenerator:
         cfg = self.input_parameter_dict['generate_masks']
         method = cfg['method']
         detector = cfg['detector']
-        sam2_model_dir = cfg['sam2_model_dir']
+        # The three filesystem paths are stored in the canonical /mnt/falkner form
+        # and translated to the host OS's mount (e.g. /Volumes/falkner on macOS) via
+        # configure_path, matching das_inference; sam2_model_cfg is a config NAME
+        # resolved inside the SAM2 install, not a mount path, so it is left as-is.
+        sam2_model_dir = configure_path(cfg['sam2_model_dir'])
         sam2_model_cfg = cfg['sam2_model_cfg']
-        sam2_model_path = cfg['sam2_model_path']
-        yolo_weights = cfg['yolo_weights']
+        sam2_model_path = configure_path(cfg['sam2_model_path'])
+        yolo_weights = configure_path(cfg['yolo_weights'])
 
         if method != 'boxprompt':
             error_message = (

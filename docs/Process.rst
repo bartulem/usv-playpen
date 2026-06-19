@@ -1262,10 +1262,10 @@ To run ``generate-masks`` / ``train-masks`` the environment must provide the ``s
     "generate_masks": {
         "method": "boxprompt",
         "detector": "yolo",
-        "sam2_model_dir": "/path/to/sam2",
+        "sam2_model_dir": "/mnt/falkner/Dexter/vocal_beh/uv_env/spec-gen-env/external/sam2",
         "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-        "sam2_model_path": "/path/to/sam2/checkpoint.pt",
-        "yolo_weights": "/path/to/yolo/best.pt"
+        "sam2_model_path": "/mnt/falkner/Dexter/vocal_beh/src/sam2_artifacts/sam2/checkpoint.pt",
+        "yolo_weights": "/mnt/falkner/Dexter/vocal_beh/src/sam2_artifacts/yolo/best.pt"
     }
 
-``sam2_model_dir`` is a clone/install of `facebookresearch/sam2 <https://github.com/facebookresearch/sam2>`_ (the step changes into it so the stock ``sam2_model_cfg`` config name resolves); ``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files. These paths are machine-specific, so leave them blank in the tracked settings and pass them per run via the CLI flags (``--sam2-model-dir`` / ``--sam2-model-path`` / ``--yolo-weights``) when they differ across hosts.
+``sam2_model_dir`` is a clone/install of `facebookresearch/sam2 <https://github.com/facebookresearch/sam2>`_ (the step changes into it so the stock ``sam2_model_cfg`` config NAME resolves); ``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files. The three filesystem paths are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path`` — the same handling as the DAS / Vocalocator model paths — so the defaults work on any lab host that has the share mounted. Override any of them per run with the CLI flags (``--sam2-model-dir`` / ``--sam2-model-cfg`` / ``--sam2-model-path`` / ``--yolo-weights``).
