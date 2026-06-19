@@ -86,11 +86,13 @@ test = [
   "pytest-cov >=3",
   "pytest-mock",
   "pytest-qt",
+  "iblatlas",
 ]
 dev = [
   { include-group = "test" },
   "jupyterlab>=4.5.7",
   "ipykernel",
+  "ipywidgets",
   "marimo",
   "altair",
   "pre-commit>=4.5.1",
