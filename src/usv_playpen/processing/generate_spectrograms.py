@@ -203,8 +203,11 @@ class SpectrogramGenerator:
         Reads the session's HPSS-filtered audio memmap and ``*_usv_summary.csv``,
         computes the variance-weighted average spectrogram of every USV, and
         writes ``audio/spectrograms/<session>_spectrograms.h5`` containing the
-        ``specs`` (N, F, T), ``durations`` (N,), ``spec_ids`` (N,) and
-        ``freq_bins`` (F,) datasets.
+        ``spectrograms`` (N, F, T), ``durations`` (N,), ``freq_bins`` (F,) and
+        ``spectrogram_ids`` (N,) datasets, where ``spectrogram_ids`` are the
+        per-USV ROW INDICES into ``usv_summary.csv``. Session provenance is the
+        file-level ``session_id`` attribute (one session per file; also
+        ``created`` and ``total_spectrograms``).
 
         Parameters
         ----------
@@ -256,7 +259,11 @@ class SpectrogramGenerator:
 
         all_specs: list[np.ndarray] = []
         all_durations: list[int] = []
-        all_spec_ids: list[str] = []
+        # spectrogram_ids are the per-USV ROW INDICES into this session's
+        # usv_summary.csv (option A): the session itself is stored once as the
+        # H5 ``session_id`` attribute, so the global id is composed downstream as
+        # f"{session_id}_{index}" rather than duplicated into every row.
+        all_usv_indices: list[int] = []
 
         starts = usv_summary_df["start"].to_numpy()
         stops = usv_summary_df["stop"].to_numpy()
@@ -278,7 +285,7 @@ class SpectrogramGenerator:
                 continue
             all_specs.append(spectrogram.astype(np.float32))
             all_durations.append(int(original_time_bins))
-            all_spec_ids.append(f"{session_id}_{usv_idx}")
+            all_usv_indices.append(usv_idx)
 
         if not all_specs:
             self.message_output(
@@ -295,10 +302,16 @@ class SpectrogramGenerator:
         spectrograms_dir.mkdir(parents=True, exist_ok=True)
         h5_file_path = spectrograms_dir / f"{session_id}_spectrograms.h5"
         with h5py.File(h5_file_path, "w") as h5_file:
-            h5_file.create_dataset("specs", data=np.asarray(all_specs), compression="gzip", compression_opts=6)
+            # Session provenance lives once, as file-level attributes (one
+            # session per file), so it is not duplicated into every row.
+            h5_file.attrs["session_id"] = session_id
+            h5_file.attrs["created"] = "generate_spectrograms"
+            h5_file.attrs["total_spectrograms"] = len(all_specs)
+            h5_file.create_dataset("spectrograms", data=np.asarray(all_specs), compression="gzip", compression_opts=6)
             h5_file.create_dataset("durations", data=np.asarray(all_durations, dtype=np.int64), compression="gzip", compression_opts=6)
             h5_file.create_dataset("freq_bins", data=freq_bins, compression="gzip", compression_opts=6)
-            h5_file.create_dataset("spec_ids", data=np.asarray(all_spec_ids, dtype=h5py.string_dtype()), compression="gzip", compression_opts=6)
+            # Per-USV row indices into usv_summary.csv (NOT "{session}_{idx}" strings).
+            h5_file.create_dataset("spectrogram_ids", data=np.asarray(all_usv_indices, dtype=np.int64), compression="gzip", compression_opts=6)
 
         self.message_output(
             f"Generated {len(all_specs)} spectrograms for session {session_id} -> {h5_file_path}."

@@ -291,7 +291,11 @@ class QLVMTrainingSetBuilder:
             None if full_dataset else dataset_size_constraint, random_state,
         )
 
-        # Phase 3: load selected specs/durations/spec_ids, concatenate.
+        # Phase 3: load selected spectrograms/durations, concatenate, and build
+        # the globally-unique spec_id. Per-session H5s store the session once as
+        # the ``session_id`` attribute and the per-USV row index in
+        # ``spectrogram_ids``; the cross-session spec_id is composed here as
+        # f"{session_id}_{usv_index}" (the format the external trainer expects).
         specs_list: list[np.ndarray] = []
         durations_list: list[np.ndarray] = []
         spec_id_list: list[np.ndarray] = []
@@ -301,10 +305,11 @@ class QLVMTrainingSetBuilder:
             if idx.size == 0:
                 continue
             with h5py.File(h5_path, "r") as h5_file:
-                specs_list.append(h5_file["specs"][idx])
+                specs_list.append(h5_file["spectrograms"][idx])
                 durations_list.append(h5_file["durations"][idx])
-                ids = h5_file["spec_ids"][idx]
-                spec_id_list.append(np.array([s.decode() if isinstance(s, bytes) else str(s) for s in ids]))
+                session_id = h5_file.attrs["session_id"]
+                usv_indices = h5_file["spectrogram_ids"][idx]
+                spec_id_list.append(np.array([f"{session_id}_{int(i)}" for i in usv_indices]))
 
         if not specs_list:
             self.message_output("No spectrograms survived filtering; nothing written.")

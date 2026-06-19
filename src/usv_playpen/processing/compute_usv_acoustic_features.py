@@ -236,13 +236,11 @@ class USVAcousticFeatureExtractor:
             label="per-session spectrogram H5",
         )
         with h5py.File(h5_loc, "r") as h5_file:
-            specs = h5_file["specs"][:]
+            specs = h5_file["spectrograms"][:]
             durations = h5_file["durations"][:]
             freq_axis = h5_file["freq_bins"][:]
-            spec_ids = [s.decode() if isinstance(s, bytes) else str(s) for s in h5_file["spec_ids"][:]]
-
-        # Per-USV index encoded in each spec_id ("{session_id}_{usv_idx}").
-        usv_indices = np.array([int(sid.rsplit("_", 1)[1]) for sid in spec_ids], dtype=np.uint32)
+            # spectrogram_ids are the per-USV row indices into usv_summary.csv.
+            usv_indices = h5_file["spectrogram_ids"][:].astype(np.uint32)
 
         features = compute_acoustic_features(
             specs=specs.astype(np.float64),
@@ -269,7 +267,7 @@ class USVAcousticFeatureExtractor:
         merged.write_csv(file=str(usv_summary_loc))
 
         self.message_output(
-            f"Merged acoustic features for {len(spec_ids)} USVs into {usv_summary_loc.name}."
+            f"Merged acoustic features for {len(usv_indices)} USVs into {usv_summary_loc.name}."
         )
         self.message_output(
             f"USV acoustic-feature extraction ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."

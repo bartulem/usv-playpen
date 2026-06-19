@@ -53,13 +53,13 @@ def _write_h5(path, session_id, usv_indices, n_f=16, n_t=16):
     n = len(usv_indices)
     specs = rng.random((n, n_f, n_t)).astype(np.float32)
     durations = np.full(n, n_t, dtype=np.int64)
-    spec_ids = np.array([f"{session_id}_{i}" for i in usv_indices], dtype=h5py.string_dtype())
     freq_bins = np.linspace(30000.0, 120000.0, n_f)
     with h5py.File(path, "w") as f:
-        f.create_dataset("specs", data=specs)
+        f.attrs["session_id"] = session_id
+        f.create_dataset("spectrograms", data=specs)
         f.create_dataset("durations", data=durations)
         f.create_dataset("freq_bins", data=freq_bins)
-        f.create_dataset("spec_ids", data=spec_ids)
+        f.create_dataset("spectrogram_ids", data=np.asarray(usv_indices, dtype=np.int64))
 
 
 def test_merge_features_into_summary(tmp_path, mocker):

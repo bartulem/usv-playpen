@@ -212,9 +212,10 @@ class QLVMLatentInference:
             label="per-session spectrogram H5",
         )
         with h5py.File(h5_loc, "r") as h5_file:
-            specs = h5_file["specs"][:]
+            specs = h5_file["spectrograms"][:]
             durations = h5_file["durations"][:]
-            spec_ids = [s.decode() if isinstance(s, bytes) else str(s) for s in h5_file["spec_ids"][:]]
+            # spectrogram_ids are the per-USV row indices into usv_summary.csv.
+            usv_indices = h5_file["spectrogram_ids"][:].astype(np.uint32)
 
         # Preprocess identically to the training set (same resize/time-stretch).
         resized = stretch_specs(specs.astype(np.float32), durations, (128, 128), cfg['time_stretch'])
@@ -223,7 +224,6 @@ class QLVMLatentInference:
         coords = np.asarray(embed_data(lattice, data, params))           # (N, 2)
         category, supercategory = labels_for_coords(coords, ws_labels, ws_labels_periodic)
 
-        usv_indices = np.array([int(sid.rsplit("_", 1)[1]) for sid in spec_ids], dtype=np.uint32)
         qlvm_df = pls.DataFrame({
             "_usv_row": usv_indices,
             "qlvm_umap1": coords[:, 0].astype(np.float64),
@@ -245,7 +245,7 @@ class QLVMLatentInference:
         merged.write_csv(file=str(usv_summary_loc))
 
         self.message_output(
-            f"Merged QLVM latents/categories for {len(spec_ids)} USVs into {usv_summary_loc.name}."
+            f"Merged QLVM latents/categories for {len(usv_indices)} USVs into {usv_summary_loc.name}."
         )
         self.message_output(
             f"QLVM latent inference ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."

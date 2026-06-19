@@ -85,8 +85,8 @@ def test_compute_usv_spectrogram_too_short_returns_none():
 
 
 def test_generate_session_spectrograms_writes_h5(tmp_path, mocker):
-    """End-to-end: a session with N USVs writes an H5 with specs/durations/
-    spec_ids/freq_bins, row-aligned and shaped (N, F, T)."""
+    """End-to-end: a session with N USVs writes an H5 with spectrograms/
+    durations/spectrogram_ids/freq_bins, row-aligned and shaped (N, F, T)."""
     root, session_id, n_usv = _build_session(tmp_path)
     mocker.patch("usv_playpen.processing.generate_spectrograms.smart_wait")
 
@@ -99,13 +99,15 @@ def test_generate_session_spectrograms_writes_h5(tmp_path, mocker):
     h5_path = root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5"
     assert h5_path.is_file()
     with h5py.File(h5_path, "r") as f:
-        assert set(f.keys()) == {"specs", "durations", "freq_bins", "spec_ids"}
-        assert f["specs"].shape == (n_usv, 128, 128)
+        assert set(f.keys()) == {"spectrograms", "durations", "freq_bins", "spectrogram_ids"}
+        assert f["spectrograms"].shape == (n_usv, 128, 128)
         assert f["durations"].shape == (n_usv,)
-        assert f["spec_ids"].shape == (n_usv,)
+        assert f["spectrogram_ids"].shape == (n_usv,)
         assert f["freq_bins"].shape == (128,)
-        ids = [s.decode() if isinstance(s, bytes) else s for s in f["spec_ids"][:]]
-        assert ids == [f"{session_id}_{i}" for i in range(n_usv)]
+        # session lives once as an attribute; spectrogram_ids are bare row indices.
+        assert f.attrs["session_id"] == session_id
+        assert f.attrs["total_spectrograms"] == n_usv
+        assert f["spectrogram_ids"][:].tolist() == list(range(n_usv))
 
 
 def test_generate_session_spectrograms_no_usvs_writes_nothing(tmp_path, mocker):

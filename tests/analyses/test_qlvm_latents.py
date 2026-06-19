@@ -87,10 +87,11 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
     n_f = n_t = 128
     specs = rng.random((2, n_f, n_t)).astype(np.float32)
     with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "w") as f:
-        f.create_dataset("specs", data=specs)
+        f.attrs["session_id"] = session_id
+        f.create_dataset("spectrograms", data=specs)
         f.create_dataset("durations", data=np.array([128, 128], dtype=np.int64))
         f.create_dataset("freq_bins", data=np.linspace(30000.0, 120000.0, n_f))
-        f.create_dataset("spec_ids", data=np.array([f"{session_id}_0", f"{session_id}_2"], dtype=h5py.string_dtype()))
+        f.create_dataset("spectrogram_ids", data=np.array([0, 2], dtype=np.int64))
 
     pls.DataFrame({
         "usv_id": [f"{i:04d}" for i in range(3)],
