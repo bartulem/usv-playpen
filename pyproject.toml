@@ -159,6 +159,13 @@ addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config"]
 xfail_strict = true
 filterwarnings = [
     "error",
+    # colorspacious 1.1.2 (latest; unmaintained) ships `\Delta` in docstrings, an
+    # invalid escape sequence that Python 3.13 raises as a SyntaxWarning at import
+    # time. It reaches us transitively (cmasher -> colorspacious) and, under the
+    # `error` filter above, escalates to a SyntaxError during test collection.
+    # Module-scoping cannot target it (the warning fires at compile time, before the
+    # offending module has a stack frame), so it is matched by message + category.
+    "ignore:invalid escape sequence:SyntaxWarning",
 ]
 log_cli_level = "INFO"
 testpaths = [
