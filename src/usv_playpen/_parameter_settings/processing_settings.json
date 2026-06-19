@@ -223,6 +223,31 @@
     "offset": 0.0,
     "normalize": true
   },
+  "generate_masks": {
+    "method": "boxprompt",
+    "detector": "yolo",
+    "sam2_model_dir": "",
+    "sam2_model_cfg": "",
+    "sam2_model_path": "",
+    "yolo_weights": "",
+    "yolo_conf": 0.25,
+    "yolo_iou": 0.7,
+    "yolo_imgsz": 128,
+    "mask_cmap": "viridis",
+    "duration_min": 10,
+    "batch_size": 12,
+    "multimask_output": true,
+    "iou_floor": 0.7,
+    "drop_below_iou": false,
+    "split_disconnected": true,
+    "max_iters": 1,
+    "merge_instances": true,
+    "merge_iou": 0.5,
+    "merge_containment": 0.8,
+    "mask_intensity_floor": 0.0,
+    "tiny_mask_floor_px": 12,
+    "min_box_area": 0
+  },
   "compute_usv_acoustic_features": {
     "low_energy_frac": 0.05,
     "high_energy_frac": 0.95
