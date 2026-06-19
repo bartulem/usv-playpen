@@ -53,6 +53,7 @@ dependencies = [
     "seaborn",
     "sleap-anipose",
     "soundfile",
+    "scikit-image",
     "scikit-learn",
     "statsmodels",
     "tifffile",
@@ -178,6 +179,10 @@ report.exclude_also = [
 
 [tool.mypy]
 files = ["src", "tests"]
+# Vendored, kept-as-is mask-segmentation kernels (near-verbatim from specgen) are
+# excluded from our strict type checking; the usv-playpen-native orchestrator
+# (processing/generate_masks.py) is checked normally.
+exclude = ["src/usv_playpen/processing/masks/"]
 python_version = "3.11"
 warn_unused_configs = true
 strict = true
@@ -193,6 +198,9 @@ disallow_incomplete_defs = true
 
 
 [tool.ruff]
+# Vendored mask-segmentation kernels are kept near-verbatim from specgen and are
+# not held to usv-playpen's lint rules; the native orchestrator is linted.
+extend-exclude = ["src/usv_playpen/processing/masks"]
 
 [tool.ruff.lint]
 extend-select = [
