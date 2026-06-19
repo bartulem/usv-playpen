@@ -293,7 +293,8 @@
   },
   "infer_qlvm_latents": {
     "weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz",
-    "reference_arrays_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
+    "reference_arrays_fine_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
+    "reference_arrays_coarse_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
     "lattice_type": "korobov",
     "latent_dim": 2,
     "n_points": 1021,

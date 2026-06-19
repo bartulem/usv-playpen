@@ -1275,10 +1275,10 @@ Infer QLVM vocalization latents
 
 Each USV can be embedded into a trained **QLVM** (Quasi-Monte-Carlo latent-variable model) toroidal latent space, giving every call a pair of torus coordinates and a categorical label that are comparable across every session embedded into the same model. These ``qlvm_*`` columns are what the categorical USV-tuning analysis in :ref:`Analyze <Analyze>`'s *Compute neuronal tuning curves* (``usv_category_tuning`` / ``usv_category_peth``) consumes.
 
-``infer-qlvm-latents`` runs per session after the spectrogram pipeline above has produced ``audio/spectrograms/<session>_spectrograms.h5``. It loads the frozen decoder weights (``qmc_decoder_weights.npz``, written by ``train-qlvm``), rebuilds the fixed lattice, embeds the session's spectrograms via the torch-free JAX inference path, assigns each USV a category by spatial lookup into the fixed reference watershed grids, and merges the results into ``usv_summary.csv``:
+``infer-qlvm-latents`` runs per session after the spectrogram pipeline above has produced ``audio/spectrograms/<session>_spectrograms.h5``. It loads the frozen decoder weights (``qmc_decoder_weights.npz``, written by ``train-qlvm``), rebuilds the fixed lattice, embeds the session's spectrograms via the torch-free JAX inference path, assigns each USV a cluster by spatial lookup into two fixed reference watershed grids (a fine and a coarse one), and merges the results into ``usv_summary.csv``:
 
-* ``qlvm_umap1`` / ``qlvm_umap2`` — the torus coordinates,
-* ``qlvm_category`` — the standard watershed label, and
-* ``qlvm_supercategory`` — the periodic watershed label (``0`` = background / noise).
+* ``qlvm_dim1`` / ``qlvm_dim2`` — the torus coordinates,
+* ``qlvm_category`` — the FINE cluster label (from the fine watershed grid, e.g. 12 clusters), and
+* ``qlvm_supercategory`` — the COARSE cluster label (from the coarse watershed grid, e.g. 7 clusters; ``0`` = background / noise).
 
-The decoder weights and the reference watershed grids (``arrays.npz``) are pointed at via the ``infer_qlvm_latents`` block of */usv-playpen/_parameter_settings/processing_settings.json* (or the ``--weights-npz-path`` / ``--reference-arrays-npz-path`` flags). The full option list and the training command that produces the weights are documented in :ref:`the CLI reference <usv-pipeline-cli>`.
+Both cluster labels are looked up in the torus-periodic ``ws_labels_periodic`` grid of the respective reference ``arrays.npz``. The decoder weights and the two reference grids are pointed at via the ``infer_qlvm_latents`` block of */usv-playpen/_parameter_settings/processing_settings.json* (``weights_npz_path``, ``reference_arrays_fine_npz_path``, ``reference_arrays_coarse_npz_path``; or the ``--weights-npz-path`` / ``--reference-arrays-fine-npz-path`` / ``--reference-arrays-coarse-npz-path`` flags). The full option list and the training command that produces the weights are documented in :ref:`the CLI reference <usv-pipeline-cli>`.

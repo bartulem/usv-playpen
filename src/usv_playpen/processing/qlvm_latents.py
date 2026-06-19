@@ -7,16 +7,16 @@ and merge the latent coordinates + watershed categories into its
 This is the in-house, JAX (torch-free) inference driver. It loads the frozen
 decoder weights (a ``.npz`` converted once from the training checkpoint's
 ``state_dict``), rebuilds the fixed lattice, embeds the session's spectrograms
-via :func:`qlvm_model.embed_data`, and assigns each USV a category by **spatial
-lookup into the fixed reference watershed grids** (`ws_labels` /
-`ws_labels_periodic` from the reference ``arrays.npz``) — NOT a per-session
-re-watershed, so categories are comparable across every session embedded into
-the same torus.
+via :func:`qlvm_model.embed_data`, and assigns each USV a cluster by **spatial
+lookup into two fixed reference watershed grids** — a FINE grid and a COARSE grid
+(the torus-periodic ``ws_labels_periodic`` field of a fine and a coarse reference
+``arrays.npz``) — NOT a per-session re-watershed, so clusters are comparable
+across every session embedded into the same torus.
 
 Columns written into ``usv_summary.csv`` (the ones the visualizations/tuning
-code already consumes): ``qlvm_umap1``, ``qlvm_umap2`` (torus coordinates),
-``qlvm_category`` (standard watershed label) and ``qlvm_supercategory``
-(periodic watershed label; 0 = background/noise).
+code already consume): ``qlvm_dim1``, ``qlvm_dim2`` (torus coordinates),
+``qlvm_category`` (FINE cluster label, e.g. 12 classes) and ``qlvm_supercategory``
+(COARSE cluster label, e.g. 7 classes; 0 = background/noise).
 
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are
@@ -43,7 +43,10 @@ from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
 
 # QLVM columns written into the USV summary CSV (consumed downstream).
-QLVM_COLUMNS = ("qlvm_umap1", "qlvm_umap2", "qlvm_category", "qlvm_supercategory")
+QLVM_COLUMNS = ("qlvm_dim1", "qlvm_dim2", "qlvm_category", "qlvm_supercategory")
+# Legacy coordinate column names (pre-rename); dropped on re-run so re-inferring a
+# session cleanly migrates an old CSV instead of leaving orphaned columns behind.
+_LEGACY_QLVM_COLUMNS = ("qlvm_umap1", "qlvm_umap2")
 
 
 def load_decoder_params(weights_npz_path: str) -> dict[str, jnp.ndarray]:
@@ -104,36 +107,45 @@ def build_lattice(cfg: dict) -> jnp.ndarray:
 
 def labels_for_coords(
     coords: np.ndarray,
-    ws_labels: np.ndarray,
-    ws_labels_periodic: np.ndarray,
+    fine_grid: np.ndarray,
+    coarse_grid: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
     -----------
-    Looks up each latent coordinate's watershed category by indexing the fixed
-    reference grids, matching ``inference_latents.py``'s convention
-    ``label = grid[int(y * res), int(x * res)]`` (with clipping to the grid).
+    Looks up each torus coordinate's cluster label in the FINE and COARSE
+    reference watershed grids, matching ``inference_latents.py``'s convention
+    ``label = grid[int(y * res), int(x * res)]`` (with clipping to each grid's
+    resolution). Each grid is the torus-periodic ``ws_labels_periodic`` field of
+    its reference ``arrays.npz`` (periodic = correct for the native-torus QLVM
+    coordinates, which wrap at the seam). The fine grid yields the per-USV
+    ``qlvm_category`` (e.g. 12 clusters); the coarse grid yields the broader
+    ``qlvm_supercategory`` (e.g. 7 clusters).
 
     Parameters
     ----------
     coords (np.ndarray)
         Torus coordinates in ``[0, 1)``, shape ``(N, 2)`` ordered ``(x, y)``.
-    ws_labels (np.ndarray)
-        Standard watershed label grid, shape ``(res, res)``.
-    ws_labels_periodic (np.ndarray)
-        Periodic watershed label grid, shape ``(res, res)``.
+    fine_grid (np.ndarray)
+        Fine-granularity periodic watershed label grid, shape ``(res, res)``.
+    coarse_grid (np.ndarray)
+        Coarse-granularity periodic watershed label grid, shape ``(res, res)``.
 
     Returns
     -------
     category (np.ndarray)
-        Standard watershed labels, shape ``(N,)``.
+        Fine cluster labels, shape ``(N,)``.
     supercategory (np.ndarray)
-        Periodic watershed labels, shape ``(N,)``.
+        Coarse cluster labels, shape ``(N,)``.
     """
-    res = ws_labels.shape[0]
-    px = np.clip((coords[:, 0] * res).astype(int), 0, res - 1)
-    py = np.clip((coords[:, 1] * res).astype(int), 0, res - 1)
-    return ws_labels[py, px], ws_labels_periodic[py, px]
+
+    def _lookup(grid: np.ndarray) -> np.ndarray:
+        res = grid.shape[0]
+        px = np.clip((coords[:, 0] * res).astype(int), 0, res - 1)
+        py = np.clip((coords[:, 1] * res).astype(int), 0, res - 1)
+        return grid[py, px]
+
+    return _lookup(fine_grid), _lookup(coarse_grid)
 
 
 class QLVMLatentInference:
@@ -201,9 +213,12 @@ class QLVMLatentInference:
         params = load_decoder_params(cfg['weights_npz_path'])
         lattice = build_lattice(cfg)
 
-        ref = np.load(configure_path(cfg['reference_arrays_npz_path']))
-        ws_labels = ref['ws_labels']
-        ws_labels_periodic = ref['ws_labels_periodic']
+        # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
+        # the torus-periodic watershed (ws_labels_periodic) of their reference file.
+        fine_ref = np.load(configure_path(cfg['reference_arrays_fine_npz_path']))
+        coarse_ref = np.load(configure_path(cfg['reference_arrays_coarse_npz_path']))
+        fine_grid = fine_ref['ws_labels_periodic']
+        coarse_grid = coarse_ref['ws_labels_periodic']
 
         root = pathlib.Path(self.root_directory)
         h5_loc = first_match_or_raise(
@@ -226,12 +241,12 @@ class QLVMLatentInference:
         data = jnp.asarray(resized[:, None, :, :])
 
         coords = np.asarray(embed_data(lattice, data, params))           # (N, 2)
-        category, supercategory = labels_for_coords(coords, ws_labels, ws_labels_periodic)
+        category, supercategory = labels_for_coords(coords, fine_grid, coarse_grid)
 
         qlvm_df = pls.DataFrame({
             "_usv_row": usv_indices,
-            "qlvm_umap1": coords[:, 0].astype(np.float64),
-            "qlvm_umap2": coords[:, 1].astype(np.float64),
+            "qlvm_dim1": coords[:, 0].astype(np.float64),
+            "qlvm_dim2": coords[:, 1].astype(np.float64),
             "qlvm_category": category.astype(np.int64),
             "qlvm_supercategory": supercategory.astype(np.int64),
         })
@@ -243,7 +258,7 @@ class QLVMLatentInference:
             label="USV summary CSV",
         )
         usv_df = pls.read_csv(source=str(usv_summary_loc))
-        usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
+        usv_df = usv_df.drop([c for c in (*QLVM_COLUMNS, *_LEGACY_QLVM_COLUMNS) if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
         merged = usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row")
         merged.write_csv(file=str(usv_summary_loc))
@@ -259,7 +274,8 @@ class QLVMLatentInference:
 @click.command(name="infer-qlvm-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--weights-npz-path', 'weights_npz_path', type=str, default=None, required=False, help='Path to the converted decoder weights .npz.')
-@click.option('--reference-arrays-npz-path', 'reference_arrays_npz_path', type=str, default=None, required=False, help='Path to the reference arrays.npz (ws_labels grids).')
+@click.option('--reference-arrays-fine-npz-path', 'reference_arrays_fine_npz_path', type=str, default=None, required=False, help='Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).')
+@click.option('--reference-arrays-coarse-npz-path', 'reference_arrays_coarse_npz_path', type=str, default=None, required=False, help='Path to the COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).')
 @click.pass_context
 def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """

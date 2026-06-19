@@ -1678,8 +1678,8 @@ def plot_session_usv_timeline(
 EMBEDDING_COORD_COLS = (
     "vae_umap1",
     "vae_umap2",
-    "qlvm_umap1",
-    "qlvm_umap2",
+    "qlvm_dim1",
+    "qlvm_dim2",
 )
 EMBEDDING_LABEL_COLS = (
     "vae_category",
@@ -1713,7 +1713,7 @@ def build_pooled_embeddings_df(
     across every session listed in ``sessions_txt_path``. The returned
     DataFrame is the master table consumed by the marimo embedding
     explorer notebook: it carries the four UMAP coordinate columns
-    (``vae_umap1/2``, ``qlvm_umap1/2``), the four label columns
+    (``vae_umap1/2``, ``qlvm_dim1/2``), the four label columns
     (``vae_category``, ``vae_supercategory``, ``qlvm_category``,
     ``qlvm_supercategory``), and — critically — a ``(session_id,
     row_index)`` pair per row that keys directly back into the
@@ -1760,7 +1760,7 @@ def build_pooled_embeddings_df(
             row_index (UInt32)
             vae_umap1, vae_umap2 (Float64)
             vae_category, vae_supercategory (Int64)
-            qlvm_umap1, qlvm_umap2 (Float64)
+            qlvm_dim1, qlvm_dim2 (Float64)
             qlvm_category, qlvm_supercategory (Int64)
         Columns missing from individual sessions become nulls in the
         pooled output (diagonal concat).

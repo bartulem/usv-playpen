@@ -268,12 +268,12 @@ def _scatter_chart(
     chart_pd = display_df.to_pandas()
 
     # Pretty axis titles -- maps the raw column name to its display
-    # form ("VAE UMAP 1", "QLVM UMAP 2", ...).
+    # form ("VAE UMAP 1", "QLVM dim 2", ...).
     label_map = {
         "vae_umap1": "VAE UMAP 1",
         "vae_umap2": "VAE UMAP 2",
-        "qlvm_umap1": "QLVM UMAP 1",
-        "qlvm_umap2": "QLVM UMAP 2",
+        "qlvm_dim1": "QLVM dim 1",
+        "qlvm_dim2": "QLVM dim 2",
     }
     x_title = label_map.get(x_col, x_col)
     y_title = label_map.get(y_col, y_col)

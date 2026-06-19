@@ -3,10 +3,10 @@
 Tests for processing/qlvm_latents — the QLVM inference driver.
 
 Covers the helper pieces (weight loading + ``decoder.`` prefix stripping,
-lattice rebuild, reference label lookup) and an end-to-end run that synthesizes
-a decoder-weights ``.npz``, a reference ``arrays.npz`` (ws grids), a session
-spectrogram H5 and a ``usv_summary.csv``, then checks the ``qlvm_*`` columns are
-merged into the right rows.
+lattice rebuild, fine/coarse reference label lookup) and an end-to-end run that
+synthesizes a decoder-weights ``.npz``, FINE + COARSE reference ``arrays.npz``
+(periodic ws grids), a session spectrogram H5 and a ``usv_summary.csv``, then
+checks the ``qlvm_*`` columns are merged into the right rows.
 """
 
 from __future__ import annotations
@@ -35,13 +35,16 @@ def test_build_lattice_korobov_and_roberts():
 
 
 def test_labels_for_coords_lookup_convention():
-    """Coordinate (x, y) maps to grid[int(y*res), int(x*res)] with clipping."""
-    ws = np.arange(16).reshape(4, 4).astype(np.int16)        # res = 4
-    ws_per = (ws + 100).astype(np.int16)
-    coords = np.array([[0.0, 0.0], [0.9, 0.1], [0.1, 0.9]])  # -> (px,py): (0,0),(3,0),(0,3)
-    cat, supercat = ql.labels_for_coords(coords, ws, ws_per)
-    assert cat.tolist() == [ws[0, 0], ws[0, 3], ws[3, 0]]
-    assert supercat.tolist() == [ws_per[0, 0], ws_per[0, 3], ws_per[3, 0]]
+    """Coordinate (x, y) maps to grid[int(y*res), int(x*res)] in each grid (per its
+    own resolution): category from the fine grid, supercategory from the coarse grid."""
+    fine = np.arange(16).reshape(4, 4).astype(np.int16)      # res = 4 -> qlvm_category
+    coarse = np.arange(4).reshape(2, 2).astype(np.int16)     # res = 2 -> qlvm_supercategory
+    coords = np.array([[0.0, 0.0], [0.9, 0.1], [0.1, 0.9]])
+    cat, supercat = ql.labels_for_coords(coords, fine, coarse)
+    # fine (res=4): (px,py) = (0,0),(3,0),(0,3)
+    assert cat.tolist() == [fine[0, 0], fine[0, 3], fine[3, 0]]
+    # coarse (res=2): (px,py) = (0,0),(1,0),(0,1)
+    assert supercat.tolist() == [coarse[0, 0], coarse[0, 1], coarse[1, 0]]
 
 
 def _decoder_weights_npz(path, rng, latent_dim=2):
@@ -72,16 +75,15 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
     root = tmp_path / session_id
     (root / "audio" / "spectrograms").mkdir(parents=True)
 
-    # weights + reference grids (res=8)
+    # weights + FINE/COARSE reference grids (the code reads ws_labels_periodic
+    # from each); fine has more clusters than coarse.
     weights = tmp_path / "qmc_decoder_weights.npz"
     _decoder_weights_npz(weights, rng)
-    arrays = tmp_path / "arrays.npz"
+    fine_arrays = tmp_path / "arrays_fine.npz"
+    coarse_arrays = tmp_path / "arrays_coarse.npz"
     res = 8
-    np.savez(
-        arrays,
-        ws_labels=(rng.integers(0, 4, size=(res, res))).astype(np.int16),
-        ws_labels_periodic=(rng.integers(0, 4, size=(res, res))).astype(np.int16),
-    )
+    np.savez(fine_arrays, ws_labels_periodic=(rng.integers(0, 12, size=(res, res))).astype(np.int16))
+    np.savez(coarse_arrays, ws_labels_periodic=(rng.integers(0, 7, size=(res, res))).astype(np.int16))
 
     # consolidated layout, rows 1:1 with the 3-USV summary: rows 0 and 2 are
     # real (duration > 0), row 1 is an all-zero placeholder (duration 0).
@@ -99,11 +101,13 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         "usv_id": [f"{i:04d}" for i in range(3)],
         "start": [0.1, 0.3, 0.5],
         "stop": [0.15, 0.35, 0.55],
+        "qlvm_umap1": [9.0, 9.0, 9.0],  # stale legacy column from a pre-rename run
     }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
 
     cfg = {
         "weights_npz_path": str(weights),
-        "reference_arrays_npz_path": str(arrays),
+        "reference_arrays_fine_npz_path": str(fine_arrays),
+        "reference_arrays_coarse_npz_path": str(coarse_arrays),
         "lattice_type": "korobov",
         "latent_dim": 2,
         "n_points": 16,
@@ -120,10 +124,12 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
 
     df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     assert set(ql.QLVM_COLUMNS).issubset(df.columns)
+    # re-running cleanly migrates: the stale legacy coordinate column is removed.
+    assert "qlvm_umap1" not in df.columns
     assert df.height == 3
     # rows 0 and 2 embedded; row 1 (no spec) is null.
-    assert df["qlvm_umap1"][0] is not None
-    assert df["qlvm_umap1"][1] is None
-    assert df["qlvm_umap1"][2] is not None
+    assert df["qlvm_dim1"][0] is not None
+    assert df["qlvm_dim1"][1] is None
+    assert df["qlvm_dim1"][2] is not None
     # coordinates live on the torus [0, 1).
-    assert 0.0 <= df["qlvm_umap1"][0] < 1.0
+    assert 0.0 <= df["qlvm_dim1"][0] < 1.0
