@@ -19,7 +19,11 @@
     "das_infer": false,
     "das_summarize": false,
     "prepare_assign_vocalizations": false,
-    "assign_vocalizations": false
+    "assign_vocalizations": false,
+    "generate_usv_spectrograms": false,
+    "generate_usv_masks": false,
+    "compute_usv_acoustic_features": false,
+    "infer_qlvm_latents": false
   },
   "credentials_directory": "",
   "anipose_operations": {
