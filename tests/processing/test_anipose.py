@@ -14,12 +14,14 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import cv2
 import h5py
 import numpy as np
 import pytest
+import sleap_anipose
 
+import usv_playpen
 from usv_playpen.processing.anipose_operations import ConvertTo3D, find_mouse_names
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -29,7 +31,6 @@ from usv_playpen.processing.anipose_operations import ConvertTo3D, find_mouse_na
 @pytest.fixture
 def processing_settings():
     """Loads processing_settings.json from the package once per test."""
-    import usv_playpen
     package_dir = Path(usv_playpen.__file__).parent
     with (package_dir / '_parameter_settings' / 'processing_settings.json').open('r') as f:
         return json.load(f)
@@ -123,7 +124,8 @@ def test_sleap_file_conversion_invokes_subprocess_per_slp(
     for call in popen_mock.call_args_list:
         argv = call.kwargs.get("args") or call.args[0]
         assert "sleap-convert" in argv
-        assert "--format" in argv and "analysis" in argv
+        assert "--format" in argv
+        assert "analysis" in argv
 
 
 def test_sleap_file_conversion_no_slp_files(processing_settings,
@@ -715,3 +717,83 @@ def test_translate_rotate_metric_session_idx_out_of_range_raises(
     )
     with pytest.raises(IndexError, match="out of range"):
         converter.translate_rotate_metric(session_idx=5)
+
+
+# Real (un-mocked) opencv/aruco checks. The orchestration tests above mock
+# sleap_anipose, so they pass even when the active opencv has lost the
+# function-style cv2.aruco API that aniposelib's calibration depends on. These
+# two exercise that API directly, so a broken opencv install (e.g. base
+# opencv-python pulled by ultralytics shadowing opencv-contrib-python) fails the
+# suite instead of only surfacing at calibration time on the rig.
+
+
+def test_cv2_aruco_function_api_present():
+    """Guard the opencv install: aniposelib's calibration calls the function-style
+    cv2.aruco API (detectMarkers / refineDetectedMarkers / interpolateCornersCharuco
+    / estimatePoseCharucoBoard), which only ``opencv-contrib-python`` ships. Base
+    ``opencv-python`` (pulled transitively by ultralytics) lacks these symbols and
+    clobbers the same ``cv2`` files, so this fails loudly if the ``opencv-python``
+    exclusion in ``pyproject.toml`` ever stops keeping contrib the sole provider."""
+    required = (
+        "detectMarkers",
+        "refineDetectedMarkers",
+        "interpolateCornersCharuco",
+        "estimatePoseCharucoBoard",
+    )
+    missing = [name for name in required if not hasattr(cv2.aruco, name)]
+    assert not missing, (
+        f"cv2.aruco is missing {missing} (active cv2 {cv2.__version__}); the "
+        f"installed opencv is not opencv-contrib-python. Check the opencv-python "
+        f"override in pyproject.toml."
+    )
+
+
+def test_charuco_pose_pipeline_is_geometrically_correct(tmp_path):
+    """Full calibration-math check (not just symbol presence): render a ChArUco
+    board via the real ``sleap_anipose.draw_board``, then run the exact deprecated
+    function-style ``cv2.aruco`` pipeline aniposelib's ``calibrate()`` uses per frame
+    -- ``detectMarkers`` -> ``interpolateCornersCharuco`` -> ``estimatePoseCharucoBoard``
+    -- and reproject the known 3D board corners with the recovered pose. A small mean
+    reprojection error proves the pose is computed CORRECTLY, so this guards the
+    calibration geometry against a broken opencv, not merely that the calls exist."""
+    board_x, board_y = 5, 7
+    square_length, marker_length = 24.0, 18.0
+    board_path = tmp_path / "charuco_board.jpg"
+    sleap_anipose.draw_board(
+        str(board_path), board_x, board_y, square_length, marker_length, 4, 50, 1440, 1080
+    )
+    assert board_path.is_file()
+
+    image = cv2.imread(str(board_path), cv2.IMREAD_GRAYSCALE)
+    assert image is not None
+    height, width = image.shape
+
+    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    board = cv2.aruco.CharucoBoard((board_x, board_y), square_length, marker_length, aruco_dict)
+
+    corners, ids, _rejected = cv2.aruco.detectMarkers(image, aruco_dict)
+    assert ids is not None, "no aruco markers detected on the rendered board"
+    assert len(ids) > 0, "no aruco markers detected on the rendered board"
+
+    n_charuco, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+        corners, ids, image, board
+    )
+    assert n_charuco > 0, "no charuco corners interpolated"
+
+    # Recover the board pose with a plausible pinhole camera, then reproject the
+    # known 3D chessboard corners and measure the error against the detected ones.
+    camera_matrix = np.array(
+        [[float(width), 0.0, width / 2.0], [0.0, float(width), height / 2.0], [0.0, 0.0, 1.0]]
+    )
+    dist_coeffs = np.zeros((5,), dtype=float)
+    ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
+        charuco_corners, charuco_ids, board, camera_matrix, dist_coeffs, None, None
+    )
+    assert ok, "estimatePoseCharucoBoard failed"
+
+    object_points = board.getChessboardCorners()[charuco_ids.flatten()]
+    reprojected, _ = cv2.projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs)
+    mean_error = float(
+        np.linalg.norm(reprojected.reshape(-1, 2) - charuco_corners.reshape(-1, 2), axis=1).mean()
+    )
+    assert mean_error < 2.0, f"charuco pose reprojection error too large ({mean_error:.3f} px)"
