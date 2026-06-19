@@ -226,10 +226,10 @@
   "generate_masks": {
     "method": "boxprompt",
     "detector": "yolo",
-    "sam2_model_dir": "/mnt/falkner/Dexter/vocal_beh/uv_env/spec-gen-env/external/sam2",
+    "sam2_model_dir": "/mnt/falkner/Bartul/spectrograms/sam",
     "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-    "sam2_model_path": "/mnt/falkner/Dexter/vocal_beh/src/sam2_artifacts/sam2/checkpoint.pt",
-    "yolo_weights": "/mnt/falkner/Dexter/vocal_beh/src/sam2_artifacts/yolo/best.pt",
+    "sam2_model_path": "/mnt/falkner/Bartul/spectrograms/sam/checkpoint.pt",
+    "yolo_weights": "/mnt/falkner/Bartul/spectrograms/sam/best.pt",
     "yolo_conf": 0.25,
     "yolo_iou": 0.7,
     "yolo_imgsz": 128,

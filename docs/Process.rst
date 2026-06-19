@@ -1262,10 +1262,10 @@ To run ``generate-masks`` / ``train-masks`` the environment must provide the ``s
     "generate_masks": {
         "method": "boxprompt",
         "detector": "yolo",
-        "sam2_model_dir": "/mnt/falkner/Dexter/vocal_beh/uv_env/spec-gen-env/external/sam2",
+        "sam2_model_dir": "/mnt/falkner/Bartul/spectrograms/sam",
         "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-        "sam2_model_path": "/mnt/falkner/Dexter/vocal_beh/src/sam2_artifacts/sam2/checkpoint.pt",
-        "yolo_weights": "/mnt/falkner/Dexter/vocal_beh/src/sam2_artifacts/yolo/best.pt"
+        "sam2_model_path": "/mnt/falkner/Bartul/spectrograms/sam/checkpoint.pt",
+        "yolo_weights": "/mnt/falkner/Bartul/spectrograms/sam/best.pt"
     }
 
-``sam2_model_dir`` is a clone/install of `facebookresearch/sam2 <https://github.com/facebookresearch/sam2>`_ (the step changes into it so the stock ``sam2_model_cfg`` config NAME resolves); ``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files. The three filesystem paths are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path`` — the same handling as the DAS / Vocalocator model paths — so the defaults work on any lab host that has the share mounted. Override any of them per run with the CLI flags (``--sam2-model-dir`` / ``--sam2-model-cfg`` / ``--sam2-model-path`` / ``--yolo-weights``).
+``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files; ``sam2_model_dir`` is the directory they live in (the step changes into it), and the stock ``sam2_model_cfg`` config NAME is resolved by the installed ``sam2`` package's Hydra search path (a co-located ``configs/sam2.1/sam2.1_hiera_b+.yaml`` copy is also kept under ``sam2_model_dir``). The three filesystem paths are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path`` — the same handling as the DAS / Vocalocator model paths — so the defaults work on any lab host that has the share mounted. Override any of them per run with the CLI flags (``--sam2-model-dir`` / ``--sam2-model-cfg`` / ``--sam2-model-path`` / ``--yolo-weights``).
