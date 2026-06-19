@@ -41,6 +41,7 @@ from click.core import ParameterSource
 from PIL import Image
 
 from ..cli_utils import modify_settings_json_for_cli
+from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .masks.box_detectors.common.boxes import render_spec_image, tlbr_to_xywhn
 from .masks.box_detectors.detect import get_detector
@@ -91,14 +92,14 @@ class YOLODatasetExporter:
     Description
     -----------
     Exports an Ultralytics-format YOLO box-detector dataset (images + normalized
-    box labels + ``data.yaml``) from a list of per-session spectrogram H5 files,
+    box labels + ``data.yaml``) from a list of session root directories,
     pseudo-labeling boxes with the connected-component detector and/or ingesting
     hand-verified labels.
     """
 
     def __init__(
         self,
-        spectrogram_h5_paths: list[str] | None = None,
+        root_directories: list[str] | None = None,
         output_directory: str | None = None,
         input_parameter_dict: dict | None = None,
         message_output: Callable | None = None,
@@ -110,8 +111,9 @@ class YOLODatasetExporter:
 
         Parameters
         ----------
-        spectrogram_h5_paths (list[str])
-            Per-session ``*_spectrograms.h5`` files to draw spectrograms from.
+        root_directories (list[str])
+            Session root directories to draw spectrograms from; each session's
+            ``audio/spectrograms/*_spectrograms.h5`` is located within it.
         output_directory (str)
             Directory to write the YOLO dataset (``images/``, ``labels/``,
             ``data.yaml``); created if missing.
@@ -126,7 +128,7 @@ class YOLODatasetExporter:
         None
         """
 
-        self.spectrogram_h5_paths = spectrogram_h5_paths if spectrogram_h5_paths is not None else []
+        self.root_directories = root_directories if root_directories is not None else []
         self.output_directory = output_directory
         self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else {}
         self.message_output = message_output if message_output is not None else print
@@ -216,12 +218,23 @@ class YOLODatasetExporter:
 
         detect_fn = get_detector("cc") if label_source in ("cc", "merge") else None
 
+        # Resolve each session root to its per-session spectrogram H5
+        # (audio/spectrograms/<session>_spectrograms.h5).
+        spectrogram_h5_paths = [
+            str(first_match_or_raise(
+                root=pathlib.Path(root_directory) / "audio" / "spectrograms",
+                pattern="*_spectrograms.h5",
+                label="per-session spectrogram H5",
+            ))
+            for root_directory in self.root_directories
+        ]
+
         # Phase 1: enumerate every valid (duration > 0) spectrogram across all
         # sessions in all files, in a stable order (file list order, then H5 group
         # insertion order, then row order). An H5 may hold more than one session
         # group, so iterate them all rather than assuming a single session.
         catalog: list[tuple[str, str, int]] = []
-        for h5_path in self.spectrogram_h5_paths:
+        for h5_path in spectrogram_h5_paths:
             with h5py.File(h5_path, "r") as h5_file:
                 for session_id in h5_file["spectrogram"]:
                     durations = h5_file[f"spectrogram/{session_id}"]["durations"][:]
@@ -239,7 +252,7 @@ class YOLODatasetExporter:
         # Phase 2: render + label + write, opening each file once in the SAME order.
         n_boxes = 0
         position = 0
-        for h5_path in self.spectrogram_h5_paths:
+        for h5_path in spectrogram_h5_paths:
             with h5py.File(h5_path, "r") as h5_file:
                 for session_id in h5_file["spectrogram"]:
                     session_group = h5_file[f"spectrogram/{session_id}"]
@@ -288,18 +301,18 @@ class YOLODatasetExporter:
 
 
 @click.command(name="export-yolo-dataset")
-@click.option('--spectrogram-h5-paths', type=str, required=True, help='Comma-separated per-session *_spectrograms.h5 paths.')
+@click.option('--root-directories', type=str, required=True, help='Comma-separated string of session root directory paths.')
 @click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write the YOLO dataset.')
 @click.option('--label-source', 'label_source', type=click.Choice(['cc', 'manual', 'merge']), default=None, required=False, help='Box label source: cc pseudo-labels, manual files, or merge.')
 @click.option('--validation-split', 'validation_split', type=float, default=None, required=False, help='Fraction of images held out for validation.')
 @click.option('--manual-labels-directory', 'manual_labels_directory', type=str, default=None, required=False, help='Directory of hand-verified {spec_id}.txt YOLO labels (manual/merge).')
 @click.pass_context
-def export_yolo_dataset_cli(ctx, spectrogram_h5_paths, output_directory, **kwargs) -> None:
+def export_yolo_dataset_cli(ctx, root_directories, output_directory, **kwargs) -> None:
     """
     Description
     -----------
-    A command-line tool to export a YOLO box-detector training dataset from
-    per-session spectrogram H5 files.
+    A command-line tool to export a YOLO box-detector training dataset from a
+    list of session root directories' spectrogram H5 files.
 
     Parameters
     ----------
@@ -317,10 +330,10 @@ def export_yolo_dataset_cli(ctx, spectrogram_h5_paths, output_directory, **kwarg
         settings_dict='processing_settings',
     )
 
-    h5_paths = [p.strip() for p in spectrogram_h5_paths.split(",") if p.strip()]
+    root_dirs = [p.strip() for p in root_directories.split(",") if p.strip()]
 
     YOLODatasetExporter(
-        spectrogram_h5_paths=h5_paths,
+        root_directories=root_dirs,
         output_directory=output_directory,
         input_parameter_dict=processing_settings_dict,
         message_output=print,

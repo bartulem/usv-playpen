@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Assemble per-session USV spectrogram H5 files into a single curated training set
+Assemble session root directories' USV spectrogram H5 files into a single curated training set
 (``.npz``) for the QLVM vocalization model.
 
 Reads the per-session ``*_spectrograms.h5`` files produced by
@@ -49,6 +49,7 @@ from scipy.ndimage import zoom
 from sklearn.model_selection import train_test_split
 
 from ..cli_utils import modify_settings_json_for_cli
+from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 
 
@@ -281,12 +282,12 @@ class QLVMTrainingSetBuilder:
     Description
     -----------
     Builds a curated ``.npz`` training set for the QLVM model from a list of
-    per-session spectrogram H5 files.
+    session root directories.
     """
 
     def __init__(
         self,
-        spectrogram_h5_paths: list[str] | None = None,
+        root_directories: list[str] | None = None,
         output_directory: str | None = None,
         input_parameter_dict: dict | None = None,
         message_output: Callable | None = None,
@@ -298,8 +299,9 @@ class QLVMTrainingSetBuilder:
 
         Parameters
         ----------
-        spectrogram_h5_paths (list[str])
-            Per-session ``*_spectrograms.h5`` files to combine.
+        root_directories (list[str])
+            Session root directories to combine; each session's
+            ``audio/spectrograms/*_spectrograms.h5`` is located within it.
         output_directory (str)
             Directory to write the ``.npz`` outputs + metadata.
         input_parameter_dict (dict)
@@ -313,7 +315,7 @@ class QLVMTrainingSetBuilder:
         None
         """
 
-        self.spectrogram_h5_paths = spectrogram_h5_paths if spectrogram_h5_paths is not None else []
+        self.root_directories = root_directories if root_directories is not None else []
         self.output_directory = output_directory
         self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else {}
         self.message_output = message_output if message_output is not None else print
@@ -353,11 +355,22 @@ class QLVMTrainingSetBuilder:
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Resolve each session root to its per-session spectrogram H5
+        # (audio/spectrograms/<session>_spectrograms.h5).
+        spectrogram_h5_paths = [
+            str(first_match_or_raise(
+                root=pathlib.Path(root_directory) / "audio" / "spectrograms",
+                pattern="*_spectrograms.h5",
+                label="per-session spectrogram H5",
+            ))
+            for root_directory in self.root_directories
+        ]
+
         # Phase 1: cheap per-session durations, keyed by the session id that
         # names the ``spectrogram/<session>`` group inside each file.
         durations_by_key: dict[str, np.ndarray] = {}
         session_by_path: dict[str, str] = {}
-        for h5_path in self.spectrogram_h5_paths:
+        for h5_path in spectrogram_h5_paths:
             with h5py.File(h5_path, "r") as h5_file:
                 session_id = next(iter(h5_file["spectrogram"].keys()))
                 session_by_path[h5_path] = session_id
@@ -381,7 +394,7 @@ class QLVMTrainingSetBuilder:
         spec_id_list: list[np.ndarray] = []
         masks_list: list[np.ndarray] = []
         masks_len_list: list[np.ndarray] = []
-        for h5_path in self.spectrogram_h5_paths:
+        for h5_path in spectrogram_h5_paths:
             session_id = session_by_path[h5_path]
             idx = selected[session_id]
             if idx.size == 0:
@@ -459,7 +472,8 @@ class QLVMTrainingSetBuilder:
 
         np.savez(
             output_dir / "metadata.npz",
-            spectrogram_h5_paths=np.array(self.spectrogram_h5_paths),
+            root_directories=np.array(self.root_directories),
+            spectrogram_h5_paths=np.array(spectrogram_h5_paths),
             length_threshold=length_threshold,
             dataset_size_constraint=np.nan if dataset_size_constraint is None else dataset_size_constraint,
             validation_split=validation_split,
@@ -477,7 +491,7 @@ class QLVMTrainingSetBuilder:
 
 
 @click.command(name="build-qlvm-training-set")
-@click.option('--spectrogram-h5-paths', type=str, required=True, help='Comma-separated per-session *_spectrograms.h5 paths.')
+@click.option('--root-directories', type=str, required=True, help='Comma-separated string of session root directory paths.')
 @click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write the .npz training set.')
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Drop spectrograms with duration >= threshold (time bins).')
 @click.option('--validation-split', 'validation_split', type=float, default=None, required=False, help='Fraction held out for validation.')
@@ -485,12 +499,12 @@ class QLVMTrainingSetBuilder:
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Time-warp the signal window instead of center-resizing.')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").')
 @click.pass_context
-def build_qlvm_training_set_cli(ctx, spectrogram_h5_paths, output_directory, **kwargs) -> None:
+def build_qlvm_training_set_cli(ctx, root_directories, output_directory, **kwargs) -> None:
     """
     Description
     -----------
-    A command-line tool to assemble per-session spectrogram H5 files into a
-    curated ``.npz`` QLVM training set.
+    A command-line tool to assemble a list of session root directories'
+    spectrogram H5 files into a curated ``.npz`` QLVM training set.
 
     Parameters
     ----------
@@ -508,10 +522,10 @@ def build_qlvm_training_set_cli(ctx, spectrogram_h5_paths, output_directory, **k
         settings_dict='processing_settings',
     )
 
-    h5_paths = [p.strip() for p in spectrogram_h5_paths.split(",") if p.strip()]
+    root_dirs = [p.strip() for p in root_directories.split(",") if p.strip()]
 
     QLVMTrainingSetBuilder(
-        spectrogram_h5_paths=h5_paths,
+        root_directories=root_dirs,
         output_directory=output_directory,
         input_parameter_dict=processing_settings_dict,
         message_output=print,

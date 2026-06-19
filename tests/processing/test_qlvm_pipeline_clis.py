@@ -28,7 +28,7 @@ def runner():
 
 
 def test_generate_spectrograms_cli_routes(runner, mocker, tmp_path):
-    """generate-spectrograms resolves settings and calls SpectrogramGenerator once."""
+    """generate-usv-spectrograms resolves settings and calls SpectrogramGenerator once."""
     mock_cls = mocker.patch("usv_playpen.processing.generate_spectrograms.SpectrogramGenerator")
     mocker.patch(
         "usv_playpen.processing.generate_spectrograms.modify_settings_json_for_cli",
@@ -54,20 +54,20 @@ def test_compute_usv_acoustic_features_cli_routes(runner, mocker, tmp_path):
 
 
 def test_build_qlvm_training_set_cli_routes_and_splits_paths(runner, mocker, tmp_path):
-    """build-qlvm-training-set splits the comma-separated H5 paths and calls the
-    builder once with the parsed list."""
+    """build-qlvm-training-set splits the comma-separated root directories and calls
+    the builder once with the parsed list."""
     mock_cls = mocker.patch("usv_playpen.processing.build_qlvm_training_set.QLVMTrainingSetBuilder")
     mocker.patch(
         "usv_playpen.processing.build_qlvm_training_set.modify_settings_json_for_cli",
         return_value={"build_qlvm_training_set": {}},
     )
     result = runner.invoke(build_qlvm_training_set_cli, [
-        "--spectrogram-h5-paths", "/a/x.h5,/b/y.h5",
+        "--root-directories", "/a/sess1,/b/sess2",
         "--output-directory", str(tmp_path / "out"),
     ])
     assert result.exit_code == 0, result.output
     mock_cls.assert_called_once()
-    assert mock_cls.call_args.kwargs["spectrogram_h5_paths"] == ["/a/x.h5", "/b/y.h5"]
+    assert mock_cls.call_args.kwargs["root_directories"] == ["/a/sess1", "/b/sess2"]
     mock_cls.return_value.build.assert_called_once()
 
 

@@ -757,14 +757,14 @@ USV vocalization & model-training pipeline
 
 These commands form the in-house, self-contained pipeline that turns segmented USVs into spectrograms, call masks, interpretable acoustic features, and toroidal QLVM latents — and that trains the two models the pipeline relies on (the SAM2 box-prompt **YOLO detector** and the **QLVM decoder**). Every step is a `click <https://click.palletsprojects.com>`_ CLI whose full option set lives under its block in */usv-playpen/_parameter_settings/processing_settings.json*; the flags below are the common overrides. The per-session steps read/write each session's ``audio/spectrograms/<session>_spectrograms.h5``; the cross-session steps aggregate a list of those files.
 
-Inference flow (per session): ``generate-spectrograms`` → ``generate-masks`` → ``generate-usv-acoustic-features`` and/or ``infer-qlvm-latents``. Training flow (cross-session, run once on a cohort): build a dataset, then train. The YOLO detector and QLVM decoder are trained in-house; **SAM2 is used pretrained** (it is not fine-tuned here).
+Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-masks`` → ``generate-usv-acoustic-features`` and/or ``infer-qlvm-latents``. Training flow (cross-session, run once on a cohort): build a dataset, then train. The YOLO detector and QLVM decoder are trained in-house; **SAM2 is used pretrained** (it is not fine-tuned here).
 
-``generate-spectrograms``
-``generate-spectrograms`` computes the variance-weighted, multi-channel average spectrogram of every USV in a session and writes the consolidated ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)) into ``audio/spectrograms/<session>_spectrograms.h5``. Rows are 1:1 with ``usv_summary.csv``.
+``generate-usv-spectrograms``
+``generate-usv-spectrograms`` computes the variance-weighted, multi-channel average spectrogram of every USV in a session and writes the consolidated ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)) into ``audio/spectrograms/<session>_spectrograms.h5``. Rows are 1:1 with ``usv_summary.csv``.
 
 .. code-block:: text
 
-    usage: generate-spectrograms [-h] --root-directory PATH
+    usage: generate-usv-spectrograms [-h] --root-directory PATH
                             [--num-freq-bins INTEGER] [--num-time-bins INTEGER]
                             [--nperseg INTEGER] [--min-freq FLOAT] [--max-freq FLOAT]
 
@@ -775,12 +775,12 @@ Inference flow (per session): ``generate-spectrograms`` → ``generate-masks`` �
       -h, --help            Show this help message and exit.
       (full parameters under processing_settings.json -> "generate_spectrograms")
 
-``generate-masks``
-``generate-masks`` segments each USV's calls with the box-prompt detector → SAM2 path (default ``detector=yolo``; ``cc`` connected-component fallback) and writes the instance masks back into the SAME spectrogram H5 under a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,) int). Requires a pretrained SAM2 checkpoint and trained YOLO weights configured in settings (a missing path raises a clear error). GPU recommended.
+``generate-usv-masks``
+``generate-usv-masks`` segments each USV's calls with the box-prompt detector → SAM2 path (default ``detector=yolo``; ``cc`` connected-component fallback) and writes the instance masks back into the SAME spectrogram H5 under a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,) int). Requires a pretrained SAM2 checkpoint and trained YOLO weights configured in settings (a missing path raises a clear error). GPU recommended.
 
 .. code-block:: text
 
-    usage: generate-masks [-h] --root-directory PATH
+    usage: generate-usv-masks [-h] --root-directory PATH
                             [--detector {yolo,cc}]
                             [--sam2-model-dir PATH] [--sam2-model-cfg TEXT] [--sam2-model-path PATH]
                             [--yolo-weights PATH] [--yolo-conf FLOAT] [--yolo-iou FLOAT]
@@ -813,18 +813,18 @@ Inference flow (per session): ``generate-spectrograms`` → ``generate-masks`` �
       (full parameters under processing_settings.json -> "compute_usv_acoustic_features")
 
 ``build-qlvm-training-set``
-``build-qlvm-training-set`` aggregates per-session spectrogram H5 files into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
+``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
 
 .. code-block:: text
 
-    usage: build-qlvm-training-set [-h] --spectrogram-h5-paths TEXT,TEXT,... --output-directory PATH
+    usage: build-qlvm-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
                             [--length-threshold FLOAT] [--validation-split FLOAT]
                             [--full-dataset | --no-full-dataset]
                             [--time-stretch | --no-time-stretch]
                             [--masking-type {sam,none}]
 
     required arguments:
-      --spectrogram-h5-paths  Comma-separated per-session *_spectrograms.h5 paths.
+      --root-directories      Comma-separated string of session root directory paths.
       --output-directory      Directory to write the .npz training set.
 
     optional arguments:
@@ -875,12 +875,12 @@ Inference flow (per session): ``generate-spectrograms`` → ``generate-masks`` �
 
 .. code-block:: text
 
-    usage: export-yolo-dataset [-h] --spectrogram-h5-paths TEXT,TEXT,... --output-directory PATH
+    usage: export-yolo-dataset [-h] --root-directories TEXT,TEXT,... --output-directory PATH
                             [--label-source {cc,manual,merge}] [--validation-split FLOAT]
                             [--manual-labels-directory PATH]
 
     required arguments:
-      --spectrogram-h5-paths  Comma-separated per-session *_spectrograms.h5 paths.
+      --root-directories      Comma-separated string of session root directory paths.
       --output-directory      Directory to write the YOLO dataset.
 
     optional arguments:
@@ -890,7 +890,7 @@ Inference flow (per session): ``generate-spectrograms`` → ``generate-masks`` �
       (full parameters under processing_settings.json -> "export_yolo_dataset")
 
 ``train-masks``
-``train-masks`` fine-tunes the Ultralytics YOLO box detector on an ``export-yolo-dataset`` dataset (from a COCO-pretrained ``yolo11n.pt`` by default) and copies the resulting ``best.pt`` to ``<output-directory>/best.pt`` — the path to set as ``generate-masks``' ``yolo_weights``. GPU recommended.
+``train-masks`` fine-tunes the Ultralytics YOLO box detector on an ``export-yolo-dataset`` dataset (from a COCO-pretrained ``yolo11n.pt`` by default) and copies the resulting ``best.pt`` to ``<output-directory>/best.pt`` — the path to set as ``generate-usv-masks``' ``yolo_weights``. GPU recommended.
 
 .. code-block:: text
 

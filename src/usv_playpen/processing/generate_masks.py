@@ -369,7 +369,7 @@ class MaskGenerator:
         )
 
 
-@click.command(name="generate-masks")
+@click.command(name="generate-usv-masks")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--detector', 'detector', type=click.Choice(['yolo', 'cc']), default=None, required=False, help='Box detector backend (yolo learned detector or cc baseline).')
 @click.option('--sam2-model-dir', 'sam2_model_dir', type=str, default=None, required=False, help='SAM2 model directory (config/checkpoint resolve against it).')

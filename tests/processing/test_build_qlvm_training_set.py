@@ -57,29 +57,42 @@ def test_stretch_specs_outputs_target_shape():
     assert out_ts.shape == (3, 128, 128)
 
 
-def _write_session_h5(path, session_id, n, n_f=32, n_t=40):
-    """Consolidated layout: top-level ``frequency_bins`` + a ``spectrogram/<session>``
-    group whose ``spectrograms`` rows are 1:1 with usv_summary (all real here)."""
+def _write_session_h5(tmp_path, session_id, n, n_f=32, n_t=40, with_masks=False):
+    """Create a session root holding ``audio/spectrograms/<session>_spectrograms.h5``
+    (consolidated layout: top-level ``frequency_bins`` + a ``spectrogram/<session>``
+    group, rows 1:1 with usv_summary) and return the session root directory. With
+    ``with_masks`` also writes a ``mask/<session>`` group where row 0 has two mask
+    instances (a shared region) and the rest have none."""
     rng = np.random.default_rng(abs(hash(session_id)) % (2**32))
-    with h5py.File(path, "w") as f:
+    root = tmp_path / session_id
+    spec_dir = root / "audio" / "spectrograms"
+    spec_dir.mkdir(parents=True)
+    with h5py.File(spec_dir / f"{session_id}_spectrograms.h5", "w") as f:
         f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
         session_group = f.create_group(f"spectrogram/{session_id}")
         session_group.create_dataset("spectrograms", data=rng.random((n, n_f, n_t)).astype(np.float32))
         session_group.create_dataset("durations", data=np.full(n, n_t, dtype=np.int64))
+        if with_masks:
+            seg0 = np.zeros((n_f, n_t), dtype=bool)
+            seg0[5:10, 2:8] = True
+            seg1 = np.zeros((n_f, n_t), dtype=bool)
+            seg1[12:15, 3:6] = True
+            mask_group = f.create_group(f"mask/{session_id}")
+            mask_group.create_dataset("segmentations", data=np.stack([seg0, seg1], axis=0))
+            mask_group.create_dataset("spectrogram_index", data=np.array([0, 0], dtype=np.int64))
+    return root
 
 
 def test_build_train_val_npz(tmp_path, mocker):
     """End-to-end train/val build: two sessions -> train_data.npz + val_data.npz
     + metadata.npz, with the expected keys, target shape, and zero masks."""
-    h5a = tmp_path / "20230119_155302_spectrograms.h5"
-    h5b = tmp_path / "20230119_162529_spectrograms.h5"
-    _write_session_h5(h5a, "20230119_155302", n=6)
-    _write_session_h5(h5b, "20230119_162529", n=6)
+    root_a = _write_session_h5(tmp_path, "20230119_155302", n=6)
+    root_b = _write_session_h5(tmp_path, "20230119_162529", n=6)
     out_dir = tmp_path / "out"
 
     mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
     QLVMTrainingSetBuilder(
-        spectrogram_h5_paths=[str(h5a), str(h5b)],
+        root_directories=[str(root_a), str(root_b)],
         output_directory=str(out_dir),
         input_parameter_dict={"build_qlvm_training_set": _CFG},
         message_output=lambda *_a, **_kw: None,
@@ -100,14 +113,13 @@ def test_build_train_val_npz(tmp_path, mocker):
 
 def test_build_full_dataset_single_npz(tmp_path, mocker):
     """full_dataset mode writes one full_data.npz with all kept samples."""
-    h5a = tmp_path / "20230119_155302_spectrograms.h5"
-    _write_session_h5(h5a, "20230119_155302", n=5)
+    root_a = _write_session_h5(tmp_path, "20230119_155302", n=5)
     out_dir = tmp_path / "out_full"
 
     mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
     cfg = {**_CFG, "full_dataset": True}
     QLVMTrainingSetBuilder(
-        spectrogram_h5_paths=[str(h5a)],
+        root_directories=[str(root_a)],
         output_directory=str(out_dir),
         input_parameter_dict={"build_qlvm_training_set": cfg},
         message_output=lambda *_a, **_kw: None,
@@ -119,37 +131,17 @@ def test_build_full_dataset_single_npz(tmp_path, mocker):
     assert full["spectrograms"].shape == (5, 128, 128)
 
 
-def _write_session_h5_with_masks(path, session_id, n, n_f=32, n_t=40):
-    """Like _write_session_h5 but also writes a mask/<session> group: row 0 gets
-    two mask instances (a shared region), the remaining rows get none (so they
-    fall back to an all-ones mask)."""
-    rng = np.random.default_rng(abs(hash(session_id)) % (2**32))
-    seg0 = np.zeros((n_f, n_t), dtype=bool)
-    seg0[5:10, 2:8] = True
-    seg1 = np.zeros((n_f, n_t), dtype=bool)
-    seg1[12:15, 3:6] = True
-    with h5py.File(path, "w") as f:
-        f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
-        session_group = f.create_group(f"spectrogram/{session_id}")
-        session_group.create_dataset("spectrograms", data=rng.random((n, n_f, n_t)).astype(np.float32))
-        session_group.create_dataset("durations", data=np.full(n, n_t, dtype=np.int64))
-        mask_group = f.create_group(f"mask/{session_id}")
-        mask_group.create_dataset("segmentations", data=np.stack([seg0, seg1], axis=0))
-        mask_group.create_dataset("spectrogram_index", data=np.array([0, 0], dtype=np.int64))
-
-
 def test_build_sam_masking_applies_masks_and_counts(tmp_path, mocker):
     """masking_type='sam' writes binary masks, masks the spectrograms (zeroed
     outside the mask), and records per-row instance counts; rows with no detected
     mask fall back to an all-ones mask."""
-    h5a = tmp_path / "20230119_155302_spectrograms.h5"
-    _write_session_h5_with_masks(h5a, "20230119_155302", n=3)
+    root_a = _write_session_h5(tmp_path, "20230119_155302", n=3, with_masks=True)
     out_dir = tmp_path / "out_sam"
 
     mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
     cfg = {**_CFG, "full_dataset": True, "masking_type": "sam"}
     QLVMTrainingSetBuilder(
-        spectrogram_h5_paths=[str(h5a)],
+        root_directories=[str(root_a)],
         output_directory=str(out_dir),
         input_parameter_dict={"build_qlvm_training_set": cfg},
         message_output=lambda *_a, **_kw: None,
@@ -170,14 +162,13 @@ def test_build_sam_masking_applies_masks_and_counts(tmp_path, mocker):
 def test_build_sam_masking_without_mask_group_falls_back(tmp_path, mocker):
     """masking_type='sam' over a session with NO mask/<session> group gives every
     row an all-ones mask (spectrogram preserved, zero instance counts)."""
-    h5a = tmp_path / "20230119_155302_spectrograms.h5"
-    _write_session_h5(h5a, "20230119_155302", n=4)  # writes no mask group
+    root_a = _write_session_h5(tmp_path, "20230119_155302", n=4)  # writes no mask group
     out_dir = tmp_path / "out_nomask"
 
     mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
     cfg = {**_CFG, "full_dataset": True, "masking_type": "sam"}
     QLVMTrainingSetBuilder(
-        spectrogram_h5_paths=[str(h5a)],
+        root_directories=[str(root_a)],
         output_directory=str(out_dir),
         input_parameter_dict={"build_qlvm_training_set": cfg},
         message_output=lambda *_a, **_kw: None,

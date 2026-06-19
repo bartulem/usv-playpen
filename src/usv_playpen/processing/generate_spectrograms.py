@@ -335,7 +335,7 @@ class SpectrogramGenerator:
         )
 
 
-@click.command(name="generate-spectrograms")
+@click.command(name="generate-usv-spectrograms")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--num-freq-bins', 'num_freq_bins', type=int, default=None, required=False, help='Number of spectrogram frequency bins.')
 @click.option('--num-time-bins', 'num_time_bins', type=int, default=None, required=False, help='Number of spectrogram time bins.')
