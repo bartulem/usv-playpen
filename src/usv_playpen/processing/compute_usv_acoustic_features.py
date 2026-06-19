@@ -236,11 +236,15 @@ class USVAcousticFeatureExtractor:
             label="per-session spectrogram H5",
         )
         with h5py.File(h5_loc, "r") as h5_file:
-            specs = h5_file["spectrograms"][:]
-            durations = h5_file["durations"][:]
-            freq_axis = h5_file["freq_bins"][:]
-            # spectrogram_ids are the per-USV row indices into usv_summary.csv.
-            usv_indices = h5_file["spectrogram_ids"][:].astype(np.uint32)
+            session_group = h5_file[f"spectrogram/{root.name}"]
+            specs = session_group["spectrograms"][:]
+            durations = session_group["durations"][:]
+            freq_axis = h5_file["frequency_bins"][:]
+        # spectrogram rows are 1:1 with usv_summary.csv; keep only the real
+        # (duration > 0) USVs and remember their row positions for the merge.
+        usv_indices = np.flatnonzero(durations > 0).astype(np.uint32)
+        specs = specs[usv_indices]
+        durations = durations[usv_indices]
 
         features = compute_acoustic_features(
             specs=specs.astype(np.float64),

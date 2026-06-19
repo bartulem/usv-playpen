@@ -57,13 +57,14 @@ def test_stretch_specs_outputs_target_shape():
 
 
 def _write_session_h5(path, session_id, n, n_f=32, n_t=40):
+    """Consolidated layout: top-level ``frequency_bins`` + a ``spectrogram/<session>``
+    group whose ``spectrograms`` rows are 1:1 with usv_summary (all real here)."""
     rng = np.random.default_rng(abs(hash(session_id)) % (2**32))
     with h5py.File(path, "w") as f:
-        f.attrs["session_id"] = session_id
-        f.create_dataset("spectrograms", data=rng.random((n, n_f, n_t)).astype(np.float32))
-        f.create_dataset("durations", data=np.full(n, n_t, dtype=np.int64))
-        f.create_dataset("freq_bins", data=np.linspace(30000.0, 120000.0, n_f))
-        f.create_dataset("spectrogram_ids", data=np.arange(n, dtype=np.int64))
+        f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
+        session_group = f.create_group(f"spectrogram/{session_id}")
+        session_group.create_dataset("spectrograms", data=rng.random((n, n_f, n_t)).astype(np.float32))
+        session_group.create_dataset("durations", data=np.full(n, n_t, dtype=np.int64))
 
 
 def test_build_train_val_npz(tmp_path, mocker):

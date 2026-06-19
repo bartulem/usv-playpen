@@ -48,18 +48,21 @@ def test_compute_acoustic_features_peak_frequency():
     assert np.all(np.isfinite(np.concatenate([feats[c] for c in FEATURE_COLUMNS])))
 
 
-def _write_h5(path, session_id, usv_indices, n_f=16, n_t=16):
+def _write_h5(path, session_id, n_usv, valid_rows, n_f=16, n_t=16):
+    """Consolidated layout, rows 1:1 with usv_summary: rows in ``valid_rows``
+    carry a real spectrogram (duration > 0); the rest are all-zero placeholders
+    (duration 0), exactly as ``generate_spectrograms`` writes them."""
     rng = np.random.default_rng(0)
-    n = len(usv_indices)
-    specs = rng.random((n, n_f, n_t)).astype(np.float32)
-    durations = np.full(n, n_t, dtype=np.int64)
-    freq_bins = np.linspace(30000.0, 120000.0, n_f)
+    specs = np.zeros((n_usv, n_f, n_t), dtype=np.float32)
+    durations = np.zeros(n_usv, dtype=np.int64)
+    for r in valid_rows:
+        specs[r] = rng.random((n_f, n_t)).astype(np.float32)
+        durations[r] = n_t
     with h5py.File(path, "w") as f:
-        f.attrs["session_id"] = session_id
-        f.create_dataset("spectrograms", data=specs)
-        f.create_dataset("durations", data=durations)
-        f.create_dataset("freq_bins", data=freq_bins)
-        f.create_dataset("spectrogram_ids", data=np.asarray(usv_indices, dtype=np.int64))
+        f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
+        session_group = f.create_group(f"spectrogram/{session_id}")
+        session_group.create_dataset("spectrograms", data=specs)
+        session_group.create_dataset("durations", data=durations)
 
 
 def test_merge_features_into_summary(tmp_path, mocker):
@@ -78,7 +81,7 @@ def test_merge_features_into_summary(tmp_path, mocker):
     }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
 
     _write_h5(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5",
-              session_id, usv_indices=[0, 1, 3])
+              session_id, n_usv=4, valid_rows=[0, 1, 3])
 
     mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")
     USVAcousticFeatureExtractor(

@@ -49,8 +49,10 @@ def compute_selected_indices(
     """
     Description
     -----------
-    For each session key, returns the sorted indices of spectrograms shorter
-    than ``length_threshold``, optionally subsampled so the total kept count
+    For each session key, returns the sorted indices of real spectrograms
+    (``0 < duration < length_threshold`` — ``duration == 0`` rows are the
+    all-zero placeholders for invalid USVs and are excluded), optionally
+    subsampled so the total kept count
     approaches ``dataset_size_constraint`` (an absolute count if ``> 1``, a
     proportion if in ``(0, 1]``, all data if ``None``). Lets later phases read
     only the needed rows from disk.
@@ -73,7 +75,7 @@ def compute_selected_indices(
     """
 
     rng = np.random.default_rng(random_state)
-    total_filtered = sum(int(np.sum(d < length_threshold)) for d in durations_by_key.values())
+    total_filtered = sum(int(np.sum((d > 0) & (d < length_threshold))) for d in durations_by_key.values())
 
     samples_per_session: int | None = None
     if dataset_size_constraint is not None and durations_by_key:
@@ -85,7 +87,7 @@ def compute_selected_indices(
 
     selected: dict[str, np.ndarray] = {}
     for key, durations in durations_by_key.items():
-        valid_indices = np.where(durations < length_threshold)[0]
+        valid_indices = np.where((durations > 0) & (durations < length_threshold))[0]
         if samples_per_session is not None and samples_per_session < len(valid_indices):
             sampled = rng.choice(len(valid_indices), size=samples_per_session, replace=False)
             valid_indices = valid_indices[sampled]
@@ -278,12 +280,15 @@ class QLVMTrainingSetBuilder:
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Phase 1: cheap per-session durations.
+        # Phase 1: cheap per-session durations, keyed by the session id that
+        # names the ``spectrogram/<session>`` group inside each file.
         durations_by_key: dict[str, np.ndarray] = {}
+        session_by_path: dict[str, str] = {}
         for h5_path in self.spectrogram_h5_paths:
-            key = pathlib.Path(h5_path).stem
             with h5py.File(h5_path, "r") as h5_file:
-                durations_by_key[key] = h5_file["durations"][:]
+                session_id = next(iter(h5_file["spectrogram"].keys()))
+                session_by_path[h5_path] = session_id
+                durations_by_key[session_id] = h5_file[f"spectrogram/{session_id}"]["durations"][:]
 
         # Phase 2: length filter + optional subsample.
         selected = compute_selected_indices(
@@ -291,25 +296,24 @@ class QLVMTrainingSetBuilder:
             None if full_dataset else dataset_size_constraint, random_state,
         )
 
-        # Phase 3: load selected spectrograms/durations, concatenate, and build
-        # the globally-unique spec_id. Per-session H5s store the session once as
-        # the ``session_id`` attribute and the per-USV row index in
-        # ``spectrogram_ids``; the cross-session spec_id is composed here as
-        # f"{session_id}_{usv_index}" (the format the external trainer expects).
+        # Phase 3: load selected spectrograms/durations from each session's
+        # ``spectrogram/<session>`` group, concatenate, and build the
+        # globally-unique spec_id. Spectrogram rows are 1:1 with usv_summary.csv,
+        # so the selected row index IS the usv index; the cross-session spec_id is
+        # f"{session_id}_{row_index}" (the format the external trainer expects).
         specs_list: list[np.ndarray] = []
         durations_list: list[np.ndarray] = []
         spec_id_list: list[np.ndarray] = []
         for h5_path in self.spectrogram_h5_paths:
-            key = pathlib.Path(h5_path).stem
-            idx = selected[key]
+            session_id = session_by_path[h5_path]
+            idx = selected[session_id]
             if idx.size == 0:
                 continue
             with h5py.File(h5_path, "r") as h5_file:
-                specs_list.append(h5_file["spectrograms"][idx])
-                durations_list.append(h5_file["durations"][idx])
-                session_id = h5_file.attrs["session_id"]
-                usv_indices = h5_file["spectrogram_ids"][idx]
-                spec_id_list.append(np.array([f"{session_id}_{int(i)}" for i in usv_indices]))
+                session_group = h5_file[f"spectrogram/{session_id}"]
+                specs_list.append(session_group["spectrograms"][idx])
+                durations_list.append(session_group["durations"][idx])
+            spec_id_list.append(np.array([f"{session_id}_{int(i)}" for i in idx]))
 
         if not specs_list:
             self.message_output("No spectrograms survived filtering; nothing written.")

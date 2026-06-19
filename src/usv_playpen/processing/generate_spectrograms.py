@@ -202,12 +202,14 @@ class SpectrogramGenerator:
         -----------
         Reads the session's HPSS-filtered audio memmap and ``*_usv_summary.csv``,
         computes the variance-weighted average spectrogram of every USV, and
-        writes ``audio/spectrograms/<session>_spectrograms.h5`` containing the
-        ``spectrograms`` (N, F, T), ``durations`` (N,), ``freq_bins`` (F,) and
-        ``spectrogram_ids`` (N,) datasets, where ``spectrogram_ids`` are the
-        per-USV ROW INDICES into ``usv_summary.csv``. Session provenance is the
-        file-level ``session_id`` attribute (one session per file; also
-        ``created`` and ``total_spectrograms``).
+        writes ``audio/spectrograms/<session>_spectrograms.h5`` in the
+        consolidated-store layout the repo's viewers read: a shared top-level
+        ``frequency_bins`` (F,) dataset plus a ``spectrogram/<session>`` group
+        holding ``spectrograms`` (N, F, T) and ``durations`` (N,). The
+        spectrogram rows are 1:1 with ``usv_summary.csv`` rows (row ``i`` ==
+        USV ``i``, no skipping); invalid/too-short USVs are all-zero rows with
+        ``duration == 0``. File-level attrs: ``created``, ``total_spectrograms``,
+        ``valid_spectrograms``.
 
         Parameters
         ----------
@@ -257,13 +259,20 @@ class SpectrogramGenerator:
             shape=(sample_num, channel_num),
         )
 
+        # The spectrogram array is 1:1 with usv_summary.csv rows: row ``i`` is the
+        # spectrogram of USV ``i``, in original on-disk order with NO skipping.
+        # This is the index convention the consolidated-store readers rely on
+        # (``/spectrogram/<session>/spectrograms[row_index]`` in
+        # make_usv_spectrograms / usv_embedding_explorer, where ``row_index`` is
+        # the usv_summary row). Invalid / too-short USVs get an all-zero
+        # placeholder + duration 0 so alignment is never broken; downstream
+        # consumers skip ``duration == 0`` rows.
+        n_freq = int(spec_params['num_freq_bins'])
+        n_time = int(spec_params['num_time_bins'])
+        blank_spec = np.zeros((n_freq, n_time), dtype=np.float32)
+
         all_specs: list[np.ndarray] = []
         all_durations: list[int] = []
-        # spectrogram_ids are the per-USV ROW INDICES into this session's
-        # usv_summary.csv (option A): the session itself is stored once as the
-        # H5 ``session_id`` attribute, so the global id is composed downstream as
-        # f"{session_id}_{index}" rather than duplicated into every row.
-        all_usv_indices: list[int] = []
 
         starts = usv_summary_df["start"].to_numpy()
         stops = usv_summary_df["stop"].to_numpy()
@@ -272,24 +281,26 @@ class SpectrogramGenerator:
             t1 = float(stops[usv_idx]) + offset
             s0 = max(0, round(t0 * audio_sampling_rate))
             s1 = min(sample_num, round(t1 * audio_sampling_rate))
-            if s1 <= s0:
-                continue
-            segment = np.asarray(audio_file_data[s0:s1, :])
-            spectrogram, original_time_bins = compute_usv_spectrogram(
-                audio_segment_channels=segment,
-                sampling_rate=audio_sampling_rate,
-                spec_params=spec_params,
-                normalize=normalize,
-            )
+            spectrogram = None
+            original_time_bins = 0
+            if s1 > s0:
+                segment = np.asarray(audio_file_data[s0:s1, :])
+                spectrogram, original_time_bins = compute_usv_spectrogram(
+                    audio_segment_channels=segment,
+                    sampling_rate=audio_sampling_rate,
+                    spec_params=spec_params,
+                    normalize=normalize,
+                )
             if spectrogram is None:
-                continue
-            all_specs.append(spectrogram.astype(np.float32))
-            all_durations.append(int(original_time_bins))
-            all_usv_indices.append(usv_idx)
+                all_specs.append(blank_spec)
+                all_durations.append(0)
+            else:
+                all_specs.append(spectrogram.astype(np.float32))
+                all_durations.append(int(original_time_bins))
 
         if not all_specs:
             self.message_output(
-                f"No spectrograms generated for '{self.root_directory}' (no valid USV segments)."
+                f"No USVs in summary for '{self.root_directory}'; no spectrograms written."
             )
             return
 
@@ -298,20 +309,23 @@ class SpectrogramGenerator:
         # matches the feature-extraction axis, so round numbers are kept.
         freq_bins = np.linspace(spec_params['min_freq'], spec_params['max_freq'], spec_params['num_freq_bins'])
 
+        durations_arr = np.asarray(all_durations, dtype=np.int64)
         spectrograms_dir = root / "audio" / "spectrograms"
         spectrograms_dir.mkdir(parents=True, exist_ok=True)
         h5_file_path = spectrograms_dir / f"{session_id}_spectrograms.h5"
         with h5py.File(h5_file_path, "w") as h5_file:
-            # Session provenance lives once, as file-level attributes (one
-            # session per file), so it is not duplicated into every row.
-            h5_file.attrs["session_id"] = session_id
             h5_file.attrs["created"] = "generate_spectrograms"
             h5_file.attrs["total_spectrograms"] = len(all_specs)
-            h5_file.create_dataset("spectrograms", data=np.asarray(all_specs), compression="gzip", compression_opts=6)
-            h5_file.create_dataset("durations", data=np.asarray(all_durations, dtype=np.int64), compression="gzip", compression_opts=6)
-            h5_file.create_dataset("freq_bins", data=freq_bins, compression="gzip", compression_opts=6)
-            # Per-USV row indices into usv_summary.csv (NOT "{session}_{idx}" strings).
-            h5_file.create_dataset("spectrogram_ids", data=np.asarray(all_usv_indices, dtype=np.int64), compression="gzip", compression_opts=6)
+            h5_file.attrs["valid_spectrograms"] = int(np.count_nonzero(durations_arr > 0))
+            # Consolidated-store layout (one session per file here, mergeable into
+            # a multi-session store): a SHARED top-level ``frequency_bins`` axis and
+            # a per-session ``spectrogram/<session>`` group whose ``spectrograms``
+            # rows are 1:1 with usv_summary.csv. This is exactly what
+            # make_usv_spectrograms / usv_embedding_explorer read.
+            h5_file.create_dataset("frequency_bins", data=freq_bins, compression="gzip", compression_opts=6)
+            session_group = h5_file.create_group(f"spectrogram/{session_id}")
+            session_group.create_dataset("spectrograms", data=np.asarray(all_specs), compression="gzip", compression_opts=6)
+            session_group.create_dataset("durations", data=durations_arr, compression="gzip", compression_opts=6)
 
         self.message_output(
             f"Generated {len(all_specs)} spectrograms for session {session_id} -> {h5_file_path}."

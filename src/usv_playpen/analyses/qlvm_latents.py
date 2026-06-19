@@ -212,10 +212,14 @@ class QLVMLatentInference:
             label="per-session spectrogram H5",
         )
         with h5py.File(h5_loc, "r") as h5_file:
-            specs = h5_file["spectrograms"][:]
-            durations = h5_file["durations"][:]
-            # spectrogram_ids are the per-USV row indices into usv_summary.csv.
-            usv_indices = h5_file["spectrogram_ids"][:].astype(np.uint32)
+            session_group = h5_file[f"spectrogram/{root.name}"]
+            specs = session_group["spectrograms"][:]
+            durations = session_group["durations"][:]
+        # spectrogram rows are 1:1 with usv_summary.csv; embed only the real
+        # (duration > 0) USVs and remember their row positions for the merge.
+        usv_indices = np.flatnonzero(durations > 0).astype(np.uint32)
+        specs = specs[usv_indices]
+        durations = durations[usv_indices]
 
         # Preprocess identically to the training set (same resize/time-stretch).
         resized = stretch_specs(specs.astype(np.float32), durations, (128, 128), cfg['time_stretch'])

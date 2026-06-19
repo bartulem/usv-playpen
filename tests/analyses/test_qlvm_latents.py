@@ -83,15 +83,17 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         ws_labels_periodic=(rng.integers(0, 4, size=(res, res))).astype(np.int16),
     )
 
-    # spectrogram H5: USV indices 0 and 2 (index 1 skipped during generation)
+    # consolidated layout, rows 1:1 with the 3-USV summary: rows 0 and 2 are
+    # real (duration > 0), row 1 is an all-zero placeholder (duration 0).
     n_f = n_t = 128
-    specs = rng.random((2, n_f, n_t)).astype(np.float32)
+    specs = np.zeros((3, n_f, n_t), dtype=np.float32)
+    specs[0] = rng.random((n_f, n_t)).astype(np.float32)
+    specs[2] = rng.random((n_f, n_t)).astype(np.float32)
     with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "w") as f:
-        f.attrs["session_id"] = session_id
-        f.create_dataset("spectrograms", data=specs)
-        f.create_dataset("durations", data=np.array([128, 128], dtype=np.int64))
-        f.create_dataset("freq_bins", data=np.linspace(30000.0, 120000.0, n_f))
-        f.create_dataset("spectrogram_ids", data=np.array([0, 2], dtype=np.int64))
+        f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
+        session_group = f.create_group(f"spectrogram/{session_id}")
+        session_group.create_dataset("spectrograms", data=specs)
+        session_group.create_dataset("durations", data=np.array([128, 0, 128], dtype=np.int64))
 
     pls.DataFrame({
         "usv_id": [f"{i:04d}" for i in range(3)],
