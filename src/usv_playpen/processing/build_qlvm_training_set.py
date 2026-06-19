@@ -373,7 +373,7 @@ class QLVMTrainingSetBuilder:
         # ``spectrogram/<session>`` group, concatenate, and build the
         # globally-unique spec_id. Spectrogram rows are 1:1 with usv_summary.csv,
         # so the selected row index IS the usv index; the cross-session spec_id is
-        # f"{session_id}_{row_index}" (the format the external trainer expects).
+        # f"{session_id}_{row_index}" (the per-sample identifier the trainer carries).
         # Under ``masking_type == "sam"`` the per-row SAM region masks + instance
         # counts are read from the ``mask/<session>`` group at the same time.
         specs_list: list[np.ndarray] = []

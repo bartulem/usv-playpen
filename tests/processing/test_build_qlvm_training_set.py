@@ -165,3 +165,25 @@ def test_build_sam_masking_applies_masks_and_counts(tmp_path, mocker):
     assert full["masks_len"].tolist() == [2, 0, 0]
     # The fallback rows keep signal (all-ones mask over the signal window).
     assert specs[1].any()
+
+
+def test_build_sam_masking_without_mask_group_falls_back(tmp_path, mocker):
+    """masking_type='sam' over a session with NO mask/<session> group gives every
+    row an all-ones mask (spectrogram preserved, zero instance counts)."""
+    h5a = tmp_path / "20230119_155302_spectrograms.h5"
+    _write_session_h5(h5a, "20230119_155302", n=4)  # writes no mask group
+    out_dir = tmp_path / "out_nomask"
+
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
+    cfg = {**_CFG, "full_dataset": True, "masking_type": "sam"}
+    QLVMTrainingSetBuilder(
+        spectrogram_h5_paths=[str(h5a)],
+        output_directory=str(out_dir),
+        input_parameter_dict={"build_qlvm_training_set": cfg},
+        message_output=lambda *_a, **_kw: None,
+    ).build()
+
+    full = np.load(out_dir / "full_data.npz", allow_pickle=True)
+    assert (full["masks_len"] == 0).all()          # no detected instances
+    assert full["spectrograms"].any()              # signal preserved (all-ones mask)
+    assert set(np.unique(full["masks"]).tolist()).issubset({0.0, 1.0})

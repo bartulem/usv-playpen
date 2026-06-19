@@ -130,6 +130,12 @@ def build_lattice(lattice_type: str, latent_dim: int, korobov_a: int, n_points: 
         return gen_korobov_basis(korobov_a, latent_dim, n_points)
     if lattice_type == "roberts":
         return roberts_sequence(n_points, latent_dim)
+    if latent_dim != 2:
+        error_message = (
+            f"lattice_type={lattice_type!r} uses the Fibonacci lattice, which is 2D only, "
+            f"but latent_dim={latent_dim}. Use 'korobov' or 'roberts' for latent_dim != 2."
+        )
+        raise ValueError(error_message)
     return gen_fib_basis(m=fib_m)
 
 
@@ -255,6 +261,10 @@ class QLVMTrainer:
         val_freq = cfg['val_freq']
         seed = cfg['seed']
         num_workers = cfg['num_workers']
+
+        if val_freq < 1:
+            error_message = f"train_qlvm val_freq must be >= 1 (it gates `epoch % val_freq`), got {val_freq}."
+            raise ValueError(error_message)
 
         dataset_dir = pathlib.Path(self.dataset_directory)
         train_npz = dataset_dir / "train_data.npz"

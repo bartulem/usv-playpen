@@ -104,6 +104,59 @@ def test_export_manual_copies_labels(tmp_path):
     assert label.strip() == "0 0.5 0.5 0.3 0.2"
 
 
+def test_cc_labels_normalization():
+    """_cc_labels turns detector (t,l,b,r) boxes into one normalized YOLO line each,
+    with class 0 and all coordinates in [0, 1]."""
+    exporter = YOLODatasetExporter(input_parameter_dict=_cfg())
+    # Fake detector returning a single box (top=10, left=20, bottom=40, right=60).
+    lines = exporter._cc_labels(lambda _spec, _dur: [(10, 20, 40, 60)], spec=None, duration=64, width=128, height=128)
+    assert len(lines) == 1
+    parts = lines[0].split()
+    assert parts[0] == "0"
+    coords = [float(v) for v in parts[1:]]
+    assert len(coords) == 4
+    assert all(0.0 <= c <= 1.0 for c in coords)
+
+
+def test_export_merge_uses_manual_then_cc(tmp_path):
+    """merge writes the hand-verified label where a {spec_id}.txt exists and falls
+    back to cc pseudo-labels for spectrograms without one."""
+    h5_path = tmp_path / f"{_SESSION_ID}_spectrograms.h5"
+    _write_session_h5(h5_path, durations=[40, 60])  # rows 0 and 1
+    manual_dir = tmp_path / "manual"
+    manual_dir.mkdir()
+    (manual_dir / f"{_SESSION_ID}_0.txt").write_text("0 0.4 0.4 0.2 0.2")  # only row 0 hand-labeled
+    out_dir = tmp_path / "yolo"
+
+    YOLODatasetExporter(
+        spectrogram_h5_paths=[str(h5_path)],
+        output_directory=str(out_dir),
+        input_parameter_dict=_cfg(label_source="merge", manual_labels_directory=str(manual_dir)),
+        message_output=lambda *_a, **_kw: None,
+    ).export()
+
+    # Row 0 -> verbatim manual; row 1 -> cc fallback (label file exists, possibly empty).
+    assert (out_dir / "labels" / "train" / f"{_SESSION_ID}_0.txt").read_text().strip() == "0 0.4 0.4 0.2 0.2"
+    assert (out_dir / "labels" / "train" / f"{_SESSION_ID}_1.txt").is_file()
+
+
+def test_export_split_is_exact_fraction(tmp_path):
+    """validation_split yields an exact, reproducible val count (not a per-image flip)."""
+    h5_path = tmp_path / f"{_SESSION_ID}_spectrograms.h5"
+    _write_session_h5(h5_path, durations=[10, 20, 30, 40])  # 4 valid USVs
+    out_dir = tmp_path / "yolo"
+
+    YOLODatasetExporter(
+        spectrogram_h5_paths=[str(h5_path)],
+        output_directory=str(out_dir),
+        input_parameter_dict=_cfg(validation_split=0.5),
+        message_output=lambda *_a, **_kw: None,
+    ).export()
+
+    assert len(list((out_dir / "images" / "val").glob("*.png"))) == 2
+    assert len(list((out_dir / "images" / "train").glob("*.png"))) == 2
+
+
 def test_export_manual_without_directory_raises(tmp_path):
     """manual/merge require a manual_labels_directory."""
     h5_path = tmp_path / f"{_SESSION_ID}_spectrograms.h5"

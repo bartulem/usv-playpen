@@ -119,6 +119,46 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     assert float(atlas.max()) <= 1.0
 
 
+def test_build_lattice_fib_requires_2d():
+    """The Fibonacci lattice is 2D only; latent_dim != 2 raises rather than
+    silently producing a lattice that mismatches the decoder input width."""
+    with pytest.raises(ValueError, match="Fibonacci"):
+        build_lattice("fib", latent_dim=3, korobov_a=3, n_points=17, fib_m=5)
+
+
+def test_train_full_dataset_no_val(tmp_path, mocker):
+    """With only full_data.npz (no val split) the run still writes both artifacts
+    and skips validation cleanly."""
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    _write_training_npz(dataset_dir / "full_data.npz", n_samples=8, seed=0)
+    output_dir = tmp_path / "model"
+
+    mocker.patch("usv_playpen.processing.train_qlvm.smart_wait")
+    QLVMTrainer(
+        dataset_directory=str(dataset_dir),
+        output_directory=str(output_dir),
+        input_parameter_dict=_TINY_CFG,
+        message_output=lambda *_a, **_kw: None,
+    ).train()
+
+    assert (output_dir / "qmc_train_qlvm.tar").is_file()
+    assert (output_dir / "qmc_decoder_weights.npz").is_file()
+
+
+def test_train_rejects_zero_val_freq(tmp_path, mocker):
+    """val_freq < 1 raises (it gates `epoch % val_freq`), before touching data."""
+    cfg = {"train_qlvm": {**_TINY_CFG["train_qlvm"], "val_freq": 0}}
+    mocker.patch("usv_playpen.processing.train_qlvm.smart_wait")
+    with pytest.raises(ValueError, match="val_freq"):
+        QLVMTrainer(
+            dataset_directory=str(tmp_path),
+            output_directory=str(tmp_path / "out"),
+            input_parameter_dict=cfg,
+            message_output=lambda *_a, **_kw: None,
+        ).train()
+
+
 def test_train_missing_dataset_raises(tmp_path):
     """A dataset directory without train_data.npz/full_data.npz raises FileNotFoundError."""
     (tmp_path / "empty").mkdir()

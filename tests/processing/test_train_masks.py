@@ -77,6 +77,35 @@ def test_train_copies_best_weights(tmp_path, monkeypatch, mocker):
     assert (output_dir / "best.pt").read_bytes() == b"fake-weights"
 
 
+def test_train_raises_when_best_weights_missing(tmp_path, monkeypatch, mocker):
+    """If the Ultralytics run produces no best.pt, the trainer raises instead of
+    silently leaving a stale/absent weights file."""
+    dataset_dir = _write_dataset(tmp_path)
+
+    module = types.ModuleType("ultralytics")
+
+    class _NoWeightsYOLO:
+        def __init__(self, weights):
+            self.weights = weights
+
+        def train(self, **kwargs):
+            save_dir = pathlib.Path(kwargs["project"]) / kwargs["name"]
+            save_dir.mkdir(parents=True, exist_ok=True)  # deliberately writes no weights/best.pt
+            return types.SimpleNamespace(save_dir=str(save_dir))
+
+    module.YOLO = _NoWeightsYOLO
+    monkeypatch.setitem(sys.modules, "ultralytics", module)
+    mocker.patch("usv_playpen.processing.train_masks.smart_wait")
+
+    with pytest.raises(FileNotFoundError, match="best.pt"):
+        MaskDetectorTrainer(
+            dataset_directory=str(dataset_dir),
+            output_directory=str(tmp_path / "detector"),
+            input_parameter_dict=_CFG,
+            message_output=lambda *_a, **_kw: None,
+        ).train()
+
+
 def test_train_missing_data_yaml_raises(tmp_path, mocker):
     """A dataset directory without data.yaml raises FileNotFoundError (before any
     ultralytics import)."""

@@ -64,8 +64,9 @@ def build_time_window_masks(durations: np.ndarray, n_time_bins: int) -> np.ndarr
     -----------
     Builds per-spectrogram binary region masks that are 1 over the USV's signal
     time-window ``[0, min(duration, n_time_bins))`` (all frequencies) and 0 over
-    the zero-padded tail. This is the mask-free stand-in for the SAM mask (see
-    the module's UPGRADE NEEDED note).
+    the zero-padded tail. This is the fallback region used when no SAM mask group
+    is present, or for an individual valid USV the detector produced no mask (see
+    the module header's "Mask region" note).
 
     Parameters
     ----------

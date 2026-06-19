@@ -222,6 +222,42 @@ def test_generate_session_masks_overwrites_existing_group(tmp_path, monkeypatch)
     assert spectrogram_index.tolist() == [0, 1]
 
 
+def test_generate_session_masks_cc_detector_skips_yolo_weights(tmp_path, monkeypatch):
+    """The cc detector path needs no YOLO weights: a blank yolo_weights is fine and
+    the mask group is still written (detect_fn is None, handled by the kernel)."""
+    durations = [40, 60]
+    root = _make_session_h5(tmp_path, durations)
+    settings = _base_settings(tmp_path)
+    settings["generate_masks"]["detector"] = "cc"
+    settings["generate_masks"]["yolo_weights"] = ""
+
+    canned = {0: [{"segmentation": _seg(40)}], 1: [{"segmentation": _seg(60)}]}
+    _install_fake_kernels(monkeypatch, canned)
+
+    MaskGenerator(
+        root_directory=str(root),
+        input_parameter_dict=settings,
+        message_output=lambda *_a, **_kw: None,
+    ).generate_session_masks()
+
+    h5_path = root / "audio" / "spectrograms" / f"{_SESSION_ID}_spectrograms.h5"
+    with h5py.File(h5_path, "r") as h5_file:
+        assert f"mask/{_SESSION_ID}" in h5_file
+
+
+def test_generate_session_masks_missing_yolo_weights_raises(tmp_path):
+    """With detector=yolo, missing YOLO weights raises FileNotFoundError up front."""
+    root = _make_session_h5(tmp_path, [40, 60])
+    settings = _base_settings(tmp_path)
+    settings["generate_masks"]["yolo_weights"] = str(tmp_path / "does_not_exist.pt")
+    with pytest.raises(FileNotFoundError, match="YOLO weights"):
+        MaskGenerator(
+            root_directory=str(root),
+            input_parameter_dict=settings,
+            message_output=lambda *_a, **_kw: None,
+        ).generate_session_masks()
+
+
 def test_generate_session_masks_missing_checkpoint_raises(tmp_path):
     """A missing SAM2 checkpoint raises FileNotFoundError before any GPU import."""
     root = _make_session_h5(tmp_path, [40, 60])

@@ -140,16 +140,17 @@ class MaskDetectorTrainer:
         # Copy the run's best.pt to a stable, predictable path for generate_masks.
         run_best = pathlib.Path(results.save_dir) / "weights" / "best.pt"
         stable_best = output_dir / "best.pt"
-        if run_best.is_file():
-            shutil.copy2(run_best, stable_best)
-            self.message_output(
-                f"Trained YOLO detector; best weights -> {stable_best} "
-                f"(set processing_settings['generate_masks']['yolo_weights'] to this path)."
+        if not run_best.is_file():
+            error_message = (
+                f"Training finished but {run_best} was not found; inspect the Ultralytics run at "
+                f"{results.save_dir}. Not copying a stale best.pt."
             )
-        else:
-            self.message_output(
-                f"Training finished but {run_best} was not found; inspect the run at {results.save_dir}."
-            )
+            raise FileNotFoundError(error_message)
+        shutil.copy2(run_best, stable_best)
+        self.message_output(
+            f"Trained YOLO detector; best weights -> {stable_best} "
+            f"(set processing_settings['generate_masks']['yolo_weights'] to this path)."
+        )
 
         self.message_output(
             f"YOLO box-detector training ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."

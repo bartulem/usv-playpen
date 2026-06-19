@@ -174,8 +174,10 @@ class YOLODatasetExporter:
         -----------
         Renders every valid (``duration > 0``) spectrogram across all input
         sessions to a YOLO image, attaches box labels per ``label_source``, splits
-        the spectrograms into train/val, and writes the Ultralytics dataset
-        (``images/{train,val}/{spec_id}.png``,
+        the spectrograms into train/val as an exact, reproducible
+        ``validation_split`` fraction (a seeded permutation over the whole dataset,
+        so the val set is never accidentally empty), and writes the Ultralytics
+        dataset (``images/{train,val}/{spec_id}.png``,
         ``labels/{train,val}/{spec_id}.txt``, ``data.yaml``) to the output
         directory.
 
@@ -213,40 +215,62 @@ class YOLODatasetExporter:
             (output_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
         detect_fn = get_detector("cc") if label_source in ("cc", "merge") else None
-        rng = np.random.default_rng(random_state)
 
-        n_written = 0
-        n_boxes = 0
+        # Phase 1: enumerate every valid (duration > 0) spectrogram across all
+        # sessions in all files, in a stable order (file list order, then H5 group
+        # insertion order, then row order). An H5 may hold more than one session
+        # group, so iterate them all rather than assuming a single session.
+        catalog: list[tuple[str, str, int]] = []
         for h5_path in self.spectrogram_h5_paths:
             with h5py.File(h5_path, "r") as h5_file:
-                session_id = next(iter(h5_file["spectrogram"].keys()))
-                session_group = h5_file[f"spectrogram/{session_id}"]
-                specs = session_group["spectrograms"][:]
-                durations = session_group["durations"][:]
+                for session_id in h5_file["spectrogram"]:
+                    durations = h5_file[f"spectrogram/{session_id}"]["durations"][:]
+                    for row in np.flatnonzero(durations > 0):
+                        catalog.append((h5_path, session_id, int(row)))
 
-            valid_rows = np.flatnonzero(durations > 0)
-            for row in valid_rows:
-                spec = specs[row].astype(np.float32)
-                duration = int(durations[row])
-                spec_id = f"{session_id}_{int(row)}"
+        # The val set is an EXACT, reproducible fraction of the whole dataset (a
+        # seeded permutation, not a per-image coin flip — the latter does not
+        # guarantee the fraction and can leave the val split empty on small sets).
+        n_total = len(catalog)
+        n_val = round(n_total * validation_split)
+        rng = np.random.default_rng(random_state)
+        val_positions = {int(i) for i in rng.permutation(n_total)[:n_val]}
 
-                image, width, height = spec_to_yolo_image(spec, duration, colormap)
+        # Phase 2: render + label + write, opening each file once in the SAME order.
+        n_boxes = 0
+        position = 0
+        for h5_path in self.spectrogram_h5_paths:
+            with h5py.File(h5_path, "r") as h5_file:
+                for session_id in h5_file["spectrogram"]:
+                    session_group = h5_file[f"spectrogram/{session_id}"]
+                    specs = session_group["spectrograms"]
+                    durations = session_group["durations"][:]
+                    for row in np.flatnonzero(durations > 0):
+                        split = "val" if position in val_positions else "train"
+                        position += 1
+                        spec = specs[row].astype(np.float32)
+                        duration = int(durations[row])
+                        spec_id = f"{session_id}_{int(row)}"
 
-                manual_file = manual_dir / f"{spec_id}.txt" if manual_dir is not None else None
-                has_manual = manual_file is not None and manual_file.is_file()
-                if label_source == "manual" or (label_source == "merge" and has_manual):
-                    lines = manual_file.read_text().splitlines() if has_manual else []
-                else:
-                    lines = self._cc_labels(detect_fn, spec, duration, width, height)
+                        image, width, height = spec_to_yolo_image(spec, duration, colormap)
 
-                split = "val" if rng.random() < validation_split else "train"
-                Image.fromarray(image).save(output_dir / "images" / split / f"{spec_id}.png")
-                (output_dir / "labels" / split / f"{spec_id}.txt").write_text("\n".join(lines))
-                n_written += 1
-                n_boxes += len(lines)
+                        manual_file = manual_dir / f"{spec_id}.txt" if manual_dir is not None else None
+                        has_manual = manual_file is not None and manual_file.is_file()
+                        if label_source == "manual" or (label_source == "merge" and has_manual):
+                            # Drop blank lines (trailing newline / accidental double
+                            # newlines) -- Ultralytics rejects empty label lines.
+                            raw_lines = manual_file.read_text().splitlines() if has_manual else []
+                            lines = [line for line in raw_lines if line.strip()]
+                        else:
+                            lines = self._cc_labels(detect_fn, spec, duration, width, height)
 
+                        Image.fromarray(image).save(output_dir / "images" / split / f"{spec_id}.png")
+                        (output_dir / "labels" / split / f"{spec_id}.txt").write_text("\n".join(lines))
+                        n_boxes += len(lines)
+
+        # Quote the path so a value with spaces / a Windows drive letter stays valid YAML.
         data_yaml = (
-            f"path: {output_dir}\n"
+            f'path: "{output_dir}"\n'
             f"train: images/train\n"
             f"val: images/val\n"
             f"nc: 1\n"
@@ -255,8 +279,8 @@ class YOLODatasetExporter:
         (output_dir / "data.yaml").write_text(data_yaml)
 
         self.message_output(
-            f"Exported {n_written} spectrogram images ({n_boxes} boxes, label_source='{label_source}') "
-            f"-> {output_dir} (data.yaml written)."
+            f"Exported {n_total} spectrogram images ({n_boxes} boxes, label_source='{label_source}'; "
+            f"{n_val} val / {n_total - n_val} train) -> {output_dir} (data.yaml written)."
         )
         self.message_output(
             f"YOLO dataset export ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
