@@ -1248,7 +1248,7 @@ Each per-session step reads and writes that session's ``audio/spectrograms/<sess
     #. ``generate-spectrograms`` — variance-weighted multi-channel spectrogram of every USV → the ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)), rows 1:1 with ``usv_summary.csv``.
     #. ``generate-masks`` — YOLO box detector → SAM2 segmentation of each call, written back into the SAME H5 as a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,)). Needs a pretrained SAM2 checkpoint + a trained YOLO ``best.pt`` set in settings (GPU recommended).
     #. ``generate-usv-acoustic-features`` — per-USV spectral/amplitude features merged into ``usv_summary.csv``; restricted to the true SAM mask region when a ``mask/<session>`` group is present, else the signal time-window.
-    #. ``infer-qlvm-latents`` — embeds the spectrograms into the trained QLVM torus and merges the latent coordinates + watershed categories into ``usv_summary.csv`` (see :ref:`Analyze <Analyze>`).
+    #. ``infer-qlvm-latents`` — embeds the spectrograms into the trained QLVM torus and merges the latent coordinates + watershed categories into ``usv_summary.csv`` (detailed below).
 
 **Training (cross-session, run once on a cohort):**
 
@@ -1269,3 +1269,16 @@ To run ``generate-masks`` / ``train-masks`` the environment must provide the ``s
     }
 
 ``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files; ``sam2_model_dir`` is the directory they live in (the step changes into it), and the stock ``sam2_model_cfg`` config NAME is resolved by the installed ``sam2`` package's Hydra search path (a co-located ``configs/sam2.1/sam2.1_hiera_b+.yaml`` copy is also kept under ``sam2_model_dir``). The three filesystem paths are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path`` — the same handling as the DAS / Vocalocator model paths — so the defaults work on any lab host that has the share mounted. Override any of them per run with the CLI flags (``--sam2-model-dir`` / ``--sam2-model-cfg`` / ``--sam2-model-path`` / ``--yolo-weights``).
+
+Infer QLVM vocalization latents
+"""""""""""""""""""""""""""""""
+
+Each USV can be embedded into a trained **QLVM** (Quasi-Monte-Carlo latent-variable model) toroidal latent space, giving every call a pair of torus coordinates and a categorical label that are comparable across every session embedded into the same model. These ``qlvm_*`` columns are what the categorical USV-tuning analysis in :ref:`Analyze <Analyze>`'s *Compute neuronal tuning curves* (``usv_category_tuning`` / ``usv_category_peth``) consumes.
+
+``infer-qlvm-latents`` runs per session after the spectrogram pipeline above has produced ``audio/spectrograms/<session>_spectrograms.h5``. It loads the frozen decoder weights (``qmc_decoder_weights.npz``, written by ``train-qlvm``), rebuilds the fixed lattice, embeds the session's spectrograms via the torch-free JAX inference path, assigns each USV a category by spatial lookup into the fixed reference watershed grids, and merges the results into ``usv_summary.csv``:
+
+* ``qlvm_umap1`` / ``qlvm_umap2`` — the torus coordinates,
+* ``qlvm_category`` — the standard watershed label, and
+* ``qlvm_supercategory`` — the periodic watershed label (``0`` = background / noise).
+
+The decoder weights and the reference watershed grids (``arrays.npz``) are pointed at via the ``infer_qlvm_latents`` block of */usv-playpen/_parameter_settings/processing_settings.json* (or the ``--weights-npz-path`` / ``--reference-arrays-npz-path`` flags). The full option list and the training command that produces the weights are documented in :ref:`the CLI reference <usv-pipeline-cli>`.

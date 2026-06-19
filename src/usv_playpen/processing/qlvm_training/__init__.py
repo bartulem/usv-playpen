@@ -10,11 +10,11 @@ evidence/log-prob losses (``losses``), the train/test epoch loops (``loop``) and
 the checkpoint save/load helpers (``checkpoint``). It is kept close to the
 original so it tracks that validated implementation; the usv-playpen-native
 orchestration (``.npz`` I/O, settings, the CLI, and the decoder-weights export
-that the JAX inference path in ``analyses/qlvm_model.py`` consumes) lives in
+that the JAX inference path in ``processing/qlvm_model.py`` consumes) lives in
 ``processing/train_qlvm.py``.
 
 These kernels are inherently ``torch`` (training); the usv-playpen QLVM
-*inference* path is the separate torch-free JAX port in ``analyses/qlvm_model.py``.
+*inference* path is the separate torch-free JAX port in ``processing/qlvm_model.py``.
 The two meet only at the exported decoder ``state_dict`` ``.npz``.
 """
 from __future__ import annotations

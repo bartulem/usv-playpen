@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
-from usv_playpen.analyses.qlvm_latents import infer_qlvm_latents_cli
+from usv_playpen.processing.qlvm_latents import infer_qlvm_latents_cli
 from usv_playpen.processing.build_qlvm_training_set import build_qlvm_training_set_cli
 from usv_playpen.processing.compute_usv_acoustic_features import (
     compute_usv_acoustic_features_cli,
@@ -73,9 +73,9 @@ def test_build_qlvm_training_set_cli_routes_and_splits_paths(runner, mocker, tmp
 
 def test_infer_qlvm_latents_cli_routes(runner, mocker, tmp_path):
     """infer-qlvm-latents calls QLVMLatentInference once."""
-    mock_cls = mocker.patch("usv_playpen.analyses.qlvm_latents.QLVMLatentInference")
+    mock_cls = mocker.patch("usv_playpen.processing.qlvm_latents.QLVMLatentInference")
     mocker.patch(
-        "usv_playpen.analyses.qlvm_latents.modify_settings_json_for_cli",
+        "usv_playpen.processing.qlvm_latents.modify_settings_json_for_cli",
         return_value={"infer_qlvm_latents": {}},
     )
     result = runner.invoke(infer_qlvm_latents_cli, ["--root-directory", str(tmp_path)])

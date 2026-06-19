@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Tests for analyses/qlvm_latents — the QLVM inference driver.
+Tests for processing/qlvm_latents — the QLVM inference driver.
 
 Covers the helper pieces (weight loading + ``decoder.`` prefix stripping,
 lattice rebuild, reference label lookup) and an end-to-end run that synthesizes
@@ -15,7 +15,7 @@ import h5py
 import numpy as np
 import polars as pls
 
-from usv_playpen.analyses import qlvm_latents as ql
+from usv_playpen.processing import qlvm_latents as ql
 
 
 def test_load_decoder_params_strips_prefix(tmp_path):
@@ -111,7 +111,7 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         "fib_m": 16,
         "time_stretch": False,
     }
-    mocker.patch("usv_playpen.analyses.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
     ql.QLVMLatentInference(
         root_directory=str(root),
         input_parameter_dict={"infer_qlvm_latents": cfg},

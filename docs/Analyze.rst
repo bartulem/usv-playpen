@@ -522,16 +522,3 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
         "playback_seed": null
     }
-
-Infer QLVM vocalization latents
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Each USV can be embedded into a trained **QLVM** (Quasi-Monte-Carlo latent-variable model) toroidal latent space, giving every call a pair of torus coordinates and a categorical label that are comparable across every session embedded into the same model. These ``qlvm_*`` columns are what the categorical USV-tuning analysis in *Compute neuronal tuning curves* (``usv_category_tuning`` / ``usv_category_peth``) consumes.
-
-This step is **CLI-only** (``infer-qlvm-latents``; not a button in the *Analyze* GUI window) and runs per session after the spectrogram pipeline in :ref:`Process <Process>` has produced ``audio/spectrograms/<session>_spectrograms.h5``. It loads the frozen decoder weights (``qmc_decoder_weights.npz``, written by ``train-qlvm``), rebuilds the fixed lattice, embeds the session's spectrograms via the torch-free JAX inference path, assigns each USV a category by spatial lookup into the fixed reference watershed grids, and merges the results into ``usv_summary.csv``:
-
-* ``qlvm_umap1`` / ``qlvm_umap2`` — the torus coordinates,
-* ``qlvm_category`` — the standard watershed label, and
-* ``qlvm_supercategory`` — the periodic watershed label (``0`` = background / noise).
-
-The decoder weights and the reference watershed grids (``arrays.npz``) are pointed at via the ``infer_qlvm_latents`` block of */usv-playpen/_parameter_settings/analyses_settings.json* (or the ``--weights-npz-path`` / ``--reference-arrays-npz-path`` flags). The full option list and the training command that produces the weights are documented in :ref:`the CLI reference <usv-pipeline-cli>`.

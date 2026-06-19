@@ -7,7 +7,7 @@ exact shape ``build_qlvm_training_set`` writes), runs a 2-epoch CPU training run
 with a small lattice, and checks that (1) the torch checkpoint and the
 decoder-weights ``.npz`` are written, (2) the weights carry the expected
 ``nn.Sequential`` ``state_dict`` keys, and (3) the exported weights load straight
-into the torch-free JAX inference decoder (``analyses/qlvm_model``) and decode a
+into the torch-free JAX inference decoder (``processing/qlvm_model``) and decode a
 lattice to ``(K, 1, 128, 128)`` reconstructions in ``[0, 1]`` -- i.e. the
 train -> infer bridge holds end to end. The full-scale GPU training run is not
 exercised here.
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 
-from usv_playpen.analyses.qlvm_model import decode_lattice_atlas
+from usv_playpen.processing.qlvm_model import decode_lattice_atlas
 from usv_playpen.processing.train_qlvm import (
     QLVMTrainer,
     build_lattice,

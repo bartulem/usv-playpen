@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Tests for analyses/qlvm_model — the JAX (torch-free) QLVM inference port.
+Tests for processing/qlvm_model — the JAX (torch-free) QLVM inference port.
 
 The load-bearing test is ``conv_transpose2d`` parity: the JAX transposed
 convolution is checked against a pure-numpy implementation of
@@ -15,7 +15,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 
-from usv_playpen.analyses import qlvm_model as qm
+from usv_playpen.processing import qlvm_model as qm
 
 
 def _ct2d_numpy(x, weight, bias, stride, padding, output_padding):

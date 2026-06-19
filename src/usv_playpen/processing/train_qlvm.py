@@ -15,8 +15,8 @@ artifacts into the output directory:
   per-batch loss trajectory), for resuming / diagnostics; and
 * ``qmc_decoder_weights.npz`` -- the decoder ``state_dict`` as one array per
   layer (keys ``"0.weight"``/``"0.bias"``/.../``"9.weight"``), which is EXACTLY
-  what the torch-free JAX inference path (``analyses/qlvm_model.py`` via
-  ``analyses/qlvm_latents.py``'s ``weights_npz_path``) loads. Training and
+  what the torch-free JAX inference path (``processing/qlvm_model.py`` via
+  ``processing/qlvm_latents.py``'s ``weights_npz_path``) loads. Training and
   inference therefore meet only at this ``.npz`` boundary -- the decoder
   architecture here (:func:`build_qmc_decoder`) is the one
   ``qlvm_model.decoder_forward`` reconstructs.
@@ -52,7 +52,7 @@ def build_qmc_decoder(latent_dim: int):
     -----------
     Builds the ConvTranspose2d decoder for the QMCLVM, identical to the external
     trainer's ``build_qmc_decoder`` so the exported weights load unchanged into
-    the JAX inference decoder (``analyses/qlvm_model.decoder_forward``).
+    the JAX inference decoder (``processing/qlvm_model.decoder_forward``).
 
     The input width is ``2 * latent_dim`` because ``TorusBasis`` expands each
     latent coordinate ``z`` to a ``(cos(2*pi*z), sin(2*pi*z))`` pair before
@@ -97,7 +97,7 @@ def build_lattice(lattice_type: str, latent_dim: int, korobov_a: int, n_points: 
     Builds the fixed quasi-random latent lattice (``base_sequence``) the decoder
     is trained over, selecting the generator by ``lattice_type``. Mirrors the
     external trainer's ``build_lattice_pair`` (and the lattice
-    ``analyses/qlvm_model.py`` rebuilds at inference, so the same settings keep
+    ``processing/qlvm_model.py`` rebuilds at inference, so the same settings keep
     train and inference on the same torus).
 
     Parameters
@@ -353,7 +353,7 @@ class QLVMTrainer:
 
         # Decoder-weights bridge: one array per nn.Sequential layer (keys
         # "0.weight"/"0.bias"/.../"9.weight"), exactly what the JAX inference path
-        # (analyses/qlvm_model.decoder_forward) reloads without torch.
+        # (processing/qlvm_model.decoder_forward) reloads without torch.
         decoder_state = model.decoder.state_dict()
         weights_path = output_dir / _DECODER_WEIGHTS_NAME
         np.savez(

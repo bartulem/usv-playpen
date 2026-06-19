@@ -160,7 +160,7 @@ class QLVMLatentInference:
         root_directory (str)
             Session root directory (contains the ``audio`` tree).
         input_parameter_dict (dict)
-            Analyses settings; the ``infer_qlvm_latents`` block supplies the
+            Processing settings; the ``infer_qlvm_latents`` block supplies the
             weight/reference paths and lattice configuration.
         message_output (Callable)
             Logging callback; defaults to ``print``.
@@ -277,14 +277,14 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
-    analyses_settings_dict = modify_settings_json_for_cli(
+    processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
-        settings_dict='analyses_settings',
+        settings_dict='processing_settings',
     )
 
     QLVMLatentInference(
         root_directory=root_directory,
-        input_parameter_dict=analyses_settings_dict,
+        input_parameter_dict=processing_settings_dict,
         message_output=print,
     ).infer_and_merge()

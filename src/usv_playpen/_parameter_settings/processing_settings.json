@@ -290,5 +290,15 @@
     "batch_size": 16,
     "device": null,
     "run_name": "usv_yolo_detector"
+  },
+  "infer_qlvm_latents": {
+    "weights_npz_path": "/mnt/falkner/Dexter/vocal_beh/models/example_qlvm_model/qmc_decoder_weights.npz",
+    "reference_arrays_npz_path": "/mnt/falkner/Dexter/vocal_beh/models/example_qlvm_model/arrays.npz",
+    "lattice_type": "korobov",
+    "latent_dim": 2,
+    "n_points": 1021,
+    "korobov_a": 76,
+    "fib_m": 16,
+    "time_stretch": false
   }
 }
