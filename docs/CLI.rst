@@ -750,6 +750,8 @@ Visualize
       --usv-segments-ypos              Y-axis position for USV segment markers (Hz).
       --usv-segments-lw                Line width for USV segment markers.
 
+.. _usv-pipeline-cli:
+
 USV vocalization & model-training pipeline
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

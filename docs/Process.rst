@@ -1235,3 +1235,37 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
         "relative_intensity_threshold": 1.0,
         "millisecond_divergence_tolerance": 12
    }
+
+USV spectrogram, mask & latent pipeline
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once the audio-processing steps above have produced each session's curated ``*_usv_summary.csv`` (DAS-detected USVs), an in-house, self-contained pipeline turns those calls into spectrograms, call masks, interpretable acoustic features, and toroidal **QLVM** latents — and trains the two models the pipeline relies on. Unlike the functions above, these steps are **CLI-only** (they are not buttons in the *Process* GUI window); every step is a ``click`` command whose full options live under its block in */usv-playpen/_parameter_settings/processing_settings.json*, and they are documented with their flags in :ref:`the CLI reference <usv-pipeline-cli>`.
+
+Each per-session step reads and writes that session's ``audio/spectrograms/<session>_spectrograms.h5``; the model-training steps aggregate a list of those H5 files across a cohort and run once (not per session).
+
+**Inference (per session), in order:**
+
+    #. ``generate-spectrograms`` — variance-weighted multi-channel spectrogram of every USV → the ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)), rows 1:1 with ``usv_summary.csv``.
+    #. ``generate-masks`` — YOLO box detector → SAM2 segmentation of each call, written back into the SAME H5 as a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,)). Needs a pretrained SAM2 checkpoint + a trained YOLO ``best.pt`` set in settings (GPU recommended).
+    #. ``generate-usv-acoustic-features`` — per-USV spectral/amplitude features merged into ``usv_summary.csv``; restricted to the true SAM mask region when a ``mask/<session>`` group is present, else the signal time-window.
+    #. ``infer-qlvm-latents`` — embeds the spectrograms into the trained QLVM torus and merges the latent coordinates + watershed categories into ``usv_summary.csv`` (see :ref:`Analyze <Analyze>`).
+
+**Training (cross-session, run once on a cohort):**
+
+    #. *QLVM decoder.* ``build-qlvm-training-set`` aggregates the per-session H5 files into a curated ``.npz`` set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms), then ``train-qlvm`` trains the decoder and writes ``qmc_decoder_weights.npz`` — the file ``infer-qlvm-latents`` reloads.
+    #. *YOLO box detector.* ``export-yolo-dataset`` renders the spectrograms to an Ultralytics dataset with box labels (``--label-source cc`` pseudo-labels them with the connected-component detector, no manual annotation; ``manual``/``merge`` use hand-verified labels), then ``train-masks`` fine-tunes YOLO and produces the ``best.pt`` that ``generate-masks`` points at. **SAM2 itself is used pretrained — it is not trained here.**
+
+To run ``generate-masks`` / ``train-masks`` the environment must provide the ``sam2`` and ``ultralytics`` packages (both are usv-playpen core dependencies) plus, for ``generate-masks``, the SAM2 checkpoint/config and the trained YOLO weights configured in the ``generate_masks`` settings block:
+
+.. code-block:: json
+
+    "generate_masks": {
+        "method": "boxprompt",
+        "detector": "yolo",
+        "sam2_model_dir": "/path/to/sam2",
+        "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+        "sam2_model_path": "/path/to/sam2/checkpoint.pt",
+        "yolo_weights": "/path/to/yolo/best.pt"
+    }
+
+``sam2_model_dir`` is a clone/install of `facebookresearch/sam2 <https://github.com/facebookresearch/sam2>`_ (the step changes into it so the stock ``sam2_model_cfg`` config name resolves); ``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files. These paths are machine-specific, so leave them blank in the tracked settings and pass them per run via the CLI flags (``--sam2-model-dir`` / ``--sam2-model-path`` / ``--yolo-weights``) when they differ across hosts.
