@@ -260,5 +260,19 @@
     "full_dataset": false,
     "target_shape": [128, 128],
     "time_stretch": false
+  },
+  "train_qlvm": {
+    "n_epochs": 300,
+    "latent_dim": 2,
+    "lattice_type": "korobov",
+    "korobov_a": 76,
+    "train_n_points": 1021,
+    "test_n_points": 2039,
+    "fib_m": 15,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "val_freq": 10,
+    "seed": 42,
+    "num_workers": 0
   }
 }
