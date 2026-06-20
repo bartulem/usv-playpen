@@ -165,8 +165,8 @@ def _widgets(available_lists, mo):
         label="Session lists",
     )
     map_dropdown = mo.ui.dropdown(
-        options=["VAE", "QLVM"],
-        value="VAE",
+        options=["QLVM", "VAE"],
+        value="QLVM",
         label="Map",
     )
     # Color by a CATEGORICAL label (category / supercategory) OR a CONTINUOUS
