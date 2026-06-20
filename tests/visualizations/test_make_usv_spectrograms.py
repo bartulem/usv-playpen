@@ -1015,6 +1015,11 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
             "emitter": ["M", "F", "M", "ghost"],
             "duration": [0.05, 0.06, 0.07, 0.08],
             "mean_freq_hz": [40_000, 60_000, 80_000, 100_000],
+            "peak_freq_hz": [45_000, 65_000, 85_000, 105_000],
+            "freq_bandwidth_hz": [5_000, 6_000, 7_000, 8_000],
+            "mean_amplitude": [0.1, 0.2, 0.3, 0.4],
+            "max_amplitude": [0.5, 0.6, 0.7, 0.8],
+            "spectral_entropy": [1.0, 1.1, 1.2, 1.3],
         },
     )
 
@@ -1036,6 +1041,9 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert set(EMBEDDING_ALL_COLS).issubset(pooled.columns)
     assert "sex" in pooled.columns
     assert set(pooled["sex"].to_list()) <= {"male", "female", "unassigned"}
+    # The per-USV acoustic features are pulled into the pool (continuous
+    # color-by metrics for the embedding explorer).
+    assert {"mean_amplitude", "peak_freq_hz", "spectral_entropy"}.issubset(pooled.columns)
 
     # Second call hits the cache (every required column present).
     logs: list[str] = []

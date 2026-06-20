@@ -152,3 +152,6 @@ Thumbs.db
 
 # setuptools_scm
 src/*/_version.py
+
+# marimo autosave/session cache
+__marimo__/

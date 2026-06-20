@@ -148,5 +148,9 @@
     "dpi": 150,
     "path_curvature": 0.15,
     "trail_length": 60
+  },
+  "usv_embedding": {
+    "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files",
+    "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5"
   }
 }

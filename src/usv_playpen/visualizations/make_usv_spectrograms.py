@@ -1689,12 +1689,23 @@ EMBEDDING_LABEL_COLS = (
 )
 EMBEDDING_ALL_COLS = EMBEDDING_COORD_COLS + EMBEDDING_LABEL_COLS
 
+# Per-USV acoustic features (written by compute_usv_acoustic_features into
+# usv_summary.csv) -- pulled into the pooled embeddings DataFrame as continuous
+# color-by metrics in the embedding explorer.
+EMBEDDING_FEATURE_COLS = (
+    "mean_freq_hz",
+    "peak_freq_hz",
+    "freq_bandwidth_hz",
+    "mean_amplitude",
+    "max_amplitude",
+    "spectral_entropy",
+)
 # Extra per-USV columns pulled into the pooled embeddings DataFrame.
-# They power the auxiliary scatters (sex, duration, mean frequency) in
-# ``plot_umap_with_category_thumbnails``. The cache file is invalidated
-# automatically when these columns are missing -- see schema-check
-# logic in ``build_pooled_embeddings_df``.
-EMBEDDING_EXTRA_COLS = ("emitter", "duration", "mean_freq_hz")
+# They power the auxiliary scatters (sex, duration) and the acoustic-feature
+# color-by metrics in ``plot_umap_with_category_thumbnails`` / the embedding
+# explorer. The cache file is invalidated automatically when these columns are
+# missing -- see schema-check logic in ``build_pooled_embeddings_df``.
+EMBEDDING_EXTRA_COLS = ("emitter", "duration") + EMBEDDING_FEATURE_COLS
 
 
 def build_pooled_embeddings_df(
@@ -1773,7 +1784,7 @@ def build_pooled_embeddings_df(
     # disk is missing any of these (older cache), trigger a rebuild
     # transparently so the caller doesn't have to flip ``rebuild_cache``
     # every time the schema is extended.
-    required_extra_cols = {"sex", "duration", "mean_freq_hz"}
+    required_extra_cols = {"sex", "duration"} | set(EMBEDDING_FEATURE_COLS)
     required_cols = (
         {"session_id", "row_index"}
         | set(EMBEDDING_ALL_COLS)
@@ -1870,7 +1881,7 @@ def build_pooled_embeddings_df(
         keep_cols = ["session_id", "row_index"] + [
             c for c in EMBEDDING_ALL_COLS if c in df.columns
         ]
-        for c in ("sex", "duration", "mean_freq_hz"):
+        for c in ("sex", "duration") + EMBEDDING_FEATURE_COLS:
             if c in df.columns:
                 keep_cols.append(c)
         frames.append(df.select(keep_cols))
@@ -1888,6 +1899,22 @@ def build_pooled_embeddings_df(
         return pls.DataFrame(schema=empty_schema)
 
     pooled = pls.concat(frames, how="diagonal")
+
+    # Guarantee every expected optional column exists (null-filled when the
+    # whole cohort lacks it), so the parquet cache always carries the full
+    # schema and required_cols stays satisfied -- otherwise a cohort missing a
+    # feature would force a rebuild on every load. Extending the schema still
+    # invalidates an older cache once (it lacks the new column), then this fill
+    # keeps it stable.
+    fill_dtypes = {c: pls.Float64 for c in ("duration",) + EMBEDDING_FEATURE_COLS}
+    fill_dtypes["sex"] = pls.Utf8
+    missing_fills = [
+        pls.lit(None, dtype=dtype).alias(c)
+        for c, dtype in fill_dtypes.items()
+        if c not in pooled.columns
+    ]
+    if missing_fills:
+        pooled = pooled.with_columns(missing_fills)
 
     if cache_p is not None:
         cache_p.parent.mkdir(parents=True, exist_ok=True)
