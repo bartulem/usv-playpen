@@ -827,7 +827,7 @@ The *Run HPSS* step populates the *hpss* directory with de-noised single channel
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+These four parameters are no longer exposed in the GUI (only the *Run HPSS* toggle remains); they are edited directly in the */usv-playpen/_parameter_settings/process_settings.json* file, under the following keys:
 
 * **stft_window_length_hop_size** : STFT window length and hop size
 * **kernel_size** : harmonic-percussive source separation kernel size
@@ -1239,7 +1239,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 USV spectrogram, mask & latent pipeline
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Once the audio-processing steps above have produced each session's curated ``*_usv_summary.csv`` (DAS-detected USVs), an in-house, self-contained pipeline turns those calls into spectrograms, call masks, interpretable acoustic features, and toroidal **QLVM** latents — and trains the two models the pipeline relies on. Unlike the functions above, these steps are **CLI-only** (they are not buttons in the *Process* GUI window); every step is a ``click`` command whose full options live under its block in */usv-playpen/_parameter_settings/processing_settings.json*, and they are documented with their flags in :ref:`the CLI reference <usv-pipeline-cli>`.
+Once the audio-processing steps above have produced each session's curated ``*_usv_summary.csv`` (DAS-detected USVs), an in-house, self-contained pipeline turns those calls into spectrograms, call masks, interpretable acoustic features, and toroidal **QLVM** latents — and trains the two models the pipeline relies on. The four per-session **inference** steps are exposed as *Yes/No* checkboxes in the audio column of the *Process* GUI window (*Generate spectrograms*, *Generate masks*, *Compute USV features*, *Infer QLVM latents*); ticking several at once dispatches them in pipeline order (spectrograms → masks → features → QLVM). The two cross-session **training** chains are intentionally **CLI / cluster only** (they are not GUI buttons). Every step is a ``click`` command whose full options live under its block in */usv-playpen/_parameter_settings/processing_settings.json*, and they are documented with their flags in :ref:`the CLI reference <usv-pipeline-cli>`.
 
 Each per-session step reads and writes that session's ``audio/spectrograms/<session>_spectrograms.h5``; the model-training steps aggregate a list of those H5 files across a cohort and run once (not per session).
 
@@ -1253,7 +1253,17 @@ Each per-session step reads and writes that session's ``audio/spectrograms/<sess
 **Training (cross-session, run once on a cohort):**
 
     #. *QLVM decoder.* ``build-qlvm-training-set`` aggregates the per-session H5 files into a curated ``.npz`` set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms), then ``train-qlvm`` trains the decoder and writes ``qmc_decoder_weights.npz`` — the file ``infer-qlvm-latents`` reloads.
-    #. *YOLO box detector.* ``export-yolo-dataset`` renders the spectrograms to an Ultralytics dataset with box labels (``--label-source cc`` pseudo-labels them with the connected-component detector, no manual annotation; ``manual``/``merge`` use hand-verified labels), then ``train-masks`` fine-tunes YOLO and produces the ``best.pt`` that ``generate-usv-masks`` points at. **SAM2 itself is used pretrained — it is not trained here.**
+    #. *YOLO box detector.* ``export-yolo-dataset`` renders the spectrograms to an Ultralytics dataset and attaches a box label to each, then ``train-masks`` fine-tunes YOLO and produces the ``best.pt`` that ``generate-usv-masks`` points at. **SAM2 itself is used pretrained — it is not trained here.**
+
+How the boxes are labelled is set by ``--label-source`` (or the ``export_yolo_dataset.label_source`` setting), and this is the one real fork in the mask-training workflow:
+
+* **Auto, no annotation** — ``--label-source cc`` (the default). Boxes are *pseudo-labelled* by the unlearned connected-component detector, so you can build a dataset and fine-tune YOLO straight from raw spectrograms with zero manual work. This is the recommended starting point; it bootstraps a learned detector that already outperforms the connected-component baseline. The build is pure ``numpy``/``scipy``/``skimage`` (no GPU, no ``torch``).
+* **Hand-labelled** — ``--label-source manual``. Boxes come from your own hand-verified YOLO-format label files, one ``{spec_id}.txt`` per spectrogram (the standard ``class x_centre y_centre width height``, normalised), read from ``--manual-labels-directory`` (or the ``export_yolo_dataset.manual_labels_directory`` setting). Any spectrogram without a matching file is exported with an empty label (treated as background).
+* **Hybrid** — ``--label-source merge``. Starts from the ``cc`` pseudo-labels and overrides them with a manual ``{spec_id}.txt`` wherever you have provided one — i.e. correct only the calls you care about and let the detector label the rest. Also needs ``--manual-labels-directory``.
+
+``manual`` and ``merge`` therefore require ``--manual-labels-directory`` to be set; ``cc`` ignores it.
+
+On the cluster, ready-made SLURM submitters live in */usv-playpen/other/cluster/USV_PLAYPEN*: the per-session inference half runs via ``process_data_step_four_inference_global.sh`` (a single GPU job that chains all four inference steps for one session), while the two training chains run via ``train_qlvm_global.sh`` (``build-qlvm-training-set`` → ``train-qlvm``) and ``train_masks_global.sh`` (``export-yolo-dataset`` → ``train-masks``) — both GPU jobs that take a comma-separated cohort of session ``--root-directories`` and write the model artifacts the inference steps reload. Edit the hyper-parameter block at the top of each script (cohort list, dataset / output directories, resources) before submitting. ``train_masks_global.sh`` additionally exposes a ``LABEL_SOURCE`` knob (``cc`` / ``manual`` / ``merge``) and a ``MANUAL_LABELS_DIRECTORY`` — leave it ``cc`` for the auto path, or set it to ``manual`` / ``merge`` and point ``MANUAL_LABELS_DIRECTORY`` at your hand-labelled ``{spec_id}.txt`` files; the script then passes ``--manual-labels-directory`` only when it is needed.
 
 To run ``generate-usv-masks`` / ``train-masks`` the environment must provide the ``sam2`` and ``ultralytics`` packages (both are usv-playpen core dependencies) plus, for ``generate-usv-masks``, the SAM2 checkpoint/config and the trained YOLO weights configured in the ``generate_masks`` settings block:
 
