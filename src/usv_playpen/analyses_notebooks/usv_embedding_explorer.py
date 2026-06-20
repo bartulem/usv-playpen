@@ -128,7 +128,8 @@ def _settings(Path, configure_path, json):
 
     # Session-list directory + consolidated store from the `usv_embedding` block
     # (canonical /mnt/falkner paths, resolved to the host mount via
-    # configure_path). Glob every *.txt list into {label -> absolute path}.
+    # configure_path). Glob every *.txt list into {label -> absolute path};
+    # playback sessions have no emitter/embedding structure here, so drop them.
     try:
         _emb = _viz["usv_embedding"]
         _input_dir = configure_path(_emb["input_files_directory"])
@@ -136,7 +137,11 @@ def _settings(Path, configure_path, json):
     except KeyError:
         _input_dir, consolidated_h5_path = None, None
     if _input_dir is not None and Path(_input_dir).is_dir():
-        available_lists = {p.name: str(p) for p in sorted(Path(_input_dir).glob("*.txt"))}
+        available_lists = {
+            p.name: str(p)
+            for p in sorted(Path(_input_dir).glob("*.txt"))
+            if "playback" not in p.name.lower()
+        }
     else:
         available_lists = {}
 
@@ -155,14 +160,44 @@ def _settings(Path, configure_path, json):
 
 @app.cell
 def _widgets(available_lists, mo):
-    # Nothing selected by default: pooling reads one usv_summary.csv per session
-    # over the share, so auto-building on launch (especially "all") can take
-    # minutes. The user picks the list(s) to pool, and the loader only builds
-    # once a selection exists. Each distinct selection is cached to local
-    # parquet, so re-selecting it later reloads in seconds.
-    lists_multiselect = mo.ui.multiselect(
-        options=available_lists,
-        label="Session lists",
+    # Session-list picker: a multiselect dropdown (pick one / some / all),
+    # FIXED WIDTH so it never widens, capped height with overflow so extra chips
+    # SCROLL inside the box rather than growing the layout. .style() returns a
+    # display-only Html (no .value), so we keep the raw element for its value and
+    # display the styled copy. A thin "Load" run_button sits to the right; the
+    # selection is batched into `mo.state` on click so the (expensive) pooled
+    # build runs/persists only on Load, not on every pick.
+    get_loaded_lists, set_loaded_lists = mo.state(None)
+    # Short display labels (strip the verbose "_sessions_list.txt" suffix) ->
+    # narrow chips; .value still returns the underlying path. No in-element label
+    # (it would sit ABOVE the box, get clipped by the height cap, and break
+    # vertical centering); the label is a separate item in the row so all three
+    # -- label, dropdown, Load -- center on one line.
+    _short_lists = {
+        _n.replace("_sessions_list.txt", "").replace(".txt", ""): _p
+        for _n, _p in available_lists.items()
+    }
+    lists_select = mo.ui.multiselect(options=_short_lists, label="")
+    load_button = mo.ui.run_button(
+        label="Load",
+        on_change=lambda _v: set_loaded_lists(lists_select.value),
+    )
+    session_row = mo.hstack(
+        [
+            mo.md("**Session lists**"),
+            lists_select.style(
+                {
+                    "width": "340px",
+                    "max-height": "34px",
+                    "overflow": "hidden",
+                    "border": "1px solid #CFCFCF",
+                    "border-radius": "6px",
+                    "box-sizing": "border-box",
+                }
+            ),
+            load_button,
+        ],
+        align="center", justify="start", gap=0.6,
     )
     map_dropdown = mo.ui.dropdown(
         options=["QLVM", "VAE"],
@@ -221,12 +256,11 @@ def _widgets(available_lists, mo):
         value=True,
         label="Apply mask",
     )
-    # One control per row (label left, input right): full row width means the
-    # marimo labels never wrap, and the (growing) multiselect only pushes the
-    # rows below it down rather than shoving neighbours sideways.
+    # One control per row (label left, input right), the fixed-width session-list
+    # picker + Load button on top.
     controls = mo.vstack(
         [
-            lists_multiselect,
+            session_row,
             map_dropdown,
             color_dropdown,
             boundary_dropdown,
@@ -246,7 +280,7 @@ def _widgets(available_lists, mo):
         boundary_dropdown,
         color_dropdown,
         controls,
-        lists_multiselect,
+        get_loaded_lists,
         map_dropdown,
         max_points_slider,
         n_samples_slider,
@@ -257,18 +291,18 @@ def _widgets(available_lists, mo):
 def _load_pooled_df(
     Path,
     build_pooled_embeddings_df,
+    get_loaded_lists,
     hashlib,
-    lists_multiselect,
     mo,
     pls,
 ):
     # Wrapped in an inner function so the no-selection case can early-return
-    # None (a marimo cell body can't `return`, but a nested function can). No
-    # selection -> pooled_df is None, which downstream cells short-circuit on
-    # quietly (no mo.stop -> no "ancestor stopped" placeholder). The "pick a
-    # list" hint is shown under the controls in `_controls_display`.
+    # None (a marimo cell body can't `return`, but a nested function can). The
+    # loaded selection is the `mo.state` set on the last "Load" click (None
+    # before any click) -- so picking in the dropdown does NOT rebuild; only
+    # clicking Load does. None -> pooled_df is None, downstream short-circuits.
     def _():
-        selected_paths = list(lists_multiselect.value)
+        selected_paths = list(get_loaded_lists() or [])
         if not selected_paths:
             return None
 
@@ -650,9 +684,9 @@ def _explorer(
     coord_x,
     coord_y,
     controls,
+    get_loaded_lists,
     global_cmap,
     h5py,
-    lists_multiselect,
     mo,
     n_samples_slider,
     np,
@@ -670,9 +704,10 @@ def _explorer(
                     "`usv_embedding.input_files_directory` in "
                     "`_parameter_settings/visualizations_settings.json`."
                 )
-            elif not lists_multiselect.value:
+            elif not get_loaded_lists():
                 _hint = mo.md(
-                    "_Pick one or more session lists above to load the embedding._"
+                    "_Choose one or more session lists above and click **Load** "
+                    "to load the embedding._"
                 )
             else:
                 _hint = mo.md("")
