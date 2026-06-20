@@ -209,8 +209,12 @@ def _prepare_display(
     pooled_df,
 ):
     map_prefix = "vae" if map_dropdown.value == "VAE" else "qlvm"
-    x_col = f"{map_prefix}_umap1"
-    y_col = f"{map_prefix}_umap2"
+    # QLVM torus coordinates are qlvm_dim1/qlvm_dim2 (not a UMAP); only the VAE
+    # embedding uses the _umap1/_umap2 suffix.
+    if map_prefix == "qlvm":
+        x_col, y_col = "qlvm_dim1", "qlvm_dim2"
+    else:
+        x_col, y_col = "vae_umap1", "vae_umap2"
     color_col = (
         None
         if color_dropdown.value == "none"

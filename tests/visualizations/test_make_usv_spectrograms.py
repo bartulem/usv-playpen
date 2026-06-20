@@ -1294,6 +1294,27 @@ def test_plot_umap_thumbnails_random(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_umap_thumbnails_qlvm_uses_dim_columns(tmp_path):
+    """map_type='qlvm' reads the qlvm_dim1/qlvm_dim2 torus coordinates (not the
+    nonexistent qlvm_umap1/2): the figure renders rather than raising a Polars
+    ColumnNotFoundError, which guards the qlvm coord-name regression."""
+    pooled = _make_pooled_df("sessQ", n_per_cat=6)
+    h5_path = tmp_path / "store.h5"
+    _write_consolidated_h5(h5_path, "sessQ", n_usvs=12, n_freq=16, n_time=24)
+    fig = plot_umap_with_category_thumbnails(
+        sessions_txt_path="unused",
+        consolidated_h5_path=str(h5_path),
+        map_type="qlvm",
+        n_samples_per_category=4,
+        pooled_df=pooled,
+        message_output=lambda *_: None,
+        seed=42,
+    )
+    assert isinstance(fig, plt.Figure)
+
+
+@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_umap_thumbnails_spiral_unstretched(tmp_path):
     """Spiral sampling + boundary overlay + unstretched specs + vertical
     tiling exercises the heavier rendering branches."""

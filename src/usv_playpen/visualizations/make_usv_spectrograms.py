@@ -2519,8 +2519,12 @@ def plot_umap_with_category_thumbnails(
         )
         raise ValueError(msg)
 
-    x_col = f"{map_prefix}_umap1"
-    y_col = f"{map_prefix}_umap2"
+    # The QLVM torus coordinates are named qlvm_dim1/qlvm_dim2 (they are not a
+    # UMAP); only the VAE embedding uses the _umap1/_umap2 suffix.
+    if map_prefix == "qlvm":
+        x_col, y_col = "qlvm_dim1", "qlvm_dim2"
+    else:
+        x_col, y_col = "vae_umap1", "vae_umap2"
     cat_col = f"{map_prefix}_{category_col_suffix}"
 
     if pooled_df is None:
