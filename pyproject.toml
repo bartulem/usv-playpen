@@ -296,6 +296,10 @@ messages_control.disable = [
 # Added 2026-06-19 -- jupyter-server (#48): jupyterlab pulls 2.18.2, whose
 # NbconvertFileHandler/NbconvertPostHandler omit a sandbox CSP, allowing stored
 # XSS; patched in 2.20.0. Prune once jupyterlab's floor mandates >=2.20.0.
+#
+# Added 2026-06-20 -- msgpack (#51): librosa pulls 1.1.2, whose Unpacker can
+# SEGV (out-of-bounds read) / act as a DoS vector when reused after a caught
+# error; patched in 1.2.1. Prune once librosa's floor mandates >=1.2.1.
 # ultralytics pulls in base `opencv-python`, but `aniposelib` (camera
 # calibration) calls the function-style cv2.aruco API (detectMarkers /
 # interpolateCornersCharuco / estimatePoseCharucoBoard / refineDetectedMarkers)
@@ -321,6 +325,7 @@ constraint-dependencies = [
     "bleach>=6.4.0",
     "marimo>=0.23.9",
     "jupyter-server>=2.20.0",
+    "msgpack>=1.2.1",
 ]
 
 [tool.uv.sources]
