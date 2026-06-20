@@ -352,6 +352,17 @@ class QLVMTrainingSetBuilder:
         time_stretch = cfg['time_stretch']
         masking_type = cfg['masking_type']
 
+        # A train/val split needs validation_split strictly inside (0, 1); the
+        # underlying train_test_split rejects 0.0 / 1.0 with a cryptic error, so
+        # fail fast with a clear pointer to the all-samples path (full_dataset).
+        if not full_dataset and not 0.0 < validation_split < 1.0:
+            error_message = (
+                f"validation_split must be in the open interval (0, 1) for a train/val "
+                f"split, got {validation_split}; set full_dataset=True to write a single "
+                f"full_data.npz with every kept sample instead."
+            )
+            raise ValueError(error_message)
+
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
 

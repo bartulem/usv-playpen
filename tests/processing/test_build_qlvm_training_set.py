@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import h5py
 import numpy as np
+import pytest
 
 from usv_playpen.processing.build_qlvm_training_set import (
     QLVMTrainingSetBuilder,
@@ -109,6 +110,23 @@ def test_build_train_val_npz(tmp_path, mocker):
     # provenance carried.
     assert any(s.startswith("20230119_") for s in train["spec_id"].tolist())
     assert (out_dir / "metadata.npz").is_file()
+
+
+@pytest.mark.parametrize("bad_split", [0.0, 1.0])
+def test_build_rejects_degenerate_validation_split(tmp_path, mocker, bad_split):
+    """A non-full_dataset build with validation_split 0.0 or 1.0 fails fast with a
+    clear error pointing at full_dataset (rather than the cryptic train_test_split
+    rejection of a degenerate split)."""
+    root_a = _write_session_h5(tmp_path, "20230119_155302", n=4)
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
+    cfg = {**_CFG, "full_dataset": False, "validation_split": bad_split}
+    with pytest.raises(ValueError, match="full_dataset"):
+        QLVMTrainingSetBuilder(
+            root_directories=[str(root_a)],
+            output_directory=str(tmp_path / "out_bad"),
+            input_parameter_dict={"build_qlvm_training_set": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).build()
 
 
 def test_build_full_dataset_single_npz(tmp_path, mocker):

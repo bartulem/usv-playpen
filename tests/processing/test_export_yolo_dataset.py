@@ -158,6 +158,55 @@ def test_export_split_is_exact_fraction(tmp_path):
     assert len(list((out_dir / "images" / "train").glob("*.png"))) == 2
 
 
+def test_export_validation_split_zero_routes_all_to_train(tmp_path):
+    """validation_split=0.0 sends every image to train and leaves val empty."""
+    root = _write_session_h5(tmp_path, durations=[10, 20, 30, 40])
+    out_dir = tmp_path / "yolo"
+
+    YOLODatasetExporter(
+        root_directories=[str(root)],
+        output_directory=str(out_dir),
+        input_parameter_dict=_cfg(validation_split=0.0),
+        message_output=lambda *_a, **_kw: None,
+    ).export()
+
+    assert len(list((out_dir / "images" / "train").glob("*.png"))) == 4
+    assert len(list((out_dir / "images" / "val").glob("*.png"))) == 0
+
+
+def test_export_validation_split_one_routes_all_to_val(tmp_path):
+    """validation_split=1.0 sends every image to val and leaves train empty."""
+    root = _write_session_h5(tmp_path, durations=[10, 20, 30, 40])
+    out_dir = tmp_path / "yolo"
+
+    YOLODatasetExporter(
+        root_directories=[str(root)],
+        output_directory=str(out_dir),
+        input_parameter_dict=_cfg(validation_split=1.0),
+        message_output=lambda *_a, **_kw: None,
+    ).export()
+
+    assert len(list((out_dir / "images" / "train").glob("*.png"))) == 0
+    assert len(list((out_dir / "images" / "val").glob("*.png"))) == 4
+
+
+def test_export_small_cohort_val_not_empty(tmp_path):
+    """On a tiny cohort the seeded-permutation split still rounds to a non-empty val
+    set (a per-image coin flip could leave it empty)."""
+    root = _write_session_h5(tmp_path, durations=[10, 20, 30])  # 3 valid USVs
+    out_dir = tmp_path / "yolo"
+
+    YOLODatasetExporter(
+        root_directories=[str(root)],
+        output_directory=str(out_dir),
+        input_parameter_dict=_cfg(validation_split=0.34),  # round(3 * 0.34) == 1
+        message_output=lambda *_a, **_kw: None,
+    ).export()
+
+    assert len(list((out_dir / "images" / "val").glob("*.png"))) == 1
+    assert len(list((out_dir / "images" / "train").glob("*.png"))) == 2
+
+
 def test_export_manual_without_directory_raises(tmp_path):
     """manual/merge require a manual_labels_directory."""
     root = _write_session_h5(tmp_path, durations=[40])

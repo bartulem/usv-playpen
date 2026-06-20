@@ -130,3 +130,110 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
     assert df["qlvm_dim1"][2] is not None
     # coordinates live on the torus [0, 1).
     assert 0.0 <= df["qlvm_dim1"][0] < 1.0
+
+
+def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid):
+    """Synthesize a session (weights + fine/coarse reference grids + spectrogram
+    H5 + usv_summary) for an end-to-end QLVMLatentInference run and return
+    (root, session_id, cfg). Rows 0 and 2 are real, row 1 is a placeholder."""
+    session_id = "20230119_155302"
+    root = tmp_path / session_id
+    (root / "audio" / "spectrograms").mkdir(parents=True)
+
+    weights = tmp_path / "qmc_decoder_weights.npz"
+    _decoder_weights_npz(weights, rng)
+    fine_arrays = tmp_path / "arrays_fine.npz"
+    coarse_arrays = tmp_path / "arrays_coarse.npz"
+    np.savez(fine_arrays, ws_labels_periodic=fine_grid)
+    np.savez(coarse_arrays, ws_labels_periodic=coarse_grid)
+
+    n_f = n_t = 128
+    specs = np.zeros((3, n_f, n_t), dtype=np.float32)
+    specs[0] = rng.random((n_f, n_t)).astype(np.float32)
+    specs[2] = rng.random((n_f, n_t)).astype(np.float32)
+    with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "w") as f:
+        f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
+        session_group = f.create_group(f"spectrogram/{session_id}")
+        session_group.create_dataset("spectrograms", data=specs)
+        session_group.create_dataset("durations", data=np.array([128, 0, 128], dtype=np.int64))
+
+    pls.DataFrame({
+        "usv_id": [f"{i:04d}" for i in range(3)],
+        "start": [0.1, 0.3, 0.5],
+        "stop": [0.15, 0.35, 0.55],
+    }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+
+    cfg = {
+        "weights_npz_path": str(weights),
+        "reference_arrays_fine_npz_path": str(fine_arrays),
+        "reference_arrays_coarse_npz_path": str(coarse_arrays),
+        "lattice_type": "korobov",
+        "latent_dim": 2,
+        "n_points": 16,
+        "korobov_a": 3,
+        "fib_m": 16,
+        "time_stretch": False,
+    }
+    return root, session_id, cfg
+
+
+def test_infer_and_merge_category_vs_supercategory_semantics(tmp_path, mocker):
+    """Regression guard for the fine/coarse mapping: qlvm_category must be read
+    from the FINE reference grid and qlvm_supercategory from the COARSE one. Using
+    grids with DISJOINT value ranges (fine 100..115, coarse 0..6) means a swapped
+    file/assignment would land values in the wrong column and fail this test."""
+    rng = np.random.default_rng(1)
+    res = 8
+    fine_grid = rng.integers(100, 116, size=(res, res)).astype(np.int16)   # 100..115
+    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)     # 0..6
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=lambda *_a, **_kw: None,
+    ).infer_and_merge()
+
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    cats = df["qlvm_category"].drop_nulls().to_list()
+    supercats = df["qlvm_supercategory"].drop_nulls().to_list()
+    assert cats, "expected at least one embedded USV"
+    # FINE labels land in qlvm_category (100..115), COARSE in qlvm_supercategory (0..6).
+    assert all(100 <= c <= 115 for c in cats)
+    assert all(0 <= s <= 6 for s in supercats)
+
+
+def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
+    """Re-running inference rewrites only the qlvm_* columns: unrelated columns
+    survive, the row count is unchanged, and the qlvm columns are refreshed (not
+    duplicated or left stale)."""
+    rng = np.random.default_rng(2)
+    res = 8
+    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
+    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+
+    # Add an unrelated column the merge must leave intact.
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    df0 = pls.read_csv(summary_path).with_columns(pls.Series("quality", [0.11, 0.22, 0.33]))
+    df0.write_csv(summary_path)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    inference = ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=lambda *_a, **_kw: None,
+    )
+    inference.infer_and_merge()
+    inference.infer_and_merge()  # second run must be a clean overwrite
+
+    df = pls.read_csv(summary_path)
+    assert df.height == 3
+    # the unrelated column is untouched, and each qlvm column appears exactly once.
+    assert df["quality"].to_list() == [0.11, 0.22, 0.33]
+    for column in ql.QLVM_COLUMNS:
+        assert df.columns.count(column) == 1
+    # the embedded rows still carry latents after the re-run.
+    assert df["qlvm_dim1"][0] is not None
+    assert df["qlvm_dim1"][1] is None

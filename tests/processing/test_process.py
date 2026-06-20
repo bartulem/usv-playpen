@@ -737,6 +737,28 @@ def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependenc
     assert first_idx['spectrograms'] < first_idx['masks'] < first_idx['features'] < first_idx['qlvm']
 
 
+def test_inhouse_usv_pipeline_subset_gated_by_booleans(processing_settings, mock_dependencies, tmp_path):
+    """Each in-house USV step runs only when its boolean is set: enabling
+    spectrograms + features (and leaving masks + QLVM off) instantiates exactly
+    those two backends and skips the other two."""
+    pb = processing_settings['processing_booleans']
+    pb['generate_usv_spectrograms'] = True
+    pb['generate_usv_masks'] = False
+    pb['compute_usv_acoustic_features'] = True
+    pb['infer_qlvm_latents'] = False
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+
+    # enabled steps ran; disabled steps were never instantiated.
+    mock_dependencies['SpectrogramGenerator'].return_value.generate_session_spectrograms.assert_called_once()
+    mock_dependencies['USVAcousticFeatureExtractor'].return_value.merge_features_into_summary.assert_called_once()
+    mock_dependencies['MaskGenerator'].assert_not_called()
+    mock_dependencies['QLVMLatentInference'].assert_not_called()
+
+
 def test_multiple_directory_looping(processing_settings, mock_dependencies, tmp_path):
     """
     Tests that per-directory tasks initialize the worker class for each directory.

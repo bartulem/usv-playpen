@@ -272,6 +272,32 @@ def test_generate_session_masks_missing_checkpoint_raises(tmp_path):
         ).generate_session_masks()
 
 
+def test_generate_session_masks_missing_sam2_dir_raises(tmp_path):
+    """A missing SAM2 model directory raises FileNotFoundError before any GPU import."""
+    root = _make_session_h5(tmp_path, [40, 60])
+    settings = _base_settings(tmp_path)
+    settings["generate_masks"]["sam2_model_dir"] = str(tmp_path / "no_such_dir")
+    with pytest.raises(FileNotFoundError, match="SAM2 model directory"):
+        MaskGenerator(
+            root_directory=str(root),
+            input_parameter_dict=settings,
+            message_output=lambda *_: None,
+        ).generate_session_masks()
+
+
+def test_generate_session_masks_missing_sam2_cfg_raises(tmp_path):
+    """A blank SAM2 config name raises FileNotFoundError before any GPU import."""
+    root = _make_session_h5(tmp_path, [40, 60])
+    settings = _base_settings(tmp_path)
+    settings["generate_masks"]["sam2_model_cfg"] = ""
+    with pytest.raises(FileNotFoundError, match="SAM2 model config"):
+        MaskGenerator(
+            root_directory=str(root),
+            input_parameter_dict=settings,
+            message_output=lambda *_: None,
+        ).generate_session_masks()
+
+
 def test_generate_session_masks_rejects_non_boxprompt(tmp_path):
     """Only the boxprompt method is supported; anything else raises ValueError."""
     root = _make_session_h5(tmp_path, [40, 60])
