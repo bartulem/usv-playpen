@@ -399,3 +399,25 @@ Beyond the GUI functions above, the ``usv_playpen.visualizations.make_usv_spectr
 The rendering knobs for the spectrogram plotter live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar limits and the save options); the module-level helpers take their inputs as function arguments, all surfaced in the notebook's single **Parameters** cell.
 
 The ``usv_spectrogram_analyses.ipynb`` notebook is the recommended entry point: it imports every function above, collects all data paths and styling toggles in one **Parameters** cell near the top, and runs each figure in its own independent cell. The full notebook lives in the repository at `usv_spectrogram_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_spectrogram_analyses.ipynb>`_.
+
+Interactively explore USV embeddings (marimo app)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+For interactive (rather than static) exploration of the embedding spaces, the repository ships a `marimo <https://marimo.io>`_ app, ``analyses_notebooks/usv_embedding_explorer.py``. It pools every selected session's ``*_usv_summary.csv`` into one scatter of the chosen embedding map (VAE UMAP or QLVM torus), lets you brush a region, and shows a grid of example spectrograms sampled from inside that region. Launch it from the repo root in either of two modes:
+
+.. code-block:: bash
+
+    # editable, reactive code view (for tweaking the notebook)
+    uv run marimo edit src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
+
+    # clean app view (just the controls + plot, no code)
+    uv run marimo run  src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
+
+Both open in the browser at ``http://localhost:2718``. The controls sit directly above the plot:
+
+- **Session lists** — a multiselect of every ``*.txt`` session list found in the configured input-files directory. Pick one, some, or all; the selected lists are pooled (and cached to a per-selection parquet under ``~/.usv_playpen_cache`` so re-selecting the same set reloads in seconds). Nothing builds until at least one list is chosen.
+- **Map** — VAE (UMAP) or QLVM (torus) coordinates.
+- **Color by** — either a **categorical** label (``category`` fine / ``supercategory`` coarse / ``session type`` / ``session (id)`` / ``emitter (sex)``) or a **continuous** metric rendered through the project colormap: ``density (counts)``, ``duration (ms)``, ``mean``/``peak frequency (kHz)``, ``frequency bandwidth (kHz)``, ``mean``/``max amplitude (a.u.)`` or ``spectral entropy (nats)``. Frequencies and duration are rescaled to the labelled units; the categorical legend is hidden automatically when there are more than ~24 categories (e.g. many sessions).
+- **Boundaries** — optionally overlay cluster outlines for ``category`` or ``supercategory`` (kNN-predicted, drawn as uniform-width haloed contours), independent of the coloring.
+- **Examples (spectrograms) plotted** — how many spectrograms the brush samples (5–50). They are picked along an Archimedean spiral from the centre of the brushed region outward and laid out as a square grid to the right of the scatter, each call's width preserving its true duration against the fixed spectrogram window.
+
+The session-list directory and the consolidated spectrogram/SAM2 store are read from the ``usv_embedding`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (``input_files_directory`` and ``consolidated_h5_path``, both resolved per-host via ``configure_path``). The emitter-sex coloring is corrected per session type inferred from the list filename (``female_female`` / ``male_male`` / ``lone_male`` / ``courtship``), so a female in a female-female session is colored as female rather than by the raw track index. The app lives in the repository at `usv_embedding_explorer.py <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py>`_.
