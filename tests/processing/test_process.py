@@ -16,7 +16,6 @@ from click.testing import CliRunner
 from scipy.io import wavfile
 from numpy.testing import assert_array_equal, assert_allclose
 from usv_playpen.processing.preprocess_data import Stylist
-from usv_playpen.processing.synchronize_files import Synchronizer
 from usv_playpen.processing.preprocess_data import (
     concatenate_video_files_cli,
     rectify_video_fps_cli,
@@ -38,7 +37,6 @@ from usv_playpen.processing.preprocess_data import (
     prepare_vcl_assign_cli,
     vcl_assign_cli,
 )
-from usv_playpen.yaml_utils import SmartDumper, load_session_metadata
 import platform
 import sys
 import time
@@ -221,9 +219,6 @@ def file_pipeline_fixture(tmp_path: Path) -> tuple[Path, dict]:
     samples_per_frame = int(AUDIO_SR / VIDEO_FPS)
 
     for device_prefix in ['m', 's']:
-        # Calculate total samples needed
-        extra_duration = desync_s if device_prefix == 'm' else 0.0
-
         # Add 30 frames (1 sec) of post-recording buffer to be safe
         post_rec_frames = 30
 
@@ -568,15 +563,6 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     # Looser tolerance due to potential 1-frame mismatches in synthetic signal
     assert abs(len(data_m) - expected_samples) < (AUDIO_SR / VIDEO_FPS * 2)
 
-    original_len = int(((VIDEO_DURATION_S * NUM_VIDEO_SEGMENTS) + 2 + DEVICE_DESYNC_MS / 1000.0) * AUDIO_SR)
-    original_lsb = np.zeros(original_len, dtype=np.int16)
-    start_sample = int(VIDEO_START_PAUSE_S * AUDIO_SR)
-    end_sample = start_sample + int(total_video_duration_s * AUDIO_SR)
-    original_lsb[start_sample:end_sample] = 1
-    original_cropped_lsb = original_lsb[start_sample:end_sample]
-
-    new_indices = np.linspace(0, len(original_cropped_lsb) - 1, len(data_s))
-
     # Verify non-empty and matching lengths
     assert len(data_m) > 0
     print("Audio cropping verified.")
@@ -671,16 +657,10 @@ def test_environment_sox_is_functional():
 
 
 @pytest.fixture
-def processing_settings(tmp_path):
-    """Loads processing_settings.json from the usv_playpen/_parameter_settings directory using pathlib."""
-    from pathlib import Path
-    import json
-    import usv_playpen
-    package_dir = Path(usv_playpen.__file__).parent
-    settings_path = package_dir / '_parameter_settings' / 'processing_settings.json'
-    with settings_path.open('r') as f:
-        settings = json.load(f)
-    return settings
+def processing_settings():
+    """Loads processing_settings.json from the source tree."""
+    settings_path = pathlib.Path(__file__).parent.parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'processing_settings.json'
+    return json.loads(settings_path.read_text())
 
 
 def test_single_directory_video_concatenation(processing_settings, mock_dependencies, tmp_path):
@@ -2080,12 +2060,6 @@ def test_write_to_h5_skips_animal_ids_when_none(tmp_path):
     )
     with h5py.File(out_path, "r") as f:
         assert "animal_id" not in f
-
-
-@pytest.fixture
-def processing_settings():
-    settings_path = pathlib.Path(__file__).parent.parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'processing_settings.json'
-    return json.loads(settings_path.read_text())
 
 
 def test_operator_concatenate_audio_files_handles_empty_dir(tmp_path, processing_settings):
