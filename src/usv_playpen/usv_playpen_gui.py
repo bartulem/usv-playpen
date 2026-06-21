@@ -4577,8 +4577,11 @@ class USVPlaypenWindow(QMainWindow):
         self.beh_features_bool_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='beh_features_cb_bool'))
         self.beh_features_bool_cb.move(vis_col_two_x2, 640)
 
-        # # # # Column 3: QLVM / USV (cohort-level) visualizations
-        vis_col_three_x1, vis_col_three_x2 = 720, 1010
+        # # # # Column 3: QLVM / USV (cohort-level) visualizations. x1 sits clear
+        # of column 2 (whose combos / Browse buttons end ~735); x2 holds the
+        # toggle / clustering combos.
+        vis_col_three_x1, vis_col_three_x2 = 770, 1010
+        _qlvm_cfg = self.visualizations_input_dict['qlvm_torus_traversal_video']
 
         qlvm_usv_header = QLabel('QLVM / USV visualizations', self.VisualizationsSettings)
         qlvm_usv_header.setFont(QFont(self.font_id, 13 + self.font_size_increase))
@@ -4600,7 +4603,7 @@ class USVPlaypenWindow(QMainWindow):
         qlvm_clustering_label.move(vis_col_three_x1, 75)
         self.qlvm_clustering_list = sorted(
             ['coarse', 'fine'],
-            key=lambda x: x == self.visualizations_input_dict['qlvm_torus_traversal_video']['clustering'],
+            key=lambda x: x == _qlvm_cfg['clustering'],
             reverse=True,
         )
         self.qlvm_clustering_cb = QComboBox(self.VisualizationsSettings)
@@ -4609,13 +4612,42 @@ class USVPlaypenWindow(QMainWindow):
         self.qlvm_clustering_cb.activated.connect(partial(self._combo_box_qlvm_clustering, variable_id='qlvm_clustering'))
         self.qlvm_clustering_cb.move(vis_col_three_x2, 75)
 
-        qlvm_fps_label = QLabel('Video fps:', self.VisualizationsSettings)
-        qlvm_fps_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        qlvm_fps_label.move(vis_col_three_x1, 105)
-        self.qlvm_fps_edit = QLineEdit(f"{self.visualizations_input_dict['qlvm_torus_traversal_video']['fps']}", self.VisualizationsSettings)
-        self.qlvm_fps_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.qlvm_fps_edit.setStyleSheet('QLineEdit { width: 57px; }')
-        self.qlvm_fps_edit.move(vis_col_three_x2, 105)
+        # fps as a bounded slider (5-60); the current value is shown in the label.
+        self.qlvm_fps_label = QLabel(f"Video fps ({_qlvm_cfg['fps']}):", self.VisualizationsSettings)
+        self.qlvm_fps_label.setFixedWidth(150)
+        self.qlvm_fps_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.qlvm_fps_label.move(vis_col_three_x1, 105)
+        self.qlvm_fps_slider = QSlider(Qt.Orientation.Horizontal, self.VisualizationsSettings)
+        self.qlvm_fps_slider.setFixedWidth(150)
+        self.qlvm_fps_slider.move(vis_col_three_x1 + 155, 108)
+        self.qlvm_fps_slider.setRange(5, 60)
+        self.qlvm_fps_slider.setValue(int(_qlvm_cfg['fps']))
+        self.qlvm_fps_slider.valueChanged.connect(self._update_qlvm_fps_label)
+
+        # Input-file paths (defaults from settings) with Browse buttons; each
+        # writes live into the qlvm_torus_traversal_video settings block.
+        _qlvm_files = [
+            ('Arrays .npz (coarse):', 'arrays_npz_path_coarse', 'Select coarse arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_coarse_edit'),
+            ('Arrays .npz (fine):', 'arrays_npz_path_fine', 'Select fine arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_fine_edit'),
+            ('Provenance .pkl:', 'provenance_pkl_path', 'Select provenance .pkl', 'Pickle (*.pkl)', 'qlvm_provenance_edit'),
+            ('Consolidated .h5:', 'consolidated_h5_path', 'Select consolidated .h5', 'HDF5 (*.h5)', 'qlvm_consolidated_edit'),
+        ]
+        for _row_i, (_lbl, _key, _title, _filt, _attr) in enumerate(_qlvm_files):
+            _y_lbl = 140 + _row_i * 55
+            _file_label = QLabel(_lbl, self.VisualizationsSettings)
+            _file_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+            _file_label.move(vis_col_three_x1, _y_lbl)
+            _file_edit = QLineEdit(f"{_qlvm_cfg[_key]}", self.VisualizationsSettings)
+            _file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+            _file_edit.setStyleSheet('QLineEdit { width: 250px; }')
+            _file_edit.textChanged.connect(partial(self._update_nested_dict_value, self.visualizations_input_dict, ('qlvm_torus_traversal_video', _key)))
+            _file_edit.move(vis_col_three_x1, _y_lbl + 23)
+            setattr(self, _attr, _file_edit)
+            _file_btn = QPushButton('Browse', self.VisualizationsSettings)
+            _file_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
+            _file_btn.setStyleSheet('QPushButton { min-width: 41px; min-height: 12px; max-width: 41px; max-height: 13px; }')
+            _file_btn.move(vis_col_three_x1 + 258, _y_lbl + 22)
+            _file_btn.clicked.connect(partial(self._open_file_dialog, _file_edit, _title, _filt))
 
         self._create_buttons_visualize(seq=0, class_option=self.VisualizationsSettings,
                                        button_pos_y=visualize_one_y - 35, next_button_x_pos=visualize_one_x - 100)
@@ -4743,7 +4775,8 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['visualize_booleans']['make_qlvm_torus_traversal_video_bool'] = self.qlvm_torus_video_cb_bool
         self.qlvm_torus_video_cb_bool = False
         self.visualizations_input_dict['qlvm_torus_traversal_video']['clustering'] = self.qlvm_clustering
-        self.visualizations_input_dict['qlvm_torus_traversal_video']['fps'] = int(_safe_literal_eval(self.qlvm_fps_edit.text()))
+        self.visualizations_input_dict['qlvm_torus_traversal_video']['fps'] = self.qlvm_fps_slider.value()
+        # input-file paths are written live via _update_nested_dict_value
 
 
     def _save_process_labels_func(self) -> None:
@@ -5871,6 +5904,24 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         self.cal_fr_label.setText(f'Calibration ({str(value)} fps):')
+
+    def _update_qlvm_fps_label(self, value: int) -> None:
+        """
+        Description
+        -----------
+        Updates the QLVM torus-traversal video fps label as its slider moves.
+
+        Parameters
+        ----------
+        value (int)
+            Video frames per second (completes automatically).
+
+        Returns
+        -------
+        None
+        """
+
+        self.qlvm_fps_label.setText(f'Video fps ({str(value)}):')
 
     def _create_sliders_general(self, camera_id: str = None, camera_color: str = None, y_start: int = None) -> None:
         """
