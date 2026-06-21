@@ -145,7 +145,6 @@
     "clustering": "coarse",
     "arrays_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
     "arrays_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
-    "provenance_pkl_path": "/mnt/falkner/Dexter/vocal_beh/data/full_dataset/latents/qlvm_20260506_coarse/latents_full_20260506.pkl",
     "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5",
     "frames_per_segment": 30,
     "fps": 20,

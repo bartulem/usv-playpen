@@ -8,11 +8,15 @@ centers, and a moving trajectory with a fading trail; the right panel shows the
 spectrogram of the data sample nearest (on the torus) to the current trajectory
 position. The result is written as ``.mp4`` (FFmpeg) or ``.gif`` (Pillow).
 
-Inputs are the outputs of the external inference step plus the curated dataset:
-* ``arrays.npz`` -- ``latent_coords`` (N, 2), ``heatmap`` (res, res),
-  ``ws_labels_periodic`` (res, res), ``centers`` (K, 2).
-* a curated ``.npz`` -- ``spectrograms`` (N, F, T), index-aligned with
-  ``latent_coords`` (sample ``i`` embeds to ``latent_coords[i]``).
+Inputs:
+* ``arrays_coarse.npz`` / ``arrays_fine.npz`` -- used ONLY for the ``heatmap``
+  (res, res) background, ``ws_labels_periodic`` (res, res) cluster contours, and
+  ``centers`` (K, 2) path waypoints (coarse = 7 clusters, fine = 12).
+* the consolidated spectrogram H5 -- supplies BOTH the per-USV latent coords
+  (per-session ``spectrogram/<key>/qlvm_dim``, written once by a one-off
+  enrichment of the store) for the nearest-neighbour lookup AND the spectrograms
+  (``spectrogram/<key>/spectrograms``) shown in the right panel. No latents
+  pickle / flat ``spectrograms`` npz is needed at render time.
 
 This is the in-house, torch-free port of ``qmc_deep_gen``'s
 ``inference_latents_video.py``. The original ``torus_forward`` is pure numpy and
@@ -27,7 +31,6 @@ from __future__ import annotations
 
 import itertools
 import pathlib
-import pickle
 from collections.abc import Callable
 from datetime import datetime
 
@@ -78,44 +81,44 @@ def torus_forward(coords: np.ndarray) -> np.ndarray:
     return np.concatenate([np.cos(2 * np.pi * coords), np.sin(2 * np.pi * coords)], axis=1)
 
 
-def build_flat_to_session_row(provenance_pkl_path: str) -> list[tuple[str, int]]:
+def pool_latents_from_h5(h5) -> tuple[np.ndarray, list[tuple[str, int]]]:
     """
     Description
     -----------
-    Builds the flat-index -> (consolidated-H5 session key, spectrogram row) map
-    that aligns the QLVM ``latent_coords`` order with the per-session
-    spectrograms in the consolidated HDF5 store.
-
-    The latents provenance pickle is a dict keyed by session name
-    (``<YYYYMMDD>_<HHMMSS>_<suffix>``), each value a DataFrame with an
-    ``original_index`` column (the USV's row within that session). Iterating the
-    dict in insertion order and concatenating reproduces exactly the order of
-    ``latent_coords`` (verified against ``arrays_*.npz``). The consolidated H5
-    keys are the bare ``<YYYYMMDD>_<HHMMSS>`` (the pickle's first two
-    underscore-separated tokens), and ``original_index`` is the spectrogram row
-    under ``spectrogram/<key>/spectrograms``.
+    Pools every session's per-USV latent coordinates from the consolidated H5's
+    ``spectrogram/<key>/qlvm_dim`` datasets (written once by a one-off
+    enrichment of the store) into one array, with a parallel
+    ``(session key, spectrogram row)`` list so a nearest-neighbour hit can be
+    mapped straight back to a spectrogram. Rows with NaN coords are dropped.
 
     Parameters
     ----------
-    provenance_pkl_path (str)
-        Path to the latents provenance ``.pkl`` (a ``{session_name: DataFrame}``
-        dict with an ``original_index`` column per session).
+    h5 (h5py.File)
+        Open consolidated spectrogram store (read mode).
 
     Returns
     -------
-    flat_map (list)
-        ``list[(h5_session_key, spectrogram_row)]``, one entry per USV in
-        ``latent_coords`` order.
+    coords, index (tuple)
+        ``coords`` is an ``(N, 2)`` float array of latent coordinates; ``index``
+        is a length-``N`` ``list[(session_key, row)]`` aligned with it.
     """
-    with open(provenance_pkl_path, "rb") as pkl_file:
-        provenance = pickle.load(pkl_file)
+    coords_chunks: list[np.ndarray] = []
+    index: list[tuple[str, int]] = []
+    spec_group = h5["spectrogram"]
+    for session_key in spec_group:
+        session_h5 = spec_group[session_key]
+        if "qlvm_dim" not in session_h5:
+            continue
+        session_coords = session_h5["qlvm_dim"][:]
+        valid_rows = ~np.isnan(session_coords).any(axis=1)
+        if not valid_rows.any():
+            continue
+        coords_chunks.append(session_coords[valid_rows])
+        index.extend((session_key, int(row)) for row in np.nonzero(valid_rows)[0])
 
-    flat_map: list[tuple[str, int]] = []
-    for session_name, session_df in provenance.items():
-        h5_key = "_".join(session_name.split("_")[:2])
-        for original_index in session_df["original_index"].to_numpy():
-            flat_map.append((h5_key, int(original_index)))
-    return flat_map
+    if not coords_chunks:
+        return np.empty((0, 2), dtype=np.float64), index
+    return np.concatenate(coords_chunks, axis=0), index
 
 
 def build_traversal_path(centers: np.ndarray, frames_per_segment: int, curvature: float) -> np.ndarray:
@@ -218,27 +221,16 @@ class QLVMTorusTraversalVideo:
         cfg = self.input_parameter_dict['qlvm_torus_traversal_video']
 
         # Coarse (fewer clusters) vs fine: the two arrays files share latent
-        # coords / heatmap and differ only in centers / watershed labels.
+        # coords / heatmap and differ only in centers / watershed labels. Here
+        # the arrays are used ONLY for the heatmap background, the watershed
+        # contours, and the cluster-center path waypoints.
         clustering = cfg['clustering']
         arrays_path = cfg['arrays_npz_path_fine'] if clustering == "fine" else cfg['arrays_npz_path_coarse']
         arrays = np.load(configure_path(arrays_path))
-        latent_coords = arrays['latent_coords']
         heatmap = arrays['heatmap']
         ws_labels_periodic = arrays['ws_labels_periodic']
         centers = arrays['centers']
 
-        # Per-USV spectrograms are NOT a flat npz; they live per-session in the
-        # consolidated H5. Build the flat-index -> (session key, row) map from the
-        # latents provenance pickle (its dict-order concatenation reproduces the
-        # latent_coords order) and pull each nearest spectrogram from the H5.
-        flat_map = build_flat_to_session_row(configure_path(cfg['provenance_pkl_path']))
-        if len(flat_map) != latent_coords.shape[0]:
-            raise ValueError(
-                f"Provenance map ({len(flat_map)} rows) does not match latent_coords "
-                f"({latent_coords.shape[0]} rows) — pickle / arrays mismatch."
-            )
-
-        nn_index = NearestNeighbors(n_neighbors=1, algorithm="ball_tree").fit(torus_forward(latent_coords))
         path = build_traversal_path(centers, cfg['frames_per_segment'], cfg['path_curvature'])
         trail_length = cfg['trail_length']
         res = heatmap.shape[0]
@@ -256,9 +248,21 @@ class QLVMTorusTraversalVideo:
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         with h5py.File(configure_path(cfg['consolidated_h5_path']), "r") as h5:
+            # Latent coords + (session, row) come straight from the H5's per-session
+            # qlvm_dim datasets (written once by a one-off enrichment); the nearest
+            # sample's spectrogram is then read from the same store.
+            pooled_coords, pooled_index = pool_latents_from_h5(h5)
+            if pooled_coords.shape[0] == 0:
+                raise ValueError(
+                    "No `qlvm_dim` coordinates found in the consolidated H5 — the "
+                    "store must be enriched once with per-session qlvm_dim latent "
+                    "coords before rendering."
+                )
+            nn_index = NearestNeighbors(n_neighbors=1, algorithm="ball_tree").fit(torus_forward(pooled_coords))
+
             def spec_for(flat_idx: int) -> np.ndarray:
-                """Spectrogram for a flat latent index, read from the consolidated H5."""
-                session_key, row = flat_map[flat_idx]
+                """Spectrogram for a pooled latent index, read from the consolidated H5."""
+                session_key, row = pooled_index[flat_idx]
                 return h5["spectrogram"][session_key]["spectrograms"][row]
 
             fig, (ax_map, ax_spec) = plt.subplots(1, 2, figsize=(12, 6), dpi=cfg['dpi'])
