@@ -27,10 +27,12 @@ from __future__ import annotations
 
 import itertools
 import pathlib
+import pickle
 from collections.abc import Callable
 from datetime import datetime
 
 import click
+import h5py
 import matplotlib
 import numpy as np
 from click.core import ParameterSource
@@ -38,10 +40,16 @@ from sklearn.neighbors import NearestNeighbors
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import configure_path
+from .plot_style import apply_plot_style
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # Agg backend is selected above, before importing pyplot
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
+
+# Register the bundled Helvetica weights + activate the project mplstyle so all
+# text in the video renders in Helvetica (titles forced to Light below), instead
+# of matplotlib's default font.
+apply_plot_style()
 
 # Hex palette (every matplotlib color= arg is a hex string).
 _TRAIL_COLOR = "#DC143C"      # crimson trajectory trail
@@ -68,6 +76,46 @@ def torus_forward(coords: np.ndarray) -> np.ndarray:
         Torus embedding, shape ``(N, 2d)``.
     """
     return np.concatenate([np.cos(2 * np.pi * coords), np.sin(2 * np.pi * coords)], axis=1)
+
+
+def build_flat_to_session_row(provenance_pkl_path: str) -> list[tuple[str, int]]:
+    """
+    Description
+    -----------
+    Builds the flat-index -> (consolidated-H5 session key, spectrogram row) map
+    that aligns the QLVM ``latent_coords`` order with the per-session
+    spectrograms in the consolidated HDF5 store.
+
+    The latents provenance pickle is a dict keyed by session name
+    (``<YYYYMMDD>_<HHMMSS>_<suffix>``), each value a DataFrame with an
+    ``original_index`` column (the USV's row within that session). Iterating the
+    dict in insertion order and concatenating reproduces exactly the order of
+    ``latent_coords`` (verified against ``arrays_*.npz``). The consolidated H5
+    keys are the bare ``<YYYYMMDD>_<HHMMSS>`` (the pickle's first two
+    underscore-separated tokens), and ``original_index`` is the spectrogram row
+    under ``spectrogram/<key>/spectrograms``.
+
+    Parameters
+    ----------
+    provenance_pkl_path (str)
+        Path to the latents provenance ``.pkl`` (a ``{session_name: DataFrame}``
+        dict with an ``original_index`` column per session).
+
+    Returns
+    -------
+    flat_map (list)
+        ``list[(h5_session_key, spectrogram_row)]``, one entry per USV in
+        ``latent_coords`` order.
+    """
+    with open(provenance_pkl_path, "rb") as pkl_file:
+        provenance = pickle.load(pkl_file)
+
+    flat_map: list[tuple[str, int]] = []
+    for session_name, session_df in provenance.items():
+        h5_key = "_".join(session_name.split("_")[:2])
+        for original_index in session_df["original_index"].to_numpy():
+            flat_map.append((h5_key, int(original_index)))
+    return flat_map
 
 
 def build_traversal_path(centers: np.ndarray, frames_per_segment: int, curvature: float) -> np.ndarray:
@@ -168,13 +216,27 @@ class QLVMTorusTraversalVideo:
         )
 
         cfg = self.input_parameter_dict['qlvm_torus_traversal_video']
-        arrays = np.load(configure_path(cfg['arrays_npz_path']))
+
+        # Coarse (fewer clusters) vs fine: the two arrays files share latent
+        # coords / heatmap and differ only in centers / watershed labels.
+        clustering = cfg['clustering']
+        arrays_path = cfg['arrays_npz_path_fine'] if clustering == "fine" else cfg['arrays_npz_path_coarse']
+        arrays = np.load(configure_path(arrays_path))
         latent_coords = arrays['latent_coords']
         heatmap = arrays['heatmap']
         ws_labels_periodic = arrays['ws_labels_periodic']
         centers = arrays['centers']
 
-        specs = np.load(configure_path(cfg['specs_npz_path']), allow_pickle=True)['spectrograms']
+        # Per-USV spectrograms are NOT a flat npz; they live per-session in the
+        # consolidated H5. Build the flat-index -> (session key, row) map from the
+        # latents provenance pickle (its dict-order concatenation reproduces the
+        # latent_coords order) and pull each nearest spectrogram from the H5.
+        flat_map = build_flat_to_session_row(configure_path(cfg['provenance_pkl_path']))
+        if len(flat_map) != latent_coords.shape[0]:
+            raise ValueError(
+                f"Provenance map ({len(flat_map)} rows) does not match latent_coords "
+                f"({latent_coords.shape[0]} rows) — pickle / arrays mismatch."
+            )
 
         nn_index = NearestNeighbors(n_neighbors=1, algorithm="ball_tree").fit(torus_forward(latent_coords))
         path = build_traversal_path(centers, cfg['frames_per_segment'], cfg['path_curvature'])
@@ -182,44 +244,60 @@ class QLVMTorusTraversalVideo:
         res = heatmap.shape[0]
         grid = np.linspace(0, 1, res)
 
-        fig, (ax_map, ax_spec) = plt.subplots(1, 2, figsize=(12, 6), dpi=cfg['dpi'])
-
-        ax_map.imshow(heatmap, origin="lower", extent=(0, 1, 0, 1), cmap="magma", aspect="auto")
-        ax_map.contour(grid, grid, ws_labels_periodic, levels=np.arange(0.5, ws_labels_periodic.max() + 1),
-                       colors=_CONTOUR_COLOR, linewidths=0.6)
-        ax_map.scatter(centers[:, 0], centers[:, 1], c=_CENTER_COLOR, s=20, zorder=4)
-        (trail_line,) = ax_map.plot([], [], color=_TRAIL_COLOR, lw=2.0, zorder=5)
-        (marker,) = ax_map.plot([], [], marker="o", color=_MARKER_COLOR, markersize=8,
-                                markeredgecolor=_CENTER_COLOR, zorder=6)
-        ax_map.set_xlim(0, 1)
-        ax_map.set_ylim(0, 1)
-        ax_map.set_title("QLVM torus", fontsize=12)
-
-        spec_im = ax_spec.imshow(specs[0], origin="lower", aspect="auto", cmap="viridis")
-        ax_spec.set_title("nearest USV spectrogram", fontsize=12)
-        ax_spec.set_xticks([])
-        ax_spec.set_yticks([])
-
-        def update(frame_idx: int):
-            """Advance the marker/trail and show the nearest sample's spectrogram."""
-            xy = path[frame_idx]
-            lo = max(0, frame_idx - trail_length)
-            trail_line.set_data(path[lo:frame_idx + 1, 0], path[lo:frame_idx + 1, 1])
-            marker.set_data([xy[0]], [xy[1]])
-            nearest = int(nn_index.kneighbors(torus_forward(xy[None]), return_distance=False)[0, 0])
-            spec_im.set_data(specs[nearest])
-            return trail_line, marker, spec_im
-
-        ani = FuncAnimation(fig, update, frames=len(path), interval=1000 / cfg['fps'], blit=False)
-
-        out_path = pathlib.Path(self.output_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if out_path.suffix.lower() == ".gif":
-            writer: PillowWriter | FFMpegWriter = PillowWriter(fps=cfg['fps'])
+        # Auto-derive the output path (figures.save_directory + timestamp) when the
+        # caller did not supply one (the GUI path); the CLI may still pass one.
+        if self.output_path is None:
+            stamp = f"{datetime.now():%Y%m%d_%H%M%S}"
+            out_path = pathlib.Path(
+                configure_path(self.input_parameter_dict['figures']['save_directory'])
+            ) / f"qlvm_torus_traversal_{stamp}.mp4"
         else:
-            writer = FFMpegWriter(fps=cfg['fps'], bitrate=4000)
-        ani.save(str(out_path), writer=writer, dpi=cfg['dpi'])
-        plt.close(fig)
+            out_path = pathlib.Path(self.output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with h5py.File(configure_path(cfg['consolidated_h5_path']), "r") as h5:
+            def spec_for(flat_idx: int) -> np.ndarray:
+                """Spectrogram for a flat latent index, read from the consolidated H5."""
+                session_key, row = flat_map[flat_idx]
+                return h5["spectrogram"][session_key]["spectrograms"][row]
+
+            fig, (ax_map, ax_spec) = plt.subplots(1, 2, figsize=(12, 6), dpi=cfg['dpi'])
+
+            ax_map.imshow(heatmap, origin="lower", extent=(0, 1, 0, 1), cmap="magma", aspect="auto")
+            ax_map.contour(grid, grid, ws_labels_periodic, levels=np.arange(0.5, ws_labels_periodic.max() + 1),
+                           colors=_CONTOUR_COLOR, linewidths=0.6)
+            ax_map.scatter(centers[:, 0], centers[:, 1], c=_CENTER_COLOR, s=20, zorder=4)
+            (trail_line,) = ax_map.plot([], [], color=_TRAIL_COLOR, lw=2.0, zorder=5)
+            (marker,) = ax_map.plot([], [], marker="o", color=_MARKER_COLOR, markersize=8,
+                                    markeredgecolor=_CENTER_COLOR, zorder=6)
+            ax_map.set_xlim(0, 1)
+            ax_map.set_ylim(0, 1)
+            ax_map.set_title("QLVM torus", fontsize=12, fontweight="light")
+
+            first_nearest = int(nn_index.kneighbors(torus_forward(path[0][None]), return_distance=False)[0, 0])
+            spec_im = ax_spec.imshow(spec_for(first_nearest), origin="lower", aspect="auto", cmap="viridis")
+            ax_spec.set_title("nearest USV spectrogram", fontsize=12, fontweight="light")
+            ax_spec.set_xticks([])
+            ax_spec.set_yticks([])
+
+            def update(frame_idx: int):
+                """Advance the marker/trail and show the nearest sample's spectrogram."""
+                xy = path[frame_idx]
+                lo = max(0, frame_idx - trail_length)
+                trail_line.set_data(path[lo:frame_idx + 1, 0], path[lo:frame_idx + 1, 1])
+                marker.set_data([xy[0]], [xy[1]])
+                nearest = int(nn_index.kneighbors(torus_forward(xy[None]), return_distance=False)[0, 0])
+                spec_im.set_data(spec_for(nearest))
+                return trail_line, marker, spec_im
+
+            ani = FuncAnimation(fig, update, frames=len(path), interval=1000 / cfg['fps'], blit=False)
+
+            if out_path.suffix.lower() == ".gif":
+                writer: PillowWriter | FFMpegWriter = PillowWriter(fps=cfg['fps'])
+            else:
+                writer = FFMpegWriter(fps=cfg['fps'], bitrate=4000)
+            ani.save(str(out_path), writer=writer, dpi=cfg['dpi'])
+            plt.close(fig)
 
         self.message_output(
             f"Wrote {len(path)}-frame traversal video -> {out_path}."
@@ -230,7 +308,7 @@ class QLVMTorusTraversalVideo:
 
 
 @click.command(name="qlvm-torus-traversal-video")
-@click.option('--output-path', type=str, required=True, help='Output .mp4 / .gif path.')
+@click.option('--output-path', type=str, default=None, required=False, help='Output .mp4 / .gif path (default: figures.save_directory + timestamp).')
 @click.option('--frames-per-segment', 'frames_per_segment', type=int, default=None, required=False, help='Interpolation frames between cluster centers.')
 @click.option('--fps', 'fps', type=int, default=None, required=False, help='Video frames per second.')
 @click.pass_context

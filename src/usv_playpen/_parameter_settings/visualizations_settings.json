@@ -23,7 +23,8 @@
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
     "make_behavioral_videos_bool": true,
-    "make_usv_spectrograms_bool": false
+    "make_usv_spectrograms_bool": false,
+    "make_qlvm_torus_traversal_video_bool": false
   },
   "visualize_data": {
     "root_directories": ["/mnt/falkner/Bartul/Data/20250909_151929"]
@@ -141,8 +142,11 @@
     }
   },
   "qlvm_torus_traversal_video": {
-    "arrays_npz_path": "/mnt/falkner/Dexter/vocal_beh/models/example_qlvm_model/arrays.npz",
-    "specs_npz_path": "/mnt/falkner/Dexter/vocal_beh/models/example_qlvm_model/full_data.npz",
+    "clustering": "coarse",
+    "arrays_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
+    "arrays_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
+    "provenance_pkl_path": "/mnt/falkner/Dexter/vocal_beh/data/full_dataset/latents/qlvm_20260506_coarse/latents_full_20260506.pkl",
+    "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5",
     "frames_per_segment": 30,
     "fps": 20,
     "dpi": 150,

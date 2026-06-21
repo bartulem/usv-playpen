@@ -4284,7 +4284,7 @@ class USVPlaypenWindow(QMainWindow):
         self.VisualizationsSettings = VisualizationsSettings(self)
         self.setWindowTitle(f'{app_name} (Visualize data > Settings)')
         self.setCentralWidget(self.VisualizationsSettings)
-        visualize_one_x, visualize_one_y = (770, 740)
+        visualize_one_x, visualize_one_y = (1130, 740)
         self.setFixedSize(visualize_one_x, visualize_one_y)
 
         visualizations_dir_label = QLabel('(*) Root directories for visualizations', self.VisualizationsSettings)
@@ -4577,6 +4577,46 @@ class USVPlaypenWindow(QMainWindow):
         self.beh_features_bool_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='beh_features_cb_bool'))
         self.beh_features_bool_cb.move(vis_col_two_x2, 640)
 
+        # # # # Column 3: QLVM / USV (cohort-level) visualizations
+        vis_col_three_x1, vis_col_three_x2 = 720, 1010
+
+        qlvm_usv_header = QLabel('QLVM / USV visualizations', self.VisualizationsSettings)
+        qlvm_usv_header.setFont(QFont(self.font_id, 13 + self.font_size_increase))
+        qlvm_usv_header.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
+        qlvm_usv_header.move(vis_col_three_x1, 10)
+
+        qlvm_torus_video_label = QLabel('Render QLVM torus video:', self.VisualizationsSettings)
+        qlvm_torus_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        qlvm_torus_video_label.setStyleSheet(self.orange_label_style)
+        qlvm_torus_video_label.move(vis_col_three_x1, 45)
+        self.qlvm_torus_video_cb = QComboBox(self.VisualizationsSettings)
+        self.qlvm_torus_video_cb.addItems(['No', 'Yes'])
+        self.qlvm_torus_video_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.qlvm_torus_video_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='qlvm_torus_video_cb_bool'))
+        self.qlvm_torus_video_cb.move(vis_col_three_x2, 45)
+
+        qlvm_clustering_label = QLabel('Clustering:', self.VisualizationsSettings)
+        qlvm_clustering_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        qlvm_clustering_label.move(vis_col_three_x1, 75)
+        self.qlvm_clustering_list = sorted(
+            ['coarse', 'fine'],
+            key=lambda x: x == self.visualizations_input_dict['qlvm_torus_traversal_video']['clustering'],
+            reverse=True,
+        )
+        self.qlvm_clustering_cb = QComboBox(self.VisualizationsSettings)
+        self.qlvm_clustering_cb.addItems(self.qlvm_clustering_list)
+        self.qlvm_clustering_cb.setStyleSheet('QComboBox { width: 70px; }')
+        self.qlvm_clustering_cb.activated.connect(partial(self._combo_box_qlvm_clustering, variable_id='qlvm_clustering'))
+        self.qlvm_clustering_cb.move(vis_col_three_x2, 75)
+
+        qlvm_fps_label = QLabel('Video fps:', self.VisualizationsSettings)
+        qlvm_fps_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        qlvm_fps_label.move(vis_col_three_x1, 105)
+        self.qlvm_fps_edit = QLineEdit(f"{self.visualizations_input_dict['qlvm_torus_traversal_video']['fps']}", self.VisualizationsSettings)
+        self.qlvm_fps_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.qlvm_fps_edit.setStyleSheet('QLineEdit { width: 57px; }')
+        self.qlvm_fps_edit.move(vis_col_three_x2, 105)
+
         self._create_buttons_visualize(seq=0, class_option=self.VisualizationsSettings,
                                        button_pos_y=visualize_one_y - 35, next_button_x_pos=visualize_one_x - 100)
 
@@ -4699,6 +4739,11 @@ class USVPlaypenWindow(QMainWindow):
 
         self.visualizations_input_dict['make_behavioral_videos']['beh_features_bool'] = self.beh_features_cb_bool
         self.beh_features_cb_bool = False
+
+        self.visualizations_input_dict['visualize_booleans']['make_qlvm_torus_traversal_video_bool'] = self.qlvm_torus_video_cb_bool
+        self.qlvm_torus_video_cb_bool = False
+        self.visualizations_input_dict['qlvm_torus_traversal_video']['clustering'] = self.qlvm_clustering
+        self.visualizations_input_dict['qlvm_torus_traversal_video']['fps'] = int(_safe_literal_eval(self.qlvm_fps_edit.text()))
 
 
     def _save_process_labels_func(self) -> None:
@@ -5290,6 +5335,32 @@ class USVPlaypenWindow(QMainWindow):
         for idx in range(len(self.fig_format_list)):
             if index == idx:
                 self.__dict__[variable_id] = self.fig_format_list[idx]
+                break
+
+    def _combo_box_qlvm_clustering(self,
+                                   index: int,
+                                   variable_id: str = None) -> None:
+        """
+        Description
+        -----------
+        QLVM torus-traversal clustering combo box (coarse / fine; selects which
+        ``arrays_*.npz`` the video reads).
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+
+        Returns
+        -------
+        None
+        """
+
+        for idx in range(len(self.qlvm_clustering_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.qlvm_clustering_list[idx]
                 break
 
     def _combo_box_default_fig_format(self,
@@ -6752,7 +6823,9 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'default_cmap': visualizations_input_dict['figures']['cmap'],
                            'rotate_side_view_bool': False, 'history_cb_bool': False, 'speaker_cb_bool': False, 'spectrogram_cb_bool': False,
                            'spectrogram_ch': visualizations_input_dict['make_behavioral_videos']['spectrogram_ch'], 'raster_plot_cb_bool': False, 'spike_sound_cb_bool': False,
-                           'beh_features_cb_bool': False, 'calculate_neuronal_tuning_curves_cb_bool': False, 'include_partner_vocalization_tuning_cb_bool': analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'],
+                           'beh_features_cb_bool': False,
+                           'qlvm_torus_video_cb_bool': False, 'qlvm_clustering': visualizations_input_dict['qlvm_torus_traversal_video']['clustering'],
+                           'calculate_neuronal_tuning_curves_cb_bool': False, 'include_partner_vocalization_tuning_cb_bool': analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'],
                            'create_usv_playback_wav_cb_bool': False, 'frequency_shift_audio_segment_cb_bool': False,
                            'fs_audio_dir': analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], 'fs_device_id': analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'],
                            'fs_channel_id': analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], 'volume_adjust_audio_segment_cb_bool': True,
