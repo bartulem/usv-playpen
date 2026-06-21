@@ -7,10 +7,20 @@
     "cmap": "inferno"
   },
   "credentials_directory": "",
-  "male_colors": ["#9AC0CD", "#8CA252"],
-  "female_colors": ["#FF6347", "#B851B4"],
-  "social_colors": ["#5A6470"],
-  "unassigned_colors": ["#C0C0C0"],
+  "male_colors": [
+    "#9AC0CD",
+    "#8CA252"
+  ],
+  "female_colors": [
+    "#FF6347",
+    "#B851B4"
+  ],
+  "social_colors": [
+    "#5A6470"
+  ],
+  "unassigned_colors": [
+    "#C0C0C0"
+  ],
   "brain_area_colors": {
     "PAG": "#677470",
     "MRN": "#939884",
@@ -22,12 +32,12 @@
   },
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
-    "make_behavioral_videos_bool": true,
+    "make_behavioral_videos_bool": false,
     "make_usv_spectrograms_bool": false,
     "make_qlvm_torus_traversal_video_bool": false
   },
   "visualize_data": {
-    "root_directories": ["/mnt/falkner/Bartul/Data/20250909_151929"]
+    "root_directories": []
   },
   "send_email": {
     "visualizations_pc_list": [
@@ -48,17 +58,29 @@
     "save_fig": true,
     "fig_format": "svg",
     "fig_dpi": 300,
-    "fig_size": [6, 2],
+    "fig_size": [
+      6,
+      2
+    ],
     "transparent_fig_bg": false,
     "mode": "single",
     "channel_of_interest": 11,
     "plot_raw_audio": false,
-    "time_window": [424.5, 426.5],
-    "freq_limits": [40, 80],
+    "time_window": [
+      424.5,
+      426.5
+    ],
+    "freq_limits": [
+      40,
+      80
+    ],
     "usv_amplitude_color": "#808080",
     "nfft": 512,
     "plot_cbar": true,
-    "cbar_limits": [-70, 0],
+    "cbar_limits": [
+      -70,
+      0
+    ],
     "consolidated_spectrograms_h5": "/Volumes/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5",
     "apply_mask": true
   },
@@ -66,7 +88,7 @@
     "arena_directory": "/mnt/falkner/Bartul/Data/20250909_142042",
     "speaker_audio_file": "",
     "sequence_audio_file": "",
-    "animate_bool": true,
+    "animate_bool": false,
     "video_start_time": 37.0,
     "video_duration": 10.0,
     "plot_theme": "dark",
@@ -77,16 +99,20 @@
     "rotation_speed": 20,
     "history_bool": false,
     "speaker_bool": false,
-    "spectrogram_bool": true,
+    "spectrogram_bool": false,
     "spectrogram_ch": 0,
-    "raster_plot_bool": true,
+    "raster_plot_bool": false,
     "raster_selection_criteria": {
       "brain_areas": [],
-      "other": ["good"]
+      "other": [
+        "good"
+      ]
     },
-    "raster_special_units": [""],
+    "raster_special_units": [
+      ""
+    ],
     "spike_sound_bool": false,
-    "beh_features_bool": true,
+    "beh_features_bool": false,
     "beh_features_to_plot": [],
     "special_beh_features": [],
     "general_figure_specs": {
@@ -132,9 +158,18 @@
       "raster_ll": 10.9,
       "spectrogram_cbar_bool": true,
       "spectrogram_plot_window_size": 1,
-      "spectrogram_power_limit": [-60, 0],
-      "spectrogram_frequency_limit": [30000, 125000],
-      "spectrogram_yticks": [50000, 100000],
+      "spectrogram_power_limit": [
+        -60,
+        0
+      ],
+      "spectrogram_frequency_limit": [
+        30000,
+        125000
+      ],
+      "spectrogram_yticks": [
+        50000,
+        100000
+      ],
       "spectrogram_stft_nfft": 512,
       "plot_usv_segments_bool": true,
       "usv_segments_ypos": 120000,
@@ -146,11 +181,23 @@
     "arrays_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
     "arrays_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
     "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5",
-    "frames_per_segment": 30,
     "fps": 20,
-    "dpi": 150,
-    "path_curvature": 0.15,
-    "trail_length": 60
+    "dpi": 100,
+    "m": 36,
+    "cluster_hold_frames": 60,
+    "peak_traverse_frames": 200,
+    "boundary_traverse_frames": 200,
+    "title_card_frames": 45,
+    "samples_per_trace": 75,
+    "peak_jitter_sigma": 0.015,
+    "boundary_curve_amplitude": 0.18,
+    "boundary_positions_per_walk": 15,
+    "boundary_neighbors": 5,
+    "seed": 0,
+    "peaks_only": false,
+    "spec_cache_size": 2048,
+    "apply_mask": true,
+    "accent_color": "#00FFFF"
   },
   "usv_embedding": {
     "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files",

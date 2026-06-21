@@ -4284,7 +4284,7 @@ class USVPlaypenWindow(QMainWindow):
         self.VisualizationsSettings = VisualizationsSettings(self)
         self.setWindowTitle(f'{app_name} (Visualize data > Settings)')
         self.setCentralWidget(self.VisualizationsSettings)
-        visualize_one_x, visualize_one_y = (1260, 740)
+        visualize_one_x, visualize_one_y = (1180, 740)
         self.setFixedSize(visualize_one_x, visualize_one_y)
 
         visualizations_dir_label = QLabel('(*) Root directories for visualizations', self.VisualizationsSettings)
@@ -4343,7 +4343,7 @@ class USVPlaypenWindow(QMainWindow):
         self.plot_behavioral_features_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='plot_behavioral_tuning_cb_bool'))
         self.plot_behavioral_features_cb.move(275, 495)
 
-        default_cmap_label = QLabel('Colormap:', self.VisualizationsSettings)
+        default_cmap_label = QLabel('Spatial ratemap colormap:', self.VisualizationsSettings)
         default_cmap_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         default_cmap_label.move(10, 525)
         self.default_cmap_list = sorted(
@@ -4357,7 +4357,7 @@ class USVPlaypenWindow(QMainWindow):
         self.default_cmap_cb.activated.connect(partial(self._combo_box_default_cmap, variable_id='default_cmap'))
         self.default_cmap_cb.move(275, 525)
 
-        default_fig_format_label = QLabel('Fig format:', self.VisualizationsSettings)
+        default_fig_format_label = QLabel('Save created figures in format:', self.VisualizationsSettings)
         default_fig_format_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         default_fig_format_label.move(10, 555)
         self.default_fig_format_list = sorted(
@@ -4577,25 +4577,53 @@ class USVPlaypenWindow(QMainWindow):
         self.beh_features_bool_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='beh_features_cb_bool'))
         self.beh_features_bool_cb.move(vis_col_two_x2, 640)
 
-        # # # # Column 3: QLVM / USV (cohort-level) visualizations. x1 (labels)
-        # sits clear of column 2 (whose combos / Browse buttons end ~735); x2 is
-        # the shared left edge for every control (combos, slider, file edits).
-        vis_col_three_x1, vis_col_three_x2 = 770, 1010
+        # # # # Column 3: QLVM / USV (cohort-level) visualizations. x1 (labels /
+        # file edits) clears column 2 (whose Browse buttons render to ~750);
+        # x2 (= x1 + 290) is the shared left edge for every control (combos,
+        # slider, Browse), mirroring column 2's label->control gap.
+        # Order: enable toggle, then the input-file edits, then the render options.
+        vis_col_three_x1, vis_col_three_x2 = 770, 1060
         _qlvm_cfg = self.visualizations_input_dict['qlvm_torus_traversal_video']
 
-        qlvm_torus_video_label = QLabel('Render QLVM torus video:', self.VisualizationsSettings)
+        qlvm_torus_video_label = QLabel('Render QLVM demo video:', self.VisualizationsSettings)
         qlvm_torus_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         qlvm_torus_video_label.setStyleSheet(self.orange_label_style)
-        qlvm_torus_video_label.move(vis_col_three_x1, 45)
+        qlvm_torus_video_label.move(vis_col_three_x1, 40)
         self.qlvm_torus_video_cb = QComboBox(self.VisualizationsSettings)
         self.qlvm_torus_video_cb.addItems(['No', 'Yes'])
-        self.qlvm_torus_video_cb.setStyleSheet('QComboBox { width: 70px; }')
+        self.qlvm_torus_video_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.qlvm_torus_video_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='qlvm_torus_video_cb_bool'))
-        self.qlvm_torus_video_cb.move(vis_col_three_x2, 45)
+        self.qlvm_torus_video_cb.move(vis_col_three_x2, 40)
 
-        qlvm_clustering_label = QLabel('Clustering:', self.VisualizationsSettings)
+        # Input-file paths (defaults from settings), each on ONE line: a fixed
+        # QLineEdit (the filled path / placeholder labels the row) + Browse. The
+        # latents pickle is NOT here -- it is consumed once by a one-off H5
+        # enrichment, not at render time. Each edit writes live into the
+        # qlvm_torus_traversal_video settings block.
+        _qlvm_files = [
+            ('Coarse arrays (npz)', 'arrays_npz_path_coarse', 'Select coarse arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_coarse_edit'),
+            ('Fine arrays (npz)', 'arrays_npz_path_fine', 'Select fine arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_fine_edit'),
+            ('Spectrograms/masks/latents (h5)', 'consolidated_h5_path', 'Select consolidated .h5', 'HDF5 (*.h5)', 'qlvm_consolidated_edit'),
+        ]
+        for _row_i, (_lbl, _key, _title, _filt, _attr) in enumerate(_qlvm_files):
+            _y = 70 + _row_i * 30
+            _file_edit = QLineEdit(f"{_qlvm_cfg[_key]}", self.VisualizationsSettings)
+            _file_edit.setPlaceholderText(_lbl)
+            _file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+            _file_edit.setStyleSheet('QLineEdit { width: 285px; }')
+            _file_edit.textChanged.connect(partial(self._update_nested_dict_value, self.visualizations_input_dict, ('qlvm_torus_traversal_video', _key)))
+            _file_edit.move(vis_col_three_x1, _y)
+            _file_edit.setCursorPosition(0)  # show the start of the path, not the tail
+            setattr(self, _attr, _file_edit)
+            _file_btn = QPushButton('Browse', self.VisualizationsSettings)
+            _file_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
+            _file_btn.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 656px; max-height: 12px; }')
+            _file_btn.move(vis_col_three_x2, _y - 1)
+            _file_btn.clicked.connect(partial(self._open_file_dialog, _file_edit, _title, _filt))
+
+        qlvm_clustering_label = QLabel('QLVM clustering type borders:', self.VisualizationsSettings)
         qlvm_clustering_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        qlvm_clustering_label.move(vis_col_three_x1, 75)
+        qlvm_clustering_label.move(vis_col_three_x1, 160)
         self.qlvm_clustering_list = sorted(
             ['coarse', 'fine'],
             key=lambda x: x == _qlvm_cfg['clustering'],
@@ -4603,47 +4631,21 @@ class USVPlaypenWindow(QMainWindow):
         )
         self.qlvm_clustering_cb = QComboBox(self.VisualizationsSettings)
         self.qlvm_clustering_cb.addItems(self.qlvm_clustering_list)
-        self.qlvm_clustering_cb.setStyleSheet('QComboBox { width: 70px; }')
+        self.qlvm_clustering_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.qlvm_clustering_cb.activated.connect(partial(self._combo_box_qlvm_clustering, variable_id='qlvm_clustering'))
-        self.qlvm_clustering_cb.move(vis_col_three_x2, 75)
+        self.qlvm_clustering_cb.move(vis_col_three_x2, 160)
 
         # fps as a bounded slider (5-60); the current value is shown in the label.
-        self.qlvm_fps_label = QLabel(f"Video fps ({_qlvm_cfg['fps']}):", self.VisualizationsSettings)
-        self.qlvm_fps_label.setFixedWidth(200)
+        self.qlvm_fps_label = QLabel(f"Video sampling rate {_qlvm_cfg['fps']} (fps):", self.VisualizationsSettings)
+        self.qlvm_fps_label.setFixedWidth(220)
         self.qlvm_fps_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        self.qlvm_fps_label.move(vis_col_three_x1, 105)
+        self.qlvm_fps_label.move(vis_col_three_x1, 190)
         self.qlvm_fps_slider = QSlider(Qt.Orientation.Horizontal, self.VisualizationsSettings)
-        self.qlvm_fps_slider.setFixedWidth(200)
-        self.qlvm_fps_slider.move(vis_col_three_x2, 108)
+        self.qlvm_fps_slider.setFixedWidth(90)
+        self.qlvm_fps_slider.move(vis_col_three_x2, 193)
         self.qlvm_fps_slider.setRange(5, 60)
         self.qlvm_fps_slider.setValue(int(_qlvm_cfg['fps']))
         self.qlvm_fps_slider.valueChanged.connect(self._update_qlvm_fps_label)
-
-        # Input-file paths (defaults from settings), each on ONE line:
-        # label | QLineEdit | Browse. The latents pickle is NOT here -- it is
-        # consumed once by a one-off H5 enrichment, not at render time. Each edit
-        # writes live into the qlvm_torus_traversal_video settings block.
-        _qlvm_files = [
-            ('Coarse arrays:', 'arrays_npz_path_coarse', 'Select coarse arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_coarse_edit'),
-            ('Fine arrays:', 'arrays_npz_path_fine', 'Select fine arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_fine_edit'),
-            ('Consolidated H5:', 'consolidated_h5_path', 'Select consolidated .h5', 'HDF5 (*.h5)', 'qlvm_consolidated_edit'),
-        ]
-        for _row_i, (_lbl, _key, _title, _filt, _attr) in enumerate(_qlvm_files):
-            _y = 140 + _row_i * 30
-            _file_label = QLabel(_lbl, self.VisualizationsSettings)
-            _file_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-            _file_label.move(vis_col_three_x1, _y)
-            _file_edit = QLineEdit(f"{_qlvm_cfg[_key]}", self.VisualizationsSettings)
-            _file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-            _file_edit.setStyleSheet('QLineEdit { width: 200px; }')
-            _file_edit.textChanged.connect(partial(self._update_nested_dict_value, self.visualizations_input_dict, ('qlvm_torus_traversal_video', _key)))
-            _file_edit.move(vis_col_three_x2, _y)
-            setattr(self, _attr, _file_edit)
-            _file_btn = QPushButton('Browse', self.VisualizationsSettings)
-            _file_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-            _file_btn.setStyleSheet('QPushButton { min-width: 41px; min-height: 12px; max-width: 41px; max-height: 13px; }')
-            _file_btn.move(vis_col_three_x2 + 208, _y - 1)
-            _file_btn.clicked.connect(partial(self._open_file_dialog, _file_edit, _title, _filt))
 
         self._create_buttons_visualize(seq=0, class_option=self.VisualizationsSettings,
                                        button_pos_y=visualize_one_y - 35, next_button_x_pos=visualize_one_x - 100)
@@ -5917,7 +5919,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        self.qlvm_fps_label.setText(f'Video fps ({str(value)}):')
+        self.qlvm_fps_label.setText(f'Video sampling rate {value} (fps):')
 
     def _create_sliders_general(self, camera_id: str = None, camera_color: str = None, y_start: int = None) -> None:
         """
