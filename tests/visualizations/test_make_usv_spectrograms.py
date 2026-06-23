@@ -1911,7 +1911,7 @@ def test_plot_sequence_vae_missing_coords_raises(tmp_path):
 
 def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, monkeypatch):
     """The cohort driver pools (deduplicated, first-seen order) roots from every
-    *sessions_list.txt under usv_embedding.input_files_directory, resolves the
+    *sessions_list.txt under shared_resources.input_files_directory, resolves the
     store from spectrograms_dir, and dispatches the renderer with the
     embedding_thumbnails block knobs."""
     input_dir = tmp_path / "input_files"
@@ -1933,8 +1933,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
 
     viz = {
         "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 150, "seed": 7},
-        "shared_resources": {"spectrograms_dir": spec_dir},
-        "usv_embedding": {"input_files_directory": str(input_dir)},
+        "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir)},
         "embedding_thumbnails": {
             "map_type": "vae", "category_col_suffix": "category",
             "n_samples_per_category": 6, "tile_orientation": "vertical",

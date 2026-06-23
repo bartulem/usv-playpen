@@ -8,7 +8,8 @@
     "seed": 42
   },
   "shared_resources": {
-    "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms"
+    "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms",
+    "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   },
   "credentials_directory": "",
   "male_colors": [
@@ -244,8 +245,5 @@
       16,
       12
     ]
-  },
-  "usv_embedding": {
-    "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   }
 }

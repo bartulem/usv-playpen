@@ -3906,7 +3906,7 @@ def render_embedding_thumbnails_for_cohort(
     -----------
     Cohort-level driver for the embedding + per-category spectrogram thumbnails
     figure. Pools every ``*sessions_list.txt`` under
-    ``usv_embedding['input_files_directory']`` into one combined session list,
+    ``shared_resources['input_files_directory']`` into one combined session list,
     resolves the consolidated store as the newest ``spectrograms_*.h5`` under
     ``shared_resources['spectrograms_dir']``, and renders
     ``plot_embedding_with_category_thumbnails`` with the knobs from the
@@ -3922,8 +3922,8 @@ def render_embedding_thumbnails_for_cohort(
     ----------
     visualizations_parameter_dict (dict)
         The full visualizations settings dict, carrying the ``figures``,
-        ``shared_resources``, ``usv_embedding`` and ``embedding_thumbnails``
-        blocks.
+        ``shared_resources`` (``spectrograms_dir`` + ``input_files_directory``)
+        and ``embedding_thumbnails`` blocks.
     message_output (Callable | None)
         Progress / diagnostic sink. Defaults to the built-in ``print``.
 
@@ -3934,11 +3934,19 @@ def render_embedding_thumbnails_for_cohort(
     """
 
     log = message_output or print
+    log(
+        f"Embedding thumbnails figure started at: "
+        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+    )
+    # Brief pause so the GUI flushes the "started" message before the (blocking)
+    # cohort pooling + render takes over the thread.
+    smart_wait(app_context_bool=is_gui_context(), seconds=1)
+
     cfg = visualizations_parameter_dict["embedding_thumbnails"]
     figures = visualizations_parameter_dict["figures"]
 
     input_files_dir = pathlib.Path(
-        configure_path(visualizations_parameter_dict["usv_embedding"]["input_files_directory"])
+        configure_path(visualizations_parameter_dict["shared_resources"]["input_files_directory"])
     )
     store_path = resolve_consolidated_h5_path(
         visualizations_parameter_dict["shared_resources"]["spectrograms_dir"]

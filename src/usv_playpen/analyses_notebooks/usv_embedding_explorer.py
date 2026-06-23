@@ -13,7 +13,7 @@ From the repo root, edit (reactive code view) or run (clean app view):
     uv run marimo edit src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
     uv run marimo run  src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
 
-Settings (the ``usv_embedding`` block of ``visualizations_settings.json``)
+Settings (the ``shared_resources`` block of ``visualizations_settings.json``)
 supply the directory of session-list ``*.txt`` files and the consolidated
 spectrogram/SAM2 store.
 
@@ -127,13 +127,13 @@ def _settings(Path, configure_path, json, resolve_consolidated_h5_path):
     except (KeyError, IndexError):
         sex_colors = {"male": "#9AC0CD", "female": "#FF6347", "unassigned": "#9E9E9E"}
 
-    # Session-list directory from the `usv_embedding` block + the consolidated
-    # store resolved from the shared `shared_resources.spectrograms_dir` (the newest
-    # spectrograms_*.h5 under it; canonical /mnt/falkner paths resolved to the host
-    # mount). Glob every *.txt list into {label -> absolute path}; playback sessions
-    # have no emitter/embedding structure here, so drop them.
+    # Session-list directory + the consolidated store, both from the shared
+    # `shared_resources` block (`input_files_directory`, and the newest
+    # spectrograms_*.h5 under `spectrograms_dir`; canonical /mnt/falkner paths
+    # resolved to the host mount). Glob every *.txt list into {label -> absolute
+    # path}; playback sessions have no emitter/embedding structure here, so drop them.
     try:
-        _input_dir = configure_path(_viz["usv_embedding"]["input_files_directory"])
+        _input_dir = configure_path(_viz["shared_resources"]["input_files_directory"])
         consolidated_h5_path = resolve_consolidated_h5_path(_viz["shared_resources"]["spectrograms_dir"])
     except (KeyError, FileNotFoundError):
         _input_dir, consolidated_h5_path = None, None
@@ -702,7 +702,7 @@ def _explorer(
             if not available_lists:
                 _hint = mo.md(
                     "**No session lists found.** Set "
-                    "`usv_embedding.input_files_directory` in "
+                    "`shared_resources.input_files_directory` in "
                     "`_parameter_settings/visualizations_settings.json`."
                 )
             elif not get_loaded_lists():
