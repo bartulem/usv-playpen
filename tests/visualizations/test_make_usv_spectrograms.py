@@ -1938,9 +1938,20 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
         "embedding_thumbnails": {
             "map_type": "vae", "category_col_suffix": "category",
             "n_samples_per_category": 6, "tile_orientation": "vertical",
-            "apply_mask": False, "sampling_method": "random",
+            "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
+            "sampling_method": "random",
             "draw_cluster_boundaries": True, "knn_boundary_neighbors": 9,
-            "thumbnail_size_fraction": 0.7, "scatter_max_points": 1000,
+            "knn_boundary_resolution": 200, "knn_boundary_density_min_count": 0.05,
+            "knn_boundary_density_smoothing_sigma": 3.0,
+            "draw_spiral_overlay": False, "spiral_show_only_for": None,
+            "spiral_color": "#000000", "spiral_linewidth": 1.0,
+            "spiral_radius_scale": 0.1, "spiral_radius_abs": 0.1,
+            "spiral_n_turns": 3, "spiral_random_phase": True,
+            "annotate_picks_on_scatter": False, "pick_number_fontsize": 9,
+            "annotate_cluster_ids": True, "cluster_id_fontsize": 20,
+            "thumbnail_size_fraction": 0.7, "thumbnail_hspace": 0.03,
+            "thumbnail_wspace": 0.04, "unstretched_specs": True,
+            "scatter_max_points": 1000, "embeddings_cache_path": "",
             "fig_size": [10, 8],
         },
     }
@@ -1960,3 +1971,12 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     # fig_dpi + seed are sourced from the general figures block, not the block
     assert captured["fig_dpi"] == 150
     assert captured["seed"] == 7
+    # the full set of ported knobs is forwarded
+    assert captured["mask_excluded_categories"] == ()        # JSON [] -> tuple
+    assert captured["category_colors"] is None
+    assert captured["draw_spiral_overlay"] is False
+    assert captured["unstretched_specs"] is True
+    assert captured["annotate_cluster_ids"] is True
+    assert captured["knn_boundary_resolution"] == 200
+    # VAE map -> no QLVM cluster-centers h5
+    assert captured["cluster_centers_h5_path"] is None

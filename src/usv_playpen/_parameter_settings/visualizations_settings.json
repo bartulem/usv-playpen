@@ -37,14 +37,12 @@
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
     "make_behavioral_videos_bool": false,
-    "make_usv_spectrograms_bool": true,
+    "make_usv_spectrograms_bool": false,
     "make_qlvm_torus_traversal_video_bool": false,
-    "make_embedding_thumbnails_bool": false
+    "make_embedding_thumbnails_bool": true
   },
   "visualize_data": {
-    "root_directories": [
-      "/Volumes/falkner/Bartul/Data/20230207_213540"
-    ]
+    "root_directories": []
   },
   "send_email": {
     "visualizations_pc_list": [
@@ -214,13 +212,34 @@
     "map_type": "qlvm",
     "category_col_suffix": "supercategory",
     "n_samples_per_category": 8,
-    "tile_orientation": "horizontal",
+    "tile_orientation": "vertical",
     "apply_mask": true,
-    "sampling_method": "random",
+    "mask_excluded_categories": [],
+    "category_colors": null,
+    "sampling_method": "spiral",
     "draw_cluster_boundaries": true,
     "knn_boundary_neighbors": 15,
+    "knn_boundary_resolution": 200,
+    "knn_boundary_density_min_count": 0.05,
+    "knn_boundary_density_smoothing_sigma": 3.0,
+    "draw_spiral_overlay": false,
+    "spiral_show_only_for": null,
+    "spiral_color": "#000000",
+    "spiral_linewidth": 1.0,
+    "spiral_radius_scale": 0.1,
+    "spiral_radius_abs": 0.1,
+    "spiral_n_turns": 3,
+    "spiral_random_phase": true,
+    "annotate_picks_on_scatter": false,
+    "pick_number_fontsize": 9,
+    "annotate_cluster_ids": true,
+    "cluster_id_fontsize": 20,
     "thumbnail_size_fraction": 0.5,
+    "thumbnail_hspace": 0.03,
+    "thumbnail_wspace": 0.04,
+    "unstretched_specs": true,
     "scatter_max_points": 50000,
+    "embeddings_cache_path": "",
     "fig_size": [
       16,
       12

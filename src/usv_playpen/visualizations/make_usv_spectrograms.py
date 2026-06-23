@@ -3966,6 +3966,22 @@ def render_embedding_thumbnails_for_cohort(
         combined_file.write("\n".join(roots))
         combined_sessions_txt = combined_file.name
 
+    # Cluster-center provenance for the QLVM cluster-ID labels / spiral centers:
+    # the newest qlvm_clusters_*.h5 under the spectrograms dir (it carries the
+    # /coarse + /fine cluster_centers). Only meaningful for the QLVM map; the VAE
+    # umap has no equivalent, so leave it unset there (centers fall back to the
+    # data-derived medoids/centroids).
+    cluster_centers_h5_path = None
+    if cfg["map_type"] == "qlvm":
+        spec_base = pathlib.Path(
+            configure_path(visualizations_parameter_dict["shared_resources"]["spectrograms_dir"])
+        )
+        cc_matches = sorted(spec_base.glob("qlvm_clusters_*.h5"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if cc_matches:
+            cluster_centers_h5_path = str(cc_matches[0])
+
+    cache_path = configure_path(cfg["embeddings_cache_path"]) if cfg["embeddings_cache_path"] else None
+
     out_dir = pathlib.Path(configure_path(figures["save_directory"]))
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_format = figures["fig_format"]
@@ -3980,16 +3996,38 @@ def render_embedding_thumbnails_for_cohort(
         category_col_suffix=cfg["category_col_suffix"],
         n_samples_per_category=cfg["n_samples_per_category"],
         apply_mask=cfg["apply_mask"],
+        mask_excluded_categories=tuple(cfg["mask_excluded_categories"]),
+        category_colors=cfg["category_colors"],
         sampling_method=cfg["sampling_method"],
+        cluster_centers_h5_path=cluster_centers_h5_path,
+        draw_spiral_overlay=cfg["draw_spiral_overlay"],
+        spiral_show_only_for=cfg["spiral_show_only_for"],
+        spiral_color=cfg["spiral_color"],
+        spiral_linewidth=cfg["spiral_linewidth"],
+        spiral_radius_scale=cfg["spiral_radius_scale"],
+        spiral_radius_abs=cfg["spiral_radius_abs"],
+        spiral_n_turns=cfg["spiral_n_turns"],
+        spiral_random_phase=cfg["spiral_random_phase"],
         draw_cluster_boundaries=cfg["draw_cluster_boundaries"],
         knn_boundary_neighbors=cfg["knn_boundary_neighbors"],
+        knn_boundary_resolution=cfg["knn_boundary_resolution"],
+        knn_boundary_density_min_count=cfg["knn_boundary_density_min_count"],
+        knn_boundary_density_smoothing_sigma=cfg["knn_boundary_density_smoothing_sigma"],
+        annotate_picks_on_scatter=cfg["annotate_picks_on_scatter"],
+        pick_number_fontsize=cfg["pick_number_fontsize"],
+        annotate_cluster_ids=cfg["annotate_cluster_ids"],
+        cluster_id_fontsize=cfg["cluster_id_fontsize"],
         tile_orientation=cfg["tile_orientation"],
         thumbnail_size_fraction=cfg["thumbnail_size_fraction"],
+        thumbnail_hspace=cfg["thumbnail_hspace"],
+        thumbnail_wspace=cfg["thumbnail_wspace"],
+        unstretched_specs=cfg["unstretched_specs"],
         scatter_max_points=cfg["scatter_max_points"],
         fig_size=tuple(cfg["fig_size"]),
         fig_dpi=figures["dpi"],
         output_path=output_path,
         fig_format=fig_format,
+        embeddings_cache_path=cache_path,
         seed=figures["seed"],
         message_output=message_output,
     )
