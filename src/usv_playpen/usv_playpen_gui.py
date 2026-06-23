@@ -2879,7 +2879,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.ambient_light_cb = QComboBox(self.VideoSettings)
         self.ambient_light_cb.addItems(on_off_list)
-        self.ambient_light_cb.setStyleSheet(f'QComboBox {{ width: 220px; }}')
+        self.ambient_light_cb.setStyleSheet('QComboBox { width: 220px; }')
         self.ambient_light_cb.move(x_widget, y_pos)
 
         def on_ambient_light_changed(index):
