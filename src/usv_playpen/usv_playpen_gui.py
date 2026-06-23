@@ -101,7 +101,7 @@ cancel_icon = str(_img_dir / 'cancel.png')
 clear_icon = str(_img_dir / 'clear.png')
 
 
-def _nudge_button_icon_up(button: QPushButton, shift_px: int = 2) -> None:
+def _nudge_button_icon_up(button: QPushButton, shift_px: int = 1) -> None:
     """
     Description
     -----------
