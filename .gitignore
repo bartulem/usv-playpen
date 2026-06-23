@@ -87,6 +87,9 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# marimo (auto-generated notebook session snapshots / cache)
+__marimo__/
+
 # IPython
 profile_default/
 ipython_config.py

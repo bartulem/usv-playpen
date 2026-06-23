@@ -7,6 +7,12 @@ on:
     branches:
       - "*"
 
+# Least-privilege GITHUB_TOKEN for all jobs (CodeQL actions/missing-workflow-permissions):
+# both jobs only read the repo, and Codecov upload authenticates with CODECOV_TOKEN
+# (not the GITHUB_TOKEN / OIDC), so read-only contents is sufficient.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -32,7 +38,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v6
@@ -70,7 +76,7 @@ jobs:
       QT_QPA_PLATFORM: offscreen
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
