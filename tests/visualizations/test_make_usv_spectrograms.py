@@ -1243,7 +1243,7 @@ def test_medoid_xy_edge_cases():
     assert any(np.allclose([cx, cy], row) for row in pts)
 
 
-@pytest.mark.parametrize("method", ["random", "nearest", "farthest_point", "grid", "spiral"])
+@pytest.mark.parametrize("method", ["random", "nearest", "spread", "grid", "spiral"])
 def test_pick_category_samples_methods(method):
     """Each sampling strategy returns up to n_per unique in-range
     indices."""

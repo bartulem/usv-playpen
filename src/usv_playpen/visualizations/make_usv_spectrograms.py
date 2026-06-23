@@ -2859,7 +2859,7 @@ def _pick_category_samples(
     - ``"random"``: uniform random draw.
     - ``"nearest"``: the ``n_per`` points closest to the category
       centroid (most "typical" / central samples).
-    - ``"farthest_point"``: iterative farthest-point sampling starting
+    - ``"spread"``: iterative farthest-point sampling starting
       from the centroid — gives maximally spread coverage.
     - ``"grid"``: overlay a dense grid over the category's bounding
       box, keep up to ``n_per`` evenly spaced grid points, and for
@@ -2895,7 +2895,7 @@ def _pick_category_samples(
         dists = np.sqrt((pts[:, 0] - cx0) ** 2 + (pts[:, 1] - cy0) ** 2)
         return np.argsort(dists)[:n_take]
 
-    if method == "farthest_point":
+    if method == "spread":
         selected: list[int] = []
         sel_xy = np.array([[cx0, cy0]])
         remaining = np.arange(pts.shape[0])
@@ -2971,7 +2971,7 @@ def _pick_category_samples(
 
     msg = (
         f"Unknown sampling_method {method!r}. "
-        "Choose from 'random', 'nearest', 'farthest_point', 'grid', 'spiral'."
+        "Choose from 'random', 'nearest', 'spread', 'grid', 'spiral'."
     )
     raise ValueError(msg)
 

@@ -4843,10 +4843,10 @@ class USVPlaypenWindow(QMainWindow):
         embedding_thumbnails_sampling_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         embedding_thumbnails_sampling_label.move(vis_col_three_x1, 640)
         self.embedding_thumbnails_sampling_cb = QComboBox(self.VisualizationsSettings)
-        _emb_sampling_choices = ['random', 'nearest', 'farthest_point', 'grid', 'spiral']
+        _emb_sampling_choices = ['random', 'nearest', 'spread', 'grid', 'spiral']
         self.embedding_thumbnails_sampling_cb.addItems(_emb_sampling_choices)
         self.embedding_thumbnails_sampling_cb.setCurrentText(_emb_cfg['sampling_method'])
-        self.embedding_thumbnails_sampling_cb.setStyleSheet('QComboBox { width: 107px; }')
+        self.embedding_thumbnails_sampling_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.embedding_thumbnails_sampling_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_sampling_method', choices=_emb_sampling_choices))
         self.embedding_thumbnails_sampling_cb.move(vis_col_three_x2, 640)
 
