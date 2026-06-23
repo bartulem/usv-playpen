@@ -37,7 +37,8 @@
     "make_neuronal_tuning_figures_bool": false,
     "make_behavioral_videos_bool": false,
     "make_usv_spectrograms_bool": true,
-    "make_qlvm_torus_traversal_video_bool": false
+    "make_qlvm_torus_traversal_video_bool": false,
+    "make_embedding_thumbnails_bool": false
   },
   "visualize_data": {
     "root_directories": [
@@ -207,6 +208,24 @@
     "spec_cache_size": 2048,
     "apply_mask": true,
     "accent_color": "#00FFFF"
+  },
+  "embedding_thumbnails": {
+    "map_type": "qlvm",
+    "category_col_suffix": "supercategory",
+    "n_samples_per_category": 8,
+    "tile_orientation": "horizontal",
+    "apply_mask": true,
+    "sampling_method": "random",
+    "draw_cluster_boundaries": true,
+    "knn_boundary_neighbors": 15,
+    "thumbnail_size_fraction": 0.5,
+    "scatter_max_points": 50000,
+    "fig_size": [
+      16,
+      12
+    ],
+    "fig_dpi": 300,
+    "seed": 42
   },
   "usv_embedding": {
     "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"

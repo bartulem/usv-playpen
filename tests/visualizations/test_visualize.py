@@ -16,6 +16,7 @@ def mock_settings():
             "make_behavioral_videos_bool": False,
             "make_usv_spectrograms_bool": False,
             "make_qlvm_torus_traversal_video_bool": False,
+            "make_embedding_thumbnails_bool": False,
         },
         "credentials_directory": "/fake/credentials",
         "send_email": {
@@ -41,6 +42,7 @@ def mock_dependencies(mocker):
         'Create3DVideo': mocker.patch('usv_playpen.visualizations.visualize_data.Create3DVideo'),
         'USVSpectrogramPlotter': mocker.patch('usv_playpen.visualizations.visualize_data.USVSpectrogramPlotter'),
         'QLVMTorusTraversalVideo': mocker.patch('usv_playpen.visualizations.visualize_data.QLVMTorusTraversalVideo'),
+        'render_embedding_thumbnails_for_cohort': mocker.patch('usv_playpen.visualizations.visualize_data.render_embedding_thumbnails_for_cohort'),
         'Messenger': mocker.patch('usv_playpen.visualizations.visualize_data.Messenger'),
     }
     return mocked_classes
@@ -164,6 +166,25 @@ def test_make_qlvm_torus_traversal_video_logic(mock_settings, mock_dependencies)
     mock_video = mock_dependencies['QLVMTorusTraversalVideo']
     assert mock_video.call_count == 1
     mock_video.return_value.make_video.assert_called_once()
+
+
+def test_make_embedding_thumbnails_logic(mock_settings, mock_dependencies):
+    """
+    The embedding + per-category thumbnails figure is COHORT-LEVEL: it must run
+    exactly once (outside the per-session loop), regardless of how many root
+    directories are given.
+    """
+    mock_settings['visualize_booleans']['make_embedding_thumbnails_bool'] = True
+    root_dirs = ['/fake/dir1', '/fake/dir2', '/fake/dir3']
+
+    visualizer = Visualizer(
+        input_parameter_dict=mock_settings,
+        root_directories=root_dirs
+    )
+    visualizer.visualize_data()
+
+    mock_thumbnails = mock_dependencies['render_embedding_thumbnails_for_cohort']
+    assert mock_thumbnails.call_count == 1
 
 
 # ---------------------------------------------------------------------------

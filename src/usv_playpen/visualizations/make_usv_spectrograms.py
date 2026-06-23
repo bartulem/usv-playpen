@@ -29,6 +29,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 from collections.abc import Callable
 from datetime import datetime
@@ -64,7 +65,7 @@ apply_plot_style()
 
 # Load the project-wide default cmap from `visualizations_settings.json`
 # at module import. Used as the default for the module-level
-# `plot_umap_with_category_thumbnails` helper's `cmap=` arguments (was
+# `plot_embedding_with_category_thumbnails` helper's `cmap=` arguments (was
 # two hard-coded `'inferno'` literals). Class instances continue to
 # resolve their cmap via `_resolve_cmap` (also reads `figures.cmap`).
 # The `figures.cmap` entry is a required field of the packaged settings
@@ -2243,7 +2244,7 @@ EMBEDDING_FEATURE_COLS = (
 )
 # Extra per-USV columns pulled into the pooled embeddings DataFrame.
 # They power the auxiliary scatters (sex, duration) and the acoustic-feature
-# color-by metrics in ``plot_umap_with_category_thumbnails`` / the embedding
+# color-by metrics in ``plot_embedding_with_category_thumbnails`` / the embedding
 # explorer. The cache file is invalidated automatically when these columns are
 # missing -- see schema-check logic in ``build_pooled_embeddings_df``.
 EMBEDDING_EXTRA_COLS = ("emitter", "duration") + EMBEDDING_FEATURE_COLS
@@ -3036,7 +3037,7 @@ def _knn_boundary_grid(
     return xx, yy, grid_labels
 
 
-def plot_umap_with_category_thumbnails(
+def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
     map_type: str = "vae",
@@ -3092,7 +3093,7 @@ def plot_umap_with_category_thumbnails(
     Render a static two-panel figure summarising one of the per-USV
     embedding maps:
 
-    - **Left panel**: UMAP scatter of every (non-noise) USV across the
+    - **Left panel**: embedding scatter of every (non-noise) USV across the
       sessions listed in ``sessions_txt_path``, colored by the chosen
       categorical label.
     - **Right panel**: a thumbnail grid of spectrograms. Each ROW
@@ -3123,7 +3124,8 @@ def plot_umap_with_category_thumbnails(
     consolidated_h5_path (str)
         Path to the consolidated SAM2 + spectrogram HDF5 store.
     map_type (str)
-        ``"vae"`` or ``"qlvm"`` - selects which UMAP map to plot.
+        ``"vae"`` or ``"qlvm"`` - selects which embedding map to plot
+        (the VAE umap or the QLVM torus).
     category_col_suffix (str)
         ``"category"`` or ``"supercategory"`` - selects which
         categorical label to color and group by.
@@ -3216,7 +3218,8 @@ def plot_umap_with_category_thumbnails(
     pooled_df (pls.DataFrame | None)
         Optionally pass a pre-built pooled-embeddings DataFrame to
         skip the loader. Must contain ``session_id``, ``row_index``,
-        ``<map>_umap1/2`` and the category column.
+        the embedding coordinate columns (``vae_umap1/2`` or
+        ``qlvm_dim1/2``) and the category column.
     embeddings_cache_path (str | None)
         Parquet cache path passed to ``build_pooled_embeddings_df``.
     rebuild_embeddings_cache (bool)
@@ -3889,6 +3892,104 @@ def plot_umap_with_category_thumbnails(
             out_path = out_path.with_suffix(f".{fig_format.lstrip('.')}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=fig_dpi)
-        message_output(f"Saved UMAP+thumbnails figure: {out_path}")
+        message_output(f"Saved embedding+thumbnails figure: {out_path}")
 
     return fig
+
+
+def render_embedding_thumbnails_for_cohort(
+    visualizations_parameter_dict: dict,
+    message_output: Callable | None = None,
+) -> plt.Figure:
+    """
+    Description
+    -----------
+    Cohort-level driver for the embedding + per-category spectrogram thumbnails
+    figure. Pools every ``*sessions_list.txt`` under
+    ``usv_embedding['input_files_directory']`` into one combined session list,
+    resolves the consolidated store as the newest ``spectrograms_*.h5`` under
+    ``shared_resources['spectrograms_dir']``, and renders
+    ``plot_embedding_with_category_thumbnails`` with the knobs from the
+    ``embedding_thumbnails`` settings block. The figure is written to
+    ``figures['save_directory']``.
+
+    Like the QLVM torus video this reads its inputs from settings rather than from
+    a session directory, so it runs ONCE outside the per-session visualization
+    loop (dispatched from ``visualize_data`` when
+    ``make_embedding_thumbnails_bool`` is set).
+
+    Parameters
+    ----------
+    visualizations_parameter_dict (dict)
+        The full visualizations settings dict, carrying the ``figures``,
+        ``shared_resources``, ``usv_embedding`` and ``embedding_thumbnails``
+        blocks.
+    message_output (Callable | None)
+        Progress / diagnostic sink. Defaults to the built-in ``print``.
+
+    Returns
+    -------
+    fig (plt.Figure)
+        The rendered two-panel figure (also saved to ``figures['save_directory']``).
+    """
+
+    log = message_output or print
+    cfg = visualizations_parameter_dict["embedding_thumbnails"]
+    figures = visualizations_parameter_dict["figures"]
+
+    input_files_dir = pathlib.Path(
+        configure_path(visualizations_parameter_dict["usv_embedding"]["input_files_directory"])
+    )
+    store_path = resolve_consolidated_h5_path(
+        visualizations_parameter_dict["shared_resources"]["spectrograms_dir"]
+    )
+
+    # Pool every cohort session list into one deduplicated combined list (same
+    # cohort definition as the embedding explorer / VAE-density precompute).
+    list_files = sorted(input_files_dir.glob("*sessions_list.txt"))
+    if not list_files:
+        raise FileNotFoundError(
+            f"embedding thumbnails: no '*sessions_list.txt' under '{input_files_dir}'."
+        )
+    roots, seen = [], set()
+    for list_file in list_files:
+        for line in list_file.read_text().splitlines():
+            root = line.strip()
+            if root and not root.startswith("#") and root not in seen:
+                seen.add(root)
+                roots.append(root)
+    log(f"[embedding-thumbnails] pooled {len(roots)} session roots from {len(list_files)} list(s).")
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix="_embedding_thumbnails_sessions.txt", delete=False
+    ) as combined_file:
+        combined_file.write("\n".join(roots))
+        combined_sessions_txt = combined_file.name
+
+    out_dir = pathlib.Path(configure_path(figures["save_directory"]))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig_format = figures["fig_format"]
+    output_path = str(
+        out_dir / f"embedding_thumbnails_{cfg['map_type']}_{cfg['category_col_suffix']}.{fig_format}"
+    )
+
+    return plot_embedding_with_category_thumbnails(
+        sessions_txt_path=combined_sessions_txt,
+        consolidated_h5_path=store_path,
+        map_type=cfg["map_type"],
+        category_col_suffix=cfg["category_col_suffix"],
+        n_samples_per_category=cfg["n_samples_per_category"],
+        apply_mask=cfg["apply_mask"],
+        sampling_method=cfg["sampling_method"],
+        draw_cluster_boundaries=cfg["draw_cluster_boundaries"],
+        knn_boundary_neighbors=cfg["knn_boundary_neighbors"],
+        tile_orientation=cfg["tile_orientation"],
+        thumbnail_size_fraction=cfg["thumbnail_size_fraction"],
+        scatter_max_points=cfg["scatter_max_points"],
+        fig_size=tuple(cfg["fig_size"]),
+        fig_dpi=cfg["fig_dpi"],
+        output_path=output_path,
+        fig_format=fig_format,
+        seed=cfg["seed"],
+        message_output=message_output,
+    )

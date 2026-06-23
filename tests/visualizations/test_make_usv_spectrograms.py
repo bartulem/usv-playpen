@@ -52,10 +52,11 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     _resolve_session_emitter_ids,
     build_pooled_embeddings_df,
     build_vae_density_npz,
+    plot_embedding_with_category_thumbnails,
     plot_session_type_usv_counts,
     plot_session_usv_timeline,
-    plot_umap_with_category_thumbnails,
     plot_usv_property_histograms,
+    render_embedding_thumbnails_for_cohort,
 )
 
 
@@ -1370,7 +1371,7 @@ def test_knn_boundary_grid_shapes():
     assert np.isnan(grid).any()  # empty corners masked out
 
 
-# ---- plot_umap_with_category_thumbnails -----------------------------------
+# ---- plot_embedding_with_category_thumbnails -----------------------------------
 
 
 def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFrame:
@@ -1426,7 +1427,7 @@ def test_plot_umap_thumbnails_random(tmp_path):
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessA", n_usvs=12, n_freq=16, n_time=24)
     out = tmp_path / "umap.png"
-    fig = plot_umap_with_category_thumbnails(
+    fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=4,
@@ -1448,7 +1449,7 @@ def test_plot_umap_thumbnails_qlvm_uses_dim_columns(tmp_path):
     pooled = _make_pooled_df("sessQ", n_per_cat=6)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessQ", n_usvs=12, n_freq=16, n_time=24)
-    fig = plot_umap_with_category_thumbnails(
+    fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         map_type="qlvm",
@@ -1468,7 +1469,7 @@ def test_plot_umap_thumbnails_spiral_unstretched(tmp_path):
     pooled = _make_pooled_df("sessB", n_per_cat=8)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessB", n_usvs=16, n_freq=16, n_time=20)
-    fig = plot_umap_with_category_thumbnails(
+    fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         map_type="vae",
@@ -1495,7 +1496,7 @@ def test_plot_umap_thumbnails_explicit_centers(tmp_path):
     pooled = _make_pooled_df("sessC", n_per_cat=5)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessC", n_usvs=10, n_freq=16, n_time=18)
-    fig = plot_umap_with_category_thumbnails(
+    fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=3,
@@ -1519,7 +1520,7 @@ def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
     _write_consolidated_h5(h5_path, "sessD", n_usvs=10, n_freq=16, n_time=18)
     prov = tmp_path / "qlvm_provenance.json"
     prov.write_text(json.dumps({"cluster_centers": [[1.0, -1.0], [2.0, -2.0]]}))
-    fig = plot_umap_with_category_thumbnails(
+    fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=3,
@@ -1534,7 +1535,7 @@ def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
 def test_plot_umap_thumbnails_bad_map_type(tmp_path):
     """An invalid map_type raises ValueError before any rendering."""
     with pytest.raises(ValueError, match="map_type must be"):
-        plot_umap_with_category_thumbnails(
+        plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             map_type="bogus",
@@ -1546,7 +1547,7 @@ def test_plot_umap_thumbnails_bad_map_type(tmp_path):
 def test_plot_umap_thumbnails_bad_category_suffix(tmp_path):
     """An invalid category_col_suffix raises ValueError."""
     with pytest.raises(ValueError, match="category_col_suffix must be"):
-        plot_umap_with_category_thumbnails(
+        plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             category_col_suffix="bogus",
@@ -1567,7 +1568,7 @@ def test_plot_umap_thumbnails_no_categories(tmp_path):
         }
     )
     with pytest.raises(RuntimeError, match="No non-noise categories"):
-        plot_umap_with_category_thumbnails(
+        plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             pooled_df=pooled,
@@ -1582,7 +1583,7 @@ def test_plot_umap_thumbnails_bad_tile_orientation(tmp_path):
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessA", n_usvs=12)
     with pytest.raises(ValueError, match="tile_orientation must be"):
-        plot_umap_with_category_thumbnails(
+        plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path=str(h5_path),
             tile_orientation="diagonal",
@@ -1598,7 +1599,7 @@ def test_plot_umap_thumbnails_bad_size_fraction(tmp_path):
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessA", n_usvs=12)
     with pytest.raises(ValueError, match="thumbnail_size_fraction"):
-        plot_umap_with_category_thumbnails(
+        plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path=str(h5_path),
             thumbnail_size_fraction=2.0,
@@ -1904,3 +1905,55 @@ def test_plot_sequence_vae_missing_coords_raises(tmp_path):
         USVSpectrogramPlotter(
             root_directory=str(root), visualizations_parameter_dict=settings
         ).plot_sequence()
+
+
+# ---- render_embedding_thumbnails_for_cohort (cohort driver) ---------------
+
+def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, monkeypatch):
+    """The cohort driver pools (deduplicated, first-seen order) roots from every
+    *sessions_list.txt under usv_embedding.input_files_directory, resolves the
+    store from spectrograms_dir, and dispatches the renderer with the
+    embedding_thumbnails block knobs."""
+    input_dir = tmp_path / "input_files"
+    input_dir.mkdir()
+    (input_dir / "a_sessions_list.txt").write_text("/root/sessA\n/root/sessB\n# skip\n")
+    (input_dir / "b_sessions_list.txt").write_text("/root/sessB\n/root/sessC\n")  # sessB duplicate
+    spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", "sessZ", n_usvs=2)
+
+    captured = {}
+
+    def _stub(**kwargs):
+        captured.update(kwargs)
+        return plt.figure()
+
+    monkeypatch.setattr(
+        "usv_playpen.visualizations.make_usv_spectrograms.plot_embedding_with_category_thumbnails",
+        _stub,
+    )
+
+    viz = {
+        "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png"},
+        "shared_resources": {"spectrograms_dir": spec_dir},
+        "usv_embedding": {"input_files_directory": str(input_dir)},
+        "embedding_thumbnails": {
+            "map_type": "vae", "category_col_suffix": "category",
+            "n_samples_per_category": 6, "tile_orientation": "vertical",
+            "apply_mask": False, "sampling_method": "random",
+            "draw_cluster_boundaries": True, "knn_boundary_neighbors": 9,
+            "thumbnail_size_fraction": 0.7, "scatter_max_points": 1000,
+            "fig_size": [10, 8], "fig_dpi": 150, "seed": 7,
+        },
+    }
+    fig = render_embedding_thumbnails_for_cohort(viz, message_output=lambda *_a, **_kw: None)
+    assert isinstance(fig, plt.Figure)
+    # store resolved to the consolidated spectrograms_*.h5 under spec_dir
+    assert pathlib.Path(captured["consolidated_h5_path"]).name.startswith("spectrograms_")
+    # combined session list = deduped roots in first-seen order ('# skip' dropped)
+    pooled_roots = pathlib.Path(captured["sessions_txt_path"]).read_text().splitlines()
+    assert pooled_roots == ["/root/sessA", "/root/sessB", "/root/sessC"]
+    # block knobs forwarded verbatim
+    assert captured["map_type"] == "vae"
+    assert captured["category_col_suffix"] == "category"
+    assert captured["n_samples_per_category"] == 6
+    assert captured["tile_orientation"] == "vertical"
+    assert tuple(captured["fig_size"]) == (10, 8)

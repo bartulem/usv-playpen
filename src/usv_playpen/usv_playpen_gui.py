@@ -4759,6 +4759,63 @@ class USVPlaypenWindow(QMainWindow):
         self.usv_seq_mark_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_seq_mark_segments_bool'))
         self.usv_seq_mark_cb.move(vis_col_three_x2, 400)
 
+        # # # # Embedding + per-category thumbnails (cohort-level, run-once): pools
+        # the cohort session lists + resolves the store from spectrograms_dir, then
+        # renders a 2-panel embedding scatter + per-category spectrogram thumbnail
+        # grid. Remaining knobs live in the embedding_thumbnails settings block.
+        _emb_cfg = self.visualizations_input_dict['embedding_thumbnails']
+
+        embedding_thumbnails_label = QLabel('Render embedding thumbnails:', self.VisualizationsSettings)
+        embedding_thumbnails_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        embedding_thumbnails_label.setStyleSheet(self.orange_label_style)
+        embedding_thumbnails_label.move(vis_col_three_x1, 440)
+        self.embedding_thumbnails_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_cb.addItems(['No', 'Yes'])
+        self.embedding_thumbnails_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='make_embedding_thumbnails_cb_bool'))
+        self.embedding_thumbnails_cb.move(vis_col_three_x2, 440)
+
+        embedding_thumbnails_map_label = QLabel('Embedding map type:', self.VisualizationsSettings)
+        embedding_thumbnails_map_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_map_label.move(vis_col_three_x1, 470)
+        self.embedding_thumbnails_map_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_map_cb.addItems(['qlvm', 'vae'])
+        self.embedding_thumbnails_map_cb.setCurrentText(_emb_cfg['map_type'])
+        self.embedding_thumbnails_map_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_map_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_map_type', choices=['qlvm', 'vae']))
+        self.embedding_thumbnails_map_cb.move(vis_col_three_x2, 470)
+
+        embedding_thumbnails_category_label = QLabel('Category level:', self.VisualizationsSettings)
+        embedding_thumbnails_category_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_category_label.move(vis_col_three_x1, 500)
+        self.embedding_thumbnails_category_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_category_cb.addItems(['supercategory', 'category'])
+        self.embedding_thumbnails_category_cb.setCurrentText(_emb_cfg['category_col_suffix'])
+        self.embedding_thumbnails_category_cb.setStyleSheet('QComboBox { width: 107px; }')
+        self.embedding_thumbnails_category_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_category', choices=['supercategory', 'category']))
+        self.embedding_thumbnails_category_cb.move(vis_col_three_x2, 500)
+
+        self.embedding_thumbnails_samples_label = QLabel(f"Thumbnails per category {_emb_cfg['n_samples_per_category']}:", self.VisualizationsSettings)
+        self.embedding_thumbnails_samples_label.setFixedWidth(220)
+        self.embedding_thumbnails_samples_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.embedding_thumbnails_samples_label.move(vis_col_three_x1, 530)
+        self.embedding_thumbnails_samples_slider = QSlider(Qt.Orientation.Horizontal, self.VisualizationsSettings)
+        self.embedding_thumbnails_samples_slider.setFixedWidth(88)
+        self.embedding_thumbnails_samples_slider.move(vis_col_three_x2, 530)
+        self.embedding_thumbnails_samples_slider.setRange(1, 20)
+        self.embedding_thumbnails_samples_slider.setValue(int(_emb_cfg['n_samples_per_category']))
+        self.embedding_thumbnails_samples_slider.valueChanged.connect(self._update_embedding_thumbnails_samples_label)
+
+        embedding_thumbnails_layout_label = QLabel('Thumbnail layout:', self.VisualizationsSettings)
+        embedding_thumbnails_layout_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_layout_label.move(vis_col_three_x1, 560)
+        self.embedding_thumbnails_layout_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_layout_cb.addItems(['horizontal', 'vertical'])
+        self.embedding_thumbnails_layout_cb.setCurrentText(_emb_cfg['tile_orientation'])
+        self.embedding_thumbnails_layout_cb.setStyleSheet('QComboBox { width: 107px; }')
+        self.embedding_thumbnails_layout_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_orientation', choices=['horizontal', 'vertical']))
+        self.embedding_thumbnails_layout_cb.move(vis_col_three_x2, 560)
+
         # Couple dependent controls: boundaries apply to both embeddings, and the
         # boundary clustering selector only matters when boundaries are drawn. Set
         # the initial enabled state here.
@@ -4910,6 +4967,15 @@ class USVPlaypenWindow(QMainWindow):
         _usv_seq_start = float(_safe_literal_eval(self.usv_seq_start_edit.text()))
         _usv_seq_duration = float(_safe_literal_eval(self.usv_seq_duration_edit.text()))
         self.visualizations_input_dict['make_usv_spectrograms']['time_window'] = [_usv_seq_start, _usv_seq_start + _usv_seq_duration]
+
+        # Embedding + per-category thumbnails (cohort-level, run-once). The rest of
+        # the knobs live in the embedding_thumbnails settings block.
+        self.visualizations_input_dict['visualize_booleans']['make_embedding_thumbnails_bool'] = self.make_embedding_thumbnails_cb_bool
+        self.make_embedding_thumbnails_cb_bool = False
+        self.visualizations_input_dict['embedding_thumbnails']['map_type'] = self.embedding_thumbnails_map_type
+        self.visualizations_input_dict['embedding_thumbnails']['category_col_suffix'] = self.embedding_thumbnails_category
+        self.visualizations_input_dict['embedding_thumbnails']['tile_orientation'] = self.embedding_thumbnails_orientation
+        self.visualizations_input_dict['embedding_thumbnails']['n_samples_per_category'] = self.embedding_thumbnails_samples_slider.value()
 
 
     def _save_process_labels_func(self) -> None:
@@ -6141,6 +6207,26 @@ class USVPlaypenWindow(QMainWindow):
 
         self.qlvm_fps_label.setText(f'Video sampling rate {value} (fps):')
 
+    def _update_embedding_thumbnails_samples_label(self, value: int) -> None:
+        """
+        Description
+        -----------
+        Updates the embedding-thumbnails "thumbnails per category" label as its
+        slider moves.
+
+        Parameters
+        ----------
+        value (int)
+            Number of spectrogram thumbnails sampled per category (completes
+            automatically).
+
+        Returns
+        -------
+        None
+        """
+
+        self.embedding_thumbnails_samples_label.setText(f'Thumbnails per category {value}:')
+
     def _create_sliders_general(self, camera_id: str = None, camera_color: str = None, y_start: int = None) -> None:
         """
         Description
@@ -7102,6 +7188,10 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'usv_seq_apply_mask_bool': visualizations_input_dict['make_usv_spectrograms']['apply_mask'],
                            'usv_seq_raw_audio_bool': visualizations_input_dict['make_usv_spectrograms']['plot_raw_audio'],
                            'usv_seq_mark_segments_bool': visualizations_input_dict['make_usv_spectrograms']['sequence']['mark_usv_segments'],
+                           'make_embedding_thumbnails_cb_bool': False,
+                           'embedding_thumbnails_map_type': visualizations_input_dict['embedding_thumbnails']['map_type'],
+                           'embedding_thumbnails_category': visualizations_input_dict['embedding_thumbnails']['category_col_suffix'],
+                           'embedding_thumbnails_orientation': visualizations_input_dict['embedding_thumbnails']['tile_orientation'],
                            'calculate_neuronal_tuning_curves_cb_bool': False, 'include_partner_vocalization_tuning_cb_bool': analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'],
                            'create_usv_playback_wav_cb_bool': False, 'frequency_shift_audio_segment_cb_bool': False,
                            'fs_audio_dir': analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], 'fs_device_id': analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'],

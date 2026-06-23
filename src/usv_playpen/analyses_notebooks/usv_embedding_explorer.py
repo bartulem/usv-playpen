@@ -738,7 +738,7 @@ def _explorer(
             )
         else:
             n_pick = min(n_pick_target, len(selected_pd))
-            # Spiral sampling (ported from plot_umap_with_category_thumbnails):
+            # Spiral sampling (ported from plot_embedding_with_category_thumbnails):
             # build an Archimedean spiral from the brushed region's centroid out
             # to its farthest point, subsample n_pick positions along it, and
             # snap each to the nearest not-yet-used point. The picks come out
