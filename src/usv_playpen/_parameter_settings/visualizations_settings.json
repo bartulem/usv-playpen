@@ -5,7 +5,7 @@
     "dpi": 300,
     "timestamp_in_name": true,
     "cmap": "inferno",
-    "seed": 42
+    "seed": 0
   },
   "shared_resources": {
     "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms",
@@ -238,7 +238,7 @@
     "thumbnail_hspace": 0.03,
     "thumbnail_wspace": 0.04,
     "unstretched_specs": true,
-    "scatter_max_points": 50000,
+    "scatter_max_points": 200000,
     "fig_size": [
       16,
       12

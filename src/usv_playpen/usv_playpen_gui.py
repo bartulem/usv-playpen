@@ -4924,7 +4924,7 @@ class USVPlaypenWindow(QMainWindow):
         self.embedding_thumbnails_boundaries_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_draw_boundaries_bool'))
         self.embedding_thumbnails_boundaries_cb.move(vis_col_three_x2, 580)
 
-        embedding_thumbnails_mask_label = QLabel('Apply SAM2 mask:', self.VisualizationsSettings)
+        embedding_thumbnails_mask_label = QLabel('Apply SAM2 mask to spectrograms:', self.VisualizationsSettings)
         embedding_thumbnails_mask_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         embedding_thumbnails_mask_label.move(vis_col_three_x1, 610)
         self.embedding_thumbnails_mask_cb = QComboBox(self.VisualizationsSettings)
@@ -4934,7 +4934,7 @@ class USVPlaypenWindow(QMainWindow):
         self.embedding_thumbnails_mask_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_apply_mask_bool'))
         self.embedding_thumbnails_mask_cb.move(vis_col_three_x2, 610)
 
-        embedding_thumbnails_sampling_label = QLabel('Per-cluster sampling:', self.VisualizationsSettings)
+        embedding_thumbnails_sampling_label = QLabel('Per-cluster sampling method:', self.VisualizationsSettings)
         embedding_thumbnails_sampling_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         embedding_thumbnails_sampling_label.move(vis_col_three_x1, 640)
         self.embedding_thumbnails_sampling_cb = QComboBox(self.VisualizationsSettings)

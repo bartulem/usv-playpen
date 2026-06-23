@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 
 import h5py
 import matplotlib
@@ -1926,7 +1927,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     )
 
     viz = {
-        "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 150, "seed": 7},
+        "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 150, "seed": 7, "timestamp_in_name": True},
         "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir)},
         "embedding_thumbnails": {
             "map_type": "vae", "category_col_suffix": "category",
@@ -1979,3 +1980,6 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     )
     # in a GUI context the saved figure is opened at the end
     assert opened == [captured["output_path"]]
+    # timestamp_in_name -> the filename ends with a _YYYYMMDD_HHMMSS stamp
+    out_name = pathlib.Path(captured["output_path"]).name
+    assert re.fullmatch(r"embedding_thumbnails_vae_category_\d{8}_\d{6}\.png", out_name)

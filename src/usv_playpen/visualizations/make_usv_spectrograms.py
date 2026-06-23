@@ -3880,8 +3880,10 @@ def render_embedding_thumbnails_for_cohort(
     ``shared_resources['spectrograms_dir']``, and renders
     ``plot_embedding_with_category_thumbnails`` with the knobs from the
     ``embedding_thumbnails`` settings block. The figure is written to
-    ``figures['save_directory']`` and, in an interactive GUI context, opened in
-    the OS default viewer at the end (headless / batch runs never spawn a viewer).
+    ``figures['save_directory']`` (with a ``_YYYYMMDD_HHMMSS`` stamp appended when
+    ``figures['timestamp_in_name']`` is set) and, in an interactive GUI context,
+    opened in the OS default viewer at the end (headless / batch runs never spawn
+    a viewer).
 
     Like the QLVM torus video this reads its inputs from settings rather than from
     a session directory, so it runs ONCE outside the per-session visualization
@@ -3969,9 +3971,10 @@ def render_embedding_thumbnails_for_cohort(
     out_dir = pathlib.Path(configure_path(figures["save_directory"]))
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_format = figures["fig_format"]
-    output_path = str(
-        out_dir / f"embedding_thumbnails_{cfg['map_type']}_{cfg['category_col_suffix']}.{fig_format}"
-    )
+    stem = f"embedding_thumbnails_{cfg['map_type']}_{cfg['category_col_suffix']}"
+    if figures["timestamp_in_name"]:
+        stem = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    output_path = str(out_dir / f"{stem}.{fig_format}")
 
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path=combined_sessions_txt,
