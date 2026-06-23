@@ -7,11 +7,7 @@
     "cmap": "inferno"
   },
   "shared_resources": {
-    "arrays_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
-    "arrays_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
-    "vae_density_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/vae/vae_density_coarse.npz",
-    "vae_density_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/vae/vae_density_fine.npz",
-    "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5"
+    "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms"
   },
   "credentials_directory": "",
   "male_colors": [
@@ -81,7 +77,7 @@
     ],
     "freq_limits": [
       40,
-      90
+      95
     ],
     "usv_amplitude_color": "#808080",
     "nfft": 512,
@@ -93,8 +89,8 @@
     "apply_mask": true,
     "auto_open_figure": true,
     "sequence": {
-      "embedding": "vae",
-      "draw_boundaries": false,
+      "embedding": "qlvm",
+      "draw_boundaries": true,
       "boundary_clustering": "coarse",
       "annotate_right": false,
       "mark_usv_segments": true

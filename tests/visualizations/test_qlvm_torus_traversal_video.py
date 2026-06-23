@@ -62,14 +62,13 @@ def test_build_phases_structure():
     assert n_cards == 3
 
 
-def _tiny_cfg(arrays_path, h5_path, peaks_only=False):
+def _tiny_cfg(spectrograms_dir, peaks_only=False):
     """A small render input dict (the qlvm block + the shared_resources block)
-    that exercises all phases quickly at low dpi."""
+    that exercises all phases quickly at low dpi. The QLVM arrays + the
+    consolidated store are resolved from ``spectrograms_dir``."""
     return {
         "shared_resources": {
-            "arrays_npz_path_coarse": arrays_path,
-            "arrays_npz_path_fine": arrays_path,
-            "consolidated_h5_path": h5_path,
+            "spectrograms_dir": str(spectrograms_dir),
         },
         "qlvm_torus_traversal_video": {
             "clustering": "coarse",
@@ -86,18 +85,21 @@ def _tiny_cfg(arrays_path, h5_path, peaks_only=False):
 
 
 def _write_inputs(tmp_path, n=12, res=8, n_f=16, n_t=16):
-    """Synthetic arrays (heatmap/ws/centers) + a consolidated H5 carrying
-    per-session spectrograms AND qlvm_dim coords."""
+    """Build a shared spectrograms dir: <dir>/qlvm/arrays_{coarse,fine}.npz
+    (heatmap/ws/centers) + <dir>/spectrograms_<key>.h5 carrying per-session
+    spectrograms AND qlvm_dim coords. Returns str(<dir>)."""
     rng = np.random.default_rng(0)
     session_key = "20250907_190610"
-    arrays = tmp_path / "arrays_coarse.npz"
-    np.savez(
-        arrays,
-        heatmap=rng.random((res, res)).astype(np.float32),
-        ws_labels_periodic=rng.integers(0, 3, size=(res, res)).astype(np.int16),
-        centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32),
-    )
-    h5_path = tmp_path / "consolidated.h5"
+    spec_dir = tmp_path / "spectrograms"
+    (spec_dir / "qlvm").mkdir(parents=True, exist_ok=True)
+    for tag in ("coarse", "fine"):
+        np.savez(
+            spec_dir / "qlvm" / f"arrays_{tag}.npz",
+            heatmap=rng.random((res, res)).astype(np.float32),
+            ws_labels_periodic=rng.integers(0, 3, size=(res, res)).astype(np.int16),
+            centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32),
+        )
+    h5_path = spec_dir / f"spectrograms_{session_key}.h5"
     with h5py.File(h5_path, "w") as h5:
         h5.create_dataset(f"spectrogram/{session_key}/spectrograms",
                           data=rng.random((n, n_f, n_t)).astype(np.float32))
@@ -110,16 +112,16 @@ def _write_inputs(tmp_path, n=12, res=8, n_f=16, n_t=16):
                           data=(rng.random((n, n_f, n_t)) > 0.5))
         h5.create_dataset(f"mask/{session_key}/spectrogram_index",
                           data=np.arange(n, dtype=np.int64))
-    return str(arrays), str(h5_path)
+    return str(spec_dir)
 
 
 def test_make_video_writes_gif(tmp_path):
     """End-to-end three-part render to a small GIF (coords + specs from H5)."""
-    arrays_path, h5_path = _write_inputs(tmp_path)
+    spec_dir = _write_inputs(tmp_path)
     out = tmp_path / "traversal.gif"
     QLVMTorusTraversalVideo(
         output_path=str(out),
-        input_parameter_dict=_tiny_cfg(arrays_path, h5_path),
+        input_parameter_dict=_tiny_cfg(spec_dir),
         message_output=lambda *_a, **_kw: None,
     ).make_video()
     assert out.is_file()
@@ -129,18 +131,20 @@ def test_make_video_writes_gif(tmp_path):
 def test_make_video_errors_without_qlvm_dim(tmp_path):
     """If the H5 has no qlvm_dim, render fails with a clear, actionable error."""
     rng = np.random.default_rng(1)
-    arrays = tmp_path / "arrays_coarse.npz"
-    np.savez(arrays, heatmap=rng.random((8, 8)).astype(np.float32),
-             ws_labels_periodic=rng.integers(0, 3, size=(8, 8)).astype(np.int16),
-             centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32))
-    h5_path = tmp_path / "consolidated.h5"
-    with h5py.File(h5_path, "w") as h5:
+    spec_dir = tmp_path / "spectrograms"
+    (spec_dir / "qlvm").mkdir(parents=True, exist_ok=True)
+    for tag in ("coarse", "fine"):
+        np.savez(spec_dir / "qlvm" / f"arrays_{tag}.npz",
+                 heatmap=rng.random((8, 8)).astype(np.float32),
+                 ws_labels_periodic=rng.integers(0, 3, size=(8, 8)).astype(np.int16),
+                 centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32))
+    with h5py.File(spec_dir / "spectrograms_20250907_190610.h5", "w") as h5:
         h5.create_dataset("spectrogram/20250907_190610/spectrograms",
                           data=rng.random((5, 16, 16)).astype(np.float32))
     with pytest.raises(ValueError, match="qlvm_dim"):
         QLVMTorusTraversalVideo(
             output_path=str(tmp_path / "x.gif"),
-            input_parameter_dict=_tiny_cfg(str(arrays), str(h5_path)),
+            input_parameter_dict=_tiny_cfg(spec_dir),
             message_output=lambda *_a, **_kw: None,
         ).make_video()
 

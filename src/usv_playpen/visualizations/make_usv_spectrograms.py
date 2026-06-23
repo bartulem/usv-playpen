@@ -11,8 +11,8 @@ Three rendering modes are exposed by ``USVSpectrogramPlotter``:
 (3) ``plot_stitched`` — a session-timeline spectrogram built by
     placing the pre-computed `[0, 1]`-normalized per-USV spectrograms
     (from the consolidated HDF5 store) at their on-session start
-    times. Gaps between USVs are zero. Requires
-    ``shared_resources['consolidated_h5_path']`` to point at the store.
+    times. Gaps between USVs are zero. Resolves the store as the newest
+    ``spectrograms_*.h5`` under ``shared_resources['spectrograms_dir']``.
 
 Audio is read from the session's ``*_int16.mmap*`` file (the canonical
 concatenated multi-channel int16 memmap), and spectrograms are computed
@@ -48,7 +48,12 @@ from scipy.ndimage import gaussian_filter, gaussian_filter1d, zoom
 from scipy.signal.windows import tukey
 from sklearn.neighbors import KNeighborsClassifier
 
-from ..os_utils import configure_path, first_match_or_raise
+from ..os_utils import (
+    configure_path,
+    first_match_or_raise,
+    resolve_consolidated_h5_path,
+    resolve_embedding_arrays_path,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .plot_style import apply_plot_style
 
@@ -822,8 +827,8 @@ class USVSpectrogramPlotter:
         canvas_fps = float(sampling_rate) / float(hop_length)
         canvas_n_bins = max(1, int(round((end_time_sec - start_time_sec) * canvas_fps)))
 
-        h5_path = configure_path(
-            self.visualizations_parameter_dict["shared_resources"]["consolidated_h5_path"]
+        h5_path = resolve_consolidated_h5_path(
+            self.visualizations_parameter_dict["shared_resources"]["spectrograms_dir"]
         )
         with h5py.File(h5_path, "r") as h5:
             freq_bins = h5["frequency_bins"][:]
@@ -1006,8 +1011,8 @@ class USVSpectrogramPlotter:
         -----------
         Render a session-timeline spectrogram by stitching the
         pre-computed per-USV averaged spectrograms from the
-        consolidated HDF5 store (path in
-        ``shared_resources['consolidated_h5_path']``) into a zero canvas at
+        consolidated HDF5 store (the newest ``spectrograms_*.h5`` under
+        ``shared_resources['spectrograms_dir']``) into a zero canvas at
         each USV's true on-session time. The store contains, for every
         session, an ``(n_usvs, 128, 128)`` array of `[0, 1]`-normalized
         spectrograms in `/spectrogram/<session>/spectrograms` and a
@@ -1240,23 +1245,16 @@ class USVSpectrogramPlotter:
         ax_left = fig.add_subplot(outer[0, 0])
 
         # # # # LEFT: precomputed cohort embedding landscape (density + category
-        # boundaries). QLVM -> torus arrays; VAE -> vae_density arrays; coarse/fine
-        # selects the clustering granularity (QLVM watershed / VAE
-        # supercategory-vs-category). Empty path -> bare axes, but ticks are still
-        # stripped so the VAE panel never shows ticks/ticklabels.
-        if embedding == "qlvm":
-            arrays_path = (
-                shared["arrays_npz_path_fine"]
-                if seq_cfg["boundary_clustering"] == "fine"
-                else shared["arrays_npz_path_coarse"]
-            )
-        else:
-            arrays_path = (
-                shared["vae_density_npz_path_fine"]
-                if seq_cfg["boundary_clustering"] == "fine"
-                else shared["vae_density_npz_path_coarse"]
-            )
-        if arrays_path:
+        # boundaries), resolved by convention from the shared spectrograms dir --
+        # QLVM -> <dir>/qlvm/arrays_{coarse,fine}.npz, VAE ->
+        # <dir>/vae/vae_density_{coarse,fine}.npz; boundary_clustering picks
+        # coarse/fine. If the npz is not present (e.g. the VAE density was never
+        # precomputed) fall back to bare axes, but still strip ticks so the panel
+        # never shows ticks/ticklabels.
+        arrays_path = resolve_embedding_arrays_path(
+            shared["spectrograms_dir"], embedding, seq_cfg["boundary_clustering"]
+        )
+        if pathlib.Path(arrays_path).exists():
             self._draw_embedding_left_map(ax_left, arrays_path, draw_boundaries=bool(seq_cfg["draw_boundaries"]))
         else:
             ax_left.set_xticks([])
@@ -1420,10 +1418,11 @@ class USVSpectrogramPlotter:
                     fontsize=7, color="#FFFFFF", ha="center", va="bottom", zorder=5,
                 )
         # Optionally mark each USV with a horizontal emitter-colored bar along
-        # the bottom of the spectrogram, spanning its [start, stop].
+        # the top of the spectrogram, spanning its [start, stop].
         if seq_cfg["mark_usv_segments"]:
             y_lo = float(freq_bins_cropped[0])
-            y_bar = y_lo + 0.03 * (float(freq_bins_cropped[-1]) - y_lo)
+            y_hi = float(freq_bins_cropped[-1])
+            y_bar = y_hi - 0.03 * (y_hi - y_lo)
             for _seq_number, row in seq_rows:
                 ax_right.plot(
                     [float(row["start"]), float(row["stop"])], [y_bar, y_bar],
@@ -2531,8 +2530,9 @@ def build_vae_density_npz(
     defaults to the unit square).
 
     Run once per clustering granularity: ``label_col="vae_supercategory"`` for the
-    COARSE map and ``label_col="vae_category"`` for the FINE map, writing two files
-    that ``shared_resources.vae_density_npz_path_{coarse,fine}`` then point at.
+    COARSE map and ``label_col="vae_category"`` for the FINE map. Write them to
+    ``<spectrograms_dir>/vae/vae_density_{coarse,fine}.npz`` so the figure resolves
+    them from ``shared_resources.spectrograms_dir`` by convention.
 
     Parameters
     ----------
@@ -2621,8 +2621,9 @@ def build_vae_density_cli(sessions_txt, out_coarse, out_fine, cache_path, grid, 
     -----------
     One-off CLI that builds BOTH cohort VAE landscape files consumed by the USV
     sequence figure: the COARSE map (``vae_supercategory`` boundaries) and the FINE
-    map (``vae_category`` boundaries). Point
-    ``shared_resources.vae_density_npz_path_{coarse,fine}`` at the two outputs.
+    map (``vae_category`` boundaries). Write them to
+    ``<shared_resources.spectrograms_dir>/vae/vae_density_{coarse,fine}.npz`` so the
+    figure resolves them automatically.
 
     Parameters
     ----------

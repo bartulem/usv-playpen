@@ -69,7 +69,7 @@ def _imports():
 
     alt.data_transformers.disable_max_rows()
 
-    from usv_playpen.os_utils import configure_path
+    from usv_playpen.os_utils import configure_path, resolve_consolidated_h5_path
     from usv_playpen.visualizations.make_usv_spectrograms import (
         _knn_boundary_grid as knn_boundary_grid,
         build_pooled_embeddings_df,
@@ -91,11 +91,12 @@ def _imports():
         pd,
         pls,
         plt,
+        resolve_consolidated_h5_path,
     )
 
 
 @app.cell
-def _settings(Path, configure_path, json):
+def _settings(Path, configure_path, json, resolve_consolidated_h5_path):
     # Cell 2 = ALL settings/config (imports are all in cell 1). Reads
     # visualizations_settings.json once and exposes everything downstream cells
     # need: the colormap, sex colors, the consolidated store path, the available
@@ -127,14 +128,14 @@ def _settings(Path, configure_path, json):
         sex_colors = {"male": "#9AC0CD", "female": "#FF6347", "unassigned": "#9E9E9E"}
 
     # Session-list directory from the `usv_embedding` block + the consolidated
-    # store from the shared `shared_resources` block (canonical /mnt/falkner
-    # paths, resolved to the host mount via configure_path). Glob every *.txt
-    # list into {label -> absolute path}; playback sessions have no
-    # emitter/embedding structure here, so drop them.
+    # store resolved from the shared `shared_resources.spectrograms_dir` (the newest
+    # spectrograms_*.h5 under it; canonical /mnt/falkner paths resolved to the host
+    # mount). Glob every *.txt list into {label -> absolute path}; playback sessions
+    # have no emitter/embedding structure here, so drop them.
     try:
         _input_dir = configure_path(_viz["usv_embedding"]["input_files_directory"])
-        consolidated_h5_path = configure_path(_viz["shared_resources"]["consolidated_h5_path"])
-    except KeyError:
+        consolidated_h5_path = resolve_consolidated_h5_path(_viz["shared_resources"]["spectrograms_dir"])
+    except (KeyError, FileNotFoundError):
         _input_dir, consolidated_h5_path = None, None
     if _input_dir is not None and Path(_input_dir).is_dir():
         available_lists = {

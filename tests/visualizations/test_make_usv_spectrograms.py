@@ -71,7 +71,7 @@ def _base_settings(
     plot_cbar: bool = True,
     freq_limits: tuple[float, float] = (10.0, 40.0),
     time_window: tuple[float, float] = (0.0, 0.0),
-    consolidated_h5: str = "",
+    spectrograms_dir: str = "",
     apply_mask: bool = True,
     channel_of_interest: int = 0,
     auto_open_figure: bool = False,
@@ -101,8 +101,9 @@ def _base_settings(
         Lower / upper frequency limits in kHz.
     time_window (tuple of float)
         Analysis window in seconds ([start, end]; end 0 -> full file).
-    consolidated_h5 (str)
-        Path to the consolidated spectrogram store (stitched mode).
+    spectrograms_dir (str)
+        Base dir holding qlvm/ + vae/ density npz and spectrograms_*.h5
+        (stitched / sequence modes resolve their inputs from it).
     apply_mask (bool)
         Master SAM2 mask toggle (stitched mode).
     channel_of_interest (int)
@@ -117,11 +118,7 @@ def _base_settings(
     return {
         "figures": {"cmap": "inferno", "timestamp_in_name": False},
         "shared_resources": {
-            "arrays_npz_path_coarse": "",
-            "arrays_npz_path_fine": "",
-            "vae_density_npz_path_coarse": "",
-            "vae_density_npz_path_fine": "",
-            "consolidated_h5_path": consolidated_h5,
+            "spectrograms_dir": spectrograms_dir,
         },
         "make_usv_spectrograms": {
             "save_dir": save_dir,
@@ -735,9 +732,8 @@ def _setup_stitched_session(tmp_path: pathlib.Path, *, with_mask: bool = True):
 
     _write_audio_memmap(tmp_path)
     session_key = tmp_path.name
-    h5_path = tmp_path / "store.h5"
-    _write_consolidated_h5(
-        h5_path, session_key, n_usvs=4, n_freq=16, n_time=32, with_mask=with_mask
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_key, n_usvs=4, n_freq=16, n_time=32, with_mask=with_mask
     )
     _write_usv_summary_csv(
         tmp_path / "audio",
@@ -751,7 +747,7 @@ def _setup_stitched_session(tmp_path: pathlib.Path, *, with_mask: bool = True):
         mode="stitched",
         freq_limits=(30.0, 120.0),
         time_window=(0.0, 1.0),
-        consolidated_h5=str(h5_path),
+        spectrograms_dir=spec_dir,
     )
 
 
@@ -784,8 +780,7 @@ def test_plot_stitched_without_mask(tmp_path):
 def test_plot_stitched_missing_session_group(tmp_path):
     """A consolidated store without the session's group raises KeyError."""
     _write_audio_memmap(tmp_path)
-    h5_path = tmp_path / "store.h5"
-    _write_consolidated_h5(h5_path, "some_other_session")
+    spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", "some_other_session", n_usvs=4)
     _write_usv_summary_csv(
         tmp_path / "audio",
         {"start": [0.1], "stop": [0.2], "vae_supercategory": [1]},
@@ -794,7 +789,7 @@ def test_plot_stitched_missing_session_group(tmp_path):
         mode="stitched",
         freq_limits=(30.0, 120.0),
         time_window=(0.0, 1.0),
-        consolidated_h5=str(h5_path),
+        spectrograms_dir=spec_dir,
     )
     plotter = USVSpectrogramPlotter(
         root_directory=str(tmp_path),
@@ -1650,6 +1645,39 @@ def _write_vae_density_npz(
     return path
 
 
+def _write_spectrograms_dir(
+    base: pathlib.Path,
+    session_key: str,
+    *,
+    n_usvs: int = 4,
+    n_freq: int = 16,
+    n_time: int = 32,
+    with_mask: bool = True,
+    with_qlvm: bool = False,
+    with_vae: bool = False,
+    vae_extent: tuple = (0.0, 5.0, -2.0, 3.0),
+) -> str:
+    """Lay out a ``shared_resources.spectrograms_dir`` the way the readers resolve
+    it: the consolidated store ``<base>/spectrograms_<key>.h5`` plus, optionally,
+    ``<base>/qlvm/arrays_{coarse,fine}.npz`` and ``<base>/vae/vae_density_{coarse,
+    fine}.npz``. Returns ``str(base)``."""
+    base = pathlib.Path(base)
+    base.mkdir(parents=True, exist_ok=True)
+    _write_consolidated_h5(
+        base / f"spectrograms_{session_key}.h5", session_key,
+        n_usvs=n_usvs, n_freq=n_freq, n_time=n_time, with_mask=with_mask,
+    )
+    if with_qlvm:
+        (base / "qlvm").mkdir(exist_ok=True)
+        _write_arrays_npz(base / "qlvm" / "arrays_coarse.npz")
+        _write_arrays_npz(base / "qlvm" / "arrays_fine.npz")
+    if with_vae:
+        (base / "vae").mkdir(exist_ok=True)
+        _write_vae_density_npz(base / "vae" / "vae_density_coarse.npz", extent=vae_extent)
+        _write_vae_density_npz(base / "vae" / "vae_density_fine.npz", extent=vae_extent)
+    return str(base)
+
+
 def _write_sequence_session(
     tmp_path: pathlib.Path, session_id: str = "20230101_120000", *, with_vae: bool = True
 ) -> pathlib.Path:
@@ -1681,19 +1709,17 @@ def _write_sequence_session(
 
 
 def _seq_settings(
-    consolidated_h5: pathlib.Path,
-    arrays_coarse: pathlib.Path,
+    spectrograms_dir: pathlib.Path,
     save_dir: pathlib.Path,
     *,
     embedding: str = "qlvm",
     plot_raw_audio: bool = False,
     apply_mask: bool = True,
-    vae_density: pathlib.Path | None = None,
 ) -> dict:
     """Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
-    `sequence` sub-dict), the emitter color palettes, and the
-    qlvm_torus_traversal_video block the QLVM background reads. When ``vae_density``
-    is given it is wired into both coarse/fine VAE-density shared paths."""
+    `sequence` sub-dict) and the emitter color palettes. The embedding density npz
+    and the consolidated store are resolved from ``spectrograms_dir`` (build it with
+    ``_write_spectrograms_dir``)."""
     settings = _base_settings(
         mode="sequence",
         save_dir=str(save_dir),
@@ -1702,7 +1728,7 @@ def _seq_settings(
         plot_cbar=True,
         freq_limits=(30.0, 120.0),
         time_window=(0.0, 0.006),
-        consolidated_h5=str(consolidated_h5),
+        spectrograms_dir=str(spectrograms_dir),
         apply_mask=apply_mask,
         channel_of_interest=0,
     )
@@ -1716,11 +1742,6 @@ def _seq_settings(
     settings["male_colors"] = ["#9AC0CD", "#8CA252"]
     settings["female_colors"] = ["#FF6347", "#B851B4"]
     settings["unassigned_colors"] = ["#C0C0C0"]
-    settings["shared_resources"]["arrays_npz_path_coarse"] = str(arrays_coarse)
-    settings["shared_resources"]["arrays_npz_path_fine"] = str(arrays_coarse)
-    if vae_density is not None:
-        settings["shared_resources"]["vae_density_npz_path_coarse"] = str(vae_density)
-        settings["shared_resources"]["vae_density_npz_path_fine"] = str(vae_density)
     return settings
 
 
@@ -1732,12 +1753,12 @@ def test_plot_sequence_writes_figure(tmp_path, embedding):
     coords from the CSV and specs/audio from the store/memmap."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)
-    h5_path = _write_consolidated_h5(
-        tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
+        with_qlvm=True, with_vae=True,
     )
-    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
     save_dir = tmp_path / "out"
-    settings = _seq_settings(h5_path, arrays, save_dir, embedding=embedding)
+    settings = _seq_settings(spec_dir, save_dir, embedding=embedding)
     fig = USVSpectrogramPlotter(
         root_directory=str(root), visualizations_parameter_dict=settings
     ).make_usv_spectrograms()
@@ -1751,19 +1772,19 @@ def test_plot_sequence_both_embeddings_draw_cohort_density(tmp_path):
     ticks: QLVM on the torus [0,1] square; VAE over its own npz extent."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)
-    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
-    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
-    vae_density = _write_vae_density_npz(tmp_path / "vae_density.npz", extent=(0.0, 5.0, -2.0, 3.0))
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
+        with_qlvm=True, with_vae=True, vae_extent=(0.0, 5.0, -2.0, 3.0),
+    )
     save_dir = tmp_path / "out"
 
     fig_q = USVSpectrogramPlotter(
         root_directory=str(root),
-        visualizations_parameter_dict=_seq_settings(h5_path, arrays, save_dir, embedding="qlvm"),
+        visualizations_parameter_dict=_seq_settings(spec_dir, save_dir, embedding="qlvm"),
     ).plot_sequence()
     fig_v = USVSpectrogramPlotter(
         root_directory=str(root),
-        visualizations_parameter_dict=_seq_settings(
-            h5_path, arrays, save_dir, embedding="vae", vae_density=vae_density),
+        visualizations_parameter_dict=_seq_settings(spec_dir, save_dir, embedding="vae"),
     ).plot_sequence()
     # Both draw a heatmap image; QLVM is the unit square, VAE is the npz extent.
     assert len(fig_q.axes[0].images) >= 1
@@ -1782,10 +1803,10 @@ def test_plot_sequence_raw_audio_uses_loudest_channel(tmp_path):
     (channel 1 in the fixture), not the configured channel_of_interest (0)."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)  # peak_amp_ch mode = 1
-    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
-    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
-    settings = _seq_settings(h5_path, arrays, tmp_path / "out", embedding="qlvm",
-                             plot_raw_audio=True)
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32, with_qlvm=True,
+    )
+    settings = _seq_settings(spec_dir, tmp_path / "out", embedding="qlvm", plot_raw_audio=True)
     settings["make_usv_spectrograms"]["channel_of_interest"] = 0  # differs from loudest (1)
     settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
     fig = USVSpectrogramPlotter(
@@ -1809,9 +1830,10 @@ def test_plot_sequence_draws_connecting_line(tmp_path):
 
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)  # 4 window USVs, all with coords
-    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
-    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
-    settings = _seq_settings(h5_path, arrays, tmp_path / "out", embedding="qlvm")
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32, with_qlvm=True,
+    )
+    settings = _seq_settings(spec_dir, tmp_path / "out", embedding="qlvm")
     settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
     fig = USVSpectrogramPlotter(
         root_directory=str(root), visualizations_parameter_dict=settings
@@ -1846,12 +1868,14 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         root / "video", track_names=("male_x", "female_y"),
         name=f"{session_id}_points3d_translated_rotated_metric.h5",
     )
-    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=2, n_freq=16, n_time=32)
-    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=2, n_freq=16, n_time=32,
+        with_qlvm=True, with_vae=True,
+    )
 
     def _n_subsegments(embedding: str) -> int:
         settings = _seq_settings(
-            h5_path, arrays, tmp_path / f"out_{embedding}", embedding=embedding
+            spec_dir, tmp_path / f"out_{embedding}", embedding=embedding
         )
         settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
         fig = USVSpectrogramPlotter(
@@ -1871,9 +1895,11 @@ def test_plot_sequence_vae_missing_coords_raises(tmp_path):
     session-named ValueError."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id, with_vae=False)
-    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
-    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
-    settings = _seq_settings(h5_path, arrays, tmp_path / "out", embedding="vae")
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
+        with_qlvm=True, with_vae=True,
+    )
+    settings = _seq_settings(spec_dir, tmp_path / "out", embedding="vae")
     with pytest.raises(ValueError, match="vae"):
         USVSpectrogramPlotter(
             root_directory=str(root), visualizations_parameter_dict=settings

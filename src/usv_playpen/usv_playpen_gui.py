@@ -4310,69 +4310,65 @@ class USVPlaypenWindow(QMainWindow):
         open_visualizations_credentials_dir_dialog = partial(self._open_directory_dialog, self.visualizations_credentials_dir_edit, 'Select credentials directory')
         visualizations_credentials_dir_btn.clicked.connect(open_visualizations_credentials_dir_dialog)
 
-        # Shared input-file paths (QLVM arrays + consolidated H5), grouped with the
-        # credentials directory since they are global I/O resources read by several
-        # visualizations (torus video, USV sequence figure, stitched spectrogram,
-        # embedding explorer). Same edit / Browse sizing as the credentials field;
-        # each writes live into the top-level `shared_resources` block.
-        _shared_cfg = self.visualizations_input_dict['shared_resources']
-        _shared_files = [
-            ('Coarse arrays (npz)', 'arrays_npz_path_coarse', 'Select coarse arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_coarse_edit'),
-            ('Fine arrays (npz)', 'arrays_npz_path_fine', 'Select fine arrays .npz', 'NumPy (*.npz)', 'qlvm_arrays_fine_edit'),
-            ('Spectrograms/masks/latents (h5)', 'consolidated_h5_path', 'Select consolidated .h5', 'HDF5 (*.h5)', 'qlvm_consolidated_edit'),
-        ]
-        for _row_i, (_lbl, _key, _title, _filt, _attr) in enumerate(_shared_files):
-            _y = 395 + _row_i * 30
-            _file_edit = QLineEdit(f"{_shared_cfg[_key]}", self.VisualizationsSettings)
-            _file_edit.setPlaceholderText(_lbl)
-            _file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-            _file_edit.setStyleSheet('QLineEdit { width: 280px; }')
-            _file_edit.textChanged.connect(partial(self._update_nested_dict_value, self.visualizations_input_dict, ('shared_resources', _key)))
-            _file_edit.move(10, _y)
-            _file_edit.setCursorPosition(0)  # show the start of the path, not the tail
-            setattr(self, _attr, _file_edit)
-            _file_btn = QPushButton('Browse', self.VisualizationsSettings)
-            _file_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-            _file_btn.setStyleSheet('QPushButton { min-width: 41px; min-height: 12px; max-width: 41px; max-height: 13px; }')
-            _file_btn.move(295, _y - 1)
-            _file_btn.clicked.connect(partial(self._open_file_dialog, _file_edit, _title, _filt))
+        # Single shared base directory, grouped with the credentials directory as a
+        # global I/O resource. Under it the visualizations resolve, by convention,
+        # the QLVM density arrays (qlvm/arrays_{coarse,fine}.npz), the VAE density
+        # arrays (vae/vae_density_{coarse,fine}.npz) and the consolidated store
+        # (spectrograms_*.h5) -- read by the torus video, the USV sequence figure,
+        # and the embedding explorer. Only this one path is configured here; it
+        # writes live into shared_resources.spectrograms_dir.
+        self.spectrograms_dir_edit = QLineEdit(
+            f"{self.visualizations_input_dict['shared_resources']['spectrograms_dir']}",
+            self.VisualizationsSettings,
+        )
+        self.spectrograms_dir_edit.setPlaceholderText('Spectrograms directory (qlvm/ + vae/ + *.h5)')
+        self.spectrograms_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.spectrograms_dir_edit.setStyleSheet('QLineEdit { width: 280px; }')
+        self.spectrograms_dir_edit.textChanged.connect(partial(self._update_nested_dict_value, self.visualizations_input_dict, ('shared_resources', 'spectrograms_dir')))
+        self.spectrograms_dir_edit.move(10, 395)
+        self.spectrograms_dir_edit.setCursorPosition(0)  # show the start of the path, not the tail
+        spectrograms_dir_btn = QPushButton('Browse', self.VisualizationsSettings)
+        spectrograms_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
+        spectrograms_dir_btn.setStyleSheet('QPushButton { min-width: 41px; min-height: 12px; max-width: 41px; max-height: 13px; }')
+        spectrograms_dir_btn.move(295, 394)
+        spectrograms_dir_btn.clicked.connect(partial(self._open_directory_dialog, self.spectrograms_dir_edit, 'Select spectrograms directory'))
 
         pc_usage_visualizations_label = QLabel('Notify e-mail(s) of PC usage:', self.VisualizationsSettings)
         pc_usage_visualizations_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        pc_usage_visualizations_label.move(10, 485)
+        pc_usage_visualizations_label.move(10, 425)
         self.pc_usage_visualizations = QLineEdit('', self.VisualizationsSettings)
         self.pc_usage_visualizations.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.pc_usage_visualizations.setStyleSheet('QLineEdit { width: 135px; }')
-        self.pc_usage_visualizations.move(225, 487)
+        self.pc_usage_visualizations.move(225, 427)
 
         visualizations_pc_label = QLabel('Visualizations PC of choice:', self.VisualizationsSettings)
         visualizations_pc_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        visualizations_pc_label.move(10, 515)
+        visualizations_pc_label.move(10, 455)
         self.loaded_visualizations_pc_list = sorted(self.visualizations_input_dict['send_email']['visualizations_pc_list'], key=lambda x: x == self.visualizations_input_dict['send_email']['visualizations_pc_choice'], reverse=True)
         self.visualizations_pc_cb = QComboBox(self.VisualizationsSettings)
         self.visualizations_pc_cb.addItems(self.loaded_visualizations_pc_list)
         self.visualizations_pc_cb.setStyleSheet('QComboBox { width: 107px; }')
         self.visualizations_pc_cb.activated.connect(partial(self._combo_box_prior_visualizations_pc_choice, variable_id='visualizations_pc_choice'))
-        self.visualizations_pc_cb.move(225, 515)
+        self.visualizations_pc_cb.move(225, 455)
 
         dv_label = QLabel('Select data visualization', self.VisualizationsSettings)
         dv_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
         dv_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        dv_label.move(10, 555)
+        dv_label.move(10, 495)
 
         plot_behavioral_features_label = QLabel('Plot neuronal tuning figures:', self.VisualizationsSettings)
         plot_behavioral_features_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         plot_behavioral_features_label.setStyleSheet(self.orange_label_style)
-        plot_behavioral_features_label.move(10, 585)
+        plot_behavioral_features_label.move(10, 525)
         self.plot_behavioral_features_cb = QComboBox(self.VisualizationsSettings)
         self.plot_behavioral_features_cb.addItems(['No', 'Yes'])
         self.plot_behavioral_features_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.plot_behavioral_features_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='plot_behavioral_tuning_cb_bool'))
-        self.plot_behavioral_features_cb.move(275, 585)
+        self.plot_behavioral_features_cb.move(275, 525)
 
         default_cmap_label = QLabel('Spatial ratemap colormap:', self.VisualizationsSettings)
         default_cmap_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        default_cmap_label.move(10, 615)
+        default_cmap_label.move(10, 555)
         self.default_cmap_list = sorted(
             ['viridis', 'cividis', 'plasma', 'inferno', 'magma'],
             key=lambda x: x == self.visualizations_input_dict['figures']['cmap'],
@@ -4382,11 +4378,11 @@ class USVPlaypenWindow(QMainWindow):
         self.default_cmap_cb.addItems(self.default_cmap_list)
         self.default_cmap_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.default_cmap_cb.activated.connect(partial(self._combo_box_default_cmap, variable_id='default_cmap'))
-        self.default_cmap_cb.move(275, 615)
+        self.default_cmap_cb.move(275, 555)
 
         default_fig_format_label = QLabel('Save created figures in format:', self.VisualizationsSettings)
         default_fig_format_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        default_fig_format_label.move(10, 645)
+        default_fig_format_label.move(10, 585)
         self.default_fig_format_list = sorted(
             ['png', 'jpg', 'svg', 'pdf'],
             key=lambda x: x == self.visualizations_input_dict['figures']['fig_format'],
@@ -4396,7 +4392,7 @@ class USVPlaypenWindow(QMainWindow):
         self.default_fig_format_cb.addItems(self.default_fig_format_list)
         self.default_fig_format_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.default_fig_format_cb.activated.connect(partial(self._combo_box_default_fig_format, variable_id='default_fig_format'))
-        self.default_fig_format_cb.move(275, 645)
+        self.default_fig_format_cb.move(275, 585)
 
         vis_col_two_x1, vis_col_two_x2 = 380, 670
 

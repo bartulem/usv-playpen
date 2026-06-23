@@ -57,7 +57,7 @@ from click.core import ParameterSource
 from sklearn.neighbors import NearestNeighbors
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import configure_path
+from ..os_utils import configure_path, resolve_consolidated_h5_path, resolve_embedding_arrays_path
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap
 from .plot_style import apply_plot_style
@@ -415,7 +415,7 @@ class QLVMTorusTraversalVideo:
         cfg = self.input_parameter_dict['qlvm_torus_traversal_video']
         shared = self.input_parameter_dict['shared_resources']
         clustering = cfg['clustering']
-        arrays_path = shared['arrays_npz_path_fine'] if clustering == "fine" else shared['arrays_npz_path_coarse']
+        arrays_path = resolve_embedding_arrays_path(shared['spectrograms_dir'], "qlvm", clustering)
         fps = cfg['fps']
         dpi = cfg['dpi']
         m = cfg['m']
@@ -464,7 +464,7 @@ class QLVMTorusTraversalVideo:
             out_path = pathlib.Path(self.output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with h5py.File(configure_path(shared['consolidated_h5_path']), "r") as h5:
+        with h5py.File(resolve_consolidated_h5_path(shared['spectrograms_dir']), "r") as h5:
             # Per-USV latent coords + (session, row) come from the H5's qlvm_dim
             # datasets; spectrograms are read from the same store on demand.
             pooled_coords, pooled_index = pool_latents_from_h5(h5)
