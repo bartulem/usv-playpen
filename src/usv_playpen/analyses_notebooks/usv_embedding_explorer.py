@@ -126,14 +126,14 @@ def _settings(Path, configure_path, json):
     except (KeyError, IndexError):
         sex_colors = {"male": "#9AC0CD", "female": "#FF6347", "unassigned": "#9E9E9E"}
 
-    # Session-list directory + consolidated store from the `usv_embedding` block
-    # (canonical /mnt/falkner paths, resolved to the host mount via
-    # configure_path). Glob every *.txt list into {label -> absolute path};
-    # playback sessions have no emitter/embedding structure here, so drop them.
+    # Session-list directory from the `usv_embedding` block + the consolidated
+    # store from the shared `shared_resources` block (canonical /mnt/falkner
+    # paths, resolved to the host mount via configure_path). Glob every *.txt
+    # list into {label -> absolute path}; playback sessions have no
+    # emitter/embedding structure here, so drop them.
     try:
-        _emb = _viz["usv_embedding"]
-        _input_dir = configure_path(_emb["input_files_directory"])
-        consolidated_h5_path = configure_path(_emb["consolidated_h5_path"])
+        _input_dir = configure_path(_viz["usv_embedding"]["input_files_directory"])
+        consolidated_h5_path = configure_path(_viz["shared_resources"]["consolidated_h5_path"])
     except KeyError:
         _input_dir, consolidated_h5_path = None, None
     if _input_dir is not None and Path(_input_dir).is_dir():

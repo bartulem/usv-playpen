@@ -58,6 +58,7 @@ from sklearn.neighbors import NearestNeighbors
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import configure_path
+from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap
 from .plot_style import apply_plot_style
 
@@ -385,6 +386,7 @@ class QLVMTorusTraversalVideo:
         self.output_path = output_path
         self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else {}
         self.message_output = message_output if message_output is not None else print
+        self.app_context_bool = is_gui_context()
 
     def make_video(self) -> None:
         """
@@ -406,10 +408,14 @@ class QLVMTorusTraversalVideo:
             f"QLVM torus-traversal video started at: "
             f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )
+        # Brief pause so the GUI flushes the "started" message before the
+        # (blocking) render takes over the thread.
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         cfg = self.input_parameter_dict['qlvm_torus_traversal_video']
+        shared = self.input_parameter_dict['shared_resources']
         clustering = cfg['clustering']
-        arrays_path = cfg['arrays_npz_path_fine'] if clustering == "fine" else cfg['arrays_npz_path_coarse']
+        arrays_path = shared['arrays_npz_path_fine'] if clustering == "fine" else shared['arrays_npz_path_coarse']
         fps = cfg['fps']
         dpi = cfg['dpi']
         m = cfg['m']
@@ -458,7 +464,7 @@ class QLVMTorusTraversalVideo:
             out_path = pathlib.Path(self.output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with h5py.File(configure_path(cfg['consolidated_h5_path']), "r") as h5:
+        with h5py.File(configure_path(shared['consolidated_h5_path']), "r") as h5:
             # Per-USV latent coords + (session, row) come from the H5's qlvm_dim
             # datasets; spectrograms are read from the same store on demand.
             pooled_coords, pooled_index = pool_latents_from_h5(h5)

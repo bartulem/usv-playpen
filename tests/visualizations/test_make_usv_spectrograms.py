@@ -51,6 +51,7 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     _pick_spiral_with_grid,
     _resolve_session_emitter_ids,
     build_pooled_embeddings_df,
+    build_vae_density_npz,
     plot_session_type_usv_counts,
     plot_session_usv_timeline,
     plot_umap_with_category_thumbnails,
@@ -73,6 +74,7 @@ def _base_settings(
     consolidated_h5: str = "",
     apply_mask: bool = True,
     channel_of_interest: int = 0,
+    auto_open_figure: bool = False,
 ) -> dict:
     """
     Description
@@ -87,7 +89,8 @@ def _base_settings(
     mode (str)
         Dispatch mode ('single' / 'all' / 'stitched').
     save_dir (str)
-        Output directory; empty string routes saves to ``<root>/audio``.
+        Output directory; empty string routes saves to
+        ``<root>/data_animation_examples``.
     save_fig (bool)
         Whether ``_save_figure`` writes to disk.
     plot_raw_audio (bool)
@@ -112,7 +115,14 @@ def _base_settings(
     """
 
     return {
-        "figures": {"cmap": "inferno"},
+        "figures": {"cmap": "inferno", "timestamp_in_name": False},
+        "shared_resources": {
+            "arrays_npz_path_coarse": "",
+            "arrays_npz_path_fine": "",
+            "vae_density_npz_path_coarse": "",
+            "vae_density_npz_path_fine": "",
+            "consolidated_h5_path": consolidated_h5,
+        },
         "make_usv_spectrograms": {
             "save_dir": save_dir,
             "save_fig": save_fig,
@@ -129,8 +139,8 @@ def _base_settings(
             "nfft": 256,
             "plot_cbar": plot_cbar,
             "cbar_limits": [-70, 0],
-            "consolidated_spectrograms_h5": consolidated_h5,
             "apply_mask": apply_mask,
+            "auto_open_figure": auto_open_figure,
         },
     }
 
@@ -543,9 +553,9 @@ def test_save_figure_noop_when_disabled(tmp_path):
     assert not list(tmp_path.rglob("*.png"))
 
 
-def test_save_figure_writes_to_audio_dir_when_save_dir_empty(tmp_path):
-    """An empty save_dir routes the figure to <root>/audio and the file
-    name encodes the mode suffix and time window."""
+def test_save_figure_writes_to_data_animation_examples_when_save_dir_empty(tmp_path):
+    """An empty save_dir routes the figure to <root>/data_animation_examples and
+    the file name encodes the mode suffix and time window."""
     plotter = USVSpectrogramPlotter(
         root_directory=str(tmp_path),
         visualizations_parameter_dict=_base_settings(
@@ -554,9 +564,58 @@ def test_save_figure_writes_to_audio_dir_when_save_dir_empty(tmp_path):
     )
     fig, _ = plt.subplots()
     plotter._save_figure(fig, "ch00", "audio_250000_2000_3_int16.mmap")
-    written = list((tmp_path / "audio").glob("*.png"))
+    written = list((tmp_path / "data_animation_examples").glob("*.png"))
     assert len(written) == 1
     assert "ch00" in written[0].name
+
+
+def test_save_figure_auto_opens_only_when_enabled_and_gui(tmp_path, mocker):
+    """The saved figure is opened in the OS viewer only when auto_open_figure is
+    on AND there is a GUI context; never otherwise."""
+    run_mock = mocker.patch("usv_playpen.visualizations.make_usv_spectrograms.subprocess.run")
+    startfile_mock = mocker.patch(
+        "usv_playpen.visualizations.make_usv_spectrograms.os.startfile", create=True
+    )
+
+    # enabled + GUI context -> opened
+    plotter = USVSpectrogramPlotter(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_base_settings(
+            save_fig=True, save_dir="", time_window=(0.0, 0.0), auto_open_figure=True
+        ),
+    )
+    plotter.app_context_bool = True
+    fig, _ = plt.subplots()
+    plotter._save_figure(fig, "ch00", "audio_250000_2000_3_int16.mmap")
+    assert run_mock.called or startfile_mock.called
+
+    # GUI context but auto_open_figure off -> NOT opened
+    run_mock.reset_mock()
+    startfile_mock.reset_mock()
+    plotter_off = USVSpectrogramPlotter(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_base_settings(
+            save_fig=True, save_dir="", time_window=(0.0, 0.0), auto_open_figure=False
+        ),
+    )
+    plotter_off.app_context_bool = True
+    fig_off, _ = plt.subplots()
+    plotter_off._save_figure(fig_off, "ch01", "audio_250000_2000_3_int16.mmap")
+    assert not run_mock.called
+    assert not startfile_mock.called
+
+    # auto_open_figure on but no GUI context -> NOT opened
+    plotter_headless = USVSpectrogramPlotter(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_base_settings(
+            save_fig=True, save_dir="", time_window=(0.0, 0.0), auto_open_figure=True
+        ),
+    )
+    plotter_headless.app_context_bool = False
+    fig_h, _ = plt.subplots()
+    plotter_headless._save_figure(fig_h, "ch02", "audio_250000_2000_3_int16.mmap")
+    assert not run_mock.called
+    assert not startfile_mock.called
 
 
 def test_save_figure_explicit_save_dir(tmp_path):
@@ -586,7 +645,7 @@ def test_plot_single_channel_returns_figure(tmp_path):
     )
     fig = plotter.plot_single_channel()
     assert isinstance(fig, plt.Figure)
-    assert list((tmp_path / "audio").glob("*.png"))
+    assert list((tmp_path / "data_animation_examples").glob("*.png"))
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -1056,6 +1115,91 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert any("from cache" in m for m in logs)
 
 
+def test_build_pooled_embeddings_df_skips_empty_session(tmp_path):
+    """A session whose usv_summary has zero rows (empty columns infer as String,
+    which would break the integer noise filter / vertical concat) is skipped, not
+    crashed on."""
+    good = tmp_path / "20230101_000000"
+    _write_embedding_session(good, "20230101_000000")
+    empty = tmp_path / "20230102_000000"
+    _write_usv_summary_csv(
+        empty / "audio",
+        {c: [] for c in (
+            "vae_umap1", "vae_umap2", "qlvm_dim1", "qlvm_dim2",
+            "vae_category", "vae_supercategory", "qlvm_category", "qlvm_supercategory",
+            "emitter", "duration", "mean_freq_hz", "peak_freq_hz",
+            "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy")},
+    )
+    txt = _write_sessions_txt(tmp_path, [good, empty])
+    pooled = build_pooled_embeddings_df(sessions_txt_path=str(txt), message_output=lambda *_: None)
+    assert pooled.height == 3  # only the good session's non-noise rows; empty skipped
+
+
+def test_build_pooled_embeddings_df_coerces_string_numeric_columns(tmp_path):
+    """A non-empty session whose numeric columns are CSV-inferred as String (e.g.
+    all-null coordinates) is coerced to the common dtype, so the diagonal concat
+    across sessions does not raise 'String is incompatible with Float64'."""
+    good = tmp_path / "20230101_000000"
+    _write_embedding_session(good, "20230101_000000")
+    weird = tmp_path / "20230103_000000"
+    _write_tracking_h5(weird / "video", ("M", "F"))
+    _write_usv_summary_csv(
+        weird / "audio",
+        {
+            "vae_umap1": [None, None],  # all-null -> CSV-inferred as String/Null
+            "vae_umap2": [None, None],
+            "qlvm_dim1": [1.0, 2.0],
+            "qlvm_dim2": [1.0, 2.0],
+            "vae_category": [1, 2],
+            "vae_supercategory": [1, 2],
+            "qlvm_category": [1, 2],
+            "qlvm_supercategory": [1, 2],
+            "emitter": ["M", "F"],
+            "duration": [0.05, 0.06],
+            "mean_freq_hz": [40_000, 60_000],
+            "peak_freq_hz": [45_000, 65_000],
+            "freq_bandwidth_hz": [5_000, 6_000],
+            "mean_amplitude": [0.1, 0.2],
+            "max_amplitude": [0.5, 0.6],
+            "spectral_entropy": [1.0, 1.1],
+        },
+    )
+    txt = _write_sessions_txt(tmp_path, [good, weird])
+    pooled = build_pooled_embeddings_df(sessions_txt_path=str(txt), message_output=lambda *_: None)
+    # good: 3 non-noise rows; weird: 2 non-noise rows -> 5 total, concat succeeded
+    assert pooled.height == 5
+
+
+def test_build_vae_density_npz(tmp_path):
+    """build_vae_density_npz pools the cohort VAE coords and writes an npz with a
+    density heatmap, a grid label field, and the umap extent; coarse vs fine differ
+    only in the label field they rasterize."""
+    sess = tmp_path / "20230101_000000"
+    _write_embedding_session(sess, "20230101_000000")
+    txt = _write_sessions_txt(tmp_path, [sess])
+
+    out_coarse = build_vae_density_npz(
+        str(txt), str(tmp_path / "vae_coarse.npz"), label_col="vae_supercategory",
+        grid=32, smooth_sigma=1.0, knn=1, message_output=lambda *_: None,
+    )
+    arr = np.load(out_coarse)
+    assert arr["heatmap"].shape == (32, 32)
+    assert np.isfinite(arr["heatmap"]).all()
+    assert arr["ws_labels_periodic"].shape == (32, 32)
+    assert arr["extent"].shape == (4,)
+    # extent covers the pooled (noise-filtered) vae_umap coordinates
+    x0, x1, y0, y1 = (float(v) for v in arr["extent"])
+    assert x0 <= 0.2 and x1 >= 0.4 and y0 <= 0.6 and y1 >= 0.8
+
+    out_fine = build_vae_density_npz(
+        str(txt), str(tmp_path / "vae_fine.npz"), label_col="vae_category",
+        grid=32, smooth_sigma=1.0, knn=1, message_output=lambda *_: None,
+    )
+    # the coarse (supercategory) and fine (category) label fields are not identical
+    fine = np.load(out_fine)
+    assert not np.array_equal(arr["ws_labels_periodic"], fine["ws_labels_periodic"])
+
+
 def test_build_pooled_embeddings_df_rebuild_on_schema_miss(tmp_path):
     """An old cache missing a required column triggers a transparent
     rebuild."""
@@ -1472,3 +1616,265 @@ def test_bandwidth_split_constant_is_khz():
     """Guard against an accidental unit regression on the bimodal split
     constant (it is in display kHz, not Hz)."""
     assert 0.0 < BANDWIDTH_BIMODAL_SPLIT_KHZ < 200.0
+
+
+# ---- plot_sequence (per-session embedding + continuous spectrogram) -------
+
+
+def _write_arrays_npz(path: pathlib.Path, res: int = 8, n_clusters: int = 2) -> pathlib.Path:
+    """Write a tiny QLVM analysis arrays .npz (heatmap / ws_labels_periodic /
+    centers) sufficient for the sequence figure's QLVM background."""
+    rng = np.random.default_rng(0)
+    np.savez(
+        path,
+        heatmap=rng.random((res, res)).astype(np.float32),
+        ws_labels_periodic=rng.integers(0, n_clusters + 1, size=(res, res)).astype(np.int16),
+        centers=rng.random((n_clusters, 2)).astype(np.float32),
+    )
+    return path
+
+
+def _write_vae_density_npz(
+    path: pathlib.Path, extent: tuple = (0.0, 5.0, -2.0, 3.0), res: int = 8, n_clusters: int = 2
+) -> pathlib.Path:
+    """Write a tiny VAE cohort-density .npz (heatmap / ws_labels_periodic / extent)
+    sufficient for the sequence figure's VAE background. Unlike the QLVM arrays it
+    carries an ``extent`` (the umap coordinate range), not the unit square."""
+    rng = np.random.default_rng(1)
+    np.savez(
+        path,
+        heatmap=rng.random((res, res)).astype(np.float32),
+        ws_labels_periodic=rng.integers(0, n_clusters + 1, size=(res, res)).astype(np.int16),
+        extent=np.array(extent, dtype=np.float64),
+    )
+    return path
+
+
+def _write_sequence_session(
+    tmp_path: pathlib.Path, session_id: str = "20230101_120000", *, with_vae: bool = True
+) -> pathlib.Path:
+    """Lay out a synthetic session (audio memmap + usv_summary CSV with
+    embedding columns + tracking h5) for the sequence figure. Four USVs in
+    [0, 0.006] s: male, female, male, unassigned (track_names male_x/female_y)."""
+    root = tmp_path / session_id
+    audio_dir = root / "audio"
+    _write_audio_memmap(audio_dir, channel_num=3)
+    rows = {
+        "start": [0.0005, 0.0015, 0.0030, 0.0045],
+        "stop": [0.0010, 0.0020, 0.0035, 0.0050],
+        "emitter": ["male_x", "female_y", "male_x", "other_z"],
+        # per-USV loudest channel (0-indexed, < channel_num=3); ch 1 is the mode
+        "peak_amp_ch": [1.0, 1.0, 0.0, 2.0],
+        "qlvm_dim1": [0.2, 0.4, 0.6, 0.8],
+        "qlvm_dim2": [0.3, 0.5, 0.7, 0.2],
+    }
+    if with_vae:
+        rows["vae_umap1"] = [1.0, 2.0, 3.0, 4.0]
+        rows["vae_umap2"] = [-1.0, 0.0, 1.0, 2.0]
+    _write_usv_summary_csv(audio_dir, rows, name=f"{session_id}_usv_summary.csv")
+    _write_tracking_h5(
+        root / "video",
+        track_names=("male_x", "female_y"),
+        name=f"{session_id}_points3d_translated_rotated_metric.h5",
+    )
+    return root
+
+
+def _seq_settings(
+    consolidated_h5: pathlib.Path,
+    arrays_coarse: pathlib.Path,
+    save_dir: pathlib.Path,
+    *,
+    embedding: str = "qlvm",
+    plot_raw_audio: bool = False,
+    apply_mask: bool = True,
+    vae_density: pathlib.Path | None = None,
+) -> dict:
+    """Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
+    `sequence` sub-dict), the emitter color palettes, and the
+    qlvm_torus_traversal_video block the QLVM background reads. When ``vae_density``
+    is given it is wired into both coarse/fine VAE-density shared paths."""
+    settings = _base_settings(
+        mode="sequence",
+        save_dir=str(save_dir),
+        save_fig=True,
+        plot_raw_audio=plot_raw_audio,
+        plot_cbar=True,
+        freq_limits=(30.0, 120.0),
+        time_window=(0.0, 0.006),
+        consolidated_h5=str(consolidated_h5),
+        apply_mask=apply_mask,
+        channel_of_interest=0,
+    )
+    settings["make_usv_spectrograms"]["sequence"] = {
+        "embedding": embedding,
+        "draw_boundaries": True,
+        "boundary_clustering": "coarse",
+        "annotate_right": True,
+        "mark_usv_segments": True,
+    }
+    settings["male_colors"] = ["#9AC0CD", "#8CA252"]
+    settings["female_colors"] = ["#FF6347", "#B851B4"]
+    settings["unassigned_colors"] = ["#C0C0C0"]
+    settings["shared_resources"]["arrays_npz_path_coarse"] = str(arrays_coarse)
+    settings["shared_resources"]["arrays_npz_path_fine"] = str(arrays_coarse)
+    if vae_density is not None:
+        settings["shared_resources"]["vae_density_npz_path_coarse"] = str(vae_density)
+        settings["shared_resources"]["vae_density_npz_path_fine"] = str(vae_density)
+    return settings
+
+
+@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+@pytest.mark.parametrize("embedding", ["qlvm", "vae"])
+def test_plot_sequence_writes_figure(tmp_path, embedding):
+    """A sequence figure is rendered and written for every embedding, sourcing
+    coords from the CSV and specs/audio from the store/memmap."""
+    session_id = "20230101_120000"
+    root = _write_sequence_session(tmp_path, session_id)
+    h5_path = _write_consolidated_h5(
+        tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32
+    )
+    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
+    save_dir = tmp_path / "out"
+    settings = _seq_settings(h5_path, arrays, save_dir, embedding=embedding)
+    fig = USVSpectrogramPlotter(
+        root_directory=str(root), visualizations_parameter_dict=settings
+    ).make_usv_spectrograms()
+    assert isinstance(fig, plt.Figure)
+    assert list(save_dir.glob(f"usv_spectrogram_*sequence_{embedding}*"))
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_sequence_both_embeddings_draw_cohort_density(tmp_path):
+    """Both embeddings draw a precomputed cohort density heatmap (an image) with no
+    ticks: QLVM on the torus [0,1] square; VAE over its own npz extent."""
+    session_id = "20230101_120000"
+    root = _write_sequence_session(tmp_path, session_id)
+    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
+    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
+    vae_density = _write_vae_density_npz(tmp_path / "vae_density.npz", extent=(0.0, 5.0, -2.0, 3.0))
+    save_dir = tmp_path / "out"
+
+    fig_q = USVSpectrogramPlotter(
+        root_directory=str(root),
+        visualizations_parameter_dict=_seq_settings(h5_path, arrays, save_dir, embedding="qlvm"),
+    ).plot_sequence()
+    fig_v = USVSpectrogramPlotter(
+        root_directory=str(root),
+        visualizations_parameter_dict=_seq_settings(
+            h5_path, arrays, save_dir, embedding="vae", vae_density=vae_density),
+    ).plot_sequence()
+    # Both draw a heatmap image; QLVM is the unit square, VAE is the npz extent.
+    assert len(fig_q.axes[0].images) >= 1
+    assert len(fig_v.axes[0].images) >= 1
+    assert fig_q.axes[0].get_xlim() == (0.0, 1.0)
+    assert fig_v.axes[0].get_xlim() == (0.0, 5.0)
+    # Neither panel shows ticks/ticklabels.
+    for ax in (fig_q.axes[0], fig_v.axes[0]):
+        assert len(ax.get_xticks()) == 0
+        assert len(ax.get_yticks()) == 0
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_sequence_raw_audio_uses_loudest_channel(tmp_path):
+    """The raw-audio strip auto-picks the window's most-frequent peak_amp_ch
+    (channel 1 in the fixture), not the configured channel_of_interest (0)."""
+    session_id = "20230101_120000"
+    root = _write_sequence_session(tmp_path, session_id)  # peak_amp_ch mode = 1
+    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
+    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
+    settings = _seq_settings(h5_path, arrays, tmp_path / "out", embedding="qlvm",
+                             plot_raw_audio=True)
+    settings["make_usv_spectrograms"]["channel_of_interest"] = 0  # differs from loudest (1)
+    settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
+    fig = USVSpectrogramPlotter(
+        root_directory=str(root), visualizations_parameter_dict=settings
+    ).plot_sequence()
+
+    mm_path = next((root / "audio").glob("*_int16.mmap"))
+    mm = np.memmap(mm_path, dtype=np.int16, mode="r", shape=(2000, 3), order="C")
+    raw_ydata = fig.axes[1].lines[0].get_ydata()  # axes: [left, raw, spec, cbar]
+    n = len(raw_ydata)
+    assert np.array_equal(raw_ydata, np.asarray(mm[:n, 1]))       # loudest channel
+    assert not np.array_equal(raw_ydata, np.asarray(mm[:n, 0]))   # NOT channel_of_interest
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_sequence_draws_connecting_line(tmp_path):
+    """The window USVs are joined by a single LineCollection with one segment per
+    consecutive pair (n - 1 for n window USVs) and per-segment widths that vary
+    with the inter-USV interval."""
+    from matplotlib.collections import LineCollection
+
+    session_id = "20230101_120000"
+    root = _write_sequence_session(tmp_path, session_id)  # 4 window USVs, all with coords
+    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
+    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
+    settings = _seq_settings(h5_path, arrays, tmp_path / "out", embedding="qlvm")
+    settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
+    fig = USVSpectrogramPlotter(
+        root_directory=str(root), visualizations_parameter_dict=settings
+    ).plot_sequence()
+    ax_left = fig.axes[0]
+    line_cols = [c for c in ax_left.collections if isinstance(c, LineCollection)]
+    assert len(line_cols) == 1
+    # fixture coords do not wrap, so each of the 3 pairs is a single sub-segment
+    assert len(line_cols[0].get_segments()) == 3  # 4 USVs -> 3 segments
+    # the fixture's silent gaps are not all equal -> widths must vary
+    assert len(set(np.round(line_cols[0].get_linewidths(), 6))) > 1
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
+    """QLVM is a periodic unit torus: two USVs near opposite edges connect via the
+    short toroidal route, so that pair's segment is split into two edge-clipped
+    sub-segments. On VAE (a plain plane) the same pair is one straight segment."""
+    from matplotlib.collections import LineCollection
+
+    session_id = "20230101_120000"
+    root = tmp_path / session_id
+    _write_audio_memmap(root / "audio")
+    rows = {
+        "start": [0.001, 0.003], "stop": [0.002, 0.004],
+        "emitter": ["male_x", "male_x"],
+        "qlvm_dim1": [0.95, 0.05], "qlvm_dim2": [0.5, 0.5],  # opposite x-edges -> wraps
+        "vae_umap1": [0.95, 0.05], "vae_umap2": [0.5, 0.5],
+    }
+    _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
+    _write_tracking_h5(
+        root / "video", track_names=("male_x", "female_y"),
+        name=f"{session_id}_points3d_translated_rotated_metric.h5",
+    )
+    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=2, n_freq=16, n_time=32)
+    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
+
+    def _n_subsegments(embedding: str) -> int:
+        settings = _seq_settings(
+            h5_path, arrays, tmp_path / f"out_{embedding}", embedding=embedding
+        )
+        settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
+        fig = USVSpectrogramPlotter(
+            root_directory=str(root), visualizations_parameter_dict=settings
+        ).plot_sequence()
+        lc = [c for c in fig.axes[0].collections if isinstance(c, LineCollection)][0]
+        return len(lc.get_segments())
+
+    assert _n_subsegments("qlvm") == 2  # short route wraps the seam -> two pieces
+    assert _n_subsegments("vae") == 1   # straight line on the plane
+
+
+@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_sequence_vae_missing_coords_raises(tmp_path):
+    """Choosing VAE for a session whose CSV lacks vae_umap columns raises a clear,
+    session-named ValueError."""
+    session_id = "20230101_120000"
+    root = _write_sequence_session(tmp_path, session_id, with_vae=False)
+    h5_path = _write_consolidated_h5(tmp_path / "store.h5", session_id, n_usvs=4, n_freq=16, n_time=32)
+    arrays = _write_arrays_npz(tmp_path / "arrays_coarse.npz")
+    settings = _seq_settings(h5_path, arrays, tmp_path / "out", embedding="vae")
+    with pytest.raises(ValueError, match="vae"):
+        USVSpectrogramPlotter(
+            root_directory=str(root), visualizations_parameter_dict=settings
+        ).plot_sequence()

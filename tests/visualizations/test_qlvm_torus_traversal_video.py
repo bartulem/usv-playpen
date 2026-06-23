@@ -63,20 +63,25 @@ def test_build_phases_structure():
 
 
 def _tiny_cfg(arrays_path, h5_path, peaks_only=False):
-    """A small render config that exercises all phases quickly at low dpi."""
+    """A small render input dict (the qlvm block + the shared_resources block)
+    that exercises all phases quickly at low dpi."""
     return {
-        "clustering": "coarse",
-        "arrays_npz_path_coarse": arrays_path,
-        "arrays_npz_path_fine": arrays_path,
-        "consolidated_h5_path": h5_path,
-        "fps": 4, "dpi": 30, "m": 4,
-        "cluster_hold_frames": 2, "peak_traverse_frames": 4,
-        "boundary_traverse_frames": 4, "title_card_frames": 1,
-        "samples_per_trace": 3, "peak_jitter_sigma": 0.01,
-        "boundary_curve_amplitude": 0.1, "boundary_positions_per_walk": 3,
-        "boundary_neighbors": 3, "seed": 0,
-        "peaks_only": peaks_only, "spec_cache_size": 64, "apply_mask": True,
-        "accent_color": "#00FFFF",
+        "shared_resources": {
+            "arrays_npz_path_coarse": arrays_path,
+            "arrays_npz_path_fine": arrays_path,
+            "consolidated_h5_path": h5_path,
+        },
+        "qlvm_torus_traversal_video": {
+            "clustering": "coarse",
+            "fps": 4, "dpi": 30, "m": 4,
+            "cluster_hold_frames": 2, "peak_traverse_frames": 4,
+            "boundary_traverse_frames": 4, "title_card_frames": 1,
+            "samples_per_trace": 3, "peak_jitter_sigma": 0.01,
+            "boundary_curve_amplitude": 0.1, "boundary_positions_per_walk": 3,
+            "boundary_neighbors": 3, "seed": 0,
+            "peaks_only": peaks_only, "spec_cache_size": 64, "apply_mask": True,
+            "accent_color": "#00FFFF",
+        },
     }
 
 
@@ -114,7 +119,7 @@ def test_make_video_writes_gif(tmp_path):
     out = tmp_path / "traversal.gif"
     QLVMTorusTraversalVideo(
         output_path=str(out),
-        input_parameter_dict={"qlvm_torus_traversal_video": _tiny_cfg(arrays_path, h5_path)},
+        input_parameter_dict=_tiny_cfg(arrays_path, h5_path),
         message_output=lambda *_a, **_kw: None,
     ).make_video()
     assert out.is_file()
@@ -135,7 +140,7 @@ def test_make_video_errors_without_qlvm_dim(tmp_path):
     with pytest.raises(ValueError, match="qlvm_dim"):
         QLVMTorusTraversalVideo(
             output_path=str(tmp_path / "x.gif"),
-            input_parameter_dict={"qlvm_torus_traversal_video": _tiny_cfg(str(arrays), str(h5_path))},
+            input_parameter_dict=_tiny_cfg(str(arrays), str(h5_path)),
             message_output=lambda *_a, **_kw: None,
         ).make_video()
 

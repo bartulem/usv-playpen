@@ -12,7 +12,7 @@ Three rendering modes are exposed by ``USVSpectrogramPlotter``:
     placing the pre-computed `[0, 1]`-normalized per-USV spectrograms
     (from the consolidated HDF5 store) at their on-session start
     times. Gaps between USVs are zero. Requires
-    ``cfg['consolidated_spectrograms_h5']`` to point at the store.
+    ``shared_resources['consolidated_h5_path']`` to point at the store.
 
 Audio is read from the session's ``*_int16.mmap*`` file (the canonical
 concatenated multi-channel int16 memmap), and spectrograms are computed
@@ -24,11 +24,16 @@ parameters live in the ``make_usv_spectrograms`` block of
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
+import subprocess
+import sys
 
 from collections.abc import Callable
+from datetime import datetime
 
+import click
 import h5py
 import librosa
 import librosa.display
@@ -36,13 +41,20 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
+from matplotlib import gridspec
+from matplotlib.collections import LineCollection
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from scipy.ndimage import gaussian_filter1d, zoom
+from scipy.ndimage import gaussian_filter, gaussian_filter1d, zoom
 from scipy.signal.windows import tukey
 from sklearn.neighbors import KNeighborsClassifier
 
 from ..os_utils import configure_path, first_match_or_raise
-from ..time_utils import is_gui_context
+from ..time_utils import is_gui_context, smart_wait
+from .plot_style import apply_plot_style
+
+# Register the bundled Helvetica weights + activate the project mplstyle so every
+# spectrogram / sequence figure renders in the same font as the torus video.
+apply_plot_style()
 
 
 # Load the project-wide default cmap from `visualizations_settings.json`
@@ -79,6 +91,17 @@ CBAR_INSET_PAD_AXES_FRACTION = 0.02
 # of the window tapered at the start and end combined. 0.3 means the
 # first 15% and last 15% of each spec are raised-cosine-faded.
 STITCHED_EDGE_TAPER_ALPHA = 0.3
+
+# Sequence-figure left-panel styling. Marker areas (pt^2) scale modestly with USV
+# duration (so longer calls read bigger without dominating); the connecting path's
+# per-segment linewidth scales with the inter-USV interval (shorter gap -> thinner)
+# within this range; its per-segment color is a white -> emitter-color time
+# gradient (white = start of the bout, emitter color towards the end).
+_SEQ_MARKER_S_MIN = 35.0
+_SEQ_MARKER_S_MAX = 70.0
+_SEQ_LW_MIN = 0.5
+_SEQ_LW_MAX = 3.0
+_SEQ_EMBEDDING_CMAP = "gray_r"
 
 
 class USVSpectrogramPlotter:
@@ -500,6 +523,9 @@ class USVSpectrogramPlotter:
         The filename includes the audio memmap basename prefix, the
         caller-supplied ``suffix`` (mode / channel info), and the
         time window, ensuring uniqueness across modes and windows.
+        An empty ``save_dir`` routes the figure to
+        ``<session>/data_animation_examples`` (the per-session
+        visualization-output folder also used by the behavioral videos).
 
         Parameters
         ----------
@@ -522,16 +548,19 @@ class USVSpectrogramPlotter:
             return
         save_dir = configure_path(cfg["save_dir"]) if cfg["save_dir"] else ""
         if save_dir == "":
-            save_dir = str(pathlib.Path(self.root_directory) / "audio")
+            save_dir = str(pathlib.Path(self.root_directory) / "data_animation_examples")
         pathlib.Path(save_dir).mkdir(parents=True, exist_ok=True)
 
         start_time_sec = float(cfg["time_window"][0])
         end_time_sec = float(cfg["time_window"][1])
         prefix = file_basename.split("_int16.mmap", maxsplit=1)[0]
-        filename = (
-            f"usv_spectrogram_{prefix}_{suffix}_"
-            f"from_{start_time_sec}s_to_{end_time_sec}s.{cfg['fig_format']}"
-        )
+        stem = f"usv_spectrogram_{prefix}_{suffix}_from_{start_time_sec}s_to_{end_time_sec}s"
+        # Honor the global figures.timestamp_in_name (matches figure_io.save_figure:
+        # _<YYYYMMDD>_<HHMMSS>), so repeated renders of the same window do not
+        # overwrite each other.
+        if self.visualizations_parameter_dict["figures"]["timestamp_in_name"]:
+            stem = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        filename = f"{stem}.{cfg['fig_format']}"
         out_path = pathlib.Path(save_dir) / filename
         fig.savefig(
             out_path,
@@ -539,6 +568,42 @@ class USVSpectrogramPlotter:
             transparent=cfg["transparent_fig_bg"],
         )
         self.message_output(f"Saved spectrogram figure: {out_path}")
+
+        # Open the saved figure in the OS default viewer, but only in an
+        # interactive GUI context (``app_context_bool``) so headless / batch
+        # runs over many sessions do not spawn viewer windows.
+        if cfg["auto_open_figure"] and self.app_context_bool:
+            self._open_in_default_viewer(out_path)
+
+    def _open_in_default_viewer(self, path: pathlib.Path) -> None:
+        """
+        Description
+        -----------
+        Open a saved file in the operating system's default viewer
+        (``open`` on macOS, ``os.startfile`` on Windows, ``xdg-open``
+        elsewhere). Best-effort: any failure is reported via
+        ``message_output`` rather than raised, so a missing opener never
+        aborts a render.
+
+        Parameters
+        ----------
+        path (pathlib.Path)
+            File to open.
+
+        Returns
+        -------
+        None
+        """
+
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(path)], check=False)
+            elif os.name == "nt":
+                os.startfile(str(path))  # noqa: S606 -- Windows-only default opener
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except OSError as exc:
+            self.message_output(f"Could not open {path} in a viewer: {exc}")
 
     def plot_single_channel(self, channel: int | None = None) -> plt.Figure:
         """
@@ -703,76 +768,63 @@ class USVSpectrogramPlotter:
         self._save_figure(fig, "all_channels", file_basename)
         return fig
 
-    def plot_stitched(self) -> plt.Figure:
+    def _build_stitched_canvas(
+        self,
+        sampling_rate: int,
+        start_time_sec: float,
+        end_time_sec: float,
+        session_key: str,
+        in_window_df: pls.DataFrame,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Description
         -----------
-        Render a session-timeline spectrogram by stitching the
-        pre-computed per-USV averaged spectrograms from the
-        consolidated HDF5 store (path in
-        ``cfg['consolidated_spectrograms_h5']``) into a zero canvas at
-        each USV's true on-session time. The store contains, for every
-        session, an ``(n_usvs, 128, 128)`` array of `[0, 1]`-normalized
-        spectrograms in `/spectrogram/<session>/spectrograms` and a
-        shared ``frequency_bins (128,)`` linear axis (~30–120 kHz).
-        Each (128, 128) entry is a fixed-size resampled cutout of the
-        whole USV; the actual on-session start and stop come from the
-        per-session ``*_usv_summary.csv`` (row index in the CSV is the
-        spec index in the store). For each USV whose
-        ``[start, stop]`` falls inside the configured ``time_window``,
-        the spec's 128-bin time axis is linearly resampled to the
-        USV's on-session duration in canvas bins and stamped at the
-        corresponding column of an `(n_freq, canvas_n_bins)` zero
-        canvas. The freq axis is cropped to ``cfg['freq_limits']`` (kHz)
-        before display. Because the saved specs are already normalized
-        to `[0, 1]` (each spec is internally peak-normalized), the
-        canvas is rendered as a *linear* normalized-amplitude image
-        with its own fixed `[0, 1]` colorbar (``cfg['cbar_limits']`` is
-        ignored for this mode); the colorbar label reads "Normalized
-        amplitude" instead of "Amplitude (dB)". Gaps between USVs are
-        exactly zero and render as the colormap's lowest color.
+        Build the continuous stitched-spectrogram canvas for one session over
+        ``[start_time_sec, end_time_sec]``. A zero (black) canvas is filled by
+        stamping each in-window USV's `[0, 1]`-normalized averaged spectrogram
+        (from the consolidated store) at its true on-session time: the spec is
+        SAM2-masked (when ``apply_mask``), edge-tapered, linearly resampled to its
+        on-session duration in canvas bins, and blended into the canvas with
+        ``np.maximum``. Inter-call gaps and masked-out regions stay zero (render
+        black). The freq axis is cropped to ``cfg['freq_limits']`` (kHz).
 
         Parameters
         ----------
+        sampling_rate (int)
+            Audio sampling rate in Hz (sets the canvas frame rate via the hop).
+        start_time_sec (float)
+            Window start in seconds.
+        end_time_sec (float)
+            Window end in seconds.
+        session_key (str)
+            Consolidated-store session group name (root basename).
+        in_window_df (pls.DataFrame)
+            Rows for the in-window USVs; must carry ``row_index`` / ``start`` /
+            ``stop`` columns (``row_index`` = spectrogram index in the store).
 
         Returns
         -------
-        fig (plt.Figure)
-            The rendered figure (also written to disk if ``save_fig``
-            is True).
+        canvas_cropped (np.ndarray)
+            ``(n_freq_cropped, canvas_n_bins)`` float32 stitched canvas.
+        freq_bins_cropped (np.ndarray)
+            The cropped frequency axis (Hz).
+
+        Raises
+        ------
+        KeyError
+            If the session group is absent from the store.
+        ValueError
+            If ``freq_limits`` selects no frequency bins from the store.
         """
 
         cfg = self.visualizations_parameter_dict["make_usv_spectrograms"]
-        audio_data, sampling_rate, sample_num, channel_num, file_basename = (
-            self._load_audio_memmap()
-        )
-        del audio_data, channel_num
-        _, _, start_time_sec, end_time_sec = self._resolve_window(
-            sample_num, sampling_rate
-        )
-
-        session_key = pathlib.Path(self.root_directory).name
-
-        usv_summary_path = first_match_or_raise(
-            root=pathlib.Path(self.root_directory),
-            pattern="*_usv_summary.csv",
-            recursive=True,
-            label="USV summary CSV",
-        )
-        usv_df = pls.read_csv(str(usv_summary_path))
-        in_window_df = (
-            usv_df.with_row_index(name="row_index")
-            .filter(
-                (pls.col("start") < end_time_sec) & (pls.col("stop") > start_time_sec)
-            )
-            .select(["row_index", "start", "stop"])
-        )
-
         hop_length = cfg["nfft"] // 4
         canvas_fps = float(sampling_rate) / float(hop_length)
         canvas_n_bins = max(1, int(round((end_time_sec - start_time_sec) * canvas_fps)))
 
-        h5_path = configure_path(cfg["consolidated_spectrograms_h5"])
+        h5_path = configure_path(
+            self.visualizations_parameter_dict["shared_resources"]["consolidated_h5_path"]
+        )
         with h5py.File(h5_path, "r") as h5:
             freq_bins = h5["frequency_bins"][:]
             sess_group_key = f"spectrogram/{session_key}"
@@ -854,13 +906,57 @@ class USVSpectrogramPlotter:
                 f"freq axis spans {freq_bins[0] / 1000:.1f}-{freq_bins[-1] / 1000:.1f} kHz"
             )
             raise ValueError(msg)
+        return canvas_cropped, freq_bins_cropped
+
+    def _render_stitched_canvas(
+        self,
+        ax: plt.Axes,
+        fig: plt.Figure,
+        canvas_cropped: np.ndarray,
+        freq_bins_cropped: np.ndarray,
+        start_time_sec: float,
+        end_time_sec: float,
+        title: str,
+        plot_cbar: bool,
+    ) -> None:
+        """
+        Description
+        -----------
+        Render a prebuilt stitched canvas onto ``ax`` as a linear `[0, 1]`
+        normalized-amplitude image spanning ``[start_time_sec, end_time_sec]`` by
+        the cropped frequency range, with kHz y-labels at the limits and
+        (optionally) a right-side `[0, 1]` colorbar labelled "Normalized
+        amplitude". The axes facecolor is set black so inter-call gaps read as
+        black (the image covers the data area, so this only affects any uncovered
+        margin).
+
+        Parameters
+        ----------
+        ax (plt.Axes)
+            Axes to draw on.
+        fig (plt.Figure)
+            Parent figure (colorbar placement).
+        canvas_cropped (np.ndarray)
+            The stitched canvas (freq by time).
+        freq_bins_cropped (np.ndarray)
+            Cropped frequency axis (Hz).
+        start_time_sec (float)
+            Window start in seconds (x extent / label).
+        end_time_sec (float)
+            Window end in seconds (x extent).
+        title (str)
+            Panel title.
+        plot_cbar (bool)
+            Whether to draw the right-side colorbar.
+
+        Returns
+        -------
+        None
+        """
 
         stitched_vmin = 0.0
         stitched_vmax = 1.0
-
-        fig, ax = plt.subplots(
-            nrows=1, ncols=1, figsize=tuple(cfg["fig_size"]), dpi=cfg["fig_dpi"]
-        )
+        ax.set_facecolor("#000000")
         img = ax.imshow(
             canvas_cropped,
             origin="lower",
@@ -871,56 +967,67 @@ class USVSpectrogramPlotter:
             extent=(start_time_sec, end_time_sec, freq_bins_cropped[0], freq_bins_cropped[-1]),
         )
         ax.minorticks_off()
-        ax.set_title(
-            f"Stitched spectrogram ({in_window_df.height} USVs in window, "
-            f"session {session_key})"
-        )
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Frequency (kHz)")
+        ax.set_title(title)
+        ax.set_xlabel("Time (s)", fontsize=6)
+        # Compact y-axis: small tick labels at the band limits and the
+        # "Frequency (kHz)" label pulled in close to the panel. NOTE: labelpad is
+        # IGNORED under constrained_layout (the engine repositions the label), so
+        # the label distance is set explicitly with set_label_coords instead.
+        ax.set_ylabel("Frequency (kHz)", fontsize=6)
         ax.set_yticks([freq_bins_cropped[0], freq_bins_cropped[-1]])
         ax.set_yticklabels(
             [
                 f"{freq_bins_cropped[0] / 1000:.0f}",
                 f"{freq_bins_cropped[-1] / 1000:.0f}",
-            ]
+            ],
+            fontsize=7,
         )
         ax.tick_params(axis="y", length=0)
+        ax.yaxis.set_label_coords(-0.05, 0.5)
 
-        if cfg["plot_cbar"]:
-            cax = inset_axes(
-                ax,
-                width=CBAR_INSET_WIDTH,
-                height="100%",
-                loc="lower left",
-                bbox_to_anchor=(1.0 + CBAR_INSET_PAD_AXES_FRACTION, 0.0, 1.0, 1.0),
-                bbox_transform=ax.transAxes,
-                borderpad=0,
-            )
-            cbar = fig.colorbar(img, cax=cax)
+        if plot_cbar:
+            # A layout-managed colorbar (constrained_layout sizes/places it next
+            # to ``ax``). The previous inset_axes approach floated free and, under
+            # tight_layout in the nested-gridspec sequence figure, drew its color
+            # block at the wrong figure location.
+            cbar = fig.colorbar(img, ax=ax, fraction=0.046, pad=0.02)
             cbar.set_ticks([stitched_vmin, stitched_vmax])
-            cbar.set_ticklabels(
-                [f"{stitched_vmin:.0f}", f"{stitched_vmax:.0f}"]
-            )
+            cbar.set_ticklabels([f"{stitched_vmin:.0f}", f"{stitched_vmax:.0f}"])
             cbar.ax.tick_params(length=0)
             cbar.ax.minorticks_off()
-            cbar.set_label("Normalized amplitude")
+            # labelpad is a no-op under constrained_layout (the engine pins the
+            # colorbar label at the figure edge); it already sits right next to
+            # the "0"/"1" tick labels, so there is nothing useful to tune here.
+            cbar.set_label("Norm. amplitude", fontsize=6)
 
-        layout_rect = (0.0, 0.0, CBAR_RIGHT_RESERVE, 1.0) if cfg["plot_cbar"] else None
-        fig.tight_layout(rect=layout_rect)
-        self._save_figure(fig, "stitched", file_basename)
-        return fig
-
-    def make_usv_spectrograms(self) -> plt.Figure:
+    def plot_stitched(self) -> plt.Figure:
         """
         Description
         -----------
-        Dispatch to the rendering method named by
-        ``make_usv_spectrograms.mode``: ``"single"`` →
-        ``plot_single_channel``; ``"all"`` → ``plot_all_channels``;
-        ``"stitched"`` → ``plot_stitched``. This is the entry point
-        that the visualization pipeline (``visualize_data.py``) is
-        expected to call once a ``make_usv_spectrograms_bool`` toggle
-        has been wired through.
+        Render a session-timeline spectrogram by stitching the
+        pre-computed per-USV averaged spectrograms from the
+        consolidated HDF5 store (path in
+        ``shared_resources['consolidated_h5_path']``) into a zero canvas at
+        each USV's true on-session time. The store contains, for every
+        session, an ``(n_usvs, 128, 128)`` array of `[0, 1]`-normalized
+        spectrograms in `/spectrogram/<session>/spectrograms` and a
+        shared ``frequency_bins (128,)`` linear axis (~30–120 kHz).
+        Each (128, 128) entry is a fixed-size resampled cutout of the
+        whole USV; the actual on-session start and stop come from the
+        per-session ``*_usv_summary.csv`` (row index in the CSV is the
+        spec index in the store). For each USV whose
+        ``[start, stop]`` falls inside the configured ``time_window``,
+        the spec's 128-bin time axis is linearly resampled to the
+        USV's on-session duration in canvas bins and stamped at the
+        corresponding column of an `(n_freq, canvas_n_bins)` zero
+        canvas. The freq axis is cropped to ``cfg['freq_limits']`` (kHz)
+        before display. Because the saved specs are already normalized
+        to `[0, 1]` (each spec is internally peak-normalized), the
+        canvas is rendered as a *linear* normalized-amplitude image
+        with its own fixed `[0, 1]` colorbar (``cfg['cbar_limits']`` is
+        ignored for this mode); the colorbar label reads "Normalized
+        amplitude" instead of "Amplitude (dB)". Gaps between USVs are
+        exactly zero and render as the colormap's lowest color.
 
         Parameters
         ----------
@@ -932,18 +1039,453 @@ class USVSpectrogramPlotter:
             is True).
         """
 
+        cfg = self.visualizations_parameter_dict["make_usv_spectrograms"]
+        audio_data, sampling_rate, sample_num, channel_num, file_basename = (
+            self._load_audio_memmap()
+        )
+        del audio_data, channel_num
+        _, _, start_time_sec, end_time_sec = self._resolve_window(
+            sample_num, sampling_rate
+        )
+
+        session_key = pathlib.Path(self.root_directory).name
+
+        usv_summary_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern="*_usv_summary.csv",
+            recursive=True,
+            label="USV summary CSV",
+        )
+        usv_df = pls.read_csv(str(usv_summary_path))
+        in_window_df = (
+            usv_df.with_row_index(name="row_index")
+            .filter(
+                (pls.col("start") < end_time_sec) & (pls.col("stop") > start_time_sec)
+            )
+            .select(["row_index", "start", "stop"])
+        )
+
+        canvas_cropped, freq_bins_cropped = self._build_stitched_canvas(
+            sampling_rate, start_time_sec, end_time_sec, session_key, in_window_df
+        )
+
+        fig, ax = plt.subplots(
+            nrows=1, ncols=1, figsize=tuple(cfg["fig_size"]), dpi=cfg["fig_dpi"],
+            layout="constrained",
+        )
+        self._render_stitched_canvas(
+            ax, fig, canvas_cropped, freq_bins_cropped, start_time_sec, end_time_sec,
+            title=(
+                f"Stitched spectrogram ({in_window_df.height} USVs in window, "
+                f"session {session_key})"
+            ),
+            plot_cbar=cfg["plot_cbar"],
+        )
+
+        self._save_figure(fig, "stitched", file_basename)
+        return fig
+
+    def _draw_embedding_left_map(self, ax: plt.Axes, arrays_npz_path: str, draw_boundaries: bool = True) -> None:
+        """
+        Description
+        -----------
+        Draw a precomputed cohort embedding landscape on ``ax``: the density
+        ``heatmap`` (gray_r) over its coordinate ``extent`` and — when
+        ``draw_boundaries`` is True — the black category lines. Serves BOTH the
+        QLVM torus (arrays ``.npz`` with no ``extent`` key → the unit square, also
+        used by the torus-traversal video) and the VAE umap (a ``vae_density``
+        ``.npz`` carrying its own ``extent``). The boundaries are a
+        uniform-thickness neighbour-difference mask, NOT ``ax.contour`` on the
+        label field: contour stacks several iso-lines wherever neighbouring region
+        labels differ by more than one, which renders as uneven line thickness.
+
+        Parameters
+        ----------
+        ax (plt.Axes)
+            Axes to draw the embedding / boundaries on.
+        arrays_npz_path (str)
+            Path to the cohort arrays ``.npz`` — keys ``heatmap`` and
+            ``ws_labels_periodic`` (the QLVM watershed field or the VAE
+            category/supercategory field), plus an optional ``extent``
+            ``[x0, x1, y0, y1]`` (absent for QLVM → the unit square).
+        draw_boundaries (bool)
+            Whether to overlay the black category lines; defaults to True.
+
+        Returns
+        -------
+        None
+        """
+
+        arrays = np.load(configure_path(arrays_npz_path))
+        heatmap = arrays["heatmap"]
+        extent = tuple(float(v) for v in arrays["extent"]) if "extent" in arrays else (0.0, 1.0, 0.0, 1.0)
+        nonzero = heatmap[heatmap > 0]
+        vmax = float(np.percentile(nonzero, 95)) if nonzero.size else None
+        ax.imshow(
+            heatmap, origin="lower", extent=extent,
+            cmap=_SEQ_EMBEDDING_CMAP, vmin=0, vmax=vmax, aspect="equal",
+        )
+        if draw_boundaries:
+            labels = arrays["ws_labels_periodic"]
+            # A pixel is a boundary iff it differs from any 4-neighbour -> a single
+            # uniform-thickness line everywhere, regardless of label difference.
+            boundary = np.zeros(labels.shape, dtype=bool)
+            boundary[:-1, :] |= labels[:-1, :] != labels[1:, :]
+            boundary[1:, :] |= labels[:-1, :] != labels[1:, :]
+            boundary[:, :-1] |= labels[:, :-1] != labels[:, 1:]
+            boundary[:, 1:] |= labels[:, :-1] != labels[:, 1:]
+            ax.imshow(
+                np.where(boundary, 1.0, np.nan), origin="lower", extent=extent,
+                cmap=mcolors.ListedColormap(["#000000"]), vmin=0, vmax=1,
+                interpolation="nearest", aspect="equal", zorder=2,
+            )
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+        ax.set_aspect("equal")
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    def plot_sequence(self) -> plt.Figure:
+        """
+        Description
+        -----------
+        Render a per-session "USV sequence" figure for the shared analysis window
+        ``time_window`` (``[start, end]`` seconds; the GUI sets it from a start +
+        duration pair). LEFT:
+        an embedding -- QLVM torus (a periodic [0, 1] density heatmap with black
+        watershed category boundaries) or VAE (plain) -- where the window's USVs
+        are colored by emitter (male / female / unassigned), sized by call
+        duration, numbered ``1..n`` in time order, and joined by a connecting line
+        whose color is a white -> male time gradient and whose per-segment width
+        tracks the inter-USV silent gap (on the QLVM torus the line takes the short
+        wrap-around route across an edge when that is closer). RIGHT: ONE
+        continuous spectrogram over the same window -- the per-USV averaged
+        spectrograms, SAM2-masked when ``apply_mask``, stitched at their true times
+        onto a black background, with an optional raw-audio trace on top
+        (``plot_raw_audio``). The left numbering matches the time order of calls
+        along the right time axis.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        fig (plt.Figure)
+            The rendered figure (also written to disk if ``save_fig`` is True).
+
+        Raises
+        ------
+        ValueError
+            If the chosen embedding's coordinate columns are absent from the
+            session's USV summary CSV.
+        """
+
+        cfg = self.visualizations_parameter_dict["make_usv_spectrograms"]
+        seq_cfg = cfg["sequence"]
+        shared = self.visualizations_parameter_dict["shared_resources"]
+
+        audio_data, sampling_rate, sample_num, channel_num, file_basename = (
+            self._load_audio_memmap()
+        )
+        # The sequence window is the shared ``time_window`` (start, end); the GUI
+        # presents it as start + duration but writes it back here.
+        start_signal, end_signal, start_time_sec, end_time_sec = self._resolve_window(
+            sample_num, sampling_rate
+        )
+
+        session_key = pathlib.Path(self.root_directory).name
+
+        usv_summary_path = first_match_or_raise(
+            root=pathlib.Path(self.root_directory),
+            pattern="*_usv_summary.csv",
+            recursive=True,
+            label="USV summary CSV",
+        )
+        usv_df = pls.read_csv(str(usv_summary_path)).with_row_index(name="row_index")
+
+        embedding = seq_cfg["embedding"]
+        x_col, y_col = (
+            ("vae_umap1", "vae_umap2") if embedding == "vae" else ("qlvm_dim1", "qlvm_dim2")
+        )
+        if x_col not in usv_df.columns or y_col not in usv_df.columns:
+            msg = (
+                f"Session {session_key!r} USV summary has no {embedding!r} embedding "
+                f"columns ({x_col!r}, {y_col!r}); choose a different 'embedding'."
+            )
+            raise ValueError(msg)
+
+        male_id, female_id = _resolve_session_emitter_ids(str(self.root_directory))
+        usv_df = usv_df.with_columns(
+            pls.when(pls.col("emitter") == male_id).then(pls.lit("male"))
+            .when(pls.col("emitter") == female_id).then(pls.lit("female"))
+            .otherwise(pls.lit("unassigned"))
+            .alias("sex")
+        )
+
+        seq_df = usv_df.filter(
+            (pls.col("start") < end_time_sec) & (pls.col("stop") > start_time_sec)
+        ).sort("start")
+
+        sex_colors = {
+            "male": self.visualizations_parameter_dict["male_colors"][0],
+            "female": self.visualizations_parameter_dict["female_colors"][0],
+            "unassigned": self.visualizations_parameter_dict["unassigned_colors"][0],
+        }
+        plot_raw_audio = bool(cfg["plot_raw_audio"])
+
+        # constrained_layout manages spacing + the colorbar robustly (the old
+        # tight_layout + inset_axes combination misplaced the colorbar).
+        fig = plt.figure(figsize=tuple(cfg["fig_size"]), dpi=cfg["fig_dpi"], layout="constrained")
+        outer = gridspec.GridSpec(1, 2, width_ratios=[1.0, 1.4], figure=fig)
+        ax_left = fig.add_subplot(outer[0, 0])
+
+        # # # # LEFT: precomputed cohort embedding landscape (density + category
+        # boundaries). QLVM -> torus arrays; VAE -> vae_density arrays; coarse/fine
+        # selects the clustering granularity (QLVM watershed / VAE
+        # supercategory-vs-category). Empty path -> bare axes, but ticks are still
+        # stripped so the VAE panel never shows ticks/ticklabels.
+        if embedding == "qlvm":
+            arrays_path = (
+                shared["arrays_npz_path_fine"]
+                if seq_cfg["boundary_clustering"] == "fine"
+                else shared["arrays_npz_path_coarse"]
+            )
+        else:
+            arrays_path = (
+                shared["vae_density_npz_path_fine"]
+                if seq_cfg["boundary_clustering"] == "fine"
+                else shared["vae_density_npz_path_coarse"]
+            )
+        if arrays_path:
+            self._draw_embedding_left_map(ax_left, arrays_path, draw_boundaries=bool(seq_cfg["draw_boundaries"]))
+        else:
+            ax_left.set_xticks([])
+            ax_left.set_yticks([])
+
+        # Window USVs: emitter-colored points sized by duration, numbered 1..n in
+        # time order (number INSIDE the point, black), connected by a time-gradient
+        # line whose per-segment width tracks the inter-USV interval.
+        seq_rows = list(enumerate(seq_df.iter_rows(named=True), start=1))
+        durations = [float(row["stop"]) - float(row["start"]) for _, row in seq_rows]
+        dur_lo, dur_hi = (min(durations), max(durations)) if durations else (0.0, 0.0)
+
+        def _marker_size(duration: float) -> float:
+            """Map a USV duration to a modest marker area (pt^2); equal/zero spread
+            falls back to the midpoint so markers never blow up."""
+            if dur_hi <= dur_lo:
+                return 0.5 * (_SEQ_MARKER_S_MIN + _SEQ_MARKER_S_MAX)
+            frac = (duration - dur_lo) / (dur_hi - dur_lo)
+            return _SEQ_MARKER_S_MIN + frac * (_SEQ_MARKER_S_MAX - _SEQ_MARKER_S_MIN)
+
+        path_pts: list[tuple[float, float]] = []
+        path_starts: list[float] = []
+        path_stops: list[float] = []
+        for (seq_number, row), duration in zip(seq_rows, durations, strict=True):
+            x_val = row[x_col]
+            y_val = row[y_col]
+            if x_val is None or y_val is None:
+                continue
+            path_pts.append((float(x_val), float(y_val)))
+            path_starts.append(float(row["start"]))
+            path_stops.append(float(row["stop"]))
+            ax_left.scatter(
+                [x_val], [y_val], s=_marker_size(duration), c=sex_colors[row["sex"]],
+                edgecolors="#000000", linewidths=0.6, zorder=3,
+            )
+            ax_left.annotate(
+                str(seq_number), (x_val, y_val),
+                ha="center", va="center", fontsize=4.5, color="#000000", zorder=4,
+            )
+
+        # Connecting line through the sequence: per-segment COLOR is a white ->
+        # male-color time gradient (white = start of the bout, emitter color toward
+        # the end), per-segment WIDTH tracks the inter-USV silent gap -- the time
+        # between the end of one call and the start of the next
+        # (start(next) - stop(prev)); a longer silence -> thicker line.
+        if len(path_pts) >= 2:
+            n_seg = len(path_pts) - 1
+            male_color = self.visualizations_parameter_dict["male_colors"][0]
+            path_cmap = mcolors.LinearSegmentedColormap.from_list(
+                "white_to_male", ["#FFFFFF", male_color]
+            )
+            # Overlapping calls (stop > next start) clamp to a zero gap.
+            gaps = [max(0.0, path_starts[i + 1] - path_stops[i]) for i in range(n_seg)]
+            # Robust width scale: cap the top of the range at the Tukey upper
+            # outlier fence (Q3 + 1.5*IQR), clamped to the real max, so one very
+            # long silence saturates at the max width instead of stretching the
+            # scale and squashing every other segment to the minimum width.
+            gap_lo = min(gaps)
+            q1, q3 = float(np.percentile(gaps, 25)), float(np.percentile(gaps, 75))
+            gap_hi = max(gap_lo, min(max(gaps), q3 + 1.5 * (q3 - q1)))
+
+            def _segment_lw(gap: float) -> float:
+                if gap_hi <= gap_lo:
+                    return 0.5 * (_SEQ_LW_MIN + _SEQ_LW_MAX)
+                frac = min(1.0, max(0.0, (gap - gap_lo) / (gap_hi - gap_lo)))
+                return _SEQ_LW_MIN + frac * (_SEQ_LW_MAX - _SEQ_LW_MIN)
+
+            # QLVM is a periodic unit torus ([0,1] in both dims), so the shortest
+            # route between two points may wrap across an edge rather than run
+            # straight over the map. For each pair pick the nearest periodic image
+            # of the second point (wrap an axis whose gap exceeds 0.5) and emit two
+            # collinear sub-segments -- p1 -> image, and the mirror (p1's image) ->
+            # p2 -- both clipped to the [0,1] axes so the geodesic exits one edge
+            # and re-enters the opposite. VAE is a plain plane: no wrapping.
+            is_torus = embedding == "qlvm"
+
+            def _wrap_offset(delta: float) -> float:
+                if delta > 0.5:
+                    return -1.0
+                if delta < -0.5:
+                    return 1.0
+                return 0.0
+
+            def _sub_segments(i: int) -> list[list[tuple[float, float]]]:
+                (x1, y1), (x2, y2) = path_pts[i], path_pts[i + 1]
+                mx = _wrap_offset(x2 - x1) if is_torus else 0.0
+                my = _wrap_offset(y2 - y1) if is_torus else 0.0
+                subs = [[(x1, y1), (x2 + mx, y2 + my)]]
+                if mx or my:
+                    subs.append([(x1 - mx, y1 - my), (x2, y2)])
+                return subs
+
+            segments: list[list[tuple[float, float]]] = []
+            seg_colors = []
+            seg_lws = []
+            for i in range(n_seg):
+                color = path_cmap(i / (n_seg - 1) if n_seg > 1 else 1.0)
+                lw = _segment_lw(gaps[i])
+                for sub in _sub_segments(i):
+                    segments.append(sub)
+                    seg_colors.append(color)
+                    seg_lws.append(lw)
+            ax_left.add_collection(
+                LineCollection(segments, colors=seg_colors, linewidths=seg_lws, zorder=2)
+            )
+
+        # # # # RIGHT: ONE continuous averaged spectrogram over the window. The
+        # per-USV averaged specs are stitched at their true times onto a black
+        # background; the spectrogram keeps its full width but is made ~1/3 shorter
+        # vertically via a bottom spacer row (raw audio, when shown, sits above it).
+        in_window_df = seq_df.select(["row_index", "start", "stop"])
+        canvas_cropped, freq_bins_cropped = self._build_stitched_canvas(
+            sampling_rate, start_time_sec, end_time_sec, session_key, in_window_df
+        )
+        if plot_raw_audio:
+            right_gs = gridspec.GridSpecFromSubplotSpec(
+                3, 1, subplot_spec=outer[0, 1], height_ratios=[3, 8, 4],
+            )
+            ax_raw = fig.add_subplot(right_gs[0, 0])
+            ax_right = fig.add_subplot(right_gs[1, 0])
+            # Auto-pick the channel that is loudest for the most USVs in the
+            # window (per-USV ``peak_amp_ch``, the 0-indexed argmax channel from
+            # das_inference). Averaging raw waveforms across mics is avoided on
+            # purpose: the per-mic phase delays make the sum interfere
+            # destructively. Falls back to channel_of_interest if the column is
+            # absent or the window has no USVs.
+            raw_ch = cfg["channel_of_interest"]
+            if "peak_amp_ch" in seq_df.columns:
+                peak_chs = seq_df["peak_amp_ch"].drop_nulls()
+                if peak_chs.len() > 0:
+                    raw_ch = int(round(float(peak_chs.mode().to_list()[0])))
+            raw_ch = raw_ch if 0 <= raw_ch < channel_num else 0
+            data_slice = np.asarray(audio_data[start_signal:end_signal, raw_ch])
+            time_vec = np.linspace(
+                start_time_sec, end_time_sec, num=data_slice.shape[0], endpoint=False
+            )
+            self._render_raw_audio(
+                ax=ax_raw, time_vec=time_vec, audio_segment=data_slice,
+                color=cfg["usv_amplitude_color"], title="",
+            )
+            # No y-axis decorations on the raw strip; the symmetric ylim set
+            # by _render_raw_audio (+/- peak) keeps the peak from being clipped.
+            ax_raw.set_ylabel("")
+            ax_raw.set_yticks([])
+        else:
+            right_gs = gridspec.GridSpecFromSubplotSpec(
+                2, 1, subplot_spec=outer[0, 1], height_ratios=[2, 1],
+            )
+            ax_right = fig.add_subplot(right_gs[0, 0])
+        self._render_stitched_canvas(
+            ax_right, fig, canvas_cropped, freq_bins_cropped,
+            start_time_sec, end_time_sec,
+            title="",
+            plot_cbar=cfg["plot_cbar"],
+        )
+        if seq_cfg["annotate_right"]:
+            for seq_number, row in seq_rows:
+                ax_right.annotate(
+                    str(seq_number), (float(row["start"]), freq_bins_cropped[-1]),
+                    textcoords="offset points", xytext=(0, 2),
+                    fontsize=7, color="#FFFFFF", ha="center", va="bottom", zorder=5,
+                )
+        # Optionally mark each USV with a horizontal emitter-colored bar along
+        # the bottom of the spectrogram, spanning its [start, stop].
+        if seq_cfg["mark_usv_segments"]:
+            y_lo = float(freq_bins_cropped[0])
+            y_bar = y_lo + 0.03 * (float(freq_bins_cropped[-1]) - y_lo)
+            for _seq_number, row in seq_rows:
+                ax_right.plot(
+                    [float(row["start"]), float(row["stop"])], [y_bar, y_bar],
+                    color=sex_colors[row["sex"]], linewidth=3.0,
+                    solid_capstyle="butt", zorder=5,
+                )
+
+        self._save_figure(fig, f"sequence_{embedding}", file_basename)
+        return fig
+
+    def make_usv_spectrograms(self) -> plt.Figure:
+        """
+        Description
+        -----------
+        Dispatch to the rendering method named by
+        ``make_usv_spectrograms.mode``: ``"single"`` →
+        ``plot_single_channel``; ``"all"`` → ``plot_all_channels``;
+        ``"stitched"`` → ``plot_stitched``; ``"sequence"`` →
+        ``plot_sequence``. This is the entry point that the
+        visualization pipeline (``visualize_data.py``) is expected to
+        call once a ``make_usv_spectrograms_bool`` toggle has been
+        wired through.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        fig (plt.Figure)
+            The rendered figure (also written to disk if ``save_fig``
+            is True).
+        """
+
+        self.message_output(
+            f"USV spectrogram plotting started at: "
+            f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+        )
+        # Brief pause so the GUI flushes the "started" message before the
+        # (blocking) render takes over the thread.
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
         mode = self.visualizations_parameter_dict["make_usv_spectrograms"]["mode"]
         if mode == "single":
-            return self.plot_single_channel()
-        if mode == "all":
-            return self.plot_all_channels()
-        if mode == "stitched":
-            return self.plot_stitched()
-        msg = (
-            f"Unknown make_usv_spectrograms.mode={mode!r}; "
-            f"expected one of 'single', 'all', 'stitched'."
-        )
-        raise ValueError(msg)
+            fig = self.plot_single_channel()
+        elif mode == "all":
+            fig = self.plot_all_channels()
+        elif mode == "stitched":
+            fig = self.plot_stitched()
+        elif mode == "sequence":
+            fig = self.plot_sequence()
+        else:
+            msg = (
+                f"Unknown make_usv_spectrograms.mode={mode!r}; "
+                f"expected one of 'single', 'all', 'stitched', 'sequence'."
+            )
+            raise ValueError(msg)
+
+        # Close the figure so a per-session pipeline run does not accumulate open
+        # figures (matplotlib warns past ~20 and memory grows); it has already
+        # been saved to disk (and optionally opened) by the plot_* method.
+        plt.close(fig)
+        return fig
 
 
 # Display-unit conversions for the pooled-histogram function below:
@@ -1818,7 +2360,12 @@ def build_pooled_embeddings_df(
     )
 
     frames: list[pls.DataFrame] = []
-    for session_root in session_roots:
+    total_sessions = len(session_roots)
+    for session_idx, session_root in enumerate(session_roots, start=1):
+        # Periodic progress (the per-session CSV reads dominate the wall-clock,
+        # especially over a network mount, and are otherwise silent).
+        if session_idx == 1 or session_idx % 25 == 0 or session_idx == total_sessions:
+            message_output(f"[pool] reading session {session_idx}/{total_sessions} ...")
         try:
             csv_path = first_match_or_raise(
                 root=pathlib.Path(session_root) / "audio",
@@ -1838,6 +2385,28 @@ def build_pooled_embeddings_df(
             continue
 
         df = df.with_row_index(name="row_index")
+        if df.height == 0:
+            # An empty usv_summary (a session with no vocalizations) infers every
+            # column as String / Null, which both breaks the noise is_in filter and
+            # mismatches the later vertical concat -- and it contributes no rows
+            # anyway, so skip it.
+            continue
+        # CSV dtype inference disagrees across sessions (e.g. an all-null coordinate
+        # or label column infers as String), which breaks the integer noise filter
+        # and the diagonal concat ("String is incompatible with Float64"). Coerce
+        # each numeric column to a consistent dtype (unparseable -> null) -- floats
+        # for coordinates / acoustic features / duration, Int64 for the category
+        # labels -- so every session frame lines up. String columns (emitter) and
+        # the row index are left untouched.
+        float_cols = set(EMBEDDING_COORD_COLS) | set(EMBEDDING_FEATURE_COLS) | {"duration"}
+        label_cols = set(EMBEDDING_LABEL_COLS)
+        casts = [
+            pls.col(col_name).cast(pls.Float64, strict=False) if col_name in float_cols
+            else pls.col(col_name).cast(pls.Int64, strict=False)
+            for col_name in df.columns if col_name in float_cols or col_name in label_cols
+        ]
+        if casts:
+            df = df.with_columns(casts)
         if noise_col_id in df.columns and noise_categories:
             df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
 
@@ -1925,6 +2494,150 @@ def build_pooled_embeddings_df(
         )
 
     return pooled
+
+
+def build_vae_density_npz(
+    sessions_txt_path: str,
+    out_npz_path: str,
+    *,
+    label_col: str = "vae_supercategory",
+    cache_path: str | None = None,
+    grid: int = 300,
+    smooth_sigma: float = 1.5,
+    knn: int = 15,
+    message_output: Callable | None = None,
+) -> str:
+    """
+    Description
+    -----------
+    Precompute the cohort VAE embedding landscape and save it to an ``.npz`` in the
+    SAME schema the sequence figure's left panel reads for QLVM, so the VAE panel can
+    show a precomputed cohort gray_r density + category boundaries (rather than
+    re-pooling ~600k coordinates on every per-session render). Unlike QLVM — whose
+    coordinates live on the periodic unit torus and whose watershed arrays ship from
+    the modeling pipeline — VAE coordinates live only in per-session
+    ``usv_summary.csv`` files, so this builds the analogue once from the pooled
+    cohort table.
+
+    The output carries three arrays:
+    ``heatmap`` — a 2-D histogram density of ``(vae_umap1, vae_umap2)`` over the
+    cohort's coordinate range (optionally Gaussian-smoothed into a KDE-like density
+    estimate), oriented ``[row=y, col=x]`` for ``origin="lower"``;
+    ``ws_labels_periodic`` — the category field on the same grid, assigned by a
+    nearest-neighbour classifier fit on the cohort points (the VAE analogue of the
+    QLVM watershed label field, so the figure's neighbour-difference boundary mask
+    works unchanged);
+    ``extent`` — ``[x0, x1, y0, y1]`` (the umap coordinate range; QLVM omits this and
+    defaults to the unit square).
+
+    Run once per clustering granularity: ``label_col="vae_supercategory"`` for the
+    COARSE map and ``label_col="vae_category"`` for the FINE map, writing two files
+    that ``shared_resources.vae_density_npz_path_{coarse,fine}`` then point at.
+
+    Parameters
+    ----------
+    sessions_txt_path (str)
+        Path to a text file listing one session root per line (passed straight to
+        ``build_pooled_embeddings_df``).
+    out_npz_path (str)
+        Destination ``.npz`` path (run through ``configure_path``).
+    label_col (str)
+        Cohort label column to rasterize into ``ws_labels_periodic`` —
+        ``"vae_supercategory"`` (coarse) or ``"vae_category"`` (fine).
+    cache_path (str | None)
+        Optional parquet cache for the pooled DataFrame (forwarded to
+        ``build_pooled_embeddings_df``).
+    grid (int)
+        Side length of the square density / label grid (``grid x grid`` cells).
+    smooth_sigma (float)
+        Gaussian-filter sigma (in grid cells) applied to the histogram density;
+        ``0`` leaves the raw histogram.
+    knn (int)
+        Number of neighbours for the grid label classifier.
+    message_output (Callable | None)
+        Optional logger; ``None`` is silent.
+
+    Returns
+    -------
+    out_path (str)
+        The path the ``.npz`` was written to.
+    """
+
+    emit = message_output if message_output is not None else (lambda *_a, **_kw: None)
+    pooled = build_pooled_embeddings_df(
+        sessions_txt_path, cache_path=cache_path, message_output=message_output
+    )
+    sub = pooled.select(["vae_umap1", "vae_umap2", label_col]).drop_nulls()
+    coords_x = sub["vae_umap1"].to_numpy().astype(np.float64)
+    coords_y = sub["vae_umap2"].to_numpy().astype(np.float64)
+    point_labels = sub[label_col].to_numpy()
+
+    x0, x1 = float(coords_x.min()), float(coords_x.max())
+    y0, y1 = float(coords_y.min()), float(coords_y.max())
+    extent = np.array([x0, x1, y0, y1], dtype=np.float64)
+
+    # Density: 2-D histogram over the coordinate range; counts come out [x, y] so
+    # transpose to [y, x] for origin="lower". An optional Gaussian filter turns the
+    # histogram into a smooth density estimate (rendered without interpolation).
+    counts, _, _ = np.histogram2d(coords_x, coords_y, bins=grid, range=[[x0, x1], [y0, y1]])
+    heatmap = counts.T
+    if smooth_sigma > 0:
+        heatmap = gaussian_filter(heatmap, sigma=smooth_sigma)
+
+    # Label field: a nearest-neighbour classifier fit on the cohort points, predicted
+    # on the grid, yields a Voronoi-like category map (the VAE analogue of the QLVM
+    # watershed labels) on which the figure's neighbour-difference mask draws lines.
+    classifier = KNeighborsClassifier(n_neighbors=knn, weights="uniform")
+    classifier.fit(np.column_stack([coords_x, coords_y]), point_labels)
+    grid_x = np.linspace(x0, x1, grid)
+    grid_y = np.linspace(y0, y1, grid)
+    mesh_x, mesh_y = np.meshgrid(grid_x, grid_y)
+    grid_labels = classifier.predict(
+        np.column_stack([mesh_x.ravel(), mesh_y.ravel()])
+    ).reshape(grid, grid)
+
+    out_path = str(configure_path(out_npz_path))
+    np.savez(
+        out_path,
+        heatmap=heatmap.astype(np.float32),
+        ws_labels_periodic=grid_labels.astype(np.int16),
+        extent=extent,
+    )
+    emit(f"Saved VAE cohort density ({label_col}, {coords_x.size} USVs) to {out_path}.")
+    return out_path
+
+
+@click.command(name="build-vae-density")
+@click.option('--sessions-txt', type=str, required=True, help='Text file listing one session root per line.')
+@click.option('--out-coarse', type=str, required=True, help='Output .npz path for the COARSE map (vae_supercategory).')
+@click.option('--out-fine', type=str, required=True, help='Output .npz path for the FINE map (vae_category).')
+@click.option('--cache-path', type=str, default=None, required=False, help='Optional parquet cache for the pooled DataFrame.')
+@click.option('--grid', type=int, default=300, required=False, help='Density / label grid side length.')
+@click.option('--smooth-sigma', type=float, default=1.5, required=False, help='Gaussian sigma (grid cells); 0 = raw histogram.')
+@click.option('--knn', type=int, default=15, required=False, help='Neighbours for the grid label classifier.')
+def build_vae_density_cli(sessions_txt, out_coarse, out_fine, cache_path, grid, smooth_sigma, knn) -> None:
+    """
+    Description
+    -----------
+    One-off CLI that builds BOTH cohort VAE landscape files consumed by the USV
+    sequence figure: the COARSE map (``vae_supercategory`` boundaries) and the FINE
+    map (``vae_category`` boundaries). Point
+    ``shared_resources.vae_density_npz_path_{coarse,fine}`` at the two outputs.
+
+    Parameters
+    ----------
+    See the command options.
+
+    Returns
+    -------
+    None
+    """
+
+    for label_col, out_path in (("vae_supercategory", out_coarse), ("vae_category", out_fine)):
+        build_vae_density_npz(
+            sessions_txt, out_path, label_col=label_col, cache_path=cache_path,
+            grid=grid, smooth_sigma=smooth_sigma, knn=knn, message_output=print,
+        )
 
 
 def _pick_spiral_with_grid(

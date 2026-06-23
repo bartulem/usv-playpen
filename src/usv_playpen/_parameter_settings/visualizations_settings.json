@@ -6,6 +6,13 @@
     "timestamp_in_name": true,
     "cmap": "inferno"
   },
+  "shared_resources": {
+    "arrays_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
+    "arrays_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
+    "vae_density_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/vae/vae_density_coarse.npz",
+    "vae_density_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/vae/vae_density_fine.npz",
+    "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5"
+  },
   "credentials_directory": "",
   "male_colors": [
     "#9AC0CD",
@@ -33,11 +40,13 @@
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
     "make_behavioral_videos_bool": false,
-    "make_usv_spectrograms_bool": false,
+    "make_usv_spectrograms_bool": true,
     "make_qlvm_torus_traversal_video_bool": false
   },
   "visualize_data": {
-    "root_directories": []
+    "root_directories": [
+      "/Volumes/falkner/Bartul/Data/20230207_213540"
+    ]
   },
   "send_email": {
     "visualizations_pc_list": [
@@ -54,25 +63,25 @@
     }
   },
   "make_usv_spectrograms": {
-    "save_dir": "/Users/bmimica/Downloads",
+    "save_dir": "",
     "save_fig": true,
-    "fig_format": "svg",
+    "fig_format": "png",
     "fig_dpi": 300,
     "fig_size": [
       6,
       2
     ],
     "transparent_fig_bg": false,
-    "mode": "single",
+    "mode": "sequence",
     "channel_of_interest": 11,
-    "plot_raw_audio": false,
+    "plot_raw_audio": true,
     "time_window": [
-      424.5,
-      426.5
+      0.4,
+      2.4
     ],
     "freq_limits": [
       40,
-      80
+      90
     ],
     "usv_amplitude_color": "#808080",
     "nfft": 512,
@@ -81,8 +90,15 @@
       -70,
       0
     ],
-    "consolidated_spectrograms_h5": "/Volumes/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5",
-    "apply_mask": true
+    "apply_mask": true,
+    "auto_open_figure": true,
+    "sequence": {
+      "embedding": "vae",
+      "draw_boundaries": false,
+      "boundary_clustering": "coarse",
+      "annotate_right": false,
+      "mark_usv_segments": true
+    }
   },
   "make_behavioral_videos": {
     "arena_directory": "/mnt/falkner/Bartul/Data/20250909_142042",
@@ -178,9 +194,6 @@
   },
   "qlvm_torus_traversal_video": {
     "clustering": "coarse",
-    "arrays_npz_path_coarse": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
-    "arrays_npz_path_fine": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
-    "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5",
     "fps": 20,
     "dpi": 100,
     "m": 36,
@@ -200,7 +213,6 @@
     "accent_color": "#00FFFF"
   },
   "usv_embedding": {
-    "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files",
-    "consolidated_h5_path": "/mnt/falkner/Bartul/spectrograms/spectrograms_sam2masks_553sessions_602724vocalizations_20260514_153009.h5"
+    "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   }
 }
