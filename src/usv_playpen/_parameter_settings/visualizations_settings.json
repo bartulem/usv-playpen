@@ -98,7 +98,7 @@
     }
   },
   "make_behavioral_videos": {
-    "arena_directory": "/mnt/falkner/Bartul/Data/20250909_142042",
+    "arena_directory": "",
     "speaker_audio_file": "",
     "sequence_audio_file": "",
     "animate_bool": false,

@@ -4922,6 +4922,22 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
         self.visualizations_input_dict['send_email']['visualizations_pc_choice'] = str(getattr(self, 'visualizations_pc_choice'))
 
+        # Make the experimenter-scoped paths follow the selected experimenter -- the
+        # same name-swap the Record/Process model dirs use (replace_name_in_path):
+        # rewrite the experimenter component of the figure output dir and the shared
+        # resource dirs to self.exp_id. A path that carries no known experimenter
+        # name (e.g. a custom Browse target) is returned unchanged.
+        _experimenter_list = self.exp_settings_dict['experimenter_list']
+        self.visualizations_input_dict['figures']['save_directory'] = replace_name_in_path(
+            experimenter_list=_experimenter_list,
+            recording_files_destinations=[self.visualizations_input_dict['figures']['save_directory']],
+            exp_id=self.exp_id)
+        for _shared_key in ('spectrograms_dir', 'input_files_directory'):
+            self.visualizations_input_dict['shared_resources'][_shared_key] = replace_name_in_path(
+                experimenter_list=_experimenter_list,
+                recording_files_destinations=[self.visualizations_input_dict['shared_resources'][_shared_key]],
+                exp_id=self.exp_id)
+
         self.pc_usage_visualizations = self.pc_usage_visualizations.text()
         if len(self.pc_usage_visualizations) == 0:
             self.pc_usage_visualizations = []
