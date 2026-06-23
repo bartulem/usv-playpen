@@ -21,7 +21,7 @@ from pathlib import Path
 import platformdirs
 import toml
 import yaml
-from PyQt6.QtCore import QEvent, QRegularExpression, Qt
+from PyQt6.QtCore import QEvent, QRegularExpression, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -99,6 +99,46 @@ remove_icon = str(_img_dir / 'remove.png')
 accept_icon = str(_img_dir / 'accept.png')
 cancel_icon = str(_img_dir / 'cancel.png')
 clear_icon = str(_img_dir / 'clear.png')
+
+
+def _nudge_button_icon_up(button: QPushButton, shift_px: int = 1) -> None:
+    """
+    Description
+    -----------
+    macOS-only cosmetic fix: shift a push-button's icon content up by
+    ``shift_px`` logical pixels so it visually centers on the button text, which
+    the Fusion style + the bundled font render slightly high on macOS. The shift
+    is baked into the icon PIXMAP (the only thing the active stylesheet style
+    honors -- a QProxyStyle reimplementation of the label is bypassed by
+    QStyleSheetStyle, verified), redrawing the icon into a same-size, transparent
+    canvas offset upward. The icon size is unchanged, so button geometry / layout
+    is unaffected; only icon+text buttons are touched (icon-less or text-less
+    buttons are left alone), and each button is nudged at most once.
+
+    Parameters
+    ----------
+    button (QPushButton)
+        The button whose icon to shift.
+    shift_px (int)
+        Logical pixels to move the icon content upward (default 1).
+
+    Returns
+    -------
+    None
+    """
+
+    if button.property("_iconNudged") or button.icon().isNull() or not button.text():
+        return
+    size = button.iconSize()
+    source = button.icon().pixmap(size)
+    shifted = QPixmap(source.size())
+    shifted.setDevicePixelRatio(source.devicePixelRatio())
+    shifted.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(shifted)
+    painter.drawPixmap(0, -shift_px, source)  # logical coords -> content moves up
+    painter.end()
+    button.setIcon(QIcon(shifted))
+    button.setProperty("_iconNudged", True)
 
 
 def _safe_literal_eval(raw: str):
@@ -1344,6 +1384,60 @@ class USVPlaypenWindow(QMainWindow):
         self.subject_repo_path = config_dir / 'subject_presets.json'
 
         self.main_window()
+
+    def setCentralWidget(self, widget) -> None:
+        """
+        Description
+        -----------
+        Set the window's central widget, then -- on macOS only -- nudge every
+        icon+text push button's icon up by 1px so it visually centers on its
+        label (Fusion + the bundled font render the text slightly high there).
+        Every window swaps its central widget through here, so this single choke
+        point applies the fix once per window without editing each builder or
+        button site. A no-op on Linux / Windows and for icon-less / text-less
+        buttons.
+
+        Parameters
+        ----------
+        widget (QWidget)
+            The window's central widget.
+
+        Returns
+        -------
+        None
+        """
+
+        super().setCentralWidget(widget)
+        # The window builders create their buttons AFTER calling setCentralWidget,
+        # so sweep on the next event-loop tick (by which point the buttons exist)
+        # rather than synchronously here.
+        if widget is not None and platform.system() == 'Darwin':
+            QTimer.singleShot(0, lambda w=widget: self._nudge_window_button_icons(w))
+
+    def _nudge_window_button_icons(self, widget) -> None:
+        """
+        Description
+        -----------
+        Nudge every icon+text push button under ``widget`` up by 1px (macOS icon /
+        label centering fix). Guarded against a widget destroyed before the
+        deferred tick fires.
+
+        Parameters
+        ----------
+        widget (QWidget)
+            The window's central widget to sweep.
+
+        Returns
+        -------
+        None
+        """
+
+        try:
+            buttons = widget.findChildren(QPushButton)
+        except RuntimeError:
+            return  # central widget already replaced / deleted
+        for button in buttons:
+            _nudge_button_icon_up(button)
 
     def _open_chemo_dialog(self):
         """

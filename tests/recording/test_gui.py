@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 from PyQt6.QtCore import Qt  # Added import
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import QPushButton
 
 from usv_playpen import usv_playpen_gui
@@ -603,3 +604,27 @@ def test_safe_literal_eval_raises_clear_value_error(raw):
     ast.literal_eval raises directly."""
     with pytest.raises(ValueError, match="Could not parse the GUI field value"):
         _safe_literal_eval(raw)
+
+
+def test_nudge_button_icon_up_marks_icon_text_buttons(qtbot):
+    """The macOS icon-centering helper marks icon+text buttons once (idempotently)
+    and leaves icon-less / text-less buttons untouched."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.black)
+
+    icon_text = QPushButton(QIcon(pixmap), "Go")
+    qtbot.addWidget(icon_text)
+    usv_playpen_gui._nudge_button_icon_up(icon_text)
+    assert icon_text.property("_iconNudged") is True
+    usv_playpen_gui._nudge_button_icon_up(icon_text)  # idempotent
+    assert icon_text.property("_iconNudged") is True
+
+    icon_only = QPushButton(QIcon(pixmap), "")
+    qtbot.addWidget(icon_only)
+    usv_playpen_gui._nudge_button_icon_up(icon_only)
+    assert not icon_only.property("_iconNudged")
+
+    text_only = QPushButton("NoIcon")
+    qtbot.addWidget(text_only)
+    usv_playpen_gui._nudge_button_icon_up(text_only)
+    assert not text_only.property("_iconNudged")
