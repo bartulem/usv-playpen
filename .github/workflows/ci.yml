@@ -7,6 +7,12 @@ on:
     branches:
       - "*"
 
+# Least-privilege GITHUB_TOKEN for all jobs (CodeQL actions/missing-workflow-permissions):
+# both jobs only read the repo, and Codecov upload authenticates with CODECOV_TOKEN
+# (not the GITHUB_TOKEN / OIDC), so read-only contents is sufficient.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
