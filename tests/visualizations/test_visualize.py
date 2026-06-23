@@ -377,3 +377,24 @@ def test_gui_record_then_process_then_main(qtbot, monkeypatch, tmp_path):
     win.main_window()
     win.close()
     win.close()
+
+
+def test_visualization_paths_follow_experimenter(qtbot, monkeypatch, tmp_path):
+    """Saving the Visualize settings rewrites the experimenter component of the
+    figure output dir + the shared resource dirs to the selected experimenter."""
+    monkeypatch.chdir(tmp_path)
+    win = _make_main_window(qtbot)
+    win.visualize_one()
+    win.exp_settings_dict["experimenter_list"] = ["Alice", "Bob"]
+    win.exp_id = "Bob"
+    win.visualizations_input_dict["figures"]["save_directory"] = "/mnt/falkner/Alice/figures"
+    shared = win.visualizations_input_dict["shared_resources"]
+    shared["spectrograms_dir"] = "/mnt/falkner/Alice/spectrograms"
+    shared["input_files_directory"] = "/mnt/falkner/Alice/modeling/input_files"
+
+    win._save_visualizations_labels_func()
+
+    assert win.visualizations_input_dict["figures"]["save_directory"] == "/mnt/falkner/Bob/figures"
+    assert shared["spectrograms_dir"] == "/mnt/falkner/Bob/spectrograms"
+    assert shared["input_files_directory"] == "/mnt/falkner/Bob/modeling/input_files"
+    win.close()

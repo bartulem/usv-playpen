@@ -32,7 +32,7 @@ SRC_TREE_ROOT = Path(__file__).resolve().parent.parent / "src" / "usv_playpen"
 
 # Generated / cache artifacts that legitimately fluctuate during a test
 # run; never include them in the integrity hash.
-_INTEGRITY_EXCLUDE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
+_INTEGRITY_EXCLUDE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", "__marimo__"}
 _INTEGRITY_EXCLUDE_FILES = {"_version.py", ".DS_Store"}
 _INTEGRITY_EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 
