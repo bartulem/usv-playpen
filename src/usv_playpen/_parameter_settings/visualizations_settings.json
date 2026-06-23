@@ -1,7 +1,7 @@
 {
   "figures": {
     "save_directory": "/mnt/falkner/Bartul/figures",
-    "fig_format": "svg",
+    "fig_format": "png",
     "dpi": 300,
     "timestamp_in_name": true,
     "cmap": "inferno",
@@ -40,7 +40,7 @@
     "make_behavioral_videos_bool": false,
     "make_usv_spectrograms_bool": false,
     "make_qlvm_torus_traversal_video_bool": false,
-    "make_embedding_thumbnails_bool": false
+    "make_embedding_thumbnails_bool": true
   },
   "visualize_data": {
     "root_directories": []

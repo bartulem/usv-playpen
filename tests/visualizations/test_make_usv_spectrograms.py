@@ -1930,6 +1930,16 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
         "usv_playpen.visualizations.make_usv_spectrograms.plot_embedding_with_category_thumbnails",
         _stub,
     )
+    # Force a GUI context + capture the viewer-open (mocked so no real viewer
+    # spawns under test) to verify the figure is opened at the end of the render.
+    monkeypatch.setattr(
+        "usv_playpen.visualizations.make_usv_spectrograms.is_gui_context", lambda: True
+    )
+    opened = []
+    monkeypatch.setattr(
+        "usv_playpen.visualizations.make_usv_spectrograms._open_path_in_default_viewer",
+        lambda path, message_output=None: opened.append(str(path)),
+    )
 
     viz = {
         "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 150, "seed": 7},
@@ -1983,3 +1993,5 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert captured["embeddings_cache_path"] == str(
         pathlib.Path(spec_dir) / "embeddings" / "pooled_embeddings.parquet"
     )
+    # in a GUI context the saved figure is opened at the end
+    assert opened == [captured["output_path"]]

@@ -111,6 +111,40 @@ _SEQ_LW_MAX = 3.0
 _SEQ_EMBEDDING_CMAP = "gray_r"
 
 
+def _open_path_in_default_viewer(path, message_output: Callable | None = None) -> None:
+    """
+    Description
+    -----------
+    Open a saved file in the operating system's default viewer (``open`` on
+    macOS, ``os.startfile`` on Windows, ``xdg-open`` elsewhere). Best-effort: any
+    failure is reported via ``message_output`` (defaulting to ``print``) rather
+    than raised, so a missing opener never aborts a render. Shared by the
+    ``USVSpectrogramPlotter`` figures and the cohort embedding-thumbnails driver.
+
+    Parameters
+    ----------
+    path (str | pathlib.Path)
+        File to open.
+    message_output (Callable | None)
+        Sink for the best-effort failure message (defaults to ``print``).
+
+    Returns
+    -------
+    None
+    """
+
+    log = message_output or print
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        elif os.name == "nt":
+            os.startfile(str(path))  # noqa: S606 -- Windows-only default opener
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+    except OSError as exc:
+        log(f"Could not open {path} in a viewer: {exc}")
+
+
 class USVSpectrogramPlotter:
     """
     Description
@@ -586,11 +620,9 @@ class USVSpectrogramPlotter:
         """
         Description
         -----------
-        Open a saved file in the operating system's default viewer
-        (``open`` on macOS, ``os.startfile`` on Windows, ``xdg-open``
-        elsewhere). Best-effort: any failure is reported via
-        ``message_output`` rather than raised, so a missing opener never
-        aborts a render.
+        Open a saved file in the operating system's default viewer, delegating to
+        the module-level ``_open_path_in_default_viewer`` (best-effort: a missing
+        opener is reported via ``message_output``, never raised).
 
         Parameters
         ----------
@@ -602,15 +634,7 @@ class USVSpectrogramPlotter:
         None
         """
 
-        try:
-            if sys.platform == "darwin":
-                subprocess.run(["open", str(path)], check=False)
-            elif os.name == "nt":
-                os.startfile(str(path))  # noqa: S606 -- Windows-only default opener
-            else:
-                subprocess.run(["xdg-open", str(path)], check=False)
-        except OSError as exc:
-            self.message_output(f"Could not open {path} in a viewer: {exc}")
+        _open_path_in_default_viewer(path, self.message_output)
 
     def plot_single_channel(self, channel: int | None = None) -> plt.Figure:
         """
@@ -3916,7 +3940,8 @@ def render_embedding_thumbnails_for_cohort(
     ``shared_resources['spectrograms_dir']``, and renders
     ``plot_embedding_with_category_thumbnails`` with the knobs from the
     ``embedding_thumbnails`` settings block. The figure is written to
-    ``figures['save_directory']``.
+    ``figures['save_directory']`` and, in an interactive GUI context, opened in
+    the OS default viewer at the end (headless / batch runs never spawn a viewer).
 
     Like the QLVM torus video this reads its inputs from settings rather than from
     a session directory, so it runs ONCE outside the per-session visualization
@@ -4008,7 +4033,7 @@ def render_embedding_thumbnails_for_cohort(
         out_dir / f"embedding_thumbnails_{cfg['map_type']}_{cfg['category_col_suffix']}.{fig_format}"
     )
 
-    return plot_embedding_with_category_thumbnails(
+    fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path=combined_sessions_txt,
         consolidated_h5_path=store_path,
         map_type=cfg["map_type"],
@@ -4050,3 +4075,9 @@ def render_embedding_thumbnails_for_cohort(
         seed=figures["seed"],
         message_output=message_output,
     )
+
+    # End by opening the saved figure in the OS default viewer, but only in an
+    # interactive GUI context so headless / batch / test runs never spawn a viewer.
+    if is_gui_context():
+        _open_path_in_default_viewer(output_path, log)
+    return fig
