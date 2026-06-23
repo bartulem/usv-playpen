@@ -240,7 +240,6 @@
     "thumbnail_wspace": 0.04,
     "unstretched_specs": true,
     "scatter_max_points": 50000,
-    "embeddings_cache_path": "",
     "fig_size": [
       16,
       12

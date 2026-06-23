@@ -54,6 +54,7 @@ from ..os_utils import (
     first_match_or_raise,
     resolve_consolidated_h5_path,
     resolve_embedding_arrays_path,
+    resolve_pooled_embeddings_cache,
 )
 from ..time_utils import is_gui_context, smart_wait
 from .plot_style import apply_plot_style
@@ -3988,7 +3989,13 @@ def render_embedding_thumbnails_for_cohort(
         if cc_matches:
             cluster_centers_h5_path = str(cc_matches[0])
 
-    cache_path = configure_path(cfg["embeddings_cache_path"]) if cfg["embeddings_cache_path"] else None
+    # Pooled-embeddings cache resolved by convention from the spectrograms dir
+    # (<dir>/embeddings/pooled_embeddings.parquet, precomputed once on a fast mount);
+    # build_pooled_embeddings_df loads it when present instead of re-reading the
+    # cohort's CSVs, and otherwise pools + writes it there.
+    cache_path = resolve_pooled_embeddings_cache(
+        visualizations_parameter_dict["shared_resources"]["spectrograms_dir"]
+    )
 
     out_dir = pathlib.Path(configure_path(figures["save_directory"]))
     out_dir.mkdir(parents=True, exist_ok=True)

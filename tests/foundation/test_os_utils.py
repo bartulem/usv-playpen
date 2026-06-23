@@ -363,6 +363,13 @@ def test_resolve_consolidated_h5_raises_when_no_store(tmp_path):
         os_utils.resolve_consolidated_h5_path(str(tmp_path))
 
 
+def test_resolve_pooled_embeddings_cache_convention(tmp_path):
+    base = tmp_path / "spectrograms"
+    assert os_utils.resolve_pooled_embeddings_cache(str(base)) == str(
+        base / "embeddings" / "pooled_embeddings.parquet"
+    )
+
+
 # wait_for_subprocesses
 
 class FakePopen:

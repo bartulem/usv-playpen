@@ -1950,7 +1950,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
             "annotate_cluster_ids": True, "cluster_id_fontsize": 20,
             "thumbnail_size_fraction": 0.7, "thumbnail_hspace": 0.03,
             "thumbnail_wspace": 0.04, "unstretched_specs": True,
-            "scatter_max_points": 1000, "embeddings_cache_path": "",
+            "scatter_max_points": 1000,
             "fig_size": [10, 8],
         },
     }
@@ -1979,3 +1979,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert captured["knn_boundary_resolution"] == 200
     # VAE map -> no QLVM cluster-centers h5
     assert captured["cluster_centers_h5_path"] is None
+    # the pooled-embeddings cache is resolved by convention under spectrograms_dir
+    assert captured["embeddings_cache_path"] == str(
+        pathlib.Path(spec_dir) / "embeddings" / "pooled_embeddings.parquet"
+    )

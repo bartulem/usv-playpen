@@ -687,3 +687,31 @@ def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
             label="consolidated spectrogram .h5",
         )
     )
+
+
+def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
+    """
+    Description
+    -----------
+    Build the path to the cohort pooled-embeddings parquet cache under the
+    spectrograms base directory, by convention:
+    ``<dir>/embeddings/pooled_embeddings.parquet``. This is a pure path builder
+    (run through ``configure_path``); whether the file exists is the caller's
+    concern -- the embedding figures pass it as ``embeddings_cache_path`` so that
+    ``build_pooled_embeddings_df`` loads it when present (one combined table that
+    carries both the VAE and QLVM coordinates and the coarse + fine labels), and
+    otherwise pools the cohort and writes it there.
+
+    Parameters
+    ----------
+    spectrograms_dir (str)
+        Base directory where the precomputed embedding artifacts live.
+
+    Returns
+    -------
+    path (str)
+        The OS-resolved parquet path (not checked for existence).
+    """
+
+    base = pathlib.Path(configure_path(spectrograms_dir))
+    return str(base / "embeddings" / "pooled_embeddings.parquet")
