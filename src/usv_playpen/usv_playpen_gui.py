@@ -21,7 +21,7 @@ from pathlib import Path
 import platformdirs
 import toml
 import yaml
-from PyQt6.QtCore import QEvent, QRegularExpression, QSize, Qt, QTimer
+from PyQt6.QtCore import QEvent, QRegularExpression, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,

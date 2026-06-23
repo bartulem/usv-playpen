@@ -1909,6 +1909,9 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
 
     def _stub(**kwargs):
         captured.update(kwargs)
+        # Read the combined session list WHILE it still exists (the driver unlinks
+        # it in a finally after this call returns).
+        captured["pooled_roots"] = pathlib.Path(kwargs["sessions_txt_path"]).read_text().splitlines()
         return plt.figure()
 
     monkeypatch.setattr(
@@ -1954,8 +1957,9 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     # store resolved to the consolidated spectrograms_*.h5 under spec_dir
     assert pathlib.Path(captured["consolidated_h5_path"]).name.startswith("spectrograms_")
     # combined session list = deduped roots in first-seen order ('# skip' dropped)
-    pooled_roots = pathlib.Path(captured["sessions_txt_path"]).read_text().splitlines()
-    assert pooled_roots == ["/root/sessA", "/root/sessB", "/root/sessC"]
+    assert captured["pooled_roots"] == ["/root/sessA", "/root/sessB", "/root/sessC"]
+    # the throwaway combined list is unlinked after the render
+    assert not pathlib.Path(captured["sessions_txt_path"]).exists()
     # block knobs forwarded verbatim
     assert captured["map_type"] == "vae"
     assert captured["category_col_suffix"] == "category"
