@@ -4819,6 +4819,37 @@ class USVPlaypenWindow(QMainWindow):
         self.embedding_thumbnails_layout_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_orientation', choices=['horizontal', 'vertical']))
         self.embedding_thumbnails_layout_cb.move(vis_col_three_x2, 550)
 
+        embedding_thumbnails_boundaries_label = QLabel('Draw cluster boundaries:', self.VisualizationsSettings)
+        embedding_thumbnails_boundaries_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_boundaries_label.move(vis_col_three_x1, 580)
+        self.embedding_thumbnails_boundaries_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_boundaries_cb.addItems(['No', 'Yes'])
+        self.embedding_thumbnails_boundaries_cb.setCurrentIndex(1 if _emb_cfg['draw_cluster_boundaries'] else 0)
+        self.embedding_thumbnails_boundaries_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_boundaries_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_draw_boundaries_bool'))
+        self.embedding_thumbnails_boundaries_cb.move(vis_col_three_x2, 580)
+
+        embedding_thumbnails_mask_label = QLabel('Apply SAM2 mask:', self.VisualizationsSettings)
+        embedding_thumbnails_mask_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_mask_label.move(vis_col_three_x1, 610)
+        self.embedding_thumbnails_mask_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_mask_cb.addItems(['No', 'Yes'])
+        self.embedding_thumbnails_mask_cb.setCurrentIndex(1 if _emb_cfg['apply_mask'] else 0)
+        self.embedding_thumbnails_mask_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_mask_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_apply_mask_bool'))
+        self.embedding_thumbnails_mask_cb.move(vis_col_three_x2, 610)
+
+        embedding_thumbnails_sampling_label = QLabel('Per-cluster sampling:', self.VisualizationsSettings)
+        embedding_thumbnails_sampling_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_sampling_label.move(vis_col_three_x1, 640)
+        self.embedding_thumbnails_sampling_cb = QComboBox(self.VisualizationsSettings)
+        _emb_sampling_choices = ['random', 'nearest', 'farthest_point', 'grid', 'spiral']
+        self.embedding_thumbnails_sampling_cb.addItems(_emb_sampling_choices)
+        self.embedding_thumbnails_sampling_cb.setCurrentText(_emb_cfg['sampling_method'])
+        self.embedding_thumbnails_sampling_cb.setStyleSheet('QComboBox { width: 107px; }')
+        self.embedding_thumbnails_sampling_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_sampling_method', choices=_emb_sampling_choices))
+        self.embedding_thumbnails_sampling_cb.move(vis_col_three_x2, 640)
+
         # Couple dependent controls: boundaries apply to both embeddings, and the
         # boundary clustering selector only matters when boundaries are drawn. Set
         # the initial enabled state here.
@@ -4979,6 +5010,9 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['embedding_thumbnails']['category_col_suffix'] = self.embedding_thumbnails_category
         self.visualizations_input_dict['embedding_thumbnails']['tile_orientation'] = self.embedding_thumbnails_orientation
         self.visualizations_input_dict['embedding_thumbnails']['n_samples_per_category'] = self.embedding_thumbnails_samples_slider.value()
+        self.visualizations_input_dict['embedding_thumbnails']['draw_cluster_boundaries'] = self.embedding_thumbnails_draw_boundaries_bool
+        self.visualizations_input_dict['embedding_thumbnails']['apply_mask'] = self.embedding_thumbnails_apply_mask_bool
+        self.visualizations_input_dict['embedding_thumbnails']['sampling_method'] = self.embedding_thumbnails_sampling_method
 
 
     def _save_process_labels_func(self) -> None:
@@ -7195,6 +7229,9 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'embedding_thumbnails_map_type': visualizations_input_dict['embedding_thumbnails']['map_type'],
                            'embedding_thumbnails_category': visualizations_input_dict['embedding_thumbnails']['category_col_suffix'],
                            'embedding_thumbnails_orientation': visualizations_input_dict['embedding_thumbnails']['tile_orientation'],
+                           'embedding_thumbnails_draw_boundaries_bool': visualizations_input_dict['embedding_thumbnails']['draw_cluster_boundaries'],
+                           'embedding_thumbnails_apply_mask_bool': visualizations_input_dict['embedding_thumbnails']['apply_mask'],
+                           'embedding_thumbnails_sampling_method': visualizations_input_dict['embedding_thumbnails']['sampling_method'],
                            'calculate_neuronal_tuning_curves_cb_bool': False, 'include_partner_vocalization_tuning_cb_bool': analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'],
                            'create_usv_playback_wav_cb_bool': False, 'frequency_shift_audio_segment_cb_bool': False,
                            'fs_audio_dir': analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], 'fs_device_id': analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'],

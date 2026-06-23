@@ -3987,9 +3987,9 @@ def render_embedding_thumbnails_for_cohort(
         thumbnail_size_fraction=cfg["thumbnail_size_fraction"],
         scatter_max_points=cfg["scatter_max_points"],
         fig_size=tuple(cfg["fig_size"]),
-        fig_dpi=cfg["fig_dpi"],
+        fig_dpi=figures["dpi"],
         output_path=output_path,
         fig_format=fig_format,
-        seed=cfg["seed"],
+        seed=figures["seed"],
         message_output=message_output,
     )

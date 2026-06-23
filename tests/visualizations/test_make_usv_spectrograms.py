@@ -1932,7 +1932,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     )
 
     viz = {
-        "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png"},
+        "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 150, "seed": 7},
         "shared_resources": {"spectrograms_dir": spec_dir},
         "usv_embedding": {"input_files_directory": str(input_dir)},
         "embedding_thumbnails": {
@@ -1941,7 +1941,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
             "apply_mask": False, "sampling_method": "random",
             "draw_cluster_boundaries": True, "knn_boundary_neighbors": 9,
             "thumbnail_size_fraction": 0.7, "scatter_max_points": 1000,
-            "fig_size": [10, 8], "fig_dpi": 150, "seed": 7,
+            "fig_size": [10, 8],
         },
     }
     fig = render_embedding_thumbnails_for_cohort(viz, message_output=lambda *_a, **_kw: None)
@@ -1957,3 +1957,6 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert captured["n_samples_per_category"] == 6
     assert captured["tile_orientation"] == "vertical"
     assert tuple(captured["fig_size"]) == (10, 8)
+    # fig_dpi + seed are sourced from the general figures block, not the block
+    assert captured["fig_dpi"] == 150
+    assert captured["seed"] == 7
