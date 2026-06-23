@@ -3885,7 +3885,11 @@ def plot_embedding_with_category_thumbnails(
                 )
                 _strip_ax_chrome(ax)
 
-    fig.tight_layout()
+    # The two-region gridspec (box_aspect scatter on the left + manual width/height
+    # ratios for the thumbnail block on the right) positions everything explicitly.
+    # tight_layout is incompatible with the box_aspect axes (it warned and distorted
+    # the thumbnail block), so set balanced margins directly instead of auto-layout.
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.96, bottom=0.07)
 
     if output_path is not None:
         out_path = pathlib.Path(configure_path(output_path))

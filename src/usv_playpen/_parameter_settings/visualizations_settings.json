@@ -40,7 +40,7 @@
     "make_behavioral_videos_bool": false,
     "make_usv_spectrograms_bool": false,
     "make_qlvm_torus_traversal_video_bool": false,
-    "make_embedding_thumbnails_bool": true
+    "make_embedding_thumbnails_bool": false
   },
   "visualize_data": {
     "root_directories": []
@@ -235,7 +235,7 @@
     "pick_number_fontsize": 9,
     "annotate_cluster_ids": true,
     "cluster_id_fontsize": 20,
-    "thumbnail_size_fraction": 0.5,
+    "thumbnail_size_fraction": 1.0,
     "thumbnail_hspace": 0.03,
     "thumbnail_wspace": 0.04,
     "unstretched_specs": true,
