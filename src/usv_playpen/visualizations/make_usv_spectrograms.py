@@ -3092,7 +3092,6 @@ def plot_embedding_with_category_thumbnails(
     pick_number_fontsize: float = 11.0,
     annotate_cluster_ids: bool = False,
     cluster_id_fontsize: float = 12.0,
-    thumbnail_size_fraction: float = 0.5,
     thumbnail_hspace: float = 0.02,
     thumbnail_wspace: float = 0.05,
     tile_orientation: str = "horizontal",
@@ -3182,18 +3181,6 @@ def plot_embedding_with_category_thumbnails(
     cluster_id_fontsize (float)
         Font size used for the cluster-ID labels when
         ``annotate_cluster_ids`` is ``True``.
-    thumbnail_size_fraction (float)
-        Final shrink multiplier applied to the thumbnail cell side.
-        The cell side is first derived to make the whole thumbnail
-        block match the LEFT main scatter's on-page footprint:
-        ``target_side_in = min(left_region_w_in, top_scatter_row_h_in)``
-        and ``cell_side_in = target_side_in / max(n_rows, n_cols)``.
-        ``1.0`` keeps the scatter-matched size; ``<1.0`` shrinks
-        further. Must satisfy ``0 < thumbnail_size_fraction <= 1.0``.
-        Combined with ``ax.set_box_aspect(1)`` on every thumbnail
-        axes (always on), each cell is square; auto-added spacer
-        row/column at the bottom/right of the inner gridspec consume
-        any remaining space in the right region.
     thumbnail_hspace (float)
         ``hspace`` for the right-side per-category x per-sample
         gridspec (fraction of average cell height). Default is
@@ -3478,18 +3465,14 @@ def plot_embedding_with_category_thumbnails(
             picks_per_category[cat] = cat_df[local_idx.tolist()]
 
     fig = plt.figure(figsize=fig_size, dpi=fig_dpi)
-    outer_width_ratios = (1.0, 1.5)
-    outer = fig.add_gridspec(
-        1, 2, width_ratios=list(outer_width_ratios), wspace=0.08,
-    )
-    right_region_w_fraction = outer_width_ratios[1] / sum(outer_width_ratios)
-    # Left column: a vertical stack of 5 UMAPs. The top scatter is
-    # the large category-colored map; below it sit two pairs of
-    # smaller auxiliary maps. ``height_ratios=[2, 1, 1]`` gives the
-    # top scatter twice the row-height of the two auxiliary rows.
-    left_inner = outer[0, 0].subgridspec(
-        3, 1, height_ratios=[2, 1, 1], hspace=0.18,
-    )
+    # Two rows. TOP: the big category-colored scatter (left) + the per-category
+    # thumbnail grid (right) as two EQUAL-width cells, so the scatter and the whole
+    # thumbnail block render at the same (square) size. BOTTOM: the four auxiliary
+    # maps (male / female emitter, duration, mean frequency) in a single line.
+    # ``height_ratios=[2, 1]`` keeps the top cells ~twice the side of the line below.
+    outer = fig.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.16)
+    top_row = outer[0, 0].subgridspec(1, 2, wspace=0.08)
+    bottom_row = outer[1, 0].subgridspec(1, 4, wspace=0.12)
 
     def _overlay_boundaries(ax, alpha=1.0, linewidth=2.5):
         if boundary_labels is None:
@@ -3503,8 +3486,8 @@ def plot_embedding_with_category_thumbnails(
             zorder=4,
         )
 
-    # Top: large category-colored scatter.
-    ax_scatter = fig.add_subplot(left_inner[0, 0])
+    # Top-left: large category-colored scatter.
+    ax_scatter = fig.add_subplot(top_row[0, 0])
     for cat in categories:
         sub = scatter_df.filter(pls.col(cat_col) == cat)
         if sub.height == 0:
@@ -3618,16 +3601,15 @@ def plot_embedding_with_category_thumbnails(
     sex_male_color = "#9AC0CD"
     sex_female_color = "#FF6347"
 
-    # The four small panels are roughly half the linear size of the
-    # big top scatter (column split 1x2). With the SAME ``scatter_df``
-    # of points packed into ~1/4 the axes area, marker density would
-    # look 4x higher. Compensate by scaling marker AREA by ~1/4.
+    # The four auxiliary panels in the bottom line are roughly a quarter the
+    # linear size of the big top scatter. With the SAME ``scatter_df`` of points
+    # packed into a much smaller axes area, marker density would look far higher;
+    # compensate by scaling marker AREA down.
     small_panel_marker_size = max(0.5, scatter_point_size * 0.25)
 
-    # Middle row: male / female emitter scatters.
-    mid_grid = left_inner[1, 0].subgridspec(1, 2, wspace=0.08)
-    ax_male = fig.add_subplot(mid_grid[0, 0])
-    ax_female = fig.add_subplot(mid_grid[0, 1])
+    # Bottom line (left pair): male / female emitter scatters.
+    ax_male = fig.add_subplot(bottom_row[0, 0])
+    ax_female = fig.add_subplot(bottom_row[0, 1])
 
     if "sex" in scatter_df.columns:
         sex_arr = scatter_df["sex"].to_numpy()
@@ -3652,9 +3634,8 @@ def plot_embedding_with_category_thumbnails(
     # ascending by value so high (bright) values are drawn last and sit
     # on top of low (dark) ones, giving a legible gradient even with
     # overplotting.
-    bot_grid = left_inner[2, 0].subgridspec(1, 2, wspace=0.08)
-    ax_dur = fig.add_subplot(bot_grid[0, 0])
-    ax_freq = fig.add_subplot(bot_grid[0, 1])
+    ax_dur = fig.add_subplot(bottom_row[0, 2])
+    ax_freq = fig.add_subplot(bottom_row[0, 3])
 
     def _render_continuous(ax, values, label_template):
         finite = np.isfinite(values)
@@ -3707,26 +3688,15 @@ def plot_embedding_with_category_thumbnails(
         # as living inside the same UMAP geometry.
         _overlay_boundaries(ax, alpha=1.0, linewidth=1.5)
 
-    # Right-side per-category x per-sample grid. ``tile_orientation``
-    # picks whether each category is a horizontal ROW of thumbnails
-    # (default) or a vertical COLUMN. The WHOLE thumbnail block is
-    # sized to match the upper-left main scatter's footprint: block
-    # width = block height = min(left_region_w_in, top_scatter_row_h_in).
-    # Cells fill their slots (no set_box_aspect) so the specs end up
-    # naturally spec-shaped -- wider than tall in vertical mode (10
-    # rows / 7 cols), taller than wide in horizontal mode. Spacer
-    # row/column appended on the bottom/right so the block sits at
-    # the top-left of the right region.
+    # Top-right per-category x per-sample grid, filling the whole top-right cell so
+    # the thumbnail block is the same square size as the scatter on the left.
+    # ``tile_orientation`` picks whether each category is a horizontal ROW of
+    # thumbnails (default) or a vertical COLUMN. Cells fill their slots (no
+    # set_box_aspect) so the specs end up naturally spec-shaped.
     if tile_orientation not in ("horizontal", "vertical"):
         msg = (
             f"tile_orientation must be 'horizontal' or 'vertical'; "
             f"got {tile_orientation!r}."
-        )
-        raise ValueError(msg)
-    if not (0.0 < thumbnail_size_fraction <= 1.0):
-        msg = (
-            f"thumbnail_size_fraction must be in (0, 1]; "
-            f"got {thumbnail_size_fraction!r}."
         )
         raise ValueError(msg)
     if tile_orientation == "horizontal":
@@ -3736,38 +3706,8 @@ def plot_embedding_with_category_thumbnails(
         grid_n_rows = n_samples_per_category
         grid_n_cols = n_categories
 
-    left_region_w_in = fig_size[0] * (
-        outer_width_ratios[0] / sum(outer_width_ratios)
-    )
-    right_region_w_in = fig_size[0] * right_region_w_fraction
-    right_region_h_in = fig_size[1]
-    top_row_h_in = fig_size[1] * (2.0 / 4.0)  # height_ratios [2, 1, 1]
-    block_side_in = thumbnail_size_fraction * min(
-        left_region_w_in, top_row_h_in,
-    )
-    block_w_in = block_side_in
-    block_h_in = block_side_in
-    cell_w_in = block_w_in / grid_n_cols
-    cell_h_in = block_h_in / grid_n_rows
-
-    width_ratios = [1.0] * grid_n_cols
-    n_extra_cols = 0
-    width_excess = right_region_w_in - block_w_in
-    if width_excess > 0:
-        width_ratios = [1.0] * grid_n_cols + [width_excess / cell_w_in]
-        n_extra_cols = 1
-
-    height_ratios = [1.0] * grid_n_rows
-    n_extra_rows = 0
-    height_excess = right_region_h_in - block_h_in
-    if height_excess > 0:
-        height_ratios = [1.0] * grid_n_rows + [height_excess / cell_h_in]
-        n_extra_rows = 1
-
-    inner = outer[0, 1].subgridspec(
-        grid_n_rows + n_extra_rows, grid_n_cols + n_extra_cols,
-        height_ratios=height_ratios,
-        width_ratios=width_ratios,
+    inner = top_row[0, 1].subgridspec(
+        grid_n_rows, grid_n_cols,
         wspace=thumbnail_wspace, hspace=thumbnail_hspace,
     )
 
@@ -4062,7 +4002,6 @@ def render_embedding_thumbnails_for_cohort(
         annotate_cluster_ids=cfg["annotate_cluster_ids"],
         cluster_id_fontsize=cfg["cluster_id_fontsize"],
         tile_orientation=cfg["tile_orientation"],
-        thumbnail_size_fraction=cfg["thumbnail_size_fraction"],
         thumbnail_hspace=cfg["thumbnail_hspace"],
         thumbnail_wspace=cfg["thumbnail_wspace"],
         unstretched_specs=cfg["unstretched_specs"],

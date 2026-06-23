@@ -1592,22 +1592,6 @@ def test_plot_umap_thumbnails_bad_tile_orientation(tmp_path):
         )
 
 
-@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
-@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-def test_plot_umap_thumbnails_bad_size_fraction(tmp_path):
-    """A thumbnail_size_fraction outside (0, 1] raises ValueError."""
-    h5_path = tmp_path / "store.h5"
-    _write_consolidated_h5(h5_path, "sessA", n_usvs=12)
-    with pytest.raises(ValueError, match="thumbnail_size_fraction"):
-        plot_embedding_with_category_thumbnails(
-            sessions_txt_path="unused",
-            consolidated_h5_path=str(h5_path),
-            thumbnail_size_fraction=2.0,
-            pooled_df=_make_pooled_df("sessA"),
-            message_output=lambda *_: None,
-        )
-
-
 def test_bandwidth_split_constant_is_khz():
     """Guard against an accidental unit regression on the bimodal split
     constant (it is in display kHz, not Hz)."""
@@ -1958,7 +1942,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
             "spiral_n_turns": 3, "spiral_random_phase": True,
             "annotate_picks_on_scatter": False, "pick_number_fontsize": 9,
             "annotate_cluster_ids": True, "cluster_id_fontsize": 20,
-            "thumbnail_size_fraction": 0.7, "thumbnail_hspace": 0.03,
+            "thumbnail_hspace": 0.03,
             "thumbnail_wspace": 0.04, "unstretched_specs": True,
             "scatter_max_points": 1000,
             "fig_size": [10, 8],

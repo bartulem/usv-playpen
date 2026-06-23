@@ -235,7 +235,6 @@
     "pick_number_fontsize": 9,
     "annotate_cluster_ids": true,
     "cluster_id_fontsize": 20,
-    "thumbnail_size_fraction": 1.0,
     "thumbnail_hspace": 0.03,
     "thumbnail_wspace": 0.04,
     "unstretched_specs": true,
