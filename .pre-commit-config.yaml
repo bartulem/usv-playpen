@@ -24,6 +24,11 @@ repos:
       - id: mixed-line-ending
       - id: name-tests-test
         args: ["--pytest-test-first"]
+        # Leading-underscore modules under tests/ are private fixtures /
+        # helpers (e.g. tests/modeling/_synth.py), not test modules, so they
+        # are exempt from the test_*.py naming requirement. Real test files
+        # are named test_*.py and never start with an underscore.
+        exclude: '(^|/)_[^/]*\.py$'
       - id: requirements-txt-fixer
       - id: trailing-whitespace
 

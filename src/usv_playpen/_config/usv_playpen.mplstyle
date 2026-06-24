@@ -6,15 +6,15 @@ font.family : sans-serif
 font.sans-serif : Helvetica
 font.style : normal
 font.variant : normal
-font.weight : normal
+font.weight : light
 font.stretch : normal
 
 # Now that Bold + Light are bundled, set per-role weights here so
 # every figure inherits the same convention. Per-call overrides via
 # `fontweight=` still win.
-axes.titleweight : bold
-axes.labelweight : normal
-figure.titleweight : bold
+axes.titleweight : light
+axes.labelweight : light
+figure.titleweight : light
 
 # Math text rendered in the same family / weight as surrounding text.
 mathtext.default : regular

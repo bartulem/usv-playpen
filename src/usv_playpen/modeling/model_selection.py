@@ -1,0 +1,4641 @@
+"""
+@author: bartulem
+Forward stepwise model selection for predicting bout and USV dynamics.
+"""
+
+import numpy as np
+import pickle
+import json
+import re
+import gc
+import time
+from pathlib import Path
+from pygam import LogisticGAM, GAM, te
+from scipy.stats import spearmanr, wilcoxon
+from sklearn.linear_model import LogisticRegressionCV, RidgeCV
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, ShuffleSplit
+from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
+                             balanced_accuracy_score, mean_squared_log_error,
+                             mean_gamma_deviance, brier_score_loss)
+from .load_input_files import load_pickle_modeling_data
+from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
+from .modeling_utils import (
+    pool_session_arrays,
+    brier_score_multi,
+    expected_calibration_error,
+    safe_matthews_corrcoef,
+    safe_confusion_matrix,
+    align_probs_to_canonical,
+    pearson_r_safe,
+    root_mean_squared_error,
+    mean_absolute_error_1d,
+    bounded_test_proportion,
+)
+from .modeling_vocal_onsets import VocalOnsetModelingPipeline
+from .modeling_vocal_categories_multinomial import (
+    get_stratified_group_splits_stable,
+    _balance_multinomial_train_indices,
+    _log_spaced_grid_multinomial,
+    _tune_multinomial_regularization,
+)
+from .manifold_metric import circular_mean, manifold_prediction_metrics, resolve_manifold_metric, signed_diff
+from .modeling_usv_manifold_position import (
+    get_stratified_spatial_splits_stable,
+    _log_spaced_grid,
+    _tune_manifold_regularization,
+)
+from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
+from .manifold_torus_regression import resolve_manifold_regressor_cls
+from .modeling_metadata import (
+    build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
+)
+
+
+def _harvest_upstream_metadata(univariate_data: dict,
+                               input_data: dict) -> tuple:
+    """
+    Pulls the upstream metadata blocks out of the loaded Level-2
+    consolidated univariate file and the Level-1 modeling input pickle.
+
+    The function pops the reserved keys (`_input_metadata`,
+    `_run_metadata`, `_consolidation_metadata`) from each dict so the
+    downstream selection loop can iterate `*.items()` over feature data
+    only. It returns the harvested `_input_metadata` (preferring the
+    Level-2 value if both files supply one — the consolidator already
+    asserted Level-2's matched every per-feature file) and the Level-2
+    `_run_metadata` (re-tagged as `_univariate_metadata` for embedding
+    into the selection step file).
+
+    Parameters
+    ----------
+    univariate_data : dict
+        The dict returned by `pickle.load` on the consolidated
+        univariate artifact.
+    input_data : dict
+        The dict returned by `pickle.load` on the Level-1 modeling
+        input pickle.
+
+    Returns
+    -------
+    tuple
+        `(input_metadata, univariate_metadata)`. Either may be `None`
+        if the upstream file was a legacy artifact without metadata.
+    """
+
+    in_md = None
+    if '_input_metadata' in univariate_data:
+        in_md = univariate_data.pop('_input_metadata')
+    if '_input_metadata' in input_data:
+        # Prefer the Level-2 copy (already consolidator-asserted) but
+        # fall back to the Level-1 copy if Level-2 was a legacy run.
+        if in_md is None:
+            in_md = input_data.pop('_input_metadata')
+        else:
+            input_data.pop('_input_metadata', None)
+
+    univ_md = None
+    if '_run_metadata' in univariate_data:
+        univ_md = univariate_data.pop('_run_metadata')
+
+    # Drop other reserved keys from both dicts so the iteration is clean.
+    for k in ('_consolidation_metadata',):
+        univariate_data.pop(k, None)
+        input_data.pop(k, None)
+
+    return in_md, univ_md
+
+
+def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
+    """
+    Returns a closure `wrap(payload) -> dict` that injects the three
+    metadata blocks into a step-pickle payload before serialization.
+
+    Each selection function loads its upstream metadata once, builds
+    its own `_run_metadata`, and then uses the closure to attach all
+    three blocks at every `pickle.dump` site. The closure short-
+    circuits cleanly when an upstream block is `None` (legacy
+    artifact); the run-level block is always emitted.
+
+    Parameters
+    ----------
+    input_md : dict or None
+        `_input_metadata` block to embed.
+    univariate_md : dict or None
+        `_univariate_metadata` block to embed.
+    run_md : dict
+        `_run_metadata` block to embed (always present for new runs).
+
+    Returns
+    -------
+    callable
+        `wrap(payload)` returning a new dict with the metadata blocks
+        injected. Never mutates the input payload.
+    """
+
+    def wrap(payload: dict) -> dict:
+        blocks = {'_run_metadata': run_md}
+        if input_md is not None:
+            blocks['_input_metadata'] = input_md
+        if univariate_md is not None:
+            blocks['_univariate_metadata'] = univariate_md
+        return inject_metadata(payload, **blocks)
+
+    return wrap
+
+
+def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
+                                    history_frames: int = None) -> np.ndarray:
+    """
+    Prepares the 'unrolled' X matrix for a multivariate pyGAM by stacking
+    multiple features side-by-side in the specific (Value, Time) format required
+    for tensor product splines.
+
+    For a single feature, pyGAM's `te(feature, time)` term expects an input with
+    two columns: [Feature_Value, Time_Index].
+
+    For a multivariate model with N features (e.g., `te(A, time) + te(B, time)`),
+    we need to construct a matrix where each feature gets its own pair of columns.
+    This function transforms a list of (n_samples, history_frames) matrices into
+    a single tall, wide matrix suitable for fitting.
+
+    Parameters
+    ----------
+    feature_data_dict_list : list of np.ndarray
+        A list of numpy arrays, where each array contains the history data for
+        one feature.
+        - Each array must have shape (n_samples, history_frames).
+        - The order of arrays in this list determines the column order in the output.
+        - Example: [X_nose_nose, X_speed, X_yaw]
+    history_frames : int
+        The number of time lags (columns) in each input array. Used for validation
+        and generating the time index column.
+
+    Returns
+    -------
+    X_unrolled : np.ndarray
+        A 2D numpy array of shape (n_samples * history_frames, 2 * n_features).
+
+        The columns are organized as pairs for each feature:
+        - Col 0: Feature 1 Value
+        - Col 1: Feature 1 Time Index (0, 1, ... history_frames-1)
+        - Col 2: Feature 2 Value
+        - Col 3: Feature 2 Time Index
+        - ... and so on.
+
+        This format allows constructing a GAM model with terms like:
+        `te(0, 1) + te(2, 3) + ...`
+    """
+
+    if not feature_data_dict_list:
+        raise ValueError("feature_data_dict_list is empty.")
+
+    n_samples, n_frames = feature_data_dict_list[0].shape
+    if n_frames != history_frames:
+        raise ValueError(f"Frame mismatch: Data has {n_frames}, expected {history_frames}")
+
+    n_features = len(feature_data_dict_list)
+    n_total_rows = n_samples * n_frames
+
+    X_unrolled = np.empty((n_total_rows, 2 * n_features), dtype=np.float32)
+
+    time_indices = np.arange(history_frames, dtype=np.float32)
+    tiled_time = np.tile(time_indices, n_samples)
+
+    for i, X_feat in enumerate(feature_data_dict_list):
+        if X_feat.shape[0] != n_samples:
+            raise ValueError(f"Sample count mismatch at feature index {i}. Expected {n_samples}, got {X_feat.shape[0]}")
+
+        col_val_idx = i * 2
+        col_time_idx = i * 2 + 1
+
+        X_unrolled[:, col_val_idx] = X_feat.ravel()
+        X_unrolled[:, col_time_idx] = tiled_time
+
+    return X_unrolled
+
+
+def compute_filter_shapes_per_fold_bout_onset(
+        *,
+        cv_folds: list[dict],
+        current_model_features: list[str],
+        all_feature_data: dict,
+        pooled_feature_cache: dict,
+        history_frames: int,
+        n_splines_value: int,
+        n_splines_time: int,
+        gam_kwargs: dict,
+        random_seed: int,
+        time_indices: np.ndarray,
+) -> list[dict]:
+    """
+    Description
+    -----------
+    Refit the final multivariate ``LogisticGAM`` once per CV fold
+    and extract the per-feature temporal-filter shape for that fold.
+
+    The bout-onset selector's final-refit block calls this; the
+    ``recompute_filter_shapes`` recovery utility for legacy
+    consolidated pickles calls it too. Keeping the loop in one
+    place guarantees both code paths exercise the same fitting,
+    balancing, and partial-dependence-extraction logic.
+
+    For each fold:
+      1. Pull this fold's train pos/neg arrays for every feature in
+         ``current_model_features``. Session folds re-pool via
+         ``pool_session_arrays``; mixed folds slice the cached
+         ``X_full`` arrays by the fold's ``train_idx``.
+      2. Balance the train fold 50/50 with a fold-specific RNG
+         seed; one RNG draw is shared across features so the same
+         pos / neg row indices are taken for every feature (design
+         matrix stays column-aligned).
+      3. Fit a multivariate LogisticGAM.
+      4. Extract per-feature partial dependence via the
+         ``predict_mu(test_grid) - predict_mu(base_grid)`` trick.
+      5. Append the fold's per-feature dict to the returned list.
+
+    Per-fold exceptions are caught and logged but do NOT abort the
+    loop; a subset of bad folds shouldn't lose the others. The
+    caller is responsible for checking the returned list length
+    against ``len(cv_folds)`` and deciding whether to raise (see
+    the bout-onset selector for the canonical ``RuntimeError`` on
+    fully-empty result + warning on <2 folds).
+
+    Parameters
+    ----------
+    cv_folds (list of dict)
+        Fold definitions. Each must have a ``'type'`` key of either
+        ``'session'`` (with ``'train_sessions'``) or ``'mixed'``
+        (with ``'train_idx'``, ``'n_pos_total'``, ``'n_neg_total'``).
+    current_model_features (list of str)
+        Features to include in the multivariate model. Must all be
+        present in ``all_feature_data`` (for session folds) and in
+        ``pooled_feature_cache`` (for mixed folds).
+    all_feature_data (dict)
+        Per-feature, per-session raw data. Consumed only for
+        ``'session'`` folds.
+    pooled_feature_cache (dict)
+        Pre-pooled balanced design matrices keyed by feature.
+        Values are dicts with ``'X_full'``. Consumed only for
+        ``'mixed'`` folds.
+    history_frames (int)
+        Number of time frames per filter.
+    n_splines_value, n_splines_time (int)
+        pyGAM spline counts for the value and time axes,
+        respectively.
+    gam_kwargs (dict)
+        Keyword args forwarded to ``LogisticGAM(**gam_kwargs)``.
+    random_seed (int)
+        Base RNG seed. Each fold uses ``random_seed + fold_idx``
+        so the balancing draws are reproducible across reruns.
+    time_indices (np.ndarray)
+        Vector ``np.arange(history_frames, dtype=float)`` used to
+        construct the partial-dependence base grid. Passed in to
+        avoid re-allocating it per call.
+
+    Returns
+    -------
+    list of dict
+        One entry per successfully-fit fold. Each dict maps every
+        feature in ``current_model_features`` to a 1-D numpy
+        array of length ``history_frames``. Length may be less
+        than ``len(cv_folds)`` if any folds raised; check the
+        length at the call site.
+    """
+
+    final_fold_shapes = []
+    for fold_idx, fold_info in enumerate(cv_folds):
+        try:
+            X_p_per_feat = []
+            X_n_per_feat = []
+            if fold_info['type'] == 'session':
+                train_sess = fold_info['train_sessions']
+                for feat in current_model_features:
+                    _X_p, _X_n = pool_session_arrays(
+                        all_feature_data[feat],
+                        train_sess,
+                        pos_key="usv_feature_arr",
+                        neg_key="no_usv_feature_arr",
+                        n_frames=history_frames,
+                    )
+                    X_p_per_feat.append(_X_p)
+                    X_n_per_feat.append(_X_n)
+            elif fold_info['type'] == 'mixed':
+                train_ix = fold_info['train_idx']
+                n_pos_total = fold_info['n_pos_total']
+                n_neg_total = fold_info['n_neg_total']
+                y_full = np.concatenate(
+                    (np.ones(n_pos_total), np.zeros(n_neg_total))
+                )
+                y_tr_all = y_full[train_ix]
+                for feat in current_model_features:
+                    X_full_feat = pooled_feature_cache[feat]['X_full']
+                    X_tr_all = X_full_feat[train_ix]
+                    X_p_per_feat.append(X_tr_all[y_tr_all == 1])
+                    X_n_per_feat.append(X_tr_all[y_tr_all == 0])
+            else:
+                print(
+                    f"    [!] Unknown fold type {fold_info.get('type')!r} "
+                    f"(fold {fold_idx}); skipping."
+                )
+                continue
+
+            n_pos = X_p_per_feat[0].shape[0]
+            n_neg = X_n_per_feat[0].shape[0]
+            n_k = min(n_pos, n_neg)
+            if n_k == 0:
+                print(
+                    f"    [!] Empty class in training fold {fold_idx} "
+                    f"(pos={n_pos}, neg={n_neg}); skipping."
+                )
+                continue
+
+            # One RNG per fold; same idx_p / idx_n applied across
+            # every feature so rows line up column-wise.
+            fold_rng = np.random.default_rng(random_seed + fold_idx)
+            idx_p = fold_rng.choice(n_pos, n_k, replace=False)
+            idx_n = fold_rng.choice(n_neg, n_k, replace=False)
+
+            X_list_fold = [
+                np.concatenate((X_p[idx_p], X_n[idx_n]))
+                for X_p, X_n in zip(X_p_per_feat, X_n_per_feat)
+            ]
+            y_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+
+            X_gam_tr = get_unrolled_X_for_multivariate(
+                X_list_fold, history_frames
+            )
+            y_gam_tr = np.repeat(y_fold.astype(float), history_frames)
+
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(current_model_features)):
+                gam_terms += te(
+                    i * 2, i * 2 + 1,
+                    n_splines=[n_splines_value, n_splines_time],
+                )
+
+            gam_fold = LogisticGAM(gam_terms, **gam_kwargs).fit(
+                X_gam_tr, y_gam_tr
+            )
+
+            base_grid = np.zeros(
+                (history_frames, 2 * len(current_model_features))
+            )
+            for k in range(len(current_model_features)):
+                base_grid[:, k * 2 + 1] = time_indices
+            base_prob = gam_fold.predict_mu(base_grid)
+
+            fold_res = {}
+            for k, f_name in enumerate(current_model_features):
+                test_grid = base_grid.copy()
+                test_grid[:, k * 2] = 1.0
+                fold_res[f_name] = (
+                    gam_fold.predict_mu(test_grid) - base_prob
+                ).flatten()
+
+            final_fold_shapes.append(fold_res)
+
+            del gam_fold, X_gam_tr, y_gam_tr
+            gc.collect()
+        except Exception as e:
+            # Per-fold failure is non-fatal; a subset of bad folds
+            # shouldn't kill the visualisation. The caller's
+            # post-loop assertion catches the "every fold failed"
+            # case.
+            print(
+                f"    [!] Filter-shape fit failed for fold {fold_idx}: {e}"
+            )
+            continue
+    return final_fold_shapes
+
+
+def bout_onset_model_selection(univariate_results_path: str,
+                               input_data_path: str,
+                               output_directory: str,
+                               settings_path: str = None,
+                               use_top_rank_as_anchor: bool = False,
+                               p_val: float = 0.01) -> None:
+    """
+    Performs Forward Stepwise Selection to identify the "minimal sufficient set"
+    of behavioral features that predict vocal (bout) onset.
+
+    This function implements a rigorous, greedy search strategy using Generalized
+    Additive Models (GAMs) with tensor product interactions. To ensure memory stability,
+    filter shapes are NOT calculated during the selection loop. Instead, a single
+    refit is performed on the final winning model to extract shapes for visualization,
+    which are then appended to the results file of the last *successful* step.
+
+    Splitting & balancing invariant:
+    --------------------------------
+    Across both 'session' and 'mixed' strategies, the training fold is down-sampled
+    to a 50/50 class balance (Bout vs. No-Bout), while the test fold preserves the
+    natural class prior of the source data. The 'mixed' strategy achieves this by
+    running `StratifiedShuffleSplit` on the *unbalanced* pool and balancing the
+    training half inside the per-fold loop. Reported metrics should therefore be
+    imbalance-robust: the `score` field stores `balanced_accuracy`, paired with
+    AUC and log-loss.
+
+    Crucially, this version preserves full-resolution metric data. For every
+    candidate tested at every step, the raw per-fold results are saved for:
+    Log-Likelihood (LL), AUC, Recall, F1, Balanced Accuracy (`score`), Brier
+    score, Expected Calibration Error (ECE), Matthews correlation coefficient
+    (MCC), and the (2, 2) confusion matrix. Per-fold optimizer diagnostics —
+    `n_iter`, `converged`, `fit_time` — are stored alongside so folds that
+    terminated at `max_iter` without meeting the tolerance can be audited
+    after the fact. Precision is intentionally not stored: it is recoverable
+    from the saved confusion matrices and macro-F1 already summarizes the
+    precision / recall trade-off. This allows plotting scripts to
+    reconstruct model selection trajectories with accurate error bars and
+    individual fold data points.
+
+    Stability features:
+    - Safe cleanup: Prevents `UnboundLocalError` during garbage collection if a
+      fold fails early.
+    - Crash reporting: Logs detailed error messages for failed fits.
+    - Resource management: Explicit garbage collection triggers to prevent
+      memory fragmentation.
+    """
+
+    print("--- Starting Model Selection ---")
+    chance_ll = np.log(2)
+
+    if settings_path is None:
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path = str(settings_path_obj)
+
+    try:
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+        print(f"Loaded settings from: {settings_path}")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Loading univariate results from: {univariate_results_path}")
+    print(f"Loading raw data from: {input_data_path}")
+    with open(univariate_results_path, 'rb') as f:
+        univariate_data = pickle.load(f)
+    all_feature_data = load_pickle_modeling_data(input_data_path)
+
+    # Strip upstream metadata blocks before iterating either dict — the
+    # reserved-key blocks (`_input_metadata` etc.) must not be mistaken
+    # for feature entries. The harvested blocks are embedded into every
+    # step pickle below via `_wrap_step`.
+    _input_md, _univariate_md = _harvest_upstream_metadata(univariate_data, all_feature_data)
+
+    # Filter feature-level candidates *after* metadata extraction so the
+    # iteration only sees behavioral-feature keys.
+    candidates = []
+    for feat_name, results in univariate_data.items():
+        if 'actual' not in results or 'll' not in results['actual']:
+            continue
+        actual_ll = results['actual']['ll']
+        null_ll = results['null']['ll']
+        valid_actual = actual_ll[~np.isnan(actual_ll)]
+        valid_null = null_ll[~np.isnan(null_ll)]
+        if len(valid_actual) == 0 or len(valid_null) == 0:
+            continue
+        mean_actual_ll = np.mean(valid_actual)
+        null_threshold = np.percentile(valid_null, q=(p_val / len(univariate_data)) * 100)
+        if mean_actual_ll < null_threshold:
+            candidates.append({'feature': feat_name, 'mean_ll': mean_actual_ll})
+
+    candidates.sort(key=lambda x: x['mean_ll'])
+    ranked_features = [x['feature'] for x in candidates]
+    if not ranked_features:
+        print("No significant features found. Aborting.")
+        return
+
+    pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+    if not hasattr(pipeline, 'history_frames'):
+        pipeline.history_frames = int(np.floor(settings['io']['camera_sampling_rate'] * settings['model_params']['filter_history']))
+    history_frames = pipeline.history_frames
+
+    common_sessions = set(all_feature_data[ranked_features[0]].keys())
+    for feat in ranked_features[1:]:
+        common_sessions = common_sessions.intersection(set(all_feature_data[feat].keys()))
+    all_sessions = sorted(list(common_sessions))
+
+    pygam_params = settings['hyperparameters']['classical']['pygam']
+    n_splines_time = pygam_params['n_splines_time']
+    n_splines_value = pygam_params['n_splines_value']
+    lam_penalty = pygam_params['lam_penalty']
+
+    gam_kwargs = {
+        'max_iter': int(pygam_params['max_iterations']),
+        'tol': float(pygam_params['tol_val']),
+        'lam': lam_penalty
+    }
+
+    model_ops = settings['model_params']
+    split_strategy = model_ops['split_strategy']
+    n_splits_selection = model_ops['split_num']
+    test_prop = model_ops['test_proportion']
+
+    random_seed = settings['model_params']['random_seed']
+    print(f"Random Seed: {random_seed} | Split Strategy: {split_strategy} | Num Splits: {n_splits_selection}")
+    anchor_feature = ranked_features[0]
+
+    # Build the selection-level `_run_metadata` block. Frozen here so
+    # every step pickle written by this function carries an identical
+    # block (the consolidator asserts equality across step files).
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='bout_onset_model_selection',
+        selection_metric='log_likelihood',
+        n_splits_selection=int(n_splits_selection),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=anchor_feature,
+        gam_kwargs=gam_kwargs,
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'n_splines_time': int(n_splines_time),
+            'n_splines_value': int(n_splines_value),
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
+    cv_folds = []
+    if split_strategy == 'session':
+        all_sessions_arr = np.array(all_sessions)
+        ss = ShuffleSplit(n_splits=n_splits_selection, test_size=bounded_test_proportion(test_prop, len(all_sessions)), random_state=random_seed)
+        for train_idx, test_idx in ss.split(all_sessions_arr):
+            cv_folds.append({'train_sessions': all_sessions_arr[train_idx], 'test_sessions': all_sessions_arr[test_idx], 'type': 'session'})
+    elif split_strategy == 'mixed':
+        # Stratified split over the *unbalanced* pool: preserves the natural class
+        # ratio in both train and test indices. Per-fold, training will be balanced
+        # 50/50 inside the loop; test retains the natural class prior.
+        X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+        n_pos_total = X_p_all.shape[0]
+        n_neg_total = X_n_all.shape[0]
+        y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
+        sss = StratifiedShuffleSplit(n_splits=n_splits_selection, test_size=test_prop, random_state=random_seed)
+        for train_ix, test_ix in sss.split(np.zeros(len(y_full)), y_full):
+            cv_folds.append({'train_idx': train_ix, 'test_idx': test_ix, 'n_pos_total': n_pos_total, 'n_neg_total': n_neg_total, 'type': 'mixed'})
+    else:
+        raise ValueError(
+            f"Unknown split_strategy '{split_strategy}' for bout-onset model selection. "
+            f"Supported strategies: 'session', 'mixed'."
+        )
+
+    # Pre-pool each candidate feature's full (positive, negative) design matrix
+    # once up front. The forward-selection loop re-evaluates every feature for
+    # every fold and every accepted step; without this cache the inner body
+    # would otherwise call `pool_session_arrays` O(n_steps * n_features * n_folds)
+    # times, re-concatenating the same per-session arrays at every iteration.
+    pooled_feature_cache = {}
+    _anchor_n_pos, _anchor_n_neg = None, None
+    for _feat_name in ranked_features:
+        _X_p, _X_n = pool_session_arrays(
+            all_feature_data[_feat_name],
+            all_sessions,
+            pos_key="usv_feature_arr",
+            neg_key="no_usv_feature_arr",
+            n_frames=pipeline.history_frames,
+        )
+        if _anchor_n_pos is None:
+            _anchor_n_pos, _anchor_n_neg = _X_p.shape[0], _X_n.shape[0]
+        else:
+            # The 'mixed' fold loop builds train/test indices against the
+            # anchor's `(n_pos, n_neg)` and then applies them to every other
+            # feature's `X_full`. This requires every feature's pooled
+            # (positive, negative) sample counts to match the anchor's; if
+            # they ever drift (e.g., feature-specific NaN drops upstream)
+            # the indices silently land on wrong rows. Fail loudly here.
+            # ``raise`` rather than ``assert`` so the check survives
+            # under ``python -O``.
+            if _X_p.shape[0] != _anchor_n_pos or _X_n.shape[0] != _anchor_n_neg:
+                msg = (
+                    f"pooled_feature_cache misalignment: feature {_feat_name!r} has "
+                    f"({_X_p.shape[0]}, {_X_n.shape[0]}) pos/neg samples but the "
+                    f"anchor has ({_anchor_n_pos}, {_anchor_n_neg}). The 'mixed' "
+                    "fold indices would silently misindex this feature."
+                )
+                raise ValueError(msg)
+        pooled_feature_cache[_feat_name] = {
+            'X_pos': _X_p,
+            'X_neg': _X_n,
+            'X_full': np.concatenate((_X_p, _X_n), axis=0),
+        }
+
+    current_model_features = []
+    best_current_score = chance_ll
+    best_current_se = 0.0
+    time_indices = np.arange(history_frames, dtype=float)
+    step_counter = 0
+
+    fname = Path(univariate_results_path).name
+    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    target_condition = cond_match.group(1) if cond_match else "unknown"
+    prediction_mode = settings['model_params']['model_target_vocal_type']
+
+    # Mirror the Level-1 analysis_tag when a single onset target category is
+    # active ('individual' mode only): embed the category column name and index
+    # so step files for different categories (or VAE-vs-QLVM columns) never
+    # collide in the same model-selection directory.
+    onset_cat = settings['model_params']['onset_target_category']
+    if onset_cat is not None and prediction_mode == 'individual':
+        cat_col = settings['vocal_features']['usv_category_column_name']
+        cat_seg = f"_cat_{cat_col}_{onset_cat}"
+    else:
+        cat_seg = ""
+
+    prefix = f"model_selection_{target_condition}_{prediction_mode}{cat_seg}_{split_strategy}_step_"
+
+    existing_steps = []
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
+            if f_name.startswith(prefix) and f_name.endswith(".pkl"):
+                try:
+                    existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
+                except ValueError:
+                    pass
+
+    if existing_steps:
+        last_step = max(existing_steps)
+        print(f"\n[RESUME] Detected previous run. Checking Step {last_step}...")
+        try:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+                last_results = pickle.load(f)
+            current_model_features = last_results['current_features']
+            best_current_score = last_results['baseline_score']
+            cand_dict = last_results['candidates_summary']
+            if cand_dict:
+                cand_stats = []
+                for feat, res in cand_dict.items():
+                    m = res['mean_ll']
+                    s = res['se_ll']
+                    cand_stats.append((feat, m, s))
+                if cand_stats:
+                    cand_stats.sort(key=lambda x: x[1])
+                    b_name, b_score, b_se = cand_stats[0]
+                    if (best_current_score - b_score) > b_se:
+                        current_model_features.append(b_name)
+                        best_current_score, best_current_se, step_counter = b_score, b_se, last_step + 1
+        except Exception as e:
+            print(f"Resume failed: {e}")
+
+    if use_top_rank_as_anchor and step_counter == 0:
+        anchor_to_force = ranked_features[0]
+        print(f"\n*** AUTO-ANCHOR: Starting with top ranked feature '{anchor_to_force}' ***")
+        current_model_features = [anchor_to_force]
+        gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+        # Per-fold scalar metrics for the anchor. See the function docstring for
+        # the definition of each key. `precision` is not stored (derivable from
+        # the confusion matrix); `brier` / `ece` / `mcc` are added as
+        # calibration and chance-corrected summary scores.
+        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                   'brier': [], 'ece': [], 'mcc': [],
+                   'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
+
+        for fold_i, fold_info in enumerate(cv_folds):
+            try:
+                X_train_list, X_test_list = [], []
+                if fold_info['type'] == 'session':
+                    train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
+                    anc_data = all_feature_data[anchor_feature]
+                    X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                    n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
+                    anc_rng = np.random.default_rng(random_seed + fold_i)
+                    idx_p = anc_rng.choice(X_p_tr.shape[0], n_k, replace=False)
+                    idx_n = anc_rng.choice(X_n_tr.shape[0], n_k, replace=False)
+                    y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+                    X_p_te, X_n_te = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                    y_te_fold = np.concatenate((np.ones(X_p_te.shape[0]), np.zeros(X_n_te.shape[0])))
+                    X_train_list.append(np.concatenate((X_p_tr[idx_p], X_n_tr[idx_n])))
+                    X_test_list.append(np.concatenate((X_p_te, X_n_te)))
+                elif fold_info['type'] == 'mixed':
+                    train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
+                    n_pos_total = fold_info['n_pos_total']
+                    n_neg_total = fold_info['n_neg_total']
+                    y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
+                    # Pull the already-pooled full design matrix from the cache
+                    # instead of rebuilding it on every fold.
+                    X_full = pooled_feature_cache[anchor_to_force]['X_full']
+
+                    X_tr_all = X_full[train_ix]
+                    y_tr_all = y_full[train_ix]
+                    X_te = X_full[test_ix]
+                    y_te_fold = y_full[test_ix]
+
+                    # Balance the training fold 50/50; test preserves natural rate.
+                    X_tr_pos = X_tr_all[y_tr_all == 1]
+                    X_tr_neg = X_tr_all[y_tr_all == 0]
+                    n_tr_keep = min(X_tr_pos.shape[0], X_tr_neg.shape[0])
+                    if n_tr_keep == 0:
+                        raise ValueError("Training fold has no samples in one class after split.")
+                    anc_rng = np.random.default_rng(random_seed + fold_i)
+                    idx_p = anc_rng.choice(X_tr_pos.shape[0], n_tr_keep, replace=False)
+                    idx_n = anc_rng.choice(X_tr_neg.shape[0], n_tr_keep, replace=False)
+                    X_tr_bal = np.concatenate((X_tr_pos[idx_p], X_tr_neg[idx_n]))
+                    y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
+
+                    X_train_list.append(X_tr_bal)
+                    X_test_list.append(X_te)
+
+                X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
+                X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
+                fit_start = time.perf_counter()
+                gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
+                fit_time = float(time.perf_counter() - fit_start)
+
+                y_proba_tiled = gam.predict_proba(X_te_gam)
+                y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
+                metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
+
+                y_pred_mean = (y_proba_mean > 0.5).astype(int)
+                metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
+                metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
+                metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
+                metrics['auc'].append(roc_auc_score(y_te_fold, y_proba_mean) if len(np.unique(y_te_fold)) > 1 else np.nan)
+                metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
+                try:
+                    y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
+                    metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=10))
+                except Exception:
+                    metrics['ece'].append(np.nan)
+                metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
+                metrics['confusion_matrix'].append(safe_confusion_matrix(
+                    y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
+                ))
+                gam_diffs = gam.logs_['diffs']
+                metrics['n_iter'].append(float(len(gam_diffs)))
+                metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
+                metrics['fit_time'].append(fit_time)
+
+                del gam, X_tr_gam, X_te_gam
+                gc.collect()
+            except Exception as e:
+                print(f"    [!] Error fitting {anchor_to_force} (Fold {fold_i}): {e}")
+                for _k in metrics:
+                    # Keep the per-fold list lengths aligned across every key.
+                    # `confusion_matrix` stores (2, 2) arrays, so on failure we
+                    # append a NaN-filled (2, 2) placeholder rather than a
+                    # scalar NaN; otherwise np.stack(...) downstream would fail
+                    # on a heterogeneous list.
+                    if _k == 'confusion_matrix':
+                        metrics[_k].append(np.full((2, 2), np.nan))
+                    else:
+                        metrics[_k].append(np.nan)
+
+        valid_ll = [x for x in metrics['ll'] if np.isfinite(x)]
+        if valid_ll:
+            best_current_score = np.mean(valid_ll)
+            best_current_se = np.std(valid_ll, ddof=1) / np.sqrt(len(valid_ll))
+
+            # Step 0 Save
+            step_0_metadata = {
+                'step_idx': 0, 'current_features': [anchor_to_force],
+                'baseline_score': chance_ll, 'selected_feature': anchor_to_force,
+                'candidates_summary': {
+                    anchor_to_force: {
+                        'll': metrics['ll'], 'auc': metrics['auc'], 'score': metrics['score'],
+                        'f1': metrics['f1'], 'recall': metrics['recall'],
+                        'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                        'confusion_matrix': metrics['confusion_matrix'],
+                        'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                        'fit_time': metrics['fit_time'],
+                        'mean_ll': best_current_score, 'se_ll': best_current_se
+                    }
+                }
+            }
+            # Reuse the canonical `prefix` derived above so Step 0 and all
+            # subsequent steps share a single filename scheme — the legacy
+            # substring-based `target_sex` path disagreed with the regex-based
+            # `target_condition` and could orphan the Step 0 file from the rest
+            # of the run on selection resume.
+            s0_name = f"{prefix}0.pkl"
+            with open(model_selection_dir / s0_name, 'wb') as f:
+                pickle.dump(_wrap_step(step_0_metadata), f)
+            step_counter = 1
+
+    while True:
+        print(f"\n=== Step {step_counter} === Best LL: {best_current_score:.5f}")
+        step_results_metadata = {
+            'step_idx': step_counter, 'current_features': list(current_model_features),
+            'baseline_score': best_current_score, 'candidates_summary': {},
+            'selected_feature': None
+        }
+
+        best_candidate, best_candidate_score, best_candidate_se = None, float('inf'), 0.0
+
+        for i_feat, feat in enumerate(ranked_features):
+            if feat in current_model_features: continue
+            gc.collect()
+            trial_features = current_model_features + [feat]
+            print(f"  [{i_feat}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
+
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(trial_features)):
+                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+
+            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                       'brier': [], 'ece': [], 'mcc': [],
+                       'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
+            for fold_i, fold_info in enumerate(cv_folds):
+                try:
+                    X_train_list, X_test_list = [], []
+                    if fold_info['type'] == 'session':
+                        train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
+                        anc_data = all_feature_data[anchor_feature]
+                        X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                        trial_rng = np.random.default_rng(random_seed + fold_i)
+                        n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
+                        idx_p = trial_rng.choice(X_p_tr.shape[0], n_k, replace=False)
+                        idx_n = trial_rng.choice(X_n_tr.shape[0], n_k, replace=False)
+                        y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+
+                        X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                        y_te_fold = np.concatenate((np.ones(X_p_te_anc.shape[0]), np.zeros(X_n_te_anc.shape[0])))
+
+                        for f_name in trial_features:
+                            f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[f_name], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                            f_p_te, f_n_te = pool_session_arrays(all_feature_data[f_name], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                            X_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
+                            X_test_list.append(np.concatenate((f_p_te, f_n_te)))
+                    elif fold_info['type'] == 'mixed':
+                        train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
+                        n_pos_total = fold_info['n_pos_total']
+                        n_neg_total = fold_info['n_neg_total']
+                        y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
+                        y_tr_all = y_full[train_ix]
+                        y_te_fold = y_full[test_ix]
+
+                        # Determine balanced-train indices once (shared across all trial features).
+                        pos_mask = (y_tr_all == 1)
+                        neg_mask = (y_tr_all == 0)
+                        pos_positions = np.where(pos_mask)[0]
+                        neg_positions = np.where(neg_mask)[0]
+                        n_tr_keep = min(pos_positions.size, neg_positions.size)
+                        if n_tr_keep == 0:
+                            raise ValueError("Training fold has no samples in one class after split.")
+                        fs_rng = np.random.default_rng(random_seed + fold_i)
+                        sel_pos = fs_rng.choice(pos_positions.size, n_tr_keep, replace=False)
+                        sel_neg = fs_rng.choice(neg_positions.size, n_tr_keep, replace=False)
+                        bal_train_local = np.concatenate((pos_positions[sel_pos], neg_positions[sel_neg]))
+                        y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
+
+                        for f_name in trial_features:
+                            # Use the pre-pooled cache rather than re-running
+                            # `pool_session_arrays` on every fold for every
+                            # trial feature (the dominant cost of the forward
+                            # loop under 'mixed' strategy).
+                            X_full = pooled_feature_cache[f_name]['X_full']
+                            X_tr_all = X_full[train_ix]
+                            X_train_list.append(X_tr_all[bal_train_local])
+                            X_test_list.append(X_full[test_ix])
+
+                    X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
+                    X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
+                    fit_start = time.perf_counter()
+                    gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
+                    fit_time = float(time.perf_counter() - fit_start)
+
+                    y_proba_tiled = gam.predict_proba(X_te_gam)
+                    y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
+                    metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
+
+                    y_pred_mean = (y_proba_mean > 0.5).astype(int)
+                    metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
+                    metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
+                    metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
+                    metrics['auc'].append(roc_auc_score(y_te_fold, y_proba_mean) if len(np.unique(y_te_fold)) > 1 else np.nan)
+                    metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
+                    try:
+                        y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
+                        metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=10))
+                    except Exception:
+                        metrics['ece'].append(np.nan)
+                    metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
+                    metrics['confusion_matrix'].append(safe_confusion_matrix(
+                        y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
+                    ))
+                    gam_diffs = gam.logs_['diffs']
+                    metrics['n_iter'].append(float(len(gam_diffs)))
+                    metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
+                    metrics['fit_time'].append(fit_time)
+
+                    del gam, X_tr_gam, X_te_gam
+                    gc.collect()
+                except Exception as e:
+                    print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
+                    for _k in metrics:
+                        # `confusion_matrix` holds (2, 2) arrays, so on failure
+                        # append a NaN-filled matrix instead of a scalar NaN to
+                        # keep the per-fold list homogeneous for downstream
+                        # np.stack / indexing.
+                        if _k == 'confusion_matrix':
+                            metrics[_k].append(np.full((2, 2), np.nan))
+                        else:
+                            metrics[_k].append(np.nan)
+
+            valid = [x for x in metrics['ll'] if np.isfinite(x)]
+
+            if valid:
+                mean_ll, se_ll = np.mean(valid), np.std(valid, ddof=1) / np.sqrt(len(valid))
+                print(f" LL: {mean_ll:.4f} (range: {min(valid):.4f}-{max(valid):.4f})")
+
+                step_results_metadata['candidates_summary'][feat] = {
+                    'll': metrics['ll'], 'auc': metrics['auc'], 'score': metrics['score'],
+                    'f1': metrics['f1'], 'recall': metrics['recall'],
+                    'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                    'confusion_matrix': metrics['confusion_matrix'],
+                    'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                    'fit_time': metrics['fit_time'],
+                    'mean_ll': mean_ll, 'se_ll': se_ll
+                }
+
+                if mean_ll < best_candidate_score:
+                    best_candidate_score, best_candidate_se, best_candidate = mean_ll, se_ll, feat
+            else:
+                print(f" Failed (No valid numeric scores). Metrics: {metrics['ll']}")
+
+        if (best_current_score - best_candidate_score) > best_candidate_se:
+            print(f"  ACCEPT {best_candidate}")
+            step_results_metadata['selected_feature'] = best_candidate
+            current_model_features.append(best_candidate)
+
+            fname = f"{prefix}{step_counter}.pkl"
+            with open(model_selection_dir / fname, 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
+
+            best_current_score, best_current_se, step_counter = best_candidate_score, best_candidate_se, step_counter + 1
+        else:
+            print("  REJECT. Selection Finished.")
+            step_results_metadata['selected_feature'] = None
+            fname = f"{prefix}{step_counter}.pkl"
+            with open(model_selection_dir / fname, 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
+            break
+
+        if len(current_model_features) == len(ranked_features):
+            break
+
+    print("\n--- Final Model Fit for Visualization (per-fold) ---")
+    last_file = model_selection_dir / fname
+
+    # Per-fold refit of the final multivariate GAM so the consumer
+    # gets one filter-shape dict per CV fold. The downstream plotter
+    # stacks the folds and renders a percentile band; a single-entry
+    # list collapses the band to a zero-width line. The previous
+    # version of this block did exactly that (one global-balanced
+    # fit wrapped in a silent ``except Exception: print('Final fit
+    # failed: ...')`` that hid every subsequent failure), and the
+    # lost per-fold filter data was only spotted after a 6-day run.
+    #
+    # The loop body is in ``compute_filter_shapes_per_fold_bout_onset``
+    # so the legacy-pickle recovery utility
+    # (``recompute_filter_shapes``) can reuse the same code path.
+    # Safety nets are layered here (caller side) rather than inside
+    # the helper:
+    #   * Per-fold exceptions are caught inside the helper and
+    #     logged but do NOT abort the loop -- a few bad folds
+    #     shouldn't lose the others.
+    #   * If every fold fails, this caller RAISES (was silently
+    #     swallowed before).
+    #   * If only one fold succeeds, a warning is printed because
+    #     the plotter's percentile band needs >= 2 folds to render.
+    #
+    # No outer try/except wraps this block on purpose. The silent
+    # ``except Exception`` was the previous failure-hiding vector;
+    # any unexpected error now propagates so the regression is
+    # impossible to miss.
+    print(f"  Calculating filter shapes across {len(cv_folds)} fold(s)...")
+    final_fold_shapes = compute_filter_shapes_per_fold_bout_onset(
+        cv_folds=cv_folds,
+        current_model_features=current_model_features,
+        all_feature_data=all_feature_data,
+        pooled_feature_cache=pooled_feature_cache,
+        history_frames=pipeline.history_frames,
+        n_splines_value=n_splines_value,
+        n_splines_time=n_splines_time,
+        gam_kwargs=gam_kwargs,
+        random_seed=random_seed,
+        time_indices=time_indices,
+    )
+
+    if not final_fold_shapes:
+        msg = (
+            f"All {len(cv_folds)} fold(s) failed during the final-refit "
+            "filter-shape loop. The consolidated artifact would carry "
+            "no usable per-fold filter data, which silently breaks the "
+            "downstream plotter; raising here so the failure is visible "
+            "at the source. Inspect the per-fold error lines above."
+        )
+        raise RuntimeError(msg)
+
+    if len(final_fold_shapes) < 2:
+        print(
+            f"  WARNING: only {len(final_fold_shapes)} fold(s) produced "
+            "filter shapes; the plotter's percentile band will collapse "
+            f"to a single line (expected {len(cv_folds)} folds)."
+        )
+
+    with open(last_file, 'rb') as f:
+        data = pickle.load(f)
+
+    # Strip existing metadata blocks so `_wrap_step` can re-inject
+    # them cleanly without colliding with the prior write's keys.
+    for _k in RESERVED_METADATA_KEYS:
+        data.pop(_k, None)
+
+    data.update({
+        'final_model_features': current_model_features,
+        'filter_shapes': final_fold_shapes,
+        'univariate_results_path': univariate_results_path,
+        'input_data_path': input_data_path,
+    })
+
+    with open(last_file, 'wb') as f:
+        pickle.dump(_wrap_step(data), f)
+    print(
+        f"Final model filters saved: {len(final_fold_shapes)} fold(s)."
+    )
+
+
+def _pool_category_features(
+        all_feature_data: dict,
+        features_to_load: list,
+        session_list: np.ndarray,
+        history_frames: int
+) -> tuple[list, list]:
+    """
+    Extracts and concatenates Target and Other arrays for a given list of features
+    across specified sessions.
+
+    Unlike older implementations, this function strictly handles pooling without
+    enforcing balancing. This separation of concerns allows the upstream
+    cross-validation logic to seamlessly support both 'session' and 'mixed'
+    splitting strategies before the final downsampling occurs.
+
+    Parameters
+    ----------
+    all_feature_data : dict
+        The nested dictionary containing raw data for all features.
+        Structure: `dict[feature_name][session_id]['target_feature_arr' | 'other_feature_arr']`.
+    features_to_load : list of str
+        The list of feature names (keys in `all_feature_data`) to extract.
+    session_list : np.ndarray
+        Array of session IDs (strings) to pool data from.
+    history_frames : int
+        The number of time columns in the feature matrices.
+
+    Returns
+    -------
+    tuple[list, list]
+        - X_target_list: List of pooled (n_samples, history_frames) arrays for the Target class.
+        - X_other_list: List of pooled (n_samples, history_frames) arrays for the Other class.
+    """
+
+    raw_target = {feat: [] for feat in features_to_load}
+    raw_other = {feat: [] for feat in features_to_load}
+
+    for sess in session_list:
+        for feat in features_to_load:
+            if sess in all_feature_data[feat]:
+                raw_target[feat].append(all_feature_data[feat][sess]['target_feature_arr'])
+                raw_other[feat].append(all_feature_data[feat][sess]['other_feature_arr'])
+
+    X_target_list = [np.concatenate(raw_target[f], axis=0) if raw_target[f] else np.empty((0, history_frames)) for f in features_to_load]
+    X_other_list = [np.concatenate(raw_other[f], axis=0) if raw_other[f] else np.empty((0, history_frames)) for f in features_to_load]
+
+    return X_target_list, X_other_list
+
+
+def _balance_multivariate_arrays(
+        X_targ_list: list,
+        X_other_list: list,
+        random_seed: int
+) -> tuple[list, list, np.ndarray, np.ndarray]:
+    """
+    Downsamples the majority class to enforce a strict 50/50 balance across all
+    feature arrays simultaneously.
+
+    This ensures that row-alignment is maintained across the multivariate feature
+    lists, preventing misalignment between predictors during classification.
+
+    Parameters
+    ----------
+    X_targ_list : list of np.ndarray
+        The aligned list of Target class arrays.
+    X_other_list : list of np.ndarray
+        The aligned list of Other class arrays.
+    random_seed : int
+        Seed for the random number generator used for downsampling indices.
+
+    Returns
+    -------
+    tuple
+        1. X_tr_t_bal (list of np.ndarray): Balanced Target arrays.
+        2. X_tr_o_bal (list of np.ndarray): Balanced Other arrays.
+        3. y_target (np.ndarray): Array of ones.
+        4. y_other (np.ndarray): Array of zeros.
+        Returns ([], [], None, None) if data is insufficient.
+    """
+
+    n_target = X_targ_list[0].shape[0]
+    n_other = X_other_list[0].shape[0]
+
+    if n_target == 0 or n_other == 0:
+        return [], [], None, None
+
+    limit = min(n_target, n_other)
+    rng = np.random.default_rng(random_seed)
+    idx_target = rng.choice(n_target, limit, replace=False)
+    idx_other = rng.choice(n_other, limit, replace=False)
+
+    X_tr_t_bal = [x[idx_target] for x in X_targ_list]
+    X_tr_o_bal = [x[idx_other] for x in X_other_list]
+
+    y_target = np.ones(limit)
+    y_other = np.zeros(limit)
+
+    return X_tr_t_bal, X_tr_o_bal, y_target, y_other
+
+
+def vocal_category_model_selection(
+        univariate_results_path: str,
+        input_data_path: str,
+        output_directory: str,
+        settings_path: str = None,
+        use_top_rank_as_anchor: bool = False,
+        *,
+        p_val: float
+) -> None:
+    """
+    Performs Forward Stepwise Selection for Vocal Category prediction using strict
+    mixed or session-based splitting, class balancing, and engine toggling (sklearn/pygam).
+
+    This function identifies the optimal subset of behavioral features that predict
+    a specific USV category (one-vs-rest). It adapts the standard forward selection
+    algorithm to handle the specific data structure of vocal categories ('target' vs 'other')
+    and enforces a consistent splitting & balancing invariant (see below) across
+    all cross-validation folds.
+
+    Splitting & balancing invariant:
+    --------------------------------
+    Across both 'session' and 'mixed' strategies, the training fold is down-sampled
+    to a 50/50 class balance (Target vs. Other), while the test fold preserves the
+    natural class prior of the source data. The 'mixed' strategy achieves this by
+    running `StratifiedShuffleSplit` on the *unbalanced* pool and balancing the
+    training half inside the per-fold loop. Reported metrics should therefore be
+    imbalance-robust: the `score` field stores `balanced_accuracy`, paired with
+    AUC and log-loss.
+
+    Engine Flexibility:
+    -------------------
+    Reads the user-defined `model_engine` from the JSON settings to dynamically build models:
+    - 'sklearn': Utilizes `LogisticRegressionCV` combined with linear basis projection
+                 (e.g., raised_cosines, b-splines) to rapidly isolate temporal predictors.
+    - 'pygam': Utilizes `LogisticGAM` with unrolled tensor product splines to capture
+               non-linear log-odds surfaces.
+
+    The process follows these steps:
+    1.  Extracts the target category and sex directly from the univariate path.
+    2.  Loads univariate results and ranks candidate features by Log-Likelihood (LL).
+    3.  Evaluates 'split_strategy'. If 'session', isolates whole recording days.
+        If 'mixed', pools all data and uses StratifiedShuffleSplit to ensure proportional
+        epoch-level splitting across all folds.
+    4.  Forward selection loop:
+        - Starts with an empty model (or the top-ranked anchor).
+        - Iteratively tests adding every remaining candidate feature.
+        - Calculates and saves raw lists of metrics (Log-Loss, AUC, F1,
+          Balanced Accuracy, Recall) for every fold for every candidate.
+    5.  Decision rule: Adopts the one-standard-error (1SE) rule.
+    6.  Final Refit: Computes filter shapes for visualization depending on the chosen
+        engine (back-projection for sklearn, partial dependence for pygam).
+
+    Parameters
+    ----------
+    univariate_results_path : str
+        The absolute path to the .pkl file containing univariate modeling results.
+    input_data_path : str
+        The absolute path to the .pkl file containing the raw feature data.
+    output_directory : str
+        The specific directory path where the resulting step files (.pkl) will be saved.
+    settings_path : str, optional
+        The path to the 'modeling_settings.json' configuration file.
+    use_top_rank_as_anchor : bool, default False
+        If True, the selection process initializes with the highest-ranked univariate feature.
+    p_val : float
+        The alpha level used to determine significance against the shuffled null.
+        Keyword-only and required — callers must specify it explicitly (no default).
+
+    Returns
+    -------
+    None
+    """
+
+    print("--- Starting Vocal Category Model Selection ---")
+    chance_ll = np.log(2)
+
+    if settings_path is None:
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path = str(settings_path_obj)
+
+    try:
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Results will be saved to: {model_selection_dir}")
+    print(f"Loading univariate results from: {univariate_results_path}")
+    print(f"Loading raw data from: {input_data_path}")
+
+    # Extract target metadata safely
+    fname = Path(univariate_results_path).name
+
+    cat_match = re.search(r'category_(\d+)', fname)
+    target_category = f"category_{cat_match.group(1)}" if cat_match else "category_unknown"
+    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    target_condition = cond_match.group(1) if cond_match else "unknown"
+    print(f"Target: {target_category} ({target_condition})")
+
+    with open(univariate_results_path, 'rb') as f:
+        univariate_data = pickle.load(f)
+
+    # Filter candidates safely
+    candidates = []
+    # Defer the upstream-input metadata harvest until `all_feature_data`
+    # is loaded below. Strip just the univariate-side blocks here so the
+    # `for feat_name, payload in univariate_data.items()` loop only sees
+    # behavioral-feature entries.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
+    for feat_name, payload in univariate_data.items():
+        if isinstance(payload, tuple) and len(payload) == 2:
+            _, results = payload
+        else:
+            results = payload
+
+        if 'actual' not in results or 'll' not in results['actual']:
+            continue
+
+        actual_ll = results['actual']['ll']
+        null_ll = results['null']['ll']
+
+        valid_actual = actual_ll[~np.isnan(actual_ll)]
+        valid_null = null_ll[~np.isnan(null_ll)]
+
+        if len(valid_actual) == 0 or len(valid_null) == 0:
+            continue
+
+        mean_actual_ll = np.mean(valid_actual)
+        null_threshold = np.percentile(valid_null, q=(p_val / len(univariate_data)) * 100)
+
+        if mean_actual_ll < null_threshold:
+            candidates.append({'feature': feat_name, 'mean_ll': mean_actual_ll})
+
+    candidates.sort(key=lambda x: x['mean_ll'])
+    ranked_features = [x['feature'] for x in candidates]
+    if not ranked_features:
+        print("No significant features found. Aborting.")
+        return
+    print(f"Identified {len(ranked_features)} significant candidates. Top: {ranked_features[0]}")
+
+    print("Loading raw input data...")
+    all_feature_data = load_pickle_modeling_data(input_data_path)
+
+    # Final upstream-metadata harvest. Prefer the value the consolidator
+    # asserted across every per-feature pickle; fall back to the
+    # Level-1 input pickle's copy for legacy runs.
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in all_feature_data:
+        _input_md = all_feature_data.pop('_input_metadata')
+    else:
+        all_feature_data.pop('_input_metadata', None)
+    all_feature_data.pop('_run_metadata', None)
+    all_feature_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
+
+    common_sessions = set(all_feature_data[ranked_features[0]].keys())
+    for feat in ranked_features[1:]:
+        common_sessions = common_sessions.intersection(set(all_feature_data[feat].keys()))
+
+    valid_sessions = []
+    for sess in common_sessions:
+        try:
+            if (all_feature_data[ranked_features[0]][sess]['target_feature_arr'].shape[0] > 0 and
+                    all_feature_data[ranked_features[0]][sess]['other_feature_arr'].shape[0] > 0):
+                valid_sessions.append(sess)
+        except KeyError:
+            continue
+
+    all_sessions_arr = np.array(sorted(valid_sessions))
+    if len(all_sessions_arr) < 2:
+        raise ValueError("Not enough common sessions for cross-validation.")
+
+    # Strict Dictionary Access Only (No .get())
+    camera_rate = settings['io']['camera_sampling_rate']
+    filter_history_sec = settings['model_params']['filter_history']
+    history_frames = int(np.floor(camera_rate * filter_history_sec))
+
+    model_ops = settings['model_params']
+    model_type = model_ops['model_engine']
+    n_splits = model_ops['split_num']
+    test_prop = model_ops['test_proportion']
+    split_strategy = model_ops['split_strategy']
+    random_seed = settings['model_params']['random_seed']
+
+    basis_matrix = None
+    gam_kwargs = {}
+    n_splines_time = 0
+    n_splines_value = 0
+    lr_params = {}
+
+    # Initialize Engine Logic
+    if model_type == 'sklearn':
+        basis_type = model_ops['model_basis_function']
+        if basis_type == 'raised_cosine':
+            p = settings['hyperparameters']['basis_functions']['raised_cosine']
+            kp = int(np.floor(history_frames * p['kpeaks_proportion']))
+            basis_matrix = raised_cosine(neye=p['neye'], ncos=p['ncos'], kpeaks=[0, kp], b=p['b'], w=history_frames)
+        elif basis_type == 'bspline':
+            p = settings['hyperparameters']['basis_functions']['bspline']
+            deg = p['degree']
+            max_k = max(0, history_frames - deg)
+            knots = np.linspace(0, max_k, p['n_splines'] - deg + 1).astype(int)
+            basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
+        elif basis_type == 'laplacian_pyramid':
+            p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
+            basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], step=p['step'], fwhm=p['fwhm']))
+        elif basis_type == 'identity':
+            basis_matrix = identity(width=history_frames)
+
+        lr_params = settings['hyperparameters']['classical']['logistic_regression']
+        print(f"Engine: Sklearn LogisticRegressionCV with '{basis_type}' projection.")
+
+    elif model_type == 'pygam':
+        pygam_params = settings['hyperparameters']['classical']['pygam']
+        n_splines_time = pygam_params['n_splines_time']
+        n_splines_value = pygam_params['n_splines_value']
+        gam_kwargs = {
+            'max_iter': int(pygam_params['max_iterations']),
+            'tol': float(pygam_params['tol_val']),
+            'lam': pygam_params['lam_penalty']
+        }
+        print("Engine: PyGAM LogisticGAM with Tensor Splines.")
+    else:
+        raise ValueError("model_engine in settings must be either 'sklearn' or 'pygam'.")
+
+    print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Strategy: {split_strategy}")
+
+    # Establish CV indices globally to maintain fold consistency across features
+    cv_folds = []
+    n_targ_total, n_other_total = 0, 0
+
+    # Pre-pool each candidate feature's full (target, other) arrays once for
+    # the 'mixed' strategy. Because the pooled result depends only on the
+    # feature (session list is always `all_sessions_arr`), the anchor and
+    # forward loops read from this cache instead of re-running
+    # `_pool_category_features` per fold per trial feature — the dominant cost
+    # of the inner loop at ~ (n_steps * n_features * n_folds) pool calls.
+    pooled_category_cache = {}
+    if split_strategy == 'session':
+        ss = ShuffleSplit(n_splits=n_splits, test_size=bounded_test_proportion(test_prop, len(all_sessions_arr)), random_state=random_seed)
+        cv_folds = list(ss.split(all_sessions_arr))
+    elif split_strategy == 'mixed':
+        for _feat_name in ranked_features:
+            _t_list, _o_list = _pool_category_features(
+                all_feature_data, [_feat_name], all_sessions_arr, history_frames
+            )
+            pooled_category_cache[_feat_name] = {
+                'target': _t_list[0],
+                'other': _o_list[0],
+            }
+        ref_targ = pooled_category_cache[ranked_features[0]]['target']
+        ref_other = pooled_category_cache[ranked_features[0]]['other']
+        n_targ_total = ref_targ.shape[0]
+        n_other_total = ref_other.shape[0]
+
+        # The 'mixed' fold loop builds train/test indices against
+        # `(n_targ_total, n_other_total)` derived from the anchor and then
+        # applies them to every trial feature's cached arrays. If a feature
+        # ever has a different per-class sample count, the indices land on
+        # wrong rows. Fail loudly here. ``raise`` rather than ``assert``
+        # so the check survives under ``python -O``.
+        for _feat_name, _entry in pooled_category_cache.items():
+            if (
+                _entry['target'].shape[0] != n_targ_total
+                or _entry['other'].shape[0] != n_other_total
+            ):
+                msg = (
+                    f"pooled_category_cache misalignment: feature {_feat_name!r} has "
+                    f"({_entry['target'].shape[0]}, {_entry['other'].shape[0]}) target/other "
+                    f"samples but the anchor has ({n_targ_total}, {n_other_total})."
+                )
+                raise ValueError(msg)
+
+        y_dummy = np.hstack([np.ones(n_targ_total), np.zeros(n_other_total)])
+        sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
+        cv_folds = list(sss.split(np.zeros(len(y_dummy)), y_dummy))
+    else:
+        raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
+
+    # Build the selection-level `_run_metadata` block + step-wrapper once.
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='vocal_category_model_selection',
+        selection_metric='log_likelihood',
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs=gam_kwargs,
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'model_type': model_type,
+            'n_splines_time': int(n_splines_time),
+            'n_splines_value': int(n_splines_value),
+            'target_category': target_category,
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
+    # Pin which USV category column generated the binary target so the
+    # per-step prefix (and downstream consolidation) carries the choice
+    # forward in the filename — e.g. `vae_supercategory`, `qlvm_category`.
+    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
+    # `target_category` is the human-readable `category_<idx>` (kept for
+    # metadata + console output); strip the redundant prefix when
+    # building the step filename so it reads `category_<col>_<idx>`
+    # instead of `category_<col>_category_<idx>`.
+    _cat_idx = target_category.replace('category_', '', 1)
+    prefix = f"model_selection_category_{_column_name_cats}_{_cat_idx}_{target_condition}_step_"
+    existing_steps = []
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
+            if f_name.startswith(prefix) and f_name.endswith(".pkl"):
+                try:
+                    existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
+                except ValueError:
+                    pass
+
+    step_counter, current_model_features = 0, []
+    best_current_score, best_current_se = chance_ll, 0.0
+
+    if existing_steps:
+        last_step = max(existing_steps)
+        print(f"\n[RESUME] Detected previous run. Checking Step {last_step}...")
+        try:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+                last_results = pickle.load(f)
+            current_model_features = last_results['current_features']
+            best_current_score = last_results['baseline_score']
+            cand_dict = last_results['candidates_summary'] if 'candidates_summary' in last_results else {}
+
+            if cand_dict:
+                cand_stats = []
+                for feat, res in cand_dict.items():
+                    m = res['mean_ll'] if 'mean_ll' in res else chance_ll
+                    s = res['se_ll'] if 'se_ll' in res else 0.0
+                    cand_stats.append((feat, m, s))
+                if cand_stats:
+                    cand_stats.sort(key=lambda x: x[1])
+                    b_name, b_score, b_se = cand_stats[0]
+                    if (best_current_score - b_score) > b_se:
+                        current_model_features.append(b_name)
+                        best_current_score, best_current_se, step_counter = b_score, b_se, last_step + 1
+        except Exception as e:
+            print(f"Resume failed: {e}")
+
+    if use_top_rank_as_anchor and step_counter == 0:
+        anchor = ranked_features[0]
+        print(f"\n*** AUTO-ANCHOR: Starting with {anchor} ***")
+        current_model_features = [anchor]
+        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                   'brier': [], 'ece': [], 'mcc': [],
+                   'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
+
+        if model_type == 'pygam':
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+
+        for fold_i, (tr_idx, te_idx) in enumerate(cv_folds):
+            try:
+                if split_strategy == 'session':
+                    X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[tr_idx], history_frames)
+                    X_te_t_raw, X_te_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[te_idx], history_frames)
+                else:
+                    # Pull the already-pooled target / other arrays from the
+                    # cache instead of rebuilding them on every fold.
+                    X_all_t_raw = [pooled_category_cache[anchor]['target']]
+                    X_all_o_raw = [pooled_category_cache[anchor]['other']]
+
+                    tr_targ_idx = tr_idx[tr_idx < n_targ_total]
+                    tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
+                    te_targ_idx = te_idx[te_idx < n_targ_total]
+                    te_other_idx = te_idx[te_idx >= n_targ_total] - n_targ_total
+
+                    X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
+                    X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
+                    X_te_t_raw = [x[te_targ_idx] for x in X_all_t_raw]
+                    X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
+
+                X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_i)
+
+                # Test set: natural class prior (no balancing).
+                if not X_tr_t or len(X_te_t_raw) == 0:
+                    continue
+                n_te_targ = X_te_t_raw[0].shape[0]
+                n_te_other = X_te_o_raw[0].shape[0]
+                if (n_te_targ + n_te_other) == 0:
+                    continue
+
+                X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+                y_tr = np.concatenate([y_tr_t, y_tr_o])
+                perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
+
+                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
+                y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
+
+                if model_type == 'sklearn':
+                    X_tr_stacked = np.hstack([np.dot(x[perm], basis_matrix) for x in X_tr_list])
+                    X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
+
+                    model = LogisticRegressionCV(
+                        penalty=lr_params['penalty'],
+                        Cs=lr_params['cs'],
+                        cv=lr_params['cv'],
+                        class_weight='balanced',
+                        solver=lr_params['solver'],
+                        max_iter=lr_params['max_iter'],
+                        random_state=random_seed
+                    )
+                    fit_start = time.perf_counter()
+                    model.fit(X_tr_stacked, y_tr[perm])
+                    fit_time = float(time.perf_counter() - fit_start)
+                    y_proba = model.predict_proba(X_te_stacked)[:, 1]
+                    y_pred = model.predict(X_te_stacked)
+                    try:
+                        fold_n_iter = float(np.max(model.n_iter_))
+                        fold_converged = bool(fold_n_iter < lr_params['max_iter'])
+                    except Exception:
+                        fold_n_iter, fold_converged = np.nan, False
+                else:
+                    X_tr_gam = get_unrolled_X_for_multivariate([x[perm] for x in X_tr_list], history_frames)
+                    y_tr_gam = np.repeat(y_tr[perm].astype(float), history_frames)
+                    fit_start = time.perf_counter()
+                    gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, y_tr_gam)
+                    fit_time = float(time.perf_counter() - fit_start)
+
+                    X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
+                    y_proba_tiled = gam.predict_proba(X_te_gam)
+                    y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
+                    y_pred = (y_proba >= 0.5).astype(int)
+                    gam_diffs = gam.logs_['diffs']
+                    fold_n_iter = float(len(gam_diffs))
+                    fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+
+                metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
+                metrics['auc'].append(roc_auc_score(y_te, y_proba))
+                metrics['f1'].append(f1_score(y_te, y_pred))
+                metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
+                metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
+                metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
+                try:
+                    y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
+                    metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10))
+                except Exception:
+                    metrics['ece'].append(np.nan)
+                metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+                metrics['confusion_matrix'].append(safe_confusion_matrix(y_te, y_pred, labels=np.array([0, 1])))
+                metrics['n_iter'].append(fold_n_iter)
+                metrics['converged'].append(fold_converged)
+                metrics['fit_time'].append(fit_time)
+                gc.collect()
+            except Exception as e:
+                print(f"    [!] Error fitting {anchor} (Fold {fold_i}): {e}")
+                for _k in metrics:
+                    # `confusion_matrix` holds (2, 2) arrays, so on failure we
+                    # append a NaN-filled matrix instead of a scalar NaN to
+                    # keep the per-fold list homogeneous for downstream stacking.
+                    if _k == 'confusion_matrix':
+                        metrics[_k].append(np.full((2, 2), np.nan))
+                    else:
+                        metrics[_k].append(np.nan)
+
+        valid = [s for s in metrics['ll'] if np.isfinite(s)]
+        if valid:
+            best_current_score = np.mean(valid)
+            best_current_se = np.std(valid, ddof=1) / np.sqrt(len(valid))
+            step_results = {
+                'step_idx': 0, 'current_features': list(current_model_features),
+                'baseline_score': best_current_score,
+                'selected_feature': anchor,
+                'candidates_summary': {
+                    anchor: {
+                        'll': metrics['ll'], 'auc': metrics['auc'],
+                        'f1': metrics['f1'], 'recall': metrics['recall'],
+                        'score': metrics['score'],
+                        'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                        'confusion_matrix': metrics['confusion_matrix'],
+                        'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                        'fit_time': metrics['fit_time'],
+                        'mean_ll': best_current_score, 'se_ll': best_current_se
+                    }
+                }
+            }
+            with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
+            step_counter = 1
+
+    print("\n--- Starting Forward Selection ---")
+    while True:
+        print(f"\n=== Step {step_counter} === Best LL: {best_current_score:.5f}")
+        step_results_metadata = {
+            'step_idx': step_counter, 'current_features': list(current_model_features),
+            'baseline_score': best_current_score, 'candidates_summary': {}
+        }
+        best_cand_name, best_cand_score, best_cand_se = None, float('inf'), 0.0
+
+        for i_feat, feat in enumerate(ranked_features):
+            if feat in current_model_features: continue
+            gc.collect()
+            trial_feats = current_model_features + [feat]
+            print(f"  [{i_feat + 1}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
+
+            if model_type == 'pygam':
+                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                for i in range(1, len(trial_feats)):
+                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+
+            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
+                       'brier': [], 'ece': [], 'mcc': [],
+                       'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
+
+            for fold_i, (tr_idx, te_idx) in enumerate(cv_folds):
+                try:
+                    if split_strategy == 'session':
+                        X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, trial_feats, all_sessions_arr[tr_idx], history_frames)
+                        X_te_t_raw, X_te_o_raw = _pool_category_features(all_feature_data, trial_feats, all_sessions_arr[te_idx], history_frames)
+                    else:
+                        # Reassemble the per-trial feature list from the
+                        # pre-pooled cache so every fold reuses the same dense
+                        # (target, other) arrays without re-concatenating per
+                        # session on each iteration.
+                        X_all_t_raw = [pooled_category_cache[f]['target'] for f in trial_feats]
+                        X_all_o_raw = [pooled_category_cache[f]['other'] for f in trial_feats]
+
+                        tr_targ_idx = tr_idx[tr_idx < n_targ_total]
+                        tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
+                        te_targ_idx = te_idx[te_idx < n_targ_total]
+                        te_other_idx = te_idx[te_idx >= n_targ_total] - n_targ_total
+
+                        X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
+                        X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
+                        X_te_t_raw = [x[te_targ_idx] for x in X_all_t_raw]
+                        X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
+
+                    X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_i)
+
+                    # Test set: natural class prior (no balancing).
+                    if not X_tr_t or len(X_te_t_raw) == 0:
+                        continue
+                    n_te_targ = X_te_t_raw[0].shape[0]
+                    n_te_other = X_te_o_raw[0].shape[0]
+                    if (n_te_targ + n_te_other) == 0:
+                        continue
+
+                    X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+                    y_tr = np.concatenate([y_tr_t, y_tr_o])
+                    perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
+
+                    X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
+                    y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
+
+                    if model_type == 'sklearn':
+                        X_tr_stacked = np.hstack([np.dot(x[perm], basis_matrix) for x in X_tr_list])
+                        X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
+
+                        model = LogisticRegressionCV(
+                            penalty=lr_params['penalty'],
+                            Cs=lr_params['cs'],
+                            cv=lr_params['cv'],
+                            class_weight='balanced',
+                            solver=lr_params['solver'],
+                            max_iter=lr_params['max_iter'],
+                            random_state=random_seed
+                        )
+                        fit_start = time.perf_counter()
+                        model.fit(X_tr_stacked, y_tr[perm])
+                        fit_time = float(time.perf_counter() - fit_start)
+                        y_proba = model.predict_proba(X_te_stacked)[:, 1]
+                        y_pred = model.predict(X_te_stacked)
+                        try:
+                            fold_n_iter = float(np.max(model.n_iter_))
+                            fold_converged = bool(fold_n_iter < lr_params['max_iter'])
+                        except Exception:
+                            fold_n_iter, fold_converged = np.nan, False
+                    else:
+                        X_tr_gam = get_unrolled_X_for_multivariate([x[perm] for x in X_tr_list], history_frames)
+                        y_tr_gam = np.repeat(y_tr[perm].astype(float), history_frames)
+                        fit_start = time.perf_counter()
+                        gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, y_tr_gam)
+                        fit_time = float(time.perf_counter() - fit_start)
+
+                        X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
+                        y_proba_tiled = gam.predict_proba(X_te_gam)
+                        y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
+                        y_pred = (y_proba >= 0.5).astype(int)
+                        gam_diffs = gam.logs_['diffs']
+                        fold_n_iter = float(len(gam_diffs))
+                        fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+
+                    metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
+                    metrics['auc'].append(roc_auc_score(y_te, y_proba))
+                    metrics['f1'].append(f1_score(y_te, y_pred))
+                    metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
+                    metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
+                    metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
+                    try:
+                        y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
+                        metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10))
+                    except Exception:
+                        metrics['ece'].append(np.nan)
+                    metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+                    metrics['confusion_matrix'].append(safe_confusion_matrix(y_te, y_pred, labels=np.array([0, 1])))
+                    metrics['n_iter'].append(fold_n_iter)
+                    metrics['converged'].append(fold_converged)
+                    metrics['fit_time'].append(fit_time)
+                    gc.collect()
+                except Exception as e:
+                    print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
+                    for _k in metrics:
+                        # `confusion_matrix` holds (2, 2) arrays, so on failure
+                        # append a NaN-filled matrix instead of a scalar NaN to
+                        # keep the per-fold list homogeneous for downstream
+                        # np.stack / indexing.
+                        if _k == 'confusion_matrix':
+                            metrics[_k].append(np.full((2, 2), np.nan))
+                        else:
+                            metrics[_k].append(np.nan)
+
+            valid = [x for x in metrics['ll'] if np.isfinite(x)]
+            if not valid:
+                print(" Failed (no finite folds).")
+                continue
+
+            mean_ll = np.mean(valid)
+            se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid))
+            print(f" LL: {mean_ll:.4f} | AUC: {np.nanmean(metrics['auc']):.3f}")
+
+            step_results_metadata['candidates_summary'][feat] = {
+                'll': metrics['ll'], 'auc': metrics['auc'],
+                'f1': metrics['f1'], 'recall': metrics['recall'],
+                'score': metrics['score'],
+                'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+                'confusion_matrix': metrics['confusion_matrix'],
+                'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+                'fit_time': metrics['fit_time'],
+                'mean_ll': mean_ll, 'se_ll': se_ll
+            }
+            if mean_ll < best_cand_score:
+                best_cand_score, best_cand_se, best_cand_name = mean_ll, se_ll, feat
+
+        if best_cand_name and (best_current_score - best_cand_score) > best_cand_se:
+            print(f"  ACCEPT {best_cand_name}")
+            current_model_features.append(best_cand_name)
+            step_results_metadata['selected_feature'] = best_cand_name
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
+            # Track `best_current_se` alongside the score so the 1SE acceptance
+            # test always compares against the *current* accepted model's
+            # sampling variability rather than a stale Step-0 value.
+            best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
+            if len(current_model_features) == len(ranked_features): break
+        else:
+            print("  REJECT. Stopping.")
+            step_results_metadata['selected_feature'] = None
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results_metadata), f)
+            break
+
+    print("Final Feature Set:", current_model_features)
+
+    print("\n--- Final Refit for Visualization (CV-based) ---")
+    try:
+        last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
+        if not last_file.exists():
+            last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+
+        final_fold_shapes = []
+        print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
+
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+
+            if split_strategy == 'session':
+                X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
+            else:
+                # Reuse the pre-pooled target / other arrays for the final
+                # refit so the visualisation loop doesn't re-pool the full
+                # dataset per fold.
+                X_all_t_raw = [pooled_category_cache[f]['target'] for f in current_model_features]
+                X_all_o_raw = [pooled_category_cache[f]['other'] for f in current_model_features]
+
+                tr_targ_idx = tr_idx[tr_idx < n_targ_total]
+                tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
+
+                X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
+                X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
+
+            X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_idx)
+
+            if not X_tr_t:
+                continue
+
+            X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+            y_tr = np.concatenate([y_tr_t, y_tr_o])
+
+            if model_type == 'sklearn':
+                X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
+
+                model = LogisticRegressionCV(
+                    penalty=lr_params['penalty'],
+                    Cs=lr_params['cs'],
+                    cv=lr_params['cv'],
+                    class_weight='balanced',
+                    solver=lr_params['solver'],
+                    max_iter=lr_params['max_iter'],
+                    random_state=random_seed
+                )
+                model.fit(X_tr_stacked, y_tr)
+
+                coefs = model.coef_.flatten()
+                n_bases = basis_matrix.shape[1]
+
+                fold_res = {}
+                for k, f_name in enumerate(current_model_features):
+                    feat_coefs = coefs[k * n_bases: (k + 1) * n_bases]
+                    fold_res[f_name] = np.dot(feat_coefs, basis_matrix.T).flatten()
+
+                final_fold_shapes.append(fold_res)
+
+            else:
+                X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
+                y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
+
+                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                for i in range(1, len(current_model_features)):
+                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+
+                gam_fold = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
+
+                time_idx = np.arange(history_frames)
+                base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
+                for k in range(len(current_model_features)):
+                    base_grid[:, k * 2 + 1] = time_idx
+
+                base_prob = gam_fold.predict_mu(base_grid)
+
+                fold_res = {}
+                for k, f_name in enumerate(current_model_features):
+                    test_grid = base_grid.copy()
+                    test_grid[:, k * 2] = 1.0
+                    fold_res[f_name] = (gam_fold.predict_mu(test_grid) - base_prob).flatten()
+
+                final_fold_shapes.append(fold_res)
+
+                del gam_fold, X_gam_tr, y_gam_tr
+
+            gc.collect()
+
+        final_res = {
+            'final_model_features': current_model_features,
+            'filter_shapes': final_fold_shapes,
+            'univariate_results_path': univariate_results_path,
+            'input_data_path': input_data_path
+        }
+
+        with open(last_file, 'rb') as f:
+            data = pickle.load(f)
+
+        for _k in RESERVED_METADATA_KEYS:
+            data.pop(_k, None)
+        data.update(final_res)
+
+        with open(last_file, 'wb') as f:
+            pickle.dump(_wrap_step(data), f)
+
+        print("Model selection complete. CV-based shapes saved.")
+
+    except Exception as e:
+        print(f"Final fit failed: {e}")
+
+
+def bout_parameter_model_selection(
+        univariate_results_path: str,
+        input_data_path: str,
+        output_directory: str,
+        settings_path: str = None,
+        target_variable: str = 'bout_durations',
+        use_top_rank_as_anchor: bool = False,
+        p_val: float = 0.01
+) -> None:
+    """
+    Performs forward stepwise selection for continuous bout parameter regression.
+
+    Identifies the minimal sufficient set of behavioral and vocal syntax features
+    that predict a continuous target (e.g., duration, complexity). The framework
+    accommodates strictly positive, right-skewed biological data.
+
+    Engine Flexibility:
+    -------------------
+    Reads `model_engine` from JSON settings to dynamically construct models:
+    - 'sklearn': Utilizes `RidgeCV` combined with linear basis projection. To satisfy
+                 normality and homoscedasticity assumptions, the target variable (y)
+                 is log-transformed prior to fitting, and predictions are back-transformed.
+                 Back-transformation applies a Jensen-inequality bias correction
+                 (`y_pred = exp(X_te @ beta + sigma^2 / 2)`, with `sigma^2` estimated from the
+                 training residuals of `log(y_tr + 1e-6)`): without the `+ sigma^2 / 2` shift,
+                 naive exponentiation of the linear-predictor targets the conditional median
+                 rather than the conditional mean under a lognormal model, which systematically
+                 biases Gamma deviance and MSLE against the sklearn branch.
+    - 'pygam': Utilizes `GAM` with a Gamma distribution and Log-link function. High-dimensional
+               features are unrolled into tensor product splines (te) to capture non-linear surfaces.
+               For each test trial the `H` per-frame predictions produced by the tensor-product
+               unroll are aggregated on the linear-predictor (eta = log mu) scale before applying
+               the inverse link (i.e. `y_pred = exp(mean(eta))`, not `mean(exp(eta))`), which
+               avoids the Jensen-inequality bias that natural-scale averaging would introduce
+               whenever the per-frame eta have any spread.
+
+    Known caveat (tile-and-repeat unroll):
+    --------------------------------------
+    The tensor-product unroll duplicates each trial's scalar target `y_tr` across `H` history
+    frames via `np.repeat(y_tr, H)` and fits as if those `N * H` rows were independent
+    observations. This inflates the effective sample size seen by pyGAM's penalty selection
+    (GCV/REML), nudging it toward under-smoothing relative to a truly i.i.d. fit on `N`
+    observations. Test-time aggregation is performed per-trial so held-out metrics remain on
+    the correct `N` scale, and cross-validation is the practical safeguard against the
+    resulting optimism; the bias is shared by both engines' multivariate paths and so does
+    not confound the sklearn-vs-pyGAM comparison.
+
+    Splitting Strategies:
+    ---------------------
+    Continuous target variables are discretized into quantile bins (`y_binned`) to enable stratification.
+    - 'session': Uses `StratifiedGroupKFold` (re-seeded per fold) to isolate whole recording days
+                 while preserving the target distribution.
+    - 'mixed': Uses `StratifiedShuffleSplit` to pool all data and split at the epoch level,
+               guaranteeing identical continuous distributions across train and test sets.
+
+    Selection Metric:
+    -----------------
+    Explained Deviance (D^2). We select features using the one-standard-error (1SE) rule:
+    a feature is accepted only if it improves the D^2 by more than the standard error (SE)
+    of the candidate model's cross-validated performance.
+
+    Data Persistence:
+    -----------------
+    Preserves full-resolution metric data. For every candidate tested at
+    every step, the raw per-fold results are saved to match the metric set
+    emitted by the univariate runner: Explained Deviance (D^2), Residual
+    Gamma Deviance, Spearman's rho, Pearson's r, Mean Squared Logarithmic
+    Error (MSLE), Mean Absolute Error (MAE), Root Mean Squared Error (RMSE),
+    the raw test-fold `y_true` / `y_pred` arrays, and per-fold optimizer
+    diagnostics (`n_iter`, `converged`, `fit_time`). `converged=False`
+    flags folds that terminated at `max_iter` without meeting the tolerance,
+    surfacing the main silent-failure mode of the pyGAM path.
+
+    Parameters
+    ----------
+    univariate_results_path : str
+        Path to the univariate regression results pickle file.
+    input_data_path : str
+        Path to the raw extracted feature data .pkl file containing (X, y, groups).
+    output_directory : str
+        The directory path where the resulting step files (.pkl) will be saved.
+    settings_path : str, optional
+        Path to the 'modeling_settings.json' configuration file.
+    target_variable : str, default 'bout_durations'
+        The name of the target variable to pull from the input data.
+    use_top_rank_as_anchor : bool, default False
+        If True, starts the search with the #1 ranked univariate feature.
+    p_val : float, default 0.01
+        The alpha level used for significance screening against shuffled controls.
+
+    Returns
+    -------
+    None
+        Saves step-wise results and final CV-based filter shapes to disk.
+    """
+
+    print(f"--- Starting Regression Model Selection for {target_variable} ---")
+
+    if settings_path is None:
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path = str(settings_path_obj)
+
+    try:
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Results will be saved to: {model_selection_dir}")
+
+    print(f"Loading univariate results from: {univariate_results_path}")
+    print(f"Loading raw data from: {input_data_path}")
+    with open(univariate_results_path, 'rb') as f:
+        univariate_data = pickle.load(f)
+
+    # Strip the upstream metadata blocks from `univariate_data` before
+    # iterating its `.items()`. The same pattern is applied to
+    # `all_feature_data` further down once it is loaded.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
+
+    # 1. Feature Screening & Ranking
+    candidates = []
+    num_features = len(univariate_data)
+
+    for feat_name, payload in univariate_data.items():
+        if isinstance(payload, tuple) and len(payload) == 2:
+            _, results = payload
+        else:
+            results = payload
+
+        if 'actual' not in results or 'explained_deviance' not in results['actual']:
+            continue
+        if 'null' not in results or 'explained_deviance' not in results['null']:
+            continue
+
+        actual_deviance = results['actual']['explained_deviance']
+        null_deviance = results['null']['explained_deviance']
+
+        valid_actual = actual_deviance[~np.isnan(actual_deviance)]
+        valid_null = null_deviance[~np.isnan(null_deviance)]
+
+        if len(valid_actual) == 0 or len(valid_null) == 0:
+            continue
+
+        mean_actual_deviance = np.mean(valid_actual)
+        null_threshold = np.percentile(valid_null, q=100 - (p_val / num_features) * 100)
+
+        if mean_actual_deviance > null_threshold and mean_actual_deviance > 0:
+            candidates.append({'feature': feat_name, 'mean_explained_deviance': mean_actual_deviance})
+        else:
+            reason = "Negative D^2" if mean_actual_deviance <= 0 else "Not Significant"
+            print(f"  Dropping {feat_name}: {reason} (Mean Dev {mean_actual_deviance:.4f} vs Null {null_threshold:.4f})")
+
+    candidates.sort(key=lambda x: x['mean_explained_deviance'], reverse=True)
+    ranked_features = [x['feature'] for x in candidates]
+
+    if not ranked_features:
+        print("No significant features found. Aborting.")
+        return
+
+    print(f"Identified {len(ranked_features)} significant candidates. Top: {ranked_features[0]}")
+
+    # 2. Raw Data Preparation
+    print("Loading raw input data...")
+    all_feature_data = load_pickle_modeling_data(input_data_path)
+
+    # Final upstream-metadata harvest: prefer the value the consolidator
+    # asserted against every per-feature univariate pickle, then fall
+    # back to the Level-1 pickle's own block for legacy runs.
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in all_feature_data:
+        _input_md = all_feature_data.pop('_input_metadata')
+    else:
+        all_feature_data.pop('_input_metadata', None)
+    all_feature_data.pop('_run_metadata', None)
+    all_feature_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
+
+    y_global = all_feature_data[ranked_features[0]]['y']
+    groups_global = all_feature_data[ranked_features[0]]['groups']
+
+    camera_rate = settings['io']['camera_sampling_rate']
+    filter_history_sec = settings['model_params']['filter_history']
+    history_frames = int(np.floor(camera_rate * filter_history_sec))
+
+    # Strict Dictionary Lookup
+    model_ops = settings['model_params']
+    model_type = model_ops['model_engine']
+    split_strategy = model_ops['split_strategy']
+    n_splits = model_ops['split_num']
+    test_prop = model_ops['test_proportion']
+    random_seed = settings['model_params']['random_seed']
+
+    print(f"Engine: {model_type.upper()} | Random Seed: {random_seed} | Strategy: {split_strategy} | Num Splits: {n_splits}")
+
+    # Engine-Specific Setup
+    basis_matrix = None
+    gam_kwargs = {}
+    n_splines_time = 0
+    n_splines_value = 0
+    lr_params = {}
+
+    if model_type == 'sklearn':
+        basis_type = model_ops['model_basis_function']
+        if basis_type == 'raised_cosine':
+            p = settings['hyperparameters']['basis_functions']['raised_cosine']
+            kp = int(np.floor(history_frames * p['kpeaks_proportion']))
+            basis_matrix = raised_cosine(neye=p['neye'], ncos=p['ncos'], kpeaks=[0, kp], b=p['b'], w=history_frames)
+        elif basis_type == 'bspline':
+            p = settings['hyperparameters']['basis_functions']['bspline']
+            deg = p['degree']
+            max_k = max(0, history_frames - deg)
+            knots = np.linspace(0, max_k, p['n_splines'] - deg + 1).astype(int)
+            basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
+        elif basis_type == 'laplacian_pyramid':
+            p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
+            basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], step=p['step'], fwhm=p['fwhm']))
+        elif basis_type == 'identity':
+            basis_matrix = identity(width=history_frames)
+
+        lr_params = settings['hyperparameters']['classical']['ridge_regression']
+
+    elif model_type == 'pygam':
+        pygam_params = settings['hyperparameters']['classical']['pygam']
+        n_splines_time = pygam_params['n_splines_time']
+        n_splines_value = pygam_params['n_splines_value']
+        gam_kwargs = {
+            'max_iter': int(pygam_params['max_iterations']),
+            'tol': float(pygam_params['tol_val']),
+            'lam': pygam_params['lam_penalty']
+        }
+    else:
+        raise ValueError("model_engine in settings must be either 'sklearn' or 'pygam'.")
+
+    # 3. Target Quantile Binning for Stratification
+    n_bins = max(2, min(10, len(y_global) // n_splits))
+    bins = np.unique(np.percentile(y_global, np.linspace(0, 100, n_bins + 1)))
+    if len(bins) < 2:
+        y_binned = np.zeros(len(y_global))
+    else:
+        y_binned = np.digitize(y_global, bins[1:-1])
+
+    # 4. Generate Splits
+    cv_folds = []
+    n_folds_mc = max(2, int(round(1.0 / test_prop)))
+
+    if split_strategy == 'session':
+        print(f"  > Generating {n_splits} Monte Carlo Session Splits (Test Prop: {test_prop})...")
+        for i in range(n_splits):
+            current_seed = random_seed + i
+            stratified_group_k_fold = StratifiedGroupKFold(n_splits=n_folds_mc, shuffle=True, random_state=current_seed)
+            try:
+                train_idx, test_idx = next(stratified_group_k_fold.split(np.zeros(len(y_global)), y_binned, groups=groups_global))
+                cv_folds.append((train_idx, test_idx))
+            except StopIteration:
+                pass
+    elif split_strategy == 'mixed':
+        print(f"  > Generating {n_splits} Monte Carlo Mixed Splits (Test Prop: {test_prop})...")
+        sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
+        for train_idx, test_idx in sss.split(np.zeros(len(y_global)), y_binned):
+            cv_folds.append((train_idx, test_idx))
+    else:
+        raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
+
+    # Resume Logic
+    current_model_features = []
+    best_current_score = 0.0
+    best_current_se = 0.0
+    step_counter = 0
+
+    fname = Path(univariate_results_path).name
+    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    target_condition = cond_match.group(1) if cond_match else "unknown"
+
+    prefix = f"model_selection_{target_variable}_{target_condition}_{split_strategy}_step_"
+
+    # Selection-level run metadata + step-wrapper, frozen here so every
+    # step file carries an identical block.
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='bout_parameter_model_selection',
+        selection_metric='explained_deviance',
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs=gam_kwargs,
+        extra_knobs={
+            'target_variable': target_variable,
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'model_type': model_type,
+            'n_splines_time': int(n_splines_time),
+            'n_splines_value': int(n_splines_value),
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
+    existing_steps = []
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
+            if f_name.startswith(prefix) and f_name.endswith(".pkl"):
+                try:
+                    existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
+                except ValueError:
+                    pass
+
+    if existing_steps:
+        last_step = max(existing_steps)
+        print(f"[RESUME] Restoring from Step {last_step}...")
+        try:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+                last_res = pickle.load(f)
+
+            # Filter to candidates with a finite mean score. An entry
+            # whose mean is non-finite (or an entirely empty
+            # candidates_summary) is the same broken-fold artifact and
+            # should not look like convergence to the resume logic.
+            cand_dict = {
+                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
+                if isinstance(s, dict) and np.isfinite(s.get('mean_explained_deviance', float('nan')))
+            }
+
+            if not cand_dict:
+                # Stale / broken checkpoint: discard and start fresh
+                # so the baseline block re-establishes the marginal
+                # prior and the auto-anchor re-fires. See the manifold
+                # variant for the full rationale.
+                print(
+                    f"[RESUME] Step {last_step} has no scored candidates "
+                    "(stale checkpoint); ignoring and starting fresh."
+                )
+                existing_steps = []
+            else:
+                current_model_features = last_res['current_features']
+                best_current_score = last_res['baseline_score']
+
+                best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_explained_deviance'])
+                name, stats = best_cand_in_file
+
+                if (stats['mean_explained_deviance'] - stats['se_explained_deviance']) > best_current_score:
+                    if name not in current_model_features:
+                        current_model_features.append(name)
+                    best_current_score = stats['mean_explained_deviance']
+                    best_current_se = stats['se_explained_deviance']
+                    step_counter = last_step + 1
+                else:
+                    print("[RESUME] Selection already converged. Stopping loop.")
+                    step_counter = last_step
+        except Exception as e:
+            print(f"Resume failed: {e}. Starting fresh.")
+            existing_steps = []
+
+    # 5. Auto-Anchor Logic
+    if use_top_rank_as_anchor and step_counter == 0:
+        anchor = ranked_features[0]
+        print(f"\n*** AUTO-ANCHOR: Initializing with {anchor} ***")
+        # Metric set is aligned with the univariate runner so downstream
+        # plotting / aggregation sees the same keys whether it reads a
+        # univariate or a selection-step pickle.
+        metrics = {
+            'explained_deviance': [], 'residual_deviance': [],
+            'spearman_r': [], 'pearson_r': [],
+            'msle': [], 'mae': [], 'rmse': [],
+            'y_true': [], 'y_pred': [],
+            'n_iter': [], 'converged': [], 'fit_time': []
+        }
+
+        for tr_idx, te_idx in cv_folds:
+            try:
+                X_tr, y_tr = all_feature_data[anchor]['X'][tr_idx], y_global[tr_idx]
+                X_te, y_te = all_feature_data[anchor]['X'][te_idx], y_global[te_idx]
+
+                if model_type == 'sklearn':
+                    X_tr_proj = np.dot(X_tr, basis_matrix)
+                    X_te_proj = np.dot(X_te, basis_matrix)
+
+                    y_tr_log = np.log(y_tr + 1e-6)
+                    fit_start = time.perf_counter()
+                    model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_proj, y_tr_log)
+                    fit_time = float(time.perf_counter() - fit_start)
+
+                    # Jensen bias correction: fitting log(y) with OLS/Ridge targets the median on the
+                    # natural scale; for a (conditionally) lognormal model, E[y|X] = exp(Xb + sigma^2/2).
+                    # Without the +sigma^2/2 shift, exp(predict(...)) systematically under-estimates the
+                    # mean, biasing gamma-deviance / MSLE against the sklearn branch.
+                    resid = y_tr_log - model.predict(X_tr_proj)
+                    sigma2 = float(np.var(resid, ddof=1))
+                    y_pred = np.exp(model.predict(X_te_proj) + 0.5 * sigma2)
+                    # RidgeCV has no iterative optimizer to report; the closed-form
+                    # solve is trivially converged.
+                    fold_n_iter = np.nan
+                    fold_converged = True
+                else:
+                    X_tr_unrolled = np.empty((len(X_tr) * history_frames, 2))
+                    X_tr_unrolled[:, 0] = X_tr.ravel()
+                    X_tr_unrolled[:, 1] = np.tile(np.arange(history_frames), len(X_tr))
+
+                    gam = GAM(te(0, 1, n_splines=[n_splines_value, n_splines_time]), distribution='gamma', link='log', **gam_kwargs)
+                    fit_start = time.perf_counter()
+                    gam.fit(X_tr_unrolled, np.repeat(y_tr + 1e-6, history_frames))
+                    fit_time = float(time.perf_counter() - fit_start)
+
+                    X_te_unrolled = np.empty((len(X_te) * history_frames, 2))
+                    X_te_unrolled[:, 0] = X_te.ravel()
+                    X_te_unrolled[:, 1] = np.tile(np.arange(history_frames), len(X_te))
+
+                    # Aggregate the H per-frame predictions on the linear-predictor (eta = log mu) scale
+                    # before applying the inverse link: exp(mean(eta)) rather than mean(exp(eta)). This
+                    # avoids the Jensen-inequality bias introduced by averaging on the natural (mu) scale,
+                    # which would otherwise over-estimate E[y|X] whenever the per-frame eta have any spread.
+                    eta_te = np.log(gam.predict_mu(X_te_unrolled)).reshape(len(y_te), history_frames)
+                    y_pred = np.exp(np.mean(eta_te, axis=1))
+                    gam_diffs = gam.logs_['diffs']
+                    fold_n_iter = float(len(gam_diffs))
+                    fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+
+                # Robust Metric Calculation
+                y_te_safe = np.maximum(y_te, 1e-6)
+                y_pred_safe = np.maximum(y_pred, 1e-6)
+                y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+
+                res_dev = mean_gamma_deviance(y_te_safe, y_pred_safe)
+                null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+
+                d2 = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+
+                metrics['residual_deviance'].append(res_dev)
+                metrics['explained_deviance'].append(d2)
+                metrics['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                metrics['pearson_r'].append(pearson_r_safe(y_te, y_pred))
+                metrics['msle'].append(mean_squared_log_error(y_te_safe, y_pred_safe))
+                metrics['mae'].append(mean_absolute_error_1d(y_te, y_pred))
+                metrics['rmse'].append(root_mean_squared_error(y_te, y_pred))
+                metrics['y_true'].append(y_te_safe)
+                metrics['y_pred'].append(y_pred_safe)
+                metrics['n_iter'].append(fold_n_iter)
+                metrics['converged'].append(fold_converged)
+                metrics['fit_time'].append(fit_time)
+                gc.collect()
+
+            except Exception as e:
+                print(f"    [!] Error fitting: {e}")
+                # Append shape-preserving placeholders so every per-fold list
+                # stays the same length. y_true / y_pred normally hold test-
+                # fold arrays, so on failure we use empty arrays rather than a
+                # scalar NaN to keep the list homogeneous for stacking.
+                metrics['explained_deviance'].append(np.nan)
+                metrics['residual_deviance'].append(np.nan)
+                metrics['spearman_r'].append(np.nan)
+                metrics['pearson_r'].append(np.nan)
+                metrics['msle'].append(np.nan)
+                metrics['mae'].append(np.nan)
+                metrics['rmse'].append(np.nan)
+                metrics['y_true'].append(np.empty((0,), dtype=np.float64))
+                metrics['y_pred'].append(np.empty((0,), dtype=np.float64))
+                metrics['n_iter'].append(np.nan)
+                metrics['converged'].append(False)
+                metrics['fit_time'].append(np.nan)
+
+        valid_dev = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
+        if valid_dev:
+            mean_anchor_score = np.mean(valid_dev)
+            if mean_anchor_score > 0:
+                best_current_score = mean_anchor_score
+                best_current_se = np.std(valid_dev, ddof=1) / np.sqrt(len(valid_dev))
+                current_model_features = [anchor]
+
+                step_0_res = {
+                    'step_idx': 0, 'current_features': [anchor],
+                    'baseline_score': 0.0,
+                    'selected_feature': anchor,
+                    'candidates_summary': {
+                        anchor: {
+                            **{k: metrics[k] for k in metrics},
+                            'mean_explained_deviance': mean_anchor_score,
+                            'se_explained_deviance': best_current_se
+                        }
+                    }
+                }
+                with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+                    pickle.dump(_wrap_step(step_0_res), f)
+                step_counter = 1
+            else:
+                print(f"*** ANCHOR FAILED: {anchor} D^2={mean_anchor_score:.4f} <= 0. Reverting to empty start. ***")
+
+    # 6. Forward Selection Loop
+    print("\n--- Starting Forward Selection ---")
+    while True:
+        fold_base_X_tr, fold_base_X_te = [], []
+        for tr_idx, te_idx in cv_folds:
+            fold_base_X_tr.append([all_feature_data[f]['X'][tr_idx] for f in current_model_features])
+            fold_base_X_te.append([all_feature_data[f]['X'][te_idx] for f in current_model_features])
+
+        best_cand, best_cand_score, best_cand_se = None, -float('inf'), 0.0
+        step_results = {
+            'step_idx': step_counter, 'current_features': list(current_model_features),
+            'baseline_score': best_current_score, 'candidates_summary': {},
+            'selected_feature': None
+        }
+
+        for feat in ranked_features:
+            if feat in current_model_features: continue
+            gc.collect()
+            print(f" Testing +{feat}...", end="", flush=True)
+
+            metrics = {
+                'explained_deviance': [], 'residual_deviance': [],
+                'spearman_r': [], 'pearson_r': [],
+                'msle': [], 'mae': [], 'rmse': [],
+                'y_true': [], 'y_pred': [],
+                'n_iter': [], 'converged': [], 'fit_time': []
+            }
+
+            if model_type == 'pygam':
+                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                for i in range(1, len(current_model_features) + 1):
+                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+
+            for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+                try:
+                    trial_tr = fold_base_X_tr[fold_idx] + [all_feature_data[feat]['X'][tr_idx]]
+                    trial_te = fold_base_X_te[fold_idx] + [all_feature_data[feat]['X'][te_idx]]
+                    y_tr, y_te = y_global[tr_idx], y_global[te_idx]
+
+                    if model_type == 'sklearn':
+                        X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in trial_tr])
+                        X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in trial_te])
+
+                        y_tr_log = np.log(y_tr + 1e-6)
+                        fit_start = time.perf_counter()
+                        model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_stacked, y_tr_log)
+                        fit_time = float(time.perf_counter() - fit_start)
+
+                        # Jensen bias correction on the natural scale (see anchor fit for rationale).
+                        resid = y_tr_log - model.predict(X_tr_stacked)
+                        sigma2 = float(np.var(resid, ddof=1))
+                        y_pred = np.exp(model.predict(X_te_stacked) + 0.5 * sigma2)
+                        fold_n_iter = np.nan
+                        fold_converged = True
+                    else:
+                        X_tr_gam = get_unrolled_X_for_multivariate(trial_tr, history_frames)
+                        X_te_gam = get_unrolled_X_for_multivariate(trial_te, history_frames)
+
+                        fit_start = time.perf_counter()
+                        gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr + 1e-6, history_frames))
+                        fit_time = float(time.perf_counter() - fit_start)
+
+                        # Aggregate the H per-frame predictions on the linear-predictor scale (see anchor fit).
+                        eta_te = np.log(gam.predict_mu(X_te_gam)).reshape(len(y_te), history_frames)
+                        y_pred = np.exp(np.mean(eta_te, axis=1))
+                        gam_diffs = gam.logs_['diffs']
+                        fold_n_iter = float(len(gam_diffs))
+                        fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+
+                    y_te_safe = np.maximum(y_te, 1e-6)
+                    y_pred_safe = np.maximum(y_pred, 1e-6)
+                    y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+
+                    res_dev = mean_gamma_deviance(y_te_safe, y_pred_safe)
+                    null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+
+                    d2 = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+
+                    metrics['residual_deviance'].append(res_dev)
+                    metrics['explained_deviance'].append(d2)
+                    metrics['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                    metrics['pearson_r'].append(pearson_r_safe(y_te, y_pred))
+                    metrics['msle'].append(mean_squared_log_error(y_te_safe, y_pred_safe))
+                    metrics['mae'].append(mean_absolute_error_1d(y_te, y_pred))
+                    metrics['rmse'].append(root_mean_squared_error(y_te, y_pred))
+                    metrics['y_true'].append(y_te_safe)
+                    metrics['y_pred'].append(y_pred_safe)
+                    metrics['n_iter'].append(fold_n_iter)
+                    metrics['converged'].append(fold_converged)
+                    metrics['fit_time'].append(fit_time)
+
+                    gc.collect()
+                except Exception as e:
+                    print(f"    [!] Error fitting {feat} (Fold {fold_idx}): {e}")
+                    metrics['explained_deviance'].append(np.nan)
+                    metrics['residual_deviance'].append(np.nan)
+                    metrics['spearman_r'].append(np.nan)
+                    metrics['pearson_r'].append(np.nan)
+                    metrics['msle'].append(np.nan)
+                    metrics['mae'].append(np.nan)
+                    metrics['rmse'].append(np.nan)
+                    # Empty arrays rather than scalar NaN so `y_true` /
+                    # `y_pred` stay a list of ndarrays (stackable downstream).
+                    metrics['y_true'].append(np.empty((0,), dtype=np.float64))
+                    metrics['y_pred'].append(np.empty((0,), dtype=np.float64))
+                    metrics['n_iter'].append(np.nan)
+                    metrics['converged'].append(False)
+                    metrics['fit_time'].append(np.nan)
+
+            valid = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
+            if not valid:
+                print(" Failed (no finite folds).")
+                continue
+
+            m_dev, s_dev = np.mean(valid), np.std(valid, ddof=1) / np.sqrt(len(valid))
+            print(f" D^2: {m_dev:.4f}")
+
+            step_results['candidates_summary'][feat] = {
+                **{k: metrics[k] for k in metrics},
+                'mean_explained_deviance': m_dev,
+                'se_explained_deviance': s_dev
+            }
+
+            if m_dev > best_cand_score:
+                best_cand_score, best_cand_se, best_cand = m_dev, s_dev, feat
+
+        if (best_cand_score - best_cand_se) > best_current_score:
+            print(f"  ACCEPT {best_cand}")
+            step_results['selected_feature'] = best_cand
+            current_model_features.append(best_cand)
+
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
+
+            best_current_score = best_cand_score
+            best_current_se = best_cand_se
+            step_counter += 1
+        else:
+            print("  REJECT. Selection Finished.")
+            step_results['selected_feature'] = None
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
+            break
+
+        if len(current_model_features) == len(ranked_features): break
+
+    # 7. Final Model Fit for Visualization
+    print("\n--- Final Model Fit for Visualization (CV-based) ---")
+    try:
+        last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
+        if not last_file.exists():
+            last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+
+        final_fold_shapes = []
+        print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
+
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+
+            X_list_tr = [all_feature_data[f]['X'][tr_idx] for f in current_model_features]
+            y_tr = y_global[tr_idx]
+
+            fold_res = {}
+            if model_type == 'sklearn':
+                X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_list_tr])
+                y_tr_log = np.log(y_tr + 1e-6)
+
+                model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_stacked, y_tr_log)
+                coefs = model.coef_.flatten()
+                n_bases = basis_matrix.shape[1]
+
+                for k, f_name in enumerate(current_model_features):
+                    feat_coefs = coefs[k * n_bases: (k + 1) * n_bases]
+                    fold_res[f_name] = np.dot(feat_coefs, basis_matrix.T).flatten()
+            else:
+                X_tr_gam = get_unrolled_X_for_multivariate(X_list_tr, history_frames)
+                y_tr_gam = np.repeat(y_tr + 1e-6, history_frames)
+
+                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                for i in range(1, len(current_model_features)):
+                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+
+                gam_fold = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, y_tr_gam)
+
+                time_idx = np.arange(history_frames)
+                base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
+                for k in range(len(current_model_features)): base_grid[:, k * 2 + 1] = time_idx
+
+                pred_base = gam_fold.predict(base_grid)
+
+                for k, feat in enumerate(current_model_features):
+                    grid = base_grid.copy()
+                    grid[:, k * 2] = 1.0
+                    pred_feat = gam_fold.predict(grid)
+                    fold_res[feat] = (pred_feat - pred_base).flatten()
+
+                del gam_fold, X_tr_gam, y_tr_gam
+
+            final_fold_shapes.append(fold_res)
+            gc.collect()
+
+        final_res = {
+            'final_model_features': current_model_features,
+            'filter_shapes': final_fold_shapes,
+            'univariate_results_path': univariate_results_path,
+            'input_data_path': input_data_path
+        }
+
+        with open(last_file, 'rb') as open_pkl_file:
+            data = pickle.load(open_pkl_file)
+
+        for _k in RESERVED_METADATA_KEYS:
+            data.pop(_k, None)
+        data.update(final_res)
+
+        with open(last_file, 'wb') as save_pkl_file:
+            pickle.dump(_wrap_step(data), save_pkl_file)
+
+        print("Model selection complete. CV-based shapes saved.")
+
+    except Exception as e:
+        print(f"Final fit failed: {e}")
+
+
+def multinomial_vocal_category_model_selection(
+        univariate_results_path: str,
+        input_data_path: str,
+        output_directory: str,
+        settings_path: str = None,
+        use_top_rank_as_anchor: bool = False,
+        p_val: float = 0.01
+) -> None:
+    """
+    Performs forward stepwise selection for multinomial USV category prediction.
+
+    This function identifies the optimal subset of behavioral features that
+    predict the full repertoire of USV categories simultaneously. It uses the
+    JAX-accelerated SmoothMultinomialLogisticRegression model.
+
+    Splitting & balancing invariant:
+    --------------------------------
+    The test fold always preserves the natural class prior of the source data
+    (stratified in 'mixed' mode, within-tolerance of global in 'session' mode).
+    The training fold follows one of two paths, selected by
+    `hyperparameters.jax_linear.multinomial_logistic.balance_train_bool`:
+
+    - `false` (default): the training fold retains the natural class prior,
+      and class imbalance is handled inside the JAX loss through softened
+      inverse-frequency alpha weights combined with focal-gamma modulation
+      (`focal_loss_gamma`).
+    - `true`: every learned-model training fold (anchor + forward-selection
+      trials) is sample-level down-sampled so each class contributes
+      `min(class_count)` rows. The JAX fit is then invoked with
+      `focal_gamma=0` and uniform `1 / n_classes` class weights to avoid
+      double-correcting an already balanced batch. The `null_model_free`
+      baseline keeps the natural-rate training distribution so its empirical
+      prior floor remains an informative reference.
+
+    Reported metrics are imbalance-robust (balanced accuracy, log-loss,
+    macro OvR AUC).
+
+    Algorithm adaptations for multinomial multi-feature data:
+    1.  Data stacking: Instead of unrolling into (Value, Time) columns for pyGAM,
+        features are horizontally concatenated (hstack) into a wide matrix of
+        shape (N_samples, N_features * N_time_bins).
+    2.  Dynamic architecture: The JAX model is re-instantiated at each step with
+        `n_features = len(trial_features)` to ensure the temporal smoothing
+        penalty (2nd derivative) is applied strictly within each feature's bins.
+    3.  Direct filter extraction: Because the model is linear in logit space,
+        filter shapes do not require synthetic grid predictions. The learned
+        `coef_` matrix is sliced directly to yield the exact temporal filters
+        for every USV category.
+    4.  Model-Free Baseline (Step 0): Computes the Marginal Class Prior (the
+        empirical frequency of each USV category in the training set) as the
+        absolute baseline. Features must prove they offer predictive power
+        above and beyond simply guessing the majority class.
+
+    Data Persistence:
+    -----------------
+    At each step of the forward sweep, a .pkl file is saved containing the complete
+    experimental state. This deep storage preserves all raw fold-level data to enable
+    post-hoc statistical testing and confusion matrix generation without refitting.
+
+    The saved dictionary at each step contains:
+    - 'step_idx' (int): The current iteration number.
+    - 'current_features' (list): Features selected prior to this step.
+    - 'selected_feature' (str or None): The winning feature added in this step.
+    - 'baseline_score' (float): The AUC of the current_features model.
+    - 'candidates_summary' (dict): Maps each tested feature to its detailed results:
+        - 'mean_auc', 'se_auc': Aggregated AUC metrics used for the 1SE rule.
+        - 'classes': Array of original USV category string labels.
+        - 'folds': A nested dictionary containing lists (length = n_splits) of:
+            * 'metrics': dict of the following per-fold scalars —
+                - `ll` : multinomial log-loss; strictly proper probabilistic score.
+                - `auc` : macro one-vs-rest ROC-AUC; threshold-free ranking quality.
+                - `f1` : macro F1; imbalance-robust harmonic mean of precision / recall.
+                - `recall` : macro recall (precision is derivable from the saved
+                  confusion matrix, so it is intentionally not stored).
+                - `score` : balanced accuracy (mean of per-class recall).
+                - `brier` : multiclass Brier score; quadratic counterpart to log-loss.
+                - `ece` : top-label expected calibration error (10 bins); gap
+                  between predicted confidence and empirical accuracy.
+                - `mcc` : Matthews correlation coefficient; chance-corrected
+                  [-1, +1] summary of the confusion matrix.
+            * 'weights': The learned JAX coefficient matrix.
+            * 'intercepts': The learned JAX biases.
+            * 'y_true', 'y_pred', 'y_probs': Ground truth, hard predictions, and softmax arrays.
+            * 'test_indices': The specific dataset rows used in the validation fold.
+            * 'confusion_matrix': (K, K) matrix with canonical class ordering.
+            * 'p_train', 'p_test': Realized per-class proportions in the fold.
+            * 'n_iter', 'converged', 'fit_time': JAX optimizer diagnostics.
+
+    *Note: The final step's file is additionally appended with 'final_model_features'
+    and 'weights_reshaped' (the extracted temporal kernels for all included features).*
+
+    Parameters
+    ----------
+    univariate_results_path : str
+        Path to the univariate regression results pickle file.
+    input_data_path : str
+        Path to the raw extracted feature data .pkl file.
+    output_directory : str
+        Directory to save the step-wise state dictionaries.
+    settings_path : str, optional
+        Path to the JSON settings file.
+    use_top_rank_as_anchor : bool, default False
+        If True, initializes the search by forcing the highest-ranked univariate
+        feature as the baseline model.
+    p_val : float, default 0.01
+        The alpha level used for significance screening against shuffled controls.
+    """
+
+    print("--- Starting Multinomial Vocal Category Model Selection ---")
+
+    if settings_path is None:
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path = str(settings_path_obj)
+
+    try:
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(univariate_results_path, 'rb') as f:
+        univariate_data = pickle.load(f)
+
+    # Strip upstream metadata blocks before iterating feature entries.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
+
+    candidates = []
+    num_features = len(univariate_data)
+
+    for feat_name, payload in univariate_data.items():
+        if isinstance(payload, tuple) and len(payload) == 2:
+            _, results = payload
+        else:
+            results = payload
+
+        if ('actual' not in results or
+                'auc' not in results['actual']['folds']['metrics']):
+            continue
+
+        actual_auc = np.array(results['actual']['folds']['metrics']['auc'])
+        null_auc = np.array(results['null']['folds']['metrics']['auc'])
+
+        valid_actual = actual_auc[~np.isnan(actual_auc)]
+        valid_null = null_auc[~np.isnan(null_auc)]
+
+        if len(valid_actual) == 0 or len(valid_null) == 0:
+            continue
+
+        mean_actual_auc = np.mean(valid_actual)
+        null_threshold = np.percentile(valid_null, q=100 - ((p_val / num_features) * 100))
+
+        if mean_actual_auc > null_threshold:
+            candidates.append({'feature': feat_name, 'mean_auc': mean_actual_auc})
+
+    candidates.sort(key=lambda x: x['mean_auc'], reverse=True)
+    ranked_features = [x['feature'] for x in candidates]
+
+    if not ranked_features:
+        print("No significant features found. Aborting.")
+        return
+
+    print("Loading and binning raw input data...")
+    with open(input_data_path, 'rb') as f:
+        raw_data = pickle.load(f)
+
+    # Final upstream-metadata harvest. The univariate-side blocks were
+    # captured above; the input-side block falls back to the Level-1
+    # pickle if the consolidator did not provide one (legacy run).
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in raw_data:
+        _input_md = raw_data.pop('_input_metadata')
+    else:
+        raw_data.pop('_input_metadata', None)
+    raw_data.pop('_run_metadata', None)
+    raw_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
+
+    hp = settings['hyperparameters']['jax_linear']['multinomial_logistic']
+    bin_size = hp['bin_resizing_factor']
+
+    binned_data = {}
+    y_global, groups_global = None, None
+    n_time_bins = None
+
+    for feat in ranked_features:
+        X_list, y_list, g_list = [], [], []
+        sessions = sorted(list(raw_data[feat].keys()))
+        for sess_id in sessions:
+            X_s = raw_data[feat][sess_id]['X']
+            y_s = raw_data[feat][sess_id]['y']
+
+            N, T = X_s.shape
+            if bin_size > 1:
+                new_T = T // bin_size
+                X_s = X_s[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+
+            X_list.append(X_s)
+            y_list.append(y_s)
+            g_list.append(np.full(len(y_s), sess_id))
+
+        binned_data[feat] = np.vstack(X_list).astype(np.float32)
+        if y_global is None:
+            y_global = np.concatenate(y_list).astype(np.int32)
+            groups_global = np.concatenate(g_list)
+            n_time_bins = binned_data[feat].shape[1]
+
+    del raw_data
+    gc.collect()
+
+    model_ops = settings['model_params']
+    split_strategy = model_ops['split_strategy']
+    n_splits = model_ops['split_num']
+    test_prop = model_ops['test_proportion']
+    random_seed = settings['model_params']['random_seed']
+    balance_train = hp['balance_train_bool']
+
+    # Both `'session'` and `'mixed'` go through the shared splitter so
+    # the cohort-wide and per-fold class-coverage guards apply
+    # uniformly. `n_categories` is read back from the Level-1
+    # `_input_metadata` block harvested above — the extractor
+    # auto-derives this value from the cohort-pooled labels after the
+    # `usv_noise_categories` filter (see
+    # `extract_and_save_multinomial_input_data`), so there is no
+    # hand-set JSON literal that could go stale if
+    # `usv_category_column_name` or `usv_noise_categories` change.
+    cv_folds, _ = get_stratified_group_splits_stable(
+        groups=groups_global,
+        y=y_global,
+        split_strategy=split_strategy,
+        test_prop=test_prop,
+        n_splits=n_splits,
+        random_seed=random_seed,
+        n_categories=int(_input_md['analysis_specific']['usv_category_number']),
+        max_total_attempts=model_ops['session_split_max_attempts'],
+        widen_step=model_ops['session_split_widen_step'],
+        widen_every=model_ops['session_split_widen_every'],
+    )
+
+    # When balance_train_bool is active the learned-model paths (anchor,
+    # forward-selection trials) down-sample each training fold per-class and
+    # the JAX fit is switched to focal_gamma=0 + uniform class weights so the
+    # already balanced batch is not double-corrected. The null_model_free
+    # baseline intentionally keeps the natural-rate training distribution so
+    # its empirical-prior floor remains an informative baseline.
+    def _fold_train_indices_for_model(tr_idx: np.ndarray, fold_idx: int) -> np.ndarray:
+        if not balance_train:
+            return tr_idx
+        fold_rng = np.random.default_rng(random_seed + fold_idx + 1)
+        return _balance_multinomial_train_indices(tr_idx, y_global, fold_rng)
+
+    if balance_train:
+        model_focal_gamma = 0.0
+        model_uniform_weights = True
+    else:
+        model_focal_gamma = hp['focal_loss_gamma']
+        model_uniform_weights = False
+
+    # Joint-tuning configuration. Mirrors the multinomial runner: fixed
+    # `lambda_smooth_fixed` / `l2_reg_fixed` centres are used when tuning
+    # is off; when on, every outer fold / candidate runs an inner CV over
+    # log-spaced grids centred on those values, with the 1-SE
+    # interpretability rule optionally promoting the smoothest pair in
+    # the SE band. `focal_loss_gamma` is intentionally not tuned — it is
+    # treated as a data-modelling choice.
+    smoothness_order = hp['smoothness_derivative_order']
+    tune_regularization_bool = hp['tune_regularization_bool']
+    tune_params = hp['tune_regularization_params']
+    lambda_smooth_grid_mn = _log_spaced_grid_multinomial(
+        center=hp['lambda_smooth_fixed'],
+        decades_each_side=tune_params['lambda_smooth_decades_each_side'],
+    )
+    l2_reg_grid_mn = _log_spaced_grid_multinomial(
+        center=hp['l2_reg_fixed'],
+        decades_each_side=tune_params['l2_reg_decades_each_side'],
+    )
+    inner_cv_folds_mn = tune_params['inner_cv_folds']
+    inner_cv_scoring_metric_mn = tune_params['inner_cv_scoring_metric']
+    inner_cv_use_one_se_rule_mn = tune_params['inner_cv_use_one_se_rule']
+    inner_max_iter_mn = tune_params['inner_max_iter']
+    use_lax_loop_mn = hp['use_lax_loop']
+
+    if tune_regularization_bool:
+        print(
+            f"  Joint per-fold tuning ENABLED: |λ_smooth grid|={len(lambda_smooth_grid_mn)}, "
+            f"|l2_reg grid|={len(l2_reg_grid_mn)}, inner CV folds={inner_cv_folds_mn}, "
+            f"scoring={inner_cv_scoring_metric_mn}, 1SE rule={'ON' if inner_cv_use_one_se_rule_mn else 'OFF'}"
+        )
+    else:
+        print(
+            f"  Joint per-fold tuning DISABLED (fixed λ_smooth={hp['lambda_smooth_fixed']}, "
+            f"fixed l2_reg={hp['l2_reg_fixed']})"
+        )
+
+    def _pick_multinomial_fold_hyperparams(X_tr_, y_tr_, n_feats_, fold_idx_):
+        """
+        Returns `(lambda_smooth, l2_reg, grid_audit, tuned_flag)` for the
+        current outer fold and trial feature set. When tuning is off the
+        fixed centres are used with the standard `1 / sqrt(n_features)`
+        rescale on l2 so larger trial models don't silently
+        over-regularise. When tuning is on the inner-CV search rescales
+        the l2 grid the same way.
+        """
+        if not tune_regularization_bool:
+            lam_sm = float(hp['lambda_smooth_fixed'])
+            lam_l2 = float(hp['l2_reg_fixed'] / np.sqrt(n_feats_))
+            return lam_sm, lam_l2, {
+                'grid_scores': {}, 'grid_ses': {},
+                'argmax_pair': None,
+                'one_se_applied': False, 'one_se_threshold': None,
+            }, False
+
+        rescaled_l2_grid = l2_reg_grid_mn / np.sqrt(n_feats_)
+        lam_sm_win, lam_l2_win, grid_audit_ = _tune_multinomial_regularization(
+            X_train=X_tr_,
+            y_train=y_tr_,
+            lambda_smooth_grid=lambda_smooth_grid_mn,
+            l2_reg_grid=rescaled_l2_grid,
+            inner_cv_folds=inner_cv_folds_mn,
+            inner_cv_scoring_metric=inner_cv_scoring_metric_mn,
+            inner_cv_use_one_se_rule=inner_cv_use_one_se_rule_mn,
+            n_features=n_feats_,
+            n_time_bins=n_time_bins,
+            smoothness_derivative_order=smoothness_order,
+            focal_gamma=model_focal_gamma,
+            uniform_class_weights=model_uniform_weights,
+            learning_rate=hp['learning_rate'],
+            inner_max_iter=inner_max_iter_mn,
+            tol=hp['tol'],
+            random_state=hp['random_state'] + fold_idx_,
+            verbose=False,
+            # Force-disable the lax_loop on the inner-CV tuner path. Same
+            # rationale as the manifold variant: per-instance JIT cache
+            # makes the tuner's ~175 short-lived estimators per outer fold
+            # each pay a fresh compile, which stalls for hours on wide
+            # graphs. The outer-fit call sites still honour `use_lax_loop_mn`.
+            use_lax_loop=False,
+            regressor_cls=SmoothMultinomialLogisticRegression,
+        )
+        return lam_sm_win, lam_l2_win, grid_audit_, True
+
+    # Project-wide canonical class order so every per-fold p_train / p_test
+    # vector has identical length and index-to-class mapping, enabling direct
+    # cross-fold comparison even if a fold happens to miss a rare class.
+    canonical_classes = np.unique(y_global)
+
+    def _class_proportions(labels: np.ndarray) -> np.ndarray:
+        if len(labels) == 0:
+            return np.zeros(len(canonical_classes), dtype=np.float32)
+        counts = np.array([(labels == c).sum() for c in canonical_classes], dtype=np.float64)
+        return (counts / counts.sum()).astype(np.float32)
+
+    current_model_features = []
+    best_current_score = 0.0
+    best_current_se = 0.0
+    step_counter = 0
+
+    fname = Path(univariate_results_path).name
+    # Match the binomial / bout-onset regex grouping: `(?:...)` non-capture on
+    # the alternation so conditions like `male_mute_partner` are captured in
+    # full. The older `(male|female.*?)` form captured only the literal `male`
+    # for any `male_...` filename and truncated the prefix.
+    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    target_condition = cond_match.group(1) if cond_match else "unknown"
+    # Pin which USV category column generated the multinomial labels so
+    # the per-step prefix (and downstream consolidation) carries the
+    # choice forward in the filename — e.g. `vae_supercategory`,
+    # `qlvm_category`.
+    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
+    prefix = f"model_selection_multinomial_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
+
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='multinomial_vocal_category_model_selection',
+        selection_metric='auc',
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=False,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs={},
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'bin_resizing_factor': int(bin_size),
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
+    existing_steps = []
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
+            if f_name.startswith(prefix) and f_name.endswith(".pkl"):
+                try:
+                    existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
+                except ValueError:
+                    pass
+
+    if existing_steps:
+        last_step = max(existing_steps)
+        print(f"[RESUME] Restoring from Step {last_step}...")
+        try:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+                last_res = pickle.load(f)
+
+            # Filter to candidates with a finite mean score. An entry
+            # whose mean is non-finite (or an entirely empty
+            # candidates_summary) is the same broken-fold artifact and
+            # should not look like convergence to the resume logic.
+            cand_dict = {
+                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
+                if isinstance(s, dict) and np.isfinite(s.get('mean_auc', float('nan')))
+            }
+
+            if not cand_dict:
+                # Stale / broken checkpoint: discard and start fresh
+                # so the baseline block re-establishes the marginal
+                # prior and the auto-anchor re-fires. See the manifold
+                # variant for the full rationale.
+                print(
+                    f"[RESUME] Step {last_step} has no scored candidates "
+                    "(stale checkpoint); ignoring and starting fresh."
+                )
+                existing_steps = []
+            else:
+                current_model_features = last_res['current_features']
+                best_current_score = last_res['baseline_score']
+
+                best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_auc'])
+                name, stats = best_cand_in_file
+
+                if (stats['mean_auc'] - stats['se_auc']) > best_current_score:
+                    if name not in current_model_features:
+                        current_model_features.append(name)
+                    best_current_score = stats['mean_auc']
+                    best_current_se = stats['se_auc']
+                    step_counter = last_step + 1
+                else:
+                    print("[RESUME] Selection already converged. Stopping loop.")
+                    step_counter = last_step
+        except Exception as e:
+            print(f"Resume failed: {e}. Starting fresh.")
+            existing_steps = []
+
+    # Calculate Model-Free Baseline (Step 0) if starting fresh
+    if not existing_steps:
+        print("\n--- Establishing Absolute Baseline (Model-Free Marginal Prior) ---")
+
+        baseline_data = {
+            'folds': {
+                # `precision` is not stored (derivable from the saved
+                # confusion matrix); Brier / ECE / MCC are added as
+                # calibration and chance-corrected summary scores.
+                'metrics': {m: [] for m in
+                            ['auc', 'score', 'recall', 'f1', 'll',
+                             'brier', 'ece', 'mcc']},
+                'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                'confusion_matrix': [],
+                # Hyperparameter audit fields — the centroid baseline has
+                # no model to tune, so these are all NaN / empty / False.
+                # Kept so the per-strategy schema stays uniform with the
+                # anchor and forward-selection cand_data blocks.
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_audit': [],
+                'hyperparams_tuned': [],
+            },
+            'classes': None
+        }
+
+        for tr_idx, te_idx in cv_folds:
+            y_tr, y_te = y_global[tr_idx], y_global[te_idx]
+
+            unique_classes, counts = np.unique(y_tr, return_counts=True)
+            class_priors = counts / float(np.sum(counts))
+
+            y_proba = np.tile(class_priors, (len(y_te), 1))
+            majority_class = unique_classes[np.argmax(class_priors)]
+            y_pred = np.full(len(y_te), majority_class)
+
+            eps = 1e-15
+            y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
+
+            f_met = baseline_data['folds']['metrics']
+
+            try:
+                f_auc = roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=unique_classes)
+            except ValueError:
+                f_auc = np.nan
+
+            f_met['auc'].append(f_auc)
+            f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
+            f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
+            f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
+
+            try:
+                f_ll = log_loss(y_te, y_proba_clipped, labels=unique_classes)
+            except ValueError:
+                f_ll = np.nan
+            f_met['ll'].append(f_ll)
+
+            # Canonical-ordered probability matrix for Brier / ECE.
+            probs_canonical = align_probs_to_canonical(
+                y_proba, unique_classes, canonical_classes
+            )
+            try:
+                f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
+            except Exception:
+                f_met['brier'].append(np.nan)
+            try:
+                f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+            except Exception:
+                f_met['ece'].append(np.nan)
+            f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+
+            baseline_data['folds']['y_true'].append(y_te)
+            baseline_data['folds']['y_pred'].append(y_pred)
+            baseline_data['folds']['y_probs'].append(y_proba)
+            baseline_data['folds']['test_indices'].append(te_idx)
+            baseline_data['folds']['confusion_matrix'].append(
+                safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
+            )
+            baseline_data['folds']['selected_lambda_smooth'].append(float('nan'))
+            baseline_data['folds']['selected_l2_reg'].append(float('nan'))
+            baseline_data['folds']['hyperparam_grid_audit'].append({
+                'grid_scores': {}, 'grid_ses': {},
+                'argmax_pair': None,
+                'one_se_applied': False, 'one_se_threshold': None,
+            })
+            baseline_data['folds']['hyperparams_tuned'].append(False)
+            if baseline_data['classes'] is None:
+                baseline_data['classes'] = unique_classes
+
+        valid_auc = [m for m in baseline_data['folds']['metrics']['auc'] if not np.isnan(m)]
+        best_current_score = np.mean(valid_auc)
+        best_current_se = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
+
+        print(f"  Baseline Global AUC established at: {best_current_score:.4f}")
+
+        baseline_data['mean_auc'] = best_current_score
+        baseline_data['se_auc'] = best_current_se
+
+        step_0_res = {
+            'step_idx': 0,
+            'current_features': [],
+            'baseline_score': best_current_score,
+            'selected_feature': 'null_model_free',
+            'candidates_summary': {'null_model_free': baseline_data}
+        }
+
+        with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+            pickle.dump(_wrap_step(step_0_res), f)
+
+        step_counter = 1
+
+    # Auto-anchor logic
+    if use_top_rank_as_anchor and step_counter == 1:
+        anchor = ranked_features[0]
+        print(f"\n*** AUTO-ANCHOR: Testing {anchor} against Baseline ***")
+
+        cand_data = {
+            'folds': {
+                'metrics': {m: [] for m in
+                            ['auc', 'score', 'recall', 'f1', 'll',
+                             'brier', 'ece', 'mcc']},
+                'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                'p_train': [], 'p_test': [],
+                'confusion_matrix': [],
+                'n_iter': [], 'converged': [], 'fit_time': [],
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_audit': [],
+                'hyperparams_tuned': [],
+                'balanced_train': bool(balance_train)
+            },
+            'classes': None,
+            'canonical_classes': canonical_classes
+        }
+
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+            try:
+                tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
+                X_tr, X_te = binned_data[anchor][tr_idx_model], binned_data[anchor][te_idx]
+                y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
+
+                fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+                    _pick_multinomial_fold_hyperparams(
+                        X_tr, y_tr, n_feats_=1, fold_idx_=fold_idx,
+                    )
+                )
+
+                model = SmoothMultinomialLogisticRegression(
+                    n_features=1, n_time_bins=n_time_bins,
+                    lambda_smooth=fold_lambda_smooth,
+                    l2_reg=fold_l2_reg,
+                    smoothness_derivative_order=smoothness_order,
+                    focal_gamma=model_focal_gamma,
+                    uniform_class_weights=model_uniform_weights,
+                    learning_rate=hp['learning_rate'],
+                    max_iter=hp['max_iter'],
+                    tol=hp['tol'],
+                    random_state=hp['random_state'] + fold_idx,
+                    _use_lax_loop=use_lax_loop_mn,
+                )
+                model.fit(X_tr, y_tr)
+
+                y_proba = model.predict_proba(X_te, balanced=hp['balance_predictions_bool'])
+                y_pred = model.predict(X_te, balanced=hp['balance_predictions_bool'])
+
+                eps = 1e-15
+                y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
+
+                f_met = cand_data['folds']['metrics']
+                f_met['auc'].append(roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=model.classes_))
+                f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
+                f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
+                f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
+                f_met['ll'].append(log_loss(y_te, y_proba_clipped, labels=model.classes_))
+
+                # Canonical-ordered probability matrix for Brier / ECE so
+                # missing classes don't misalign columns against `canonical_classes`.
+                probs_canonical = align_probs_to_canonical(
+                    y_proba, model.classes_, canonical_classes
+                )
+                try:
+                    f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
+                except Exception:
+                    f_met['brier'].append(np.nan)
+                try:
+                    f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+                except Exception:
+                    f_met['ece'].append(np.nan)
+                f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+
+                cand_data['folds']['weights'].append(model.coef_)
+                cand_data['folds']['intercepts'].append(model.intercept_)
+                cand_data['folds']['y_true'].append(y_te)
+                cand_data['folds']['y_pred'].append(y_pred)
+                cand_data['folds']['y_probs'].append(y_proba)
+                cand_data['folds']['test_indices'].append(te_idx)
+                cand_data['folds']['p_train'].append(_class_proportions(y_tr))
+                cand_data['folds']['p_test'].append(_class_proportions(y_te))
+                cand_data['folds']['confusion_matrix'].append(
+                    safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
+                )
+                cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                cand_data['folds']['converged'].append(bool(model.converged_))
+                cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
+                cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
+                if cand_data['classes'] is None:
+                    cand_data['classes'] = model.classes_
+            except Exception as e:
+                print(f"    [!] Error fitting anchor: {e}")
+                # Keep every per-fold list aligned on failure so downstream
+                # consumers can safely zip / stack across keys. Metrics get
+                # scalar NaNs; confusion_matrix needs a (K, K) NaN placeholder
+                # (to stay stackable); weights / intercepts become None; and
+                # the fold-level data arrays become empty-but-well-shaped.
+                K = len(canonical_classes)
+                for _k, _v in cand_data['folds']['metrics'].items():
+                    _v.append(np.nan)
+                cand_data['folds']['weights'].append(None)
+                cand_data['folds']['intercepts'].append(None)
+                cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
+                cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
+                cand_data['folds']['y_probs'].append(np.empty((0, K), dtype=np.float32))
+                cand_data['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
+                cand_data['folds']['p_train'].append(np.full(K, np.nan, dtype=np.float32))
+                cand_data['folds']['p_test'].append(np.full(K, np.nan, dtype=np.float32))
+                cand_data['folds']['confusion_matrix'].append(np.full((K, K), np.nan))
+                cand_data['folds']['n_iter'].append(np.nan)
+                cand_data['folds']['converged'].append(False)
+                cand_data['folds']['fit_time'].append(np.nan)
+                cand_data['folds']['selected_lambda_smooth'].append(float('nan'))
+                cand_data['folds']['selected_l2_reg'].append(float('nan'))
+                cand_data['folds']['hyperparam_grid_audit'].append({
+                    'grid_scores': {}, 'grid_ses': {},
+                    'argmax_pair': None,
+                    'one_se_applied': False, 'one_se_threshold': None,
+                })
+                cand_data['folds']['hyperparams_tuned'].append(False)
+
+        valid_auc = [m for m in cand_data['folds']['metrics']['auc'] if np.isfinite(m)]
+        if valid_auc:
+            mean_anc_auc = np.mean(valid_auc)
+            se_anc_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
+
+            cand_data['mean_auc'] = mean_anc_auc
+            cand_data['se_auc'] = se_anc_auc
+
+            if (mean_anc_auc - se_anc_auc) > best_current_score:
+                print(f"  *** ANCHOR ACCEPTED: AUC improved to {mean_anc_auc:.4f} ***")
+                best_current_score = mean_anc_auc
+                best_current_se = se_anc_auc
+                current_model_features = [anchor]
+
+                step_1_res = {
+                    'step_idx': 1,
+                    'current_features': [anchor],
+                    'baseline_score': best_current_score,
+                    'selected_feature': anchor,
+                    'candidates_summary': {anchor: cand_data}
+                }
+                with open(model_selection_dir / f"{prefix}1.pkl", 'wb') as f:
+                    pickle.dump(_wrap_step(step_1_res), f)
+                step_counter = 2
+            else:
+                print("  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
+        else:
+            print(
+                "  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
+            )
+
+    # Main Forward Selection Loop
+    while True:
+        print(f"\n=== Step {step_counter} === Best AUC: {best_current_score:.5f}")
+        step_results = {
+            'step_idx': step_counter,
+            'current_features': list(current_model_features),
+            'baseline_score': best_current_score,
+            'candidates_summary': {},
+            'selected_feature': None
+        }
+        best_cand, best_cand_score, best_cand_se = None, 0.0, 0.0
+
+        for i_feat, feat in enumerate(ranked_features):
+            if feat in current_model_features:
+                continue
+            gc.collect()
+            print(f"  [{i_feat + 1}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
+
+            trial_feats = current_model_features + [feat]
+            n_trial_feats = len(trial_feats)
+            cand_data = {
+                'folds': {
+                    'metrics': {m: [] for m in
+                                ['auc', 'score', 'recall', 'f1', 'll',
+                                 'brier', 'ece', 'mcc']},
+                    'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                    'p_train': [], 'p_test': [],
+                    'confusion_matrix': [],
+                    'n_iter': [], 'converged': [], 'fit_time': [],
+                    'selected_lambda_smooth': [],
+                    'selected_l2_reg': [],
+                    'hyperparam_grid_audit': [],
+                    'hyperparams_tuned': [],
+                    'balanced_train': bool(balance_train)
+                },
+                'classes': None,
+                'canonical_classes': canonical_classes
+            }
+
+            for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+                try:
+                    tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
+                    X_tr_stacked = np.hstack([binned_data[f][tr_idx_model] for f in trial_feats])
+                    X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
+                    y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
+
+                    # Per-fold hyperparameters. When tuning is off, the
+                    # closure falls back to the fixed centres with the
+                    # standard 1 / sqrt(n_trial_feats) rescale on l2 so
+                    # the summed L2 penalty on `W ** 2` does not grow
+                    # ~linearly with feature count and silently over-
+                    # regularise larger models. When tuning is on, the
+                    # inner CV searches a rescaled l2 grid with the same
+                    # shape.
+                    fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+                        _pick_multinomial_fold_hyperparams(
+                            X_tr_stacked, y_tr,
+                            n_feats_=n_trial_feats,
+                            fold_idx_=fold_idx,
+                        )
+                    )
+
+                    model = SmoothMultinomialLogisticRegression(
+                        n_features=n_trial_feats, n_time_bins=n_time_bins,
+                        lambda_smooth=fold_lambda_smooth,
+                        l2_reg=fold_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
+                        focal_gamma=model_focal_gamma,
+                        uniform_class_weights=model_uniform_weights,
+                        learning_rate=hp['learning_rate'],
+                        max_iter=hp['max_iter'],
+                        tol=hp['tol'],
+                        random_state=hp['random_state'] + fold_idx,
+                        _use_lax_loop=use_lax_loop_mn,
+                    )
+                    model.fit(X_tr_stacked, y_tr)
+
+                    y_proba = model.predict_proba(X_te_stacked, balanced=hp['balance_predictions_bool'])
+                    y_pred = model.predict(X_te_stacked, balanced=hp['balance_predictions_bool'])
+
+                    eps = 1e-15
+                    y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
+
+                    f_met = cand_data['folds']['metrics']
+                    f_met['auc'].append(roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=model.classes_))
+                    f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
+                    f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
+                    f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
+                    f_met['ll'].append(log_loss(y_te, y_proba_clipped, labels=model.classes_))
+
+                    # Canonical-ordered probability matrix so Brier / ECE are
+                    # computed against a stable column ordering across folds
+                    # even when a rare class is absent from `model.classes_`.
+                    probs_canonical = align_probs_to_canonical(
+                        y_proba, model.classes_, canonical_classes
+                    )
+                    try:
+                        f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
+                    except Exception:
+                        f_met['brier'].append(np.nan)
+                    try:
+                        f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+                    except Exception:
+                        f_met['ece'].append(np.nan)
+                    f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
+
+                    cand_data['folds']['weights'].append(model.coef_)
+                    cand_data['folds']['intercepts'].append(model.intercept_)
+                    cand_data['folds']['y_true'].append(y_te)
+                    cand_data['folds']['y_pred'].append(y_pred)
+                    cand_data['folds']['y_probs'].append(y_proba)
+                    cand_data['folds']['test_indices'].append(te_idx)
+                    cand_data['folds']['p_train'].append(_class_proportions(y_tr))
+                    cand_data['folds']['p_test'].append(_class_proportions(y_te))
+                    cand_data['folds']['confusion_matrix'].append(
+                        safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
+                    )
+                    cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                    cand_data['folds']['converged'].append(bool(model.converged_))
+                    cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                    cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                    cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                    cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
+                    cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
+                    if cand_data['classes'] is None:
+                        cand_data['classes'] = model.classes_
+                except Exception as e:
+                    # Log the exception so the silent-failure mode that
+                    # used to bury per-fold JAX / scikit-learn errors
+                    # is no longer invisible. The placeholders below
+                    # still keep per-fold list lengths aligned so the
+                    # downstream aggregation logic does not need to
+                    # special-case missing folds.
+                    print(
+                        f"\n    [!] Fold {fold_idx + 1:02d}/{n_splits:02d} "
+                        f"failed on +{feat}: "
+                        f"{type(e).__name__}: {e}",
+                        flush=True,
+                    )
+                    K = len(canonical_classes)
+                    for _k, _v in cand_data['folds']['metrics'].items():
+                        _v.append(np.nan)
+                    cand_data['folds']['weights'].append(None)
+                    cand_data['folds']['intercepts'].append(None)
+                    cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
+                    cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
+                    cand_data['folds']['y_probs'].append(np.empty((0, K), dtype=np.float32))
+                    cand_data['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
+                    cand_data['folds']['p_train'].append(np.full(K, np.nan, dtype=np.float32))
+                    cand_data['folds']['p_test'].append(np.full(K, np.nan, dtype=np.float32))
+                    cand_data['folds']['confusion_matrix'].append(np.full((K, K), np.nan))
+                    cand_data['folds']['n_iter'].append(np.nan)
+                    cand_data['folds']['converged'].append(False)
+                    cand_data['folds']['fit_time'].append(np.nan)
+                    cand_data['folds']['selected_lambda_smooth'].append(float('nan'))
+                    cand_data['folds']['selected_l2_reg'].append(float('nan'))
+                    cand_data['folds']['hyperparam_grid_audit'].append({
+                        'grid_scores': {}, 'grid_ses': {},
+                        'argmax_pair': None,
+                        'one_se_applied': False, 'one_se_threshold': None,
+                    })
+                    cand_data['folds']['hyperparams_tuned'].append(False)
+
+            valid_auc = [x for x in cand_data['folds']['metrics']['auc'] if np.isfinite(x)]
+            if not valid_auc:
+                print(" Failed (no finite folds).")
+                continue
+
+            mean_auc = np.mean(valid_auc)
+            se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
+            print(f" AUC: {mean_auc:.4f}")
+            cand_data['mean_auc'], cand_data['se_auc'] = mean_auc, se_auc
+            step_results['candidates_summary'][feat] = cand_data
+            if mean_auc > best_cand_score:
+                best_cand_score, best_cand_se, best_cand = mean_auc, se_auc, feat
+
+        if (best_cand and (best_cand_score - best_current_score) > best_cand_se):
+            print(f"  ACCEPT {best_cand}")
+            step_results['selected_feature'] = best_cand
+            current_model_features.append(best_cand)
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
+            best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
+        else:
+            print("  REJECT. Selection Finished.")
+            step_results['selected_feature'] = None
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
+            break
+
+        if len(current_model_features) == len(ranked_features):
+            break
+
+    # 7. Final Data Promotion for Visualization
+    print("\n--- Finalizing Results for Visualization ---")
+    try:
+        last_file_path = model_selection_dir / f"{prefix}{max(0, step_counter - 1)}.pkl"
+        with open(last_file_path, 'rb') as f:
+            step_data = pickle.load(f)
+
+        winner = step_data['selected_feature'] or current_model_features[-1]
+        winning_cand_data = step_data['candidates_summary'][winner]
+
+        # Only process reshaping if the winning candidate was a real model with weights
+        if winner != 'null_model_free':
+            # CV folds that hit a fitting exception are recorded as
+            # `None` in `cand_data['folds']['weights']`. `np.array` on
+            # a mixed list of `None` + 2D arrays raises an
+            # inhomogeneous-shape error under numpy>=1.24, so swap
+            # each failed-fold `None` for a same-shape NaN block
+            # taken from the first successful fold. Downstream
+            # consumers of `weights_reshaped` should already treat
+            # NaNs as missing folds.
+            weights_list = list(winning_cand_data['folds']['weights'])
+            first_valid = next((w for w in weights_list if w is not None), None)
+            if first_valid is None:
+                reshaped_weights = None
+            else:
+                nan_block = np.full_like(first_valid, np.nan, dtype=float)
+                weights_list = [
+                    nan_block if w is None else w for w in weights_list
+                ]
+                raw_weights = np.array(weights_list)
+                n_folds, n_classes, _ = raw_weights.shape
+                n_final_feats = len(current_model_features)
+                reshaped_weights = raw_weights.reshape(
+                    n_folds, n_classes, n_final_feats, n_time_bins,
+                )
+        else:
+            reshaped_weights = None
+
+        step_data.update({
+            'final_model_features': current_model_features,
+            'weights_reshaped': reshaped_weights,
+            'classes': winning_cand_data['classes']
+        })
+        for _k in RESERVED_METADATA_KEYS:
+            step_data.pop(_k, None)
+        with open(last_file_path, 'wb') as f:
+            pickle.dump(_wrap_step(step_data), f)
+
+        print("Final model configuration successfully saved.")
+    except Exception as e:
+        print(f"Final promotion failed: {e}")
+
+def continuous_vocal_manifold_model_selection(
+        univariate_results_path: str,
+        input_data_path: str,
+        output_directory: str,
+        settings_path: str = None,
+        use_top_rank_as_anchor: bool = False,
+        p_val: float = 0.05
+) -> None:
+    """
+    Performs forward stepwise selection for continuous manifold-position
+    prediction using the geometry-resolved estimator
+    (`SmoothBivariateRegression` on Euclidean / VAE / UMAP manifolds,
+    `SmoothTorusManifoldRegression` on the torus).
+
+    The selector identifies the minimal set of behavioural features that
+    jointly predict the `(x, y)` manifold coordinates of upcoming USVs.
+    Candidates are ranked by the geometry-appropriate selection score
+    (`SELECTION_SCORE_KEY`): `r2_spatial` (the coefficient of
+    determination pooled across manifold axes — higher is better,
+    interpretable as the fraction of test-fold spatial variance the
+    model explains above the test-fold marginal mean) on Euclidean /
+    VAE / UMAP manifolds, and wrap-aware distance correlation `dcor_xy`
+    on the near-uniform periodic TORUS manifold, where the centroid-
+    referenced `r2_spatial` is structurally inverted.
+
+    Key algorithmic choices
+    -----------------------
+    1. Manifold-bounded predictions. On Euclidean manifolds every
+       candidate prediction is snapped to the nearest observed training
+       point before metrics are computed, so the active model and the
+       baselines compete on the same support and the magnitudes are
+       directly comparable (see `SmoothBivariateRegression.predict`).
+       The torus estimator decodes to a coordinate that is always on the
+       manifold, so it deliberately does not snap.
+    2. Wilcoxon screening (higher-is-better). Candidates are ranked by a
+       Bonferroni-corrected one-sided Wilcoxon signed-rank test on the
+       paired per-fold selection score of `actual` vs. the within-session
+       X-history shuffle `null` (`SCREEN_BASELINE_STRATEGY`) — on both
+       geometries. The shuffle removes the session-level confound while
+       leaving the trial-level dependence to test; on the torus it is the
+       only meaningful baseline anyway (a constant prediction's `dcor_xy`
+       is 0 by construction). A separate gate-1 (`score > 0`) keeps the
+       "beats the no-model mean" floor on euclidean.
+    3. Spatial stratification. Folds come from
+       `get_stratified_spatial_splits_stable`, which uses deterministic
+       K-Means geographic clustering so rare acoustic satellites are
+       proportionally represented across train / test halves under both
+       `session` and `mixed` strategies.
+    4. Inverse-density weighting. The pre-computed KDE spatial weights
+       `w` are forwarded to the JAX optimiser so gradient updates give
+       satellite vocalisations the same pull as dense-core bouts.
+    5. Empirical-density baseline (Step 0). `null_model_free` predicts a
+       uniform random draw from the training `Y` for every test trial —
+       the chance floor (a sample from the observed repertoire, ignoring
+       kinematics) reported alongside the screen.
+    6. 1SE rule on the selection score. Because the selection score is
+       higher-is-better on both geometries, a feature is added only when
+       `(best_cand_score - best_current_score) > best_cand_se`, i.e. the
+       candidate's mean score beats the current best by more than one SE
+       of its own per-fold distribution.
+
+    Joint per-fold hyperparameter tuning
+    ------------------------------------
+    On the TORUS manifold the inner-loop CV is unnecessary and is
+    unconditionally disabled (`tune_regularization_bool` is forced to
+    `False`): `dcor_xy` is scale/regularisation-invariant via the `atan2`
+    decode, so the inner-CV score is flat across the grids. Use the advised
+    fixed defaults `lambda_smooth_fixed = 1.0` and `l2_reg_fixed = 0.01`
+    (`lambda_smooth` still shapes the interpretable filter even though it no
+    longer moves the score). On Euclidean manifolds, when
+    `hyperparameters.jax_linear.bivariate.tune_regularization_bool` is
+    `true`, every candidate fold (anchor + every forward-selection trial)
+    runs its own joint inner CV over the log-spaced
+    `(lambda_smooth, l2_reg)` grids before the outer fit. The l2 grid is
+    rescaled by `1 / sqrt(n_trial_features)` so the search window tracks
+    the same effective regularisation strength as the fixed fallback
+    (which is rescaled the same way). The winning pair, the full grid of
+    inner-CV scores, and a `hyperparams_tuned` flag are persisted per
+    candidate per fold alongside the filter weights. Setting the flag to
+    `false` preserves the legacy single-fixed-centre behaviour and
+    writes the same schema.
+
+    Deep storage for post-hoc visualisation
+    ---------------------------------------
+    Every step persists, for each candidate and fold: the full
+    `evaluate_metrics` bundle, the learned `coef_` / `intercept_`
+    matrices, the test coordinates `y_true`, the manifold-snapped
+    predictions `y_pred_xy`, the test-fold weights `w_test`, the per-
+    fold JAX optimiser diagnostics (`n_iter`, `converged`, `fit_time`),
+    and the hyperparameter audit trail (`selected_lambda_smooth`,
+    `selected_l2_reg`, `hyperparam_grid_audit`, `hyperparams_tuned`).
+    The audit dict contains per-fold `grid_scores` / `grid_ses` maps,
+    the raw performance `argmax_pair`, and flags recording whether the
+    1-SE interpretability rule softened the final choice.
+
+    Parameters
+    ----------
+    univariate_results_path : str
+        Path to the univariate regression results pickle file containing the
+        paired actual / null per-fold metric arrays.
+    input_data_path : str
+        Path to the extracted UMAP data containing X (history), Y (UMAP),
+        and w (KDE spatial weights).
+    output_directory : str
+        Directory to save the step-wise state dictionaries.
+    settings_path : str, optional
+        Path to the JSON settings file.
+    use_top_rank_as_anchor : bool, default False
+        If True, initialises the search by forcing the single highest-ranked
+        Wilcoxon feature as Step 1.
+    p_val : float, default 0.05
+        The overall alpha level, Bonferroni-corrected by dividing it by the
+        number of evaluated features.
+    """
+
+    print("--- Starting Continuous Vocal Manifold Model Selection ---")
+
+    if settings_path is None:
+        settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
+        settings_path = str(settings_path_obj)
+
+    try:
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+
+    model_selection_dir = Path(output_directory)
+    model_selection_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Results will be saved to: {model_selection_dir}")
+
+    print(f"Loading univariate results from: {univariate_results_path}")
+    with open(univariate_results_path, 'rb') as f:
+        univariate_data = pickle.load(f)
+
+    # Strip upstream metadata blocks before iterating feature entries.
+    _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
+    univariate_data.pop('_consolidation_metadata', None)
+
+    # Geometry-conditional selection score. The QLVM torus is a near-uniform,
+    # fully-covered periodic latent space, so the centroid-referenced
+    # squared-geodesic `r2_spatial` is structurally inverted there (real signal
+    # reads more negative than junk). Wrap-aware distance correlation `dcor_xy`
+    # (see SmoothBivariateRegression.evaluate_metrics / manifold_metric for the
+    # full rationale + validation) recovers it. Euclidean (VAE/UMAP) manifolds
+    # are well-behaved, so `r2_spatial` remains the score there. The substitution
+    # is torus-only and drives the screen and every candidate/baseline score
+    # below; on both geometries the score is screened against the within-session
+    # `null` (see SCREEN_BASELINE_STRATEGY below).
+    _selection_manifold_metric, _ = resolve_manifold_metric(settings)
+    SELECTION_SCORE_KEY = (
+        'dcor_xy' if _selection_manifold_metric == 'torus' else 'r2_spatial'
+    )
+    # The screen tests `actual` against the within-session-shuffle `null`
+    # baseline on BOTH geometries (gate 2 below): the shuffle preserves
+    # session-level structure and destroys the trial-level X->Y pairing, so
+    # beating it isolates genuine trial-level prediction from a session-level
+    # artefact. The `null_model_free` empirical-density draw is the reported
+    # chance floor, not the screening baseline.
+    SCREEN_BASELINE_STRATEGY = 'null'
+
+    num_features = len(univariate_data)
+    alpha_corrected = p_val / num_features
+    candidates = []
+
+    # The selection score (`SELECTION_SCORE_KEY`: `r2_spatial` on euclidean,
+    # `dcor_xy` on the torus) is the headline screening figure. A feature is
+    # kept for stepwise selection only if BOTH gates pass:
+    #   (1) mean(actual score) across folds is strictly positive. On euclidean
+    #       this is the metric-intrinsic "beats the no-model centroid" floor
+    #       (`r2_spatial > 0`); on the torus `dcor_xy` is always > 0 so this
+    #       gate is automatically satisfied (gate 2 is the operative bar). It
+    #       also refuses to spend stepwise-tuning compute on features the
+    #       forward selector's 1-SE rule would reject regardless.
+    #   (2) one-sided Wilcoxon `actual > null` per fold (the within-session
+    #       X-history shuffle, `SCREEN_BASELINE_STRATEGY`), Bonferroni-corrected
+    #       at `alpha_corrected`. The shuffle preserves session-level structure
+    #       and destroys the trial-level X->Y pairing, so clearing it shows
+    #       genuine trial-level behavioural prediction rather than a
+    #       session-level artefact.
+    # Both geometries screen against `null`. Gate (1) supplies the "beat the
+    # mean" safety net that a pure `actual > null` test lacks on euclidean (a
+    # feature could beat its own shuffle while still sitting below the centroid);
+    # on the torus the centroid is degenerate (`dcor_xy = 0`), so `null` is the
+    # only meaningful baseline anyway. The `null_model_free` empirical-density
+    # draw is the reported chance reference and is not used as a screening
+    # baseline.
+    SCREENING_METRIC = SELECTION_SCORE_KEY
+
+    # Schema guard: a univariate ranking produced before the current screening
+    # metric (`dcor_xy` on torus) existed lacks the key, so the screen below
+    # would skip every feature and mis-report the schema mismatch as "no
+    # significant features" (a misleading false null). Detect the absence up
+    # front and fail loudly with the fix instead of silently aborting.
+    _screen_metric_present = False
+    for _payload in univariate_data.values():
+        _res = _payload[1] if isinstance(_payload, tuple) and len(_payload) == 2 else _payload
+        if isinstance(_res, dict) and 'actual' in _res \
+                and SCREENING_METRIC in _res['actual']['folds']['metrics']:
+            _screen_metric_present = True
+            break
+    if num_features > 0 and not _screen_metric_present:
+        raise ValueError(
+            f"None of the univariate results carry the screening metric "
+            f"'{SCREENING_METRIC}'. This ranking predates it — re-run the "
+            f"univariate stage (modeling_usv_manifold_position) so the ranking "
+            f"is regenerated with the '{SCREENING_METRIC}' metric."
+        )
+
+    print(f"Screening {num_features} features (Bonferroni alpha = {alpha_corrected:.2e})...")
+    for feat_name, payload in univariate_data.items():
+        if isinstance(payload, tuple) and len(payload) == 2:
+            _, results = payload
+        else:
+            results = payload
+
+        if 'actual' not in results or SCREEN_BASELINE_STRATEGY not in results:
+            continue
+
+        actual_metrics = results['actual']['folds']['metrics']
+        baseline_metrics = results[SCREEN_BASELINE_STRATEGY]['folds']['metrics']
+        if SCREENING_METRIC not in actual_metrics or SCREENING_METRIC not in baseline_metrics:
+            continue
+
+        actual_score = np.array(actual_metrics[SCREENING_METRIC])
+        baseline_score = np.array(baseline_metrics[SCREENING_METRIC])
+
+        # Pair the folds so the Wilcoxon never silently degenerates when
+        # a single fold NaNs out for one strategy but not the other.
+        paired_mask = np.isfinite(actual_score) & np.isfinite(baseline_score)
+        valid_actual = actual_score[paired_mask]
+        valid_baseline = baseline_score[paired_mask]
+
+        if valid_actual.size == 0:
+            continue
+
+        mean_score = float(np.mean(valid_actual))
+
+        # Gate (1): must beat the no-model mean on average (`r2_spatial > 0`;
+        # automatically satisfied on the torus where `dcor_xy` is always > 0).
+        if mean_score <= 0:
+            continue
+
+        # Gate (2): must beat the within-session `null` per fold (Wilcoxon).
+        try:
+            _, p_value = wilcoxon(valid_actual, valid_baseline, alternative='greater')
+        except ValueError:
+            p_value = 1.0
+
+        if p_value < alpha_corrected:
+            candidates.append({
+                'feature': feat_name,
+                'mean_r2': mean_score,
+                'p_val': p_value,
+            })
+
+    # Rank by descending R^2 (best features first).
+    candidates.sort(key=lambda x: x['mean_r2'], reverse=True)
+    ranked_features = [x['feature'] for x in candidates]
+
+    if not ranked_features:
+        print(f"No significant features found (p < {alpha_corrected:.2e}). Aborting.")
+        return
+
+    print(f"Identified {len(ranked_features)} significant candidates. Top: {ranked_features[0]}")
+
+    print("Loading and binning raw continuous input data...")
+    with open(input_data_path, 'rb') as f:
+        raw_data = pickle.load(f)
+
+    # Final upstream-metadata harvest.
+    _input_md = _input_pre_md_from_univ
+    if _input_md is None and '_input_metadata' in raw_data:
+        _input_md = raw_data.pop('_input_metadata')
+    else:
+        raw_data.pop('_input_metadata', None)
+    raw_data.pop('_run_metadata', None)
+    raw_data.pop('_consolidation_metadata', None)
+    _univariate_md = _univ_pre_md
+
+    hp = settings['hyperparameters']['jax_linear']['bivariate']
+    bin_size = hp['bin_resizing_factor']
+
+    binned_data = {}
+    y_global, w_global, groups_global = None, None, None
+    n_time_bins = None
+
+    for feat in ranked_features:
+        X_list, y_list, w_list, g_list = [], [], [], []
+        sessions = sorted(list(raw_data[feat].keys()))
+        for sess_id in sessions:
+            X_s = raw_data[feat][sess_id]['X']
+            y_s = raw_data[feat][sess_id]['Y']
+            w_s = raw_data[feat][sess_id]['w']
+
+            N, T = X_s.shape
+            if bin_size > 1:
+                new_T = T // bin_size
+                X_s = X_s[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+
+            X_list.append(X_s)
+            y_list.append(y_s)
+            w_list.append(w_s)
+            g_list.append(np.full(len(y_s), sess_id))
+
+        binned_data[feat] = np.vstack(X_list).astype(np.float32)
+        if y_global is None:
+            y_global = np.vstack(y_list).astype(np.float32)
+            w_global = np.concatenate(w_list).astype(np.float32)
+            groups_global = np.concatenate(g_list)
+            n_time_bins = binned_data[feat].shape[1]
+
+    del raw_data
+    gc.collect()
+
+    model_ops = settings['model_params']
+    n_splits = model_ops['split_num']
+    test_prop = model_ops['test_proportion']
+    n_clusters = model_ops['spatial_cluster_num']
+    split_strategy = model_ops['split_strategy']
+    random_seed = settings['model_params']['random_seed']
+
+    # Joint-tuning configuration. Mirrors the runner: fixed fallback values
+    # are the grid centres; the `tune_regularization_bool` flag flips
+    # whether each outer fold / candidate runs an inner CV to pick the
+    # `(λ_smooth, l2_reg)` pair. Keeping both regularisers in the same
+    # search guarantees the selector behaves consistently — the current
+    # active model, the anchor, and every forward-selection trial all use
+    # hyperparameters chosen by their own inner CV on their own training
+    # fold.
+    tune_regularization_bool = hp['tune_regularization_bool']
+    tune_params = hp['tune_regularization_params']
+    lambda_smooth_grid = _log_spaced_grid(
+        center=hp['lambda_smooth_fixed'],
+        decades_each_side=tune_params['lambda_smooth_decades_each_side'],
+    )
+    l2_reg_grid = _log_spaced_grid(
+        center=hp['l2_reg_fixed'],
+        decades_each_side=tune_params['l2_reg_decades_each_side'],
+    )
+    inner_cv_folds = tune_params['inner_cv_folds']
+    inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
+    if _selection_manifold_metric == 'torus':
+        # Disable regularisation tuning on the torus: the selection score
+        # `dcor_xy` is decode-/scale-invariant and verified flat across l2 and
+        # lambda_smooth, so tuning would only fit subsample noise on a flat
+        # surface (and running dCor in the inner-CV loop is needlessly
+        # expensive). The fixed settings-level lambda_smooth / l2 are used.
+        tune_regularization_bool = False
+    inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
+    inner_max_iter = tune_params['inner_max_iter']
+    use_lax_loop = hp['use_lax_loop']
+    smoothness_order = hp['smoothness_derivative_order']
+
+    print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Split Strategy: Spatial Proxy ({split_strategy.upper()})")
+    if tune_regularization_bool:
+        print(
+            f"  Joint per-fold tuning ENABLED: |λ_smooth grid|={len(lambda_smooth_grid)}, "
+            f"|l2_reg grid|={len(l2_reg_grid)}, inner CV folds={inner_cv_folds}, "
+            f"scoring={inner_cv_scoring_metric}, 1SE rule={'ON' if inner_cv_use_one_se_rule else 'OFF'}"
+        )
+    else:
+        print(
+            f"  Joint per-fold tuning DISABLED (fixed λ_smooth={hp['lambda_smooth_fixed']}, "
+            f"fixed l2_reg={hp['l2_reg_fixed']})"
+        )
+
+    # Manifold-metric configuration. On `metric='torus'` the K-means
+    # behind the spatial splitter operates on the canonical 4-D
+    # embedding so cluster boundaries respect the wrap.
+    manifold_metric, manifold_period = resolve_manifold_metric(settings)
+    # Geometry selects the estimator for every candidate fit and the inner-CV
+    # tuner: torus runs use the convex closed-form sin-cos embedding ridge
+    # (wound-aware), euclidean runs keep the unchanged coordinate model.
+    manifold_regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
+
+    cv_folds = get_stratified_spatial_splits_stable(
+        groups=groups_global,
+        Y=y_global,
+        n_clusters=n_clusters,
+        test_prop=test_prop,
+        n_splits=n_splits,
+        split_strategy=split_strategy,
+        random_seed=random_seed,
+        max_total_attempts=model_ops['session_split_max_attempts'],
+        widen_step=model_ops['session_split_widen_step'],
+        widen_every=model_ops['session_split_widen_every'],
+        metric=manifold_metric,
+        period=manifold_period,
+    )
+
+    current_model_features = []
+    # R^2 is higher-is-better, so the pre-Step-0 "best" is `-inf` (any
+    # finite baseline beats it); 1SE acceptance becomes
+    # `(best_cand_score - best_current_score) > best_cand_se`.
+    best_current_score = float('-inf')
+    best_current_se = 0.0
+    step_counter = 0
+
+    fname = Path(univariate_results_path).name
+    # Use a non-capturing alternation so conditions like `male_mute_partner`
+    # are captured in full rather than truncated to `male`.
+    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    target_condition = cond_match.group(1) if cond_match else "unknown"
+
+    # Pin which USV category column the manifold targets were derived
+    # from (e.g. `vae_supercategory`, `qlvm_category`) so the per-step
+    # prefix (and downstream consolidation) carries the choice forward
+    # in the filename.
+    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
+    prefix = f"model_selection_continuous_manifold_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
+
+    _run_md = build_selection_metadata(
+        modeling_settings=settings,
+        selection_function='continuous_vocal_manifold_model_selection',
+        selection_metric=SELECTION_SCORE_KEY,
+        n_splits_selection=int(n_splits),
+        test_proportion=float(test_prop),
+        split_strategy=split_strategy,
+        random_seed=int(random_seed),
+        one_se_rule_used=True,
+        aic_termination_used=False,
+        n_anchor_features=len(ranked_features),
+        anchor_feature=ranked_features[0],
+        gam_kwargs={},
+        extra_knobs={
+            'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
+            'p_val': float(p_val),
+            'bin_resizing_factor': int(bin_size),
+            'screening_metric': SCREENING_METRIC,
+            'target_condition': target_condition,
+        },
+        settings_path=settings_path,
+    )
+    _wrap_step = _make_step_wrapper(_input_md, _univariate_md, _run_md)
+
+    existing_steps = []
+    if model_selection_dir.is_dir():
+        for f_name in (p.name for p in model_selection_dir.iterdir()):
+            if f_name.startswith(prefix) and f_name.endswith(".pkl"):
+                try:
+                    existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
+                except ValueError:
+                    pass
+
+    if existing_steps:
+        last_step = max(existing_steps)
+        print(f"[RESUME] Restoring from Step {last_step}...")
+        try:
+            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+                last_res = pickle.load(f)
+
+            # Metric-compatibility guard: if this checkpoint was scored on a
+            # different selection metric (usv_manifold_metric was flipped
+            # between runs, e.g. euclidean `r2_spatial` <-> torus `dcor_xy`)
+            # its scores live on a different scale and must not be compared
+            # against this run's `best_current_score`
+            # / accept rule. Discard and fall through to the fresh-start path.
+            _saved_metric = (last_res.get('_run_metadata') or {}).get('selection_metric')
+            if _saved_metric is not None and _saved_metric != SELECTION_SCORE_KEY:
+                print(
+                    f"[RESUME] Step {last_step} was scored on '{_saved_metric}' but this "
+                    f"run uses '{SELECTION_SCORE_KEY}' (usv_manifold_metric changed); the "
+                    "scores are on different scales. Ignoring checkpoint and starting fresh."
+                )
+                existing_steps = []
+                cand_dict = {}
+            else:
+                # Filter to candidates with a finite mean score. An entry
+                # whose mean is non-finite (or an entirely empty
+                # candidates_summary) is the same broken-fold artifact and
+                # should not look like convergence to the resume logic.
+                cand_dict = {
+                    n: s for n, s in (last_res.get('candidates_summary') or {}).items()
+                    if isinstance(s, dict) and np.isfinite(s.get('mean_r2', float('nan')))
+                }
+
+            if not cand_dict:
+                # Stale / broken checkpoint: every saved candidate
+                # crashed or was never scored. Discard it and fall
+                # through to the fresh-start path so the baseline block
+                # re-establishes the empirical-density Step-0 baseline and
+                # the auto-anchor re-fires. Previously this case slipped
+                # through silently with `step_counter` left at its
+                # initial value, producing a misleading "Restoring from
+                # Step N" banner followed by a Step 0 forward selection.
+                # Guarded by `existing_steps` so we do not double-log when the
+                # metric-mismatch branch above already explained the discard.
+                if existing_steps:
+                    print(
+                        f"[RESUME] Step {last_step} has no scored candidates "
+                        "(stale checkpoint); ignoring and starting fresh."
+                    )
+                existing_steps = []
+            else:
+                current_model_features = last_res['current_features']
+                best_current_score = last_res['baseline_score']
+
+                # Best-of-file is the candidate with highest mean R^2.
+                best_cand_in_file = max(
+                    cand_dict.items(),
+                    key=lambda x: x[1]['mean_r2'],
+                )
+                name, stats = best_cand_in_file
+
+                if (stats['mean_r2'] - best_current_score) > stats['se_r2']:
+                    if name not in current_model_features:
+                        current_model_features.append(name)
+                    best_current_score = stats['mean_r2']
+                    best_current_se = stats['se_r2']
+                    step_counter = last_step + 1
+                else:
+                    print("[RESUME] Selection already converged. Stopping loop.")
+                    step_counter = last_step
+        except Exception as e:
+            print(f"Resume failed: {e}. Starting fresh.")
+            existing_steps = []
+
+    # Canonical ordering of the metric keys so the dict initialiser and the
+    # downstream aggregation stay in lockstep with the estimator output.
+    # `r2_spatial` is first because it is the selection score.
+    MANIFOLD_METRIC_KEYS = [
+        'r2_spatial',
+        'euclidean_mae',
+        'euclidean_rmse',
+        'euclidean_mae_weighted',
+        'euclidean_mae_raw',
+        'mahalanobis_mae',
+        'mae_x',
+        'mae_y',
+        'pearson_x',
+        'pearson_y',
+        'spearman_x',
+        'spearman_y',
+        'dcor_xy',
+    ]
+
+    # Calculate Model-Free Baseline (Step 0) if starting fresh.
+    if not existing_steps:
+        print("\n--- Establishing Absolute Baseline (Empirical-Density Draw) ---")
+
+        baseline_data = {
+            'folds': {
+                'metrics': {m: [] for m in MANIFOLD_METRIC_KEYS},
+                'test_indices': [],
+                'y_true': [],
+                'w_test': [],
+                # `(x, y)` predictions per fold: a uniform random draw from
+                # the training set, one per test trial.
+                'y_pred_xy': [],
+                # Hyperparameter audit fields — the density-draw baseline has
+                # no model, so these are all NaN / empty / False. Kept so
+                # the saved schema is uniform across strategies.
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_audit': [],
+                'hyperparams_tuned': [],
+            }
+        }
+
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+            Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
+            w_tr, w_te = w_global[tr_idx], w_global[te_idx]
+
+            # Empirical-density Step-0 baseline: predict a uniform random draw
+            # from the training `Y` for every test trial ("vocalise from the
+            # observed repertoire, ignoring kinematics") — the chance floor
+            # shared with the univariate runner and the CNN. The metric-aware
+            # training centroid / covariance are still computed, purely to
+            # supply the `mahalanobis_mae` inverse-covariance (matching the
+            # regressor's convention so baseline and active models compete on
+            # the same distance metric). `manifold_prediction_metrics` produces
+            # exactly the same metric bundle as the fitted strategies; on
+            # `metric='euclidean'` every wrap-aware term reduces to the ordinary
+            # plane distance, on `metric='torus'` to the shortest-wrap geodesic.
+            w_cov = w_tr / (np.sum(w_tr) + 1e-12)
+            mu = circular_mean(
+                Y_tr, metric=manifold_metric, period=manifold_period, weights=w_cov
+            )
+            diff_tr = signed_diff(
+                Y_tr, mu[None, :], metric=manifold_metric, period=manifold_period
+            )
+            cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
+            cov_inv = np.linalg.pinv(cov_tr)
+
+            draw_rng = np.random.default_rng(random_seed + fold_idx + 2)
+            draw_idx = draw_rng.choice(len(Y_tr), size=len(Y_te), replace=True)
+            y_pred_xy = Y_tr[draw_idx].astype(np.float32)
+
+            bundle = manifold_prediction_metrics(
+                Y_te, y_pred_xy, w_te,
+                metric=manifold_metric, period=manifold_period,
+                train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
+            )
+            f_met = baseline_data['folds']['metrics']
+            for _k, _v in bundle.items():
+                f_met[_k].append(_v)
+
+            baseline_data['folds']['test_indices'].append(te_idx)
+            baseline_data['folds']['y_true'].append(Y_te)
+            baseline_data['folds']['w_test'].append(w_te)
+            baseline_data['folds']['y_pred_xy'].append(y_pred_xy)
+            baseline_data['folds']['selected_lambda_smooth'].append(float('nan'))
+            baseline_data['folds']['selected_l2_reg'].append(float('nan'))
+            # Shape-matched empty audit so the persisted schema is uniform
+            # with the `actual` and `null` strategies.
+            baseline_data['folds']['hyperparam_grid_audit'].append({
+                'grid_scores': {},
+                'grid_ses': {},
+                'argmax_pair': None,
+                'one_se_applied': False,
+                'one_se_threshold': None,
+            })
+            baseline_data['folds']['hyperparams_tuned'].append(False)
+
+        baseline_scores = np.asarray(
+            baseline_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
+        )
+        valid_scores = baseline_scores[~np.isnan(baseline_scores)]
+        best_current_score = (
+            float(np.mean(valid_scores)) if valid_scores.size else float('-inf')
+        )
+        best_current_se = (
+            float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
+            if valid_scores.size > 1 else 0.0
+        )
+
+        print(f"  Baseline {SELECTION_SCORE_KEY} (density draw) established at: {best_current_score:.4f}")
+
+        baseline_data['mean_r2'] = best_current_score
+        baseline_data['se_r2'] = best_current_se
+
+        step_0_res = {
+            'step_idx': 0,
+            'current_features': [],
+            'baseline_score': best_current_score,
+            'selected_feature': 'null_model_free',
+            'candidates_summary': {'null_model_free': baseline_data}
+        }
+
+        with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
+            pickle.dump(_wrap_step(step_0_res), f)
+
+        step_counter = 1
+
+    def _make_manifold_cand_data():
+        return {
+            'folds': {
+                'metrics': {m: [] for m in MANIFOLD_METRIC_KEYS},
+                'weights': [],
+                'intercepts': [],
+                'test_indices': [],
+                'y_true': [],
+                'w_test': [],
+                'y_pred_xy': [],
+                'n_iter': [],
+                'converged': [],
+                'fit_time': [],
+                # Mirror of the runner's schema so the selection-step pickles
+                # and the univariate pickles carry the same hyperparameter
+                # audit trail. Both tuned and fixed runs populate these
+                # keys; `null_model_free` writes NaN.
+                'selected_lambda_smooth': [],
+                'selected_l2_reg': [],
+                'hyperparam_grid_audit': [],
+                'hyperparams_tuned': [],
+            }
+        }
+
+    def _empty_grid_audit():
+        return {
+            'grid_scores': {},
+            'grid_ses': {},
+            'argmax_pair': None,
+            'one_se_applied': False,
+            'one_se_threshold': None,
+        }
+
+    def _append_failed_fold(cand_data_):
+        """Append shape-preserving placeholders so per-fold lists stay aligned."""
+        for _mk in cand_data_['folds']['metrics']:
+            cand_data_['folds']['metrics'][_mk].append(np.nan)
+        cand_data_['folds']['weights'].append(None)
+        cand_data_['folds']['intercepts'].append(None)
+        cand_data_['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
+        cand_data_['folds']['y_true'].append(np.empty((0, 2), dtype=np.float32))
+        cand_data_['folds']['w_test'].append(np.empty((0,), dtype=np.float32))
+        cand_data_['folds']['y_pred_xy'].append(np.empty((0, 2), dtype=np.float32))
+        cand_data_['folds']['n_iter'].append(np.nan)
+        cand_data_['folds']['converged'].append(False)
+        cand_data_['folds']['fit_time'].append(np.nan)
+        cand_data_['folds']['selected_lambda_smooth'].append(float('nan'))
+        cand_data_['folds']['selected_l2_reg'].append(float('nan'))
+        cand_data_['folds']['hyperparam_grid_audit'].append(_empty_grid_audit())
+        cand_data_['folds']['hyperparams_tuned'].append(False)
+
+    def _pick_fold_hyperparams(X_tr_, Y_tr_, w_tr_, groups_tr_, n_feats_, fold_idx_):
+        """
+        Returns `(lambda_smooth, l2_reg, grid_audit, tuned_flag)` for this
+        fold and trial feature set.
+
+        When `tune_regularization_bool` is False the fixed centres are used
+        directly (with the standard `1 / sqrt(n_features)` rescale on the
+        l2 centre so larger trial models don't silently over-regularise).
+        When tuning is on, the inner-CV routine searches the Cartesian
+        product of the settings-level grids, with the l2 grid *also*
+        rescaled by `1 / sqrt(n_features)` so the search window tracks
+        the same effective regularisation strength as the fixed fallback.
+        The 1-SE interpretability rule is forwarded via
+        `inner_cv_use_one_se_rule`.
+        """
+        if not tune_regularization_bool:
+            lam_sm = float(hp['lambda_smooth_fixed'])
+            lam_l2 = float(hp['l2_reg_fixed'] / np.sqrt(n_feats_))
+            return lam_sm, lam_l2, _empty_grid_audit(), False
+
+        rescaled_l2_grid = l2_reg_grid / np.sqrt(n_feats_)
+        lam_sm_win, lam_l2_win, grid_audit_ = _tune_manifold_regularization(
+            X_train=X_tr_,
+            Y_train=Y_tr_,
+            w_train=w_tr_,
+            groups_train=groups_tr_,
+            lambda_smooth_grid=lambda_smooth_grid,
+            l2_reg_grid=rescaled_l2_grid,
+            inner_cv_folds=inner_cv_folds,
+            inner_cv_scoring_metric=inner_cv_scoring_metric,
+            inner_cv_use_one_se_rule=inner_cv_use_one_se_rule,
+            n_features=n_feats_,
+            n_time_bins=n_time_bins,
+            spatial_cluster_num=n_clusters,
+            smoothness_derivative_order=smoothness_order,
+            huber_delta=hp['huber_delta'],
+            learning_rate=hp['learning_rate'],
+            inner_max_iter=inner_max_iter,
+            tol=hp['tol'],
+            random_state=hp['random_state'] + fold_idx_,
+            verbose=False,
+            # Force-disable the lax_loop on the inner-CV tuner path. Per the
+            # SmoothBivariateRegression docstring, the lax_loop cache is keyed
+            # per-instance, so the joint tuner's ~175 short-lived estimators
+            # per outer fold each pay a fresh JIT compile and the run stalls
+            # for hours on wide-feature graphs (bin=1 with 600 time bins).
+            # The Python-loop path has no compile issues at any scale. The
+            # outer-fit call below still honours the user setting where
+            # lax_loop is appropriate.
+            use_lax_loop=False,
+            regressor_cls=manifold_regressor_cls,
+            metric=manifold_metric,
+            period=manifold_period,
+        )
+        return lam_sm_win, lam_l2_win, grid_audit_, True
+
+    # Auto-anchor logic
+    if use_top_rank_as_anchor and step_counter == 1:
+        anchor = ranked_features[0]
+        print(f"\n*** AUTO-ANCHOR: Testing {anchor} against Baseline ***")
+
+        cand_data = _make_manifold_cand_data()
+
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+            try:
+                X_tr, X_te = binned_data[anchor][tr_idx], binned_data[anchor][te_idx]
+                Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
+                w_tr, w_te = w_global[tr_idx], w_global[te_idx]
+                groups_tr = groups_global[tr_idx]
+
+                fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+                    _pick_fold_hyperparams(
+                        X_tr, Y_tr, w_tr, groups_tr,
+                        n_feats_=1,
+                        fold_idx_=fold_idx,
+                    )
+                )
+
+                model = manifold_regressor_cls(
+                    n_features=1, n_time_bins=n_time_bins,
+                    lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
+                    smoothness_derivative_order=smoothness_order,
+                    huber_delta=hp['huber_delta'],
+                    learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
+                    tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
+                    _use_lax_loop=use_lax_loop,
+                    metric=manifold_metric, period=manifold_period,
+                )
+                model.fit(X_tr, Y_tr, sample_weight=w_tr)
+
+                metrics = model.evaluate_metrics(X_te, Y_te, weights=w_te)
+                y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
+
+                f_met = cand_data['folds']['metrics']
+                for _mk in f_met:
+                    f_met[_mk].append(metrics[_mk])
+
+                cand_data['folds']['weights'].append(model.coef_)
+                cand_data['folds']['intercepts'].append(model.intercept_)
+                cand_data['folds']['test_indices'].append(te_idx)
+                cand_data['folds']['y_true'].append(Y_te)
+                cand_data['folds']['w_test'].append(w_te)
+                cand_data['folds']['y_pred_xy'].append(y_pred_xy)
+                cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                cand_data['folds']['converged'].append(bool(model.converged_))
+                cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
+                cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
+
+                del model
+                gc.collect()
+            except Exception as e:
+                print(f"    [!] Error fitting anchor (Fold {fold_idx}): {e}")
+                _append_failed_fold(cand_data)
+
+        valid_scores = np.asarray(
+            cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
+        )
+        valid_scores = valid_scores[np.isfinite(valid_scores)]
+        if valid_scores.size:
+            mean_anc = float(np.mean(valid_scores))
+            se_anc = (
+                float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
+                if valid_scores.size > 1 else 0.0
+            )
+
+            cand_data['mean_r2'] = mean_anc
+            cand_data['se_r2'] = se_anc
+
+            # 1SE rule — R^2 is higher-is-better, so the candidate is
+            # accepted only when its mean score beats the current best by
+            # more than one SE of its own per-fold distribution.
+            if (mean_anc - best_current_score) > se_anc:
+                print(f"  *** ANCHOR ACCEPTED: {SELECTION_SCORE_KEY} rose to {mean_anc:.4f} ***")
+                best_current_score = mean_anc
+                best_current_se = se_anc
+                current_model_features = [anchor]
+
+                step_1_res = {
+                    'step_idx': 1, 'current_features': [anchor],
+                    'baseline_score': best_current_score, 'selected_feature': anchor,
+                    'candidates_summary': {anchor: cand_data}
+                }
+                with open(model_selection_dir / f"{prefix}1.pkl", 'wb') as f:
+                    pickle.dump(_wrap_step(step_1_res), f)
+                step_counter = 2
+            else:
+                print("  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
+        else:
+            print(
+                "  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
+            )
+
+    # Forward stepwise selection loop
+    print("\n--- Starting Forward Selection ---")
+    while True:
+        print(f"\n=== Step {step_counter} === Best {SELECTION_SCORE_KEY}: {best_current_score:.5f}")
+        step_results = {
+            'step_idx': step_counter, 'current_features': list(current_model_features),
+            'baseline_score': best_current_score, 'candidates_summary': {},
+            'selected_feature': None
+        }
+
+        # R^2 is higher-is-better; initialise the per-step best score at
+        # `-inf` so any finite candidate score is an improvement.
+        best_cand, best_cand_score, best_cand_se = None, float('-inf'), 0.0
+
+        for i_feat, feat in enumerate(ranked_features):
+            if feat in current_model_features: continue
+            gc.collect()
+            print(f"  [{i_feat + 1}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
+
+            trial_feats = current_model_features + [feat]
+            n_trial_feats = len(trial_feats)
+
+            cand_data = _make_manifold_cand_data()
+
+            for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+                try:
+                    X_tr_stacked = np.hstack([binned_data[f][tr_idx] for f in trial_feats])
+                    X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
+                    Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
+                    w_tr, w_te = w_global[tr_idx], w_global[te_idx]
+                    groups_tr = groups_global[tr_idx]
+
+                    # Per-fold hyperparameters. When tuning is off,
+                    # `_pick_fold_hyperparams` returns the fixed centres
+                    # with the standard `1 / sqrt(n_trial_feats)` rescale
+                    # on l2 so larger trial models don't silently get
+                    # over-regularised as the selector grows. When tuning
+                    # is on, the inner CV searches a rescaled grid with
+                    # the same centre structure.
+                    fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+                        _pick_fold_hyperparams(
+                            X_tr_stacked, Y_tr, w_tr, groups_tr,
+                            n_feats_=n_trial_feats,
+                            fold_idx_=fold_idx,
+                        )
+                    )
+
+                    model = manifold_regressor_cls(
+                        n_features=n_trial_feats, n_time_bins=n_time_bins,
+                        lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
+                        huber_delta=hp['huber_delta'],
+                        learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
+                        tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
+                        _use_lax_loop=use_lax_loop,
+                        metric=manifold_metric, period=manifold_period,
+                    )
+                    model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr)
+
+                    metrics = model.evaluate_metrics(X_te_stacked, Y_te, weights=w_te)
+                    y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
+
+                    f_met = cand_data['folds']['metrics']
+                    for _mk in f_met:
+                        f_met[_mk].append(metrics[_mk])
+
+                    cand_data['folds']['weights'].append(model.coef_)
+                    cand_data['folds']['intercepts'].append(model.intercept_)
+                    cand_data['folds']['test_indices'].append(te_idx)
+                    cand_data['folds']['y_true'].append(Y_te)
+                    cand_data['folds']['w_test'].append(w_te)
+                    cand_data['folds']['y_pred_xy'].append(y_pred_xy)
+                    cand_data['folds']['n_iter'].append(int(model.n_iter_))
+                    cand_data['folds']['converged'].append(bool(model.converged_))
+                    cand_data['folds']['fit_time'].append(float(model.fit_time_))
+                    cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
+                    cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
+                    cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
+                    cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
+
+                    del model, X_tr_stacked, X_te_stacked
+                    gc.collect()
+                except Exception as e:
+                    print(f"    [!] Error fitting {feat} (Fold {fold_idx}): {e}")
+                    _append_failed_fold(cand_data)
+
+            valid_scores = np.asarray(
+                cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
+            )
+            valid_scores = valid_scores[np.isfinite(valid_scores)]
+            if not valid_scores.size:
+                print(" Failed (no finite folds).")
+                continue
+
+            mean_score = float(np.mean(valid_scores))
+            se_score = (
+                float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
+                if valid_scores.size > 1 else 0.0
+            )
+            mean_mae = float(np.nanmean(cand_data['folds']['metrics']['euclidean_mae']))
+            print(f" {SELECTION_SCORE_KEY}: {mean_score:.4f} | MAE: {mean_mae:.4f}")
+
+            cand_data['mean_r2'] = mean_score
+            cand_data['se_r2'] = se_score
+            step_results['candidates_summary'][feat] = cand_data
+
+            if mean_score > best_cand_score:
+                best_cand_score, best_cand_se, best_cand = mean_score, se_score, feat
+
+        # 1SE rule on R^2 (higher is better): accept only when the best
+        # candidate beats the current best by more than its own SE.
+        if best_cand and (best_cand_score - best_current_score) > best_cand_se:
+            print(f"  ACCEPT {best_cand}")
+            step_results['selected_feature'] = best_cand
+            current_model_features.append(best_cand)
+
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
+
+            best_current_score = best_cand_score
+            best_current_se = best_cand_se
+            step_counter += 1
+        else:
+            print("  REJECT. Selection Finished.")
+            step_results['selected_feature'] = None
+            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
+                pickle.dump(_wrap_step(step_results), f)
+            break
+
+        if len(current_model_features) == len(ranked_features):
+            break
+
+    print("\n--- Finalizing Results ---")
+    try:
+        last_file_path = model_selection_dir / f"{prefix}{step_counter}.pkl"
+        if not last_file_path.exists():
+            last_file_path = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+
+        with open(last_file_path, 'rb') as f:
+            step_data = pickle.load(f)
+
+        final_res = {
+            'final_model_features': current_model_features,
+            'univariate_results_path': univariate_results_path,
+            'input_data_path': input_data_path
+        }
+
+        for _k in RESERVED_METADATA_KEYS:
+            step_data.pop(_k, None)
+        step_data.update(final_res)
+        with open(last_file_path, 'wb') as f:
+            pickle.dump(_wrap_step(step_data), f)
+
+        print(f"Success. Final model configuration saved to {Path(last_file_path).name}")
+
+    except Exception as e:
+        print(f"Final promotion failed: {e}")
