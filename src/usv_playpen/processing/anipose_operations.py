@@ -120,7 +120,8 @@ def find_mouse_names(root_directory: str = None,
                 break
 
     else:
-        track_names = [subject.get('subject_id') for subject in metadata.get('Subjects', [])]
+        subjects = metadata['Subjects'] if 'Subjects' in metadata else []
+        track_names = [subject['subject_id'] for subject in subjects]
 
     return track_names
 

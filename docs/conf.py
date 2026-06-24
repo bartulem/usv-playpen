@@ -2,6 +2,8 @@
 # https://stackoverflow.com/questions/66495200/is-it-possible-to-include-external-rst-files-in-my-documentation
 from __future__ import annotations
 
+import pathlib
+import shutil
 from contextlib import suppress
 from importlib import metadata
 from importlib.util import find_spec
@@ -46,6 +48,14 @@ if find_spec("nbsphinx") is not None:
     nbsphinx_allow_errors = True
     # Don't auto-execute notebooks.
     nbsphinx_execute = "never"
+    # The analysis notebooks live under src/ (outside this Sphinx source dir).
+    # Copy them into docs/notebooks/ at build time so the Notebooks page can
+    # render them via nbsphinx (cross-platform; the copy dir is gitignored).
+    _nb_src_dir = pathlib.Path(__file__).parent.parent / "src" / "usv_playpen" / "analyses_notebooks"
+    _nb_dst_dir = pathlib.Path(__file__).parent / "notebooks"
+    _nb_dst_dir.mkdir(exist_ok=True)
+    for _notebook in sorted(_nb_src_dir.glob("*.ipynb")):
+        shutil.copy2(_notebook, _nb_dst_dir / _notebook.name)
 
 # Set to True if you want dark mode to be the default for first-time visitors.
 default_dark_mode = True

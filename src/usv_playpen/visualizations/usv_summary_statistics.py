@@ -36,7 +36,7 @@ _VIZ_SETTINGS_PATH = (
 )
 try:
     with _VIZ_SETTINGS_PATH.open() as _vf:
-        _GLOBAL_CMAP = json.load(_vf).get("figures", {}).get("cmap", "inferno")
+        _GLOBAL_CMAP = json.load(_vf)["figures"]["cmap"]
 except FileNotFoundError:
     _GLOBAL_CMAP = "inferno"
 

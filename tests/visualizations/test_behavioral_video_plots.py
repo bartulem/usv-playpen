@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from unittest.mock import MagicMock
 
 import h5py
 import numpy as np
@@ -620,7 +621,7 @@ def test_visualize_in_video_animate_path(tmp_path, mocker):
         "raster_plot_bool": False, "spike_sound_bool": False,
         "view_angle": "top", "video_start_time": 0.0, "video_duration": 0.05,
         "history_point": "Trunk", "raster_special_units": [""],
-        "sequence_audio_file": "", "rotate_side_view_bool": False,
+        "rotate_side_view_bool": False,
     })
 
     n_frames, fr = 60, 150.0
@@ -650,3 +651,154 @@ def test_visualize_in_video_animate_path(tmp_path, mocker):
         message_output=lambda *_a, **_k: None,
     )
     maker.visualize_in_video()      # animate() callback runs via the fake animator
+
+
+def _build_animate_maker(tmp_path, msgs=None, **mbv_extra):
+    """
+    Description
+    -----------
+    Build a minimal animate-path `Create3DVideo` (mirrors the fixture in
+    `test_visualize_in_video_animate_path`) with optional `make_behavioral_videos`
+    overrides, so the pitch-shifted-audio mux branch can be exercised under
+    different toggle/precedence states.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    msgs (list or None)
+        When a list is passed, `message_output` appends to it (so emitted
+        warnings can be asserted); otherwise output is discarded.
+    mbv_extra (dict)
+        Extra `make_behavioral_videos` settings overrides (e.g.
+        `pitch_shifted_audio_bool=True`).
+
+    Returns
+    -------
+    maker (Create3DVideo)
+        Ready-to-run instance whose `visualize_in_video()` reaches the mux branch.
+    """
+
+    with (pathlib.Path(usv_playpen.__file__).parent / "_parameter_settings"
+          / "visualizations_settings.json").open() as f:
+        viz = json.load(f)
+    mbv = viz["make_behavioral_videos"]
+    mbv.update({
+        "animate_bool": True, "save_fig": False, "speaker_bool": False,
+        "spectrogram_bool": False, "beh_features_bool": False,
+        "raster_plot_bool": False, "spike_sound_bool": False,
+        "view_angle": "top", "video_start_time": 0.0, "video_duration": 0.05,
+        "history_point": "Trunk", "raster_special_units": [""],
+        "rotate_side_view_bool": False,
+    })
+    mbv.update(mbv_extra)
+
+    n_frames, fr = 60, 150.0
+    rng = np.random.default_rng(1)
+    root = tmp_path / "Data" / "20250919_155842"
+    (root / "video" / "sess").mkdir(parents=True)
+    arena_dir = tmp_path / "Data" / "20250919_155842_calib"
+    (arena_dir / "video" / "sess").mkdir(parents=True)
+    _write_tracks_h5(
+        arena_dir / "video" / "sess" / "arena_points3d_translated_rotated_metric.h5",
+        np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
+    )
+    _write_tracks_h5(
+        root / "video" / "sess" / "mouse_points3d_translated_rotated_metric.h5",
+        rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
+        _VIS_MOUSE_NODES, track_names=["m1", "m2"],
+        exp_code="BCL2FSmFSm", frame_rate=fr,
+    )
+    return Create3DVideo(
+        exp_id="20250919_155842",
+        root_directory=str(root),
+        arena_directory=str(arena_dir),
+        speaker_audio_file="",
+        visualizations_parameter_dict=viz,
+        message_output=(msgs.append if msgs is not None else (lambda *_a, **_k: None)),
+    )
+
+
+def test_animate_path_auto_produces_and_muxes_pitch_shifted_audio(tmp_path, mocker):
+    """
+    Description
+    -----------
+    With `pitch_shifted_audio_bool=True`, the animate path auto-produces the
+    pitch-shifted audio exactly once (windowed to the video's
+    [start, start+duration]) and muxes the produced file via ffmpeg.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Stubs smart_wait/animator and the audio-producer + subprocess.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.smart_wait")
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.FuncAnimation", _FakeAnim)
+
+    produced_wav = tmp_path / "shifted.wav"
+    produced_wav.write_bytes(b"\x00\x00")
+    fake_shift = mocker.patch(
+        "usv_playpen.visualizations.make_behavioral_videos.AudioGenerator.frequency_shift_audio_segment",
+        return_value=produced_wav,
+    )
+    fake_popen = mocker.patch(
+        "usv_playpen.visualizations.make_behavioral_videos.subprocess.Popen",
+        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+    )
+
+    maker = _build_animate_maker(tmp_path, pitch_shifted_audio_bool=True)
+    maker.visualize_in_video()
+
+    # auto-producer ran once, windowed to the video (video_start_time/_duration)
+    fake_shift.assert_called_once()
+    assert fake_shift.call_args.kwargs == {"seq_start": 0.0, "seq_duration": 0.05}
+    # ffmpeg muxed the produced file (exactly one Popen call carries its path)
+    mux_calls = [c for c in fake_popen.call_args_list
+                 if "args" in c.kwargs and str(produced_wav) in c.kwargs["args"]]
+    assert len(mux_calls) == 1
+
+
+def test_animate_path_warns_when_pitch_shift_mux_fails(tmp_path, mocker):
+    """
+    Description
+    -----------
+    A non-zero ffmpeg return code on the pitch-shifted-audio mux surfaces a
+    WARNING through `message_output` (instead of silently producing an
+    audio-less video).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Stubs smart_wait/animator and the audio-producer + subprocess.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.smart_wait")
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.FuncAnimation", _FakeAnim)
+
+    produced_wav = tmp_path / "shifted.wav"
+    produced_wav.write_bytes(b"\x00\x00")
+    mocker.patch(
+        "usv_playpen.visualizations.make_behavioral_videos.AudioGenerator.frequency_shift_audio_segment",
+        return_value=produced_wav,
+    )
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.subprocess.Popen",
+                 return_value=MagicMock(wait=lambda *_a, **_kw: 1))
+
+    msgs: list[str] = []
+    maker = _build_animate_maker(tmp_path, msgs=msgs, pitch_shifted_audio_bool=True)
+    maker.visualize_in_video()
+
+    assert any("ffmpeg mux of pitch-shifted audio failed" in m for m in msgs)

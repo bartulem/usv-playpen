@@ -38,7 +38,6 @@ import json
 import pathlib
 import urllib.request
 from collections.abc import Callable
-from datetime import datetime
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
@@ -49,6 +48,7 @@ from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+from usv_playpen.os_utils import resolve_data_root
 from usv_playpen.visualizations.plot_style import apply_plot_style
 from usv_playpen.visualizations.figure_io import resolve_pdf_path, save_figure
 from usv_playpen.visualizations.make_behavioral_videos import pool_brain_area
@@ -113,17 +113,15 @@ _BREGMA_ML_CCF: float = 5739.0
 # Default root directory holding the per-day ephys folders. Each
 # directory contains the concatenated `.ap.bin` plus its
 # `kilosort4/` and `changepoints_info_<YYYYMMDD>_imec<i>.json`.
-_DEFAULT_EPHYS_ROOT: pathlib.Path = pathlib.Path("/mnt/falkner/Bartul/EPHYS")
+_DEFAULT_EPHYS_ROOT: pathlib.Path = resolve_data_root("ephys_root")
 
 # Default root for IBL histology output (one channel_locations.json
 # per (mouse, session_date, hemisphere)).
-_DEFAULT_HISTOLOGY_ROOT: pathlib.Path = pathlib.Path("/mnt/falkner/Bartul/histology")
+_DEFAULT_HISTOLOGY_ROOT: pathlib.Path = resolve_data_root("histology_root")
 
 
 # Local cache directory for Allen mesh OBJ files.
-_ALLEN_MESH_CACHE: pathlib.Path = pathlib.Path(
-    "/mnt/falkner/Bartul/EPHYS/allen_meshes"
-)
+_ALLEN_MESH_CACHE: pathlib.Path = resolve_data_root("allen_meshes_dir")
 _ALLEN_MESH_URL: str = (
     "https://download.alleninstitute.org/informatics-archive/"
     "current-release/mouse_ccf/annotation/ccf_2017/"
@@ -1345,7 +1343,7 @@ class AnatomyFigureMaker:
         hemisphere = "R" if str(probe_filter).endswith("0") else "L"
         ibl_dir = "ibl_RH" if hemisphere == "R" else "ibl_LH"
         ibl_path = (
-            pathlib.Path("/mnt/falkner/Bartul/histology")
+            _DEFAULT_HISTOLOGY_ROOT
             / str(mouse_id) / str(rec_date) / ibl_dir / "channel_locations.json"
         )
         with ibl_path.open() as fh:

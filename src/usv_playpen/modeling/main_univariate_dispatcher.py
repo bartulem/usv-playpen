@@ -134,7 +134,13 @@ def get_basis_matrix_standardized(
     # Atomic Lock: Only the first job in the array generates the verification plot
     lock_file = Path(output_dir) / ".basis_plotted"
 
-    if not lock_file.exists() and basis_matrix is not None:
+    # The configurable bases gate their verification plot on the per-basis
+    # `plot_bool` setting; the `identity` basis has no settings block (no
+    # `plot_bool` to honour), so it keeps its always-on trivial plot. An
+    # unbuilt basis (`basis_matrix is None`) is skipped first, so `p` is only
+    # read for the parametric bases that define it.
+    plot_basis_bool = basis_matrix is not None and (basis_type == 'identity' or p['plot_bool'])
+    if plot_basis_bool and not lock_file.exists():
         try:
             lock_file.touch(exist_ok=False)
 

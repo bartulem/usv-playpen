@@ -130,7 +130,7 @@ def test_generate_rm_figures_cli_success(runner, mocker, tmp_path):
     mock_maker = mocker.patch('usv_playpen.visualizations.visualize_data.NeuronalTuningFigureMaker')
     mocker.patch(
         'usv_playpen.visualizations.visualize_data.modify_settings_json_for_cli',
-        return_value={'neuronal_tuning_figures': {}}
+        return_value={}
     )
 
     result = runner.invoke(generate_rm_figures_cli, [

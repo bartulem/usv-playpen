@@ -40,9 +40,9 @@ and finally — for the continuous manifold target — with a non-linear
 
 The whole subsystem is configured by a single settings file,
 ``_parameter_settings/modeling_settings.json``, and is driven either
-interactively from the :ref:`modeling-notebook` (linked at the bottom of
-this page) or, at cohort scale, from the SLURM dispatchers described in
-:ref:`modeling-model-selection`.
+interactively from the :ref:`modeling-notebook` (``modeling_analyses.ipynb``,
+detailed in :doc:`Notebooks`) or, at cohort scale, from the SLURM dispatchers
+described in :ref:`modeling-model-selection`.
 
 .. note::
 
@@ -356,23 +356,9 @@ The trained-network diagnostics (permutation test, feature importance,
 spatial-precision grid, error landscape, regional saliency) are rendered by
 ``DeepResultsVisualizer`` from the same prediction artifact.
 
-8. Vocalisation embedding-space view
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-``plot_vocalization_embedding_space`` renders the corpus-level UMAP-embedded
-USV space with cluster-category overlays and a grid of per-cell mean
-spectrograms — a descriptive plot for orienting yourself to the GMM-category
-structure before reading the modeling figures above. Its data-discovery root
-is resolved per-OS from ``behavioral_experiments_settings.toml`` via
-``find_base_path`` (so it works on both the ``/mnt/falkner`` Linux mount and
-the ``/Volumes/falkner`` macOS mount).
-
-.. _modeling-notebook:
-
 Interactive notebook
 ^^^^^^^^^^^^^^^^^^^^^
 The ``modeling_analyses.ipynb`` notebook is the recommended interactive
-entry point. It runs the whole workflow above in order — every path,
-toggle, and threshold lives in a single **Parameters** cell near the top
-(grouped by section), so a run is configured in one place. The full
-notebook lives in the repository at `modeling_analyses.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/modeling_analyses.ipynb>`_.
+entry point — it runs the whole workflow above in order from a single
+**Parameters** cell. Its detailed walkthrough, knobs, and rendered source
+live in :doc:`Notebooks`.

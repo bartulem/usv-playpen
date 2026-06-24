@@ -212,7 +212,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "bout_quiet_seconds": 2.0,
         "vocal_require_clean_post_anchor": true,
         "vocal_require_clean_prior_anchor": false,
-        "n_usv_min_self": 100,
+        "n_usv_min_self": 30,
         "n_usv_min_partner": 30,
         "n_usv_min_category": 20,
         "behavioral_min_occupancy_seconds": 1.0,
@@ -265,9 +265,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file holds the gat
         "spatial_info_bps_threshold": 0.5
     }
 
-The notebook is a thin wrapper: edit ``CONDITION_TO_SESSION_LIST`` to point at the ``.txt`` lists, optionally adjust ``THRESHOLDS``, and run all cells. The pickle it produces is the input to all downstream cross-session plotting.
-
-The cross-session figure half of the notebook additionally honours two unit-selection knobs in the **Parameters** cell: ``UNIT_KSLABELS`` (the Kilosort curation labels to include, e.g. ``("good",)`` or ``("good", "mua")``) and ``UNIT_SOMATIC_FILTER`` (one of ``"somatic"`` / ``"non_somatic"`` / ``"both"``). Both default to the historical good + somatic scope (``("good",)`` + ``"somatic"``). Because the aggregator pickle always holds *every* unit, changing these knobs simply re-filters the figures — no pickle rebuild is needed — and every figure caption reflects the active filter.
+The pickle this step produces is the input to all downstream cross-session plotting. The aggregation and the anatomy / dataset-overview figures are driven by ``neuronal_tuning_summary.ipynb`` (edit ``CONDITION_TO_SESSION_LIST``, optionally ``THRESHOLDS``, and the figure-half unit-selection knobs ``UNIT_KSLABELS`` / ``UNIT_SOMATIC_FILTER``); see :doc:`Notebooks` for the full walkthrough.
 
 Compute inter-vocalization-interval (inter-USV interval) distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -299,7 +297,7 @@ The archive's structure (see :mod:`usv_playpen.analyses.usv_interval_archive` fo
 * ``/<mode>/bootstrap_lrt_null`` -- long-form bootstrap LR null draws, one row per ``(sex, K_null, K_alt, b)`` with the bootstrap statistic ``lr_b``. Used to re-render the null-distribution panel without re-running the test.
 * ``/<mode>/attrs`` -- ``alpha_effective`` (post-Bonferroni alpha if requested) plus the per-sex step-up-selected K (``K_selected_male``, ``K_selected_female``).
 
-The accompanying notebook (``analyses_notebooks/usv_interval_mixture_models_plots.ipynb``) reads the archive via the ``ivs.load_*_from_h5`` helpers and renders the bootstrap LRT null-distribution panel (with broken-axis support when ``LR_obs`` falls far above the null), the BIC and AIC sweeps with the LRT-selected K highlighted, the best-fit mixture with per-component triangles labelled by bold ``(a)``, ``(b)``, ... markers, a left-aligned text legend mapping each letter to its component median in seconds, an optional per-component pdf overlay, and a log-log Q-Q diagnostic embedded as an inset.
+The mixture-model fits and figures driven from this archive are produced by ``usv_interval_mixture_models_plots.ipynb`` (it reads the archive via the ``ivs.load_*_from_h5`` helpers) — see :doc:`Notebooks`.
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section that should be modified manually (the GUI does not currently expose this analysis):
 
@@ -336,15 +334,15 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
     "compute_inter_usv_interval_distributions": {
         "session_lists": [
-          "/mnt/falkner/Bartul/modeling/input_files/courtship_behavioral_intact_partners_sessions_list.txt"
+          "/mnt/falkner/{experimenter}/modeling/input_files/courtship_behavioral_intact_partners_sessions_list.txt"
         ],
-        "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
-        "noise_col_id": "usv_supercategory",
+        "output_directory": "/mnt/falkner/{experimenter}/modeling/usv_interval_results",
+        "noise_col_id": "vae_supercategory",
         "noise_categories": [0],
         "fit_gmm": true,
         "n_components_min": 2,
-        "n_components_max": 5,
-        "n_repeats": 100,
+        "n_components_max": 6,
+        "n_repeats": 10,
         "max_modes_reported": 3,
         "random_seed_base": 0,
         "cv_n_folds": 5,
@@ -352,7 +350,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "gmm_n_init": 10,
         "gmm_reg_covar": 1e-4,
         "tau": 0.5,
-        "figures_directory": "/mnt/falkner/Bartul/figures",
+        "figures_directory": "/mnt/falkner/{experimenter}/figures",
         "bins_per_sex": {"male": 80, "female": 30},
         "plot_log_xlims": [-5.0, 5.0],
         "model_class": "t",
@@ -517,7 +515,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "naturalistic_wav_sampling_rate": 250,
         "naturalistic_playback_snippets_dir_prefix": "female",
         "total_acceptable_naturalistic_playback_time": 1080,
-        "naturalistic_iui_archive_h5": "/mnt/falkner/Bartul/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
+        "naturalistic_iui_archive_h5": "/mnt/falkner/{experimenter}/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
         "naturalistic_interval_mode": "e2s",
         "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
         "playback_seed": null
@@ -550,17 +548,9 @@ reproducible across runs, while leaving it ``None`` draws fresh entropy
 each call.
 
 Unlike the GUI-driven analyses above, this one is **not** exposed in the
-GUI and reads **nothing** from ``analyses_settings.json``. Everything is
-configured in the notebook's single **Parameters** cell: the segmentation
-column and the two category-id groups, the three-criteria unit filter
-(``cluster_group`` + ``somatic`` + ``brain_area``, looked up per unit in
-``unit_catalog.csv``), the animal-to-sessions map, the coactivity
-hyperparameters (window, bootstrap N, shuffle / permutation counts), and
-the per-group plotting colors. The loader picks, for each animal, the
-single recording day with the largest filtered-unit pool so the analyzed
-population is fixed across the day's sessions.
-
-The ``neuronal_coactivity_analyses.ipynb`` notebook runs
-the whole workflow in order. The full notebook lives in the repository at
-`neuronal_coactivity_analyses.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/neuronal_coactivity_analyses.ipynb>`_.
+GUI and reads **nothing** from ``analyses_settings.json`` — everything is
+configured in the notebook's single **Parameters** cell. The end-to-end
+workflow is driven by ``neuronal_coactivity_analyses.ipynb``; see
+:doc:`Notebooks` for its parameters (segmentation column and category
+groups, the three-criteria unit filter, animal-to-sessions map, coactivity
+hyperparameters, plot colors) and rendered source.

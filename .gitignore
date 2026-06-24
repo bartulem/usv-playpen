@@ -155,3 +155,6 @@ Thumbs.db
 
 # setuptools_scm
 src/*/_version.py
+
+# nbsphinx: package notebooks copied into the docs tree at build time
+docs/notebooks/

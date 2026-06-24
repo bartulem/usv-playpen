@@ -216,6 +216,63 @@ def test_frequency_shift_audio_segment_no_match_logs_and_returns(tmp_path, mocke
     assert any("Requested audio file not found" in m for m in msgs)
 
 
+def test_frequency_shift_audio_segment_returns_path_with_explicit_window(tmp_path, mocker):
+    """The method returns the produced file's Path, and an explicit
+    ``seq_start``/``seq_duration`` overrides the settings-dict window: the
+    output filename embeds the passed values and ``librosa.load`` is offset
+    accordingly (this is the path the behavioral-video step relies on to align
+    the audible audio to the rendered frames)."""
+    audio_dir = tmp_path / "audio" / "original"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "m_001_ch01_session.wav").write_bytes(b"\x00\x00")
+
+    fake_load = mocker.patch("usv_playpen.analyses.generate_audio_files.librosa.load",
+                             return_value=(np.zeros(1024, dtype=np.float32), 250000))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.sf.write")
+    mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
+                 side_effect=lambda y, **_kw: y)
+    mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.Popen",
+                 return_value=MagicMock(wait=lambda *_a, **_kw: 0))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+    mocker.patch("pathlib.Path.unlink", return_value=None)
+
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory=str(tmp_path),
+        freq_shift_settings_dict=_fs_settings(),  # fs_sequence_start=0.0, fs_sequence_duration=0.05
+        message_output=lambda *_a, **_kw: None,
+    )
+    out_path = ag.frequency_shift_audio_segment(seq_start=2.0, seq_duration=0.05)
+
+    # the produced .wav path is returned (not None)
+    assert out_path is not None
+    assert out_path.name.endswith("_audible_denoised_tempo_adjusted.wav")
+    # the explicit 2.0 s window overrides the dict's fs_sequence_start (0.0 s)
+    assert "start=2.0s_duration=0.05s" in out_path.name
+    # and the FIRST librosa.load (the segment extraction; later calls reload
+    # temp files with only sr=) received the overriding offset/duration
+    assert fake_load.call_args_list[0].kwargs["offset"] == 2.0
+    assert fake_load.call_args_list[0].kwargs["duration"] == 0.05
+
+
+def test_frequency_shift_audio_segment_returns_none_when_source_missing(tmp_path, mocker):
+    """Returns None (not a Path) when the source audio cannot be uniquely
+    located, so callers can fall back gracefully (the video step skips the
+    audio mux when None is returned)."""
+    (tmp_path / "audio" / "original").mkdir(parents=True)  # empty dir -> 0 glob matches
+    mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.Popen",
+                 return_value=MagicMock(wait=lambda *_a, **_kw: 0))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory=str(tmp_path),
+        freq_shift_settings_dict=_fs_settings(),
+        message_output=lambda *_a, **_kw: None,
+    )
+    assert ag.frequency_shift_audio_segment() is None
+
+
 def _run_usv_playback(tmp_path, mocker, *, seed, exp_id, n_snippets=8, total_usv=25):
     """Drive create_usv_playback_wav with mocked audio I/O and return the
     ordered list of chosen snippet filenames (from the *_usvids.txt the method

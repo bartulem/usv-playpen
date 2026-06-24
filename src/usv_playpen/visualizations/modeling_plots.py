@@ -44,11 +44,9 @@ import math
 import warnings
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import matplotlib.patches as patches
-import matplotlib.mlab as mlab
 import matplotlib.transforms as mtransforms
 from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch, Rectangle, ConnectionPatch
+from matplotlib.patches import Patch, Rectangle
 from matplotlib.lines import Line2D
 import numpy as np
 import os
@@ -60,10 +58,6 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics import confusion_matrix, roc_auc_score
 from sklearn.cluster import KMeans
 from typing import Optional
-import h5py
-import polars as pls
-from tqdm import tqdm
-from scipy.interpolate import griddata
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 
@@ -71,7 +65,7 @@ from .auxiliary_plot_functions import create_colormap
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import configure_path, find_base_path
+from ..os_utils import configure_path
 from .plot_style import apply_plot_style
 
 
@@ -141,437 +135,6 @@ male_cmap = create_colormap(input_parameter_dict={
     "cm_opacity": 1,
 })
 
-
-def plot_vocalization_embedding_space(
-        umap_position_file_path: str,
-        cluster_category_file_path: str,
-        x_range: tuple = None,
-        y_range: tuple = None,
-        target_subdirs: list = None,
-        csv_category_column_id: str = 'usv_supercategory',
-        grid_res: int = 600,
-        cmap_name: str = 'tab20',
-        spec_cmap_name: str = 'magma',
-        border_color: str = '#000000',
-        point_size: float = 0.5,
-        point_alpha: float = 0.6,
-        grid_dims: tuple = (4, 4),
-        figsize: tuple = (20, 10),
-        save_plot: bool = False,
-        output_dir: str = None
-) -> None:
-    """
-    Extracts, aligns, and plots the global USV UMAP manifold colored by supercategory,
-    with calculated boundary lines separating distinct vocalization territories.
-    Optionally draws an expanded spectrogram inset for a target region.
-
-    This function serves a dual purpose for deep vocal analysis:
-
-    1. Global Manifold Mapping (Default):
-       Cross-references HDF5 coordinate/label data with CSV metadata to filter out
-       noise (category 0) and perfectly align the valid USVs. It uses a nearest-neighbor
-       grid interpolation to mathematically define the boundaries between behavioral
-       categories and draws sharp 'cracks' where different behavioral states collide.
-
-    2. Regional Audio Inspection (If x_range and y_range are provided):
-       Calculates an evenly spaced grid across the specified UMAP bounding box. For each
-       ideal grid intersection, it finds the nearest real USV to sample the topology evenly.
-       It locates the raw .mmap 24-channel audio file for each USV, calculates the exact
-       sample indices using the sampling rate embedded in the filename, and extracts
-       the sequence. It calculates the variance across all 24 channels to weight and
-       average them into a single high-SNR audio array.
-
-       Each spectrogram is independently auto-scaled (vmin = local min, vmax = local max)
-       to ensure maximum contrast regardless of the specific USV's absolute volume. The grid
-       of spectrograms has custom frequency y-limits of 30-125 kHz with explicit, minimal kHz labels.
-       Because USV durations vary, every spectrogram maintains its own independent Time (x) axis.
-
-    Parameters
-    ----------
-    umap_position_file_path : str
-        Path to the .h5 file containing the UMAP coordinates for each session.
-    cluster_category_file_path : str
-        Path to the .h5 file containing the cluster labels for each session.
-    x_range : tuple, optional
-        The (min, max) boundaries for the target UMAP X-axis region. Use None for open bounds.
-    y_range : tuple, optional
-        The (min, max) boundaries for the target UMAP Y-axis region. Use None for open bounds.
-    target_subdirs : list of str, optional
-        Directories (relative to the host's falkner CUP-share mount root,
-        resolved per-OS from ``behavioral_experiments_settings.toml`` via
-        ``os_utils.find_base_path``) to search for the metadata CSV files and
-        .mmap audio files.
-    csv_category_column_id : str, default 'usv_supercategory'
-        The specific column in the CSV file to use for category labels.
-    grid_res : int, default 600
-        The resolution of the invisible meshgrid used to calculate the territorial boundaries.
-    cmap_name : str, default 'tab20'
-        The matplotlib colormap used to assign colors to the distinct categories on the UMAP.
-    spec_cmap_name : str, default 'magma'
-        The matplotlib colormap used to plot the spectrograms.
-    border_color : str, default '#000000'
-        The color of the boundary lines drawn between the UMAP supercategories.
-    point_size : float, default 0.5
-        The size of the individual scatter points on the UMAP.
-    point_alpha : float, default 0.6
-        The opacity of the scatter points.
-    grid_dims : tuple, default (4, 4)
-        The (rows, columns) shape of the sampled spectrogram grid.
-    figsize : tuple, default (20, 10)
-        The dimensions of the generated matplotlib figure.
-    save_plot : bool, default False
-        If True, saves the figure to disk.
-    output_dir : str, optional
-        The directory where the plot will be saved.
-
-    Returns
-    -------
-    None
-        Displays the generated Matplotlib figure.
-    """
-
-    umap_position_file_path = configure_path(str(umap_position_file_path))
-    cluster_category_file_path = configure_path(str(cluster_category_file_path))
-    if output_dir is not None:
-        output_dir = configure_path(str(output_dir))
-
-    if target_subdirs is None:
-        target_subdirs = ["Liza/data", "Jinrun/Data", "Bartul/Data"]
-
-    # Resolve the falkner CUP-share mount root for the host OS from the
-    # single source of truth (`behavioral_experiments_settings.toml`) rather
-    # than hardcoding `/mnt/falkner`; this is `/Volumes/falkner` on macOS,
-    # `/mnt/falkner` on Linux, `F:\` on Windows. `None` on an unrecognised
-    # platform, in which case no session directory can be discovered and the
-    # function falls through to the "No valid coordinates" early return.
-    base_root = find_base_path()
-
-    all_coordinates = []
-    all_categories = []
-    candidate_usvs = []
-
-    print("Extracting coordinates, metadata, and matching supercategories...")
-
-    # 1. Data Extraction & Alignment
-    with h5py.File(umap_position_file_path, mode='r') as umap_position_file, \
-            h5py.File(cluster_category_file_path, mode='r') as super_category_h5_file:
-
-        for session_key in tqdm(umap_position_file.keys(), desc="Scanning Sessions"):
-            if session_key not in super_category_h5_file:
-                continue
-
-            session_coords = umap_position_file[session_key][:]
-            session_labels = super_category_h5_file[session_key][:].flatten()
-
-            search_term = session_key[:15]
-            usv_csv_file = None
-
-            for subdir in target_subdirs:
-                if base_root is None:
-                    break
-                current_search_root = pathlib.Path(base_root) / subdir
-                if current_search_root.exists():
-                    for path in current_search_root.glob(f"*{search_term}"):
-                        if path.is_dir():
-                            usv_csv_file = next(path.glob(f"**{os.sep}*_usv_summary.csv"), None)
-                            if usv_csv_file:
-                                break
-                if usv_csv_file:
-                    break
-
-            if usv_csv_file and session_coords.size > 0 and len(session_coords) == len(session_labels):
-                try:
-                    usv_summary_df = pls.read_csv(usv_csv_file)
-
-                    # Dynamically pulling the requested category column
-                    session_supercats = usv_summary_df[csv_category_column_id].to_numpy()
-
-                    if len(session_coords) == len(session_supercats):
-                        valid_mask = (session_labels != 0)
-                        filtered_coords = session_coords[valid_mask]
-                        filtered_cats = session_supercats[valid_mask]
-
-                        all_coordinates.append(filtered_coords)
-                        all_categories.append(filtered_cats)
-
-                        if x_range is not None and y_range is not None:
-                            starts = usv_summary_df['start'].to_numpy()[valid_mask]
-                            stops = usv_summary_df['stop'].to_numpy()[valid_mask]
-
-                            x_min_bound = x_range[0] if x_range[0] is not None else -np.inf
-                            x_max_bound = x_range[1] if x_range[1] is not None else np.inf
-                            y_min_bound = y_range[0] if y_range[0] is not None else -np.inf
-                            y_max_bound = y_range[1] if y_range[1] is not None else np.inf
-
-                            in_box = (filtered_coords[:, 0] >= x_min_bound) & (filtered_coords[:, 0] <= x_max_bound) & \
-                                     (filtered_coords[:, 1] >= y_min_bound) & (filtered_coords[:, 1] <= y_max_bound)
-
-                            valid_indices = np.where(in_box)[0]
-                            for idx in valid_indices:
-                                candidate_usvs.append({
-                                    'session_key': session_key,
-                                    'start': starts[idx],
-                                    'stop': stops[idx],
-                                    'x': filtered_coords[idx, 0],
-                                    'y': filtered_coords[idx, 1],
-                                    'csv_dir': usv_csv_file.parent
-                                })
-                except Exception:
-                    pass
-
-    # 2. Aggregation & Boundary Math
-
-    if len(all_coordinates) == 0:
-        print("No valid coordinates extracted. Exiting plot generation.")
-        return
-
-    all_coordinates = np.vstack(all_coordinates)
-    all_categories = np.concatenate(all_categories)
-    print(f"Total valid USVs extracted: {all_coordinates.shape[0]}")
-
-    print(f"Computing regional boundary lines on a {grid_res}x{grid_res} grid...")
-    unique_cats, cat_indices = np.unique(all_categories, return_inverse=True)
-
-    x_min, x_max = all_coordinates[:, 0].min() - 1, all_coordinates[:, 0].max() + 1
-    y_min, y_max = all_coordinates[:, 1].min() - 1, all_coordinates[:, 1].max() + 1
-
-    xx, yy = np.meshgrid(np.linspace(x_min, x_max, grid_res),
-                         np.linspace(y_min, y_max, grid_res))
-
-    Z = griddata(all_coordinates, cat_indices, (xx, yy), method='nearest')
-
-    # 3. Figure Setup
-    TEXT_COLOR = '#000000'
-    BG_COLOR = '#FFFFFF'
-    HIGHLIGHT_COLOR = '#000000'
-
-    is_dual_panel = (x_range is not None and y_range is not None and len(candidate_usvs) > 0)
-
-    if is_dual_panel:
-        fig = plt.figure(figsize=figsize, facecolor=BG_COLOR, dpi=200)
-        fig.patch.set_alpha(1.0)
-        gs_main = gridspec.GridSpec(1, 2, width_ratios=[1, 1.5], figure=fig, wspace=0.1)
-        ax_umap = fig.add_subplot(gs_main[0])
-    else:
-        single_figsize = (14, 12) if figsize == (20, 10) else figsize
-        fig, ax_umap = plt.subplots(figsize=single_figsize, facecolor=BG_COLOR, dpi=300)
-        fig.patch.set_alpha(1.0)
-
-    ax_umap.set_facecolor(BG_COLOR)
-    umap_cmap = plt.get_cmap(cmap_name)
-
-    for idx, cat in enumerate(unique_cats):
-        cat_mask = (all_categories == cat)
-        ax_umap.scatter(
-            all_coordinates[cat_mask, 0],
-            all_coordinates[cat_mask, 1],
-            s=point_size,
-            alpha=point_alpha,
-            label=str(cat),
-            color=umap_cmap(idx % len(unique_cats)),
-            edgecolors='none',
-            zorder=1
-        )
-
-    ax_umap.contour(xx, yy, Z,
-                    levels=np.arange(len(unique_cats) + 1) - 0.5,
-                    colors=border_color,
-                    linewidths=1.5,
-                    zorder=2)
-
-    ax_umap.set_title("USV UMAP manifold by category", fontsize=16, color=TEXT_COLOR, pad=15)
-    ax_umap.set_xlabel("UMAP 1", fontsize=14, color=TEXT_COLOR)
-    ax_umap.set_ylabel("UMAP 2", fontsize=14, color=TEXT_COLOR)
-    ax_umap.set_aspect('equal', adjustable='datalim')
-
-    ax_umap.tick_params(colors=TEXT_COLOR, labelsize=10)
-    for spine in ax_umap.spines.values():
-        spine.set_edgecolor(TEXT_COLOR)
-        spine.set_visible(True)
-        spine.set_linewidth(1.5)
-
-    leg_fontsize = 10 if is_dual_panel else 12
-    leg = ax_umap.legend(title=csv_category_column_id.replace('_', ' ').title(),
-                         loc='lower right',
-                         markerscale=20, frameon=True, fontsize=leg_fontsize,
-                         facecolor=BG_COLOR, framealpha=0.9)
-
-    for lh in leg.legend_handles:
-        lh.set_alpha(1.0)
-    leg.get_title().set_color(TEXT_COLOR)
-    for text in leg.get_texts():
-        text.set_color(TEXT_COLOR)
-
-    # 4. Spectrogram Inset Processing
-    if is_dual_panel:
-        rows, cols = grid_dims
-
-        # Compute physical bounds for the dashed box
-        rect_x_min = x_range[0] if x_range[0] is not None else all_coordinates[:, 0].min()
-        rect_x_max = x_range[1] if x_range[1] is not None else all_coordinates[:, 0].max()
-        rect_y_min = y_range[0] if y_range[0] is not None else all_coordinates[:, 1].min()
-        rect_y_max = y_range[1] if y_range[1] is not None else all_coordinates[:, 1].max()
-
-        # Grid Mapping Nearest Neighbor Algorithm
-        ideal_x = np.linspace(rect_x_min, rect_x_max, cols)
-        ideal_y = np.linspace(rect_y_max, rect_y_min, rows)  # Top to bottom for natural mapping
-
-        sampled_usvs = []
-        candidate_coords = np.array([[u['x'], u['y']] for u in candidate_usvs])
-        available_mask = np.ones(len(candidate_usvs), dtype=bool)
-
-        for r in range(rows):
-            for c in range(cols):
-                if not np.any(available_mask):
-                    sampled_usvs.append(None)  # Out of candidates
-                    continue
-
-                target_x = ideal_x[c]
-                target_y = ideal_y[r]
-
-                # Compute Euclidean distance from ideal grid point to all available USVs
-                dx = candidate_coords[available_mask, 0] - target_x
-                dy = candidate_coords[available_mask, 1] - target_y
-                sq_dists = dx ** 2 + dy ** 2
-
-                # Pick the closest available USV
-                available_indices = np.where(available_mask)[0]
-                best_idx = available_indices[np.argmin(sq_dists)]
-
-                sampled_usvs.append(candidate_usvs[best_idx])
-                available_mask[best_idx] = False  # Sample without replacement
-
-        # Highlight ONLY the successfully sampled USVs on the UMAP
-        sx = [u['x'] for u in sampled_usvs if u is not None]
-        sy = [u['y'] for u in sampled_usvs if u is not None]
-        ax_umap.scatter(sx, sy, facecolors='none', edgecolors=HIGHLIGHT_COLOR, s=60, linewidth=2.0, zorder=10)
-
-        rect = patches.Rectangle((rect_x_min, rect_y_min), rect_x_max - rect_x_min, rect_y_max - rect_y_min,
-                                 linewidth=2.5, edgecolor=HIGHLIGHT_COLOR, facecolor='none', linestyle='--', zorder=10)
-        ax_umap.add_patch(rect)
-
-        gs_specs = gs_main[1].subgridspec(rows, cols, wspace=0.05, hspace=0.45)
-        spec_axes = []
-        for i in range(rows * cols):
-            r = i // cols
-            c = i % cols
-            ax = fig.add_subplot(gs_specs[r, c])
-            ax.set_facecolor(BG_COLOR)
-            spec_axes.append(ax)
-
-        mmap_cache = {}
-
-        for idx, usv in enumerate(tqdm(sampled_usvs, desc="Processing Audio")):
-            ax = spec_axes[idx]
-
-            if usv is None:
-                ax.axis('off')
-                continue
-
-            sess = usv['session_key']
-
-            if sess not in mmap_cache:
-                mmap_path = next(usv['csv_dir'].glob(f"**{os.sep}*_24_int16.mmap"), None)
-                mmap_cache[sess] = mmap_path
-
-            audio_loc = mmap_cache[sess]
-            if audio_loc is None or not audio_loc.exists():
-                ax.set_title("Audio Missing", fontsize=8, color=MISSING_AUDIO_COLOR)
-                ax.axis('off')
-                continue
-
-            parts = audio_loc.name.replace('.mmap', '').split('_')
-            try:
-                channel_num = int(parts[-2])
-                sample_num = int(parts[-3])
-                sample_rate = int(parts[-4])
-            except (ValueError, IndexError):
-                ax.axis('off')
-                continue
-
-            try:
-                start_sample = int(np.floor(usv['start'] * sample_rate))
-                stop_sample = int(np.floor(usv['stop'] * sample_rate))
-                stop_sample = min(stop_sample, sample_num)
-
-                audio_data = np.memmap(filename=audio_loc, dtype=np.int16, mode='r',
-                                       shape=(sample_num, channel_num), order='C')
-                raw_chunk = audio_data[start_sample:stop_sample, :]
-
-                channel_vars = np.var(raw_chunk, axis=0)
-                sum_var = np.sum(channel_vars)
-                weights = channel_vars / sum_var if sum_var > 0 else np.ones(channel_num) / channel_num
-                weighted_audio = np.sum(raw_chunk * weights, axis=1)
-
-                Pxx, freqs, bins = mlab.specgram(weighted_audio, NFFT=1024, Fs=sample_rate, noverlap=800)
-                Pxx_db = 10 * np.log10(Pxx + 1e-10)
-
-                freq_mask = (freqs >= 30000) & (freqs <= 125000)
-                visible_Pxx_db = Pxx_db[freq_mask, :]
-                local_vmax = np.max(visible_Pxx_db)
-                local_vmin = np.percentile(visible_Pxx_db, 5)
-
-                ax.imshow(Pxx_db, aspect='auto', origin='lower',
-                          extent=[bins[0], bins[-1], freqs[0], freqs[-1]],
-                          cmap=spec_cmap_name, vmin=local_vmin, vmax=local_vmax)
-
-                ax.grid(False)
-
-                ax.set_ylim(30000, 125000)
-                ax.set_yticks([30000, 75000, 125000])
-                ax.set_yticklabels(['30', '75', '125'])
-
-                ax.set_title(f"X:{usv['x']:.1f} Y:{usv['y']:.1f}", fontsize=9, color=TEXT_COLOR)
-                ax.tick_params(colors=TEXT_COLOR, labelsize=8)
-                for spine in ax.spines.values():
-                    spine.set_edgecolor(TEXT_COLOR)
-
-                if (idx % cols) != 0:
-                    ax.set_yticklabels([])
-                else:
-                    ax.set_ylabel("Frequency (kHz)", fontsize=9, color=TEXT_COLOR)
-
-                ax.set_xlabel("Time (s)", fontsize=8, color=TEXT_COLOR, labelpad=2)
-                ax.tick_params(axis='x', colors=TEXT_COLOR, labelsize=7)
-                ax.tick_params(axis='y', colors=TEXT_COLOR, labelsize=8)
-
-            except Exception:
-                ax.axis('off')
-
-        con1 = ConnectionPatch(xyA=(rect_x_max, rect_y_max), xyB=(0, 1),
-                               coordsA="data", coordsB="axes fraction",
-                               axesA=ax_umap, axesB=spec_axes[0],
-                               color=HIGHLIGHT_COLOR, linestyle=":", linewidth=2.0, zorder=20)
-
-        bottom_left_idx = (rows - 1) * cols
-        if bottom_left_idx < len(spec_axes):
-            target_ax = spec_axes[bottom_left_idx]
-            con2 = ConnectionPatch(xyA=(rect_x_max, rect_y_min), xyB=(0, 0),
-                                   coordsA="data", coordsB="axes fraction",
-                                   axesA=ax_umap, axesB=target_ax,
-                                   color=HIGHLIGHT_COLOR, linestyle=":", linewidth=2.0, zorder=20)
-            ax_umap.add_artist(con2)
-
-        ax_umap.add_artist(con1)
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message="This figure includes Axes that are not compatible with tight_layout")
-        plt.tight_layout()
-
-    if save_plot:
-        out_dir = pathlib.Path(output_dir) if output_dir else pathlib.Path(umap_position_file_path).parent
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        if is_dual_panel:
-            safe_name = f"vocalization_embedding_spectrograms_inset_X{rect_x_min:.1f}-{rect_x_max:.1f}_Y{rect_y_min:.1f}-{rect_y_max:.1f}.svg"
-        else:
-            safe_name = "global_vocalization_embedding_space.svg"
-
-        save_path = out_dir / safe_name
-        fig.savefig(save_path, bbox_inches='tight', facecolor=BG_COLOR, dpi=300)
-        print(f"Plot saved to: {save_path}")
-
-    plt.show()
 
 
 def plot_feature_ranking(
@@ -742,7 +305,7 @@ def plot_feature_ranking(
 
         for i, feature_name in enumerate(feats_sorted):
 
-            is_significant = significance_map.get(feature_name, False)
+            is_significant = significance_map[feature_name]
 
             if is_significant:
                 dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
@@ -1645,7 +1208,7 @@ def plot_model_selection_results(
     valid_steps_for_plot = list(selection_steps)
     if len(selection_steps) > 1:
         last_data = selection_steps[-1]
-        if last_data.get('selected_feature') is None:
+        if last_data['selected_feature'] is None:
             print("Last step was a rejection. Excluding it from trajectory plots.")
             valid_steps_for_plot = selection_steps[:-1]
 
@@ -2781,7 +2344,7 @@ def plot_multinomial_selection_trajectory(
     # chance baseline (1/K for balanced accuracy etc.).
     n_classes = None
     for _s in selection_steps:
-        _cs = _s.get('candidates_summary') or {}
+        _cs = _s['candidates_summary']
         for _c in _cs.values():
             _cl = _c.get('classes') if isinstance(_c, dict) else None
             if _cl is not None and len(_cl) > 0:
@@ -2816,7 +2379,7 @@ def plot_multinomial_selection_trajectory(
     # the multinomial selector's null baseline marker. Order preserved.
     accepted_steps = [
         s for s in selection_steps
-        if s.get('selected_feature') not in (None, 'null_model_free')
+        if s['selected_feature'] not in (None, 'null_model_free')
     ]
     if not accepted_steps:
         print(f"No accepted feature steps in {selection_results_path}")
@@ -2833,7 +2396,7 @@ def plot_multinomial_selection_trajectory(
     for s in accepted_steps:
         winner = s['selected_feature']
         wd = s['candidates_summary'][winner]
-        fm = wd.get('folds', {}).get('metrics', {})
+        fm = wd['folds']['metrics']
         sec_vals = np.array(fm.get(metric_secondary, []), dtype=float)
         sec_vals = sec_vals[np.isfinite(sec_vals)]
         steps_data.append({
@@ -2850,8 +2413,8 @@ def plot_multinomial_selection_trajectory(
     anchor_step = accepted_steps[0]
     best_univariate_value = float('nan')
     best_univariate_feat = None
-    for f, cdata in (anchor_step.get('candidates_summary') or {}).items():
-        fm = cdata.get('folds', {}).get('metrics', {})
+    for f, cdata in anchor_step['candidates_summary'].items():
+        fm = cdata['folds']['metrics']
         v = np.array(fm.get(metric_secondary, []), dtype=float)
         v = v[np.isfinite(v)]
         if v.size == 0:
@@ -2870,15 +2433,15 @@ def plot_multinomial_selection_trajectory(
 
     # Rejected final step lookup (by secondary metric, like binary case).
     rejection_row = None
-    if selection_steps[-1].get('selected_feature') is None:
+    if selection_steps[-1]['selected_feature'] is None:
         rej_step = selection_steps[-1]
-        rej_cs = rej_step.get('candidates_summary') or {}
+        rej_cs = rej_step['candidates_summary']
         if rej_cs:
             best_rej_feat = None
             best_rej_sec = -np.inf
             best_rej_pri = float('nan')
             for f, cdata in rej_cs.items():
-                fm = cdata.get('folds', {}).get('metrics', {})
+                fm = cdata['folds']['metrics']
                 v = np.array(fm.get(metric_secondary, []), dtype=float)
                 v = v[np.isfinite(v)]
                 if v.size == 0:
@@ -3274,7 +2837,7 @@ def plot_multinomial_multivariate_filters(
     # Find the last step that actually selected a feature (ignores the final rejection step)
     valid_data = None
     for data in reversed(selection_steps):
-        if data.get('selected_feature') is not None:
+        if data['selected_feature'] is not None:
             valid_data = data
             break
 
@@ -3468,7 +3031,7 @@ def plot_multinomial_selection_diagnosis(
     # skip a rejected last step if present.
     final_step = None
     for s in reversed(selection_steps):
-        sel = s.get('selected_feature')
+        sel = s['selected_feature']
         if sel and sel != 'null_model_free':
             final_step = s
             break
@@ -3484,7 +3047,7 @@ def plot_multinomial_selection_diagnosis(
         classes_raw = cdata.get('classes')
     classes = np.asarray(classes_raw).ravel()
     K = len(classes)
-    final_features = list(final_step.get('final_model_features') or [])
+    final_features = list(final_step['final_model_features'] or [])
 
     # Pool every valid fold's predictions for the AUC matrix
     def _concat_finite(key: str) -> Optional[np.ndarray]:
@@ -3812,9 +3375,9 @@ def plot_manifold_selection_trajectory(
             return 0.0
         null_step = selection_steps[0] if selection_steps else None
         if null_step is not None:
-            null_cs = null_step.get('candidates_summary') or {}
+            null_cs = null_step['candidates_summary']
             for cd in null_cs.values():
-                fm = cd.get('folds', {}).get('metrics', {})
+                fm = cd['folds']['metrics']
                 val = _fold_mean(fm, metric_name)
                 if np.isfinite(val):
                     return val
@@ -3824,7 +3387,7 @@ def plot_manifold_selection_trajectory(
     # the manifold selector's null baseline marker.
     accepted_steps = [
         s for s in selection_steps
-        if s.get('selected_feature') not in (None, 'null_model_free')
+        if s['selected_feature'] not in (None, 'null_model_free')
     ]
     if not accepted_steps:
         print(f"No accepted feature steps in {selection_results_path}")
@@ -3841,7 +3404,7 @@ def plot_manifold_selection_trajectory(
     for s in accepted_steps:
         winner = s['selected_feature']
         wd = s['candidates_summary'][winner]
-        fm = wd.get('folds', {}).get('metrics', {})
+        fm = wd['folds']['metrics']
         steps_data.append({
             'feature_name': winner,
             'prim_mean': _fold_mean(fm, metric_primary),
@@ -3854,8 +3417,7 @@ def plot_manifold_selection_trajectory(
     anchor_step = accepted_steps[0]
     anchor_winner = anchor_step['selected_feature']
     anchor_fm = (
-        anchor_step['candidates_summary'][anchor_winner]
-        .get('folds', {}).get('metrics', {})
+        anchor_step['candidates_summary'][anchor_winner]['folds']['metrics']
     )
     best_univariate_value = _fold_mean(anchor_fm, metric_secondary)
     best_univariate_feat = anchor_winner
@@ -3865,16 +3427,16 @@ def plot_manifold_selection_trajectory(
     # Rejected final step lookup -- mirrored from the multinomial
     # trajectory plotter so a rejection row is rendered consistently.
     rejection_row = None
-    if selection_steps[-1].get('selected_feature') is None:
+    if selection_steps[-1]['selected_feature'] is None:
         rej_step = selection_steps[-1]
-        rej_cs = rej_step.get('candidates_summary') or {}
+        rej_cs = rej_step['candidates_summary']
         if rej_cs:
             best_rej_feat = None
             best_rej_pri = float('nan')
             comp = (lambda a, b: a < b) if is_minimization_primary else (lambda a, b: a > b)
             best_pri_so_far = np.inf if is_minimization_primary else -np.inf
             for f, cdata in rej_cs.items():
-                fm = cdata.get('folds', {}).get('metrics', {})
+                fm = cdata['folds']['metrics']
                 pv = _fold_mean(fm, metric_primary)
                 if not np.isfinite(pv):
                     continue
@@ -4224,7 +3786,7 @@ def plot_manifold_multivariate_filters(
         # accepted multivariate model.
         valid_data = None
         for data in reversed(selection_steps):
-            sel = data.get('selected_feature')
+            sel = data['selected_feature']
             if sel is not None and sel != 'null_model_free':
                 valid_data = data
                 break

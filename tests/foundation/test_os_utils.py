@@ -40,6 +40,83 @@ def test_find_base_path_per_os(as_os, system, expected):
     assert os_utils.find_base_path() == expected
 
 
+# find_cluster_path
+
+@pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux"])
+def test_find_cluster_path_is_os_independent(as_os, system):
+    """The cluster mount root (where a job sees the share when running ON the
+    HPC cluster) is the same regardless of the host OS."""
+    as_os(system)
+    assert os_utils.find_cluster_path() == "/mnt/cup/labs/falkner"
+
+
+# _host_experimenter + configure_path {experimenter} fill
+
+def test_host_experimenter_reads_from_host_config(monkeypatch):
+    """The experimenter id is read from the `experimenter` key of the host
+    config TOML (the same key `exp_id` derives from)."""
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    assert os_utils._host_experimenter() == "Bartul"
+
+
+def test_host_experimenter_raises_when_config_missing(monkeypatch, tmp_path):
+    """A missing host config raises rather than guessing the experimenter."""
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
+    with pytest.raises(RuntimeError, match="Cannot read the host config"):
+        os_utils._host_experimenter()
+
+
+@pytest.mark.parametrize("system,expected", [
+    ("Linux", "/mnt/falkner/Liza/EPHYS"),
+    ("Darwin", "/Volumes/falkner/Liza/EPHYS"),
+    ("Windows", "F:\\Liza\\EPHYS"),
+])
+def test_configure_path_fills_experimenter_then_translates(as_os, monkeypatch, system, expected):
+    """`configure_path` fills the `{experimenter}` placeholder from the host
+    experimenter id, THEN translates the leading mount root to the host OS. A
+    non-default experimenter ('Liza') proves the substitution actually happens."""
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", ["Liza"])
+    as_os(system)
+    assert os_utils.configure_path("/mnt/falkner/{experimenter}/EPHYS") == expected
+
+
+def test_configure_path_without_placeholder_never_reads_experimenter(as_os, monkeypatch, tmp_path):
+    """A path with no `{experimenter}` (e.g. a user-entered root/arena dir) is
+    OS-translated only; the experimenter id is never read — proven by pointing
+    the host config at an absent file and asserting no error is raised."""
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
+    as_os("Darwin")
+    assert os_utils.configure_path("/mnt/falkner/SomeUser/Data/s1") == "/Volumes/falkner/SomeUser/Data/s1"
+
+
+# resolve_data_root
+
+def test_resolve_data_root_reads_key_and_delegates(as_os, monkeypatch, tmp_path):
+    """`resolve_data_root` reads the requested key from the `data_roots` block
+    and resolves it via `configure_path` (which fills `{experimenter}` and
+    OS-translates). A non-default experimenter ('Liza') proves it flows through."""
+    settings = tmp_path / "analyses_settings.json"
+    settings.write_text('{"data_roots": {"ephys_root": "/mnt/falkner/{experimenter}/EPHYS"}}')
+    monkeypatch.setattr(os_utils, "_ANALYSES_SETTINGS_PATH", settings)
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", ["Liza"])
+    as_os("Darwin")
+    assert os_utils.resolve_data_root("ephys_root") == pathlib.Path("/Volumes/falkner/Liza/EPHYS")
+    as_os("Linux")
+    assert os_utils.resolve_data_root("ephys_root") == pathlib.Path("/mnt/falkner/Liza/EPHYS")
+
+
+def test_resolve_data_root_reads_shipped_block(as_os):
+    """The shipped analyses_settings.json defines the `data_roots` keys the
+    analysis tools rely on; spot-check one resolves on the host OS (with the
+    shipped `experimenter` filled into `{experimenter}`)."""
+    as_os("Linux")
+    assert os_utils.resolve_data_root("catalog_path") == pathlib.Path(
+        "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv"
+    )
+
+
 # _host_lab_shares (single-source table read from the host config TOML)
 
 def test_host_lab_shares_reads_from_host_config(monkeypatch):

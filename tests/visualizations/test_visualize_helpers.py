@@ -78,7 +78,6 @@ def _make_fig_maker(root_directory: str, **viz_overrides) -> NeuronalTuningFigur
     viz = {
         "male_colors": ["#1f77b4"],
         "female_colors": ["#d62728"],
-        "neuronal_tuning_figures": {"fig_format": "png"},
     }
     viz.update(viz_overrides)
     return NeuronalTuningFigureMaker(

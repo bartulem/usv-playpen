@@ -113,7 +113,7 @@ def test_resolve_save_path_no_settings_with_override_dir_ok(tmp_path):
     fallbacks for the other parameters."""
     path, fmt, dpi = resolve_save_path("x", None, override_dir=tmp_path)
     assert path.parent == tmp_path
-    assert fmt == "svg"
+    assert fmt == "png"
     assert dpi == 300
 
 

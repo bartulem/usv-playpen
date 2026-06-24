@@ -45,13 +45,16 @@ from typing import Any
 
 import numpy as np
 
+from ..os_utils import resolve_data_root
 
-_DEFAULT_CONVERTER_PATH = (
-    pathlib.Path("/mnt/falkner/Bartul/EPHYS")
-    / "neuropixels_sites_to_anatomy_converter.json"
-)
-_DEFAULT_EPHYS_ROOT = pathlib.Path("/mnt/falkner/Bartul/EPHYS")
-_DEFAULT_HISTOLOGY_ROOT = pathlib.Path("/mnt/falkner/Bartul/histology")
+
+# Data-location defaults are configured in `analyses_settings.json` under
+# `data_roots` and resolved to the host OS via `configure_path` (see
+# `resolve_data_root`), so they are user-editable and OS-portable rather than
+# hard-coded; the CLI flags below still override them.
+_DEFAULT_CONVERTER_PATH = resolve_data_root("converter_path")
+_DEFAULT_EPHYS_ROOT = resolve_data_root("ephys_root")
+_DEFAULT_HISTOLOGY_ROOT = resolve_data_root("histology_root")
 
 # Constant across all sessions in this dataset (user-confirmed). Update
 # this if a future probe is wired differently and the dict needs to be
@@ -179,7 +182,7 @@ def _build_ks_keyed_block(
             int(channel_positions[ks_row, 0]),
             int(channel_positions[ks_row, 1]),
         )
-        region = pos_to_region.get(pos, "unknown")
+        region = pos_to_region[pos] if pos in pos_to_region else "unknown"
         per_row_region.append(region)
     return _runs_to_ranges(per_row_region)
 
@@ -260,12 +263,12 @@ def regenerate_anatomy_converter(
                         f"{mouse_id}/{session_id}/{probe}: no channel_positions.npy"
                     )
                     continue
-                hemisphere = probe_to_hemisphere.get(probe)
-                if hemisphere is None:
+                if probe not in probe_to_hemisphere:
                     skipped.append(
                         f"{mouse_id}/{session_id}/{probe}: no hemisphere mapping"
                     )
                     continue
+                hemisphere = probe_to_hemisphere[probe]
                 try:
                     pos_to_region = _load_ibl_position_to_region(
                         histology_root, str(mouse_id), int(rec_date), hemisphere,

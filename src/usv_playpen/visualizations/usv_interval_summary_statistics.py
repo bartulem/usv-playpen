@@ -1461,10 +1461,10 @@ def save_notebook_archive_to_h5(
         ):
             continue
 
-        drops = usv_interval_summary.get("n_dropped", {}).get(it, {"male": 0, "female": 0})
+        drops = usv_interval_summary["n_dropped"][it]
         drop_df = pls.DataFrame([
-            {"sex": "male",   "n_dropped": int(drops.get("male", 0))},
-            {"sex": "female", "n_dropped": int(drops.get("female", 0))},
+            {"sex": "male",   "n_dropped": int(drops["male"])},
+            {"sex": "female", "n_dropped": int(drops["female"])},
         ])
 
         mode_payload: dict = {
@@ -1538,8 +1538,8 @@ def save_notebook_archive_to_h5(
         # directory outside the repo and would always resolve to
         # "unknown").
         "git_sha": git_sha_for_provenance(Path(__file__).resolve().parent),
-        "source_lists": [str(p) for p in usv_interval_cfg.get("session_lists", [])],
-        "n_sessions_loaded": int(usv_interval_summary.get("n_sessions_loaded", 0)),
+        "source_lists": [str(p) for p in usv_interval_cfg["session_lists"]],
+        "n_sessions_loaded": int(usv_interval_summary["n_sessions_loaded"]),
         "noise_col_id": usv_interval_cfg["noise_col_id"],
         "noise_categories": list(usv_interval_cfg["noise_categories"]),
         "fit_gmm": bool(usv_interval_cfg["fit_gmm"]),

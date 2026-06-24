@@ -7,6 +7,7 @@ across the codebase.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import pathlib
 import platform
@@ -184,6 +185,58 @@ def _host_lab_shares() -> tuple[tuple[dict[str, str], ...], str]:
     return _HOST_SHARES_CACHE[0]
 
 
+# One-element cache for the resolved experimenter id; a list so it can be
+# populated by mutation (no ``global``). Cleared in tests to force a re-read.
+_HOST_EXPERIMENTER_CACHE: list[str] = []
+
+
+def _host_experimenter() -> str:
+    """
+    Description
+    -----------
+    Returns the canonical experimenter id from the host config TOML (the
+    top-level ``experimenter`` key of
+    ``_config/behavioral_experiments_settings.toml``), resolved once and cached
+    for the process. This is the single source the ``{experimenter}`` placeholder
+    in the analysis data / model paths resolves to (via :func:`configure_path`),
+    so the experimenter is declared in exactly one place -- the same key the
+    recording GUI writes and ``exp_id`` is derived from. A missing or unparseable
+    host config, or one lacking an ``experimenter`` entry, raises rather than
+    guessing, so a broken config fails loud at the first templated-path read.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    experimenter (str)
+        The experimenter id (e.g. ``Bartul``).
+    """
+
+    if _HOST_EXPERIMENTER_CACHE:
+        return _HOST_EXPERIMENTER_CACHE[0]
+
+    try:
+        host_config = toml.load(_HOST_CONFIG_PATH)
+    except (OSError, toml.TomlDecodeError) as exc:
+        msg = (
+            f"Cannot read the host config '{_HOST_CONFIG_PATH}' required to resolve "
+            f"the experimenter id for path templating: {type(exc).__name__}: {exc}"
+        )
+        raise RuntimeError(msg) from exc
+
+    if "experimenter" not in host_config:
+        msg = (
+            f"Host config '{_HOST_CONFIG_PATH}' has no 'experimenter' entry; "
+            "cannot fill the '{experimenter}' placeholder in data paths."
+        )
+        raise KeyError(msg)
+
+    _HOST_EXPERIMENTER_CACHE.append(host_config["experimenter"])
+    return _HOST_EXPERIMENTER_CACHE[0]
+
+
 def find_base_path() -> str | None:
     """
     Description
@@ -219,6 +272,13 @@ def configure_path(pa: str) -> str:
     the form expected by the OS currently in use, for any share listed in
     the resolved lab-share table (falkner, murthy, ...).
 
+    A ``{experimenter}`` placeholder -- used in the analysis data / model paths
+    in the ``*_settings.json`` files so those paths follow the experimenter
+    rather than hard-coding a name -- is first filled with the canonical
+    experimenter id (:func:`_host_experimenter`, declared in exactly one place).
+    Paths without the placeholder (e.g. the user-entered root/arena directories)
+    are unaffected.
+
     Only the leading mount root is rewritten; the remainder of the path is kept
     verbatim apart from normalising the path separator to the target OS
     (``\\`` on Windows, ``/`` elsewhere). A root must be followed by a path
@@ -243,6 +303,9 @@ def configure_path(pa: str) -> str:
         matched or the host OS is unrecognised.
     """
 
+    if "{experimenter}" in pa:
+        pa = pa.replace("{experimenter}", _host_experimenter())
+
     system = platform.system()
     if system not in _OS_KEYS:
         return pa
@@ -261,6 +324,65 @@ def configure_path(pa: str) -> str:
                 return f"{share[target_key]}{remainder}"
 
     return pa
+
+
+def find_cluster_path() -> str:
+    """
+    Description
+    -----------
+    Returns the primary (falkner) CUP share's **cluster** mount root
+    (e.g. ``/mnt/cup/labs/falkner``), regardless of the host OS. This is the
+    location of the share when a job runs ON the HPC cluster (where the share
+    is not locally mounted under the host-OS root from :func:`find_base_path`).
+    Derived from the resolved lab-share table so the cluster root is defined in
+    exactly one place (``_config/behavioral_experiments_settings.toml``).
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    cluster_path (str)
+        The falkner cluster mount root.
+    """
+
+    return _host_lab_shares()[0][0]["cluster"]
+
+
+_ANALYSES_SETTINGS_PATH = pathlib.Path(__file__).parent / "_parameter_settings" / "analyses_settings.json"
+
+
+def resolve_data_root(key: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Reads a canonical data-location path from
+    ``analyses_settings.json['data_roots'][key]`` and resolves it via
+    :func:`configure_path`, which fills the ``{experimenter}`` placeholder with
+    the canonical experimenter id and translates the leading mount root to the
+    host OS. This is the single place the analysis data roots (the EPHYS /
+    histology / Data trees, the unit catalog, the aggregator output directory,
+    ...) are defined, so they are user-editable configuration that is also
+    OS-portable and experimenter-keyed -- rather than hard-coded
+    ``/mnt/<experimenter>/...`` constants.
+
+    Parameters
+    ----------
+    key (str)
+        A key under the ``data_roots`` block of ``analyses_settings.json``
+        (e.g. ``'ephys_root'``, ``'histology_root'``, ``'catalog_path'``).
+
+    Returns
+    -------
+    data_root (pathlib.Path)
+        The configured path, with ``{experimenter}`` filled in and its leading
+        mount root translated to the host OS.
+    """
+
+    with _ANALYSES_SETTINGS_PATH.open() as settings_file:
+        data_roots = json.load(settings_file)["data_roots"]
+    return pathlib.Path(configure_path(data_roots[key]))
 
 
 def ephys_base_for_data_root(data_root_directory: str) -> pathlib.Path:

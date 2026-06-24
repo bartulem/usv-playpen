@@ -127,8 +127,8 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 .. code-block:: json
 
     "figures": {
-        "save_directory": "/mnt/falkner/Bartul/figures",
-        "fig_format": "svg",
+        "save_directory": "/mnt/falkner/{experimenter}/figures",
+        "fig_format": "png",
         "dpi": 300,
         "timestamp_in_name": true,
         "cmap": "inferno"
@@ -138,7 +138,7 @@ Visualize 3D behavior (figure/video)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Once 3D tracked data is available, you can visualize animal social behavior, either in figure or video. This GUI segment allows for a wide array of options in creating such visualizations. For example, you can choose whether you want to view the interaction from above or the side, and you can also choose to rotate the view as the behavior unfolds.
 
-To obtain this visualization, you need to list the root directories of interest (it is best to stick with one), select the *Visualize 3D behavior (figure/video)* option in the GUI, insert the arena directory for that session, pick all desired figure features, click *Next* and then *Visualize*. It is important to point out that there are many more features available in the *visualization_settings.json* file than are available in the GUI, and these options are explained in detail several sections below:
+To obtain this visualization, you need to list the root directories of interest (it is best to stick with one), select the *Visualize 3D behavior (figure/video)* option in the GUI, insert the arena directory for that session, pick all desired figure features, click *Next* and then *Visualize*. It is important to point out that there are many more features available in the *visualizations_settings.json* file than are available in the GUI, and these options are explained in detail several sections below:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_2.png
    :align: center
@@ -216,11 +216,12 @@ An example of an animated male-female courtship interaction with a dark backgrou
 
    <br>
 
-The */usv-playpen/_parameter_settings/visualization_settings.json* file contains a section only partially modifiable in the GUI, but it can entirely be modified manually in the *visualization_settings.json* file:
+The */usv-playpen/_parameter_settings/visualizations_settings.json* file contains a section only partially modifiable in the GUI, but it can entirely be modified manually in the *visualizations_settings.json* file:
 
 * **arena_directory** : path to the directory with the 3D tracked arena data
 * **speaker_audio_file** : path to the audio file containing the playback speaker sound
-* **sequence_audio_file** : path to the frequency-shifted audio file containing the audible vocalizations
+* **pitch_shifted_audio_bool** : if "Yes", automatically frequency-shift the session USVs over the chosen ``[video_start_time, video_start_time + video_duration]`` window into the human-audible range and mux the result onto the video (replaces the former manual ``sequence_audio_file`` path)
+* **pitch_shifted_audio_specs** : pitch-shift recipe used when ``pitch_shifted_audio_bool`` is "Yes" (``fs_audio_dir``, ``fs_device_id``, ``fs_channel_id``, ``fs_wav_sampling_rate``, ``fs_octave_shift``, ``fs_volume_adjustment``)
 * **animate_bool** : boolean value indicating whether to animate the figure or not ("No" creates figure)
 * **video_start_time** : start time of the figure/video in seconds
 * **video_duration** : duration of the video in seconds
@@ -295,7 +296,15 @@ Parameters specific to subplots include:
     "make_behavioral_videos": {
         "arena_directory": "",
         "speaker_audio_file": "",
-        "sequence_audio_file": "",
+        "pitch_shifted_audio_bool": false,
+        "pitch_shifted_audio_specs": {
+            "fs_audio_dir": "hpss_filtered",
+            "fs_device_id": "m",
+            "fs_channel_id": 1,
+            "fs_wav_sampling_rate": 250,
+            "fs_octave_shift": -3,
+            "fs_volume_adjustment": true
+        },
         "animate_bool": false,
         "video_start_time": 567.19,
         "video_duration": 5.0,
@@ -388,17 +397,11 @@ Parameters specific to subplots include:
 
 Render USV spectrograms and embedding maps
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Beyond the GUI functions above, the ``usv_playpen.visualizations.make_usv_spectrograms`` module renders publication figures for ultrasonic vocalizations (USVs) directly from the processed session artifacts. It is driven from the ``usv_spectrogram_analyses.ipynb`` notebook (embedded below) rather than the GUI, and exposes:
+Beyond the GUI functions above, the ``usv_playpen.visualizations.make_usv_spectrograms`` module renders publication figures for ultrasonic vocalizations (USVs) directly from the processed session artifacts. Its per-session and pooled helpers (``USVSpectrogramPlotter``, ``plot_usv_property_histograms``, ``plot_session_type_usv_counts``, ``plot_session_usv_timeline``) are driven from the ``usv_spectrogram_analyses.ipynb`` notebook rather than the GUI — the notebook catalogue and its **Parameters** cell are detailed in :doc:`Notebooks`. The remaining helper is **cohort-level** and GUI-exposed:
 
-- ``USVSpectrogramPlotter`` — single-channel, all-channel and stitched session-timeline spectrograms read from a session's concatenated ``*_int16.mmap`` audio. The single / all modes show a dB amplitude scale over a user-defined ``time_window``; the stitched mode places the pre-computed ``[0, 1]``-normalized per-USV spectrograms from the consolidated HDF5 store at their true on-session times on a linear normalized-amplitude canvas.
-- ``plot_usv_property_histograms`` — five pooled per-USV property histograms (duration, mean amplitude, mean frequency, frequency bandwidth, spectral entropy) across every session listed in a text file.
-- ``plot_session_type_usv_counts`` — mean USVs per session compared across the male-female, female-female and lone-male session types, with SEM error bars on each bar.
-- ``plot_session_usv_timeline`` — every non-noise USV in one session drawn as a colored interval on a horizontal strip, keyed to the male / female / unassigned emitter.
 - ``plot_embedding_with_category_thumbnails`` — a two-panel figure pairing an embedding scatter (VAE umap or QLVM torus) — colored by call category and overlaid with kNN cluster boundaries — against a per-category grid of spectrogram thumbnails sampled from the consolidated SAM2 + spectrogram store. Unlike the helpers above it is **cohort-level** and exposed in the GUI: enabling *Render embedding thumbnails* in the *Visualize* window (third column, with **map type**, **clustering type borders** (coarse / fine), **thumbnails per category**, **thumbnail layout**, **draw cluster boundaries**, **apply SAM2 mask** and **per-cluster sampling** selectors) pools every cohort session list under ``shared_resources.input_files_directory`` and resolves the store from ``shared_resources.spectrograms_dir``, then runs ONCE (the same run-once dispatch as the QLVM torus video, via ``render_embedding_thumbnails_for_cohort``). The remaining knobs — per-cluster sampling, spiral overlay, kNN boundary density, pick / cluster-ID annotations, thumbnail spacing / stretch, ``mask_excluded_categories`` and ``category_colors`` — all live in the ``embedding_thumbnails`` settings block; the figure DPI and the sampling seed are taken from the general ``figures`` block (``dpi`` / ``seed``); the QLVM cluster centers (for cluster-ID labels / spiral centers) are auto-resolved from the newest ``qlvm_clusters_*.h5`` under ``spectrograms_dir`` (QLVM map only); and the cohort scatter is read from the precomputed pooled-embeddings cache ``<spectrograms_dir>/embeddings/pooled_embeddings.parquet`` (one parquet holding both embeddings' coordinates and the coarse + fine labels) — built once on a fast mount via ``build_pooled_embeddings_df`` so the figure does not re-read every session's ``usv_summary.csv``.
 
-The rendering knobs for the spectrogram plotter live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar limits and the save options); the module-level helpers take their inputs as function arguments, all surfaced in the notebook's single **Parameters** cell.
-
-The ``usv_spectrogram_analyses.ipynb`` notebook is the recommended entry point for the per-session and pooled helpers (the four above): it imports them, collects all data paths and styling toggles in one **Parameters** cell near the top, and runs each figure in its own independent cell. The cohort-level ``plot_embedding_with_category_thumbnails`` figure is driven from the GUI instead (see its bullet above). The full notebook lives in the repository at `usv_spectrogram_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_spectrogram_analyses.ipynb>`_.
+The rendering knobs for the spectrogram plotter live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar limits and the save options); the module-level helpers take their inputs as function arguments, surfaced in ``usv_spectrogram_analyses.ipynb`` — see :doc:`Notebooks`.
 
 Interactively explore USV embeddings (marimo app)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -412,15 +415,7 @@ For interactive (rather than static) exploration of the embedding spaces, the re
     # clean app view (just the controls + plot, no code)
     uv run marimo run  src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
 
-Both open in the browser at ``http://localhost:2718``. The controls sit directly above the plot:
-
-- **Session lists** — a fixed-width dropdown of every ``*.txt`` session list in the configured input-files directory (playback lists are excluded). Pick one, some, or all, then click the **Load** button beside it; the chosen lists are pooled (and cached to a per-selection parquet under ``~/.usv_playpen_cache`` so re-selecting the same set reloads in seconds). Picking does not rebuild — nothing builds until you click **Load**.
-- **Map** — VAE (UMAP) or QLVM (torus) coordinates.
-- **Color by** — either a **categorical** label (``category`` fine / ``supercategory`` coarse / ``session type`` / ``session (id)`` / ``emitter (sex)``) or a **continuous** metric rendered through the project colormap: ``density (counts)``, ``duration (ms)``, ``mean``/``peak frequency (kHz)``, ``frequency bandwidth (kHz)``, ``mean``/``max amplitude (a.u.)`` or ``spectral entropy (nats)``. Frequencies and duration are rescaled to the labelled units; the categorical legend is hidden automatically when there are more than ~24 categories (e.g. many sessions).
-- **Boundaries** — optionally overlay cluster outlines for ``category`` or ``supercategory`` (kNN-predicted, drawn as uniform-width haloed contours), independent of the coloring.
-- **Examples (spectrograms) plotted** — how many spectrograms the brush samples (5–50). They are picked along an Archimedean spiral from the centre of the brushed region outward and laid out as a square grid to the right of the scatter, each call's width preserving its true duration against the fixed spectrogram window.
-
-The session-list directory is read from the ``shared_resources`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (``input_files_directory``), and the consolidated spectrogram/SAM2 store resolved from the shared ``shared_resources.spectrograms_dir`` (the newest ``spectrograms_*.h5`` under it); both are resolved per-host via ``configure_path``. The emitter-sex coloring is corrected per session type inferred from the list filename (``female_female`` / ``male_male`` / ``lone_male`` / ``courtship``), so a female in a female-female session is colored as female rather than by the raw track index. The app lives in the repository at `usv_embedding_explorer.py <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py>`_.
+Both open in the browser at ``http://localhost:2718``. Its controls (session-list picker, map, color-by, cluster boundaries, brushed-region spectrogram examples) and the settings it reads are catalogued in :doc:`Notebooks`.
 
 Render the QLVM torus-traversal video
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

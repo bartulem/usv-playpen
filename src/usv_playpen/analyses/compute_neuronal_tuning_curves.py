@@ -35,7 +35,6 @@ order, never clobbers the other's output.
 
 from __future__ import annotations
 
-import json
 import pathlib
 import pickle
 from collections import OrderedDict

@@ -32,6 +32,7 @@ the tool correctly. Should you have any questions, please do not hesitate to ope
    Modeling
    Histology
    Visualize
+   Notebooks
    CLI
 
 .. toctree::

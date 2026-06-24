@@ -417,7 +417,8 @@ def test_summarize_das_findings_writes_summary_csv_and_histogram(
 ):
     """End-to-end: 2 channels × 3 USVs each, all overlapping → 3 merged USVs.
     The function should write a `<sess>_usv_summary.csv` plus a
-    `<sess>_usv_signal_correlation_histogram.svg` (the noise-cutoff figure).
+    `<sess>_usv_signal_correlation_histogram.png` (the noise-cutoff figure;
+    no viz settings are passed, so it uses the project-wide `png` default).
 
     Filterwarning rationale: when every USV is detected on >1 channel, the
     `signal_variance` array stays all-NaN and `np.nanpercentile` emits a
@@ -441,9 +442,9 @@ def test_summarize_das_findings_writes_summary_csv_and_histogram(
     fmv.summarize_das_findings()
 
     audio_dir = tmp_path / "audio"
-    # Histogram .svg written
-    svgs = list(audio_dir.glob("*_usv_signal_correlation_histogram.svg"))
-    assert len(svgs) == 1
+    # Histogram written (png — the project-wide default format)
+    histograms = list(audio_dir.glob("*_usv_signal_correlation_histogram.png"))
+    assert len(histograms) == 1
     # Summary CSV written
     summaries = list(audio_dir.glob("*_usv_summary.csv"))
     assert len(summaries) == 1
@@ -481,8 +482,8 @@ def test_summarize_das_findings_no_filter_keeps_all_and_skips_quality_checks(
     fmv.summarize_das_findings()
 
     audio_dir = tmp_path / "audio"
-    # No histogram figure is written when filtering is disabled.
-    assert list(audio_dir.glob("*_usv_signal_correlation_histogram.svg")) == []
+    # No histogram figure is written when filtering is disabled (any format).
+    assert list(audio_dir.glob("*_usv_signal_correlation_histogram.*")) == []
     # Summary CSV is still written, with all 3 merged USVs retained.
     summaries = list(audio_dir.glob("*_usv_summary.csv"))
     assert len(summaries) == 1
@@ -556,8 +557,8 @@ def test_summarize_das_findings_single_usv_writes_csv_and_counts_it(
     # The lone USV is counted (not zeroed) and the metadata is saved.
     assert metadata["Session"]["session_usv_count"] == 1
     saved.assert_called_once()
-    # No correlation/variance histogram for a single USV.
-    assert list(audio_dir.glob("*_histogram.svg")) == []
+    # No correlation/variance histogram for a single USV (any format).
+    assert list(audio_dir.glob("*_histogram.*")) == []
 
 
 def test_summarize_das_findings_missing_mmap_reports_real_cause(

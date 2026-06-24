@@ -200,7 +200,7 @@ class Visualizer:
 @click.option('--arena-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Arena session path.')
 @click.option('--exp-id', type=str, default=None, required=True, help='Experimenter ID.')
 @click.option('--speaker-audio-file', 'speaker_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Speaker audio file path.')
-@click.option('--sequence-audio-file', 'sequence_audio_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Audible audio sequence file path.')
+@click.option('--pitch-shifted-audio/--no-pitch-shifted-audio', 'pitch_shifted_audio_bool', default=None, help='Auto-produce and mux pitch-shifted (audible) USV audio onto the video.')
 @click.option('--animate/--no-animate', 'animate_bool', default=None, help='Animate visualization.')
 @click.option('--video-start-time', 'video_start_time', type=click.FloatRange(min=0.0), default=None, required=False, help='Video start time (in s).')
 @click.option('--video-duration', 'video_duration', type=float, default=None, required=False, help='Video duration (in s).')

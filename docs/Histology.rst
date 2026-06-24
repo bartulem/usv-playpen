@@ -276,10 +276,13 @@ columns. ``run`` writes the global ``EPHYS/unit_catalog.csv`` and a per-probe
 
 .. _histology-utilities:
 
-Converter and catalog-patch utilities
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Two maintenance utilities are exposed as ``python -m`` module CLIs. Both
-default to a dry run via ``--dry-run`` and print a JSON summary:
+Anatomy-converter utility
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The sites-to-anatomy converter is exposed as a ``python -m`` module CLI. It
+defaults to a dry run via ``--dry-run`` and prints a JSON summary. Its path
+flags default to the paths in ``analyses_settings.json`` under ``data_roots``
+(translated to the host OS via ``configure_path``), so pass them only to
+override:
 
 .. code-block:: bash
 
@@ -287,13 +290,6 @@ default to a dry run via ``--dry-run`` and print a JSON summary:
     # are keyed by Kilosort-row index (see :doc:`channel_indexing`).
     $ python -m usv_playpen.neuropixels.anatomy_converter --dry-run \
         --converter-path /mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json \
-        --ephys-root /mnt/falkner/Bartul/EPHYS \
-        --histology-root /mnt/falkner/Bartul/histology
-
-    # Re-triangulate each catalog unit restricted to its template-peak
-    # shank, patching closest_ch / brain_area / loc_* in unit_catalog.csv.
-    $ python -m usv_playpen.neuropixels.patch_unit_catalog_peak_channel --dry-run \
-        --catalog-path /mnt/falkner/Bartul/EPHYS/unit_catalog.csv \
         --ephys-root /mnt/falkner/Bartul/EPHYS \
         --histology-root /mnt/falkner/Bartul/histology
 
@@ -334,9 +330,6 @@ the public SpikeGLX / Imec documentation. Run it as a GUI via the
 Interactive notebook
 ^^^^^^^^^^^^^^^^^^^^^
 The ``npx_histology_unit_quality_processing.ipynb`` notebook is the
-recommended entry point. It runs the whole workflow above in order — every
-acquisition path and session identifier lives in a single **Parameters**
-cell near the top (grouped by section), so a run is configured in one
-place. The full notebook lives in the repository at
-`npx_histology_unit_quality_processing.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/npx_histology_unit_quality_processing.ipynb>`_.
+recommended entry point — it runs the whole workflow above in order from a
+single **Parameters** cell. Its detailed walkthrough, knobs, and rendered
+source live in :doc:`Notebooks`.

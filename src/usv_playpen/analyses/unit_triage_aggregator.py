@@ -34,7 +34,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..os_utils import atomic_output_path
+from ..os_utils import atomic_output_path, resolve_data_root
 
 
 # JSON encoder helpers
@@ -337,9 +337,9 @@ def _flag_runs(
         direction is not flagged.
     """
 
-    if int(direction_block.get("max_run", 0) or 0) < min_run:
+    if int(direction_block["max_run"] or 0) < min_run:
         return None
-    peak_z = _safe_float(direction_block.get("peak_z"))
+    peak_z = _safe_float(direction_block["peak_z"])
     if peak_z is None or abs(peak_z) < z_threshold:
         return None
     return _extract_run_metrics(direction_block)
@@ -745,9 +745,12 @@ def flag_one_cluster(
     return records
 
 
-_DEFAULT_CATALOG_PATH = "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv"
-_DEFAULT_AGGREGATOR_OUT_DIR = "/mnt/falkner/Bartul/neuronal_tuning"
-_DEFAULT_DATA_ROOT = "/mnt/falkner/Bartul/Data"
+# Data-location defaults come from `analyses_settings.json` under `data_roots`,
+# resolved to the host OS via `configure_path` (see `resolve_data_root`), so
+# they are user-editable + OS-portable rather than hard-coded.
+_DEFAULT_CATALOG_PATH = str(resolve_data_root("catalog_path"))
+_DEFAULT_AGGREGATOR_OUT_DIR = str(resolve_data_root("aggregator_out_dir"))
+_DEFAULT_DATA_ROOT = str(resolve_data_root("data_root"))
 
 
 def _load_default_thresholds() -> dict:

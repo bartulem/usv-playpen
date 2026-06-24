@@ -1218,7 +1218,7 @@ class ExperimentController:
         if self.metadata_settings:
             self.metadata_settings['Session']['session_id'] = session_id
             self.metadata_settings['Environment']['playpen_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
-            if 'usv_playpen_recording_version' in self.metadata_settings.get('Session', {}):
+            if 'usv_playpen_recording_version' in self.metadata_settings['Session']:
                 self.metadata_settings['Session']['usv_playpen_recording_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
 
             destination_path = Path(total_dir_name_windows[0]) / f"{session_id}_metadata.yaml"

@@ -163,21 +163,16 @@ class TestBasisMatrix:
         assert (out_dir / '.basis_plotted').exists()
         assert (out_dir / 'basis_verification.png').exists()
 
-    @pytest.mark.parametrize('basis_name', ['raised_cosine', 'bspline'])
+    @pytest.mark.parametrize('basis_name', ['raised_cosine', 'bspline', 'laplacian_pyramid'])
     def test_parametric_basis_branches_build_matrix(self, tmp_path, basis_name):
-        """The raised-cosine and B-spline branches read their
-        hyperparameter blocks and return a matrix with ``history_frames``
+        """The raised-cosine, B-spline, and laplacian-pyramid branches read
+        their hyperparameter blocks and return a matrix with ``history_frames``
         rows. A wide history (90 frames) is used so the shipped B-spline
         config (32 splines, degree 3) keeps every knot distinct — at a
         short width the integer-cast knots collapse and ``_normalizecols``
-        divides a zero column (RuntimeWarning).
-
-        Note: the ``laplacian_pyramid`` branch is intentionally NOT
-        parametrized here — the dispatcher calls
-        ``laplacian_pyramid(width=, levels=, fwhm=)`` but the function
-        signature requires a ``step`` positional argument (present in the
-        shipped JSON config), so that branch raises ``TypeError`` and is
-        currently dead. See the final report."""
+        divides a zero column (RuntimeWarning). The dispatcher passes
+        ``step=p['step']`` to ``laplacian_pyramid``, so that branch builds
+        normally (it was previously thought dead due to a missing ``step``)."""
 
         settings = _settings(tmp_path, model_engine='sklearn')
         settings['model_params']['model_basis_function'] = basis_name
@@ -202,6 +197,31 @@ class TestBasisMatrix:
                                                 output_dir=str(out_dir))
         assert isinstance(mat, np.ndarray)
         assert not (out_dir / 'basis_verification.png').exists()
+
+    def test_plot_bool_toggles_parametric_basis_plot(self, tmp_path):
+        """A configurable basis honours its ``plot_bool``: ``raised_cosine``
+        with ``plot_bool=False`` builds the matrix but writes NO verification
+        PNG, while ``plot_bool=True`` writes it. (The ``identity`` basis has no
+        ``plot_bool`` and always plots — covered above.)"""
+
+        out_off = tmp_path / 'off'
+        out_off.mkdir()
+        s_off = _settings(tmp_path, model_engine='sklearn')
+        s_off['model_params']['model_basis_function'] = 'raised_cosine'
+        s_off['hyperparameters']['basis_functions']['raised_cosine']['plot_bool'] = False
+        mat = uni.get_basis_matrix_standardized(s_off, history_frames=90,
+                                                output_dir=str(out_off))
+        assert isinstance(mat, np.ndarray)
+        assert not (out_off / 'basis_verification.png').exists()
+
+        out_on = tmp_path / 'on'
+        out_on.mkdir()
+        s_on = _settings(tmp_path, model_engine='sklearn')
+        s_on['model_params']['model_basis_function'] = 'raised_cosine'
+        s_on['hyperparameters']['basis_functions']['raised_cosine']['plot_bool'] = True
+        uni.get_basis_matrix_standardized(s_on, history_frames=90,
+                                          output_dir=str(out_on))
+        assert (out_on / 'basis_verification.png').exists()
 
 
 # dispatch_univariate_job

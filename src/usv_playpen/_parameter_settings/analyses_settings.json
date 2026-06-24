@@ -16,10 +16,10 @@
   },
   "compute_inter_usv_interval_distributions": {
     "session_lists": [
-      "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
+      "/mnt/falkner/{experimenter}/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
     ],
-    "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
-    "figures_directory": "/mnt/falkner/Bartul/figures",
+    "output_directory": "/mnt/falkner/{experimenter}/modeling/usv_interval_results",
+    "figures_directory": "/mnt/falkner/{experimenter}/figures",
     "noise_col_id": "vae_supercategory",
     "noise_categories": [0],
     "fit_gmm": true,
@@ -63,7 +63,7 @@
     "naturalistic_wav_sampling_rate": 250,
     "naturalistic_playback_snippets_dir_prefix": "female",
     "total_acceptable_naturalistic_playback_time": 1080,
-    "naturalistic_iui_archive_h5": "/mnt/falkner/Bartul/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
+    "naturalistic_iui_archive_h5": "/mnt/falkner/{experimenter}/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
     "naturalistic_interval_mode": "e2s",
     "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
     "playback_seed": null
@@ -154,5 +154,14 @@
       "chunk_duration": "1s",
       "progress_bar": true
     }
+  },
+  "data_roots": {
+    "ephys_root": "/mnt/falkner/{experimenter}/EPHYS",
+    "histology_root": "/mnt/falkner/{experimenter}/histology",
+    "data_root": "/mnt/falkner/{experimenter}/Data",
+    "catalog_path": "/mnt/falkner/{experimenter}/EPHYS/unit_catalog.csv",
+    "aggregator_out_dir": "/mnt/falkner/{experimenter}/neuronal_tuning",
+    "allen_meshes_dir": "/mnt/falkner/{experimenter}/EPHYS/allen_meshes",
+    "converter_path": "/mnt/falkner/{experimenter}/EPHYS/neuropixels_sites_to_anatomy_converter.json"
   }
 }

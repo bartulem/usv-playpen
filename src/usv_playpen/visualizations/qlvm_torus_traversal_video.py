@@ -332,7 +332,7 @@ def precompute_reveals(phases, nn_query, samples_per_trace,
         if ph['name'] != 'traversal':
             continue
         n = ph['duration']
-        if ph.get('kind') == 'boundary':
+        if ph['kind'] == 'boundary':
             reveal_frames = np.linspace(0, n - 1, boundary_positions_per_walk).astype(int)
             reveal_xy = ph['traj'][reveal_frames]
             reveal_nn = np.array([nn_query(xy % 1.0, k=boundary_neighbors) for xy in reveal_xy])
@@ -735,13 +735,13 @@ class QLVMTorusTraversalVideo:
                 cluster_center_marker.set_offsets(np.empty((0, 2)))
 
                 if ph['name'] == 'title_card':
-                    part = ph.get('part', 0)
+                    part = ph['part']
                     state['reached_part'] = max(state['reached_part'], part)
                     set_grid_visible(False)
                     set_ring_visible(False)
                     ax_card.set_visible(True)
                     card_title.set_text(ph['title'])
-                    card_sub.set_text(ph.get('subtitle', ''))
+                    card_sub.set_text(ph['subtitle'])
                     sup.set_text('')
                     title.set_text('')
                     return
@@ -766,7 +766,7 @@ class QLVMTorusTraversalVideo:
                     set_ring_visible(False)
                     set_grid_visible(True)
                     blank_grid()
-                    kind = ph.get('kind', '')
+                    kind = ph['kind']
                     if kind == 'boundary':
                         sup.set_text(f"Boundary walk  -  {ph['sub']}")
                         title.set_text(f'Curved path  -  right columns = '
@@ -813,7 +813,7 @@ class QLVMTorusTraversalVideo:
                 reveal_frames = ph['reveal_frames']
                 count = int(np.sum(reveal_frames <= fi))
                 last_count = state['last_reveal_count']
-                kind = ph.get('kind', '')
+                kind = ph['kind']
 
                 if kind == 'boundary':
                     if count > last_count:

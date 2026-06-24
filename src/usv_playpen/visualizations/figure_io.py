@@ -50,7 +50,7 @@ from typing import Any
 from ..os_utils import configure_path
 
 
-_DEFAULT_FIG_FORMAT = "svg"
+_DEFAULT_FIG_FORMAT = "png"
 _DEFAULT_DPI = 300
 _DEFAULT_TIMESTAMP_IN_NAME = True
 

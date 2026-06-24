@@ -32,11 +32,11 @@ Create a ChArUco board
 OpenCV provides a function to create a ChArUco board. This is implemented through SLEAP-Anipose and available in the GUI.
 A thing to consider is the size of the board. The larger the board, the more markers it contains, and the more accurate the
 calibration will be. The user is responsible for printing the board and attaching it to a flat surface. By default, the board
-has the following characteristics (found in */usv-playpen/_parameter_settings/process_settings.json*):
+has the following characteristics (found in */usv-playpen/_parameter_settings/processing_settings.json*):
 
 .. code-block:: json
 
-    "calibrate_anipose": {
+    "conduct_anipose_calibration": {
         "board_provided_bool": false,
         "board_xy": [
           8,
@@ -63,7 +63,7 @@ Clear arena and position IR-markers
    :align: left
    :alt: Corner marker
 
-Arena corners are fitted with four laser-cut acrylic parts that are proped vertically to discourage mice from climbing up. Each part is a three-piece design consisting of the main vertical piece, a top cover and
+Arena corners are fitted with four laser-cut acrylic parts that are propped vertically to discourage mice from climbing up. Each part is a three-piece design consisting of the main vertical piece, a top cover and
 screw that secures the top to the vertical rail. Secured parts should not wobble when you apply perpendicular pressure. It should press tightly against the floor plate. You can remove these parts by
 loosening the screws and removing the pieces one by one. Try not to push any of these acrylic parts against the floor while removing, since they can break.
 

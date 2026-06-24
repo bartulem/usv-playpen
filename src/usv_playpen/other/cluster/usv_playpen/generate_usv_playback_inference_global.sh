@@ -1,48 +1,47 @@
 #!/bin/bash
 
-# Usage: bash generate_ratemaps_inference_global.sh
+# Usage: bash generate_usv_playback_inference_global.sh
 
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT="Name"
-CPUS_PER_TASK=2
-TOTAL_MEMORY="16G"
-TIME_RESTRICTION="18:00:00"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# and the `--exp-id` passed to the function (session/arena roots stay as
+# entered). Match the `experimenter` key in this checkout's
+# behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
+CPUS_PER_TASK=4
+TOTAL_MEMORY="24G"
+TIME_RESTRICTION="02:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 
-SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
+NUM_USV_FILES=1
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
-SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
-
-WORK_DIR="/mnt/cup/labs/falkner/$CUP_ROOT/USV_PLAYPEN/ratemaps"
-JOB_SCRIPT="$WORK_DIR/generate_ratemaps_inference_settings.sh"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/usv_playback"
+JOB_SCRIPT="$WORK_DIR/generate_usv_playback_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
 
 touch "$JOB_SCRIPT"
 echo "#!/bin/bash" > "$JOB_SCRIPT"
-echo "#SBATCH --job-name=generate-ratemaps-$SESSION_ID" >> "$JOB_SCRIPT"
-echo "#SBATCH --output=$WORK_DIR/logs/generate-ratemaps-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
-echo "#SBATCH --error=$WORK_DIR/logs/generate-ratemaps-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
+echo "#SBATCH --job-name=usv-playback" >> "$JOB_SCRIPT"
+echo "#SBATCH --output=$WORK_DIR/logs/usv-playback-%j.out" >> "$JOB_SCRIPT"
+echo "#SBATCH --error=$WORK_DIR/logs/usv-playback-%j.err" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "#SBATCH --mem=$TOTAL_MEMORY" >> "$JOB_SCRIPT"
 echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"
 echo "#SBATCH --mail-type=$EMAIL_TYPE" >> "$JOB_SCRIPT"
 echo "#SBATCH --mail-user=$EMAIL_ADDRESS" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "set -e" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
 echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
 echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "generate-rm --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
-echo "generate-rm-figs --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "generate-usv-playback --exp-id \"$EXPERIMENTER_ID\" --num-usv-files $NUM_USV_FILES" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

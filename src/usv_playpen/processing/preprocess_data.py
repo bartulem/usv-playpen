@@ -65,7 +65,7 @@ def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
         session_metadata = yaml.safe_load(yaml_in)
     if not isinstance(session_metadata, dict):
         return
-    if 'usv_playpen_processing_version' not in session_metadata.get('Session', {}):
+    if 'Session' not in session_metadata or 'usv_playpen_processing_version' not in session_metadata['Session']:
         return
     session_metadata['Session']['usv_playpen_processing_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
     with atomic_output_path(metadata_path) as tmp_path:

@@ -5,7 +5,12 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/visualizations"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# and the `--exp-id` passed to the function (session/arena roots stay as
+# entered). Match the `experimenter` key in this checkout's
+# behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/visualizations"
 CPUS_PER_TASK=6
 TOTAL_MEMORY="8G"
 TIME_RESTRICTION="30:00:00"
@@ -13,7 +18,6 @@ EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 
-EXP_ID="Name"
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 ARENA_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_091231"
 VIDEO_START_TIME=0.0
@@ -48,7 +52,7 @@ echo "" >> "$JOB_SCRIPT"
 echo "generate-viz \\
     --root-directory \"$SESSION_ROOT_DIRECTORY\" \\
     --arena-directory \"$ARENA_DIRECTORY\" \\
-    --exp-id \"$EXP_ID\" \\
+    --exp-id \"$EXPERIMENTER_ID\" \\
     --animate \\
     --video-start-time $VIDEO_START_TIME \\
     --video-duration $VIDEO_DURATION \\

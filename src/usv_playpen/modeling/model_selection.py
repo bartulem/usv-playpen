@@ -334,7 +334,7 @@ def compute_filter_shapes_per_fold_bout_onset(
                     X_n_per_feat.append(X_tr_all[y_tr_all == 0])
             else:
                 print(
-                    f"    [!] Unknown fold type {fold_info.get('type')!r} "
+                    f"    [!] Unknown fold type {fold_info['type']!r} "
                     f"(fold {fold_idx}); skipping."
                 )
                 continue
@@ -2269,9 +2269,10 @@ def bout_parameter_model_selection(
             # whose mean is non-finite (or an entirely empty
             # candidates_summary) is the same broken-fold artifact and
             # should not look like convergence to the resume logic.
+            _cand_summary = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
             cand_dict = {
-                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
-                if isinstance(s, dict) and np.isfinite(s.get('mean_explained_deviance', float('nan')))
+                n: s for n, s in _cand_summary.items()
+                if isinstance(s, dict) and 'mean_explained_deviance' in s and np.isfinite(s['mean_explained_deviance'])
             }
 
             if not cand_dict:
@@ -3078,9 +3079,10 @@ def multinomial_vocal_category_model_selection(
             # whose mean is non-finite (or an entirely empty
             # candidates_summary) is the same broken-fold artifact and
             # should not look like convergence to the resume logic.
+            _cand_summary = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
             cand_dict = {
-                n: s for n, s in (last_res.get('candidates_summary') or {}).items()
-                if isinstance(s, dict) and np.isfinite(s.get('mean_auc', float('nan')))
+                n: s for n, s in _cand_summary.items()
+                if isinstance(s, dict) and 'mean_auc' in s and np.isfinite(s['mean_auc'])
             }
 
             if not cand_dict:
@@ -4089,7 +4091,8 @@ def continuous_vocal_manifold_model_selection(
             # its scores live on a different scale and must not be compared
             # against this run's `best_current_score`
             # / accept rule. Discard and fall through to the fresh-start path.
-            _saved_metric = (last_res.get('_run_metadata') or {}).get('selection_metric')
+            _run_meta = (last_res['_run_metadata'] if '_run_metadata' in last_res else None) or {}
+            _saved_metric = _run_meta['selection_metric'] if 'selection_metric' in _run_meta else None
             if _saved_metric is not None and _saved_metric != SELECTION_SCORE_KEY:
                 print(
                     f"[RESUME] Step {last_step} was scored on '{_saved_metric}' but this "
@@ -4103,9 +4106,10 @@ def continuous_vocal_manifold_model_selection(
                 # whose mean is non-finite (or an entirely empty
                 # candidates_summary) is the same broken-fold artifact and
                 # should not look like convergence to the resume logic.
+                _cand_summary = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
                 cand_dict = {
-                    n: s for n, s in (last_res.get('candidates_summary') or {}).items()
-                    if isinstance(s, dict) and np.isfinite(s.get('mean_r2', float('nan')))
+                    n: s for n, s in _cand_summary.items()
+                    if isinstance(s, dict) and 'mean_r2' in s and np.isfinite(s['mean_r2'])
                 }
 
             if not cand_dict:

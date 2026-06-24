@@ -5,9 +5,13 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
-HPSS_WORK_DIR="/mnt/cup/labs/falkner/Name/HPSS"
-DAS_WORK_DIR="/mnt/cup/labs/falkner/Name/DAS"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# (session/arena roots stay as entered). Match the `experimenter` key in this
+# checkout's behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/processing"
+HPSS_WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/HPSS"
+DAS_WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/DAS"
 
 CPUS_PER_TASK=24
 TOTAL_MEMORY="128G"

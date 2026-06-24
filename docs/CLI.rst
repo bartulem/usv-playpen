@@ -287,14 +287,14 @@ Process
 
 .. code-block:: text
 
-    usage: anipose-triangulate [-h] --root-directory PATH --calibration-file PATH
+    usage: anipose-triangulate [-h] --root-directory PATH --cal-directory PATH
                                [--arena-points | --no-arena-points]
                                [--frame-restriction INTEGER]
                                [--exclude-views TEXT...]
                                [--display-progress | --no-display-progress]
                                [--use-ransac | --no-use-ransac]
-                               [--rigid-constraints "TEXT,TEXT"...]
-                               [--weak-constraints "TEXT,TEXT"...] [--smooth-scale FLOAT]
+                               [--rigid-constraint "TEXT,TEXT"...]
+                               [--weak-constraint "TEXT,TEXT"...] [--smooth-scale FLOAT]
                                [--weight-weak INTEGER] [--weight-rigid INTEGER]
                                [--reprojection-threshold INTEGER] [--regularization TEXT]
                                [--n-deriv-smooth INTEGER]
@@ -313,8 +313,8 @@ Process
                                  Display the progress bar during triangulation.
       --use-ransac / --no-use-ransac
                                  Use RANSAC for robust triangulation.
-      --rigid-constraints        Pair(s) of nodes for a rigid constraint.
-      --weak-constraints         Pair(s) of nodes for a weak constraint.
+      --rigid-constraint        Pair(s) of nodes for a rigid constraint.
+      --weak-constraint         Pair(s) of nodes for a weak constraint.
       --smooth-scale             Scaling factor for smoothing.
       --weight-weak              Weight for weak constraints.
       --weight-rigid             Weight for rigid constraints.
@@ -421,7 +421,7 @@ Neuropixels
 ^^^^^^^^^^^
 
 ``npx-meta-to-coords``
-``npx-meta-to-coords`` launches a small Qt GUI that converts a SpikeGLX ``*.ap.meta`` file into a probe-geometry artifact: a Kilosort ``chanMap.mat``, plain-text or ``.npy`` site coordinates, JRClust ``.prm`` strings, or an in-place upgrade of a legacy (pre-SpikeGLX 032623) meta file. It takes no command-line flags — every choice is made through three dialogs. The related ``python -m usv_playpen.neuropixels.anatomy_converter`` and ``python -m usv_playpen.neuropixels.patch_unit_catalog_peak_channel`` utilities, and the programmatic API, are documented on the :ref:`Histology` page.
+``npx-meta-to-coords`` launches a small Qt GUI that converts a SpikeGLX ``*.ap.meta`` file into a probe-geometry artifact: a Kilosort ``chanMap.mat``, plain-text or ``.npy`` site coordinates, JRClust ``.prm`` strings, or an in-place upgrade of a legacy (pre-SpikeGLX 032623) meta file. It takes no command-line flags — every choice is made through three dialogs. The related ``python -m usv_playpen.neuropixels.anatomy_converter`` utility, and the programmatic API, are documented on the :ref:`Histology` page.
 
 .. code-block:: text
 
@@ -611,7 +611,7 @@ Visualize
 ^^^^^^^^^
 
 ``generate-rm-figs``
-``generate-rm-figs`` is the command-line interface for rendering the per-cluster neuronal tuning figures from existing pkls. Each cluster gets one combined output (behavioral pages + vocal Page 1 / Page 2). The output file format and ratemap colormap are read from ``visualizations_settings.json`` under ``neuronal_tuning_figures``; compute-time knobs (``smoothing_sd``, ``behavioral_min_occupancy_seconds``) live on the analyses side and are read from each pkl's ``behavioral_metadata`` block at render time.
+``generate-rm-figs`` is the command-line interface for rendering the per-cluster neuronal tuning figures from existing pkls. Each cluster gets one combined output (behavioral pages + vocal Page 1 / Page 2). The output file format and ratemap colormap are read from ``visualizations_settings.json`` under the shared ``figures`` block; compute-time knobs (``smoothing_sd``, ``behavioral_min_occupancy_seconds``) live on the analyses side and are read from each pkl's ``behavioral_metadata`` block at render time.
 
 .. code-block:: text
 
@@ -630,7 +630,7 @@ Visualize
 .. code-block:: text
 
     usage: generate-viz [-h] --root-directory PATH --arena-directory PATH --exp-id TEXT
-                        [--speaker-audio-file PATH] [--sequence-audio-file PATH]
+                        [--speaker-audio-file PATH] [--pitch-shifted-audio | --no-pitch-shifted-audio]
                         [--animate | --no-animate] [--video-start-time FLOAT]
                         [--video-duration FLOAT] [--plot-theme TEXT]
                         [--save-fig | --no-save-fig]
@@ -687,7 +687,8 @@ Visualize
     optional arguments:
       -h, --help                       Show this help message and exit.
       --speaker-audio-file             Speaker audio file path.
-      --sequence-audio-file            Audible audio sequence file path.
+      --pitch-shifted-audio / --no-pitch-shifted-audio
+                                       Auto-produce and mux pitch-shifted (audible) USV audio onto the video.
       --animate / --no-animate         Animate visualization.
       --video-start-time               Video start time (in s).
       --video-duration                 Video duration (in s).
@@ -764,6 +765,41 @@ Visualize
                                        Display USV assignments on the spectrogram.
       --usv-segments-ypos              Y-axis position for USV segment markers (Hz).
       --usv-segments-lw                Line width for USV segment markers.
+
+``qlvm-torus-traversal-video``
+``qlvm-torus-traversal-video`` renders a demo video that traverses the toroidal QLVM latent space.
+
+.. code-block:: text
+
+    usage: qlvm-torus-traversal-video [-h] [--output-path TEXT]
+                                      [--clustering TEXT] [--fps INTEGER]
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --output-path         Output .mp4 / .gif path (default: figures.save_directory + timestamp).
+      --clustering          Clustering type borders (coarse / fine).
+      --fps                 Video frames per second.
+
+``build-vae-density``
+``build-vae-density`` builds the pooled VAE-UMAP density / category-label maps (coarse + fine) used as the embedding-space background for the USV spectrogram figures.
+
+.. code-block:: text
+
+    usage: build-vae-density [-h] --sessions-txt TEXT --out-coarse TEXT
+                             --out-fine TEXT [--cache-path TEXT]
+                             [--grid INTEGER] [--smooth-sigma FLOAT] [--knn INTEGER]
+
+    required arguments:
+      --sessions-txt        Text file listing one session root per line.
+      --out-coarse          Output .npz path for the COARSE map (vae_supercategory).
+      --out-fine            Output .npz path for the FINE map (vae_category).
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --cache-path          Optional parquet cache for the pooled DataFrame.
+      --grid                Density / label grid side length (default 300).
+      --smooth-sigma        Gaussian sigma in grid cells; 0 = raw histogram (default 1.5).
+      --knn                 Neighbours for the grid label classifier (default 15).
 
 .. _usv-pipeline-cli:
 

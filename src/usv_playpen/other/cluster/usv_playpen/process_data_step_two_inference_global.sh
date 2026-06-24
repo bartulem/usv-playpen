@@ -1,38 +1,40 @@
 #!/bin/bash
 
-# Usage: bash process_data_step_three_inference_global.sh
+# Usage: bash process_data_step_two_inference_global.sh
 
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
-CPUS_PER_TASK=2
-TOTAL_MEMORY="18G"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# (session/arena roots stay as entered). Match the `experimenter` key in this
+# checkout's behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/processing"
+CPUS_PER_TASK=6
+TOTAL_MEMORY="48G"
 TIME_RESTRICTION="02:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 
-VCL_CONDA_ENV="vcl-ssl"
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 ARENA_SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_092213"
-VCL_VERSION="vcl-ssl" # 'vcl' or 'vcl-ssl'
-VCL_MODEL_DIR="/mnt/cup/labs/falkner/Bartul/sound_localization/conformer_smol_4.00"
+EXP_CODE="BCL2MGFGe"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
 SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
-JOB_SCRIPT="$WORK_DIR/process_data_step_three_inference_settings.sh"
+
+JOB_SCRIPT="$WORK_DIR/process_data_step_two_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
 
 touch "$JOB_SCRIPT"
 echo "#!/bin/bash" > "$JOB_SCRIPT"
-echo "#SBATCH --job-name=vcl-assign-$SESSION_ID" >> "$JOB_SCRIPT"
-echo "#SBATCH --output=$WORK_DIR/logs/vcl-assign-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
-echo "#SBATCH --error=$WORK_DIR/logs/vcl-assign-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
-echo "#SBATCH --gpus=1" >> "$JOB_SCRIPT"
+echo "#SBATCH --job-name=processing-two-$SESSION_ID" >> "$JOB_SCRIPT"
+echo "#SBATCH --output=$WORK_DIR/logs/processing-two-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
+echo "#SBATCH --error=$WORK_DIR/logs/processing-two-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "#SBATCH --mem=$TOTAL_MEMORY" >> "$JOB_SCRIPT"
 echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"
@@ -44,13 +46,10 @@ echo "" >> "$JOB_SCRIPT"
 echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
 echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "prepare-vcl-assign --root-directory \"$SESSION_ROOT_DIRECTORY\" --arena-directory \"$ARENA_SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
-echo "" >> "$JOB_SCRIPT"
-echo "vcl-assign \\
-    --root-directory \"$SESSION_ROOT_DIRECTORY\" \\
-    --vcl-version \"$VCL_VERSION\" \\
-    --env-name \"$VCL_CONDA_ENV\" \\
-    --model-dir \"$VCL_MODEL_DIR\"" >> "$JOB_SCRIPT"
+echo "sleap-to-h5 --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "anipose-triangulate --root-directory \"$SESSION_ROOT_DIRECTORY\" --cal-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --display-progress --no-arena-points" >> "$JOB_SCRIPT"
+echo "anipose-trm --root-directory \"$SESSION_ROOT_DIRECTORY\" --exp-code $EXP_CODE --arena-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --delete-original" >> "$JOB_SCRIPT"
+echo "echo 'All processing steps (step two) completed successfully.'" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

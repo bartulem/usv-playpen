@@ -1,36 +1,38 @@
 #!/bin/bash
 
-# Usage: bash process_data_step_two_inference_global.sh
+# Usage: bash generate_ratemaps_inference_global.sh
 
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
-CPUS_PER_TASK=6
-TOTAL_MEMORY="48G"
-TIME_RESTRICTION="02:00:00"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# (session/arena roots stay as entered). Match the `experimenter` key in this
+# checkout's behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
+CPUS_PER_TASK=2
+TOTAL_MEMORY="16G"
+TIME_RESTRICTION="18:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
-ARENA_SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_092213"
-EXP_CODE="BCL2MGFGe"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
 SESSION_ID=$(basename "$SESSION_ROOT_DIRECTORY")
 
-JOB_SCRIPT="$WORK_DIR/process_data_step_two_inference_settings.sh"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/ratemaps"
+JOB_SCRIPT="$WORK_DIR/generate_ratemaps_inference_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
 
 touch "$JOB_SCRIPT"
 echo "#!/bin/bash" > "$JOB_SCRIPT"
-echo "#SBATCH --job-name=processing-two-$SESSION_ID" >> "$JOB_SCRIPT"
-echo "#SBATCH --output=$WORK_DIR/logs/processing-two-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
-echo "#SBATCH --error=$WORK_DIR/logs/processing-two-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
+echo "#SBATCH --job-name=generate-ratemaps-$SESSION_ID" >> "$JOB_SCRIPT"
+echo "#SBATCH --output=$WORK_DIR/logs/generate-ratemaps-%j-$SESSION_ID.out" >> "$JOB_SCRIPT"
+echo "#SBATCH --error=$WORK_DIR/logs/generate-ratemaps-%j-$SESSION_ID.err" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "#SBATCH --mem=$TOTAL_MEMORY" >> "$JOB_SCRIPT"
 echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"
@@ -42,10 +44,8 @@ echo "" >> "$JOB_SCRIPT"
 echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
 echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
-echo "sleap-to-h5 --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
-echo "anipose-triangulate --root-directory \"$SESSION_ROOT_DIRECTORY\" --cal-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --display-progress --no-arena-points" >> "$JOB_SCRIPT"
-echo "anipose-trm --root-directory \"$SESSION_ROOT_DIRECTORY\" --exp-code $EXP_CODE --arena-directory \"$ARENA_SESSION_ROOT_DIRECTORY\" --delete-original" >> "$JOB_SCRIPT"
-echo "echo 'All processing steps (step two) completed successfully.'" >> "$JOB_SCRIPT"
+echo "generate-rm --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "generate-rm-figs --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #
 # --------------------- RUN JOB -------------------- #

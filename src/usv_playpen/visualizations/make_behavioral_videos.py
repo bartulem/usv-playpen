@@ -25,6 +25,7 @@ from numba import njit
 from scipy.io import wavfile
 
 from ..analyses.decode_experiment_label import extract_information
+from ..analyses.generate_audio_files import AudioGenerator
 from ..os_utils import first_match_or_raise
 from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
@@ -2134,9 +2135,7 @@ class Create3DVideo:
                                                    usv_stop - current_video_time)
                                                   for usv_start, usv_stop in zip(frame_usv_summary_df_temp['start'], frame_usv_summary_df_temp['stop'], strict=True)]
 
-                        _unassigned = self.visualizations_parameter_dict.get(
-                            "unassigned_colors", ["#C0C0C0"]
-                        )[0]
+                        _unassigned = self.visualizations_parameter_dict["unassigned_colors"][0]
                         usv_segments_colors_temp = [animal_colors_dict.get(emitter_id, _unassigned) for emitter_id in frame_usv_summary_df_temp['emitter']]
                     else:
                         usv_segments_list_temp = []
@@ -2312,13 +2311,25 @@ class Create3DVideo:
                                          shell=self.shell_usage_bool).wait()
                         (putative_save_directory / audio_file_name).unlink()
 
-                if self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file'] != '' and pathlib.Path(self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file']).is_file():
-                    output_video_name = animation_file_name + f"_with_USV_sound.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
-                    subprocess.Popen(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {self.visualizations_parameter_dict['make_behavioral_videos']['sequence_audio_file']} -c:v copy -c:a aac {output_video_name}",
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.STDOUT,
-                                     cwd=putative_save_directory,
-                                     shell=self.shell_usage_bool).wait()
+                mbv = self.visualizations_parameter_dict['make_behavioral_videos']
+                if mbv['pitch_shifted_audio_bool']:
+                    # auto-produce the audible (pitch-shifted) audio for THIS video's time window
+                    fs_dict = dict(mbv['pitch_shifted_audio_specs'])
+                    fs_dict['fs_sequence_start'] = mbv['video_start_time']
+                    fs_dict['fs_sequence_duration'] = mbv['video_duration']
+                    usv_sound_path = AudioGenerator(root_directory=self.root_directory,
+                                                    freq_shift_settings_dict=fs_dict,
+                                                    message_output=self.message_output).frequency_shift_audio_segment(seq_start=mbv['video_start_time'],
+                                                                                                                      seq_duration=mbv['video_duration'])
+                    if usv_sound_path is not None and pathlib.Path(usv_sound_path).is_file():
+                        output_video_name = animation_file_name + f"_with_USV_sound.{mbv['general_figure_specs']['animation_format']}"
+                        mux_return_code = subprocess.Popen(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{mbv['general_figure_specs']['animation_format']} -i {usv_sound_path} -c:v copy -c:a aac {output_video_name}",
+                                                           stdout=subprocess.DEVNULL,
+                                                           stderr=subprocess.STDOUT,
+                                                           cwd=putative_save_directory,
+                                                           shell=self.shell_usage_bool).wait()
+                        if mux_return_code != 0:
+                            self.message_output(f"WARNING: ffmpeg mux of pitch-shifted audio failed (return code {mux_return_code}).")
 
             else:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:

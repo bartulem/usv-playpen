@@ -5,7 +5,11 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT="Name"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# and the `--exp-id` passed to the function (session/arena roots stay as
+# entered). Match the `experimenter` key in this checkout's
+# behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
 CPUS_PER_TASK=4
 TOTAL_MEMORY="16G"
 TIME_RESTRICTION="02:00:00"
@@ -13,7 +17,6 @@ EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 
-EXP_ID="Name"
 NUM_USV_FILES=1
 SAMPLING_RATE=250
 SNIPPETS_DIR_PREFIX="female"
@@ -27,14 +30,14 @@ TOTAL_PLAYBACK_TIME=1080
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
-WORK_DIR="/mnt/cup/labs/falkner/$CUP_ROOT/USV_PLAYPEN/naturalistic_usv_playback"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/naturalistic_usv_playback"
 JOB_SCRIPT="$WORK_DIR/generate_naturalistic_usv_playback_settings.sh"
 
 mkdir -p "$WORK_DIR/logs"
 
 touch "$JOB_SCRIPT"
 echo "#!/bin/bash" > "$JOB_SCRIPT"
-echo "#SBATCH --job-name=gen-natural-usv-${EXP_ID}" >> "$JOB_SCRIPT"
+echo "#SBATCH --job-name=gen-natural-usv-${EXPERIMENTER_ID}" >> "$JOB_SCRIPT"
 echo "#SBATCH --output=$WORK_DIR/logs/gen-natural-usv-%j.out" >> "$JOB_SCRIPT"
 echo "#SBATCH --error=$WORK_DIR/logs/gen-natural-usv-%j.err" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
@@ -49,7 +52,7 @@ echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
 echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "generate-naturalistic-usv-playback \\
-    --exp-id \"$EXP_ID\" \\
+    --exp-id \"$EXPERIMENTER_ID\" \\
     --num-naturalistic-usv-files $NUM_USV_FILES \\
     --naturalistic-wav-sampling-rate $SAMPLING_RATE \\
     --naturalistic-playback-snippets-dir-prefix \"$SNIPPETS_DIR_PREFIX\" \\

@@ -205,7 +205,7 @@ class SummaryPlotter:
                     camera_frame_rate = user_meta_data["hwframerate"]
 
                     if metadata is not None:
-                        subjects_list = metadata.get('Subjects', [])
+                        subjects_list = metadata['Subjects']
 
                         def _pad_two(raw_list):
                             """
@@ -231,18 +231,18 @@ class SummaryPlotter:
                             padded = list(raw_list) + ['-', '-']
                             return padded[:2]
 
-                        subject_ids = _pad_two([subject.get('subject_id') for subject in subjects_list])
-                        genotypes = _pad_two([subject.get('genotype_strain') for subject in subjects_list])
-                        sexes = _pad_two([subject.get('sex') for subject in subjects_list])
-                        dobs = _pad_two([subject.get('dob') for subject in subjects_list])
-                        weights = _pad_two([subject.get('weight') for subject in subjects_list])
-                        housings = _pad_two([subject.get('housing') for subject in subjects_list])
+                        subject_ids = _pad_two([subject['subject_id'] for subject in subjects_list])
+                        genotypes = _pad_two([subject['genotype_strain'] for subject in subjects_list])
+                        sexes = _pad_two([subject['sex'] for subject in subjects_list])
+                        dobs = _pad_two([subject['dob'] for subject in subjects_list])
+                        weights = _pad_two([subject['weight'] for subject in subjects_list])
+                        housings = _pad_two([subject['housing'] for subject in subjects_list])
 
                         # Pull the experimenter name from the session metadata too;
                         # without this the plot fell through to the "Ø" default because
                         # the legacy experimenter read lives in the else-branch below.
-                        session_block = metadata.get('Session', {}) or {}
-                        experimenter_from_meta = session_block.get('experimenter')
+                        session_block = metadata['Session']
+                        experimenter_from_meta = session_block['experimenter']
                         if experimenter_from_meta:
                             experimenter = experimenter_from_meta
                     else:

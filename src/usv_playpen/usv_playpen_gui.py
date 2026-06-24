@@ -288,11 +288,11 @@ class ChemoDialog(QDialog):
 
         self.subject_combo = QComboBox()
         if self.is_edit_mode:
-            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.addItem(self.subject['subject_id'])
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
@@ -397,7 +397,7 @@ class ChemoDialog(QDialog):
         """
 
         reply = QMessageBox.question(self, 'Confirm Delete',
-                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject['subject_id']}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -422,7 +422,7 @@ class ChemoDialog(QDialog):
         """
 
         selected_id = self.subject_combo.currentText()
-        target_subject = next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+        target_subject = next((s for s in self.parent_window.metadata_settings['Subjects'] if s['subject_id'] == selected_id), None)
 
         if not target_subject:
             return
@@ -494,11 +494,11 @@ class EphysDialog(QDialog):
 
         self.subject_combo = QComboBox()
         if self.is_edit_mode:
-            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.addItem(self.subject['subject_id'])
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
@@ -606,7 +606,7 @@ class EphysDialog(QDialog):
         """
 
         reply = QMessageBox.question(self, 'Confirm Delete',
-                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject['subject_id']}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             if 'interventions' in self.subject and self.intervention_key in self.subject['interventions']:
@@ -635,7 +635,7 @@ class EphysDialog(QDialog):
         """
 
         selected_id = self.subject_combo.currentText()
-        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s['subject_id'] == selected_id), None)
         if not target_subject: return
 
         intervention_data = {}
@@ -706,11 +706,11 @@ class LesionDialog(QDialog):
 
         self.subject_combo = QComboBox()
         if self.is_edit_mode:
-            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.addItem(self.subject['subject_id'])
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
@@ -793,7 +793,7 @@ class LesionDialog(QDialog):
         """
 
         reply = QMessageBox.question(self, 'Confirm Delete',
-                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject['subject_id']}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             if 'interventions' in self.subject and self.intervention_key in self.subject['interventions']:
@@ -819,7 +819,7 @@ class LesionDialog(QDialog):
         """
 
         selected_id = self.subject_combo.currentText()
-        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s['subject_id'] == selected_id), None)
         if not target_subject: return
 
         intervention_data = {}
@@ -888,11 +888,11 @@ class OptoDialog(QDialog):
 
         self.subject_combo = QComboBox()
         if self.is_edit_mode:
-            self.subject_combo.addItem(self.subject.get('subject_id'))
+            self.subject_combo.addItem(self.subject['subject_id'])
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s.get('subject_id', '') for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
@@ -1002,7 +1002,7 @@ class OptoDialog(QDialog):
         """
 
         reply = QMessageBox.question(self, 'Confirm Delete',
-                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject.get('subject_id')}?",
+                                     f"Are you sure you want to delete the {self.intervention_key} intervention for subject {self.subject['subject_id']}?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             if 'interventions' in self.subject and self.intervention_key in self.subject['interventions']:
@@ -1028,7 +1028,7 @@ class OptoDialog(QDialog):
         """
 
         selected_id = self.subject_combo.currentText()
-        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s.get('subject_id') == selected_id), None)
+        target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s['subject_id'] == selected_id), None)
         if not target_subject: return
 
         intervention_data = {}
@@ -1605,7 +1605,7 @@ class USVPlaypenWindow(QMainWindow):
         if not self.active_subject_id:
             return
 
-        target_subject = next((s for s in self.metadata_settings.get('Subjects', []) if s.get('subject_id') == self.active_subject_id), None)
+        target_subject = next((s for s in self.metadata_settings.get('Subjects', []) if s['subject_id'] == self.active_subject_id), None)
         if not target_subject:
             return
 
@@ -1621,7 +1621,7 @@ class USVPlaypenWindow(QMainWindow):
         except (ValueError, SyntaxError):
             pass
 
-        new_subject_id = current_form_data.get('subject_id', '')
+        new_subject_id = current_form_data['subject_id']
         old_subject_id = self.active_subject_id
 
         # If the user is mid-edit and the subject_id field is blank, do not
@@ -1646,8 +1646,8 @@ class USVPlaypenWindow(QMainWindow):
             # and let the user keep typing until the id is unique again.
             session_subjects = self.metadata_settings.get('Subjects', []) or []
             colliding = (
-                any(s.get('subject_id') == new_subject_id for s in self.subject_repository)
-                or any(s.get('subject_id') == new_subject_id and s is not target_subject for s in session_subjects)
+                any(s['subject_id'] == new_subject_id for s in self.subject_repository)
+                or any(s['subject_id'] == new_subject_id and s is not target_subject for s in session_subjects)
             )
             if colliding:
                 return
@@ -1656,7 +1656,7 @@ class USVPlaypenWindow(QMainWindow):
             # orphan once the renamed record is written under the new id.
             self.subject_repository = [
                 s for s in self.subject_repository
-                if s.get('subject_id') != old_subject_id
+                if s['subject_id'] != old_subject_id
             ]
 
             target_subject.update(current_form_data)
@@ -1685,7 +1685,7 @@ class USVPlaypenWindow(QMainWindow):
 
         subject_data = None
         for subject in self.subject_repository:
-            if subject.get('subject_id') == subject_id:
+            if subject['subject_id'] == subject_id:
                 subject_data = subject
                 break
 
@@ -1715,7 +1715,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.active_subject_id = subject_id
 
-        current_session_ids = {s.get('subject_id') for s in self.metadata_settings.get('Subjects', []) if s}
+        current_session_ids = {s['subject_id'] for s in self.metadata_settings.get('Subjects', []) if s}
         if subject_id in current_session_ids:
             QMessageBox.information(
                 self,
@@ -1752,13 +1752,15 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        subject_id = subject_data_to_save.get('subject_id')
+        if 'subject_id' not in subject_data_to_save:
+            return
+        subject_id = subject_data_to_save['subject_id']
         if not subject_id:
             return
 
         existing_subject_index = -1
         for i, subject in enumerate(self.subject_repository):
-            if subject.get('subject_id') == subject_id:
+            if subject['subject_id'] == subject_id:
                 existing_subject_index = i
                 break
 
@@ -2144,7 +2146,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        target_subject = next((s for s in self.metadata_settings['Subjects'] if s.get('subject_id') == subject_id), None)
+        target_subject = next((s for s in self.metadata_settings['Subjects'] if s['subject_id'] == subject_id), None)
         if not target_subject:
             return
 
@@ -2193,7 +2195,7 @@ class USVPlaypenWindow(QMainWindow):
         except (ValueError, SyntaxError):
             pass
 
-        target_subject_in_session = next((s for s in self.metadata_settings.get('Subjects', []) if s.get('subject_id') == new_subject_id), None)
+        target_subject_in_session = next((s for s in self.metadata_settings.get('Subjects', []) if s['subject_id'] == new_subject_id), None)
         if target_subject_in_session:
             target_subject_in_session.update(subject_data)
         else:
@@ -3073,7 +3075,7 @@ class USVPlaypenWindow(QMainWindow):
 
             y_pos += 30
 
-        subject_ids_from_repo = [s.get('subject_id', '') for s in self.subject_repository if s.get('subject_id')]
+        subject_ids_from_repo = [s['subject_id'] for s in self.subject_repository if s['subject_id']]
 
         # create a QCompleter with the list of IDs
         completer = QCompleter(subject_ids_from_repo, self)
@@ -4529,19 +4531,14 @@ class USVPlaypenWindow(QMainWindow):
         speaker_audio_file_dialog = partial(self._open_file_dialog, self.speaker_audio_file_edit, 'Select speaker audio file', 'Wave Files (*.wav)')
         speaker_audio_file_btn.clicked.connect(speaker_audio_file_dialog)
 
-        self.sequence_audio_file_edit = QLineEdit('', self.VisualizationsSettings)
-        update_sequence_audio_file_edit = partial(self._update_nested_dict_value, self.visualizations_input_dict, ('make_behavioral_videos', 'sequence_audio_file'))
-        self.sequence_audio_file_edit.textChanged.connect(update_sequence_audio_file_edit)
-        self.sequence_audio_file_edit.setPlaceholderText('Audible USV sequence file')
-        self.sequence_audio_file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.sequence_audio_file_edit.setStyleSheet('QLineEdit { width: 285px; }')
-        self.sequence_audio_file_edit.move(vis_col_two_x1, 130)
-        sequence_audio_file_btn = QPushButton('Browse', self.VisualizationsSettings)
-        sequence_audio_file_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        sequence_audio_file_btn.move(vis_col_two_x2, 129)
-        sequence_audio_file_btn.setStyleSheet('QPushButton { min-width: 65px; min-height: 12px; max-width: 656px; max-height: 12px; }')
-        sequence_audio_file_dialog = partial(self._open_file_dialog, self.sequence_audio_file_edit, 'Select audible sequence file', 'Wave Files (*.wav)')
-        sequence_audio_file_btn.clicked.connect(sequence_audio_file_dialog)
+        pitch_shifted_audio_bool_label = QLabel('Add pitch-shifted audio to video:', self.VisualizationsSettings)
+        pitch_shifted_audio_bool_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        pitch_shifted_audio_bool_label.move(vis_col_two_x1, 130)
+        self.pitch_shifted_audio_bool_cb = QComboBox(self.VisualizationsSettings)
+        self.pitch_shifted_audio_bool_cb.addItems(['No', 'Yes'])
+        self.pitch_shifted_audio_bool_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.pitch_shifted_audio_bool_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='pitch_shifted_audio_cb_bool'))
+        self.pitch_shifted_audio_bool_cb.move(vis_col_two_x2, 130)
 
         visualization_type_cb_label = QLabel('Create data animation (or else figure):', self.VisualizationsSettings)
         visualization_type_cb_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -4669,7 +4666,7 @@ class USVPlaypenWindow(QMainWindow):
         self.raster_plot_bool_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='raster_plot_cb_bool'))
         self.raster_plot_bool_cb.move(vis_col_two_x2, 550)
 
-        raster_special_units_label = QLabel('Emphasize specific unit(s) in raster plot:', self.VisualizationsSettings)
+        raster_special_units_label = QLabel('Emphasize specific unit(s) in raster:', self.VisualizationsSettings)
         raster_special_units_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         raster_special_units_label.move(vis_col_two_x1, 580)
         self.raster_special_units = QLineEdit(','.join(map(str, self.visualizations_input_dict['make_behavioral_videos']['raster_special_units'])), self.VisualizationsSettings)
@@ -5088,6 +5085,9 @@ class USVPlaypenWindow(QMainWindow):
 
         self.visualizations_input_dict['make_behavioral_videos']['beh_features_bool'] = self.beh_features_cb_bool
         self.beh_features_cb_bool = False
+
+        self.visualizations_input_dict['make_behavioral_videos']['pitch_shifted_audio_bool'] = self.pitch_shifted_audio_cb_bool
+        self.pitch_shifted_audio_cb_bool = False
 
         self.visualizations_input_dict['visualize_booleans']['make_qlvm_torus_traversal_video_bool'] = self.qlvm_torus_video_cb_bool
         self.qlvm_torus_video_cb_bool = False
@@ -5770,37 +5770,6 @@ class USVPlaypenWindow(QMainWindow):
         if choices is not None and 0 <= index < len(choices):
             self.__dict__[variable_id] = choices[index]
 
-    def _set_usv_seq_toggle_enabled(self, label, combo, variable_id: str, enabled: bool) -> None:
-        """
-        Description
-        -----------
-        Enable/disable a USV-sequence No/Yes toggle together with its label. When
-        disabling, the combo is forced back to "No" (index 0) and its backing
-        boolean attribute is set False, so a control that does not apply to the
-        current combination cannot leave a stale "Yes" behind.
-
-        Parameters
-        ----------
-        label (QLabel)
-            The toggle's text label (greyed out alongside the combo).
-        combo (QComboBox)
-            The No/Yes combo box.
-        variable_id (str)
-            Name of the backing boolean attribute on ``self``.
-        enabled (bool)
-            Whether the control applies in the current combination.
-
-        Returns
-        -------
-        None
-        """
-
-        if not enabled:
-            combo.setCurrentIndex(0)  # 'No'
-            self.__dict__[variable_id] = False
-        label.setEnabled(enabled)
-        combo.setEnabled(enabled)
-
     def _update_usv_seq_enabled_state(self, *_args) -> None:
         """
         Description
@@ -6261,46 +6230,6 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.__dict__[variable_id] = False
 
-    def _update_exposure_time_label(self, value: int, variable_id: str = None) -> None:
-        """
-        Description
-        -----------
-        Updates camera exposure time label.
-
-        Parameters
-        ----------
-        value (int)
-            Exposure time (in μs, completes automatically).
-        variable_id (str)
-            Attribute to be created based on the choice.
-
-        Returns
-        -------
-        None
-        """
-
-        self.__dict__[variable_id].setText(f'exp time ({str(value)} μs):')
-
-    def _update_gain_label(self, value: int, variable_id: str = None) -> None:
-        """
-        Description
-        -----------
-        Updates camera digital gain label.
-
-        Parameters
-        ----------
-        value (int)
-            Digital gain (in dB, completes automatically).
-        variable_id (str)
-            Attribute to be created based on the choice.
-
-        Returns
-        -------
-        None
-        """
-
-        self.__dict__[variable_id].setText(f'digital gain ({str(value)} dB):')
-
     def _update_fr_label(self, value: int) -> None:
         """
         Description
@@ -6374,53 +6303,6 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         self.embedding_thumbnails_samples_label.setText(f'Thumbnails per category {value}:')
-
-    def _create_sliders_general(self, camera_id: str = None, camera_color: str = None, y_start: int = None) -> None:
-        """
-        Description
-        -----------
-        Creates sliders for camera exposure time and digital gain.
-
-        Parameters
-        ----------
-        camera_id (str)
-            Camera ID (e.g., 21372316).
-        camera_color (str)
-            Camera label color (e.g., green).
-        y_start (int)
-            Starting y position for the camera settings.
-
-        Returns
-        -------
-        None
-        """
-
-        specific_camera_label = QLabel(f'Camera {camera_id} ({camera_color})', self.VideoSettings)
-        specific_camera_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        specific_camera_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        specific_camera_label.move(5, y_start)
-
-        self.__dict__[f'exposure_time_{camera_id}_label'] = QLabel('exp time (2500 μs)', self.VideoSettings)
-        self.__dict__[f'exposure_time_{camera_id}_label'].setFixedWidth(150)
-        self.__dict__[f'exposure_time_{camera_id}_label'].setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.__dict__[f'exposure_time_{camera_id}_label'].move(25, y_start+30)
-        self.__dict__[f'exposure_time_{camera_id}'] = QSlider(Qt.Orientation.Horizontal, self.VideoSettings)
-        self.__dict__[f'exposure_time_{camera_id}'].setFixedWidth(150)
-        self.__dict__[f'exposure_time_{camera_id}'].setRange(500, 30000)
-        self.__dict__[f'exposure_time_{camera_id}'].setValue(self.__dict__[f"{camera_id}_et"])
-        self.__dict__[f'exposure_time_{camera_id}'].move(5, y_start+60)
-        self.__dict__[f'exposure_time_{camera_id}'].valueChanged.connect(partial(self._update_exposure_time_label, variable_id=f'exposure_time_{camera_id}_label'))
-
-        self.__dict__[f'gain_{camera_id}_label'] = QLabel('digital gain (0 dB)', self.VideoSettings)
-        self.__dict__[f'gain_{camera_id}_label'].setFixedWidth(150)
-        self.__dict__[f'gain_{camera_id}_label'].setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.__dict__[f'gain_{camera_id}_label'].move(200, y_start+30)
-        self.__dict__[f'gain_{camera_id}'] = QSlider(Qt.Orientation.Horizontal, self.VideoSettings)
-        self.__dict__[f'gain_{camera_id}'].setFixedWidth(150)
-        self.__dict__[f'gain_{camera_id}'].setRange(0, 15)
-        self.__dict__[f'gain_{camera_id}'].setValue(self.__dict__[f"{camera_id}_dg"])
-        self.__dict__[f'gain_{camera_id}'].move(180, y_start+60)
-        self.__dict__[f'gain_{camera_id}'].valueChanged.connect(partial(self._update_gain_label, variable_id=f'gain_{camera_id}_label'))
 
 
     def _create_buttons_main(self) -> None:
@@ -7326,7 +7208,7 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'default_cmap': visualizations_input_dict['figures']['cmap'],
                            'rotate_side_view_bool': False, 'history_cb_bool': False, 'speaker_cb_bool': False, 'spectrogram_cb_bool': False,
                            'spectrogram_ch': visualizations_input_dict['make_behavioral_videos']['spectrogram_ch'], 'raster_plot_cb_bool': False, 'spike_sound_cb_bool': False,
-                           'beh_features_cb_bool': False,
+                           'beh_features_cb_bool': False, 'pitch_shifted_audio_cb_bool': False,
                            'qlvm_torus_video_cb_bool': False, 'qlvm_clustering': visualizations_input_dict['qlvm_torus_traversal_video']['clustering'],
                            'make_usv_sequence_cb_bool': False,
                            'usv_seq_fig_format': visualizations_input_dict['make_usv_spectrograms']['fig_format'],

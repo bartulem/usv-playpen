@@ -24,7 +24,6 @@ def mock_settings():
             "visualizations_pc_choice": "Test PC",
             "experimenter": "Tester"
         },
-        "neuronal_tuning_figures": {},
         "make_behavioral_videos": {
             "arena_directory": "/fake/arena/dir",
             "speaker_audio_file": "/fake/speaker.wav",

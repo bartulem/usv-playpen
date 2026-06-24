@@ -16,7 +16,7 @@ import soundfile as sf
 from scipy.io import wavfile
 from tqdm import tqdm
 
-from ..os_utils import find_base_path
+from ..os_utils import find_base_path, find_cluster_path
 from ..time_utils import is_gui_context, smart_wait
 from .mixture_model_utils import TMixture, _sample_from_mixture
 from .usv_interval_archive import read_usv_interval_h5, reconstruct_best_model
@@ -270,8 +270,8 @@ class AudioGenerator:
             playback_snippets_dir = Path(os_base_path) / self.exp_id / 'usv_playback_experiments' / f"{prefix}_usv_playback_snippets"
             output_file_dir = Path(os_base_path) / self.exp_id / 'usv_playback_experiments' / 'naturalistic_usv_playback_files'
         else:
-            playback_snippets_dir = Path('/mnt/cup/labs/falkner') / self.exp_id / 'usv_playback_experiments' / f"{prefix}_usv_playback_snippets"
-            output_file_dir = Path('/mnt/cup/labs/falkner') / self.exp_id / 'usv_playback_experiments' / 'naturalistic_usv_playback_files'
+            playback_snippets_dir = Path(find_cluster_path()) / self.exp_id / 'usv_playback_experiments' / f"{prefix}_usv_playback_snippets"
+            output_file_dir = Path(find_cluster_path()) / self.exp_id / 'usv_playback_experiments' / 'naturalistic_usv_playback_files'
 
         output_file_dir.mkdir(parents=True, exist_ok=True)
 
@@ -424,8 +424,8 @@ class AudioGenerator:
             playback_snippets_dir = Path(os_base_path) / self.exp_id / 'usv_playback_experiments' / self.create_playback_settings_dict['playback_snippets_dir']
             output_file_dir = Path(os_base_path) / self.exp_id / 'usv_playback_experiments' / 'usv_playback_files'
         else:
-            playback_snippets_dir = Path('/mnt/cup/labs/falkner') / self.exp_id / 'usv_playback_experiments' / self.create_playback_settings_dict['playback_snippets_dir']
-            output_file_dir = Path('/mnt/cup/labs/falkner') / self.exp_id / 'usv_playback_experiments' / 'usv_playback_files'
+            playback_snippets_dir = Path(find_cluster_path()) / self.exp_id / 'usv_playback_experiments' / self.create_playback_settings_dict['playback_snippets_dir']
+            output_file_dir = Path(find_cluster_path()) / self.exp_id / 'usv_playback_experiments' / 'usv_playback_files'
 
         output_file_dir.mkdir(parents=True, exist_ok=True)
         ipi_duration = self.create_playback_settings_dict['ipi_duration']
@@ -470,7 +470,7 @@ class AudioGenerator:
 
         self.message_output(f"Creating USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
-    def frequency_shift_audio_segment(self) -> None:
+    def frequency_shift_audio_segment(self, seq_start: float = None, seq_duration: float = None) -> Path | None:
         """
         Description
         -----------
@@ -499,12 +499,21 @@ class AudioGenerator:
 
         Parameters
         ----------
+        seq_start (float)
+            Start time (in seconds) of the segment to extract from the source .wav; when None,
+            falls back to ``fs_sequence_start`` in the frequency-shift settings dictionary. This
+            override lets callers (e.g., the behavioral-video step) align the audible segment to
+            an externally-defined window without mutating the settings file.
+        seq_duration (float)
+            Duration (in seconds) of the segment to extract; when None, falls back to
+            ``fs_sequence_duration`` in the frequency-shift settings dictionary.
 
         Returns
         -------
-        audible_chirp (.wav file)
-            Wave file with audible chirp data.
-        NB: File is saved in the 'audio/frequency_shifted_audio_segments' directory.
+        final_output_file (pathlib.Path or None)
+            Absolute path to the written audible .wav file (saved in the
+            'audio/frequency_shifted_audio_segments' directory), or None if the source audio file
+            could not be uniquely located.
         """
 
         self.message_output(f"Frequency shifting of audio segment by {abs(self.freq_shift_settings_dict['fs_octave_shift'])} octaves started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -515,16 +524,16 @@ class AudioGenerator:
         channel_id = self.freq_shift_settings_dict['fs_channel_id']
 
         wav_sampling_rate = self.freq_shift_settings_dict['fs_wav_sampling_rate']
-        seq_start = self.freq_shift_settings_dict['fs_sequence_start']
-        seq_duration = self.freq_shift_settings_dict['fs_sequence_duration']
+        seq_start = seq_start if seq_start is not None else self.freq_shift_settings_dict['fs_sequence_start']
+        seq_duration = seq_duration if seq_duration is not None else self.freq_shift_settings_dict['fs_sequence_duration']
         octave_shift = self.freq_shift_settings_dict['fs_octave_shift']
         volume_adjustment = self.freq_shift_settings_dict['fs_volume_adjustment']
 
         audio_file_loc = list((Path(self.root_directory) / 'audio' / audio_dir).glob(f"*{device_id}_*_ch{channel_id:02d}_*.wav"))
 
         if len(audio_file_loc) != 1:
-            self.message_output(f"Requested audio file not found. Please try again.")
-            return
+            self.message_output("Requested audio file not found. Please try again.")
+            return None
 
         output_dir = Path(self.root_directory) / 'audio' / 'frequency_shifted_audio_segments'
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -587,3 +596,5 @@ class AudioGenerator:
         if volume_adjustment:
             temp_audible_file.unlink()
         temp_denoised_file.unlink()
+
+        return final_output_file

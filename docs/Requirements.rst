@@ -177,7 +177,7 @@ On the firmware/software side, install the following (note that SpikeGLX only wo
 
 To make SpikeGLX functional (once the module and card are connected, and probe is connected to the chassis):
 
-* put the probe configuration directories in "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\SpikeGLX\_Calibation"
+* put the probe configuration directories in "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\SpikeGLX\_Calibration"
 * Download firmware for your specific SpikeGLX version, open the SpikeGLX Console and navigate to Tools > Update IMEC Firmware, select the slot you are using and:
 * load BS firmware from, e.g., "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\Firmware"
 * load BSC firmware from, e.g., "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\Firmware"

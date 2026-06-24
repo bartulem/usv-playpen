@@ -198,7 +198,7 @@ In the *changepoints* JSON file, the E/V sync check process will save the *track
         "imec_probe_sn": "22420015064"
     }
 
-The */usv-playpen/_parameter_settings/process_settings.json* file also contains a section not modifiable in the GUI itself, but it can be modified manually:
+The */usv-playpen/_parameter_settings/processing_settings.json* file also contains a section not modifiable in the GUI itself, but it can be modified manually:
 
 * **npx_file_type** : Neuropixels 1.0 had "lf" and "ap" files, this field allows you to switch between them
 * **npx_ms_divergence_tolerance** : the maximum allowed difference between the video and e-phys recording duration in milliseconds; the default value is 12 ms but it can be tuned to whatever the user thinks is appropriate.
@@ -317,7 +317,7 @@ The code will create a *cluster_data* subdirectory in each session's *ephys/imec
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file also contains a section partially modifiable in the GUI, but it can entirely be modified manually:
+The */usv-playpen/_parameter_settings/processing_settings.json* file also contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
 * **min_spike_num** : eliminate clusters with fewer spikes than this (set 0 if you want to keep all)
 * **kilosort_version** : Kilosort version in use
@@ -405,7 +405,7 @@ These steps change videos and video directory structure from the native Loopbio 
     │       │    │   ├── **21241563-20250430145035.mp4**
     │       ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file also contains a section partially modifiable in the GUI, but it can entirely be modified manually:
+The */usv-playpen/_parameter_settings/processing_settings.json* file also contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
 * **camera_serial_num** : serial numbers of cameras used in the recording
 * **video_extension** : video type (usually "mp4")
@@ -469,7 +469,7 @@ This shouldn’t take longer than several seconds - it will create/update the *j
     ├── **job_list.txt**
     │   ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section partially modifiable in the GUI, but it can entirely be modified manually:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
 * **camera_names** : camera serial numbers used in the recording
 * **inference_root_dir** : directory where the inference job list will be saved
@@ -486,7 +486,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
       "22085397",
       "21241563"
     ],
-    "inference_root_dir": "/mnt/falkner/Bartul/SLEAP/inference",
+    "inference_root_dir": "/mnt/falkner/{experimenter}/SLEAP/inference",
     "centroid_model_path": "",
     "centered_instance_model_path": ""
   }
@@ -614,7 +614,7 @@ The process results in the creation of an H5 file which ends in *_points3d_trans
     │       │    ├── **20250430145035_points3d_translated_rotated_metric.h5**
     │       ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file also contains a section partially modifiable in the GUI, but it can entirely be modified manually:
+The */usv-playpen/_parameter_settings/processing_settings.json* file also contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
 * **calibration_file_loc** : directory containing the _calibration.toml file relevant for the session
 * **triangulate_arena_points_bool** : whether to triangulate arena or animal tracked nodes
@@ -711,7 +711,7 @@ The processing of audio data passes multiple stages:
 
 Convert to single-channel and crop to video
 """""""""""""""""""""""""""""""""""""""""""
-Before running this section, it is always a good idea to check that audio files were copied to the file server corr1erectly. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select *Convert to single-ch files* and *Crop AUDIO (to VIDEO)*, click *Next* and then *Process*:
+Before running this section, it is always a good idea to check that audio files were copied to the file server correctly. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select *Convert to single-ch files* and *Crop AUDIO (to VIDEO)*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_9.png
    :align: center
@@ -770,7 +770,7 @@ The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_tr
         }
     }
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **device_receiving_input** : USGH device receiving Loopbio Triggerbox input (if using SYNC mode, this should be "m")
 * **ch_receiving_input** : microphone channel receiving Loopbio Triggerbox input
@@ -827,7 +827,7 @@ The *Run HPSS* step populates the *hpss* directory with de-noised single channel
     │   └── video
     │       ...
 
-These four parameters are no longer exposed in the GUI (only the *Run HPSS* toggle remains); they are edited directly in the */usv-playpen/_parameter_settings/process_settings.json* file, under the following keys:
+These four parameters are no longer exposed in the GUI (only the *Run HPSS* toggle remains); they are edited directly in the */usv-playpen/_parameter_settings/processing_settings.json* file, under the following keys:
 
 * **stft_window_length_hop_size** : STFT window length and hop size
 * **kernel_size** : harmonic-percussive source separation kernel size
@@ -889,7 +889,7 @@ The purpose of these two functions is to first high-pass filter each audio file 
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **audio_format** : audio file format (usually "wav")
 * **filter_dirs** : list of directories to be filtered (usually "hpss")
@@ -950,7 +950,7 @@ This will create a *das_annotations* subdirectory which will contain a CSV file 
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **das_conda_env_name** : name of the local conda environment used for running DAS inference
 * **model_directory** : directory containing the trained DAS model
@@ -964,7 +964,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 
     "das_command_line_inference": {
         "das_conda_env_name": "das",
-        "model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
+        "das_model_directory": "/mnt/falkner/{experimenter}/DAS/model_2024-03-25",
         "model_name_base": "20240325_073951",
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,
@@ -1044,7 +1044,7 @@ The *usv_signal_correlation_histogram.svg* file contains a histogram of [1] mean
 
    <br>
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section not modifiable in the GUI, but it can be modified manually:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section not modifiable in the GUI, but it can be modified manually:
 
 * **filter_putative_noise_bool** : whether to run the Phase-4 amplitude/spectrogram noise rejection; when ``false``, every merged detection is kept and the summary CSV is written as-is (peak/mean amplitude channels left at 0)
 * **len_win_signal** : STFT window length
@@ -1064,7 +1064,7 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
 
 Prepare and run USV assignment
 """"""""""""""""""""""""""""""
-You might also want to know which animal emitted which vocalization. To do this, *usv-playpen* relies on `vocalocator <https://github.com/neurostatslab/vocalocator>`_, a tool for localizing animal vocalizations in 3D space, and it assumes you already have a trained model. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select the arena directory, select the conda environment name for vocalocator, select the directory of the vocalocator model, select *Prepare USV assignment* and *Run USV assignment*, select the *Assignment type* (vocalocator or click *Next* and then *Process*:
+You might also want to know which animal emitted which vocalization. To do this, *usv-playpen* relies on `vocalocator <https://github.com/neurostatslab/vocalocator>`_, a tool for localizing animal vocalizations in 3D space, and it assumes you already have a trained model. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select the arena directory, select the conda environment name for vocalocator, select the directory of the vocalocator model, select *Prepare USV assignment* and *Run USV assignment*, select the *Assignment type* (``vcl`` or ``vcl-ssl``), click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_14.png
    :align: center
@@ -1074,7 +1074,7 @@ You might also want to know which animal emitted which vocalization. To do this,
 
    <br>
 
-This will create a *sound_localization* subdirectory which will contain several files: [1] dse.h5 file which contains all data relevant for sound localization, [2] assessment.h5 file which contains 2D assessment data, and [3] assessment_assn.npy which contains 6D assessment output - the output of this file is then transferred to the "emitter" column of the *20250430_145017_usv_summary.csv* file.
+This will create a *sound_localization* subdirectory which will contain several files: [1] dset.h5 file which contains all data relevant for sound localization, [2] assessment.h5 file which contains 2D assessment data, and [3] assessment_assn.npy which contains 6D assessment output - the output of this file is then transferred to the "emitter" column of the *20250430_145017_usv_summary.csv* file.
 
 .. parsed-literal::
 
@@ -1126,7 +1126,7 @@ The modified *usv_summary.csv* file now contains information in the last column 
     └────────┴─────────────┴─────────────┴──────────┴───┴─────────────┴───────────┴─────────────────────────────────┴──────────┘
 
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **vcl_conda_env_name** : name of the local conda environment used for running Vocalocator
 * **vcl_model_directory** : directory containing the trained Vocalocator model
@@ -1192,7 +1192,7 @@ In case NIDQ was also used in the recording, the first of the device plots will 
 
    <br>
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **extra_data_camera** : serial number of the camera used to store phidget data
 * **ch_receiving_input** : microphone channel receiving Arduino digital input
@@ -1263,7 +1263,7 @@ How the boxes are labelled is set by ``--label-source`` (or the ``export_yolo_da
 
 ``manual`` and ``merge`` therefore require ``--manual-labels-directory`` to be set; ``cc`` ignores it.
 
-On the cluster, ready-made SLURM submitters live in */usv-playpen/other/cluster/USV_PLAYPEN*: the per-session inference half runs via ``process_data_step_four_inference_global.sh`` (a single GPU job that chains all four inference steps for one session), while the two training chains run via ``train_qlvm_global.sh`` (``build-qlvm-training-set`` → ``train-qlvm``) and ``train_masks_global.sh`` (``export-yolo-dataset`` → ``train-masks``) — both GPU jobs that take a comma-separated cohort of session ``--root-directories`` and write the model artifacts the inference steps reload. Edit the hyper-parameter block at the top of each script (cohort list, dataset / output directories, resources) before submitting. ``train_masks_global.sh`` additionally exposes a ``LABEL_SOURCE`` knob (``cc`` / ``manual`` / ``merge``) and a ``MANUAL_LABELS_DIRECTORY`` — leave it ``cc`` for the auto path, or set it to ``manual`` / ``merge`` and point ``MANUAL_LABELS_DIRECTORY`` at your hand-labelled ``{spec_id}.txt`` files; the script then passes ``--manual-labels-directory`` only when it is needed.
+On the cluster, ready-made SLURM submitters live in */usv-playpen/other/cluster/usv_playpen*: the per-session inference half runs via ``process_data_step_four_inference_global.sh`` (a single GPU job that chains all four inference steps for one session), while the two training chains run via ``train_qlvm_global.sh`` (``build-qlvm-training-set`` → ``train-qlvm``) and ``train_masks_global.sh`` (``export-yolo-dataset`` → ``train-masks``) — both GPU jobs that take a comma-separated cohort of session ``--root-directories`` and write the model artifacts the inference steps reload. Edit the hyper-parameter block at the top of each script (cohort list, dataset / output directories, resources) before submitting. ``train_masks_global.sh`` additionally exposes a ``LABEL_SOURCE`` knob (``cc`` / ``manual`` / ``merge``) and a ``MANUAL_LABELS_DIRECTORY`` — leave it ``cc`` for the auto path, or set it to ``manual`` / ``merge`` and point ``MANUAL_LABELS_DIRECTORY`` at your hand-labelled ``{spec_id}.txt`` files; the script then passes ``--manual-labels-directory`` only when it is needed.
 
 To run ``generate-usv-masks`` / ``train-masks`` the environment must provide the ``sam2`` and ``ultralytics`` packages (both are usv-playpen core dependencies) plus, for ``generate-usv-masks``, the SAM2 checkpoint/config and the trained YOLO weights configured in the ``generate_masks`` settings block:
 
@@ -1272,10 +1272,10 @@ To run ``generate-usv-masks`` / ``train-masks`` the environment must provide the
     "generate_masks": {
         "method": "boxprompt",
         "detector": "yolo",
-        "sam2_model_dir": "/mnt/falkner/Bartul/spectrograms/sam",
+        "sam2_model_dir": "/mnt/falkner/{experimenter}/spectrograms/sam",
         "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-        "sam2_model_path": "/mnt/falkner/Bartul/spectrograms/sam/checkpoint.pt",
-        "yolo_weights": "/mnt/falkner/Bartul/spectrograms/sam/best.pt"
+        "sam2_model_path": "/mnt/falkner/{experimenter}/spectrograms/sam/checkpoint.pt",
+        "yolo_weights": "/mnt/falkner/{experimenter}/spectrograms/sam/best.pt"
     }
 
 ``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files; ``sam2_model_dir`` is the directory they live in (the step changes into it), and the stock ``sam2_model_cfg`` config NAME is resolved by the installed ``sam2`` package's Hydra search path (a co-located ``configs/sam2.1/sam2.1_hiera_b+.yaml`` copy is also kept under ``sam2_model_dir``). The three filesystem paths are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path`` — the same handling as the DAS / Vocalocator model paths — so the defaults work on any lab host that has the share mounted. Override any of them per run with the CLI flags (``--sam2-model-dir`` / ``--sam2-model-cfg`` / ``--sam2-model-path`` / ``--yolo-weights``).

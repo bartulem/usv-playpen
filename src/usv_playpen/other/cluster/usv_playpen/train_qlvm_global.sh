@@ -5,7 +5,11 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# (session/arena roots stay as entered). Match the `experimenter` key in this
+# checkout's behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/processing"
 CPUS_PER_TASK=8
 TOTAL_MEMORY="64G"
 TIME_RESTRICTION="06:00:00"
@@ -16,9 +20,9 @@ USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 # Comma-separated list of session root directories the cohort is built from.
 SESSION_ROOT_DIRECTORIES="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726,/mnt/cup/labs/falkner/Bartul/Data/20230126_142000"
 # Where build-qlvm-training-set writes the .npz training set (train-qlvm reads it back).
-DATASET_DIRECTORY="/mnt/cup/labs/falkner/Bartul/spectrograms/qlvm/training_set"
+DATASET_DIRECTORY="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/spectrograms/qlvm/training_set"
 # Where train-qlvm writes the checkpoint + decoder weights.
-MODEL_OUTPUT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/spectrograms/qlvm"
+MODEL_OUTPUT_DIRECTORY="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/spectrograms/qlvm"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #

@@ -5,7 +5,11 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-WORK_DIR="/mnt/cup/labs/falkner/Name/USV_PLAYPEN/processing"
+# Experimenter id keying the experimenter-owned work/resource/model paths below
+# (session/arena roots stay as entered). Match the `experimenter` key in this
+# checkout's behavioral_experiments_settings.toml (read to fill {experimenter}).
+EXPERIMENTER_ID="Name"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/processing"
 CPUS_PER_TASK=8
 TOTAL_MEMORY="64G"
 TIME_RESTRICTION="06:00:00"
@@ -16,9 +20,9 @@ USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 # Comma-separated list of session root directories the cohort is built from.
 SESSION_ROOT_DIRECTORIES="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726,/mnt/cup/labs/falkner/Bartul/Data/20230126_142000"
 # Where export-yolo-dataset writes the Ultralytics dataset (train-masks reads it back).
-DATASET_DIRECTORY="/mnt/cup/labs/falkner/Bartul/spectrograms/sam/yolo_dataset"
+DATASET_DIRECTORY="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/spectrograms/sam/yolo_dataset"
 # Where train-masks writes the Ultralytics run + copied best.pt.
-MODEL_OUTPUT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/spectrograms/sam"
+MODEL_OUTPUT_DIRECTORY="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/spectrograms/sam"
 
 # Box-label source for the YOLO training set:
 #   "cc"     -- AUTO: connected-component pseudo-labels, zero manual annotation (default).
@@ -27,7 +31,7 @@ MODEL_OUTPUT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/spectrograms/sam"
 #   "merge"  -- cc pseudo-labels, overridden by a manual {spec_id}.txt where one exists.
 LABEL_SOURCE="cc"
 # Only used when LABEL_SOURCE is "manual" or "merge" (ignored for the "cc" auto path).
-MANUAL_LABELS_DIRECTORY="/mnt/cup/labs/falkner/Bartul/spectrograms/sam/manual_labels"
+MANUAL_LABELS_DIRECTORY="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/spectrograms/sam/manual_labels"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #

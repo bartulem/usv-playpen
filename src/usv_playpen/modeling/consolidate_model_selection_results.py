@@ -240,8 +240,8 @@ def _build_default_output_filename(input_metadata: dict,
     # itself. Skip the graft if the tag already contains the column
     # (new pipelines hand it in pre-augmented).
     if input_metadata is not None:
-        analysis_specific = input_metadata.get('analysis_specific') or {}
-        cat_col = analysis_specific.get('usv_category_column_name')
+        analysis_specific = (input_metadata['analysis_specific'] if 'analysis_specific' in input_metadata else None) or {}
+        cat_col = analysis_specific['usv_category_column_name'] if 'usv_category_column_name' in analysis_specific else None
         if cat_col and cat_col not in analysis_tag:
             if analysis_tag.startswith('category_'):
                 # `category_<idx>` → `category_<col>_<idx>`

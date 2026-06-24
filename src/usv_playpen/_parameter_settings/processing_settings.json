@@ -136,7 +136,7 @@
       "22085397",
       "21241563"
     ],
-    "inference_root_dir": "/mnt/falkner/Bartul/SLEAP/inference",
+    "inference_root_dir": "/mnt/falkner/{experimenter}/SLEAP/inference",
     "centroid_model_path": "",
     "centered_instance_model_path": ""
   },
@@ -194,7 +194,7 @@
     "FindMouseVocalizations": {
       "das_command_line_inference": {
         "das_conda_env_name": "das",
-        "das_model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
+        "das_model_directory": "/mnt/falkner/{experimenter}/DAS/model_2024-03-25",
         "model_name_base": "20240325_073951",
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,
@@ -212,7 +212,7 @@
   },
   "vocalocator": {
     "vcl_conda_env_name": "vcl-ssl",
-    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/conformer_smol_4.00",
+    "vcl_model_directory": "/mnt/falkner/{experimenter}/sound_localization/conformer_smol_4.00",
     "vcl_version": "vcl-ssl"
   },
   "generate_spectrograms": {
@@ -230,10 +230,10 @@
   "generate_masks": {
     "method": "boxprompt",
     "detector": "yolo",
-    "sam2_model_dir": "/mnt/falkner/Bartul/spectrograms/sam",
+    "sam2_model_dir": "/mnt/falkner/{experimenter}/spectrograms/sam",
     "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-    "sam2_model_path": "/mnt/falkner/Bartul/spectrograms/sam/checkpoint.pt",
-    "yolo_weights": "/mnt/falkner/Bartul/spectrograms/sam/best.pt",
+    "sam2_model_path": "/mnt/falkner/{experimenter}/spectrograms/sam/checkpoint.pt",
+    "yolo_weights": "/mnt/falkner/{experimenter}/spectrograms/sam/best.pt",
     "yolo_conf": 0.25,
     "yolo_iou": 0.7,
     "yolo_imgsz": 128,
@@ -296,9 +296,9 @@
     "run_name": "usv_yolo_detector"
   },
   "infer_qlvm_latents": {
-    "weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz",
-    "reference_arrays_fine_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
-    "reference_arrays_coarse_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
+    "weights_npz_path": "/mnt/falkner/{experimenter}/spectrograms/qlvm/qmc_decoder_weights.npz",
+    "reference_arrays_fine_npz_path": "/mnt/falkner/{experimenter}/spectrograms/qlvm/arrays_fine.npz",
+    "reference_arrays_coarse_npz_path": "/mnt/falkner/{experimenter}/spectrograms/qlvm/arrays_coarse.npz",
     "lattice_type": "korobov",
     "latent_dim": 2,
     "n_points": 1021,

@@ -6,7 +6,7 @@ offset) and the vocal pages (Page 1: bout raster + pooled `usv_peth`
 on top, `usv_property_tuning` 4x4 grid below; Page 2:
 `usv_category_tuning` watersheds + `usv_category_peth` grid). Output
 format is configurable via `figures.fig_format` in
-visualizations_settings.json (`svg` default project-wide; this module
+visualizations_settings.json (`png` default project-wide; this module
 falls back to `pdf` if the key is missing). PDF is multi-page in one
 file, other formats produce one file per page.
 
@@ -359,7 +359,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Session root directory.
     visualizations_parameter_dict (dict)
         Settings dictionary; reads `male_colors`, `female_colors`, and
-        the `neuronal_tuning_figures` block.
+        the `figures` block.
     message_output (Callable)
         Logger; defaults to print.
     kslabels (collection[str])
@@ -605,11 +605,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             message_output(f"  neuronal-figs: no tuning pkls in {tuning_dir}; skipping.")
             return
 
-        viz_params = self.visualizations_parameter_dict.get(
-            "neuronal_tuning_figures", {}
+        figures_settings = (
+            self.visualizations_parameter_dict["figures"]
+            if "figures" in self.visualizations_parameter_dict
+            else {}
         )
         fig_format = str(
-            self.visualizations_parameter_dict.get("figures", {}).get("fig_format", "pdf")
+            figures_settings["fig_format"]
+            if "fig_format" in figures_settings
+            else "pdf"
         ).lower()
 
         # try to load USV summary for the bout raster (left subplot of section a).
@@ -712,7 +716,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             cluster_data=cluster_data,
                             usv_summary_df=usv_summary_df,
                             segmentation=segmentation,
-                            viz_params=viz_params,
                             save_fig=save_fig,
                         )
             except Exception as exc:  # noqa: BLE001
@@ -3175,9 +3178,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             pks: list[float] = []
             pzs: list[float] = []
             for cond in u["conditions"].values():
-                m = cond["modalities"].get(modality_key)
-                if m is None:
+                if modality_key not in cond["modalities"]:
                     continue
+                m = cond["modalities"][modality_key]
                 for e in m["per_session"]:
                     if not e["significant"]:
                         continue
@@ -3522,9 +3525,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             pvs: list[float] = []
             pzs: list[float] = []
             for cond in u["conditions"].values():
-                m = cond["modalities"].get(modality_key)
-                if m is None:
+                if modality_key not in cond["modalities"]:
                     continue
+                m = cond["modalities"][modality_key]
                 for e in m["per_session"]:
                     if not e["significant"]:
                         continue
@@ -3920,20 +3923,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             n_sigs:    list[int] = []
             selects:   list[float] = []
             for cond in u["conditions"].values():
-                m = cond["modalities"].get(modality_key)
-                if m is None:
+                if modality_key not in cond["modalities"]:
                     continue
+                m = cond["modalities"][modality_key]
                 for e in m["per_session"]:
                     if not e["significant"]:
                         continue
-                    psz = e.get("peak_signed_z")
-                    bc = e.get("best_cat")
+                    psz = e["peak_signed_z"]
+                    bc = e["best_cat"]
                     if psz is None or bc is None or float(psz) <= 0:
                         continue
                     best_cats.append(int(bc))
                     peak_zs.append(float(psz))
-                    n_sigs.append(int(e.get("n_sig_categories", 0)))
-                    sel = e.get("selectivity")
+                    n_sigs.append(int(e["n_sig_categories"]))
+                    sel = e["selectivity"]
                     selects.append(float(sel) if sel is not None else float("nan"))
             n_sig_up = len(best_cats)
             if n_sig_up < 2:
@@ -4451,9 +4454,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             bool}`. Units with no `condition` entry get all-False.
         """
 
-        cond = unit["conditions"].get(condition)
-        if not cond:
+        if condition not in unit["conditions"]:
             return {"pose": False, "movement": False, "social": False}
+        cond = unit["conditions"][condition]
 
         bucket_tuned = {"pose": False, "movement": False, "social": False}
 
@@ -4472,15 +4475,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # social bucket is asking.
         dyadic_pool: dict[tuple[str, str], dict[str, int]] = {}
 
-        for mkey, payload in cond.get("modalities", {}).items():
+        for mkey, payload in cond["modalities"].items():
             parsed = _parse_behavioral_modality_key(mkey)
             if parsed is None:
                 continue
             prefix, feat, direction = parsed
             if not isinstance(payload, dict):
                 continue
-            n_sig = int(payload.get("n_significant", 0))
-            n_test = int(payload.get("n_tested", 0))
+            n_sig = int(payload["n_significant"])
+            n_test = int(payload["n_tested"])
 
             if "-" in prefix:
                 # Pool dyadic across partner identities.
@@ -4630,16 +4633,16 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             satisfies the consistency rule; False otherwise.
         """
 
-        cond = unit["conditions"].get(condition)
-        if not cond:
+        if condition not in unit["conditions"]:
             return False
-        for mkey, payload in cond.get("modalities", {}).items():
+        cond = unit["conditions"][condition]
+        for mkey, payload in cond["modalities"].items():
             if not isinstance(payload, dict):
                 continue
             if not any(mkey.startswith(px) for px in self._VOCAL_MODALITY_PREFIXES):
                 continue
-            n_sig = int(payload.get("n_significant", 0))
-            n_test = int(payload.get("n_tested", 0))
+            n_sig = int(payload["n_significant"])
+            n_test = int(payload["n_tested"])
             if n_sig < k_min:
                 continue
             if require_majority and n_test > 0 and (n_sig / n_test) <= 0.5:
@@ -4819,15 +4822,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if total == 0:
                 continue
             for c, tier in enumerate(BEHAVIORAL_TIER_ORDER):
-                k = int(ctr.get(tier, 0))
+                k = int(ctr[tier])
                 counts[r, c] = k
                 fractions[r, c] = k / total
 
         # render
         fig, ax = plt.subplots(figsize=(7.5, 3.5))
-        cmap_name = self.visualizations_parameter_dict.get(
-            "figures", {}
-        ).get("cmap", "inferno")
+        cmap_name = self.visualizations_parameter_dict["figures"]["cmap"]
         im = ax.imshow(
             fractions, aspect="auto", cmap=cmap_name, vmin=0.0, vmax=1.0,
         )
@@ -5080,7 +5081,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         total = max(1, n_panel)
 
         def _annotate(triple, pos):
-            n = counts.get(triple, 0)
+            n = counts[triple]
             p = 100.0 * n / total
             ax.text(
                 pos[0], pos[1], f"{n}\n({p:.1f}%)",
@@ -5097,7 +5098,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         _annotate((False, True,  True ), (+0.60, +0.30))
         _annotate((True,  True,  True ), (0.00,  -0.10))
 
-        n_none = counts.get((False, False, False), 0)
+        n_none = counts[(False, False, False)]
         p_none = 100.0 * n_none / total
         ax.text(
             0.0, -1.85, f"None: n={n_none}  ({p_none:.1f}%)",
@@ -5419,8 +5420,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
+        figures_settings = (
+            self.visualizations_parameter_dict["figures"]
+            if "figures" in self.visualizations_parameter_dict
+            else {}
+        )
         dpi = int(
-            self.visualizations_parameter_dict.get("figures", {}).get("dpi", 300)
+            figures_settings["dpi"] if "dpi" in figures_settings else 300
         )
 
         if fig_format == "pdf":
@@ -5531,8 +5537,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if not beh_offset_keys:
             return
 
-        social_color = self.visualizations_parameter_dict.get(
-            "social_colors", ["#5A6470"]
+        social_color = (
+            self.visualizations_parameter_dict["social_colors"]
+            if "social_colors" in self.visualizations_parameter_dict
+            else ["#5A6470"]
         )[0]
         mouse_color_dict = {"social": social_color}
         mouse_colormap_dict: dict = {}
@@ -5569,20 +5577,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             else:
                 plot_features.setdefault("social", []).append(feature_key)
 
-        viz_params = self.visualizations_parameter_dict.get(
-            "neuronal_tuning_figures", {}
+        figures_settings = (
+            self.visualizations_parameter_dict["figures"]
+            if "figures" in self.visualizations_parameter_dict
+            else {}
         )
-        ratemap_cmap = self.visualizations_parameter_dict.get(
-            "figures", {}
-        ).get("cmap", "inferno")
+        ratemap_cmap = (
+            figures_settings["cmap"] if "cmap" in figures_settings else "inferno"
+        )
         # behavioral occupancy threshold lives on the analyses side (it's
         # a tuning-curve config alongside usv_property_min_occupancy_seconds);
         # compute writes it into behavioral_metadata, plotter reads from
         # there with a sane fallback for older pkls.
         occ_threshold_setting = float(
-            cluster_data.get("behavioral_metadata", {}).get(
-                "behavioral_min_occupancy_seconds", 1.0
-            )
+            cluster_data["behavioral_metadata"]["behavioral_min_occupancy_seconds"]
         )
 
         for offset in beh_offset_keys:
@@ -5627,8 +5635,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                         if "space" in feature:
                             cbar_width = 0.005
                             cbar_height = 0.04
-                            ratemap_2d = feat_payload.get(
-                                "rate_smoothed", feat_payload["rate"]
+                            ratemap_2d = (
+                                feat_payload["rate_smoothed"]
+                                if "rate_smoothed" in feat_payload
+                                else feat_payload["rate"]
                             )
                             ax1 = fig.add_subplot(gs[gs_x, gs_y])
                             rm = ax1.imshow(
@@ -5691,14 +5701,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             occ_mask = (
                                 feat_payload["occupancy_seconds"] > occ_threshold_setting
                             )
-                            low_end_sh = feat_payload.get(
-                                "null_p0_5_smoothed", feat_payload["null_p0_5"]
+                            low_end_sh = (
+                                feat_payload["null_p0_5_smoothed"]
+                                if "null_p0_5_smoothed" in feat_payload
+                                else feat_payload["null_p0_5"]
                             )
-                            high_end_sh = feat_payload.get(
-                                "null_p99_5_smoothed", feat_payload["null_p99_5"]
+                            high_end_sh = (
+                                feat_payload["null_p99_5_smoothed"]
+                                if "null_p99_5_smoothed" in feat_payload
+                                else feat_payload["null_p99_5"]
                             )
-                            ratemap = feat_payload.get(
-                                "rate_smoothed", feat_payload["rate"]
+                            ratemap = (
+                                feat_payload["rate_smoothed"]
+                                if "rate_smoothed" in feat_payload
+                                else feat_payload["rate"]
                             )
                             bin_edges = feat_payload["bin_edges"]
                             bin_centers = feat_payload["bin_centers"]
@@ -5835,7 +5851,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         cluster_data: dict,
         usv_summary_df,
         segmentation: dict,
-        viz_params: dict,
         save_fig,
     ) -> None:
         """
@@ -5855,8 +5870,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             available; required for the bout raster.
         segmentation (dict)
             Loaded latent-embedding segmentation per categorical feature.
-        viz_params (dict)
-            `neuronal_tuning_figures` settings block.
         save_fig (Callable[[Figure, str], None])
             Persists each rendered page; closes the figure.
 
@@ -5866,12 +5879,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         for emitter in cluster_data["usv_peth"]:
-            sex_label = cluster_data["usv_peth"][emitter].get("sex", "x")
+            sex_label = cluster_data["usv_peth"][emitter]["sex"]
             self._render_page1(
                 emitter=emitter,
                 cluster_data=cluster_data,
                 usv_summary_df=usv_summary_df,
-                viz_params=viz_params,
                 save_fig=save_fig,
                 page_label=f"vocal_a_{sex_label}",
             )
@@ -5879,7 +5891,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 emitter=emitter,
                 cluster_data=cluster_data,
                 segmentation=segmentation,
-                viz_params=viz_params,
                 save_fig=save_fig,
                 page_label=f"vocal_b_{sex_label}",
             )
@@ -5891,7 +5902,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         emitter: str,
         cluster_data: dict,
         usv_summary_df,
-        viz_params: dict,
         save_fig,
         page_label: str,
     ) -> None:
@@ -5913,8 +5923,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         usv_summary_df (pls.DataFrame | None)
             Filtered USV summary (post `vae_supercategory != 0`); used
             by the bout raster. Pass `None` to skip the raster.
-        viz_params (dict)
-            `neuronal_tuning_figures` settings block.
         save_fig (Callable[[Figure, str], None])
             Persists the rendered figure and closes it.
         page_label (str)
@@ -5992,7 +6000,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        sex = cluster_data["usv_peth"][emitter].get("sex", "male")
+        sex = cluster_data["usv_peth"][emitter]["sex"]
         line_color = self._sex_color(sex)
 
         # left: bout raster
@@ -6016,9 +6024,17 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         bin_centers = peth["bin_centers_s"]
         # smoothed versions are pre-computed in compute (smooth-then-percentile);
         # fall back to raw if smoothing was disabled (smoothing_sd == 0).
-        rate = peth.get("rate_smoothed", peth["rate"])
-        p0_5 = peth.get("null_p0_5_smoothed", peth["null_p0_5"])
-        p99_5 = peth.get("null_p99_5_smoothed", peth["null_p99_5"])
+        rate = peth["rate_smoothed"] if "rate_smoothed" in peth else peth["rate"]
+        p0_5 = (
+            peth["null_p0_5_smoothed"]
+            if "null_p0_5_smoothed" in peth
+            else peth["null_p0_5"]
+        )
+        p99_5 = (
+            peth["null_p99_5_smoothed"]
+            if "null_p99_5_smoothed" in peth
+            else peth["null_p99_5"]
+        )
 
         ax_peth.fill_between(
             bin_centers,
@@ -6044,7 +6060,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_peth.set_xticklabels([f"{v:g}" for v in peth_xticks])
         ax_peth.set_xlabel("time relative to USV onset (s)", fontsize=12)
         ax_peth.set_ylabel("firing rate (sp/s)", fontsize=12)
-        n_anchors = peth.get("n_anchors", 0)
+        n_anchors = peth["n_anchors"]
         ax_peth.set_title(f"PETH (n_USVs = {n_anchors})", fontsize=13, pad=3)
         ax_peth.tick_params(labelsize=11)
 
@@ -6082,7 +6098,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        bout_quiet_s = cluster_data.get("usv_metadata", {}).get("bout_quiet_seconds", 2.0)
+        bout_quiet_s = cluster_data["usv_metadata"]["bout_quiet_seconds"]
 
         # find bouts of the anchor emitter
         emitters = [
@@ -6119,9 +6135,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # spike data: the spike file path is not stored in the pkl;
         # locate the cluster's spike .npy under <session_root>/ephys
         # via session_root + cluster_id stored in metadata.
-        spike_path_hint = cluster_data.get("usv_metadata", {}).get("session_root", None)
+        spike_path_hint = cluster_data["usv_metadata"]["session_root"]
         if spike_path_hint is not None:
-            cluster_id = cluster_data.get("usv_metadata", {}).get("cluster_id", None)
+            cluster_id = cluster_data["usv_metadata"]["cluster_id"]
             if cluster_id:
                 spike_npy_candidates = list(
                     pathlib.Path(spike_path_hint).rglob(f"cluster_data/{cluster_id}.npy")
@@ -6140,7 +6156,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         # USV-bar color: anchor's own sex for anchor-emitter USVs, the
         # opposite sex for any other emitter's USVs falling in the window.
-        anchor_sex = cluster_data["usv_peth"][emitter].get("sex", "male")
+        anchor_sex = cluster_data["usv_peth"][emitter]["sex"]
         anchor_partner_sex = "female" if anchor_sex == "male" else "male"
 
         # for each bout, draw spikes (black) and USV-bars (sex-colored)
@@ -6225,7 +6241,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        sex = cluster_data["usv_property_tuning"][emitter][CONTINUOUS_PROPERTIES[0]].get("sex", "male")
+        sex = cluster_data["usv_property_tuning"][emitter][CONTINUOUS_PROPERTIES[0]]["sex"]
         line_color = self._sex_color(sex)
 
         for row_idx, prop_pair in enumerate(PROPERTY_ROW_ORDER):
@@ -6284,10 +6300,22 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         edges = cluster_payload["bin_edges"] * f
         # smoothed versions are pre-computed in compute; fall back to raw
         # if smoothing was disabled (smoothing_sd == 0).
-        rate = cluster_payload.get("rate_smoothed", cluster_payload["rate"])
+        rate = (
+            cluster_payload["rate_smoothed"]
+            if "rate_smoothed" in cluster_payload
+            else cluster_payload["rate"]
+        )
         occ = cluster_payload["occupancy_seconds"]
-        p0_5 = cluster_payload.get("null_p0_5_smoothed", cluster_payload["null_p0_5"])
-        p99_5 = cluster_payload.get("null_p99_5_smoothed", cluster_payload["null_p99_5"])
+        p0_5 = (
+            cluster_payload["null_p0_5_smoothed"]
+            if "null_p0_5_smoothed" in cluster_payload
+            else cluster_payload["null_p0_5"]
+        )
+        p99_5 = (
+            cluster_payload["null_p99_5_smoothed"]
+            if "null_p99_5_smoothed" in cluster_payload
+            else cluster_payload["null_p99_5"]
+        )
 
         # Firing rates are non-negative by construction (counts /
         # occupancy, both >= 0) and Gaussian smoothing preserves that;
@@ -6408,7 +6436,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         emitter: str,
         cluster_data: dict,
         segmentation: dict,
-        viz_params: dict,
         save_fig,
         page_label: str,
     ) -> None:
@@ -6431,8 +6458,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Per-cluster pkl payload.
         segmentation (dict)
             Loaded latent-embedding segmentation per categorical feature.
-        viz_params (dict)
-            `neuronal_tuning_figures` settings block.
         save_fig (Callable[[Figure, str], None])
             Persists the rendered figure and closes it.
         page_label (str)
@@ -6452,7 +6477,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         total_d_cells = 0
         for cf in CATEGORICAL_FEATURES:
             payload_d = cluster_data["usv_category_peth"][emitter][cf]
-            rate_arr_d = payload_d.get("rate_smoothed", payload_d["rate"])
+            rate_arr_d = (
+                payload_d["rate_smoothed"]
+                if "rate_smoothed" in payload_d
+                else payload_d["rate"]
+            )
             for i in range(rate_arr_d.shape[0]):
                 if np.isfinite(rate_arr_d[i]).any():
                     total_d_cells += 1
@@ -6480,7 +6509,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             emitter=emitter,
             cluster_data=cluster_data,
             segmentation=segmentation,
-            viz_params=viz_params,
         )
 
         # section (d): flat sequential PETH flow at 6 cols / row,
@@ -6509,7 +6537,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         emitter: str,
         cluster_data: dict,
         segmentation: dict,
-        viz_params: dict,
     ) -> None:
         """
         Description
@@ -6535,24 +6562,25 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Per-cluster pkl payload.
         segmentation (dict)
             Per-categorical-feature watershed segmentation.
-        viz_params (dict)
-            `neuronal_tuning_figures` settings block; reads
-            `ratemap_cmap`, `vocal_strip_log_ratio_threshold`,
-            `vocal_strip_symlog_linthresh`.
 
         Returns
         -------
         None
         """
 
-        sex = cluster_data["usv_category_tuning"][emitter][SECTION_C_ROWS[0][0]].get("sex", "male")
+        sex = cluster_data["usv_category_tuning"][emitter][SECTION_C_ROWS[0][0]]["sex"]
         dot_color = self._sex_color(sex)
 
         log_threshold = VOCAL_STRIP_LOG_RATIO_THRESHOLD
         symlog_linthresh = VOCAL_STRIP_SYMLOG_LINTHRESH
-        ratemap_cmap = self.visualizations_parameter_dict.get(
-            "figures", {}
-        ).get("cmap", "inferno")
+        figures_settings = (
+            self.visualizations_parameter_dict["figures"]
+            if "figures" in self.visualizations_parameter_dict
+            else {}
+        )
+        ratemap_cmap = (
+            figures_settings["cmap"] if "cmap" in figures_settings else "inferno"
+        )
 
         # build a sequential colormap for the occupancy watershed from
         # the emitter's sex color (mirrors the per-mouse colormap that
@@ -6580,7 +6608,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for sub_idx, cat_feat in enumerate(row_feats):
                 col_offset = sub_idx * 3
                 payload = cluster_data["usv_category_tuning"][emitter][cat_feat]
-                seg = segmentation.get(cat_feat)
+                seg = segmentation[cat_feat] if cat_feat in segmentation else None
 
                 ax_rate = fig.add_subplot(gs[row_idx, col_offset + 0])
                 ax_occ = fig.add_subplot(gs[row_idx, col_offset + 1])
@@ -6703,7 +6731,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         flat = label_grid.ravel()
         value_grid = np.array(
-            [cat_to_value.get(int(l), np.nan) for l in flat],
+            [
+                cat_to_value[int(l)] if int(l) in cat_to_value else np.nan
+                for l in flat
+            ],
             dtype=float,
         ).reshape(label_grid.shape)
 
@@ -6999,7 +7030,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        sex = cluster_data["usv_category_peth"][emitter][CATEGORICAL_FEATURES[0]].get("sex", "male")
+        sex = cluster_data["usv_category_peth"][emitter][CATEGORICAL_FEATURES[0]]["sex"]
         line_color = self._sex_color(sex)
 
         # build a flat sequential list of (title, rate, p0_5, p99_5,
@@ -7018,9 +7049,21 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             bin_centers = payload["bin_centers_s"]
             # smoothed versions are pre-computed in compute; fall back
             # to raw if smoothing was disabled (smoothing_sd == 0).
-            rate_arr = payload.get("rate_smoothed", payload["rate"])
-            p0_5_arr = payload.get("null_p0_5_smoothed", payload["null_p0_5"])
-            p99_5_arr = payload.get("null_p99_5_smoothed", payload["null_p99_5"])
+            rate_arr = (
+                payload["rate_smoothed"]
+                if "rate_smoothed" in payload
+                else payload["rate"]
+            )
+            p0_5_arr = (
+                payload["null_p0_5_smoothed"]
+                if "null_p0_5_smoothed" in payload
+                else payload["null_p0_5"]
+            )
+            p99_5_arr = (
+                payload["null_p99_5_smoothed"]
+                if "null_p99_5_smoothed" in payload
+                else payload["null_p99_5"]
+            )
             for i in range(cats.size):
                 rate = rate_arr[i, :]
                 if not np.isfinite(rate).any():
