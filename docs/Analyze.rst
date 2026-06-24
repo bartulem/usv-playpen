@@ -560,7 +560,7 @@ the per-group plotting colors. The loader picks, for each animal, the
 single recording day with the largest filtered-unit pool so the analyzed
 population is fixed across the day's sessions.
 
-The ``neuronal_coactivity_vocal_categories_analyses.ipynb`` notebook runs
+The ``neuronal_coactivity_analyses.ipynb`` notebook runs
 the whole workflow in order. The full notebook lives in the repository at
-`neuronal_coactivity_vocal_categories_analyses.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/neuronal_coactivity_vocal_categories_analyses.ipynb>`_.
+`neuronal_coactivity_analyses.ipynb
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/neuronal_coactivity_analyses.ipynb>`_.

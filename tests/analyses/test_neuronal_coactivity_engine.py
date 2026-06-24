@@ -308,3 +308,214 @@ def test_sample_onsets_across_sessions_rejects_oversized_request():
 
     with pytest.raises(ValueError, match="less than target N"):
         engine.sample_onsets_across_sessions(_sessions_for_sampling(), "group", n_total=99)
+
+
+def _write_tone_mmap(
+    tmp_path,
+    *,
+    sampling_rate=250000,
+    n_channels=4,
+    n_samples=250000,
+    loud_channel=2,
+    f0=60000.0,
+    loud_amp=10000,
+    quiet_amp=200,
+    tone_lo_s=0.10,
+    tone_hi_s=0.16,
+):
+    """
+    Description
+    -----------
+    Writes a synthetic concatenated int16 audio memmap under ``<tmp_path>/audio``
+    whose filename encodes the ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata the
+    helper parses. The loud channel carries a pure ``f0`` tone of int16 amplitude
+    ``loud_amp`` ONLY within ``[tone_lo_s, tone_hi_s)`` (silence elsewhere on it);
+    every other channel carries a quieter ``f0`` tone (amplitude ``quiet_amp``)
+    throughout. This lets the test exercise channel selection, the onset-anchored
+    window, and end-of-session clamping.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest temporary directory (the session root).
+    sampling_rate, n_channels, n_samples : int
+        Audio memmap geometry.
+    loud_channel : int
+        Channel that carries the loud, time-limited tone.
+    f0 : float
+        Tone frequency (Hz).
+    loud_amp, quiet_amp : int
+        int16 amplitudes of the loud and quiet tones.
+    tone_lo_s, tone_hi_s : float
+        Start/stop (s) of the loud tone on ``loud_channel``.
+
+    Returns
+    -------
+    session_root (pathlib.Path)
+        ``tmp_path`` (the directory containing ``audio/``).
+    """
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    t = np.arange(n_samples) / sampling_rate
+    arr = np.zeros((n_samples, n_channels), dtype=np.int16)
+    quiet = (quiet_amp * np.sin(2 * np.pi * f0 * t)).astype(np.int16)
+    for ch in range(n_channels):
+        arr[:, ch] = quiet
+    s_lo, s_hi = round(tone_lo_s * sampling_rate), round(tone_hi_s * sampling_rate)
+    loud = (loud_amp * np.sin(2 * np.pi * f0 * t)).astype(np.int16)
+    arr[:, loud_channel] = 0
+    arr[s_lo:s_hi, loud_channel] = loud[s_lo:s_hi]
+    name = f"sess_concatenated_audio_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
+    arr.tofile(audio_dir / name)
+    return tmp_path
+
+
+def test_extract_snippet_acoustics_tone(tmp_path):
+    """
+    Description
+    -----------
+    The amplitude / frequency features are correct for a known pure tone: RMS
+    equals ``A/sqrt(2)`` of the int16->float waveform, the peak frequency lands on
+    the ``f0`` bin, and the mean frequency / bandwidth are sensible. Also verifies
+    that the helper reads the SUPPLIED loudest channel (not another), that the
+    window is anchored at the onset, and that an out-of-tone window reads silence.
+    """
+
+    sampling_rate, f0, loud_amp, quiet_amp = 250000, 60000.0, 10000, 200
+    root = _write_tone_mmap(
+        tmp_path, sampling_rate=sampling_rate, loud_channel=2, f0=f0,
+        loud_amp=loud_amp, quiet_amp=quiet_amp, tone_lo_s=0.10, tone_hi_s=0.16,
+    )
+
+    # (0) loud channel, window inside the tone; (1) same onset but the quiet
+    # channel 0; (2) loud channel but a silent stretch (window past the tone).
+    onsets = np.array([0.10, 0.10, 0.50])
+    peak_channels = np.array([2.0, 0.0, 2.0])
+    out = engine.extract_snippet_acoustics(str(root), onsets, peak_channels, 0.030)
+
+    bin_hz = sampling_rate / 2048
+    # (0) loud-channel tone. The energy-weighted (linear-power) features track a pure
+    # tone tightly: RMS is exact, peak + mean frequency land on f0, and the bandwidth
+    # is only a few bins wide.
+    assert out["rms"][0] == pytest.approx((loud_amp / 32767) / np.sqrt(2), rel=2e-2)
+    assert abs(out["peak_freq_hz"][0] - f0) <= bin_hz
+    assert abs(out["mean_freq_hz"][0] - f0) <= 5 * bin_hz
+    assert 0.0 < out["freq_bandwidth_hz"][0] <= 10 * bin_hz
+    # (1) quiet channel selected -> much smaller RMS (channel indexing matters)
+    assert out["rms"][1] == pytest.approx((quiet_amp / 32767) / np.sqrt(2), rel=2e-2)
+    assert out["rms"][1] < out["rms"][0]
+    # (2) onset-anchored window lands in silence on the loud channel
+    assert out["rms"][2] < 1e-3
+    assert np.isnan(out["peak_freq_hz"][2])
+
+
+def test_extract_snippet_acoustics_clamps_and_empty(tmp_path):
+    """
+    Description
+    -----------
+    A window running past the session end is clamped (no crash; RMS still finite,
+    frequency features NaN when the clamped snippet is shorter than one STFT
+    window), and an empty onset list returns empty arrays without touching the
+    audio file.
+    """
+
+    sampling_rate, n_samples = 250000, 250000
+    root = _write_tone_mmap(tmp_path, sampling_rate=sampling_rate, n_samples=n_samples)
+
+    # onset 5 ms before the end -> 30 ms window clamps to ~5 ms (< nperseg=2048)
+    near_end = (n_samples / sampling_rate) - 0.005
+    out = engine.extract_snippet_acoustics(
+        str(root), np.array([near_end]), np.array([2.0]), 0.030,
+    )
+    assert np.isfinite(out["rms"][0])
+    assert np.isnan(out["peak_freq_hz"][0])
+
+    empty = engine.extract_snippet_acoustics(str(root), np.array([]), np.array([]), 0.030)
+    assert all(empty[key].shape == (0,) for key in empty)
+
+
+def test_cohens_d_known_values():
+    """
+    Description
+    -----------
+    ``cohens_d`` matches the analytic pooled-SD standardized mean difference, is 0
+    for identical samples, drops non-finite entries first, and returns NaN when a
+    sample is undersized.
+    """
+
+    x = np.array([2.0, 4.0, 6.0, 8.0])
+    y = np.array([1.0, 3.0, 5.0, 7.0])
+    pooled = np.sqrt(x.var(ddof=1))   # equal spread; mean difference is 1.0
+    assert engine.cohens_d(x, y) == pytest.approx(1.0 / pooled)
+    assert engine.cohens_d(x, x) == pytest.approx(0.0)
+    assert engine.cohens_d(np.array([np.nan, 2.0, 4.0, 6.0, 8.0]), y) == pytest.approx(1.0 / pooled)
+    assert np.isnan(engine.cohens_d(np.array([1.0]), y))
+
+
+def test_bootstrap_vs_null_stats():
+    """
+    Description
+    -----------
+    Right-tailed ``+1``-corrected p-value and the null-standardized Z-score match
+    hand-computed values, and a zero-spread null yields Z = 0.0.
+    """
+
+    boot = np.array([3.0, 3.0, 3.0])            # mean 3
+    null = np.array([0.0, 1.0, 2.0, 3.0, 4.0])  # mean 2, population std sqrt(2)
+    boot_mean, null_mean, p_val, z = engine.bootstrap_vs_null_stats(boot, null)
+    assert boot_mean == pytest.approx(3.0)
+    assert null_mean == pytest.approx(2.0)
+    assert p_val == pytest.approx(3 / 6)        # {3, 4} >= 3 -> (2 + 1) / (5 + 1)
+    assert z == pytest.approx(1.0 / np.sqrt(2.0))
+    _, _, _, z_flat = engine.bootstrap_vs_null_stats(boot, np.array([2.0, 2.0, 2.0]))
+    assert z_flat == 0.0
+
+
+def test_filter_units_by_catalog():
+    """
+    Description
+    -----------
+    The three-criteria filter (``cluster_group`` + ``somatic`` + ``brain_area``)
+    keeps only matching catalog rows; stems without a catalog row are dropped, and an
+    empty ``brain_areas`` set disables the area filter.
+    """
+
+    catalog = {
+        ("m", "d", "u_good_pag"):    {"cluster_group": "good", "somatic": "True",  "brain_area": "PAG"},
+        ("m", "d", "u_mua_pag"):     {"cluster_group": "mua",  "somatic": "True",  "brain_area": "PAG"},
+        ("m", "d", "u_good_nonsom"): {"cluster_group": "good", "somatic": "False", "brain_area": "PAG"},
+        ("m", "d", "u_good_other"):  {"cluster_group": "good", "somatic": "True",  "brain_area": "BLA"},
+    }
+    stems = {stem for _, _, stem in catalog} | {"u_absent"}
+    kept = engine.filter_units_by_catalog(
+        "m", "d", stems, catalog,
+        cluster_group="good", require_somatic=True, brain_areas={"PAG"},
+    )
+    assert kept == {"u_good_pag"}
+    kept_any_area = engine.filter_units_by_catalog(
+        "m", "d", stems, catalog,
+        cluster_group="good", require_somatic=True, brain_areas=set(),
+    )
+    assert kept_any_area == {"u_good_pag", "u_good_other"}
+
+
+def test_load_unit_catalog(tmp_path):
+    """
+    Description
+    -----------
+    The catalog loads into a ``(mouse_id, rec_date, unit_id) -> row`` lookup with
+    every field read as a string (so numeric-looking unit ids stay strings and match
+    file stems).
+    """
+
+    csv_path = tmp_path / "unit_catalog.csv"
+    csv_path.write_text(
+        "mouse_id,rec_date,unit_id,cluster_group,somatic,brain_area\n"
+        "158112_0,20241107,42,good,True,PAG\n"
+    )
+    catalog = engine.load_unit_catalog(csv_path)
+    row = catalog[("158112_0", "20241107", "42")]
+    assert row["cluster_group"] == "good"
+    assert row["brain_area"] == "PAG"
+    assert row["unit_id"] == "42"
