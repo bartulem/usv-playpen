@@ -128,6 +128,13 @@ anipose-triangulate = "usv_playpen.processing.preprocess_data:conduct_anipose_tr
 anipose-trm = "usv_playpen.processing.preprocess_data:translate_rotate_metric_cli"
 das-infer = "usv_playpen.processing.preprocess_data:das_command_line_inference_cli"
 das-summarize = "usv_playpen.processing.preprocess_data:summarize_das_findings_cli"
+generate-usv-spectrograms = "usv_playpen.processing.generate_spectrograms:generate_spectrograms_cli"
+generate-usv-masks = "usv_playpen.processing.generate_masks:generate_masks_cli"
+generate-usv-acoustic-features = "usv_playpen.processing.compute_usv_acoustic_features:compute_usv_acoustic_features_cli"
+build-qlvm-training-set = "usv_playpen.processing.build_qlvm_training_set:build_qlvm_training_set_cli"
+train-qlvm = "usv_playpen.processing.train_qlvm:train_qlvm_cli"
+export-yolo-dataset = "usv_playpen.processing.export_yolo_dataset:export_yolo_dataset_cli"
+train-masks = "usv_playpen.processing.train_masks:train_masks_cli"
 prepare-vcl-assign = "usv_playpen.processing.preprocess_data:prepare_vcl_assign_cli"
 vcl-assign = "usv_playpen.processing.preprocess_data:vcl_assign_cli"
 concatenate-ephys-files = "usv_playpen.processing.preprocess_data:concatenate_binary_files_cli"
@@ -137,8 +144,11 @@ generate-usv-playback = "usv_playpen.analyses.analyze_data:generate_usv_playback
 generate-naturalistic-usv-playback = "usv_playpen.analyses.analyze_data:generate_naturalistic_usv_playback_cli"
 generate-rm = "usv_playpen.analyses.analyze_data:generate_rm_files_cli"
 generate-usv-interval-distributions = "usv_playpen.analyses.analyze_data:generate_usv_interval_distributions_cli"
+infer-qlvm-latents = "usv_playpen.processing.qlvm_latents:infer_qlvm_latents_cli"
 generate-rm-figs = "usv_playpen.visualizations.visualize_data:generate_rm_figures_cli"
 generate-viz = "usv_playpen.visualizations.visualize_data:visualize_3D_data_cli"
+qlvm-torus-traversal-video = "usv_playpen.visualizations.qlvm_torus_traversal_video:qlvm_torus_traversal_video_cli"
+build-vae-density = "usv_playpen.visualizations.make_usv_spectrograms:build_vae_density_cli"
 
 
 [tool.hatch]
@@ -181,6 +191,11 @@ report.exclude_also = [
 
 [tool.mypy]
 files = ["src", "tests"]
+# Vendored, kept-as-is kernels (near-verbatim from specgen) are excluded from our
+# strict type checking: the mask-segmentation kernels and the QLVM training
+# kernels. The usv-playpen-native orchestrators (processing/generate_masks.py,
+# processing/train_qlvm.py) are checked normally.
+exclude = ["src/usv_playpen/processing/masks/", "src/usv_playpen/processing/qlvm_training/"]
 python_version = "3.11"
 warn_unused_configs = true
 strict = true
@@ -196,6 +211,10 @@ disallow_incomplete_defs = true
 
 
 [tool.ruff]
+# Vendored kernels (mask-segmentation + QLVM training) are kept near-verbatim from
+# specgen and are not held to usv-playpen's lint rules; the native orchestrators
+# are linted.
+extend-exclude = ["src/usv_playpen/processing/masks", "src/usv_playpen/processing/qlvm_training"]
 
 [tool.ruff.lint]
 extend-select = [
@@ -313,3 +332,10 @@ constraint-dependencies = [
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }
 sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
+
+# Lift marimo's per-cell output cap so the usv-embedding-explorer notebook
+# can embed up to ~10 K base64-encoded spectrogram thumbnails inside
+# its altair vconcat chart spec without hitting "Your output is too
+# large". 30 MB is generous; raise further if needed.
+[tool.marimo.runtime]
+output_max_bytes = 30_000_000

@@ -632,6 +632,10 @@ def mock_dependencies(mocker):
         'SummaryPlotter': mocker.patch('usv_playpen.processing.preprocess_data.SummaryPlotter'),
         'Messenger': mocker.patch('usv_playpen.processing.preprocess_data.Messenger'),
         'Synchronizer': mocker.patch('usv_playpen.processing.preprocess_data.Synchronizer'),
+        'SpectrogramGenerator': mocker.patch('usv_playpen.processing.preprocess_data.SpectrogramGenerator'),
+        'MaskGenerator': mocker.patch('usv_playpen.processing.preprocess_data.MaskGenerator'),
+        'USVAcousticFeatureExtractor': mocker.patch('usv_playpen.processing.preprocess_data.USVAcousticFeatureExtractor'),
+        'QLVMLatentInference': mocker.patch('usv_playpen.processing.preprocess_data.QLVMLatentInference'),
     }
     mocked_classes['Gatherer'].return_value.prepare_data_for_analyses.return_value = {}
     mocked_classes['Synchronizer'].return_value.find_audio_sync_trains.return_value = {}
@@ -673,6 +677,66 @@ def test_single_directory_video_concatenation(processing_settings, mock_dependen
     assert mock_operator.call_count == 1
     mock_operator.return_value.concatenate_video_files.assert_called_once()
     mock_operator.return_value.rectify_video_fps.assert_not_called()
+
+
+def test_processing_booleans_has_inhouse_usv_keys(processing_settings):
+    """The 4 in-house USV-pipeline steps are present in processing_booleans."""
+    pb = processing_settings['processing_booleans']
+    for key in ('generate_usv_spectrograms', 'generate_usv_masks',
+                'compute_usv_acoustic_features', 'infer_qlvm_latents'):
+        assert key in pb
+
+
+def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependencies, tmp_path, mocker):
+    """All 4 in-house USV steps run once each, in pipeline order
+    (spectrograms -> masks -> acoustic-features -> QLVM)."""
+    for key in ('generate_usv_spectrograms', 'generate_usv_masks',
+                'compute_usv_acoustic_features', 'infer_qlvm_latents'):
+        processing_settings['processing_booleans'][key] = True
+
+    manager = mocker.Mock()
+    manager.attach_mock(mock_dependencies['SpectrogramGenerator'], 'spectrograms')
+    manager.attach_mock(mock_dependencies['MaskGenerator'], 'masks')
+    manager.attach_mock(mock_dependencies['USVAcousticFeatureExtractor'], 'features')
+    manager.attach_mock(mock_dependencies['QLVMLatentInference'], 'qlvm')
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+
+    # each backend's single public method ran exactly once
+    mock_dependencies['SpectrogramGenerator'].return_value.generate_session_spectrograms.assert_called_once()
+    mock_dependencies['MaskGenerator'].return_value.generate_session_masks.assert_called_once()
+    mock_dependencies['USVAcousticFeatureExtractor'].return_value.merge_features_into_summary.assert_called_once()
+    mock_dependencies['QLVMLatentInference'].return_value.infer_and_merge.assert_called_once()
+
+    # constructor call order == pipeline order
+    call_names = [c[0] for c in manager.mock_calls]
+    first_idx = {name: call_names.index(name) for name in ('spectrograms', 'masks', 'features', 'qlvm')}
+    assert first_idx['spectrograms'] < first_idx['masks'] < first_idx['features'] < first_idx['qlvm']
+
+
+def test_inhouse_usv_pipeline_subset_gated_by_booleans(processing_settings, mock_dependencies, tmp_path):
+    """Each in-house USV step runs only when its boolean is set: enabling
+    spectrograms + features (and leaving masks + QLVM off) instantiates exactly
+    those two backends and skips the other two."""
+    pb = processing_settings['processing_booleans']
+    pb['generate_usv_spectrograms'] = True
+    pb['generate_usv_masks'] = False
+    pb['compute_usv_acoustic_features'] = True
+    pb['infer_qlvm_latents'] = False
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+
+    # enabled steps ran; disabled steps were never instantiated.
+    mock_dependencies['SpectrogramGenerator'].return_value.generate_session_spectrograms.assert_called_once()
+    mock_dependencies['USVAcousticFeatureExtractor'].return_value.merge_features_into_summary.assert_called_once()
+    mock_dependencies['MaskGenerator'].assert_not_called()
+    mock_dependencies['QLVMLatentInference'].assert_not_called()
 
 
 def test_multiple_directory_looping(processing_settings, mock_dependencies, tmp_path):

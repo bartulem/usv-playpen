@@ -1,16 +1,31 @@
 {
   "figures": {
     "save_directory": "/mnt/falkner/Bartul/figures",
-    "fig_format": "svg",
+    "fig_format": "png",
     "dpi": 300,
     "timestamp_in_name": true,
-    "cmap": "inferno"
+    "cmap": "inferno",
+    "seed": 0
+  },
+  "shared_resources": {
+    "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms",
+    "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   },
   "credentials_directory": "",
-  "male_colors": ["#9AC0CD", "#8CA252"],
-  "female_colors": ["#FF6347", "#B851B4"],
-  "social_colors": ["#5A6470"],
-  "unassigned_colors": ["#C0C0C0"],
+  "male_colors": [
+    "#9AC0CD",
+    "#8CA252"
+  ],
+  "female_colors": [
+    "#FF6347",
+    "#B851B4"
+  ],
+  "social_colors": [
+    "#5A6470"
+  ],
+  "unassigned_colors": [
+    "#C0C0C0"
+  ],
   "brain_area_colors": {
     "PAG": "#677470",
     "MRN": "#939884",
@@ -22,10 +37,13 @@
   },
   "visualize_booleans": {
     "make_neuronal_tuning_figures_bool": false,
-    "make_behavioral_videos_bool": true
+    "make_behavioral_videos_bool": false,
+    "make_usv_spectrograms_bool": false,
+    "make_qlvm_torus_traversal_video_bool": false,
+    "make_embedding_thumbnails_bool": true
   },
   "visualize_data": {
-    "root_directories": ["/mnt/falkner/Bartul/Data/20250909_151929"]
+    "root_directories": []
   },
   "send_email": {
     "visualizations_pc_list": [
@@ -41,11 +59,49 @@
       "receivers": []
     }
   },
+  "make_usv_spectrograms": {
+    "save_dir": "",
+    "save_fig": true,
+    "fig_format": "png",
+    "fig_dpi": 300,
+    "fig_size": [
+      6,
+      2
+    ],
+    "transparent_fig_bg": false,
+    "mode": "sequence",
+    "channel_of_interest": 11,
+    "plot_raw_audio": true,
+    "time_window": [
+      0.4,
+      2.4
+    ],
+    "freq_limits": [
+      40,
+      95
+    ],
+    "usv_amplitude_color": "#808080",
+    "nfft": 512,
+    "plot_cbar": true,
+    "cbar_limits": [
+      -70,
+      0
+    ],
+    "apply_mask": true,
+    "auto_open_figure": true,
+    "sequence": {
+      "embedding": "qlvm",
+      "draw_boundaries": true,
+      "boundary_clustering": "coarse",
+      "annotate_right": false,
+      "mark_usv_segments": true
+    }
+  },
   "make_behavioral_videos": {
-    "arena_directory": "/mnt/falkner/Bartul/Data/20250909_142042",
+    "arena_directory": "",
     "speaker_audio_file": "",
     "sequence_audio_file": "",
-    "animate_bool": true,
+    "animate_bool": false,
     "video_start_time": 37.0,
     "video_duration": 10.0,
     "plot_theme": "dark",
@@ -56,16 +112,20 @@
     "rotation_speed": 20,
     "history_bool": false,
     "speaker_bool": false,
-    "spectrogram_bool": true,
+    "spectrogram_bool": false,
     "spectrogram_ch": 0,
-    "raster_plot_bool": true,
+    "raster_plot_bool": false,
     "raster_selection_criteria": {
       "brain_areas": [],
-      "other": ["good"]
+      "other": [
+        "good"
+      ]
     },
-    "raster_special_units": [""],
+    "raster_special_units": [
+      ""
+    ],
     "spike_sound_bool": false,
-    "beh_features_bool": true,
+    "beh_features_bool": false,
     "beh_features_to_plot": [],
     "special_beh_features": [],
     "general_figure_specs": {
@@ -111,13 +171,77 @@
       "raster_ll": 10.9,
       "spectrogram_cbar_bool": true,
       "spectrogram_plot_window_size": 1,
-      "spectrogram_power_limit": [-60, 0],
-      "spectrogram_frequency_limit": [30000, 125000],
-      "spectrogram_yticks": [50000, 100000],
+      "spectrogram_power_limit": [
+        -60,
+        0
+      ],
+      "spectrogram_frequency_limit": [
+        30000,
+        125000
+      ],
+      "spectrogram_yticks": [
+        50000,
+        100000
+      ],
       "spectrogram_stft_nfft": 512,
       "plot_usv_segments_bool": true,
       "usv_segments_ypos": 120000,
       "usv_segments_lw": 1.25
     }
+  },
+  "qlvm_torus_traversal_video": {
+    "clustering": "coarse",
+    "fps": 20,
+    "dpi": 100,
+    "m": 36,
+    "cluster_hold_frames": 60,
+    "peak_traverse_frames": 200,
+    "boundary_traverse_frames": 200,
+    "title_card_frames": 45,
+    "samples_per_trace": 75,
+    "peak_jitter_sigma": 0.015,
+    "boundary_curve_amplitude": 0.18,
+    "boundary_positions_per_walk": 15,
+    "boundary_neighbors": 5,
+    "seed": 0,
+    "peaks_only": false,
+    "spec_cache_size": 2048,
+    "apply_mask": true,
+    "accent_color": "#00FFFF"
+  },
+  "embedding_thumbnails": {
+    "map_type": "qlvm",
+    "category_col_suffix": "supercategory",
+    "n_samples_per_category": 8,
+    "tile_orientation": "vertical",
+    "apply_mask": true,
+    "mask_excluded_categories": [],
+    "category_colors": null,
+    "sampling_method": "spiral",
+    "draw_cluster_boundaries": true,
+    "knn_boundary_neighbors": 15,
+    "knn_boundary_resolution": 200,
+    "knn_boundary_density_min_count": 0.05,
+    "knn_boundary_density_smoothing_sigma": 3.0,
+    "draw_spiral_overlay": false,
+    "spiral_show_only_for": null,
+    "spiral_color": "#000000",
+    "spiral_linewidth": 1.0,
+    "spiral_radius_scale": 0.1,
+    "spiral_radius_abs": 0.1,
+    "spiral_n_turns": 3,
+    "spiral_random_phase": true,
+    "annotate_picks_on_scatter": false,
+    "pick_number_fontsize": 9,
+    "annotate_cluster_ids": true,
+    "cluster_id_fontsize": 20,
+    "thumbnail_hspace": 0.03,
+    "thumbnail_wspace": 0.04,
+    "unstretched_specs": true,
+    "scatter_max_points": 200000,
+    "fig_size": [
+      16,
+      12
+    ]
   }
 }

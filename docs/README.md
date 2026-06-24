@@ -1,7 +1,9 @@
 [![Python version](https://img.shields.io/badge/Python-3.13-blue)](https://img.shields.io/badge/Python-3.13-blue)
-[![DOI](https://zenodo.org/badge/566588932.svg)](https://zenodo.org/badge/latestdoi/566588932)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.7926971-blue)](https://doi.org/10.5281/zenodo.7926971)
 [![repo size](https://img.shields.io/github/repo-size/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/)
 [![Documentation Status](https://readthedocs.org/projects//usv-playpen/badge/?version=latest)](https://usv-playpen.readthedocs.io/en/latest/?badge=latest)
+[![tests](https://github.com/bartulem/usv-playpen/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bartulem/usv-playpen/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/bartulem/usv-playpen/graph/badge.svg)](https://codecov.io/gh/bartulem/usv-playpen)
 [![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 ![shields.io-issues](https://img.shields.io/github/issues/bartulem/usv-playpen)
 [![Release](https://img.shields.io/github/v/release/bartulem/usv-playpen)](https://img.shields.io/github/v/release/bartulem/usv-playpen)
@@ -25,8 +27,6 @@ GUI are platform-independent.
 
 ## Prerequisites
 
-- [CoolTerm](https://coolterm.en.lo4d.com/windows) (necessary only on the audio
-  recording PC)
 - [git](https://git-scm.com/download/) (if on Windows, add PATH to USER
   VARIABLES)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) (if on Windows,

@@ -616,3 +616,102 @@ def newest_match_or_raise(
             f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
         )
     return max(matches, key=key)
+
+
+# Embedding-landscape resolution. The visualization layer reads its precomputed
+# cohort artifacts from a single base directory (``shared_resources.spectrograms_dir``)
+# by convention, rather than from several hard-coded file paths:
+#   <dir>/qlvm/arrays_{coarse,fine}.npz      QLVM torus density + watershed labels
+#   <dir>/vae/vae_density_{coarse,fine}.npz  VAE umap density + category labels
+#   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
+def resolve_embedding_arrays_path(spectrograms_dir: str, embedding: str, clustering: str) -> str:
+    """
+    Description
+    -----------
+    Build the path to a precomputed embedding-landscape ``.npz`` under the
+    spectrograms base directory, by convention -- QLVM at
+    ``<dir>/qlvm/arrays_{coarse,fine}.npz`` and VAE at
+    ``<dir>/vae/vae_density_{coarse,fine}.npz``. This is a pure path builder (run
+    through ``configure_path``); whether the file exists is the caller's concern
+    (the sequence figure falls back to a bare panel, the torus video requires it).
+
+    Parameters
+    ----------
+    spectrograms_dir (str)
+        Base directory where the ``qlvm`` / ``vae`` subdirectories branch off.
+    embedding (str)
+        ``"qlvm"`` or ``"vae"``.
+    clustering (str)
+        ``"fine"`` selects the fine map; anything else selects the coarse map.
+
+    Returns
+    -------
+    path (str)
+        The OS-resolved ``.npz`` path (not checked for existence).
+    """
+
+    base = pathlib.Path(configure_path(spectrograms_dir))
+    tag = "fine" if clustering == "fine" else "coarse"
+    if embedding == "vae":
+        return str(base / "vae" / f"vae_density_{tag}.npz")
+    return str(base / "qlvm" / f"arrays_{tag}.npz")
+
+
+def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
+    """
+    Description
+    -----------
+    Resolve the consolidated spectrogram/mask/latent ``.h5`` store: the most
+    recently modified ``spectrograms_*.h5`` directly under the base directory. The
+    name pattern is deliberate -- it selects the consolidated store and skips other
+    ``.h5`` siblings (e.g. ``qlvm_clusters_*.h5``). Raises ``FileNotFoundError`` with
+    a clear message if the directory is missing or holds no matching store.
+
+    Parameters
+    ----------
+    spectrograms_dir (str)
+        Base spectrograms directory (run through ``configure_path``).
+
+    Returns
+    -------
+    path (str)
+        The OS-resolved path to the newest ``spectrograms_*.h5``.
+    """
+
+    base = pathlib.Path(configure_path(spectrograms_dir))
+    return str(
+        newest_match_or_raise(
+            base,
+            "spectrograms_*.h5",
+            key=lambda p: p.stat().st_mtime,
+            label="consolidated spectrogram .h5",
+        )
+    )
+
+
+def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
+    """
+    Description
+    -----------
+    Build the path to the cohort pooled-embeddings parquet cache under the
+    spectrograms base directory, by convention:
+    ``<dir>/embeddings/pooled_embeddings.parquet``. This is a pure path builder
+    (run through ``configure_path``); whether the file exists is the caller's
+    concern -- the embedding figures pass it as ``embeddings_cache_path`` so that
+    ``build_pooled_embeddings_df`` loads it when present (one combined table that
+    carries both the VAE and QLVM coordinates and the coarse + fine labels), and
+    otherwise pools the cohort and writes it there.
+
+    Parameters
+    ----------
+    spectrograms_dir (str)
+        Base directory where the precomputed embedding artifacts live.
+
+    Returns
+    -------
+    path (str)
+        The OS-resolved parquet path (not checked for existence).
+    """
+
+    base = pathlib.Path(configure_path(spectrograms_dir))
+    return str(base / "embeddings" / "pooled_embeddings.parquet")

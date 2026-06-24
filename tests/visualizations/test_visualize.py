@@ -14,6 +14,9 @@ def mock_settings():
         "visualize_booleans": {
             "make_neuronal_tuning_figures_bool": False,
             "make_behavioral_videos_bool": False,
+            "make_usv_spectrograms_bool": False,
+            "make_qlvm_torus_traversal_video_bool": False,
+            "make_embedding_thumbnails_bool": False,
         },
         "credentials_directory": "/fake/credentials",
         "send_email": {
@@ -37,6 +40,9 @@ def mock_dependencies(mocker):
     mocked_classes = {
         'NeuronalTuningFigureMaker': mocker.patch('usv_playpen.visualizations.visualize_data.NeuronalTuningFigureMaker'),
         'Create3DVideo': mocker.patch('usv_playpen.visualizations.visualize_data.Create3DVideo'),
+        'USVSpectrogramPlotter': mocker.patch('usv_playpen.visualizations.visualize_data.USVSpectrogramPlotter'),
+        'QLVMTorusTraversalVideo': mocker.patch('usv_playpen.visualizations.visualize_data.QLVMTorusTraversalVideo'),
+        'render_embedding_thumbnails_for_cohort': mocker.patch('usv_playpen.visualizations.visualize_data.render_embedding_thumbnails_for_cohort'),
         'Messenger': mocker.patch('usv_playpen.visualizations.visualize_data.Messenger'),
     }
     return mocked_classes
@@ -120,6 +126,65 @@ def test_multiple_tasks_are_called(mock_settings, mock_dependencies):
     mock_video_creator = mock_dependencies['Create3DVideo']
     assert mock_video_creator.call_count == len(root_dirs)
     assert mock_video_creator.return_value.visualize_in_video.call_count == len(root_dirs)
+
+
+def test_make_usv_spectrograms_logic(mock_settings, mock_dependencies):
+    """
+    The USV spectrogram figure is PER-SESSION: it must run once per root
+    directory (inside the loop), independent of the cohort torus block.
+    """
+    mock_settings['visualize_booleans']['make_usv_spectrograms_bool'] = True
+    root_dirs = ['/fake/dir1', '/fake/dir2', '/fake/dir3']
+
+    visualizer = Visualizer(
+        input_parameter_dict=mock_settings,
+        root_directories=root_dirs
+    )
+    visualizer.visualize_data()
+
+    mock_plotter = mock_dependencies['USVSpectrogramPlotter']
+    assert mock_plotter.call_count == len(root_dirs)
+    assert mock_plotter.return_value.make_usv_spectrograms.call_count == len(root_dirs)
+    # the cohort torus block must NOT have run
+    assert mock_dependencies['QLVMTorusTraversalVideo'].call_count == 0
+
+
+def test_make_qlvm_torus_traversal_video_logic(mock_settings, mock_dependencies):
+    """
+    The QLVM torus video is COHORT-LEVEL: it must run exactly once (outside the
+    per-session loop), regardless of how many root directories are given.
+    """
+    mock_settings['visualize_booleans']['make_qlvm_torus_traversal_video_bool'] = True
+    root_dirs = ['/fake/dir1', '/fake/dir2', '/fake/dir3']
+
+    visualizer = Visualizer(
+        input_parameter_dict=mock_settings,
+        root_directories=root_dirs
+    )
+    visualizer.visualize_data()
+
+    mock_video = mock_dependencies['QLVMTorusTraversalVideo']
+    assert mock_video.call_count == 1
+    mock_video.return_value.make_video.assert_called_once()
+
+
+def test_make_embedding_thumbnails_logic(mock_settings, mock_dependencies):
+    """
+    The embedding + per-category thumbnails figure is COHORT-LEVEL: it must run
+    exactly once (outside the per-session loop), regardless of how many root
+    directories are given.
+    """
+    mock_settings['visualize_booleans']['make_embedding_thumbnails_bool'] = True
+    root_dirs = ['/fake/dir1', '/fake/dir2', '/fake/dir3']
+
+    visualizer = Visualizer(
+        input_parameter_dict=mock_settings,
+        root_directories=root_dirs
+    )
+    visualizer.visualize_data()
+
+    mock_thumbnails = mock_dependencies['render_embedding_thumbnails_for_cohort']
+    assert mock_thumbnails.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +271,46 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
     # the default figure-format / colormap dropdowns
     assert hasattr(win, "default_fig_format_cb")
     assert hasattr(win, "default_cmap_cb")
+    # the USV sequence figure controls (column 3)
+    for attr in ("usv_seq_cb", "usv_seq_fig_format_cb", "usv_seq_start_edit",
+                 "usv_seq_duration_edit", "usv_seq_embedding_cb",
+                 "usv_seq_mask_cb", "usv_seq_raw_cb", "usv_seq_boundaries_cb",
+                 "usv_seq_boundary_clustering_cb", "usv_seq_mark_cb"):
+        assert hasattr(win, attr), f"Visualize tab missing USV-sequence widget: {attr}"
+    # the sequence selectors are seeded from settings
+    assert win.usv_seq_embedding in ("qlvm", "vae")
+    win.close()
+
+
+def test_gui_usv_sequence_control_coupling(qtbot, monkeypatch, tmp_path):
+    """Boundaries apply to BOTH embeddings (VAE has category boundaries too); the
+    clustering selector is enabled only when boundaries = Yes."""
+    monkeypatch.chdir(tmp_path)
+    win = _make_main_window(qtbot)
+    win.visualize_one()
+
+    # VAE + boundaries Yes -> boundaries stay enabled (no longer QLVM-only) and the
+    # clustering selector is enabled.
+    win.usv_seq_embedding_cb.setCurrentText("vae")
+    win.usv_seq_boundaries_cb.setCurrentText("Yes")
+    win._update_usv_seq_enabled_state()
+    assert win.usv_seq_boundaries_cb.isEnabled()
+    assert win.usv_seq_boundary_clustering_cb.isEnabled()
+    assert win.usv_seq_boundary_clustering_label.isEnabled()
+
+    # boundaries No -> clustering selector disabled (either embedding)
+    win.usv_seq_boundaries_cb.setCurrentText("No")
+    win._update_usv_seq_enabled_state()
+    assert win.usv_seq_boundaries_cb.isEnabled()
+    assert not win.usv_seq_boundary_clustering_cb.isEnabled()
+    assert not win.usv_seq_boundary_clustering_label.isEnabled()
+
+    # QLVM + boundaries Yes -> clustering selector enabled
+    win.usv_seq_embedding_cb.setCurrentText("qlvm")
+    win.usv_seq_boundaries_cb.setCurrentText("Yes")
+    win._update_usv_seq_enabled_state()
+    assert win.usv_seq_boundary_clustering_cb.isEnabled()
+    assert win.usv_seq_boundary_clustering_label.isEnabled()
     win.close()
 
 
@@ -271,4 +376,25 @@ def test_gui_record_then_process_then_main(qtbot, monkeypatch, tmp_path):
     win.process_one()
     win.main_window()
     win.close()
+    win.close()
+
+
+def test_visualization_paths_follow_experimenter(qtbot, monkeypatch, tmp_path):
+    """Saving the Visualize settings rewrites the experimenter component of the
+    figure output dir + the shared resource dirs to the selected experimenter."""
+    monkeypatch.chdir(tmp_path)
+    win = _make_main_window(qtbot)
+    win.visualize_one()
+    win.exp_settings_dict["experimenter_list"] = ["Alice", "Bob"]
+    win.exp_id = "Bob"
+    win.visualizations_input_dict["figures"]["save_directory"] = "/mnt/falkner/Alice/figures"
+    shared = win.visualizations_input_dict["shared_resources"]
+    shared["spectrograms_dir"] = "/mnt/falkner/Alice/spectrograms"
+    shared["input_files_directory"] = "/mnt/falkner/Alice/modeling/input_files"
+
+    win._save_visualizations_labels_func()
+
+    assert win.visualizations_input_dict["figures"]["save_directory"] == "/mnt/falkner/Bob/figures"
+    assert shared["spectrograms_dir"] == "/mnt/falkner/Bob/spectrograms"
+    assert shared["input_files_directory"] == "/mnt/falkner/Bob/modeling/input_files"
     win.close()

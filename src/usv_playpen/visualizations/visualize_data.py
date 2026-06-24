@@ -19,6 +19,8 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..send_email import Messenger
 from .make_behavioral_videos import Create3DVideo
 from .make_neuronal_tuning_figures import NeuronalTuningFigureMaker
+from .make_usv_spectrograms import USVSpectrogramPlotter, render_embedding_thumbnails_for_cohort
+from .qlvm_torus_traversal_video import QLVMTorusTraversalVideo
 
 
 class Visualizer:
@@ -127,12 +129,41 @@ class Visualizer:
                                   visualizations_parameter_dict=self.input_parameter_dict,
                                   message_output=self.message_output).visualize_in_video()
 
+                # # # # make USV spectrogram figures (per-session; mode set in settings, e.g. 'sequence')
+                if self.input_parameter_dict['visualize_booleans']['make_usv_spectrograms_bool']:
+                    USVSpectrogramPlotter(root_directory=one_directory,
+                                          visualizations_parameter_dict=self.input_parameter_dict,
+                                          message_output=self.message_output).make_usv_spectrograms()
+
                 self.message_output(f"Visualizing data in {one_directory} finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
             except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
                 failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
+
+        # # # # cohort-level (run-once) QLVM torus-traversal video: reads a model's
+        # arrays + provenance pickle + the consolidated H5 from settings (not a
+        # session directory), so it runs ONCE outside the per-session loop.
+        if self.input_parameter_dict['visualize_booleans']['make_qlvm_torus_traversal_video_bool']:
+            try:
+                QLVMTorusTraversalVideo(output_path=None,
+                                        input_parameter_dict=self.input_parameter_dict,
+                                        message_output=self.message_output).make_video()
+            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+                self.message_output(traceback.format_exc())
+                failed_directories.append(("qlvm_torus_traversal_video", f"{type(exc).__name__}: {exc}"))
+
+        # # # # cohort-level (run-once) embedding + per-category thumbnails figure:
+        # pools the cohort session lists + reads the consolidated store from
+        # settings (not a session directory), so it runs ONCE outside the loop.
+        if self.input_parameter_dict['visualize_booleans']['make_embedding_thumbnails_bool']:
+            try:
+                render_embedding_thumbnails_for_cohort(self.input_parameter_dict,
+                                                       message_output=self.message_output)
+            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+                self.message_output(traceback.format_exc())
+                failed_directories.append(("embedding_thumbnails", f"{type(exc).__name__}: {exc}"))
 
         # Report failures honestly: the completion e-mail previously always
         # announced success even when directories had errored and been swallowed

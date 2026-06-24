@@ -10,6 +10,7 @@ mount-mapping table was introduced to fix (all-occurrence substring corruption,
 and the previously-unhandled `murthy` share).
 """
 
+import os
 import pathlib
 import time
 
@@ -333,6 +334,40 @@ def test_newest_match_picks_max_key(tmp_path):
 def test_newest_match_raises_when_empty(tmp_path):
     with pytest.raises(FileNotFoundError, match="newest"):
         os_utils.newest_match_or_raise(tmp_path, "*.bin", label="newest")
+
+
+# resolve_embedding_arrays_path / resolve_consolidated_h5_path
+
+def test_resolve_embedding_arrays_path_conventions(tmp_path):
+    base = tmp_path / "spectrograms"
+    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "coarse") == str(base / "qlvm" / "arrays_coarse.npz")
+    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine") == str(base / "qlvm" / "arrays_fine.npz")
+    assert os_utils.resolve_embedding_arrays_path(str(base), "vae", "coarse") == str(base / "vae" / "vae_density_coarse.npz")
+    assert os_utils.resolve_embedding_arrays_path(str(base), "vae", "fine") == str(base / "vae" / "vae_density_fine.npz")
+
+
+def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
+    (tmp_path / "qlvm_clusters_20260506.h5").write_bytes(b"x")  # different store -> must be ignored
+    old = tmp_path / "spectrograms_old.h5"
+    new = tmp_path / "spectrograms_new.h5"
+    old.write_bytes(b"x")
+    new.write_bytes(b"x")
+    os.utime(old, (1, 1))
+    os.utime(new, (10 ** 9, 10 ** 9))  # strictly newer mtime
+    assert os_utils.resolve_consolidated_h5_path(str(tmp_path)) == str(new)
+
+
+def test_resolve_consolidated_h5_raises_when_no_store(tmp_path):
+    (tmp_path / "qlvm_clusters_x.h5").write_bytes(b"x")  # only a non-consolidated .h5
+    with pytest.raises(FileNotFoundError, match="consolidated"):
+        os_utils.resolve_consolidated_h5_path(str(tmp_path))
+
+
+def test_resolve_pooled_embeddings_cache_convention(tmp_path):
+    base = tmp_path / "spectrograms"
+    assert os_utils.resolve_pooled_embeddings_cache(str(base)) == str(
+        base / "embeddings" / "pooled_embeddings.parquet"
+    )
 
 
 # wait_for_subprocesses

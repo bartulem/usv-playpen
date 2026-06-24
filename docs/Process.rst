@@ -827,7 +827,7 @@ The *Run HPSS* step populates the *hpss* directory with de-noised single channel
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/process_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+These four parameters are no longer exposed in the GUI (only the *Run HPSS* toggle remains); they are edited directly in the */usv-playpen/_parameter_settings/process_settings.json* file, under the following keys:
 
 * **stft_window_length_hop_size** : STFT window length and hop size
 * **kernel_size** : harmonic-percussive source separation kernel size
@@ -1235,3 +1235,95 @@ The */usv-playpen/_parameter_settings/process_settings.json* file contains a sec
         "relative_intensity_threshold": 1.0,
         "millisecond_divergence_tolerance": 12
    }
+
+USV spectrogram, mask & latent pipeline
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once the audio-processing steps above have produced each session's curated ``*_usv_summary.csv`` (DAS-detected USVs), an in-house, self-contained pipeline turns those calls into spectrograms, call masks, interpretable acoustic features, and toroidal **QLVM** latents — and trains the two models the pipeline relies on. The four per-session **inference** steps are exposed as *Yes/No* checkboxes in the audio column of the *Process* GUI window (*Generate spectrograms*, *Generate masks*, *Compute USV features*, *Infer QLVM latents*); ticking several at once dispatches them in pipeline order (spectrograms → masks → features → QLVM). The two cross-session **training** chains are intentionally **CLI / cluster only** (they are not GUI buttons). Every step is a ``click`` command whose full options live under its block in */usv-playpen/_parameter_settings/processing_settings.json*, and they are documented with their flags in :ref:`the CLI reference <usv-pipeline-cli>`.
+
+Each per-session step reads and writes that session's ``audio/spectrograms/<session>_spectrograms.h5``; the model-training steps aggregate a list of those H5 files across a cohort and run once (not per session).
+
+**Inference (per session), in order:**
+
+    #. ``generate-usv-spectrograms`` — variance-weighted multi-channel spectrogram of every USV → the ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)), rows 1:1 with ``usv_summary.csv``.
+    #. ``generate-usv-masks`` — YOLO box detector → SAM2 segmentation of each call, written back into the SAME H5 as a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,)). Needs a pretrained SAM2 checkpoint + a trained YOLO ``best.pt`` set in settings (GPU recommended).
+    #. ``generate-usv-acoustic-features`` — per-USV spectral/amplitude features merged into ``usv_summary.csv``; restricted to the true SAM mask region when a ``mask/<session>`` group is present, else the signal time-window.
+    #. ``infer-qlvm-latents`` — embeds the spectrograms into the trained QLVM torus and merges the latent coordinates + watershed categories into ``usv_summary.csv`` (detailed below).
+
+**Training (cross-session, run once on a cohort):**
+
+    #. *QLVM decoder.* ``build-qlvm-training-set`` aggregates the per-session H5 files into a curated ``.npz`` set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms), then ``train-qlvm`` trains the decoder and writes ``qmc_decoder_weights.npz`` — the file ``infer-qlvm-latents`` reloads.
+    #. *YOLO box detector.* ``export-yolo-dataset`` renders the spectrograms to an Ultralytics dataset and attaches a box label to each, then ``train-masks`` fine-tunes YOLO and produces the ``best.pt`` that ``generate-usv-masks`` points at. **SAM2 itself is used pretrained — it is not trained here.**
+
+How the boxes are labelled is set by ``--label-source`` (or the ``export_yolo_dataset.label_source`` setting), and this is the one real fork in the mask-training workflow:
+
+* **Auto, no annotation** — ``--label-source cc`` (the default). Boxes are *pseudo-labelled* by the unlearned connected-component detector, so you can build a dataset and fine-tune YOLO straight from raw spectrograms with zero manual work. This is the recommended starting point; it bootstraps a learned detector that already outperforms the connected-component baseline. The build is pure ``numpy``/``scipy``/``skimage`` (no GPU, no ``torch``).
+* **Hand-labelled** — ``--label-source manual``. Boxes come from your own hand-verified YOLO-format label files, one ``{spec_id}.txt`` per spectrogram (the standard ``class x_centre y_centre width height``, normalised), read from ``--manual-labels-directory`` (or the ``export_yolo_dataset.manual_labels_directory`` setting). Any spectrogram without a matching file is exported with an empty label (treated as background).
+* **Hybrid** — ``--label-source merge``. Starts from the ``cc`` pseudo-labels and overrides them with a manual ``{spec_id}.txt`` wherever you have provided one — i.e. correct only the calls you care about and let the detector label the rest. Also needs ``--manual-labels-directory``.
+
+``manual`` and ``merge`` therefore require ``--manual-labels-directory`` to be set; ``cc`` ignores it.
+
+On the cluster, ready-made SLURM submitters live in */usv-playpen/other/cluster/USV_PLAYPEN*: the per-session inference half runs via ``process_data_step_four_inference_global.sh`` (a single GPU job that chains all four inference steps for one session), while the two training chains run via ``train_qlvm_global.sh`` (``build-qlvm-training-set`` → ``train-qlvm``) and ``train_masks_global.sh`` (``export-yolo-dataset`` → ``train-masks``) — both GPU jobs that take a comma-separated cohort of session ``--root-directories`` and write the model artifacts the inference steps reload. Edit the hyper-parameter block at the top of each script (cohort list, dataset / output directories, resources) before submitting. ``train_masks_global.sh`` additionally exposes a ``LABEL_SOURCE`` knob (``cc`` / ``manual`` / ``merge``) and a ``MANUAL_LABELS_DIRECTORY`` — leave it ``cc`` for the auto path, or set it to ``manual`` / ``merge`` and point ``MANUAL_LABELS_DIRECTORY`` at your hand-labelled ``{spec_id}.txt`` files; the script then passes ``--manual-labels-directory`` only when it is needed.
+
+To run ``generate-usv-masks`` / ``train-masks`` the environment must provide the ``sam2`` and ``ultralytics`` packages (both are usv-playpen core dependencies) plus, for ``generate-usv-masks``, the SAM2 checkpoint/config and the trained YOLO weights configured in the ``generate_masks`` settings block:
+
+.. code-block:: json
+
+    "generate_masks": {
+        "method": "boxprompt",
+        "detector": "yolo",
+        "sam2_model_dir": "/mnt/falkner/Bartul/spectrograms/sam",
+        "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+        "sam2_model_path": "/mnt/falkner/Bartul/spectrograms/sam/checkpoint.pt",
+        "yolo_weights": "/mnt/falkner/Bartul/spectrograms/sam/best.pt"
+    }
+
+``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files; ``sam2_model_dir`` is the directory they live in (the step changes into it), and the stock ``sam2_model_cfg`` config NAME is resolved by the installed ``sam2`` package's Hydra search path (a co-located ``configs/sam2.1/sam2.1_hiera_b+.yaml`` copy is also kept under ``sam2_model_dir``). The three filesystem paths are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path`` — the same handling as the DAS / Vocalocator model paths — so the defaults work on any lab host that has the share mounted. Override any of them per run with the CLI flags (``--sam2-model-dir`` / ``--sam2-model-cfg`` / ``--sam2-model-path`` / ``--yolo-weights``).
+
+Infer QLVM vocalization latents
+"""""""""""""""""""""""""""""""
+
+Each USV can be embedded into a trained **QLVM** (Quasi-Monte-Carlo latent-variable model) toroidal latent space, giving every call a pair of torus coordinates and a categorical label that are comparable across every session embedded into the same model. These ``qlvm_*`` columns are what the categorical USV-tuning analysis in :ref:`Analyze <Analyze>`'s *Compute neuronal tuning curves* (``usv_category_tuning`` / ``usv_category_peth``) consumes.
+
+``infer-qlvm-latents`` runs per session after the spectrogram pipeline above has produced ``audio/spectrograms/<session>_spectrograms.h5``. It loads the frozen decoder weights (``qmc_decoder_weights.npz``, written by ``train-qlvm``), rebuilds the fixed lattice, embeds the session's spectrograms via the torch-free JAX inference path, assigns each USV a cluster by spatial lookup into two fixed reference watershed grids (a fine and a coarse one), and merges the results into ``usv_summary.csv``:
+
+* ``qlvm_dim1`` / ``qlvm_dim2`` — the torus coordinates,
+* ``qlvm_category`` — the FINE cluster label (from the fine watershed grid, e.g. 12 clusters), and
+* ``qlvm_supercategory`` — the COARSE cluster label (from the coarse watershed grid, e.g. 7 clusters; ``0`` = background / noise).
+
+Both cluster labels are looked up in the torus-periodic ``ws_labels_periodic`` grid of the respective reference ``arrays.npz``. The decoder weights and the two reference grids are pointed at via the ``infer_qlvm_latents`` block of */usv-playpen/_parameter_settings/processing_settings.json* (``weights_npz_path``, ``reference_arrays_fine_npz_path``, ``reference_arrays_coarse_npz_path``; or the ``--weights-npz-path`` / ``--reference-arrays-fine-npz-path`` / ``--reference-arrays-coarse-npz-path`` flags). The full option list and the training command that produces the weights are documented in :ref:`the CLI reference <usv-pipeline-cli>`.
+
+Input / output structure
+""""""""""""""""""""""""
+
+The per-session steps share and mutate **two files** — the session's spectrogram H5 and its ``usv_summary.csv`` — while the cross-session training steps read many sessions and write standalone artifacts. After the per-session steps run, one session looks like:
+
+.. code-block:: text
+
+    <session>/
+    └── audio/
+        ├── <session>_usv_summary.csv                        # DAS USVs + columns added in place (below)
+        ├── hpss_filtered/*.mmap                             # input to generate-usv-spectrograms
+        └── spectrograms/
+            └── <session>_spectrograms.h5
+                ├── frequency_bins (F,)                      # generate-usv-spectrograms
+                ├── spectrogram/<session>/spectrograms (N,F,T)    # generate-usv-spectrograms
+                ├── spectrogram/<session>/durations  (N,)         # generate-usv-spectrograms
+                ├── mask/<session>/segmentations (M,F,T) bool     # generate-usv-masks
+                └── mask/<session>/spectrogram_index (M,)          # generate-usv-masks
+
+Per-session steps — which file each writes, and how:
+
+* ``generate-usv-spectrograms`` — **creates** ``<session>_spectrograms.h5`` (the ``spectrogram/<session>`` group + top-level ``frequency_bins``).
+* ``generate-usv-masks`` — **appends** the ``mask/<session>`` group to that same H5 (deleted + rewritten on re-run; the spectrogram group is left untouched).
+* ``generate-usv-acoustic-features`` — **rewrites ``usv_summary.csv`` in place**, adding/replacing ``mean_freq_hz``, ``peak_freq_hz``, ``freq_bandwidth_hz``, ``mean_amplitude``, ``max_amplitude``, ``spectral_entropy``.
+* ``infer-qlvm-latents`` — **rewrites ``usv_summary.csv`` in place**, adding/replacing ``qlvm_dim1``, ``qlvm_dim2``, ``qlvm_category``, ``qlvm_supercategory``.
+
+The three in-place steps are idempotent: re-running overwrites only the group / columns they own and leaves everything else intact.
+
+Cross-session steps take a comma-separated list of session **root directories** (``--root-directories``; each session's ``audio/spectrograms/*_spectrograms.h5`` is found within it) and write standalone artifacts to ``--output-directory``:
+
+* ``build-qlvm-training-set`` → ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``.
+* ``train-qlvm`` → ``qmc_train_qlvm.tar`` (checkpoint) + ``qmc_decoder_weights.npz`` (the file ``infer-qlvm-latents`` loads).
+* ``export-yolo-dataset`` → ``images/{train,val}/`` + ``labels/{train,val}/`` + ``data.yaml``.
+* ``train-masks`` → the Ultralytics run directory + ``best.pt`` (the file ``generate-usv-masks`` loads).

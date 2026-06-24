@@ -1,0 +1,220 @@
+# Box-prompt detector/predictor presets for Step 2 `--method boxprompt`.
+#
+# Select one with `--config NAME`. If NAME matches a key below, its `params` (CLI knobs)
+# and `detector_extra` (deeper detector thresholds not exposed as flags) are applied, and
+# NAME also tags the output `{session}_{NAME}.pkl`. If NAME is NOT a key here, it is treated
+# as a free-form tag and the individual `--min_area_px / --max_iters / ...` flags are used
+# (backward-compatible). Explicit CLI flags ALWAYS override a preset value.
+# Override the file with `SPECGEN_BOXPROMPT_PRESETS=FILE`.
+#
+# ----------------------------------------------------------------------------------------
+# RECALL  <->  PRECISION   TRADEOFF   (boxprompt)   [+ speed scales with max_iters]
+# ----------------------------------------------------------------------------------------
+# Boxprompt = connected-component detector emits one box per USV candidate -> SAM2 segments
+# each. A component with NO box gets NO mask (no recovery), so RECALL is set by how
+# permissive the detector's binarization is. The knobs that move the tradeoff:
+#
+#   max_iters         ^  -> residual passes recover missed parts -> +RECALL, SLOWER
+#   min_area_px       v  -> keep smaller components              -> +RECALL, +false positives
+#   detector_extra.PCT v -> lower binarization percentile floor  -> +RECALL (faint calls), +FP
+#   detector_extra.ABS_FLOOR / min_mean_int  v  -> keep dimmer components -> +RECALL, +FP
+#   strict_traces  true  -> shape gates (elongation/fill/height) -> +PRECISION, -recall
+#   drop_below_iou true + iou_floor ^  -> discard low-confidence SAM masks -> +PRECISION
+#
+# The binarization threshold is max(otsu, percentile(fg, PCT), ABS_FLOOR); PCT=90 (baseline)
+# keeps only the ~top-10% brightest foreground. Lowering PCT is the strongest recall lever.
+#
+# Presets below run highest-recall -> highest-precision:
+#   max_recall < high_recall < balanced < precise < strict
+# Plus `custom`: a hybrid that does NOT sit on that linear axis — it keeps permissive
+# detection (high recall) and instead strips noise with shape + SAM-confidence filters, so
+# faint real calls survive while blobby/transient noise is dropped. Your tuning sandbox.
+# ----------------------------------------------------------------------------------------
+
+# Catch as much as possible; tolerates more false positives. Slowest (3 residual passes).
+max_recall:
+  description:
+    Maximize recall — lowest thresholds, 3 residual passes. Expect more false
+    positives.
+  tradeoff: { recall: highest, precision: lowest, speed: slowest }
+  params:
+    max_iters: 3
+    min_area_px: 12
+    pad_time: 10
+    merge_time_gap: 8
+  detector_extra:
+    PCT: 75.0
+    ABS_FLOOR: 0.03
+    min_mean_int: 0.03
+
+# Recover faint/short calls the baseline misses, with a modest false-positive increase.
+high_recall:
+  description:
+    Higher recall — lower thresholds + one residual pass. Recovers faint/short
+    calls.
+  tradeoff: { recall: high, precision: medium, speed: medium }
+  params:
+    max_iters: 2
+    min_area_px: 14
+  detector_extra:
+    PCT: 82.0
+    ABS_FLOOR: 0.04
+    min_mean_int: 0.04
+
+# Reference defaults: good recall with controlled false positives, single pass (fastest).
+# Equivalent to running boxprompt with no overrides.
+balanced:
+  description:
+    Reference defaults — balanced recall/precision, single pass. Same as no
+    overrides.
+  tradeoff: { recall: medium, precision: medium, speed: fast }
+  params:
+    max_iters: 1
+    min_area_px: 20
+  detector_extra:
+    PCT: 90.0
+    ABS_FLOOR: 0.05
+    min_mean_int: 0.05
+
+# Fewer false positives; drops faint/small components and low-confidence SAM masks.
+precise:
+  description:
+    Higher precision — stricter area/threshold, drops low-IoU masks. Misses
+    faint calls.
+  tradeoff: { recall: lower, precision: high, speed: fast }
+  params:
+    max_iters: 1
+    min_area_px: 28
+    iou_floor: 0.75
+    drop_below_iou: true
+  detector_extra:
+    PCT: 93.0
+    ABS_FLOOR: 0.07
+    min_mean_int: 0.07
+
+# Highest precision: strict horizontal-tonal-strip gates — only clean, well-formed calls.
+strict:
+  description:
+    Maximize precision — strict trace shape gates + high IoU floor. May miss
+    atypical USVs.
+  tradeoff: { recall: lowest, precision: highest, speed: fast }
+  params:
+    max_iters: 1
+    min_area_px: 30
+    strict_traces: true
+    iou_floor: 0.80
+    drop_below_iou: true
+  detector_extra:
+    PCT: 94.0
+    ABS_FLOOR: 0.08
+    min_mean_int: 0.08
+
+# Tuned middle ground: high_recall's permissive DETECTION (low PCT/min_area so faint &
+# short USVs still become boxes) + precision filters that discriminate by SHAPE and SAM
+# CONFIDENCE rather than by raising the threshold. Goal: drop the noise "shades" that
+# high_recall admits without losing the USVs that precise/strict miss. Iterate from here:
+#   still noisy   -> raise iou_floor (0.62->0.68) or min_elong (1.4->1.8)
+#   missing calls -> lower min_area_px / min_width_t, or drop strict_traces
+custom:
+  description:
+    Permissive detection + shape/confidence noise filters — clean without
+    missing USVs.
+  tradeoff: { recall: high, precision: high, speed: medium }
+  params:
+    max_iters: 1 # residual pass recovers missed parts (recall)
+    min_area_px: 18 # permissive: keep small/short calls
+  detector_extra:
+    PCT: 85.0 # permissive binarization (from high_recall) -> faint calls detected
+    ABS_FLOOR: 0.04
+    min_mean_int: 0.06 # drop dim diffuse noise
+    min_elong: 1.4 # USVs are horizontal; round noise blobs are not (loosened from 2.0)
+    max_height_f: 30 # reject tall vertical broadband noise (loosened from 18)
+    min_fill: 0.5 # reject sparse scattered noise (loosened from 0.60)
+    min_width_t: 3 # keep short calls (loosened from 5)
+
+# ----------------------------------------------------------------------------------------
+# LEARNED DETECTOR (YOLO) presets  —  set `detector: yolo` so boxes come from the trained
+# yolo11n (box_detectors merged GT) instead of the connected-component binarization. One box
+# per call from human-corrected labels: it does NOT box the faint harmonics the cc
+# binarization sweeps up, and it separates temporally-overlapping calls. Single pass (no
+# residual). `detector_extra` (cc-only thresholds) is ignored when detector=yolo.
+# Knobs that move the tradeoff for yolo:
+#   yolo_conf  v  -> more boxes (recall), +false positives ;  ^ -> fewer, cleaner
+#   yolo_iou   ^  -> keep more stacked/overlapping calls (less NMS suppression)
+#   mask_intensity_floor ^ -> trim faint harmonic bands / tails from each SAM mask (stringency)
+# ----------------------------------------------------------------------------------------
+
+# YOLO boxes, balanced operating point (the compare_detectors sweet spot). Drop-in cc replacement.
+yolo:
+  description:
+    Trained yolo11n box source — one tight box per call, separates stacked
+    calls. Balanced.
+  tradeoff: { recall: high, precision: high, speed: fast }
+  params:
+    detector: yolo
+    yolo_conf: 0.25
+    yolo_iou: 0.7
+    yolo_imgsz: 128
+
+# Stringent: yolo + higher confidence + an intensity floor that keeps only the bright call
+# CORE, dropping faint harmonic bands / diffuse tails (which add nothing about shape/intensity).
+# Use when you want clean, tight, fundamental-only masks for downstream shape/VAE analysis.
+yolo_strict:
+  description:
+    yolo at high confidence + modest floor + tiny-mask drop — clean, selective,
+    no fragments.
+  tradeoff: { recall: medium, precision: high, speed: fast }
+  params:
+    detector: yolo
+    yolo_conf: 0.50 # SCORE is the lever: tiny boxes are low-conf (median 0.14) -> gone by 0.5
+    yolo_iou: 0.7
+    yolo_imgsz: 128
+    mask_intensity_floor: 0.15 # modest core-tightening; >0.3 over-trims into fragments
+    tiny_mask_floor_px: 30 # post-SAM area floor: drop any residual tiny fragment
+    min_box_area: 50 # pre-SAM: drop small boxes (conf + area block unwanted segments)
+    iou_floor: 0.75
+    drop_below_iou: true
+
+# THE STANDARD boxprompt preset (default when `--method boxprompt` is run with no --config).
+# Only high-confidence calls (conf 0.6) AND a box-area floor, so both low-confidence and small
+# unwanted segments are blocked. Modest intensity floor + post-SAM area floor keep masks tight
+# without fragmenting. Clean, fundamental-only masks; tolerates missing the faintest calls.
+default: &default_preset
+  description:
+    STANDARD (default for `--method boxprompt`) — confident, sufficiently-large
+    calls; clean fundamental masks.
+  tradeoff: { recall: lower, precision: high, speed: fast }
+  params:
+    detector: yolo
+    yolo_conf: 0.60 # only high-confidence calls (drops faint/marginal detections)
+    yolo_iou: 0.7
+    yolo_imgsz: 128
+    mask_intensity_floor: 0.15 # modest (NOT 0.3 — that over-trims into tiny cores)
+    tiny_mask_floor_px: 40 # post-SAM area floor
+    min_box_area: 80 # pre-SAM: drop small boxes (conf + area block unwanted segments)
+    iou_floor: 0.80
+    drop_below_iou: true
+
+# Back-compat alias for the former preset name (identical params to `default`).
+yolo_stricter: *default_preset
+
+# MAXIMUM precision: pushes every stringency lever past `default`. Only the most confident
+# calls (conf 0.75), a tighter intensity core, larger box-area + tiny-mask floors, and a high
+# IoU floor. Use for the cleanest possible fundamental-only masks when missing faint/marginal
+# calls is acceptable (shape/VAE analyses that need pristine segments). intensity_floor stays
+# <= 0.20 — 0.3+ over-trims into fragments (diagnostic finding).
+strictest:
+  description:
+    Maximum precision — most confident, largest calls only; pristine fundamental
+    masks, drops marginal calls.
+  tradeoff: { recall: lowest, precision: highest, speed: fast }
+  params:
+    detector: yolo
+    yolo_conf: 0.75 # only the most confident calls
+    yolo_iou: 0.7
+    yolo_imgsz: 128
+    mask_intensity_floor: 0.20 # tighter core (still <= 0.20 to avoid fragmenting)
+    tiny_mask_floor_px: 60 # larger post-SAM area floor
+    min_box_area: 150 # larger pre-SAM box-area floor
+    iou_floor: 0.85
+    drop_below_iou: true

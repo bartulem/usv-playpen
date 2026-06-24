@@ -2355,4 +2355,8 @@ class Create3DVideo:
                     else:
                         self.message_output("Unsupported operating system for opening image.")
 
-                plt.close()
+            # Close the figure for BOTH branches (video + static): pyplot keeps
+            # figures in its registry until closed, so a per-session run would
+            # otherwise accumulate one open figure per session (the animate
+            # branch previously never closed it).
+            plt.close(fig)

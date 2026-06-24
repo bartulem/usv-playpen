@@ -19,7 +19,11 @@
     "das_infer": false,
     "das_summarize": false,
     "prepare_assign_vocalizations": false,
-    "assign_vocalizations": false
+    "assign_vocalizations": false,
+    "generate_usv_spectrograms": false,
+    "generate_usv_masks": false,
+    "compute_usv_acoustic_features": false,
+    "infer_qlvm_latents": false
   },
   "credentials_directory": "",
   "anipose_operations": {
@@ -210,5 +214,96 @@
     "vcl_conda_env_name": "vcl-ssl",
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/conformer_smol_4.00",
     "vcl_version": "vcl-ssl"
+  },
+  "generate_spectrograms": {
+    "num_freq_bins": 128,
+    "num_time_bins": 128,
+    "nperseg": 2048,
+    "noverlap": 1792,
+    "min_freq": 30000,
+    "max_freq": 120000,
+    "hop_length": 512,
+    "window": "blackmanharris",
+    "offset": 0.0,
+    "normalize": true
+  },
+  "generate_masks": {
+    "method": "boxprompt",
+    "detector": "yolo",
+    "sam2_model_dir": "/mnt/falkner/Bartul/spectrograms/sam",
+    "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "sam2_model_path": "/mnt/falkner/Bartul/spectrograms/sam/checkpoint.pt",
+    "yolo_weights": "/mnt/falkner/Bartul/spectrograms/sam/best.pt",
+    "yolo_conf": 0.25,
+    "yolo_iou": 0.7,
+    "yolo_imgsz": 128,
+    "mask_cmap": "viridis",
+    "duration_min": 10,
+    "batch_size": 12,
+    "multimask_output": true,
+    "iou_floor": 0.7,
+    "drop_below_iou": false,
+    "split_disconnected": true,
+    "max_iters": 1,
+    "merge_instances": true,
+    "merge_iou": 0.5,
+    "merge_containment": 0.8,
+    "mask_intensity_floor": 0.0,
+    "tiny_mask_floor_px": 12,
+    "min_box_area": 0
+  },
+  "compute_usv_acoustic_features": {
+    "low_energy_frac": 0.05,
+    "high_energy_frac": 0.95
+  },
+  "build_qlvm_training_set": {
+    "length_threshold": 50.0,
+    "dataset_size_constraint": null,
+    "validation_split": 0.2,
+    "random_state": 42,
+    "full_dataset": false,
+    "target_shape": [128, 128],
+    "time_stretch": false,
+    "masking_type": "sam"
+  },
+  "train_qlvm": {
+    "n_epochs": 300,
+    "latent_dim": 2,
+    "lattice_type": "korobov",
+    "korobov_a": 76,
+    "train_n_points": 1021,
+    "test_n_points": 2039,
+    "fib_m": 15,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "val_freq": 10,
+    "seed": 42,
+    "num_workers": 0
+  },
+  "export_yolo_dataset": {
+    "label_source": "cc",
+    "validation_split": 0.2,
+    "random_state": 42,
+    "colormap": "viridis",
+    "manual_labels_directory": ""
+  },
+  "train_masks": {
+    "base_weights": "yolo11n.pt",
+    "n_epochs": 100,
+    "imgsz": 128,
+    "batch_size": 16,
+    "device": null,
+    "run_name": "usv_yolo_detector"
+  },
+  "infer_qlvm_latents": {
+    "weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz",
+    "reference_arrays_fine_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
+    "reference_arrays_coarse_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
+    "lattice_type": "korobov",
+    "latent_dim": 2,
+    "n_points": 1021,
+    "korobov_a": 76,
+    "fib_m": 16,
+    "time_stretch": false
   }
 }

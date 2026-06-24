@@ -22,11 +22,15 @@ from ..send_email import Messenger
 from ..yaml_utils import SmartDumper
 from .anipose_operations import ConvertTo3D
 from .assign_vocalizations import Vocalocator
+from .compute_usv_acoustic_features import USVAcousticFeatureExtractor
 from .das_inference import FindMouseVocalizations
 from .extract_phidget_data import Gatherer
+from .generate_masks import MaskGenerator
+from .generate_spectrograms import SpectrogramGenerator
 from .modify_files import Operator
 from .prepare_cluster_job import PrepareClusterJob
 from .preprocessing_plot import SummaryPlotter
+from .qlvm_latents import QLVMLatentInference
 from .synchronize_files import Synchronizer
 
 
@@ -316,6 +320,30 @@ class Stylist:
                             Vocalocator(root_directory=one_directory,
                                         input_parameter_dict=self.input_parameter_dict,
                                         message_output=self.message_output).run_vocalocator_ssl()
+
+                    # # # generate USV spectrograms
+                    if self.input_parameter_dict['processing_booleans']['generate_usv_spectrograms']:
+                        SpectrogramGenerator(root_directory=one_directory,
+                                             input_parameter_dict=self.input_parameter_dict,
+                                             message_output=self.message_output).generate_session_spectrograms()
+
+                    # # # generate USV masks
+                    if self.input_parameter_dict['processing_booleans']['generate_usv_masks']:
+                        MaskGenerator(root_directory=one_directory,
+                                      input_parameter_dict=self.input_parameter_dict,
+                                      message_output=self.message_output).generate_session_masks()
+
+                    # # # compute USV acoustic features
+                    if self.input_parameter_dict['processing_booleans']['compute_usv_acoustic_features']:
+                        USVAcousticFeatureExtractor(root_directory=one_directory,
+                                                    input_parameter_dict=self.input_parameter_dict,
+                                                    message_output=self.message_output).merge_features_into_summary()
+
+                    # # # infer QLVM latents
+                    if self.input_parameter_dict['processing_booleans']['infer_qlvm_latents']:
+                        QLVMLatentInference(root_directory=one_directory,
+                                            input_parameter_dict=self.input_parameter_dict,
+                                            message_output=self.message_output).infer_and_merge()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")

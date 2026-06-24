@@ -21,7 +21,7 @@ from pathlib import Path
 import platformdirs
 import toml
 import yaml
-from PyQt6.QtCore import QEvent, QRegularExpression, Qt
+from PyQt6.QtCore import QEvent, QRegularExpression, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -99,6 +99,47 @@ remove_icon = str(_img_dir / 'remove.png')
 accept_icon = str(_img_dir / 'accept.png')
 cancel_icon = str(_img_dir / 'cancel.png')
 clear_icon = str(_img_dir / 'clear.png')
+
+
+def _nudge_button_icon_up(button: QPushButton, shift_px: int = 1) -> None:
+    """
+    Description
+    -----------
+    macOS-only cosmetic fix: shift a push-button's icon content up by
+    ``shift_px`` logical pixels so it visually centers on the button text, which
+    the Fusion style + the bundled font render slightly high on macOS. The shift
+    is baked into the icon PIXMAP (the only thing the active stylesheet style
+    honors -- a QProxyStyle reimplementation of the label is bypassed by
+    QStyleSheetStyle, verified), redrawing the icon into a same-size, transparent
+    canvas offset upward. The icon size is unchanged, so button geometry / layout
+    is unaffected; only icon+text buttons are touched (icon-less or text-less
+    buttons are left alone), and each button is nudged at most once.
+
+    Parameters
+    ----------
+    button (QPushButton)
+        The button whose icon to shift.
+    shift_px (int)
+        Logical pixels to move the icon content upward -- equivalently, how far
+        the text sits lower relative to the icon (default 2).
+
+    Returns
+    -------
+    None
+    """
+
+    if button.property("_iconNudged") or button.icon().isNull() or not button.text():
+        return
+    size = button.iconSize()
+    source = button.icon().pixmap(size)
+    shifted = QPixmap(source.size())
+    shifted.setDevicePixelRatio(source.devicePixelRatio())
+    shifted.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(shifted)
+    painter.drawPixmap(0, -shift_px, source)  # logical coords -> content moves up
+    painter.end()
+    button.setIcon(QIcon(shifted))
+    button.setProperty("_iconNudged", True)
 
 
 def _safe_literal_eval(raw: str):
@@ -1344,6 +1385,60 @@ class USVPlaypenWindow(QMainWindow):
         self.subject_repo_path = config_dir / 'subject_presets.json'
 
         self.main_window()
+
+    def setCentralWidget(self, widget) -> None:
+        """
+        Description
+        -----------
+        Set the window's central widget, then -- on macOS only -- nudge every
+        icon+text push button's icon up by 1px so it visually centers on its
+        label (Fusion + the bundled font render the text slightly high there).
+        Every window swaps its central widget through here, so this single choke
+        point applies the fix once per window without editing each builder or
+        button site. A no-op on Linux / Windows and for icon-less / text-less
+        buttons.
+
+        Parameters
+        ----------
+        widget (QWidget)
+            The window's central widget.
+
+        Returns
+        -------
+        None
+        """
+
+        super().setCentralWidget(widget)
+        # The window builders create their buttons AFTER calling setCentralWidget,
+        # so sweep on the next event-loop tick (by which point the buttons exist)
+        # rather than synchronously here.
+        if widget is not None and platform.system() == 'Darwin':
+            QTimer.singleShot(0, lambda w=widget: self._nudge_window_button_icons(w))
+
+    def _nudge_window_button_icons(self, widget) -> None:
+        """
+        Description
+        -----------
+        Nudge every icon+text push button under ``widget`` up by 1px (macOS icon /
+        label centering fix). Guarded against a widget destroyed before the
+        deferred tick fires.
+
+        Parameters
+        ----------
+        widget (QWidget)
+            The window's central widget to sweep.
+
+        Returns
+        -------
+        None
+        """
+
+        try:
+            buttons = widget.findChildren(QPushButton)
+        except RuntimeError:
+            return  # central widget already replaced / deleted
+        for button in buttons:
+            _nudge_button_icon_up(button)
 
     def _open_chemo_dialog(self):
         """
@@ -2784,7 +2879,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.ambient_light_cb = QComboBox(self.VideoSettings)
         self.ambient_light_cb.addItems(on_off_list)
-        self.ambient_light_cb.setStyleSheet(f'QComboBox {{ width: 220px; }}')
+        self.ambient_light_cb.setStyleSheet('QComboBox { width: 220px; }')
         self.ambient_light_cb.move(x_widget, y_pos)
 
         def on_ambient_light_changed(index):
@@ -3641,163 +3736,171 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_hpss_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_hpss_cb_bool'))
         self.conduct_hpss_cb.move(column_three_x2, 160)
 
-        stft_label = QLabel('STFT window & hop size:', self.ProcessSettings)
-        stft_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        stft_label.move(column_three_x1, 190)
-        self.stft_window_hop = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size']]), self.ProcessSettings)
-        self.stft_window_hop.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.stft_window_hop.setStyleSheet('QLineEdit { width: 108px; }')
-        self.stft_window_hop.move(column_three_x2, 192)
-
-        hpss_kernel_size_label = QLabel('HPSS kernel size:', self.ProcessSettings)
-        hpss_kernel_size_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        hpss_kernel_size_label.move(column_three_x1, 220)
-        self.hpss_kernel_size = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['hpss_audio']['kernel_size']]), self.ProcessSettings)
-        self.hpss_kernel_size.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.hpss_kernel_size.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_kernel_size.move(column_three_x2, 222)
-
-        hpss_power_label = QLabel('HPSS power:', self.ProcessSettings)
-        hpss_power_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        hpss_power_label.move(column_three_x1, 250)
-        self.hpss_power = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['hpss_audio']['hpss_power']}", self.ProcessSettings)
-        self.hpss_power.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.hpss_power.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_power.move(column_three_x2, 252)
-
-        hpss_margin_label = QLabel('HPSS margin:', self.ProcessSettings)
-        hpss_margin_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        hpss_margin_label.move(column_three_x1, 280)
-        self.hpss_margin = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['hpss_audio']['margin']]), self.ProcessSettings)
-        self.hpss_margin.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.hpss_margin.setStyleSheet('QLineEdit { width: 108px; }')
-        self.hpss_margin.move(column_three_x2, 282)
-
         filter_audio_cb_label = QLabel('Filter audio files:', self.ProcessSettings)
         filter_audio_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         filter_audio_cb_label.setStyleSheet(self.orange_label_style)
-        filter_audio_cb_label.move(column_three_x1, 310)
+        filter_audio_cb_label.move(column_three_x1, 190)
         self.filter_audio_cb = QComboBox(self.ProcessSettings)
         self.filter_audio_cb.addItems(['No', 'Yes'])
         self.filter_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.filter_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='filter_audio_cb_bool'))
-        self.filter_audio_cb.move(column_three_x2, 310)
+        self.filter_audio_cb.move(column_three_x2, 190)
 
         filter_freq_bounds_label = QLabel('Filter freq bounds (Hz):', self.ProcessSettings)
         filter_freq_bounds_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        filter_freq_bounds_label.move(column_three_x1, 340)
+        filter_freq_bounds_label.move(column_three_x1, 220)
         self.filter_freq_bounds = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds']]), self.ProcessSettings)
         self.filter_freq_bounds.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.filter_freq_bounds.setStyleSheet('QLineEdit { width: 108px; }')
-        self.filter_freq_bounds.move(column_three_x2, 342)
+        self.filter_freq_bounds.move(column_three_x2, 222)
 
         filter_dirs_label = QLabel('Folder(s) to filter:', self.ProcessSettings)
         filter_dirs_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        filter_dirs_label.move(column_three_x1, 370)
+        filter_dirs_label.move(column_three_x1, 250)
         self.filter_dirs = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_dirs']]), self.ProcessSettings)
         self.filter_dirs.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.filter_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.filter_dirs.move(column_three_x2, 372)
+        self.filter_dirs.move(column_three_x2, 252)
 
         conc_audio_cb_label = QLabel('Concatenate to MEMMAP:', self.ProcessSettings)
         conc_audio_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         conc_audio_cb_label.setStyleSheet(self.orange_label_style)
-        conc_audio_cb_label.move(column_three_x1, 400)
+        conc_audio_cb_label.move(column_three_x1, 280)
         self.conc_audio_cb = QComboBox(self.ProcessSettings)
         self.conc_audio_cb.addItems(['No', 'Yes'])
         self.conc_audio_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conc_audio_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conc_audio_cb_bool'))
-        self.conc_audio_cb.move(column_three_x2, 400)
+        self.conc_audio_cb.move(column_three_x2, 280)
 
         concat_dirs_label = QLabel('Folder(s) to concatenate:', self.ProcessSettings)
         concat_dirs_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        concat_dirs_label.move(column_three_x1, 430)
+        concat_dirs_label.move(column_three_x1, 310)
         self.concat_dirs = QLineEdit(','.join([str(x) for x in self.processing_input_dict['modify_files']['Operator']['concatenate_audio_files']['concat_dirs']]), self.ProcessSettings)
         self.concat_dirs.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.concat_dirs.setStyleSheet('QLineEdit { width: 108px; }')
-        self.concat_dirs.move(column_three_x2, 432)
+        self.concat_dirs.move(column_three_x2, 312)
 
         das_inference_cb_label = QLabel('Run DAS inference:', self.ProcessSettings)
         das_inference_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         das_inference_cb_label.setStyleSheet(self.orange_label_style)
-        das_inference_cb_label.move(column_three_x1, 460)
+        das_inference_cb_label.move(column_three_x1, 340)
         self.das_inference_cb = QComboBox(self.ProcessSettings)
         self.das_inference_cb.addItems(['No', 'Yes'])
         self.das_inference_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.das_inference_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_inference_cb_bool'))
-        self.das_inference_cb.move(column_three_x2, 460)
+        self.das_inference_cb.move(column_three_x2, 340)
 
         segment_confidence_threshold_label = QLabel('DAS confidence threshold:', self.ProcessSettings)
         segment_confidence_threshold_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        segment_confidence_threshold_label.move(column_three_x1, 490)
+        segment_confidence_threshold_label.move(column_three_x1, 370)
         self.segment_confidence_threshold = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_confidence_threshold']}", self.ProcessSettings)
         self.segment_confidence_threshold.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.segment_confidence_threshold.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_confidence_threshold.move(column_three_x2, 492)
+        self.segment_confidence_threshold.move(column_three_x2, 372)
 
         segment_minlen_label = QLabel('USV min duration (s):', self.ProcessSettings)
         segment_minlen_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        segment_minlen_label.move(column_three_x1, 520)
+        segment_minlen_label.move(column_three_x1, 400)
         self.segment_minlen = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_minlen']}", self.ProcessSettings)
         self.segment_minlen.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.segment_minlen.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_minlen.move(column_three_x2, 522)
+        self.segment_minlen.move(column_three_x2, 402)
 
         segment_fillgap_label = QLabel('Fill gaps shorter than (s):', self.ProcessSettings)
         segment_fillgap_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        segment_fillgap_label.move(column_three_x1, 550)
+        segment_fillgap_label.move(column_three_x1, 430)
         self.segment_fillgap = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['segment_fillgap']}", self.ProcessSettings)
         self.segment_fillgap.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.segment_fillgap.setStyleSheet('QLineEdit { width: 108px; }')
-        self.segment_fillgap.move(column_three_x2, 552)
+        self.segment_fillgap.move(column_three_x2, 432)
 
         das_output_type_label = QLabel('Inference output file type:', self.ProcessSettings)
         das_output_type_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        das_output_type_label.move(column_three_x1, 580)
+        das_output_type_label.move(column_three_x1, 460)
         self.das_output_type = QLineEdit(f"{self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['output_file_type']}", self.ProcessSettings)
         self.das_output_type.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_output_type.setStyleSheet('QLineEdit { width: 108px; }')
-        self.das_output_type.move(column_three_x2, 582)
+        self.das_output_type.move(column_three_x2, 462)
 
         das_summary_cb_label = QLabel('Curate DAS outputs:', self.ProcessSettings)
         das_summary_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         das_summary_cb_label.setStyleSheet(self.orange_label_style)
-        das_summary_cb_label.move(column_three_x1, 610)
+        das_summary_cb_label.move(column_three_x1, 490)
         self.das_summary_cb = QComboBox(self.ProcessSettings)
         self.das_summary_cb.addItems(['No', 'Yes'])
         self.das_summary_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.das_summary_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_summary_cb_bool'))
-        self.das_summary_cb.move(column_three_x2, 610)
+        self.das_summary_cb.move(column_three_x2, 490)
 
         prepare_assign_usv_cb_label = QLabel('Prepare USV assignment:', self.ProcessSettings)
         prepare_assign_usv_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         prepare_assign_usv_cb_label.setStyleSheet(self.orange_label_style)
-        prepare_assign_usv_cb_label.move(column_three_x1, 640)
+        prepare_assign_usv_cb_label.move(column_three_x1, 520)
         self.prepare_assign_usv_cb = QComboBox(self.ProcessSettings)
         self.prepare_assign_usv_cb.addItems(['No', 'Yes'])
         self.prepare_assign_usv_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.prepare_assign_usv_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='prepare_assign_usv_cb_bool'))
-        self.prepare_assign_usv_cb.move(column_three_x2, 640)
+        self.prepare_assign_usv_cb.move(column_three_x2, 520)
 
         assign_usv_cb_label = QLabel('Run USV assignment:', self.ProcessSettings)
         assign_usv_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         assign_usv_cb_label.setStyleSheet(self.orange_label_style)
-        assign_usv_cb_label.move(column_three_x1, 670)
+        assign_usv_cb_label.move(column_three_x1, 550)
         self.assign_usv_cb = QComboBox(self.ProcessSettings)
         self.assign_usv_cb.addItems(['No', 'Yes'])
         self.assign_usv_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.assign_usv_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='assign_usv_cb_bool'))
-        self.assign_usv_cb.move(column_three_x2, 670)
+        self.assign_usv_cb.move(column_three_x2, 550)
 
         assign_type_cb_label = QLabel('Assignment type:', self.ProcessSettings)
         assign_type_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        assign_type_cb_label.move(column_three_x1, 700)
+        assign_type_cb_label.move(column_three_x1, 580)
         self.assign_type_list = sorted(['vcl', 'vcl-ssl'], key=lambda x: x == self.vcl_version, reverse=True)
         self.assign_type_cb = QComboBox(self.ProcessSettings)
         self.assign_type_cb.addItems([str(assign_item) for assign_item in self.assign_type_list])
         self.assign_type_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.assign_type_cb.activated.connect(partial(self._combo_box_vcl_version, variable_id='vcl_version'))
-        self.assign_type_cb.move(column_three_x2, 700)
+        self.assign_type_cb.move(column_three_x2, 580)
+
+        generate_usv_spectrograms_cb_label = QLabel('Generate spectrograms:', self.ProcessSettings)
+        generate_usv_spectrograms_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        generate_usv_spectrograms_cb_label.setStyleSheet(self.orange_label_style)
+        generate_usv_spectrograms_cb_label.move(column_three_x1, 610)
+        self.generate_usv_spectrograms_cb = QComboBox(self.ProcessSettings)
+        self.generate_usv_spectrograms_cb.addItems(['No', 'Yes'])
+        self.generate_usv_spectrograms_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.generate_usv_spectrograms_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='generate_usv_spectrograms_cb_bool'))
+        self.generate_usv_spectrograms_cb.move(column_three_x2, 610)
+
+        generate_usv_masks_cb_label = QLabel('Generate masks:', self.ProcessSettings)
+        generate_usv_masks_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        generate_usv_masks_cb_label.setStyleSheet(self.orange_label_style)
+        generate_usv_masks_cb_label.move(column_three_x1, 640)
+        self.generate_usv_masks_cb = QComboBox(self.ProcessSettings)
+        self.generate_usv_masks_cb.addItems(['No', 'Yes'])
+        self.generate_usv_masks_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.generate_usv_masks_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='generate_usv_masks_cb_bool'))
+        self.generate_usv_masks_cb.move(column_three_x2, 640)
+
+        compute_usv_acoustic_features_cb_label = QLabel('Compute USV features:', self.ProcessSettings)
+        compute_usv_acoustic_features_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        compute_usv_acoustic_features_cb_label.setStyleSheet(self.orange_label_style)
+        compute_usv_acoustic_features_cb_label.move(column_three_x1, 670)
+        self.compute_usv_acoustic_features_cb = QComboBox(self.ProcessSettings)
+        self.compute_usv_acoustic_features_cb.addItems(['No', 'Yes'])
+        self.compute_usv_acoustic_features_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.compute_usv_acoustic_features_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='compute_usv_acoustic_features_cb_bool'))
+        self.compute_usv_acoustic_features_cb.move(column_three_x2, 670)
+
+        infer_qlvm_latents_cb_label = QLabel('Infer QLVM latents:', self.ProcessSettings)
+        infer_qlvm_latents_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        infer_qlvm_latents_cb_label.setStyleSheet(self.orange_label_style)
+        infer_qlvm_latents_cb_label.move(column_three_x1, 700)
+        self.infer_qlvm_latents_cb = QComboBox(self.ProcessSettings)
+        self.infer_qlvm_latents_cb.addItems(['No', 'Yes'])
+        self.infer_qlvm_latents_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.infer_qlvm_latents_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='infer_qlvm_latents_cb_bool'))
+        self.infer_qlvm_latents_cb.move(column_three_x2, 700)
 
         av_sync_label = QLabel('Synchronization between A/V files', self.ProcessSettings)
         av_sync_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
@@ -4276,7 +4379,7 @@ class USVPlaypenWindow(QMainWindow):
         self.VisualizationsSettings = VisualizationsSettings(self)
         self.setWindowTitle(f'{app_name} (Visualize data > Settings)')
         self.setCentralWidget(self.VisualizationsSettings)
-        visualize_one_x, visualize_one_y = (770, 740)
+        visualize_one_x, visualize_one_y = (1180, 740)
         self.setFixedSize(visualize_one_x, visualize_one_y)
 
         visualizations_dir_label = QLabel('(*) Root directories for visualizations', self.VisualizationsSettings)
@@ -4302,42 +4405,65 @@ class USVPlaypenWindow(QMainWindow):
         open_visualizations_credentials_dir_dialog = partial(self._open_directory_dialog, self.visualizations_credentials_dir_edit, 'Select credentials directory')
         visualizations_credentials_dir_btn.clicked.connect(open_visualizations_credentials_dir_dialog)
 
+        # Single shared base directory, grouped with the credentials directory as a
+        # global I/O resource. Under it the visualizations resolve, by convention,
+        # the QLVM density arrays (qlvm/arrays_{coarse,fine}.npz), the VAE density
+        # arrays (vae/vae_density_{coarse,fine}.npz) and the consolidated store
+        # (spectrograms_*.h5) -- read by the torus video, the USV sequence figure,
+        # and the embedding explorer. Only this one path is configured here; it
+        # writes live into shared_resources.spectrograms_dir.
+        self.spectrograms_dir_edit = QLineEdit(
+            f"{self.visualizations_input_dict['shared_resources']['spectrograms_dir']}",
+            self.VisualizationsSettings,
+        )
+        self.spectrograms_dir_edit.setPlaceholderText('Spectrograms directory (qlvm/ + vae/ + *.h5)')
+        self.spectrograms_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.spectrograms_dir_edit.setStyleSheet('QLineEdit { width: 280px; }')
+        self.spectrograms_dir_edit.textChanged.connect(partial(self._update_nested_dict_value, self.visualizations_input_dict, ('shared_resources', 'spectrograms_dir')))
+        self.spectrograms_dir_edit.move(10, 395)
+        self.spectrograms_dir_edit.setCursorPosition(0)  # show the start of the path, not the tail
+        spectrograms_dir_btn = QPushButton('Browse', self.VisualizationsSettings)
+        spectrograms_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
+        spectrograms_dir_btn.setStyleSheet('QPushButton { min-width: 41px; min-height: 12px; max-width: 41px; max-height: 13px; }')
+        spectrograms_dir_btn.move(295, 394)
+        spectrograms_dir_btn.clicked.connect(partial(self._open_directory_dialog, self.spectrograms_dir_edit, 'Select spectrograms directory'))
+
         pc_usage_visualizations_label = QLabel('Notify e-mail(s) of PC usage:', self.VisualizationsSettings)
         pc_usage_visualizations_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        pc_usage_visualizations_label.move(10, 395)
+        pc_usage_visualizations_label.move(10, 425)
         self.pc_usage_visualizations = QLineEdit('', self.VisualizationsSettings)
         self.pc_usage_visualizations.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.pc_usage_visualizations.setStyleSheet('QLineEdit { width: 135px; }')
-        self.pc_usage_visualizations.move(225, 397)
+        self.pc_usage_visualizations.move(225, 427)
 
         visualizations_pc_label = QLabel('Visualizations PC of choice:', self.VisualizationsSettings)
         visualizations_pc_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        visualizations_pc_label.move(10, 425)
+        visualizations_pc_label.move(10, 455)
         self.loaded_visualizations_pc_list = sorted(self.visualizations_input_dict['send_email']['visualizations_pc_list'], key=lambda x: x == self.visualizations_input_dict['send_email']['visualizations_pc_choice'], reverse=True)
         self.visualizations_pc_cb = QComboBox(self.VisualizationsSettings)
         self.visualizations_pc_cb.addItems(self.loaded_visualizations_pc_list)
         self.visualizations_pc_cb.setStyleSheet('QComboBox { width: 107px; }')
         self.visualizations_pc_cb.activated.connect(partial(self._combo_box_prior_visualizations_pc_choice, variable_id='visualizations_pc_choice'))
-        self.visualizations_pc_cb.move(225, 425)
+        self.visualizations_pc_cb.move(225, 455)
 
         dv_label = QLabel('Select data visualization', self.VisualizationsSettings)
         dv_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
         dv_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        dv_label.move(10, 465)
+        dv_label.move(10, 495)
 
         plot_behavioral_features_label = QLabel('Plot neuronal tuning figures:', self.VisualizationsSettings)
         plot_behavioral_features_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         plot_behavioral_features_label.setStyleSheet(self.orange_label_style)
-        plot_behavioral_features_label.move(10, 495)
+        plot_behavioral_features_label.move(10, 525)
         self.plot_behavioral_features_cb = QComboBox(self.VisualizationsSettings)
         self.plot_behavioral_features_cb.addItems(['No', 'Yes'])
         self.plot_behavioral_features_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.plot_behavioral_features_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='plot_behavioral_tuning_cb_bool'))
-        self.plot_behavioral_features_cb.move(275, 495)
+        self.plot_behavioral_features_cb.move(275, 525)
 
-        default_cmap_label = QLabel('Colormap:', self.VisualizationsSettings)
+        default_cmap_label = QLabel('Spatial ratemap colormap:', self.VisualizationsSettings)
         default_cmap_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        default_cmap_label.move(10, 525)
+        default_cmap_label.move(10, 555)
         self.default_cmap_list = sorted(
             ['viridis', 'cividis', 'plasma', 'inferno', 'magma'],
             key=lambda x: x == self.visualizations_input_dict['figures']['cmap'],
@@ -4347,11 +4473,11 @@ class USVPlaypenWindow(QMainWindow):
         self.default_cmap_cb.addItems(self.default_cmap_list)
         self.default_cmap_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.default_cmap_cb.activated.connect(partial(self._combo_box_default_cmap, variable_id='default_cmap'))
-        self.default_cmap_cb.move(275, 525)
+        self.default_cmap_cb.move(275, 555)
 
-        default_fig_format_label = QLabel('Fig format:', self.VisualizationsSettings)
+        default_fig_format_label = QLabel('Save created figures in format:', self.VisualizationsSettings)
         default_fig_format_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        default_fig_format_label.move(10, 555)
+        default_fig_format_label.move(10, 585)
         self.default_fig_format_list = sorted(
             ['png', 'jpg', 'svg', 'pdf'],
             key=lambda x: x == self.visualizations_input_dict['figures']['fig_format'],
@@ -4361,7 +4487,7 @@ class USVPlaypenWindow(QMainWindow):
         self.default_fig_format_cb.addItems(self.default_fig_format_list)
         self.default_fig_format_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.default_fig_format_cb.activated.connect(partial(self._combo_box_default_fig_format, variable_id='default_fig_format'))
-        self.default_fig_format_cb.move(275, 555)
+        self.default_fig_format_cb.move(275, 585)
 
         vis_col_two_x1, vis_col_two_x2 = 380, 670
 
@@ -4569,6 +4695,261 @@ class USVPlaypenWindow(QMainWindow):
         self.beh_features_bool_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='beh_features_cb_bool'))
         self.beh_features_bool_cb.move(vis_col_two_x2, 640)
 
+        # # # # Column 3: QLVM / USV (cohort-level) visualizations. x1 (labels /
+        # file edits) clears column 2 (whose Browse buttons render to ~750);
+        # x2 (= x1 + 290) is the shared left edge for every control (combos,
+        # slider, Browse), mirroring column 2's label->control gap.
+        # Order: enable toggle, then the input-file edits, then the render options.
+        vis_col_three_x1, vis_col_three_x2 = 770, 1060
+        _qlvm_cfg = self.visualizations_input_dict['qlvm_torus_traversal_video']
+
+        qlvm_torus_video_label = QLabel('Render QLVM demo video:', self.VisualizationsSettings)
+        qlvm_torus_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        qlvm_torus_video_label.setStyleSheet(self.orange_label_style)
+        qlvm_torus_video_label.move(vis_col_three_x1, 40)
+        self.qlvm_torus_video_cb = QComboBox(self.VisualizationsSettings)
+        self.qlvm_torus_video_cb.addItems(['No', 'Yes'])
+        self.qlvm_torus_video_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.qlvm_torus_video_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='qlvm_torus_video_cb_bool'))
+        self.qlvm_torus_video_cb.move(vis_col_three_x2, 40)
+
+        qlvm_clustering_label = QLabel('QLVM clustering type borders:', self.VisualizationsSettings)
+        qlvm_clustering_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        qlvm_clustering_label.move(vis_col_three_x1, 70)
+        self.qlvm_clustering_list = sorted(
+            ['coarse', 'fine'],
+            key=lambda x: x == _qlvm_cfg['clustering'],
+            reverse=True,
+        )
+        self.qlvm_clustering_cb = QComboBox(self.VisualizationsSettings)
+        self.qlvm_clustering_cb.addItems(self.qlvm_clustering_list)
+        self.qlvm_clustering_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.qlvm_clustering_cb.activated.connect(partial(self._combo_box_qlvm_clustering, variable_id='qlvm_clustering'))
+        self.qlvm_clustering_cb.move(vis_col_three_x2, 70)
+
+        # fps as a bounded slider (5-60); the current value is shown in the label.
+        self.qlvm_fps_label = QLabel(f"Video sampling rate {_qlvm_cfg['fps']} (fps):", self.VisualizationsSettings)
+        self.qlvm_fps_label.setFixedWidth(220)
+        self.qlvm_fps_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.qlvm_fps_label.move(vis_col_three_x1, 100)
+        self.qlvm_fps_slider = QSlider(Qt.Orientation.Horizontal, self.VisualizationsSettings)
+        self.qlvm_fps_slider.setFixedWidth(88)
+        self.qlvm_fps_slider.move(vis_col_three_x2, 100)
+        self.qlvm_fps_slider.setRange(5, 60)
+        self.qlvm_fps_slider.setValue(int(_qlvm_cfg['fps']))
+        self.qlvm_fps_slider.valueChanged.connect(self._update_qlvm_fps_label)
+
+        # # # # USV sequence figure (per-session): a [start, start+duration]
+        # window -> left embedding (QLVM/VAE) with the numbered, emitter-colored
+        # sequence + right continuous spectrogram (average / 24-channel). The
+        # QLVM background reuses the arrays + clustering selected above.
+        _usv_cfg = self.visualizations_input_dict['make_usv_spectrograms']
+        _seq_cfg = _usv_cfg['sequence']
+        _usv_time_window = _usv_cfg['time_window']
+
+        usv_seq_label = QLabel('Render USV sequence figure:', self.VisualizationsSettings)
+        usv_seq_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        usv_seq_label.setStyleSheet(self.orange_label_style)
+        usv_seq_label.move(vis_col_three_x1, 130)
+        self.usv_seq_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_cb.addItems(['No', 'Yes'])
+        self.usv_seq_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.usv_seq_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='make_usv_sequence_cb_bool'))
+        self.usv_seq_cb.move(vis_col_three_x2, 130)
+
+        usv_seq_fig_format_label = QLabel('Save created figure in format:', self.VisualizationsSettings)
+        usv_seq_fig_format_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usv_seq_fig_format_label.move(vis_col_three_x1, 160)
+        self.usv_seq_fig_format_list = sorted(
+            ['png', 'jpg', 'svg', 'pdf'],
+            key=lambda x: x == _usv_cfg['fig_format'],
+            reverse=True,
+        )
+        self.usv_seq_fig_format_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_fig_format_cb.addItems(self.usv_seq_fig_format_list)
+        self.usv_seq_fig_format_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.usv_seq_fig_format_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='usv_seq_fig_format', choices=self.usv_seq_fig_format_list))
+        self.usv_seq_fig_format_cb.move(vis_col_three_x2, 160)
+
+        # Start + duration are the shared make_usv_spectrograms `time_window`,
+        # presented here as start (= window[0]) and duration (= window[1]-[0]);
+        # _save_visualizations_labels_func writes them back to time_window.
+        usv_seq_start_label = QLabel('Audio sequence start (s):', self.VisualizationsSettings)
+        usv_seq_start_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usv_seq_start_label.move(vis_col_three_x1, 190)
+        self.usv_seq_start_edit = QLineEdit(f"{_usv_time_window[0]}", self.VisualizationsSettings)
+        self.usv_seq_start_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.usv_seq_start_edit.setStyleSheet('QLineEdit { width: 85px; }')
+        self.usv_seq_start_edit.move(vis_col_three_x2, 190)
+
+        usv_seq_duration_label = QLabel('Audio sequence duration (s):', self.VisualizationsSettings)
+        usv_seq_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usv_seq_duration_label.move(vis_col_three_x1, 220)
+        self.usv_seq_duration_edit = QLineEdit(f"{_usv_time_window[1] - _usv_time_window[0]}", self.VisualizationsSettings)
+        self.usv_seq_duration_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.usv_seq_duration_edit.setStyleSheet('QLineEdit { width: 85px; }')
+        self.usv_seq_duration_edit.move(vis_col_three_x2, 220)
+
+        usv_seq_embedding_label = QLabel('Embedding map type (left panel):', self.VisualizationsSettings)
+        usv_seq_embedding_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usv_seq_embedding_label.move(vis_col_three_x1, 250)
+        self.usv_seq_embedding_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_embedding_cb.addItems(['qlvm', 'vae'])
+        self.usv_seq_embedding_cb.setCurrentText(_seq_cfg['embedding'])
+        self.usv_seq_embedding_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.usv_seq_embedding_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='usv_seq_embedding', choices=['qlvm', 'vae']))
+        self.usv_seq_embedding_cb.activated.connect(self._update_usv_seq_enabled_state)
+        self.usv_seq_embedding_cb.move(vis_col_three_x2, 250)
+
+        self.usv_seq_mask_label = QLabel('Apply SAM2 masks to sequence:', self.VisualizationsSettings)
+        self.usv_seq_mask_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.usv_seq_mask_label.move(vis_col_three_x1, 280)
+        self.usv_seq_mask_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_mask_cb.addItems(['No', 'Yes'])
+        self.usv_seq_mask_cb.setCurrentIndex(1 if _usv_cfg['apply_mask'] else 0)
+        self.usv_seq_mask_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.usv_seq_mask_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_seq_apply_mask_bool'))
+        self.usv_seq_mask_cb.move(vis_col_three_x2, 280)
+
+        self.usv_seq_raw_label = QLabel('Plot raw audio (with spectrogram):', self.VisualizationsSettings)
+        self.usv_seq_raw_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.usv_seq_raw_label.move(vis_col_three_x1, 310)
+        self.usv_seq_raw_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_raw_cb.addItems(['No', 'Yes'])
+        self.usv_seq_raw_cb.setCurrentIndex(1 if _usv_cfg['plot_raw_audio'] else 0)
+        self.usv_seq_raw_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.usv_seq_raw_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_seq_raw_audio_bool'))
+        self.usv_seq_raw_cb.move(vis_col_three_x2, 310)
+
+        self.usv_seq_boundaries_label = QLabel('Draw embedding boundaries:', self.VisualizationsSettings)
+        self.usv_seq_boundaries_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.usv_seq_boundaries_label.setStyleSheet('QLabel:disabled { color: #cccccc; }')
+        self.usv_seq_boundaries_label.move(vis_col_three_x1, 340)
+        self.usv_seq_boundaries_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_boundaries_cb.addItems(['No', 'Yes'])
+        self.usv_seq_boundaries_cb.setCurrentIndex(1 if _seq_cfg['draw_boundaries'] else 0)
+        self.usv_seq_boundaries_cb.setStyleSheet('QComboBox { width: 57px; } QComboBox:disabled { color: #cccccc; }')
+        self.usv_seq_boundaries_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_seq_draw_boundaries_bool'))
+        self.usv_seq_boundaries_cb.activated.connect(self._update_usv_seq_enabled_state)
+        self.usv_seq_boundaries_cb.move(vis_col_three_x2, 340)
+
+        self.usv_seq_boundary_clustering_label = QLabel('Clustering type borders:', self.VisualizationsSettings)
+        self.usv_seq_boundary_clustering_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.usv_seq_boundary_clustering_label.setStyleSheet('QLabel:disabled { color: #cccccc; }')
+        self.usv_seq_boundary_clustering_label.move(vis_col_three_x1, 370)
+        self.usv_seq_boundary_clustering_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_boundary_clustering_cb.addItems(['coarse', 'fine'])
+        self.usv_seq_boundary_clustering_cb.setCurrentText(_seq_cfg['boundary_clustering'])
+        self.usv_seq_boundary_clustering_cb.setStyleSheet('QComboBox { width: 57px; } QComboBox:disabled { color: #cccccc; }')
+        self.usv_seq_boundary_clustering_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='usv_seq_boundary_clustering', choices=['coarse', 'fine']))
+        self.usv_seq_boundary_clustering_cb.move(vis_col_three_x2, 370)
+
+        usv_seq_mark_label = QLabel('Mark USV emitters (in spectrogram):', self.VisualizationsSettings)
+        usv_seq_mark_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usv_seq_mark_label.move(vis_col_three_x1, 400)
+        self.usv_seq_mark_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_mark_cb.addItems(['No', 'Yes'])
+        self.usv_seq_mark_cb.setCurrentIndex(1 if _seq_cfg['mark_usv_segments'] else 0)
+        self.usv_seq_mark_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.usv_seq_mark_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_seq_mark_segments_bool'))
+        self.usv_seq_mark_cb.move(vis_col_three_x2, 400)
+
+        # # # # Embedding + per-category thumbnails (cohort-level, run-once): pools
+        # the cohort session lists + resolves the store from spectrograms_dir, then
+        # renders a 2-panel embedding scatter + per-category spectrogram thumbnail
+        # grid. Remaining knobs live in the embedding_thumbnails settings block.
+        _emb_cfg = self.visualizations_input_dict['embedding_thumbnails']
+
+        embedding_thumbnails_label = QLabel('Render embedding thumbnails:', self.VisualizationsSettings)
+        embedding_thumbnails_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        embedding_thumbnails_label.setStyleSheet(self.orange_label_style)
+        embedding_thumbnails_label.move(vis_col_three_x1, 430)
+        self.embedding_thumbnails_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_cb.addItems(['No', 'Yes'])
+        self.embedding_thumbnails_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='make_embedding_thumbnails_cb_bool'))
+        self.embedding_thumbnails_cb.move(vis_col_three_x2, 430)
+
+        embedding_thumbnails_map_label = QLabel('Embedding map type:', self.VisualizationsSettings)
+        embedding_thumbnails_map_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_map_label.move(vis_col_three_x1, 460)
+        self.embedding_thumbnails_map_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_map_cb.addItems(['qlvm', 'vae'])
+        self.embedding_thumbnails_map_cb.setCurrentText(_emb_cfg['map_type'])
+        self.embedding_thumbnails_map_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_map_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_map_type', choices=['qlvm', 'vae']))
+        self.embedding_thumbnails_map_cb.move(vis_col_three_x2, 460)
+
+        embedding_thumbnails_category_label = QLabel('Clustering type borders:', self.VisualizationsSettings)
+        embedding_thumbnails_category_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_category_label.move(vis_col_three_x1, 490)
+        self.embedding_thumbnails_category_cb = QComboBox(self.VisualizationsSettings)
+        # Displayed as coarse/fine (consistent with the other clustering selectors)
+        # but stored as the category column suffix the figure reads: coarse ->
+        # supercategory, fine -> category.
+        self.embedding_thumbnails_category_cb.addItems(['coarse', 'fine'])
+        self.embedding_thumbnails_category_cb.setCurrentText('coarse' if _emb_cfg['category_col_suffix'] == 'supercategory' else 'fine')
+        self.embedding_thumbnails_category_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_category_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_category', choices=['supercategory', 'category']))
+        self.embedding_thumbnails_category_cb.move(vis_col_three_x2, 490)
+
+        self.embedding_thumbnails_samples_label = QLabel(f"Thumbnails per category {_emb_cfg['n_samples_per_category']}:", self.VisualizationsSettings)
+        self.embedding_thumbnails_samples_label.setFixedWidth(220)
+        self.embedding_thumbnails_samples_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.embedding_thumbnails_samples_label.move(vis_col_three_x1, 520)
+        self.embedding_thumbnails_samples_slider = QSlider(Qt.Orientation.Horizontal, self.VisualizationsSettings)
+        self.embedding_thumbnails_samples_slider.setFixedWidth(88)
+        self.embedding_thumbnails_samples_slider.move(vis_col_three_x2, 520)
+        self.embedding_thumbnails_samples_slider.setRange(1, 20)
+        self.embedding_thumbnails_samples_slider.setValue(int(_emb_cfg['n_samples_per_category']))
+        self.embedding_thumbnails_samples_slider.valueChanged.connect(self._update_embedding_thumbnails_samples_label)
+
+        embedding_thumbnails_layout_label = QLabel('Thumbnail layout:', self.VisualizationsSettings)
+        embedding_thumbnails_layout_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_layout_label.move(vis_col_three_x1, 550)
+        self.embedding_thumbnails_layout_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_layout_cb.addItems(['horizontal', 'vertical'])
+        self.embedding_thumbnails_layout_cb.setCurrentText(_emb_cfg['tile_orientation'])
+        self.embedding_thumbnails_layout_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_layout_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_orientation', choices=['horizontal', 'vertical']))
+        self.embedding_thumbnails_layout_cb.move(vis_col_three_x2, 550)
+
+        embedding_thumbnails_boundaries_label = QLabel('Draw cluster boundaries:', self.VisualizationsSettings)
+        embedding_thumbnails_boundaries_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_boundaries_label.move(vis_col_three_x1, 580)
+        self.embedding_thumbnails_boundaries_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_boundaries_cb.addItems(['No', 'Yes'])
+        self.embedding_thumbnails_boundaries_cb.setCurrentIndex(1 if _emb_cfg['draw_cluster_boundaries'] else 0)
+        self.embedding_thumbnails_boundaries_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_boundaries_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_draw_boundaries_bool'))
+        self.embedding_thumbnails_boundaries_cb.move(vis_col_three_x2, 580)
+
+        embedding_thumbnails_mask_label = QLabel('Apply SAM2 mask to spectrograms:', self.VisualizationsSettings)
+        embedding_thumbnails_mask_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_mask_label.move(vis_col_three_x1, 610)
+        self.embedding_thumbnails_mask_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_mask_cb.addItems(['No', 'Yes'])
+        self.embedding_thumbnails_mask_cb.setCurrentIndex(1 if _emb_cfg['apply_mask'] else 0)
+        self.embedding_thumbnails_mask_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_mask_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_apply_mask_bool'))
+        self.embedding_thumbnails_mask_cb.move(vis_col_three_x2, 610)
+
+        embedding_thumbnails_sampling_label = QLabel('Per-cluster sampling method:', self.VisualizationsSettings)
+        embedding_thumbnails_sampling_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_sampling_label.move(vis_col_three_x1, 640)
+        self.embedding_thumbnails_sampling_cb = QComboBox(self.VisualizationsSettings)
+        _emb_sampling_choices = ['random', 'nearest', 'spread', 'grid', 'spiral']
+        self.embedding_thumbnails_sampling_cb.addItems(_emb_sampling_choices)
+        self.embedding_thumbnails_sampling_cb.setCurrentText(_emb_cfg['sampling_method'])
+        self.embedding_thumbnails_sampling_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_sampling_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_sampling_method', choices=_emb_sampling_choices))
+        self.embedding_thumbnails_sampling_cb.move(vis_col_three_x2, 640)
+
+        # Couple dependent controls: boundaries apply to both embeddings, and the
+        # boundary clustering selector only matters when boundaries are drawn. Set
+        # the initial enabled state here.
+        self._update_usv_seq_enabled_state()
+
         self._create_buttons_visualize(seq=0, class_option=self.VisualizationsSettings,
                                        button_pos_y=visualize_one_y - 35, next_button_x_pos=visualize_one_x - 100)
 
@@ -4636,6 +5017,22 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
         self.visualizations_input_dict['send_email']['visualizations_pc_choice'] = str(getattr(self, 'visualizations_pc_choice'))
 
+        # Make the experimenter-scoped paths follow the selected experimenter -- the
+        # same name-swap the Record/Process model dirs use (replace_name_in_path):
+        # rewrite the experimenter component of the figure output dir and the shared
+        # resource dirs to self.exp_id. A path that carries no known experimenter
+        # name (e.g. a custom Browse target) is returned unchanged.
+        _experimenter_list = self.exp_settings_dict['experimenter_list']
+        self.visualizations_input_dict['figures']['save_directory'] = replace_name_in_path(
+            experimenter_list=_experimenter_list,
+            recording_files_destinations=[self.visualizations_input_dict['figures']['save_directory']],
+            exp_id=self.exp_id)
+        for _shared_key in ('spectrograms_dir', 'input_files_directory'):
+            self.visualizations_input_dict['shared_resources'][_shared_key] = replace_name_in_path(
+                experimenter_list=_experimenter_list,
+                recording_files_destinations=[self.visualizations_input_dict['shared_resources'][_shared_key]],
+                exp_id=self.exp_id)
+
         self.pc_usage_visualizations = self.pc_usage_visualizations.text()
         if len(self.pc_usage_visualizations) == 0:
             self.pc_usage_visualizations = []
@@ -4692,6 +5089,42 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['make_behavioral_videos']['beh_features_bool'] = self.beh_features_cb_bool
         self.beh_features_cb_bool = False
 
+        self.visualizations_input_dict['visualize_booleans']['make_qlvm_torus_traversal_video_bool'] = self.qlvm_torus_video_cb_bool
+        self.qlvm_torus_video_cb_bool = False
+        self.visualizations_input_dict['qlvm_torus_traversal_video']['clustering'] = self.qlvm_clustering
+        self.visualizations_input_dict['qlvm_torus_traversal_video']['fps'] = self.qlvm_fps_slider.value()
+        # input-file paths are written live via _update_nested_dict_value
+
+        # USV sequence figure (per-session). The GUI only drives 'sequence' mode,
+        # so enabling the toggle sets make_usv_spectrograms.mode = 'sequence'.
+        self.visualizations_input_dict['visualize_booleans']['make_usv_spectrograms_bool'] = self.make_usv_sequence_cb_bool
+        if self.make_usv_sequence_cb_bool:
+            self.visualizations_input_dict['make_usv_spectrograms']['mode'] = 'sequence'
+        self.make_usv_sequence_cb_bool = False
+        self.visualizations_input_dict['make_usv_spectrograms']['fig_format'] = self.usv_seq_fig_format
+        self.visualizations_input_dict['make_usv_spectrograms']['sequence']['embedding'] = self.usv_seq_embedding
+        self.visualizations_input_dict['make_usv_spectrograms']['sequence']['draw_boundaries'] = self.usv_seq_draw_boundaries_bool
+        self.visualizations_input_dict['make_usv_spectrograms']['sequence']['boundary_clustering'] = self.usv_seq_boundary_clustering
+        self.visualizations_input_dict['make_usv_spectrograms']['sequence']['mark_usv_segments'] = self.usv_seq_mark_segments_bool
+        self.visualizations_input_dict['make_usv_spectrograms']['apply_mask'] = self.usv_seq_apply_mask_bool
+        self.visualizations_input_dict['make_usv_spectrograms']['plot_raw_audio'] = self.usv_seq_raw_audio_bool
+        # the sequence start + duration are the shared make_usv_spectrograms time_window
+        _usv_seq_start = float(_safe_literal_eval(self.usv_seq_start_edit.text()))
+        _usv_seq_duration = float(_safe_literal_eval(self.usv_seq_duration_edit.text()))
+        self.visualizations_input_dict['make_usv_spectrograms']['time_window'] = [_usv_seq_start, _usv_seq_start + _usv_seq_duration]
+
+        # Embedding + per-category thumbnails (cohort-level, run-once). The rest of
+        # the knobs live in the embedding_thumbnails settings block.
+        self.visualizations_input_dict['visualize_booleans']['make_embedding_thumbnails_bool'] = self.make_embedding_thumbnails_cb_bool
+        self.make_embedding_thumbnails_cb_bool = False
+        self.visualizations_input_dict['embedding_thumbnails']['map_type'] = self.embedding_thumbnails_map_type
+        self.visualizations_input_dict['embedding_thumbnails']['category_col_suffix'] = self.embedding_thumbnails_category
+        self.visualizations_input_dict['embedding_thumbnails']['tile_orientation'] = self.embedding_thumbnails_orientation
+        self.visualizations_input_dict['embedding_thumbnails']['n_samples_per_category'] = self.embedding_thumbnails_samples_slider.value()
+        self.visualizations_input_dict['embedding_thumbnails']['draw_cluster_boundaries'] = self.embedding_thumbnails_draw_boundaries_bool
+        self.visualizations_input_dict['embedding_thumbnails']['apply_mask'] = self.embedding_thumbnails_apply_mask_bool
+        self.visualizations_input_dict['embedding_thumbnails']['sampling_method'] = self.embedding_thumbnails_sampling_method
+
 
     def _save_process_labels_func(self) -> None:
         """
@@ -4709,15 +5142,14 @@ class USVPlaypenWindow(QMainWindow):
 
         qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'ch_receiving_input',
                           'a_ch_receiving_input', 'pc_usage_process', 'min_spike_num', 'phidget_extra_data_camera',
-                          'hpss_power', 'n_deriv_smooth','das_conda', 'das_model_base', 'das_output_type',
+                          'n_deriv_smooth','das_conda', 'das_model_base', 'das_output_type',
                           'smooth_scale', 'static_reference_len', 'weight_rigid', 'weight_weak',
                           'reprojection_error_threshold', 'regularization_function',
                           'segment_confidence_threshold', 'segment_minlen', 'segment_fillgap',
                           'rigid_body_constraints', 'weak_body_constraints', 'vcl_conda',
                           'das_model_dir_edit', 'vcl_model_dir_edit', 'inference_root_dir_edit',
                           'centroid_model_edit', 'centered_instance_model_edit']
-        lists_in_string = ['v_camera_serial_num', 'filter_dirs', 'concat_dirs', 'stft_window_hop', 'hpss_kernel_size',
-                           'hpss_margin', 'filter_freq_bounds', 'frame_restriction', 'excluded_views']
+        lists_in_string = ['v_camera_serial_num', 'filter_dirs', 'concat_dirs', 'filter_freq_bounds', 'frame_restriction', 'excluded_views']
 
         for one_elem_str in qlabel_strings:
             if type(self.__dict__[one_elem_str]) != str:
@@ -4765,10 +5197,6 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(getattr(self, 'encoding_preset'))
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input'] = int(_safe_literal_eval(self.ch_receiving_input))
         self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_freq_bounds'] = [int(_safe_literal_eval(freq_bound)) for freq_bound in self.filter_freq_bounds]
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['stft_window_length_hop_size'] = [int(_safe_literal_eval(stft_value)) for stft_value in self.stft_window_hop]
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['kernel_size'] = tuple([int(_safe_literal_eval(kernel_value)) for kernel_value in self.hpss_kernel_size])
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['hpss_power'] = float(_safe_literal_eval(self.hpss_power))
-        self.processing_input_dict['modify_files']['Operator']['hpss_audio']['margin'] = tuple([int(_safe_literal_eval(margin_value)) for margin_value in self.hpss_margin])
         self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num'] = int(_safe_literal_eval(self.min_spike_num))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input'] = int(_safe_literal_eval(self.a_ch_receiving_input))
         self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = self.phidget_extra_data_camera
@@ -4873,6 +5301,14 @@ class USVPlaypenWindow(QMainWindow):
         self.prepare_assign_usv_cb_bool = False
         self.processing_input_dict['processing_booleans']['assign_vocalizations'] = self.assign_usv_cb_bool
         self.assign_usv_cb_bool = False
+        self.processing_input_dict['processing_booleans']['generate_usv_spectrograms'] = self.generate_usv_spectrograms_cb_bool
+        self.generate_usv_spectrograms_cb_bool = False
+        self.processing_input_dict['processing_booleans']['generate_usv_masks'] = self.generate_usv_masks_cb_bool
+        self.generate_usv_masks_cb_bool = False
+        self.processing_input_dict['processing_booleans']['compute_usv_acoustic_features'] = self.compute_usv_acoustic_features_cb_bool
+        self.compute_usv_acoustic_features_cb_bool = False
+        self.processing_input_dict['processing_booleans']['infer_qlvm_latents'] = self.infer_qlvm_latents_cb_bool
+        self.infer_qlvm_latents_cb_bool = False
 
     def _save_record_one_labels_func(self) -> None:
         """
@@ -5280,6 +5716,117 @@ class USVPlaypenWindow(QMainWindow):
             if index == idx:
                 self.__dict__[variable_id] = self.fig_format_list[idx]
                 break
+
+    def _combo_box_qlvm_clustering(self,
+                                   index: int,
+                                   variable_id: str = None) -> None:
+        """
+        Description
+        -----------
+        QLVM torus-traversal clustering combo box (coarse / fine; selects which
+        ``arrays_*.npz`` the video reads).
+
+        Parameters
+        ----------
+        index (int)
+            Index of selected choice (completes automatically).
+        variable_id (str)
+            Attribute to be created based on the choice.
+
+        Returns
+        -------
+        None
+        """
+
+        for idx in range(len(self.qlvm_clustering_list)):
+            if index == idx:
+                self.__dict__[variable_id] = self.qlvm_clustering_list[idx]
+                break
+
+    def _combo_box_usv_seq_choice(self,
+                                  index: int,
+                                  variable_id: str = None,
+                                  choices: list = None) -> None:
+        """
+        Description
+        -----------
+        Generic USV-sequence string-combo handler: set ``self.<variable_id>`` to
+        ``choices[index]`` (used for the embedding and right-panel-mode selectors).
+
+        Parameters
+        ----------
+        index (int)
+            Index of the selected choice (completed automatically by the signal).
+        variable_id (str)
+            Attribute to set based on the choice.
+        choices (list)
+            Ordered list of string choices matching the combo's items.
+
+        Returns
+        -------
+        None
+        """
+
+        if choices is not None and 0 <= index < len(choices):
+            self.__dict__[variable_id] = choices[index]
+
+    def _set_usv_seq_toggle_enabled(self, label, combo, variable_id: str, enabled: bool) -> None:
+        """
+        Description
+        -----------
+        Enable/disable a USV-sequence No/Yes toggle together with its label. When
+        disabling, the combo is forced back to "No" (index 0) and its backing
+        boolean attribute is set False, so a control that does not apply to the
+        current combination cannot leave a stale "Yes" behind.
+
+        Parameters
+        ----------
+        label (QLabel)
+            The toggle's text label (greyed out alongside the combo).
+        combo (QComboBox)
+            The No/Yes combo box.
+        variable_id (str)
+            Name of the backing boolean attribute on ``self``.
+        enabled (bool)
+            Whether the control applies in the current combination.
+
+        Returns
+        -------
+        None
+        """
+
+        if not enabled:
+            combo.setCurrentIndex(0)  # 'No'
+            self.__dict__[variable_id] = False
+        label.setEnabled(enabled)
+        combo.setEnabled(enabled)
+
+    def _update_usv_seq_enabled_state(self, *_args) -> None:
+        """
+        Description
+        -----------
+        Enable/disable the one USV-sequence control that only applies in certain
+        combinations. Both embeddings now carry a precomputed cohort landscape with
+        category boundaries (QLVM watershed / VAE supercategory-vs-category), so
+        **Draw embedding boundaries** is always available; **Clustering type
+        borders** (coarse/fine) only matters when boundaries are actually drawn.
+
+        Parameters
+        ----------
+        *_args
+            Ignored positional args (the combo ``activated`` signal passes an
+            index that this slot does not use).
+
+        Returns
+        -------
+        None
+        """
+
+        # Boundaries apply to BOTH embeddings; the clustering selector only matters
+        # when boundaries are drawn.
+        clustering_enabled = self.usv_seq_boundaries_cb.currentText() == 'Yes'
+        self.usv_seq_boundary_clustering_label.setEnabled(clustering_enabled)
+        self.usv_seq_boundary_clustering_cb.setEnabled(clustering_enabled)
 
     def _combo_box_default_fig_format(self,
                                       index: int,
@@ -5789,6 +6336,44 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         self.cal_fr_label.setText(f'Calibration ({str(value)} fps):')
+
+    def _update_qlvm_fps_label(self, value: int) -> None:
+        """
+        Description
+        -----------
+        Updates the QLVM torus-traversal video fps label as its slider moves.
+
+        Parameters
+        ----------
+        value (int)
+            Video frames per second (completes automatically).
+
+        Returns
+        -------
+        None
+        """
+
+        self.qlvm_fps_label.setText(f'Video sampling rate {value} (fps):')
+
+    def _update_embedding_thumbnails_samples_label(self, value: int) -> None:
+        """
+        Description
+        -----------
+        Updates the embedding-thumbnails "thumbnails per category" label as its
+        slider moves.
+
+        Parameters
+        ----------
+        value (int)
+            Number of spectrogram thumbnails sampled per category (completes
+            automatically).
+
+        Returns
+        -------
+        None
+        """
+
+        self.embedding_thumbnails_samples_label.setText(f'Thumbnails per category {value}:')
 
     def _create_sliders_general(self, camera_id: str = None, camera_color: str = None, y_start: int = None) -> None:
         """
@@ -6728,7 +7313,7 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'usgh_devices_sync_cb_bool': _toml['audio']['usgh_devices_sync'], 'usgh_sr': str(_toml['audio']['devices']['fabtast']), 'cpu_priority': _toml['audio']['cpu_priority'],
                            'conduct_video_concatenation_cb_bool': False, 'conduct_video_fps_change_cb_bool': False,
                            'conduct_multichannel_conversion_cb_bool': False, 'crop_wav_cam_cb_bool': False, 'conc_audio_cb_bool': False, 'filter_audio_cb_bool': False,
-                           'conduct_sync_cb_bool': False, 'conduct_hpss_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
+                           'conduct_sync_cb_bool': False, 'conduct_hpss_cb_bool': False, 'generate_usv_spectrograms_cb_bool': False, 'generate_usv_masks_cb_bool': False, 'compute_usv_acoustic_features_cb_bool': False, 'infer_qlvm_latents_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
                            'conduct_nv_sync_cb_bool': False, 'split_cluster_spikes_cb_bool': False, 'anipose_calibration_cb_bool': False,
                            'sleap_file_conversion_cb_bool': False, 'anipose_triangulation_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
                            'sleap_cluster_cb_bool': False, 'das_inference_cb_bool': False, 'das_summary_cb_bool': False, 'assign_usv_cb_bool': False,
@@ -6741,7 +7326,24 @@ def initialize_main_window(no_splash: bool = False) -> QMainWindow:
                            'default_cmap': visualizations_input_dict['figures']['cmap'],
                            'rotate_side_view_bool': False, 'history_cb_bool': False, 'speaker_cb_bool': False, 'spectrogram_cb_bool': False,
                            'spectrogram_ch': visualizations_input_dict['make_behavioral_videos']['spectrogram_ch'], 'raster_plot_cb_bool': False, 'spike_sound_cb_bool': False,
-                           'beh_features_cb_bool': False, 'calculate_neuronal_tuning_curves_cb_bool': False, 'include_partner_vocalization_tuning_cb_bool': analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'],
+                           'beh_features_cb_bool': False,
+                           'qlvm_torus_video_cb_bool': False, 'qlvm_clustering': visualizations_input_dict['qlvm_torus_traversal_video']['clustering'],
+                           'make_usv_sequence_cb_bool': False,
+                           'usv_seq_fig_format': visualizations_input_dict['make_usv_spectrograms']['fig_format'],
+                           'usv_seq_embedding': visualizations_input_dict['make_usv_spectrograms']['sequence']['embedding'],
+                           'usv_seq_draw_boundaries_bool': visualizations_input_dict['make_usv_spectrograms']['sequence']['draw_boundaries'],
+                           'usv_seq_boundary_clustering': visualizations_input_dict['make_usv_spectrograms']['sequence']['boundary_clustering'],
+                           'usv_seq_apply_mask_bool': visualizations_input_dict['make_usv_spectrograms']['apply_mask'],
+                           'usv_seq_raw_audio_bool': visualizations_input_dict['make_usv_spectrograms']['plot_raw_audio'],
+                           'usv_seq_mark_segments_bool': visualizations_input_dict['make_usv_spectrograms']['sequence']['mark_usv_segments'],
+                           'make_embedding_thumbnails_cb_bool': False,
+                           'embedding_thumbnails_map_type': visualizations_input_dict['embedding_thumbnails']['map_type'],
+                           'embedding_thumbnails_category': visualizations_input_dict['embedding_thumbnails']['category_col_suffix'],
+                           'embedding_thumbnails_orientation': visualizations_input_dict['embedding_thumbnails']['tile_orientation'],
+                           'embedding_thumbnails_draw_boundaries_bool': visualizations_input_dict['embedding_thumbnails']['draw_cluster_boundaries'],
+                           'embedding_thumbnails_apply_mask_bool': visualizations_input_dict['embedding_thumbnails']['apply_mask'],
+                           'embedding_thumbnails_sampling_method': visualizations_input_dict['embedding_thumbnails']['sampling_method'],
+                           'calculate_neuronal_tuning_curves_cb_bool': False, 'include_partner_vocalization_tuning_cb_bool': analyses_input_dict['calculate_neuronal_tuning_curves']['include_partner_vocalization_tuning_bool'],
                            'create_usv_playback_wav_cb_bool': False, 'frequency_shift_audio_segment_cb_bool': False,
                            'fs_audio_dir': analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], 'fs_device_id': analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'],
                            'fs_channel_id': analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], 'volume_adjust_audio_segment_cb_bool': True,
