@@ -22,11 +22,16 @@ Four groups of functions live here:
    reproduces the patch against a stock
    :class:`spikeinterface.core.ChannelSparsity`.
 
-2. Somatic classifier — :func:`is_somatic`
-   The fork hijacked ``template_metrics.get_num_positive_peaks`` so that,
-   instead of counting positive peaks, it returned a boolean somatic /
-   non-somatic classification of the waveform. :func:`is_somatic` is
-   that classification as a standalone function on a single 1D template.
+2. Somatic classifier — :func:`classify_somatic`
+   A waveform peak/trough shape rule, grounded in Deligkaris et al. (2016):
+   axonal / dendritic (passing-fibre) units show a large, narrow positive
+   peak BEFORE the main trough, whereas somatic units are trough-dominated.
+   It computes the waveform-shape features (peak-before / peak-after /
+   trough sizes and widths and the derived ratios) from the trough + peak
+   indices stock SI already detects, and applies a two-condition decision.
+   It replaces the fork's one-line classifier, which flagged a unit non-
+   somatic purely when its most-positive sample preceded its most-negative
+   one — a noise-sensitive sample-order test with no magnitude or width gate.
 
 3. Multi-channel template metrics — :func:`get_exp_decay`,
    :func:`get_spread`, with the helpers :func:`transform_column_range`
@@ -42,9 +47,13 @@ Four groups of functions live here:
 
 from __future__ import annotations
 
+import warnings
+from itertools import pairwise
+
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
+from scipy.signal import peak_widths
 from sklearn.metrics import r2_score
 from spikeinterface.core import ChannelSparsity
 from spikeinterface.curation.curation_tools import find_duplicated_spikes
@@ -154,42 +163,144 @@ def sparsity_around_phy_peak(recording, sorting, num_channels: int) -> ChannelSp
     return ChannelSparsity(mask, sorting.unit_ids, recording.channel_ids)
 
 
-def is_somatic(template_single: np.ndarray) -> bool:
+# Non-somatic decision thresholds (waveform peak/trough shape rule, after Deligkaris
+# et al. 2016). `standard_spike_width` is the 61-sample reference window the two width
+# thresholds scale against.
+DEFAULT_SOMATIC_PARAMS = {
+    'min_trough_to_peak2_ratio': 5.0,
+    'min_width_first_peak': 4,
+    'min_width_main_trough': 5,
+    'max_peak1_to_peak2_ratio': 3.0,
+    'max_main_peak_to_trough_ratio': 0.8,
+    'standard_spike_width': 61,
+}
+
+
+def classify_somatic(
+    template_single: np.ndarray,
+    peaks_info: dict,
+    *,
+    params: dict | None = None,
+) -> dict:
     """
     Description
     -----------
-    Classify a single-channel template waveform as somatic or
-    non-somatic.
+    Classify a single-channel template waveform as somatic or non-somatic and
+    return the waveform-shape features the decision rests on.
 
-    This is the owned reimplementation of the fork's hijacked
-    ``template_metrics.get_num_positive_peaks``. A waveform whose
-    positive peak both exceeds its negative trough and occurs **before**
-    that trough in time is treated as non-somatic (the inverted /
-    axonal-passing-fibre signature) and the function returns ``False``.
-    Every other waveform — including the canonical somatic shape, where
-    the negative trough leads — returns ``True``.
+    A waveform peak/trough shape rule grounded in Deligkaris et al. (2016): axonal /
+    dendritic (passing-fibre) units show a large, narrow positive peak BEFORE the main
+    trough, whereas somatic units are trough-dominated. It replaces the fork's one-line
+    classifier, which flagged a unit non-somatic purely when its most-positive sample
+    preceded its most-negative one — a noise-sensitive sample-order test with no
+    magnitude or width gate.
 
-    The logic and variable names are kept identical to the fork patch.
+    The main trough and the largest peaks before / after it are taken from
+    ``peaks_info`` (already computed by stock SI's ``get_trough_and_peak_idx`` for
+    the other single-channel template metrics, so the detection is consistent across
+    the catalog). Peak / trough widths are measured in SAMPLES at half-prominence
+    (:func:`scipy.signal.peak_widths`); the two width thresholds scale with the
+    template length relative to a 61-sample standard. A unit is NON-somatic iff::
+
+        ( trough_to_peak2_ratio   < min_trough_to_peak2_ratio  AND
+          main_peak_before_width  < min_width_first_peak        AND
+          main_trough_width       < min_width_main_trough       AND
+          peak1_to_peak2_ratio    > max_peak1_to_peak2_ratio )
+        OR  main_peak_to_trough_ratio > max_main_peak_to_trough_ratio
+
+    Ratios are ``abs(numerator / denominator)`` (zero denominator -> ``inf``; a zero
+    / absent numerator -> ``0.0``). All sizes are absolute amplitudes; a ``None``
+    peak / trough index (the stock detector's "not found" sentinel) yields size 0 and
+    width 0.
 
     Parameters
     ----------
     template_single : numpy.ndarray
-        1D template waveform on a single channel (typically the unit's
-        peak channel).
+        1D template waveform on the unit's peak (extremum) channel. Raw ADC units are
+        fine — every feature is a ratio or a sample count.
+    peaks_info : dict
+        Output of ``get_trough_and_peak_idx``; uses ``trough_index``,
+        ``peak_before_index`` and ``peak_after_index`` (each an int or ``None``).
+    params : dict, optional
+        Threshold overrides merged onto :data:`DEFAULT_SOMATIC_PARAMS`. Keys:
+        ``min_trough_to_peak2_ratio``, ``min_width_first_peak``,
+        ``min_width_main_trough``, ``max_peak1_to_peak2_ratio``,
+        ``max_main_peak_to_trough_ratio``, ``standard_spike_width``.
 
     Returns
     -------
-    bool
-        ``True`` if the waveform is classified as somatic, ``False`` if
-        non-somatic.
+    dict
+        ``{'somatic': bool, 'main_trough_size', 'main_peak_before_size',
+        'main_peak_after_size', 'main_peak_before_width', 'main_trough_width',
+        'peak1_to_peak2_ratio', 'trough_to_peak2_ratio',
+        'main_peak_to_trough_ratio'}``.
     """
-    peak_height = max(template_single)
-    trough_height = min(template_single)
 
-    if (peak_height > trough_height) and (np.argmax(template_single) < np.argmin(template_single)):
-        return False
-    else:
-        return True
+    resolved_params = {**DEFAULT_SOMATIC_PARAMS, **(params or {})}
+    template_single = np.asarray(template_single, dtype=np.float64)
+    n_samples = template_single.shape[0]
+
+    trough_index = peaks_info['trough_index']
+    peak_before_index = peaks_info['peak_before_index']
+    peak_after_index = peaks_info['peak_after_index']
+
+    def _size(index):
+        return abs(float(template_single[index])) if index is not None else 0.0
+
+    def _width(index, signal):
+        # Half-prominence width in samples; `index` must be a local maximum of
+        # `signal` (the trough is a maximum of the negated waveform).
+        if index is None:
+            return 0.0
+        try:
+            with warnings.catch_warnings():
+                # a degenerate (zero-prominence / edge) peak warns and returns 0 width
+                warnings.simplefilter('ignore')
+                return float(peak_widths(signal, [int(index)], rel_height=0.5)[0][0])
+        except Exception:  # a degenerate edge peak just yields width 0
+            return 0.0
+
+    def _ratio(numerator, denominator):
+        if denominator == 0:
+            return float('inf')
+        if numerator == 0:
+            return 0.0
+        return abs(numerator / denominator)
+
+    main_trough_size = _size(trough_index)
+    main_peak_before_size = _size(peak_before_index)
+    main_peak_after_size = _size(peak_after_index)
+    main_peak_before_width = _width(peak_before_index, template_single)
+    main_trough_width = _width(trough_index, -template_single)
+
+    peak1_to_peak2_ratio = _ratio(main_peak_before_size, main_peak_after_size)
+    trough_to_peak2_ratio = _ratio(main_trough_size, main_peak_before_size)
+    main_peak_to_trough_ratio = _ratio(
+        max(main_peak_before_size, main_peak_after_size), main_trough_size
+    )
+
+    width_scale = n_samples / resolved_params['standard_spike_width']
+    min_width_first_peak = max(2.0, round(resolved_params['min_width_first_peak'] * width_scale))
+    min_width_main_trough = max(3.0, round(resolved_params['min_width_main_trough'] * width_scale))
+
+    is_non_somatic = (
+        (trough_to_peak2_ratio < resolved_params['min_trough_to_peak2_ratio'])
+        and (main_peak_before_width < min_width_first_peak)
+        and (main_trough_width < min_width_main_trough)
+        and (peak1_to_peak2_ratio > resolved_params['max_peak1_to_peak2_ratio'])
+    ) or (main_peak_to_trough_ratio > resolved_params['max_main_peak_to_trough_ratio'])
+
+    return {
+        'somatic': not is_non_somatic,
+        'main_trough_size': main_trough_size,
+        'main_peak_before_size': main_peak_before_size,
+        'main_peak_after_size': main_peak_after_size,
+        'main_peak_before_width': main_peak_before_width,
+        'main_trough_width': main_trough_width,
+        'peak1_to_peak2_ratio': peak1_to_peak2_ratio,
+        'trough_to_peak2_ratio': trough_to_peak2_ratio,
+        'main_peak_to_trough_ratio': main_peak_to_trough_ratio,
+    }
 
 
 def transform_column_range(template, channel_locations, column_range, depth_direction="y"):
@@ -217,7 +328,7 @@ def sort_template_and_locations(template, channel_locations, depth_direction="y"
     return template[:, sort_indices], channel_locations[sort_indices, :]
 
 
-def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs):
+def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs):  # noqa: ARG001 - name kept for SpikeInterface signature compatibility
     """
     Compute the exponential decay constant of the template amplitude over distance (units: 1/um).
 
@@ -286,7 +397,7 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
     return exp_decay_value
 
 
-def get_spread(template, channel_locations, sampling_frequency, **kwargs) -> float:
+def get_spread(template, channel_locations, sampling_frequency, **kwargs) -> float:  # noqa: ARG001 - name kept for SpikeInterface signature compatibility
     """
     Compute the spread (depth extent) of the template amplitude over distance (units: um).
 
@@ -330,12 +441,10 @@ def get_spread(template, channel_locations, sampling_frequency, **kwargs) -> flo
 
     MM = MM / np.max(MM)
 
-    channel_locations_above_threshold = channel_locations[MM > spread_threshold]
+    channel_locations_above_threshold = channel_locations[spread_threshold < MM]
     channel_depth_above_threshold = channel_locations_above_threshold[:, depth_dim]
 
-    spread = np.ptp(channel_depth_above_threshold)
-
-    return spread
+    return np.ptp(channel_depth_above_threshold)
 
 
 def compute_amplitude_cv(amplitudes: np.ndarray, sample_indices: np.ndarray,
@@ -409,7 +518,7 @@ def compute_amplitude_cv(amplitudes: np.ndarray, sample_indices: np.ndarray,
     bounds = np.searchsorted(sample_indices, sample_bin_edges, side="left")
 
     amp_spreads = []
-    for i0, i1 in zip(bounds[:-1], bounds[1:]):
+    for i0, i1 in pairwise(bounds):
         amp_spreads.append(np.std(amplitudes[i0:i1]) / amp_mean)
 
     if len(amp_spreads) < min_num_bins:
@@ -488,7 +597,7 @@ def compute_sd_ratio(amplitudes: np.ndarray, sample_indices: np.ndarray,
     if amplitudes.size == 0:
         return np.nan
 
-    censored_period = int(round(censored_period_ms * 1e-3 * sampling_frequency))
+    censored_period = round(float(censored_period_ms * 1e-3 * sampling_frequency))
     censored_indices = find_duplicated_spikes(
         sample_indices, censored_period, method="keep_first_iterative"
     )

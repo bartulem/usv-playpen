@@ -16,19 +16,22 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from spikeinterface.metrics.quality.quality_metrics import get_quality_metric_list
 
 from usv_playpen.neuropixels.spike_quality_metrics import (
-    SpikeQualityMetricsExtractor,
-    SPIKE_TRAIN_METRIC_NAMES,
-    RECORDING_DEPENDENT_METRIC_NAMES,
-    QM_PARAMS,
     CATALOG_COLUMNS,
+    QM_PARAMS,
+    RECORDING_DEPENDENT_METRIC_NAMES,
+    SPIKE_TRAIN_METRIC_NAMES,
+    SpikeQualityMetricsExtractor,
 )
 
 
 def _new_extractor():
     """Build a bare extractor instance, bypassing ``__init__`` and its disk I/O."""
-    return SpikeQualityMetricsExtractor.__new__(SpikeQualityMetricsExtractor)
+    instance = SpikeQualityMetricsExtractor.__new__(SpikeQualityMetricsExtractor)
+    instance.somatic_classifier = None
+    return instance
 
 
 def test_resolve_catalog_path_explicit_and_default():
@@ -58,8 +61,6 @@ def test_metric_name_split_is_valid_and_disjoint():
     actually requested — a stale params key raises a ``KeyError`` in
     ``compute_quality_metrics``.
     """
-    from spikeinterface.metrics.quality.quality_metrics import get_quality_metric_list
-
     spike_train = set(SPIKE_TRAIN_METRIC_NAMES)
     recording_dependent = set(RECORDING_DEPENDENT_METRIC_NAMES)
     valid_metric_names = set(get_quality_metric_list())
@@ -69,17 +70,17 @@ def test_metric_name_split_is_valid_and_disjoint():
     assert set(QM_PARAMS) <= (spike_train | recording_dependent)
 
 
-def test_catalog_has_47_unique_columns():
+def test_catalog_has_55_unique_columns():
     """
     Description
     -----------
-    The per-session catalog schema must have exactly 47 columns with no
-    duplicates — the row builder in ``build_session_catalog`` appends 47
+    The per-session catalog schema must have exactly 55 columns with no
+    duplicates — the row builder in ``build_session_catalog`` appends 55
     values positionally, so a schema drift would silently misalign every
-    column.
+    column. (47 base metrics + the 8 waveform-shape features.)
     """
-    assert len(CATALOG_COLUMNS) == 47
-    assert len(set(CATALOG_COLUMNS)) == 47
+    assert len(CATALOG_COLUMNS) == 55
+    assert len(set(CATALOG_COLUMNS)) == 55
 
 
 def test_write_channel_order_per_shank_orders_by_electrode_position(tmp_path):
@@ -395,7 +396,7 @@ def test_constructor_raises_when_no_meta_found(tmp_path):
     """
 
     (tmp_path / "EPHYS" / "20240101_imec0").mkdir(parents=True)
-    with pytest.raises(FileNotFoundError, match="No concatenated_.*ap.meta"):
+    with pytest.raises(FileNotFoundError, match=r"No concatenated_.*ap.meta"):
         SpikeQualityMetricsExtractor(
             os_cup_loc=tmp_path, mouse_id="M1", session_date="20240101",
             probe_id="imec0", hemisphere="R",
@@ -452,6 +453,9 @@ def test_compute_template_metrics_populates_all_keys():
         'peak_to_valley', 'peak_trough_ratio', 'half_width',
         'repolarization_slope', 'recovery_slope', 'somatic',
         'exp_decay', 'spread',
+        'main_trough_size', 'main_peak_before_size', 'main_peak_after_size',
+        'main_peak_before_width', 'main_trough_width', 'peak1_to_peak2_ratio',
+        'trough_to_peak2_ratio', 'main_peak_to_trough_ratio',
     }
     assert set(metrics) == expected
     assert isinstance(metrics['somatic'], bool)
@@ -619,8 +623,11 @@ def _template_metrics_for(unit_ids):
     """Build a per-unit template-metrics dict with the keys
     :meth:`build_session_catalog` reads."""
     keys = ('peak_to_valley', 'peak_trough_ratio', 'half_width',
-            'repolarization_slope', 'recovery_slope', 'exp_decay', 'spread')
-    return {u: {**{k: 0.1 for k in keys}, 'somatic': True} for u in unit_ids}
+            'repolarization_slope', 'recovery_slope', 'exp_decay', 'spread',
+            'main_trough_size', 'main_peak_before_size', 'main_peak_after_size',
+            'main_peak_before_width', 'main_trough_width', 'peak1_to_peak2_ratio',
+            'trough_to_peak2_ratio', 'main_peak_to_trough_ratio')
+    return {u: {**dict.fromkeys(keys, 0.1), 'somatic': True} for u in unit_ids}
 
 
 def test_build_session_catalog_assembles_rows_and_merges_idempotently(tmp_path):
@@ -628,7 +635,7 @@ def test_build_session_catalog_assembles_rows_and_merges_idempotently(tmp_path):
     Description
     -----------
     :meth:`build_session_catalog` assembles one row per unit (with the
-    47-column schema), writes the global catalog, and on a second call
+    55-column schema), writes the global catalog, and on a second call
     replaces this session's rows rather than duplicating them. Units that
     appear in no recording session are skipped.
     """
@@ -661,7 +668,7 @@ def test_build_session_catalog_assembles_rows_and_merges_idempotently(tmp_path):
     extractor.quality_metrics = _full_quality_metrics_frame(unit_ids)
 
     # Unit 0 appears in a session; unit 1 appears in none (gets skipped).
-    extractor._compute_cross_session_firing_rates = lambda unit_file_names: {
+    extractor._compute_cross_session_firing_rates = lambda _unit_file_names: {
         0: {'rec_sessions': ['s1'], 'probe_sn': 'P', 'hs_sn': 'H', 'median_fr': 1.5},
         1: {'rec_sessions': [], 'probe_sn': 'P', 'hs_sn': 'H', 'median_fr': np.nan},
     }

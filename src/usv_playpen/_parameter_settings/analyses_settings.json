@@ -137,6 +137,14 @@
     "num_channels_sparsity": 7,
     "shank_width_microns": 70,
     "shank_spacing_microns": 250,
+    "somatic_classifier": {
+      "min_trough_to_peak2_ratio": 5.0,
+      "min_width_first_peak": 4,
+      "min_width_main_trough": 5,
+      "max_peak1_to_peak2_ratio": 3.0,
+      "max_main_peak_to_trough_ratio": 0.8,
+      "standard_spike_width": 61
+    },
     "probe_to_hemisphere": {
       "imec0": "R",
       "imec1": "L"

@@ -76,8 +76,9 @@ identifiers are passed in explicitly. The relevant blocks are:
   ``num_channels_sparsity`` (channels per unit in the phy-peak-centred
   sparsity), ``shank_width_microns`` / ``shank_spacing_microns`` (used to
   fold the within-shank lateral offset into the anatomical AP axis),
-  ``probe_to_hemisphere``, and ``job_kwargs`` (``n_jobs`` is the main
-  throughput knob for the single recording read).
+  ``somatic_classifier`` (the peak/trough thresholds for the somatic /
+  non-somatic decision), ``probe_to_hemisphere``, and ``job_kwargs``
+  (``n_jobs`` is the main throughput knob for the single recording read).
 
 All filesystem paths in the notebook are written ``/mnt/...`` and wrapped
 in ``configure_path`` so they resolve on macOS (``/Volumes/...``) too.
@@ -264,11 +265,13 @@ template-peak shank, with IBL anatomy looked up by physical electrode
 position rather than by raw channel index. Pass ``overwrite=True`` to
 recompute a session already in the catalog.
 
-The two SpikeInterface fork patches the original workflow relied on — a
-phy-peak-centred channel sparsity and the somatic / non-somatic
-single-channel classifier — are reimplemented in
-``spikeinterface_helpers``; ``run`` writes the global
-``EPHYS/unit_catalog.csv`` and a per-probe
+The phy-peak-centred channel sparsity (a SpikeInterface fork patch the
+original workflow relied on) is reimplemented in ``spikeinterface_helpers``,
+alongside the somatic / non-somatic single-channel classifier — a waveform
+peak/trough shape rule (after Deligkaris et al. 2016) that flags a unit
+non-somatic when a large, narrow positive peak precedes the main trough, and
+records the peak/trough sizes, widths and ratios it rests on as catalog
+columns. ``run`` writes the global ``EPHYS/unit_catalog.csv`` and a per-probe
 ``channel_order_per_shank.json``.
 
 .. _histology-utilities:

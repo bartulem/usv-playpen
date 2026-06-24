@@ -53,7 +53,6 @@ duplicating them (the bug in the original notebook's blind-append).
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 import warnings
@@ -64,27 +63,33 @@ import pandas as pd
 import spikeinterface.full as si
 from spikeinterface.core.template_tools import get_dense_templates_array
 from spikeinterface.metrics.quality.misc_metrics import amplitude_cutoff
+
 # Stock 0.104.3 prominence-based peak/trough detector + the template
 # metrics that consume its ``peaks_info`` dict. Adopted in place of the
 # fork's naive argmax-after-trough detector — see :meth:`_compute_template_metrics`.
 from spikeinterface.metrics.template.metrics import (
-    get_trough_and_peak_idx,
-    get_peak_to_trough_duration,
-    get_waveform_ratios,
     get_half_widths,
-    get_repolarization_slope,
+    get_peak_to_trough_duration,
     get_recovery_slope,
+    get_repolarization_slope,
+    get_trough_and_peak_idx,
+    get_waveform_ratios,
 )
 
-from usv_playpen.neuropixels.histology_ibl_alignment_export import read_ap_meta, parse_imro_table
-from usv_playpen.neuropixels.monopolar_triangulation import solve_monopolar_triangulation_3d
+from usv_playpen.neuropixels.histology_ibl_alignment_export import (
+    parse_imro_table,
+    read_ap_meta,
+)
+from usv_playpen.neuropixels.monopolar_triangulation import (
+    solve_monopolar_triangulation_3d,
+)
 from usv_playpen.neuropixels.spikeinterface_helpers import (
-    sparsity_around_phy_peak,
-    is_somatic,
-    get_exp_decay,
-    get_spread,
+    classify_somatic,
     compute_amplitude_cv,
     compute_sd_ratio,
+    get_exp_decay,
+    get_spread,
+    sparsity_around_phy_peak,
 )
 
 # Default SpikeInterface job kwargs for the single `waveforms` recording
@@ -193,6 +198,9 @@ CATALOG_COLUMNS = [
     'loc_ap', 'loc_ml', 'loc_dv', 'closest_ch', 'brain_area', 'firing_rate',
     'noise_level', 'waveform_duration', 'peak_trough_ratio', 'fwhm',
     'repolarization_slope', 'recovery_slope', 'exp_decay', 'spread',
+    'main_trough_size', 'main_peak_before_size', 'main_peak_after_size',
+    'main_peak_before_width', 'main_trough_width', 'peak1_to_peak2_ratio',
+    'trough_to_peak2_ratio', 'main_peak_to_trough_ratio',
     'amplitude_cutoff', 'amplitude_cv_median', 'amplitude_cv_range', 'amplitude_median',
     'firing_range', 'firing_rate_si', 'isi_violations_ratio', 'isi_violations_count',
     'num_spikes', 'presence_ratio', 'rp_contamination', 'sd_ratio', 'snr',
@@ -300,6 +308,7 @@ class SpikeQualityMetricsExtractor:
         num_channels_sparsity: int = 7,
         shank_width_microns: float = 70,
         shank_spacing_microns: float = 250,
+        somatic_classifier: dict | None = None,
         histology_dirname: str = 'histology',
         ephys_dirname: str = 'EPHYS',
         unit_subset: int | list | None = None,
@@ -307,7 +316,8 @@ class SpikeQualityMetricsExtractor:
         job_kwargs: dict | None = None,
     ) -> None:
         if hemisphere not in ('L', 'R'):
-            raise ValueError(f"hemisphere must be 'L' or 'R', got {hemisphere!r}")
+            msg = f"hemisphere must be 'L' or 'R', got {hemisphere!r}"
+            raise ValueError(msg)
 
         self.os_cup_loc = Path(os_cup_loc)
         self.mouse_id = mouse_id
@@ -319,6 +329,7 @@ class SpikeQualityMetricsExtractor:
         self.num_channels_sparsity = num_channels_sparsity
         self.shank_width_microns = shank_width_microns
         self.shank_spacing_microns = shank_spacing_microns
+        self.somatic_classifier = somatic_classifier
         self.unit_subset = unit_subset
         self.analyzer_folder = Path(analyzer_folder) if analyzer_folder is not None else None
         self.job_kwargs = dict(job_kwargs) if job_kwargs is not None else dict(DEFAULT_JOB_KWARGS)
@@ -332,14 +343,14 @@ class SpikeQualityMetricsExtractor:
 
         meta_candidates = sorted(self.ephys_path.glob('concatenated_*.ap.meta'))
         if len(meta_candidates) == 0:
-            raise FileNotFoundError(
-                f"No concatenated_*.ap.meta found under {self.ephys_path}."
-            )
+            msg = f"No concatenated_*.ap.meta found under {self.ephys_path}."
+            raise FileNotFoundError(msg)
         if len(meta_candidates) > 1:
-            raise RuntimeError(
+            msg = (
                 f"Multiple concatenated .ap.meta files under {self.ephys_path}; "
                 f"expected exactly one."
             )
+            raise RuntimeError(msg)
         self.meta_path = meta_candidates[0]
         self.meta = read_ap_meta(self.meta_path)
         self.imro_rows = parse_imro_table(self.meta['imroTbl'])
@@ -469,8 +480,9 @@ class SpikeQualityMetricsExtractor:
         ``peak_after_to_trough_ratio`` from stock's
         :func:`get_waveform_ratios` (the magnitude of the post-trough
         peak relative to the trough; sign-positive, where the fork's
-        version was signed-negative). The somatic classification stays
-        on :func:`is_somatic` since stock SI carries no equivalent.
+        version was signed-negative). The somatic classification and its
+        waveform-shape features come from :func:`classify_somatic`, which
+        consumes the same ``peaks_info`` indices.
         Multi-channel metrics (``exp_decay``, ``spread``) and their
         helpers remain owned: they do not consume ``peaks_info`` and the
         stock signatures differ in ways the existing parameter set does
@@ -521,8 +533,12 @@ class SpikeQualityMetricsExtractor:
                     template_single, sampling_frequency, peaks_info, **TEMPLATE_METRIC_PARAMS),
                 'recovery_slope': get_recovery_slope(
                     template_single, sampling_frequency, peaks_info, **TEMPLATE_METRIC_PARAMS),
-                'somatic': is_somatic(template_single),
             }
+            # somatic flag + waveform-shape features, computed from the trough / peak
+            # indices `get_trough_and_peak_idx` already detected above.
+            unit_template_metrics.update(
+                classify_somatic(template_single, peaks_info, params=self.somatic_classifier)
+            )
 
             template_multi = template_all[:, sparsity_mask[unit_index]]
             channel_locations_sparse = channel_locations[sparsity_mask[unit_index]]
@@ -756,7 +772,7 @@ class SpikeQualityMetricsExtractor:
         each value a ``dict`` with ``location``, ``closest_channel`` and
         ``brain_region``).
         """
-        with open(self.channel_locations_file, 'r') as channel_locs_file:
+        with self.channel_locations_file.open() as channel_locs_file:
             channel_locations = json.load(channel_locs_file)
 
         # Position-keyed IBL lookups: (lateral_int, axial_int) ->
@@ -904,7 +920,7 @@ class SpikeQualityMetricsExtractor:
 
         out_dir = Path(output_dir) if output_dir is not None else self.ephys_path
         out_path = out_dir / 'channel_order_per_shank.json'
-        with open(out_path, 'w') as json_output_file:
+        with out_path.open('w') as json_output_file:
             json.dump(info_dict, json_output_file, indent=4)
         return out_path
 
@@ -941,7 +957,7 @@ class SpikeQualityMetricsExtractor:
             serial number) and ``median_fr`` (median firing rate).
         """
         changepoints_path = next(self.ephys_path.glob('changepoints_info*.json'))
-        with open(changepoints_path, 'r') as changepoints_json_file:
+        with changepoints_path.open() as changepoints_json_file:
             changepoints_info = json.load(changepoints_json_file)
 
         session_ids = list(changepoints_info.keys())
@@ -953,13 +969,13 @@ class SpikeQualityMetricsExtractor:
         for session_id in session_ids:
             root_directory = changepoints_info[session_id]['root_directory']
             frame_count_path = sorted(
-                glob.glob(f"{root_directory}{os.sep}video{os.sep}*_camera_frame_count_dict.json")
+                Path(root_directory).glob('video/*_camera_frame_count_dict.json')
             )[0]
-            with open(frame_count_path, 'r') as frame_count_infile:
+            with frame_count_path.open() as frame_count_infile:
                 session_video_time[session_id] = json.load(frame_count_infile)['total_video_time_least']
-            cluster_data_dir = f"{root_directory}{os.sep}ephys{os.sep}{self.probe_id}{os.sep}cluster_data"
+            cluster_data_dir = Path(root_directory) / 'ephys' / self.probe_id / 'cluster_data'
             session_cluster_files[session_id] = {
-                os.path.basename(x_name) for x_name in glob.glob(f"{cluster_data_dir}{os.sep}*.npy")
+                npy_path.name for npy_path in cluster_data_dir.glob('*.npy')
             }
 
         result = {}
@@ -970,11 +986,11 @@ class SpikeQualityMetricsExtractor:
             for session_id in session_ids:
                 if unit_file_name in session_cluster_files[session_id]:
                     root_directory = changepoints_info[session_id]['root_directory']
-                    rec_sessions.append(root_directory.split(os.sep)[-1])
+                    rec_sessions.append(Path(root_directory).name)
                     hs_ids.append(changepoints_info[session_id]['headstage_sn'])
 
-                    cluster_data_dir = f"{root_directory}{os.sep}ephys{os.sep}{self.probe_id}{os.sep}cluster_data"
-                    loaded_spike_times = np.load(f"{cluster_data_dir}{os.sep}{unit_file_name}")
+                    cluster_data_dir = Path(root_directory) / 'ephys' / self.probe_id / 'cluster_data'
+                    loaded_spike_times = np.load(cluster_data_dir / unit_file_name)
                     firing_rate_dict[session_id] = round(
                         loaded_spike_times.shape[1] / session_video_time[session_id], 3
                     )
@@ -1095,7 +1111,7 @@ class SpikeQualityMetricsExtractor:
             on disk additionally contains every other session's rows.
         """
         cluster_info_df = pd.read_csv(self.ks_path / 'cluster_info.tsv', sep='\t')
-        group_by_cluster_id = dict(zip(cluster_info_df['cluster_id'], cluster_info_df['group']))
+        group_by_cluster_id = dict(zip(cluster_info_df['cluster_id'], cluster_info_df['group'], strict=True))
 
         noise_levels = self.analyzer.get_extension('noise_levels').get_data()
         peak_channels = self.sorting.get_property('ch')
@@ -1152,6 +1168,14 @@ class SpikeQualityMetricsExtractor:
                 template_metrics['recovery_slope'],
                 template_metrics['exp_decay'],
                 template_metrics['spread'],
+                template_metrics['main_trough_size'],
+                template_metrics['main_peak_before_size'],
+                template_metrics['main_peak_after_size'],
+                template_metrics['main_peak_before_width'],
+                template_metrics['main_trough_width'],
+                template_metrics['peak1_to_peak2_ratio'],
+                template_metrics['trough_to_peak2_ratio'],
+                template_metrics['main_peak_to_trough_ratio'],
                 quality_metrics['amplitude_cutoff'],
                 quality_metrics['amplitude_cv_median'],
                 quality_metrics['amplitude_cv_range'],
@@ -1253,7 +1277,7 @@ class SpikeQualityMetricsExtractor:
                 & (existing_catalog['unit_id'].astype(str).str.startswith(f"{self.probe_id}_"))
             )
             session_catalog = existing_catalog[this_session].reset_index(drop=True)
-            print(
+            print(  # noqa: T201 - interactive skip-notice when the session is already catalogued
                 f"{self.session_date} {self.probe_id} already in {catalog_path} "
                 f"({session_catalog.shape[0]} units); skipping — pass overwrite=True to recompute."
             )

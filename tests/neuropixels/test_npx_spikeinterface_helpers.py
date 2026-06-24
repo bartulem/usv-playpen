@@ -11,18 +11,17 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from spikeinterface.core import ChannelSparsity
 
 from usv_playpen.neuropixels.spikeinterface_helpers import (
     _closest_channel_mask,
-    sparsity_around_phy_peak,
-    is_somatic,
-    transform_column_range,
-    get_exp_decay,
-    get_spread,
+    classify_somatic,
     compute_amplitude_cv,
     compute_sd_ratio,
+    get_exp_decay,
+    get_spread,
+    sparsity_around_phy_peak,
+    transform_column_range,
 )
 
 
@@ -103,7 +102,8 @@ def test_closest_channel_mask_selects_peak_and_nearest_neighbours():
     mask = _closest_channel_mask(channel_locations, peak_channels, num_channels=3)
 
     assert mask.shape == (2, 10)
-    assert mask[0].sum() == 3 and mask[1].sum() == 3
+    assert mask[0].sum() == 3
+    assert mask[1].sum() == 3
     np.testing.assert_array_equal(np.flatnonzero(mask[0]), [4, 5, 6])
     np.testing.assert_array_equal(np.flatnonzero(mask[1]), [0, 1, 2])
 
@@ -164,51 +164,89 @@ def test_sparsity_around_phy_peak_wraps_mask_in_channel_sparsity():
     np.testing.assert_array_equal(sparsity.unit_id_to_channel_ids[101], [10, 11, 12])
 
 
-def test_is_somatic_true_when_trough_leads_peak():
+def test_classify_somatic_canonical_somatic():
     """
     Description
     -----------
-    The canonical somatic waveform — negative trough first, positive
-    repolarisation peak after — must be classified somatic (``True``).
+    The canonical somatic waveform — a dominant negative trough leading a small
+    positive repolarisation peak, with no peak before the trough — is classified
+    somatic, the full waveform-shape feature set is returned, and the absent
+    before-peak yields size / width 0 without error.
     """
-    template = np.zeros(60)
-    template[20] = -5.0
-    template[40] = 3.0
-    assert is_somatic(template) is True
+    template = np.zeros(61)
+    template[30] = -5.0
+    template[45] = 1.0
+    peaks_info = {'trough_index': 30, 'peak_before_index': None, 'peak_after_index': 45}
+    result = classify_somatic(template, peaks_info)
+
+    assert result['somatic'] is True
+    assert result['main_trough_size'] == 5.0
+    assert result['main_peak_before_size'] == 0.0
+    assert result['main_peak_before_width'] == 0.0
+    assert result['main_peak_after_size'] == 1.0
+    assert result['main_peak_to_trough_ratio'] == pytest.approx(0.2)
+    assert set(result) == {
+        'somatic', 'main_trough_size', 'main_peak_before_size', 'main_peak_after_size',
+        'main_peak_before_width', 'main_trough_width', 'peak1_to_peak2_ratio',
+        'trough_to_peak2_ratio', 'main_peak_to_trough_ratio',
+    }
 
 
-def test_is_somatic_false_when_peak_leads_trough():
+def test_classify_somatic_condition_a_nonsomatic():
     """
     Description
     -----------
-    A waveform whose positive peak both exceeds its negative trough and
-    occurs before it in time is the inverted / non-somatic signature and
-    must be classified non-somatic (``False``).
+    A large, narrow positive peak BEFORE the trough (peak-before > 3x peak-after,
+    trough not > 5x the before-peak, both narrow) is the axonal / passing-fibre
+    signature — condition A flags it non-somatic.
     """
-    template = np.zeros(60)
-    template[20] = 3.0
-    template[40] = -5.0
-    assert is_somatic(template) is False
+    template = np.zeros(61)
+    template[20] = 4.0     # narrow leading peak
+    template[30] = -6.0    # trough; main_peak_to_trough = 4/6 = 0.67 < 0.8 -> condition B off
+    template[40] = 1.0     # small trailing peak
+    peaks_info = {'trough_index': 30, 'peak_before_index': 20, 'peak_after_index': 40}
+    result = classify_somatic(template, peaks_info)
+
+    assert result['somatic'] is False
+    assert result['peak1_to_peak2_ratio'] == pytest.approx(4.0)
+    assert result['trough_to_peak2_ratio'] == pytest.approx(1.5)
+    assert result['main_peak_before_width'] < 4
+    assert result['main_trough_width'] < 5
 
 
-def test_is_somatic_on_realistic_biphasic_waveforms():
+def test_classify_somatic_condition_b_nonsomatic():
     """
     Description
     -----------
-    On smooth Gaussian-bump biphasic waveforms (baseline noise absent),
-    a trough-then-peak shape classifies somatic and the time-reversed
-    peak-then-trough shape classifies non-somatic.
+    A positive peak nearly as large as the trough (> 0.8x) is atypical of a somatic
+    spike — condition B flags it non-somatic even though the peak comes AFTER the
+    trough (which the old sample-order rule classified somatic).
     """
-    t = np.arange(120)
+    template = np.zeros(61)
+    template[30] = -5.0
+    template[45] = 4.5     # 4.5 / 5 = 0.9 > 0.8
+    peaks_info = {'trough_index': 30, 'peak_before_index': None, 'peak_after_index': 45}
+    result = classify_somatic(template, peaks_info)
 
-    def _bump(centre, amp, width=6.0):
-        return amp * np.exp(-0.5 * ((t - centre) / width) ** 2)
+    assert result['somatic'] is False
+    assert result['main_peak_to_trough_ratio'] == pytest.approx(0.9)
 
-    somatic = _bump(40, -6.0) + _bump(70, 3.0)
-    non_somatic = somatic[::-1].copy()
 
-    assert is_somatic(somatic) is True
-    assert is_somatic(non_somatic) is False
+def test_classify_somatic_param_override():
+    """
+    Description
+    -----------
+    Threshold overrides via ``params`` change the decision: raising the condition-B
+    threshold above the peak/trough ratio reclassifies the condition-B unit somatic.
+    """
+    template = np.zeros(61)
+    template[30] = -5.0
+    template[45] = 4.5
+    peaks_info = {'trough_index': 30, 'peak_before_index': None, 'peak_after_index': 45}
+
+    assert classify_somatic(template, peaks_info)['somatic'] is False
+    relaxed = classify_somatic(template, peaks_info, params={'max_main_peak_to_trough_ratio': 0.95})
+    assert relaxed['somatic'] is True
 
 
 _FS = 30000.0
@@ -291,7 +329,8 @@ def test_compute_amplitude_cv_is_nan_below_min_num_bins():
     cv_median, cv_range = compute_amplitude_cv(
         amplitudes, sample_indices, n_samples_total=10000, sampling_frequency=1000.0,
         average_num_spikes_per_bin=5, min_num_bins=10)
-    assert np.isnan(cv_median) and np.isnan(cv_range)
+    assert np.isnan(cv_median)
+    assert np.isnan(cv_range)
 
 
 def test_compute_sd_ratio_is_amplitude_sd_over_noise_sd():
@@ -429,7 +468,8 @@ def test_compute_amplitude_cv_empty_amplitudes_is_nan():
     cv_median, cv_range = compute_amplitude_cv(
         np.array([]), np.array([]), n_samples_total=1000,
         sampling_frequency=1000.0, average_num_spikes_per_bin=5, min_num_bins=10)
-    assert np.isnan(cv_median) and np.isnan(cv_range)
+    assert np.isnan(cv_median)
+    assert np.isnan(cv_range)
 
 
 def test_compute_amplitude_cv_sub_sample_bin_is_nan():
@@ -447,7 +487,8 @@ def test_compute_amplitude_cv_sub_sample_bin_is_nan():
     cv_median, cv_range = compute_amplitude_cv(
         amplitudes, sample_indices, n_samples_total=10,
         sampling_frequency=1000.0, average_num_spikes_per_bin=1, min_num_bins=10)
-    assert np.isnan(cv_median) and np.isnan(cv_range)
+    assert np.isnan(cv_median)
+    assert np.isnan(cv_range)
 
 
 def test_compute_sd_ratio_empty_amplitudes_is_nan():
