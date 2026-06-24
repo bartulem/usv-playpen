@@ -417,6 +417,21 @@ Process
       --env-name            Name of the Vocalocator conda environment.
       --model-dir           Directory of the Vocalocator model.
 
+Neuropixels
+^^^^^^^^^^^
+
+``npx-meta-to-coords``
+``npx-meta-to-coords`` launches a small Qt GUI that converts a SpikeGLX ``*.ap.meta`` file into a probe-geometry artifact: a Kilosort ``chanMap.mat``, plain-text or ``.npy`` site coordinates, JRClust ``.prm`` strings, or an in-place upgrade of a legacy (pre-SpikeGLX 032623) meta file. It takes no command-line flags — every choice is made through three dialogs. The related ``python -m usv_playpen.neuropixels.anatomy_converter`` and ``python -m usv_playpen.neuropixels.patch_unit_catalog_peak_channel`` utilities, and the programmatic API, are documented on the :ref:`Histology` page.
+
+.. code-block:: text
+
+    usage: npx-meta-to-coords
+
+    A Qt GUI; takes no command-line arguments. Three dialogs run in sequence:
+      1. select a SpikeGLX *.ap.meta file;
+      2. choose the output format (defaults to the Kilosort chanMap);
+      3. confirm the destination, optionally showing the probe-layout plot.
+
 Analyze
 ^^^^^^^
 

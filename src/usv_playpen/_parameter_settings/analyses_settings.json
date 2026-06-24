@@ -115,5 +115,44 @@
     "vmi_alpha": 0.01,
     "vmi_min_bouts": 10,
     "spatial_info_bps_threshold": 0.5
+  },
+  "npx_histology_stack_lightsheet_volume": {
+    "xy_flip": "none",
+    "z_flip": false,
+    "skip_first": true
+  },
+  "npx_histology_stitch_smartspim_tiles": {
+    "z_flip": true,
+    "feather_pixels": 64
+  },
+  "npx_histology_ibl_alignment_export": {
+    "probe_to_hemisphere": {
+      "imec0": "R",
+      "imec1": "L"
+    }
+  },
+  "npx_spike_quality_metrics": {
+    "kilosort_version": 4,
+    "phy_curated": true,
+    "num_channels_sparsity": 7,
+    "shank_width_microns": 70,
+    "shank_spacing_microns": 250,
+    "somatic_classifier": {
+      "min_trough_to_peak2_ratio": 5.0,
+      "min_width_first_peak": 4,
+      "min_width_main_trough": 5,
+      "max_peak1_to_peak2_ratio": 3.0,
+      "max_main_peak_to_trough_ratio": 0.8,
+      "standard_spike_width": 61
+    },
+    "probe_to_hemisphere": {
+      "imec0": "R",
+      "imec1": "L"
+    },
+    "job_kwargs": {
+      "n_jobs": 16,
+      "chunk_duration": "1s",
+      "progress_bar": true
+    }
   }
 }

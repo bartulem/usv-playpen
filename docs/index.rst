@@ -9,7 +9,7 @@ video (Loopbio) acquisition. Developed for behavioral recording purposes at the
 Due to proprietary software design and limitations, recordings can only be performed on OS Windows.
 The data processing, analysis and visualization branches of the GUI are platform-independent.
 
-This manual is divided into seven sections: *Requirements*, *Record*, *Process*, *Analyze*, *Modeling*, *Visualize* and *CLI*.
+This manual is divided into eight sections: *Requirements*, *Record*, *Process*, *Analyze*, *Modeling*, *Histology*, *Visualize* and *CLI*.
 Each section is a step-by-step guide to the respective functionalities of the GUI. As the GUI is
 developing gradually over time, the manual is also a work in progress. We have tried to design the GUI
 with the experimenter in mind, whether they are a technician, graduate student, or postdoc, with
@@ -30,5 +30,12 @@ the tool correctly. Should you have any questions, please do not hesitate to ope
    Process
    Analyze
    Modeling
+   Histology
    Visualize
    CLI
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Reference
+
+   channel_indexing

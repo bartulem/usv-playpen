@@ -522,3 +522,45 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
         "playback_seed": null
     }
+
+Neuronal coactivity by vocal category
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Having recorded unit activity alongside categorized USVs, you might ask
+whether a brain region's population is more *coordinated* during one class
+of vocalizations than another (e.g. acoustically complex vs simple calls).
+The :mod:`usv_playpen.analyses.neuronal_coactivity_engine` quantifies this
+from per-event spike-count snippets with three ensemble metrics: the mean
+pairwise spike-count correlation (``r_sc``), the mean population-vector
+cosine similarity (``similarity``), and the mean population-vector Pearson
+correlation (``pop_corr``).
+
+For each focal animal, the workflow pools per-session count matrices for
+the two USV groups, bootstraps each group to a matched trial count, builds
+a per-group **chained circular-shuffle** null (each session shifted by its
+own random offset to preserve within-session timing), and runs a direct
+group-A-vs-group-B **trial-label permutation test**. The results are
+reported as summary tables, per-metric null-distribution plots, a
+per-session breakdown, and a cross-animal slope plot.
+
+Every stochastic routine — the bootstrap, the per-session and chained
+circular shuffles, the label permutation, and the cross-session onset
+sampling — accepts an optional ``seed`` argument; passing a fixed integer
+makes the null distributions (and therefore the p-values and z-scores)
+reproducible across runs, while leaving it ``None`` draws fresh entropy
+each call.
+
+Unlike the GUI-driven analyses above, this one is **not** exposed in the
+GUI and reads **nothing** from ``analyses_settings.json``. Everything is
+configured in the notebook's single **Parameters** cell: the segmentation
+column and the two category-id groups, the three-criteria unit filter
+(``cluster_group`` + ``somatic`` + ``brain_area``, looked up per unit in
+``unit_catalog.csv``), the animal-to-sessions map, the coactivity
+hyperparameters (window, bootstrap N, shuffle / permutation counts), and
+the per-group plotting colors. The loader picks, for each animal, the
+single recording day with the largest filtered-unit pool so the analyzed
+population is fixed across the day's sessions.
+
+The ``neuronal_coactivity_analyses.ipynb`` notebook runs
+the whole workflow in order. The full notebook lives in the repository at
+`neuronal_coactivity_analyses.ipynb
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/neuronal_coactivity_analyses.ipynb>`_.
