@@ -14,8 +14,12 @@ RNG entropy.
 
 from __future__ import annotations
 
+import pathlib
+
+import h5py
 import numpy as np
 import pandas as pd
+import polars as pls
 import pytest
 
 from usv_playpen.analyses import neuronal_coactivity_engine as engine
@@ -519,3 +523,314 @@ def test_load_unit_catalog(tmp_path):
     assert row["cluster_group"] == "good"
     assert row["brain_area"] == "PAG"
     assert row["unit_id"] == "42"
+
+
+def test_extract_snippet_acoustics_channel_length_mismatch_raises(tmp_path):
+    """
+    Description
+    -----------
+    A ``peak_channels`` array whose length disagrees with ``onsets`` raises a
+    ``ValueError`` naming both lengths, BEFORE the audio memmap is ever located —
+    so the guard fires on a session root that does not even contain an audio file.
+    The message is asserted to mention the mismatching counts.
+    """
+
+    onsets = np.array([0.10, 0.20, 0.30])
+    peak_channels = np.array([2.0, 0.0])  # one short
+    with pytest.raises(ValueError, match=r"peak_channels length \(2\).*onsets length \(3\)"):
+        engine.extract_snippet_acoustics(str(tmp_path), onsets, peak_channels, 0.030)
+
+
+def test_extract_snippet_acoustics_unparseable_mmap_name_raises(tmp_path):
+    """
+    Description
+    -----------
+    When an ``*_int16.mmap*`` file exists but its name lacks the
+    ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata segment, the metadata regex
+    returns ``None`` and the helper raises a ``ValueError`` quoting the offending
+    file name. Exercises the malformed-filename branch.
+    """
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    # A file matching the glob ('*_int16.mmap*') but NOT the metadata regex.
+    bad_name = "session_audio_int16.mmap"
+    (audio_dir / bad_name).write_bytes(b"\x00\x00")
+    with pytest.raises(ValueError, match=r"Could not parse.*int16\.mmap.*segment"):
+        engine.extract_snippet_acoustics(
+            str(tmp_path), np.array([0.10]), np.array([0.0]), 0.030,
+        )
+
+
+def test_extract_snippet_acoustics_negative_onset_skipped(tmp_path):
+    """
+    Description
+    -----------
+    A negative onset yields a start sample ``s0 < 0``, so the trial is skipped
+    (``continue``) and every feature stays NaN — the out-of-range guard. A valid
+    onset in the same call still produces a finite RMS, proving the skip is
+    per-trial rather than aborting the whole sweep.
+    """
+
+    root = _write_tone_mmap(tmp_path, loud_channel=2, tone_lo_s=0.10, tone_hi_s=0.16)
+    onsets = np.array([-0.05, 0.10])
+    peak_channels = np.array([2.0, 2.0])
+    out = engine.extract_snippet_acoustics(str(root), onsets, peak_channels, 0.030)
+    assert np.isnan(out["rms"][0])
+    assert np.isnan(out["peak_freq_hz"][0])
+    assert np.isfinite(out["rms"][1])
+
+
+def test_extract_snippet_acoustics_empty_band_skips_frequency_features(tmp_path):
+    """
+    Description
+    -----------
+    Choosing a pass band entirely above the Nyquist frequency leaves the in-band
+    power array empty, so the ``power.size == 0`` guard fires and the frequency
+    features stay NaN while ``rms`` (computed before the STFT) is still finite.
+    Exercises the empty-band branch of the trial loop.
+    """
+
+    sampling_rate = 250000
+    root = _write_tone_mmap(
+        tmp_path, sampling_rate=sampling_rate, loud_channel=2,
+        tone_lo_s=0.10, tone_hi_s=0.16,
+    )
+    out = engine.extract_snippet_acoustics(
+        str(root), np.array([0.10]), np.array([2.0]), 0.030,
+        min_freq=sampling_rate, max_freq=sampling_rate * 2.0,
+    )
+    assert np.isfinite(out["rms"][0])
+    assert np.isnan(out["mean_freq_hz"][0])
+    assert np.isnan(out["peak_freq_hz"][0])
+
+
+def _write_session_dir(
+    session_dir,
+    *,
+    unit_stems,
+    n_neural_samples=2000,
+    emitter="mouse_focal",
+    other_emitter="mouse_other",
+    n_frames=300,
+    frame_rate=120.0,
+    category_column="qlvm_supercategory",
+    rows=None,
+    with_peak_amp_ch=True,
+):
+    """
+    Description
+    -----------
+    Materialises one session directory on disk with exactly the three artefacts
+    :func:`load_animal_sessions` (and, indirectly, :func:`compute_group_acoustics`)
+    consume: one ``<stem>.npy`` spike-train file per unit stem (each a
+    ``(1, n_neural_samples)`` float array so ``np.load(...)[0, :]`` works), one
+    ``*_translated_rotated_metric.h5`` tracking file exposing ``track_names``,
+    ``recording_frame_rate`` and a ``tracks`` array (only its leading dimension is
+    read), and one ``*_usv_summary.csv`` of per-call rows. The focal mouse is the
+    FIRST entry of ``track_names`` so the loader's ``emitter`` filter keeps only
+    its calls.
+
+    Parameters
+    ----------
+    session_dir (pathlib.Path)
+        Directory to create and populate (the per-session root).
+    unit_stems : list[str]
+        File stems for the ``<stem>.npy`` good-unit files (e.g. ``"u_a_good"``);
+        these are also the catalog ``unit_id`` keys.
+    n_neural_samples : int
+        Length of each unit's spike-train vector.
+    emitter, other_emitter : str
+        Focal and non-focal mouse track names (focal is listed first).
+    n_frames : int
+        Number of tracking frames (drives ``total_duration``).
+    frame_rate : float
+        Recording frame rate written to the H5.
+    category_column : str
+        ``usv_summary`` column used to split calls into the two groups.
+    rows : list[dict] or None
+        Explicit ``usv_summary`` rows; when None a default focal/other split is
+        written.
+    with_peak_amp_ch : bool
+        When True a ``peak_amp_ch`` column is included in the summary CSV.
+
+    Returns
+    -------
+    session_dir (pathlib.Path)
+        The populated directory.
+    """
+
+    session_dir.mkdir(parents=True, exist_ok=True)
+    for idx, stem in enumerate(unit_stems):
+        # The file stem must NOT include the '_good' suffix here because the loader
+        # globs '**/*_good.npy' and keys by f.stem (which then carries '_good').
+        train = np.arange(n_neural_samples, dtype=np.float64) + float(idx)
+        np.save(session_dir / f"{stem}.npy", train.reshape(1, -1))
+
+    track_path = session_dir / "sess_translated_rotated_metric.h5"
+    with h5py.File(name=track_path, mode="w") as track_file:
+        track_file.create_dataset(
+            "track_names",
+            data=np.array([emitter.encode("utf-8"), other_emitter.encode("utf-8")]),
+        )
+        track_file.create_dataset("recording_frame_rate", data=np.float64(frame_rate))
+        track_file.create_dataset("tracks", data=np.zeros((n_frames, 2, 3), dtype=np.float64))
+
+    if rows is None:
+        rows = [
+            {"emitter": emitter,       "start": 1.0, category_column: "USV", "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 2.0, category_column: "USV", "peak_amp_ch": 0},
+            {"emitter": emitter,       "start": 3.0, category_column: "WHISTLE", "peak_amp_ch": 1},
+            {"emitter": other_emitter, "start": 4.0, category_column: "USV", "peak_amp_ch": 2},
+        ]
+    frame = pls.DataFrame(rows)
+    if not with_peak_amp_ch and "peak_amp_ch" in frame.columns:
+        frame = frame.drop("peak_amp_ch")
+    frame.write_csv(session_dir / "sess_usv_summary.csv")
+    return session_dir
+
+
+def test_load_animal_sessions_empty_session_names_returns_empty():
+    """
+    Description
+    -----------
+    With no session names the ``by_date`` index is empty, so the loader short-
+    circuits and returns ``[]`` without touching the filesystem (``data_root`` is a
+    throwaway path that is never read).
+    """
+
+    out = engine.load_animal_sessions(
+        "mouse_focal",
+        [],
+        data_root=pathlib.Path("/nonexistent"),
+        catalog={},
+        category_column="qlvm_supercategory",
+        group_a_ids=["USV"],
+        group_b_ids=["WHISTLE"],
+        cluster_group="good",
+        require_somatic=False,
+        brain_areas=set(),
+    )
+    assert out == []
+
+
+def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
+    """
+    Description
+    -----------
+    End-to-end happy path across two recording days for one focal mouse. Day
+    ``20240102`` has two catalog-passing units versus one on ``20240101``, so the
+    loader picks the richer day, intersects the per-session unit sets, reads the
+    tracking H5 (frame rate + frame count) and the ``usv_summary`` CSV (focal-only
+    calls split into the two category groups), and returns one entry per session of
+    the chosen day. A custom ``message_output`` sink captures the two diagnostic
+    lines (day pick + common-unit count), confirming the logging branch runs.
+    """
+
+    animal_id = "mouse_focal"
+    category_column = "qlvm_supercategory"
+    # Day 1: one session, one good unit. Day 2: one session, two good units.
+    day1 = tmp_path / "20240101_run0"
+    day2 = tmp_path / "20240102_run0"
+    _write_session_dir(day1, unit_stems=["u_a_good"], frame_rate=120.0, n_frames=240)
+    _write_session_dir(day2, unit_stems=["u_a_good", "u_b_good"], frame_rate=150.0, n_frames=300)
+
+    catalog = {
+        (animal_id, "20240101", "u_a_good"): {
+            "cluster_group": "good", "somatic": "True", "brain_area": "PAG",
+        },
+        (animal_id, "20240102", "u_a_good"): {
+            "cluster_group": "good", "somatic": "True", "brain_area": "PAG",
+        },
+        (animal_id, "20240102", "u_b_good"): {
+            "cluster_group": "good", "somatic": "True", "brain_area": "PAG",
+        },
+    }
+
+    messages: list[str] = []
+    out = engine.load_animal_sessions(
+        animal_id,
+        ["20240101_run0", "20240102_run0"],
+        data_root=tmp_path,
+        catalog=catalog,
+        category_column=category_column,
+        group_a_ids=["USV"],
+        group_b_ids=["WHISTLE"],
+        cluster_group="good",
+        require_somatic=True,
+        brain_areas={"PAG"},
+        message_output=messages.append,
+    )
+
+    # Richer day chosen -> exactly its one session, with both common units loaded.
+    assert len(out) == 1
+    entry = out[0]
+    assert entry["session_id"] == "20240102_run0"
+    assert entry["session_root"] == str(day2)
+    assert entry["fs"] == pytest.approx(150.0)
+    assert entry["total_duration"] == pytest.approx(300 / 150.0)
+    assert set(entry["neural_data"]) == {"u_a_good", "u_b_good"}
+    # Focal-only calls split by category; group A = USV (2 focal rows), B = WHISTLE (1).
+    assert entry["group_a_df"].height == 2
+    assert entry["group_b_df"].height == 1
+    # Both diagnostic lines were emitted and name the chosen day.
+    assert any("20240102" in line and "picked day" in line for line in messages)
+    assert any("common filtered units" in line for line in messages)
+
+
+def test_compute_group_acoustics_reads_peak_amp_ch(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    :func:`compute_group_acoustics` pulls onsets from the group dataframe's
+    ``start`` column and per-call channels from ``peak_amp_ch`` when present, then
+    forwards them to :func:`extract_snippet_acoustics`. The acoustics extractor is
+    monkeypatched to a recorder so the test asserts the exact onsets/channels/root
+    passed through (the ``peak_amp_ch`` branch), without needing a real audio file.
+    """
+
+    group_df = pls.DataFrame({"start": [0.1, 0.2, 0.3], "peak_amp_ch": [2, 0, 1]})
+    session = {"session_id": "sess0", "session_root": "/some/root", "group_a_df": group_df}
+
+    captured = {}
+
+    def _fake_extract(session_root, onsets, peak_channels, window_s):
+        captured["session_root"] = session_root
+        captured["onsets"] = onsets
+        captured["peak_channels"] = peak_channels
+        captured["window_s"] = window_s
+        return {"rms": np.zeros(onsets.shape[0])}
+
+    monkeypatch.setattr(engine, "extract_snippet_acoustics", _fake_extract)
+    out = engine.compute_group_acoustics(session, "group_a_df", 0.030)
+    assert captured["session_root"] == "/some/root"
+    np.testing.assert_array_equal(captured["onsets"], [0.1, 0.2, 0.3])
+    np.testing.assert_array_equal(captured["peak_channels"], [2, 0, 1])
+    assert captured["window_s"] == pytest.approx(0.030)
+    assert "rms" in out
+
+
+def test_compute_group_acoustics_missing_peak_amp_ch_falls_back_to_channel_zero(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    When the group dataframe predates the ``peak_amp_ch`` column the helper logs a
+    fallback diagnostic and passes an all-zero channel vector (channel 0) to
+    :func:`extract_snippet_acoustics`. Verifies both the zero channels and that the
+    custom ``message_output`` sink received the fallback line naming the session id.
+    """
+
+    group_df = pls.DataFrame({"start": [0.5, 0.6]})
+    session = {"session_id": "sess_no_ch", "session_root": "/r", "group_b_df": group_df}
+
+    captured = {}
+
+    def _fake_extract(session_root, onsets, peak_channels, window_s):
+        captured["peak_channels"] = peak_channels
+        return {"rms": np.zeros(onsets.shape[0])}
+
+    monkeypatch.setattr(engine, "extract_snippet_acoustics", _fake_extract)
+    messages: list[str] = []
+    engine.compute_group_acoustics(session, "group_b_df", 0.040, message_output=messages.append)
+    np.testing.assert_array_equal(captured["peak_channels"], [0.0, 0.0])
+    assert any("no 'peak_amp_ch' column" in line and "sess_no_ch" in line for line in messages)

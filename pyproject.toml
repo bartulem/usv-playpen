@@ -185,9 +185,21 @@ testpaths = [
 
 [tool.coverage]
 run.source = ["usv_playpen"]
+# The vendored, kept-as-is kernels (near-verbatim from specgen) are excluded from
+# coverage for the same reason they are excluded from ruff + mypy (see [tool.ruff]
+# extend-exclude and [tool.mypy] exclude): they are upstream code we deliberately
+# keep verbatim and do not hold to this project's standards. The usv-playpen-native
+# orchestrators (processing/generate_masks.py, processing/train_qlvm.py) live above
+# these subdirectories and stay measured.
+run.omit = [
+  "*/processing/masks/*",
+  "*/processing/qlvm_training/*",
+]
 report.exclude_also = [
   '\.\.\.',
   'if typing.TYPE_CHECKING:',
+  'if __name__ == .__main__.:',
+  'raise NotImplementedError',
 ]
 
 [tool.mypy]

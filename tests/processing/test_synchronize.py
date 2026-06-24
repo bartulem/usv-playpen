@@ -19,9 +19,9 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 from scipy.io import wavfile
+from scipy.io.wavfile import read as _real_wavfile_read
 
 from usv_playpen.processing.synchronize_files import Synchronizer
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -690,3 +690,964 @@ def test_crop_wav_files_to_video_both_devices_tempo_adjust(tmp_path, mocker):
     assert (root / "sync" / "s_video_frames_in_audio_samples.txt").is_file()
     cropped = list((root / "audio" / "cropped_to_video").glob("*_cropped_to_video.wav"))
     assert len(cropped) >= 2      # both devices cropped
+
+
+# ---------------------------------------------------------------------------
+# find_audio_sync_trains — pulse-sequence shape-mismatch reconciliation
+# ---------------------------------------------------------------------------
+
+
+def _wire_audio_sync(sync, mocker, *, audio_durations_ms, audio_starts,
+                     video_seq, video_frames, root, wave_keys=("m_240101_ch02_cropped_to_video.wav",),
+                     sampling_rate=250000):
+    """
+    Description
+    -----------
+    Wire up ``find_audio_sync_trains`` so the audio/video pulse-sequence
+    reconciliation block (source lines 926-1026) runs against fully crafted
+    inputs. The expensive detectors are replaced: ``DataLoader`` yields the
+    given wave keys, ``find_ipi_intervals`` returns the supplied audio IPI
+    durations + start samples, and ``find_video_sync_trains`` returns the
+    supplied video frames + a single-camera sequence dict (so the
+    all-equal-sequence guard at line 926 passes trivially). A camera frame
+    count JSON is written so the early ``first_match_or_raise`` succeeds.
+
+    Parameters
+    ----------
+    sync (Synchronizer)
+        Instance under test.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory.
+    audio_durations_ms (np.ndarray)
+        IPI durations (ms) the mocked ``find_ipi_intervals`` returns.
+    audio_starts (np.ndarray)
+        Audio IPI start samples the mocked ``find_ipi_intervals`` returns.
+    video_seq (np.ndarray)
+        Per-camera video IPI duration sequence.
+    video_frames (np.ndarray)
+        Video IPI start frame indices.
+    root (pathlib.Path)
+        Session root.
+    wave_keys (tuple[str])
+        Wave-data dict keys (cropped WAV file names).
+    sampling_rate (int)
+        Reported WAV sampling rate.
+
+    Returns
+    -------
+    video_key (str)
+        The synthetic camera directory name used as the sequence-dict key.
+    """
+
+    (root / "video").mkdir(exist_ok=True)
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "21372315": [len(video_frames), 150.0],
+        "total_frame_number_least": int(max(video_frames) + 1) if len(video_frames) else 1,
+        "total_video_time_least": 1.0,
+    }))
+
+    wave_data_dict = {k: {"wav_data": np.zeros(8, dtype=np.int16), "sampling_rate": sampling_rate}
+                      for k in wave_keys}
+    mocker.patch("usv_playpen.processing.synchronize_files.DataLoader",
+                 return_value=MagicMock(load_wavefile_data=lambda: wave_data_dict))
+
+    video_key = "21372315"
+    video_sync_sequence_dict = {video_key: np.asarray(video_seq)}
+    mocker.patch.object(sync, "find_video_sync_trains",
+                        return_value=(np.asarray(video_frames), video_sync_sequence_dict))
+    mocker.patch.object(sync, "find_ipi_intervals",
+                        return_value=(np.asarray(audio_durations_ms, dtype=float),
+                                      np.asarray(audio_starts, dtype=np.int64)))
+    return video_key
+
+
+def test_find_audio_sync_trains_equal_shapes_within_tolerance(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Equal audio/video pulse counts whose rounded durations agree within the
+    12 ms tolerance: drives the ``n_a == n_v`` diff branch (line 938) through
+    the successful-match tail that records ``ipi_discrepancy_ms`` and
+    ``video_ipi_start_frames`` (lines 966, 982, 1011-1017). Audio sample
+    starts are aligned to the video-frame timing so the discrepancy stays
+    below tolerance.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    camera_fps = 150.0
+    video_frames = np.array([10, 20, 30, 40])
+    # audio start samples placed exactly at video-frame times -> zero discrepancy.
+    audio_starts = (video_frames / camera_fps * 250000).astype(np.int64)
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=np.array([300.0, 300.0, 300.0, 300.0]),
+                     audio_starts=audio_starts,
+                     video_seq=np.array([300, 300, 300, 300]),
+                     video_frames=video_frames, root=tmp_path)
+
+    # write the per-device video-frame-in-audio-samples map so the audio->video
+    # frame-index reconciliation block (source lines 985-1008) runs: each audio
+    # IPI start sample is attributed to the last recorded video frame before it.
+    (tmp_path / "sync").mkdir(exist_ok=True)
+    frame_samples = np.linspace(0, int(audio_starts.max()) + 5000, num=200).astype(np.int64)
+    (tmp_path / "sync" / "m_video_frames_in_audio_samples.txt").write_text(
+        "\n".join(str(int(s)) for s in frame_samples) + "\n"
+    )
+
+    # an existing audio/original dir so the acceptable-sync cleanup that deletes
+    # it (source lines 1012-1014) actually runs and removes the directory.
+    (tmp_path / "audio" / "original").mkdir(parents=True, exist_ok=True)
+
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert "ipi_discrepancy_ms" in result[key]
+    assert np.max(np.abs(result[key]["ipi_discrepancy_ms"])) < 12
+    assert not (tmp_path / "audio" / "original").exists()   # cleaned up (line 1014)
+
+
+def test_find_audio_sync_trains_two_devices_start_sample_difference(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Two cropped WAV files (master + slave) so the second iteration runs the
+    cross-device IPI-start-sample subtraction (source line 924) and the trailing
+    master/slave start-sample difference summary (lines 1028-1031). The mocked
+    ``find_ipi_intervals`` returns identical starts for both files so the
+    difference reduces to zero.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    camera_fps = 150.0
+    video_frames = np.array([10, 20, 30, 40])
+    audio_starts = (video_frames / camera_fps * 250000).astype(np.int64)
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=np.array([300.0, 300.0, 300.0, 300.0]),
+                     audio_starts=audio_starts,
+                     video_seq=np.array([300, 300, 300, 300]),
+                     video_frames=video_frames, root=tmp_path,
+                     wave_keys=("m_240101_ch02_cropped_to_video.wav",
+                                "s_240101_ch02_cropped_to_video.wav"))
+    result = sync.find_audio_sync_trains()
+    # both per-file entries created; second iteration drove the subtraction.
+    assert "m_240101_ch02_cropped_to_video" in result
+    assert "s_240101_ch02_cropped_to_video" in result
+
+
+def test_find_audio_sync_trains_audio_start_precedes_all_frames_nan(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Equal audio/video pulse counts with a ``m_video_frames_in_audio_samples.txt``
+    map whose every recorded video-frame start sample lies AFTER the first audio
+    IPI start sample: drives the NaN-attribution guard (source lines 993-1003)
+    where an audio start precedes all video frames and its frame index is marked
+    NaN rather than crashing on ``max()`` of an empty slice.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    camera_fps = 150.0
+    video_frames = np.array([10, 20, 30, 40])
+    audio_starts = (video_frames / camera_fps * 250000).astype(np.int64)
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=np.array([300.0, 300.0, 300.0, 300.0]),
+                     audio_starts=audio_starts,
+                     video_seq=np.array([300, 300, 300, 300]),
+                     video_frames=video_frames, root=tmp_path)
+
+    # all recorded frame-start samples lie AFTER the earliest audio IPI start ->
+    # the first audio start has no preceding frame -> NaN-attribution branch.
+    (tmp_path / "sync").mkdir(exist_ok=True)
+    offset = int(audio_starts.min()) + 1000
+    frame_samples = (offset + np.arange(200) * 10).astype(np.int64)
+    (tmp_path / "sync" / "m_video_frames_in_audio_samples.txt").write_text(
+        "\n".join(str(int(s)) for s in frame_samples) + "\n"
+    )
+
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert "ipi_discrepancy_ms" in result[key]
+
+
+def test_find_audio_sync_trains_drop_first_audio_pulse(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    One extra audio pulse (n_a == n_v + 1) where dropping the FIRST audio pulse
+    aligns the sequences within tolerance: drives the ``abs(n_a - n_v) == 1``
+    /``n_a > n_v`` candidate loop and the "dropped first audio pulse" resolution
+    (source lines 939-957). A spurious leading audio IPI is prepended.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    camera_fps = 150.0
+    video_seq = np.array([300, 300, 300])
+    video_frames = np.array([20, 30, 40])
+    # real audio aligned to video; a bogus leading pulse of wildly wrong duration.
+    real_starts = (video_frames / camera_fps * 250000).astype(np.int64)
+    audio_starts = np.concatenate([[1], real_starts])
+    audio_durations = np.array([9999.0, 300.0, 300.0, 300.0])
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=audio_durations,
+                     audio_starts=audio_starts,
+                     video_seq=video_seq, video_frames=video_frames, root=tmp_path)
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert "ipi_discrepancy_ms" in result[key]
+    # dropped-first resolution -> three retained frames equal to video_frames.
+    np.testing.assert_array_equal(result[key]["video_ipi_start_frames"], video_frames)
+
+
+def test_find_audio_sync_trains_drop_last_audio_pulse(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    One extra audio pulse (n_a == n_v + 1) where dropping the LAST audio pulse
+    aligns the sequences: the first candidate ("dropped first audio pulse")
+    fails tolerance, so the loop falls through to the second candidate
+    ("dropped last audio pulse"). Drives the second ``n_a > n_v`` candidate
+    (source lines 943, 951-957).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    camera_fps = 150.0
+    video_seq = np.array([300, 300, 300])
+    video_frames = np.array([10, 20, 30])
+    real_starts = (video_frames / camera_fps * 250000).astype(np.int64)
+    audio_starts = np.concatenate([real_starts, [999999]])
+    # trailing bogus pulse -> dropping first would misalign, dropping last works.
+    audio_durations = np.array([300.0, 300.0, 300.0, 9999.0])
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=audio_durations,
+                     audio_starts=audio_starts,
+                     video_seq=video_seq, video_frames=video_frames, root=tmp_path)
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert "ipi_discrepancy_ms" in result[key]
+    np.testing.assert_array_equal(result[key]["video_ipi_start_frames"], video_frames)
+
+
+def test_find_audio_sync_trains_drop_first_video_pulse(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    One extra VIDEO pulse (n_v == n_a + 1) where dropping the FIRST video pulse
+    aligns the sequences: drives the ``n_a < n_v`` candidate branch and the
+    "dropped first video pulse" resolution (source lines 945-957). A spurious
+    leading video IPI is prepended to ``video_seq``/``video_frames``.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    camera_fps = 150.0
+    video_seq = np.array([9999, 300, 300, 300])
+    video_frames = np.array([5, 20, 30, 40])
+    retained_frames = video_frames[1:]
+    audio_starts = (retained_frames / camera_fps * 250000).astype(np.int64)
+    audio_durations = np.array([300.0, 300.0, 300.0])
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=audio_durations,
+                     audio_starts=audio_starts,
+                     video_seq=video_seq, video_frames=video_frames, root=tmp_path)
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert "ipi_discrepancy_ms" in result[key]
+    np.testing.assert_array_equal(result[key]["video_ipi_start_frames"], retained_frames)
+
+
+def test_find_audio_sync_trains_drop_last_video_pulse(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    One extra VIDEO pulse (n_v == n_a + 1) where dropping the LAST video pulse
+    aligns the sequences: the first candidate ("dropped first video pulse")
+    fails tolerance, so the loop falls through to "dropped last video pulse"
+    (source lines 948, 951-957). A spurious trailing video IPI is appended.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    camera_fps = 150.0
+    video_seq = np.array([300, 300, 300, 9999])
+    video_frames = np.array([10, 20, 30, 99])
+    retained_frames = video_frames[:-1]
+    audio_starts = (retained_frames / camera_fps * 250000).astype(np.int64)
+    audio_durations = np.array([300.0, 300.0, 300.0])
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=audio_durations,
+                     audio_starts=audio_starts,
+                     video_seq=video_seq, video_frames=video_frames, root=tmp_path)
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert "ipi_discrepancy_ms" in result[key]
+    np.testing.assert_array_equal(result[key]["video_ipi_start_frames"], retained_frames)
+
+
+def test_find_audio_sync_trains_shape_mismatch_fallback_truncation(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Shape mismatch of 1 where NEITHER drop-candidate clears tolerance: drives
+    the ``diff_array is None`` fallback that truncates both sequences to
+    ``n_min`` (source lines 958-962). Because the truncated diffs still exceed
+    tolerance, the "IPI sequence match NOT found" branch (lines 967-969) fires
+    and no ``ipi_discrepancy_ms`` is recorded.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    # n_a = 4, n_v = 3; every alignment is far out of tolerance.
+    audio_durations = np.array([100.0, 200.0, 400.0, 800.0])
+    audio_starts = np.array([1, 2, 3, 4], dtype=np.int64)
+    video_seq = np.array([300, 300, 300])
+    video_frames = np.array([10, 20, 30])
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=audio_durations,
+                     audio_starts=audio_starts,
+                     video_seq=video_seq, video_frames=video_frames, root=tmp_path)
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    # match failed -> the per-file dict was created but never populated.
+    assert result[key] == {}
+
+
+def test_find_audio_sync_trains_shape_mismatch_gt_one_infinite(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Audio/video pulse counts differing by more than one: drives the final
+    ``else`` that sets ``diff_array = np.array([np.inf])`` (source lines
+    963-964), which then fails the tolerance check and reports no match.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    audio_durations = np.array([300.0, 300.0, 300.0, 300.0, 300.0])
+    audio_starts = np.arange(5, dtype=np.int64)
+    video_seq = np.array([300, 300])
+    video_frames = np.array([10, 20])
+    _wire_audio_sync(sync, mocker,
+                     audio_durations_ms=audio_durations,
+                     audio_starts=audio_starts,
+                     video_seq=video_seq, video_frames=video_frames, root=tmp_path)
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert result[key] == {}
+
+
+def test_find_audio_sync_trains_unequal_video_sequences_skip(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Two cameras whose matched IPI sequences disagree: the all-equal guard at
+    source line 926 is False, so the reconciliation block is skipped and the
+    "IPI sequences on different videos do not match" branch (lines 1025-1026)
+    runs. ``find_video_sync_trains`` is mocked to return a two-key sequence
+    dict with differing rows.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    (tmp_path / "video").mkdir()
+    (tmp_path / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "21372315": [3, 150.0],
+        "total_frame_number_least": 3,
+        "total_video_time_least": 1.0,
+    }))
+    wave_data_dict = {"m_240101_ch02_cropped_to_video.wav":
+                      {"wav_data": np.zeros(8, dtype=np.int16), "sampling_rate": 250000}}
+    mocker.patch("usv_playpen.processing.synchronize_files.DataLoader",
+                 return_value=MagicMock(load_wavefile_data=lambda: wave_data_dict))
+    # two cameras with DIFFERENT sequences -> guard at line 926 is False.
+    video_sync_sequence_dict = {"21372315": np.array([300, 300, 300]),
+                                "21372316": np.array([300, 250, 300])}
+    mocker.patch.object(sync, "find_video_sync_trains",
+                        return_value=(np.array([10, 20, 30]), video_sync_sequence_dict))
+    mocker.patch.object(sync, "find_ipi_intervals",
+                        return_value=(np.array([300.0, 300.0, 300.0]),
+                                      np.array([10, 20, 30], dtype=np.int64)))
+    result = sync.find_audio_sync_trains()
+    key = "m_240101_ch02_cropped_to_video"
+    assert result[key] == {}
+
+
+def test_find_audio_sync_trains_with_nidq_block(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Exercises the NIDQ sync-extraction block (source lines 866-908): a real
+    ``*.nidq.bin`` memmap with a triggerbox bit carrying a camera-frame pulse
+    train (one large break + ``total_frame_number`` post-break edges) and a
+    sync bit carrying OFF/ON IPI gaps. ``nidq_bool`` is enabled so the recording
+    window is recovered, IPI durations + start samples are computed and saved to
+    ``sync/nidq_ipi_data.npy`` (line 908). The audio/video match then succeeds
+    and the NIDQ tail (lines 1018-1022) attaches NIDQ fields to the result.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture (mutated locally to enable NIDQ).
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    settings = json.loads(json.dumps(processing_settings))  # deep copy
+    fa = settings["synchronize_files"]["Synchronizer"]["find_audio_sync_trains"]
+    fa["nidq_bool"] = True
+    fa["nidq_num_channels"] = 2
+    fa["nidq_triggerbox_input_bit_position"] = 5
+    fa["nidq_sync_input_bit_position"] = 7
+
+    nidq_sr = fa["nidq_sr"]
+    n_ch = 2
+    total_frame_number = 4
+    camera_fps = 150.0
+
+    # build the 16-bit digital word per sample for the LAST nidq channel.
+    n_samples = 4000
+    digital_word = np.zeros(n_samples, dtype=np.int16)
+    trig_bit = 1 << fa["nidq_triggerbox_input_bit_position"]
+    sync_bit = 1 << fa["nidq_sync_input_bit_position"]
+
+    # triggerbox rising edges: 3 pre-break edges, a large break, then
+    # total_frame_number + 1 post-break edges (so [hop+total_frame_number] indexes).
+    pre = [50, 100, 150]
+    first_post = 1500
+    spacing = 300
+    post = [first_post + i * spacing for i in range(total_frame_number + 1)]
+    for e in pre + post:
+        digital_word[e] |= trig_bit          # single-sample triggerbox pulse
+
+    # sync bit: held ON across the post-break window with OFF gaps (IPIs).
+    window_start = first_post + 1
+    window_end = post[-1] + 1
+    digital_word[window_start:window_end] |= sync_bit
+    # punch four OFF gaps (sync bit -> 0) to create IPI start/end edges,
+    # one per video frame so the NIDQ-vs-video broadcast (line 1021) aligns.
+    for gap_start in (1550, 1850, 2150, 2450):
+        digital_word[gap_start:gap_start + 40] &= ~sync_bit
+
+    # interleave digital word as the LAST channel of an (n_ch, n_samples) 'F' layout.
+    frame = np.zeros((n_samples, n_ch), dtype=np.int16)
+    frame[:, -1] = digital_word
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    frame.tofile(sync_dir / "recording.nidq.bin")
+
+    # camera frame count JSON.
+    (tmp_path / "video").mkdir()
+    video_frames = np.array([10, 20, 30, 40])
+    (tmp_path / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "21372315": [total_frame_number, camera_fps],
+        "total_frame_number_least": total_frame_number,
+        "total_video_time_least": (post[-1] - first_post) / nidq_sr,
+    }))
+
+    wave_data_dict = {"m_240101_ch02_cropped_to_video.wav":
+                      {"wav_data": np.zeros(8, dtype=np.int16), "sampling_rate": 250000}}
+    mocker.patch("usv_playpen.processing.synchronize_files.DataLoader",
+                 return_value=MagicMock(load_wavefile_data=lambda: wave_data_dict))
+
+    video_seq = np.array([300, 300, 300, 300])
+    audio_starts = (video_frames / camera_fps * 250000).astype(np.int64)
+    sync = Synchronizer(root_directory=str(tmp_path), input_parameter_dict=settings,
+                        message_output=lambda *_a, **_k: None)
+    mocker.patch.object(sync, "find_video_sync_trains",
+                        return_value=(video_frames, {"21372315": video_seq}))
+    mocker.patch.object(sync, "find_ipi_intervals",
+                        return_value=(np.array([300.0, 300.0, 300.0, 300.0]), audio_starts))
+
+    result = sync.find_audio_sync_trains()
+    assert (sync_dir / "nidq_ipi_data.npy").is_file()    # NIDQ IPI data saved (line 908)
+    key = "m_240101_ch02_cropped_to_video"
+    assert "nidq_ipi_durations_ms" in result[key]         # NIDQ tail attached (lines 1019-1022)
+    assert "nidq_ipi_discrepancy_ms" in result[key]
+    assert "nidq_ipi_start_samples" in result[key]
+
+
+# ---------------------------------------------------------------------------
+# crop_wav_files_to_video — s_longer branch + KeyError guards
+# ---------------------------------------------------------------------------
+
+
+def test_crop_wav_files_to_video_both_devices_s_longer(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Two-device ("both") crop where the SLAVE tracking window is longer than the
+    master's: exercises the ``s_longer`` branch (source lines 1146-1157,
+    1208-1220, 1279-1306) that resamples (SoX ``tempo``) the slave files down to
+    the master duration, then rewrites the cropped slave WAV's LSB. The post-crop
+    LSB overwrite covers the size-equal / size-greater / padding sub-branches
+    depending on what ``static_sox`` produced.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    root = tmp_path
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": 5,
+        "total_video_time_least": 0.001,
+    }))
+    (root / "sync").mkdir()
+    audio_orig = root / "audio" / "original"
+    audio_orig.mkdir(parents=True)
+
+    # master: post-break edges spaced 5 -> window 200..225 (shorter);
+    # slave: spaced 10 -> window 200..250 (longer) -> s_longer branch.
+    _triggerbox_wav(audio_orig / "m_240101_ch04.wav",
+                    [10, 20, 30, 200, 205, 210, 215, 220, 225])
+    _triggerbox_wav(audio_orig / "s_240101_ch04.wav",
+                    [10, 20, 30, 200, 210, 220, 230, 240, 250])
+
+    settings = _processing_settings_full()
+    crop = settings["synchronize_files"]["Synchronizer"]["crop_wav_files_to_video"]
+    crop["device_receiving_input"] = "both"
+    crop["triggerbox_ch_receiving_input"] = 4
+
+    sync = Synchronizer(root_directory=str(root), input_parameter_dict=settings,
+                        message_output=lambda *_a, **_k: None)
+    sync.crop_wav_files_to_video()
+
+    info = json.loads((root / "audio" / "audio_triggerbox_sync_info.json").read_text())
+    assert info["s"]["duration_samples"] > info["m"]["duration_samples"]   # s_longer path
+    cropped = list((root / "audio" / "cropped_to_video").glob("*_cropped_to_video.wav"))
+    assert len(cropped) >= 2      # both devices cropped
+
+
+def test_crop_wav_files_to_video_m_longer_missing_slave_key_raises(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Two-device crop where only the MASTER triggerbox WAV exists: the slave
+    duration stays 0 so ``m_longer`` is True, but no ``s_*`` triggerbox key is
+    present in ``wave_data_dict``, driving the defensive ``KeyError`` guard
+    (source lines 1139-1144).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    root = tmp_path
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": 5,
+        "total_video_time_least": 0.001,
+    }))
+    (root / "sync").mkdir()
+    audio_orig = root / "audio" / "original"
+    audio_orig.mkdir(parents=True)
+    # only the master triggerbox channel present -> slave duration stays 0.
+    _triggerbox_wav(audio_orig / "m_240101_ch04.wav",
+                    [10, 20, 30, 200, 210, 220, 230, 240, 250])
+
+    settings = _processing_settings_full()
+    crop = settings["synchronize_files"]["Synchronizer"]["crop_wav_files_to_video"]
+    crop["device_receiving_input"] = "both"
+    crop["triggerbox_ch_receiving_input"] = 4
+
+    sync = Synchronizer(root_directory=str(root), input_parameter_dict=settings,
+                        message_output=lambda *_a, **_k: None)
+    with pytest.raises(KeyError, match=r"s_\*"):
+        sync.crop_wav_files_to_video()
+
+
+def test_crop_wav_files_to_video_s_longer_missing_master_key_raises(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Two-device crop where only the SLAVE triggerbox WAV exists: the master
+    duration stays 0 so ``s_longer`` is True, but no ``m_*`` triggerbox key is
+    present in ``wave_data_dict``, driving the defensive ``KeyError`` guard
+    (source lines 1151-1156).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    root = tmp_path
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": 5,
+        "total_video_time_least": 0.001,
+    }))
+    (root / "sync").mkdir()
+    audio_orig = root / "audio" / "original"
+    audio_orig.mkdir(parents=True)
+    # only the slave triggerbox channel present -> master duration stays 0.
+    _triggerbox_wav(audio_orig / "s_240101_ch04.wav",
+                    [10, 20, 30, 200, 210, 220, 230, 240, 250])
+
+    settings = _processing_settings_full()
+    crop = settings["synchronize_files"]["Synchronizer"]["crop_wav_files_to_video"]
+    crop["device_receiving_input"] = "both"
+    crop["triggerbox_ch_receiving_input"] = 4
+
+    sync = Synchronizer(root_directory=str(root), input_parameter_dict=settings,
+                        message_output=lambda *_a, **_k: None)
+    with pytest.raises(KeyError, match=r"m_\*"):
+        sync.crop_wav_files_to_video()
+
+
+def _crop_both_m_longer(tmp_path, mocker, read_side_effect):
+    """
+    Description
+    -----------
+    Run the two-device ("both") ``m_longer`` crop with a custom
+    ``wavfile.read`` side effect, used to force the post-tempo LSB-overwrite
+    size sub-branches (source lines 1262-1274). The master tracking window is
+    longer than the slave's, so the master cropped WAV is rewritten by reading
+    it back; intercepting that read lets a test inject an over- or under-sized
+    array to drive the ``>`` and padding branches.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+    read_side_effect (callable)
+        Replacement for ``synchronize_files.wavfile.read``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    root = tmp_path
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": 5,
+        "total_video_time_least": 0.001,
+    }))
+    (root / "sync").mkdir()
+    audio_orig = root / "audio" / "original"
+    audio_orig.mkdir(parents=True)
+    _triggerbox_wav(audio_orig / "m_240101_ch04.wav",
+                    [10, 20, 30, 200, 210, 220, 230, 240, 250])
+    _triggerbox_wav(audio_orig / "s_240101_ch04.wav",
+                    [10, 20, 30, 200, 205, 210, 215, 220, 225])
+
+    settings = _processing_settings_full()
+    crop = settings["synchronize_files"]["Synchronizer"]["crop_wav_files_to_video"]
+    crop["device_receiving_input"] = "both"
+    crop["triggerbox_ch_receiving_input"] = 4
+
+    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.read",
+                 side_effect=read_side_effect)
+    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.write")
+
+    sync = Synchronizer(root_directory=str(root), input_parameter_dict=settings,
+                        message_output=lambda *_a, **_k: None)
+    sync.crop_wav_files_to_video()
+
+
+def _make_read_side_effect(cropped_size, real_read):
+    """
+    Description
+    -----------
+    Build a ``wavfile.read`` side effect that returns a zero array of
+    ``cropped_size`` samples (with a non-zero final sample) for any path under
+    ``cropped_to_video``, and passes every other path through to the supplied
+    unpatched ``real_read``. Used to force a specific post-tempo size branch in
+    the ``crop_wav_files_to_video`` LSB-overwrite block. The real reader must be
+    captured BEFORE patching, otherwise the side effect would recurse into
+    itself (the module attribute and ``scipy.io.wavfile.read`` are the same
+    object).
+
+    Parameters
+    ----------
+    cropped_size (int)
+        Sample count returned for cropped-file reads.
+    real_read (callable)
+        The original, unpatched ``scipy.io.wavfile.read`` function.
+
+    Returns
+    -------
+    side_effect (callable)
+        Replacement for ``synchronize_files.wavfile.read``.
+    """
+
+    def _side_effect(path):
+        path = str(path)
+        if "cropped_to_video" in path:
+            data = np.zeros(cropped_size, dtype=np.int16)
+            data[-1] = 7
+            return 250000, data
+        return real_read(path)
+
+    return _side_effect
+
+
+def test_crop_wav_files_to_video_m_longer_oversized_cropped(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Forces the ``m_longer`` LSB-overwrite ``>`` branch (source lines
+    1264-1265): the cropped master WAV is read back as an OVERSIZED array
+    (larger than the slave duration), so it is truncated to the slave duration
+    before the LSB is XOR-merged. ``wavfile.read`` of the cropped file is
+    intercepted; original-file reads pass through to real data.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait`` and stubs ``wavfile.write``.
+
+    Returns
+    -------
+    None
+    """
+
+    # slave window 200..225 inclusive = 26 samples; 40 > 26 -> '>' branch.
+    _crop_both_m_longer(tmp_path, mocker, _make_read_side_effect(cropped_size=40, real_read=_real_wavfile_read))
+
+
+def _crop_both_s_longer(tmp_path, mocker, read_side_effect):
+    """
+    Description
+    -----------
+    Run the two-device ("both") ``s_longer`` crop with a custom
+    ``wavfile.read`` side effect, used to force the post-tempo slave
+    LSB-overwrite size sub-branches (source lines 1292-1304). The slave
+    tracking window is longer than the master's, so the slave cropped WAV is
+    rewritten; intercepting its read injects an over- or under-sized array.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait`` and stubs ``wavfile.write``.
+    read_side_effect (callable)
+        Replacement for ``synchronize_files.wavfile.read``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    root = tmp_path
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": 5,
+        "total_video_time_least": 0.001,
+    }))
+    (root / "sync").mkdir()
+    audio_orig = root / "audio" / "original"
+    audio_orig.mkdir(parents=True)
+    # slave longer (spaced 10 -> 200..250), master shorter (spaced 5 -> 200..225).
+    _triggerbox_wav(audio_orig / "m_240101_ch04.wav",
+                    [10, 20, 30, 200, 205, 210, 215, 220, 225])
+    _triggerbox_wav(audio_orig / "s_240101_ch04.wav",
+                    [10, 20, 30, 200, 210, 220, 230, 240, 250])
+
+    settings = _processing_settings_full()
+    crop = settings["synchronize_files"]["Synchronizer"]["crop_wav_files_to_video"]
+    crop["device_receiving_input"] = "both"
+    crop["triggerbox_ch_receiving_input"] = 4
+
+    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.read",
+                 side_effect=read_side_effect)
+    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.write")
+
+    sync = Synchronizer(root_directory=str(root), input_parameter_dict=settings,
+                        message_output=lambda *_a, **_k: None)
+    sync.crop_wav_files_to_video()
+
+
+def test_crop_wav_files_to_video_s_longer_oversized_cropped(tmp_path, mocker):
+    """
+    Description
+    -----------
+    Forces the ``s_longer`` LSB-overwrite ``>`` branch (source lines
+    1294-1295): the cropped slave WAV is read back OVERSIZED relative to the
+    master duration and truncated before the XOR-merge.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait`` and stubs ``wavfile.write``.
+
+    Returns
+    -------
+    None
+    """
+
+    # master window 200..225 inclusive = 26 samples; 40 > 26 -> '>' branch.
+    _crop_both_s_longer(tmp_path, mocker, _make_read_side_effect(cropped_size=40, real_read=_real_wavfile_read))
