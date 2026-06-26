@@ -673,12 +673,12 @@ class MultinomialModelingPipeline(FeatureZoo):
         Key configurations include:
         - 'session_list_file': Path to the list of sessions to process.
         - 'random_seed': Seed for reproducibility.
-        - 'vocal_features': Settings for vocal extraction (e.g., 'category_column_name').
-        - 'features': Settings for behavioral history (e.g., 'filter_history').
+        - 'vocal_features': Settings for vocal extraction (e.g., 'usv_category_column_name').
+        - 'model_params': Settings for behavioral history (e.g., 'filter_history').
 
         Returns
         -------
-        Saves a pickle file to `self.modeling_settings['save_dir']` containing a nested dictionary:
+        Saves a pickle file to `self.modeling_settings['io']['save_directory']` containing a nested dictionary:
         `data[feature_name][session_id] = {'X': np.array, 'y': np.array}`.
         - 'X': Predictor matrix of shape (n_samples, history_frames).
         - 'y': Target vector of shape (n_samples,) containing integer class labels.
@@ -740,7 +740,12 @@ class MultinomialModelingPipeline(FeatureZoo):
 
             temp_events = []
             for cat_id, start_times in events_by_category_dict.items():
-                frame_indices = np.round(start_times * fps).astype(int)
+                # Floor (not round) onset seconds -> frame index to match the
+                # canonical onset->frame conversion used elsewhere in the
+                # codebase (load_input_files.py), so the multinomial history
+                # window boundary is defined identically to the binary /
+                # continuous pipelines that share these source onsets.
+                frame_indices = np.floor(start_times * fps).astype(int)
 
                 for f_idx in frame_indices:
                     if self.history_frames <= f_idx <= max_frame_idx:
@@ -1112,9 +1117,6 @@ class MultinomialModelRunner:
 
         self.modeling_settings = pipeline_instance.modeling_settings
 
-        if hasattr(pipeline_instance, 'feature_boundaries'):
-            self.feature_boundaries = pipeline_instance.feature_boundaries
-
     @staticmethod
     def load_univariate_data_blocks(pkl_path: str,
                                     bin_size: int = 10,
@@ -1198,6 +1200,14 @@ class MultinomialModelRunner:
                 N, T = X_sess.shape
                 if bin_size > 1:
                     new_T = T // bin_size
+                    # Guard against a bin_size larger than the history window,
+                    # which would floor-divide to zero bins and silently emit a
+                    # degenerate (N, 0) design matrix (and n_time_bins=0) into
+                    # the JAX estimator. Fail loudly instead.
+                    if new_T == 0:
+                        raise ValueError(
+                            f"bin_size={bin_size} exceeds history length {T} for feature {feat}"
+                        )
                     X_sess = X_sess[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
 
                 X_list.append(X_sess)
@@ -1517,7 +1527,7 @@ class MultinomialModelRunner:
                     # inner CV (same focal_gamma / uniform_class_weights as
                     # the outer fit) to pick (lambda_smooth, l2_reg); when
                     # off we use the settings-level fixed centres. Both the
-                    # `actual` and within-session X-shuffled `null`
+                    # `actual` and within-session label-shuffled `null`
                     # strategies are tuned identically so the permutation
                     # test compares like-against-like hyperparameters.
                     if tune_regularization_bool:

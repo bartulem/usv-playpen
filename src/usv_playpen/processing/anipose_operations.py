@@ -31,14 +31,14 @@ def find_mouse_names(root_directory: str = None,
     This function finds the mouse names from the metadata.yaml file.
 
     NB: Since the video metadata file was not standardized for a while, the function
-    check for either the old or the new version of the metadata.yaml file.
+    checks for either the old or the new version of the metadata.yaml file.
 
-    NB: from v0.8.12 onwards,it uses the usv_playpen native metadata files.
+    NB: from v0.8.12 onwards, it uses the usv_playpen native metadata files.
 
     Parameters
     ----------
     root_directory (str)
-        The directory where of the session.
+        The root directory of the session.
     metadata (dict | None)
         The metadata dictionary; defaults to None.
 
@@ -398,7 +398,7 @@ class ConvertTo3D:
         wait_for_subprocesses(
             subps=conversion_subprocesses,
             max_seconds=3 * 60 * 60,
-            label="SLEAP→.slp conversion",
+            label=".slp→.analysis.h5 conversion",
             poll_interval_s=1,
             message_output=self.message_output,
             raise_on_nonzero=False,
@@ -603,6 +603,9 @@ class ConvertTo3D:
 
         Parameters
         ----------
+        session_idx (int)
+            Index into the configured "experimental_codes" list selecting this
+            session's experiment code (bounds-checked before use); defaults to 0.
 
         Returns
         -------
@@ -715,11 +718,17 @@ class ConvertTo3D:
         )
         arena_data = rotate_x(arena_data_temp, x_theta)
 
+        # Apply a fixed -pi/4 (-45 deg) Z rotation: after the geometry-derived
+        # X/Y/Z rotations the North/East/South/West corners sit on the diagonals,
+        # so this extra turn aligns them onto the X/Y axes, which lets the
+        # per-corner signed offset correction below operate axis-by-axis.
         arena_data_temp = arena_data.copy()
         z_theta_extra = -math.pi / 4
         arena_data = rotate_z(arena_data_temp, z_theta_extra)
 
         # take same distance to all corners and correct corners to be the outer edge of rail instead of inside corner
+        # NB: the +/-0.025 offsets below are the rail offset in meters that move
+        # each corner from the inner edge to the outer rail edge.
         arena_center_out_distance = np.max(
             [
                 np.abs(

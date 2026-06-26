@@ -32,8 +32,9 @@ This module exposes one builder per level (`build_input_metadata`,
 provenance helpers (`derive_experimental_condition`,
 `compute_settings_sha256`, `get_git_commit_info`, `get_package_version`)
 that every builder calls. It also defines the reserved-key vocabulary
-(`_input_metadata`, `_run_metadata`, `_univariate_metadata`) used to
-embed metadata blocks alongside the actual data inside each artifact.
+(`_input_metadata`, `_run_metadata`, `_univariate_metadata`,
+`_consolidation_metadata`) used to embed metadata blocks alongside the
+actual data inside each artifact.
 
 Design choices baked in here:
 
@@ -558,17 +559,31 @@ def build_run_metadata(modeling_settings: dict,
     Field groups
     ------------
     - **Engine** (`analysis_type`, `model_engine`, `basis_function`).
+    - **Split configuration** — emitted unconditionally for every run:
+      `random_seed_outer`, `spatial_cluster_num`, `test_proportion`,
+      `session_split_max_attempts`, `session_split_widen_step`,
+      `session_split_widen_every`.
     - **JAX hyperparameters** — only populated for analyses that use
       the JAX path (multinomial, continuous): `bin_resizing_factor`,
       `lambda_smooth_fixed`, `l2_reg_fixed`, `smoothness_derivative_order`,
       `learning_rate`, `max_iter`, `tol`, `random_state`,
       `use_lax_loop`, `tune_regularization_bool`. Plus
-      `focal_loss_gamma` for multinomial only.
+      `focal_loss_gamma`, `balance_predictions_bool`, and
+      `balance_train_bool` for multinomial only.
     - **Inner-CV grid** — populated when `tune_regularization_bool` is
       true: `lambda_smooth_decades_each_side`,
       `l2_reg_decades_each_side`, `inner_cv_folds`,
       `inner_cv_scoring_metric`, `inner_cv_use_one_se_rule`,
       `inner_max_iter`.
+    - **CPU-path hyperparameters** — populated for the sklearn / pygam
+      analyses (onset, category, params). When `model_engine` is
+      `'pygam'` a `pygam_hyperparameters` block is emitted
+      (`n_splines_time`, `n_splines_value`, `lam_penalty`,
+      `max_iterations`, `tol_val`, `distribution`, `link`). When
+      `model_engine` is `'sklearn'` a `sklearn_hyperparameters` block is
+      emitted (`basis_function`, `basis_function_params`, plus a nested
+      `logistic_regression` sub-block for onset / category or a
+      `ridge_regression` sub-block for params).
     - **Outer-loop layout** (`null_strategy`, `n_outer_folds`,
       `split_strategy`).
     - **Provenance** (`git_commit`, `git_dirty`, `package_version`,
@@ -933,10 +948,11 @@ def inject_metadata(payload: dict, **metadata_blocks) -> dict:
         The data dict (Level-1: feature → session → arrays;
         Level-2: feature → result; Level-3: dict of step results).
     **metadata_blocks
-        Keyword arguments whose names must be drawn from
-        `RESERVED_METADATA_KEYS` (passed without the leading underscore
-        is *not* permitted — the caller writes the underscore name
-        explicitly so the embedded key matches the spec).
+        Keyword names must be exact members of
+        `RESERVED_METADATA_KEYS`, i.e. include the leading underscore
+        (e.g. `_input_metadata=...`). A name without the underscore is
+        rejected because the embedded key must match the reserved name
+        verbatim.
 
     Returns
     -------
@@ -1029,6 +1045,7 @@ def derive_camera_fps_field(camera_fr_dict: dict):
     -------
     float or dict
         Single float when all sessions match; original dict otherwise.
+        An empty input map returns an empty dict `{}`.
     """
 
     if not camera_fr_dict:

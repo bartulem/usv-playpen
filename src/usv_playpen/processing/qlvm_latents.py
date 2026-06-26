@@ -65,11 +65,13 @@ def load_decoder_params(weights_npz_path: str) -> dict[str, jnp.ndarray]:
     params (dict[str, jnp.ndarray])
         Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
     """
-    raw = np.load(configure_path(weights_npz_path))
     params: dict[str, jnp.ndarray] = {}
-    for key in raw.files:
-        clean = key[len("decoder."):] if key.startswith("decoder.") else key
-        params[clean] = jnp.asarray(raw[key])
+    # Context manager closes the zip-backed NpzFile handle; every array is copied
+    # out into ``params`` inside the block, so closing on exit is safe.
+    with np.load(configure_path(weights_npz_path)) as raw:
+        for key in raw.files:
+            clean = key[len("decoder."):] if key.startswith("decoder.") else key
+            params[clean] = jnp.asarray(raw[key])
     return params
 
 
@@ -111,7 +113,7 @@ def labels_for_coords(
     Description
     -----------
     Looks up each torus coordinate's cluster label in the FINE and COARSE
-    reference watershed grids, matching ``inference_latents.py``'s convention
+    reference watershed grids, using the convention
     ``label = grid[int(y * res), int(x * res)]`` (with clipping to each grid's
     resolution). Each grid is the torus-periodic ``ws_labels_periodic`` field of
     its reference ``arrays.npz`` (periodic = correct for the native-torus QLVM
@@ -191,8 +193,9 @@ class QLVMLatentInference:
         the session spectrogram H5, preprocesses identically to training, embeds
         into the torus, assigns categories by reference lookup, and merges
         ``qlvm_*`` columns into the matching USV summary rows (joined on the
-        per-USV index in each ``spec_id``; USVs absent from the H5 get nulls;
-        any pre-existing ``qlvm_*`` columns are replaced).
+        positional USV row index, since the spectrogram rows are 1:1 with the
+        ``usv_summary.csv`` rows; USVs with non-positive duration are skipped and
+        get nulls; any pre-existing ``qlvm_*`` columns are replaced).
 
         Parameters
         ----------
@@ -212,10 +215,12 @@ class QLVMLatentInference:
 
         # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
         # the torus-periodic watershed (ws_labels_periodic) of their reference file.
-        fine_ref = np.load(configure_path(cfg['reference_arrays_fine_npz_path']))
-        coarse_ref = np.load(configure_path(cfg['reference_arrays_coarse_npz_path']))
-        fine_grid = fine_ref['ws_labels_periodic']
-        coarse_grid = coarse_ref['ws_labels_periodic']
+        # Context managers close each zip-backed NpzFile handle; the grid array is
+        # fully materialized on access inside the block, so closing on exit is safe.
+        with np.load(configure_path(cfg['reference_arrays_fine_npz_path'])) as fine_ref:
+            fine_grid = fine_ref['ws_labels_periodic']
+        with np.load(configure_path(cfg['reference_arrays_coarse_npz_path'])) as coarse_ref:
+            coarse_grid = coarse_ref['ws_labels_periodic']
 
         root = pathlib.Path(self.root_directory)
         h5_loc = first_match_or_raise(

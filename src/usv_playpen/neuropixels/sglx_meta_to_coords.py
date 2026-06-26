@@ -636,9 +636,9 @@ def parse_shank_map(meta: dict[str, str]) -> ShankCoords:
     -------
     coords (ShankCoords)
         Per-channel geometry; the count of channels equals the AP
-        count from ``snsApLfSy`` (legacy meta files sometimes write
-        a SYNC entry in ``snsChanMap``, which we exclude by anchoring
-        on the AP count).
+        count from ``snsApLfSy`` (``snsShankMap`` can include a
+        trailing SYNC entry, which we exclude by anchoring on the AP
+        count).
     """
 
     counts = channel_counts(meta)
@@ -740,7 +740,7 @@ def apply_bad_channels(coords: ShankCoords, bad_channels: np.ndarray) -> ShankCo
         marked disconnected.
     """
 
-    bad = bad_channels[bad_channels < coords.n_channels]
+    bad = bad_channels[(bad_channels >= 0) & (bad_channels < coords.n_channels)]
     connected = coords.connected.copy()
     connected[bad] = False
     return ShankCoords(

@@ -2,7 +2,8 @@
 @author: bartulem
 Computes inter-vocalization interval (inter-USV interval) distributions across one or
 more lists of session root directories, and (optionally) sweeps a 1D
-Gaussian Mixture Model over a range of component counts on the pooled
+mixture model -- either a Gaussian or a Student-t mixture, selected via
+``model_class`` -- over a range of component counts on the pooled
 log-inter-USV interval samples.
 
 Convention
@@ -17,6 +18,10 @@ Two interval definitions are supported:
 
 The number of dropped non-positive intervals is reported per session
 per mode so a user can detect bias from overlapping calls in ``e2s``.
+Non-positive intervals are most common in ``e2s`` (overlapping calls),
+but ``s2s`` can also drop an interval when two same-animal calls share
+an identical ``start`` timestamp (interval == 0), so the drop count is
+meaningful -- if rarely nonzero -- in both modes.
 """
 
 from __future__ import annotations
@@ -151,8 +156,10 @@ def compute_session_usv_intervals(
     intentional: it preserves chronological order of the conversation
     so a male->female->male triplet does not record a male-male
     interval that skips over the female call. Intervals strictly
-    greater than zero are kept; non-positive intervals (only possible
-    in ``e2s`` mode for overlapping calls) are counted and reported.
+    greater than zero are kept; non-positive intervals are counted and
+    reported. These arise most often in ``e2s`` mode (overlapping
+    calls), but ``s2s`` can also yield a zero interval when two
+    same-animal calls share an identical ``start`` timestamp.
 
     Parameters
     ----------
@@ -302,10 +309,14 @@ def fit_gmm_sweep(
     """
     Description
     -----------
-    Sweeps GMMs of size ``n_components_min`` through ``n_components_max``
-    on each pooled inter-USV interval array (typically
-    ``{'male': ..., 'female': ...}``), repeating each fit ``n_repeats``
-    times under different seeds. Selection across reps and across K is
+    Sweeps mixture models of size ``n_components_min`` through
+    ``n_components_max`` on each pooled inter-USV interval array
+    (typically ``{'male': ..., 'female': ...}``), repeating each fit
+    ``n_repeats`` times under different seeds. Despite the ``gmm`` in
+    the name and in the ``gmm_fits`` archive group, this function is
+    model-class agnostic: ``model_class`` selects a Gaussian mixture
+    (``'gauss'``) or a Student-t mixture (``'t'``); the shipped config
+    default is ``'t'``. Selection across reps and across K is
     delegated to the bootstrap-LRT step-up procedure in
     :func:`mixture_model_utils.bootstrap_lrt` /
     :func:`mixture_model_utils.select_n_components_step_up_lrt`; the IC columns
@@ -358,10 +369,14 @@ def fit_gmm_sweep(
         K), per-component ``logmean_k`` / ``logsd_k`` /
         ``median_sec_k`` / ``weight_k`` / ``nu_k`` (NaN-padded to
         ``n_components_max`` and NaN for ``nu_k`` under
-        ``gauss``), the top ``max_modes_reported`` mixture modes
-        (``mode_sec_k`` / ``density_k``), and Gaussian-only
-        adjacent-component boundaries (``boundary_log_k`` /
-        ``boundary_sec_k``).
+        ``gauss``), the first ``max_modes_reported`` mixture modes
+        (``mode_sec_k`` / ``density_k``), kept in ascending-location
+        order, and Gaussian-only adjacent-component boundaries
+        (``boundary_log_k`` / ``boundary_sec_k``). For the Student-t
+        path (``model_class='t'``), ``mode_sec_k`` / ``density_k``
+        carry per-component peak locations and the mixture density at
+        each component peak rather than distinct GMM-style mixture
+        modes.
     """
 
     if model_class not in ("gauss", "t"):
@@ -481,7 +496,9 @@ def fit_gmm_sweep(
                     results[f"weight_{k+1}"].append(np.nan)
                     results[f"nu_{k+1}"].append(np.nan)
 
-                # mixture modes (top-N by density, sorted ascending in seconds)
+                # mixture modes (Gaussian) or per-component peaks (t), kept in
+                # ascending-location order; first max_modes_reported recorded
+                # (no density-based selection -- report_gmm_stats re-sorts by location)
                 modes_sec = np.exp(modes_log) if modes_log.size else modes_log
                 n_modes = len(modes_sec)
                 for k in range(min(max_modes_reported, n_modes)):

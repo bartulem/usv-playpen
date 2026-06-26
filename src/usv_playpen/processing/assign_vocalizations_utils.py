@@ -135,17 +135,26 @@ def to_float(input_array: np.ndarray) -> np.ndarray:
     """
     Description
     -----------
-    Converts the input array to float16.
+    Normalizes an integer-typed array to the [-1, 1] range (or [0, 1] for an
+    unsigned dtype) by dividing every element by the maximum value representable
+    by the input dtype, then casts the result to float16. Intended for rescaling
+    raw integer PCM audio into a normalized floating-point representation.
+
+    Note: the input array must have an integer dtype, because the normalization
+    divisor is `np.iinfo(input_array.dtype).max`; passing a floating-point array
+    raises ValueError ("Invalid integer data type").
 
     Parameters
     ----------
     input_array (np.ndarray)
-        Input array to be converted to float16.
+        Integer-typed input array (e.g., raw PCM audio samples) to be normalized
+        and converted to float16.
 
     Returns
     -------
     (np.ndarray)
-        Array converted to float16.
+        Input array normalized by its integer dtype's maximum value and cast to
+        float16.
     """
 
     return (input_array.astype(np.float32) / np.iinfo(input_array.dtype).max).astype(
@@ -166,13 +175,16 @@ def write_to_h5(
     Description
     -----------
     Writes audio data, node names, locations, and length indices to an HDF5 file.
+    The per-USV audio segments are concatenated along axis 0 into a single
+    'audio' dataset.
 
     Parameters
     ----------
     output_path (pathlib.Path)
         Path to the output HDF5 file.
-    audio (list[tuple[np.ndarray]])
-        List of audio segments to be written to the file.
+    audio (list[np.ndarray])
+        List of per-USV audio segments; concatenated along axis 0 into one
+        'audio' dataset.
     node_names (np.ndarray)
         Array of node names.
     locations (np.ndarray)
@@ -218,8 +230,21 @@ def eval_pdf_with_angle(
     """
     Description
     -----------
-    Evaluate the multivariate normal PDF at points. Assumes the points
-    and the mean are in the same coordinate system.
+    Evaluates a joint spatial-by-angular probability mass function over a grid
+    of points, returning a discrete normalized PMF (not a continuous MVN value).
+    The spatial component is a 2D Gaussian with the supplied mean and covariance
+    (evaluated as the einsum log-probability against the precision matrix); the
+    angular component is either a von Mises distribution (when `histogram` is
+    None, parameterized by `center_rad` and `concentration`) or, otherwise, the
+    supplied `histogram` renormalized to sum to 1. The two components are
+    combined in log space, the per-grid maximum is subtracted for numerical
+    stability, exponentiated, and the whole array is normalized to sum to 1 over
+    the (spatial x angular) grid. Assumes the points and the mean are in the same
+    coordinate system.
+
+    If the covariance matrix is singular (np.linalg.LinAlgError on inversion),
+    the function falls back to placing all mass on the spatial grid point closest
+    to the mean (the returned array is unnormalized in this degenerate case).
 
     Parameters
     ----------
@@ -276,12 +301,21 @@ def compute_covs_6d(raw_outputs: np.ndarray, arena_dims: np.ndarray) -> np.ndarr
     """
     Description
     -----------
-    Computes the covariance matrix from the raw output of the model.
+    Computes a batch of 6x6 covariance matrices from the raw model output by
+    reconstructing a lower-triangular Cholesky factor L. The 21 lower-triangular
+    entries are read from raw_outputs[:, 6:] (the first 6 columns hold the 6D
+    means and are not used here), softplus is applied to L's diagonal to
+    guarantee positive entries, L is scaled by half the larger arena dimension
+    (0.5 * arena_dims.max()) to convert from arbitrary units into mm, and the
+    covariance is formed as covs = L @ L^T. raw_outputs is therefore expected to
+    have at least 27 columns (6 means + 21 lower-triangular factor entries).
 
     Parameters
     ----------
     raw_outputs (np.ndarray)
-        Raw output from the model. Shape: (B, num_outputs)
+        Raw output from the model. Shape: (B, num_outputs), where num_outputs is
+        at least 27: columns [:6] are the 6D means and columns [6:27] are the 21
+        lower-triangular Cholesky-factor entries.
     arena_dims (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
 
@@ -561,12 +595,21 @@ def are_points_in_conf_set(
         Boolean array of shape (n)
     """
 
+    # Point index 0 is the nose and index 1 is the head, so head_to_nose_vecs
+    # points from the head toward the nose; its arctan2 gives the heading (yaw).
     head_to_nose_vecs = points[:, 0, :] - points[:, 1, :]
     head_to_nose_yaw = np.arctan2(head_to_nose_vecs[:, 1], head_to_nose_vecs[:, 0])
+    # Clip the nose's (x, y) into the arena bounds so digitize cannot produce an
+    # out-of-range index; the angle is intentionally left unclipped because its
+    # bins already span the full [-pi, pi) circle.
     nose_points = np.clip(points[:, 0, :2], -arena_dims[:2] / 2, arena_dims[:2] / 2)
+    # These bin grids must match the grid/histogram used to build the PDF in
+    # get_conf_sets_6d (100x100 spatial grid, 45 angular bins).
     y_bins = np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, 100)
     x_bins = np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, 100)
     angle_bins = np.linspace(-np.pi, np.pi, 45, endpoint=False)
+    # np.digitize returns 1-based bin indices, so subtract 1 to index the
+    # 0-based confidence-set arrays.
     y_bin_indices = np.digitize(nose_points[:, 1], y_bins) - 1
     x_bin_indices = np.digitize(nose_points[:, 0], x_bins) - 1
     angle_bin_indices = np.digitize(head_to_nose_yaw, angle_bins) - 1

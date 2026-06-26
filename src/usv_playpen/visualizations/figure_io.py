@@ -9,7 +9,7 @@ The project's visualisations historically hard-coded one or more of
 
     "figures": {
       "save_directory": "/mnt/falkner/Bartul/figures",
-      "fig_format": "svg",
+      "fig_format": "png",
       "dpi": 300,
       "timestamp_in_name": true,
       "cmap": "inferno"
@@ -121,7 +121,7 @@ def resolve_save_path(
     override_format (str | None)
         Per-call format override. Defaults to
         ``viz_settings["figures"]["fig_format"]`` and then to
-        ``"svg"``.
+        ``"png"``.
     override_dpi (int | None)
         Per-call dpi override. Defaults to
         ``viz_settings["figures"]["dpi"]`` and then to ``300``.

@@ -16,10 +16,13 @@ The dispatcher manages five distinct analysis frameworks:
 
 Computational & Structural Features:
 ------------------------------------
-- Memory Guarding: Implements a two-phase loading strategy. For JAX/GPU tasks,
-  it loads only dictionary keys to perform feature-to-index mapping before
-  releasing CPU memory, preventing Out-of-Memory (OOM) errors during heavy
-  GPU allocation.
+- Memory Guarding: Implements a two-phase loading strategy. For every analysis
+  type, a key-only indexing pass loads the pickle solely to map the feature
+  index to a feature name, then releases that CPU memory (del + gc.collect()).
+  The CPU paths (onset/category/params) subsequently re-load the full data via
+  load_pickle_modeling_data, whereas the JAX/GPU paths defer loading to the
+  runner via pkl_path, which is what actually preserves GPU headroom and
+  prevents Out-of-Memory (OOM) errors during heavy GPU allocation.
 - Atomic Plotting Lock: Uses a file-based signaling mechanism ('.basis_plotted')
   to ensure that basis set verification plots are generated exactly once per
   batch run, preventing race conditions and I/O collisions across cluster nodes.
@@ -83,7 +86,10 @@ def get_basis_matrix_standardized(
     -------
     basis_matrix : np.ndarray or None
         A matrix of shape (history_frames, n_basis_functions). Returns None
-        if the current model_engine is 'pygam' (which uses internal splines).
+        when model_engine is not 'sklearn' (e.g. 'pygam', which uses
+        internal splines), or when model_basis_function does not match a
+        recognized basis type ('raised_cosine', 'bspline',
+        'laplacian_pyramid', or 'identity').
     """
     model_cfg = settings['model_params']
 
@@ -163,8 +169,8 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
     This function acts as the execution router. It maps the SLURM_ARRAY_TASK_ID
     to a specific behavioral feature and then selects the appropriate
-    modeling pipeline (Onset, Multinomial JAX, or Continuous JAX) based on
-    the provided analysis_type.
+    modeling pipeline (Onset, Category, Params, Multinomial JAX, or
+    Continuous JAX) based on the provided analysis_type.
 
     It enforces strict memory cleanup between the indexing phase and the
     modeling phase to ensure that GPU-enabled jobs have maximum available
@@ -217,7 +223,11 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             all_features = sorted([k for k in loaded.keys() if k not in RESERVED_METADATA_KEYS])
             del loaded
 
-        if args.feature_idx >= len(all_features):
+        # Guard both bounds: a negative index would otherwise wrap via
+        # Python negative indexing into a valid-but-wrong feature, silently
+        # writing a result pickle for the wrong feature with a negative
+        # index embedded in the filename.
+        if args.feature_idx < 0 or args.feature_idx >= len(all_features):
             print(f"FATAL: Index {args.feature_idx} out of bounds.")
             return
 

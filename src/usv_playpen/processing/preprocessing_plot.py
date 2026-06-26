@@ -37,6 +37,9 @@ class SummaryPlotter:
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
            Processing parameters; defaults to None.
+        message_output (Callable | None)
+            Logging/message callback used to surface progress and warnings;
+            defaults to None, in which case the built-in ``print`` is used.
 
         Returns
         -------
@@ -61,21 +64,28 @@ class SummaryPlotter:
         -----------
         This method generates a plot summarizing the first data preprocessing stage,
         with session details (e.g., name, mice used, duration, etc.), variables
-        measure with the phidget device (humidity, illumination, temperature) and
+        measured with the phidget device (humidity, illumination, temperature) and
         the error estimates from predicting LED on start times with the Avisoft
-        recorder data vs. the actual video frames these events appeared at.
+        recorder data vs. the actual video frames these events appeared at. The
+        resulting figure is written to ``<root_directory>/sync/`` rather than
+        returned.
 
         Parameters
         ----------
         ipi_discrepancy_dict (dict)
-           Contains arrays of A/V IPI discrepancies (in ms) and video ipi start frames.
+           Per-device dict whose keys are device IDs; each value contains
+           ``ipi_discrepancy_ms`` (A/V IPI discrepancies in ms) and
+           ``video_ipi_start_frames`` (video IPI start frames), plus the
+           optional ``nidq_ipi_discrepancy_ms`` / ``nidq_ipi_start_samples``
+           used to draw the NIDQ inset axes.
         phidget_data_dictionary (dict)
             Contains lux, humidity and temperature data.
 
         Returns
         -------
-        preprocessing_plot (fig)
-            Figure summarizing the preprocessing of experimental data.
+        None
+            The summary figure is saved to ``<root_directory>/sync/`` as a
+            side effect; nothing is returned.
         """
 
         # get the total number of frames in the video
@@ -102,10 +112,16 @@ class SummaryPlotter:
             # SEM is std / sqrt(N), not std / N. The previous formula
             # under-reported the spread by a factor of sqrt(N), which
             # in turn made the 99% CIs below narrower than they should
-            # have been by the same factor.
+            # have been by the same factor. N must be the non-NaN count
+            # (nanstd already excludes NaNs); using the full array size
+            # would inflate the denominator whenever NaNs are present and
+            # again understate the SEM.
+            sem_n = np.count_nonzero(
+                ~np.isnan(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"])
+            )
             plot_statistics_dict[device_id]["error_sem"] = (
                 np.nanstd(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"])
-                / np.sqrt(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"].size)
+                / np.sqrt(sem_n)
             )
             plot_statistics_dict[device_id]["low_ci"] = plot_statistics_dict[device_id][
                 "error_mean"
@@ -156,7 +172,6 @@ class SummaryPlotter:
         used_cameras = []
         total_frames = []
         cam_esr = []
-        cam_durations = []
         motif_version = "Ø"
         video_encoding = "Ø"
         camera_gain = 0
@@ -191,7 +206,6 @@ class SummaryPlotter:
                 total_frames.append(img_store.frame_count)
                 frame_times = img_store.get_frame_metadata()["frame_time"]
                 video_duration = frame_times[-1] - frame_times[0]
-                cam_durations.append(video_duration)
                 cam_esr.append(
                     round(number=img_store.frame_count / video_duration, ndigits=3)
                 )
@@ -312,8 +326,14 @@ class SummaryPlotter:
             metadata['Environment']['humidity_percent'] = float(med_hum)
             save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
+        # squeeze=False keeps ax a 2D (2, ncols) array even when there is a
+        # single device; without it matplotlib collapses to shape (2,) and the
+        # ax[row, device_num] accesses below raise IndexError.
         fig, ax = plt.subplots(
-            nrows=2, ncols=len(plot_statistics_dict.keys()), figsize=(12.8, 9.6)
+            nrows=2,
+            ncols=len(plot_statistics_dict.keys()),
+            figsize=(12.8, 9.6),
+            squeeze=False,
         )
         for device_num, device_id in enumerate(plot_statistics_dict.keys()):
             ax[0, device_num].hist(
@@ -595,7 +615,7 @@ class SummaryPlotter:
                     x=0.005,
                     y=0.685,
                     s=r"$\bf{audio}$: "
-                    + f"{audio_sample_number} ({audio_ch_number}ch, {audio_sampling_rate} kHz)",
+                    + f"{audio_sample_number} ({audio_ch_number}ch, {audio_sampling_rate / 1000:g} kHz)",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,

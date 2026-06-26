@@ -10,7 +10,7 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 (24) Body yaw (25) Body yaw der (26) Body yaw 2der (27) Tail curvature (28) Tail curvature der (29) Tail curvature 2der
 
 [B] SOCIAL FEATURES (DISTANCES & ANGLES)
-(0) Nose distance (1) Nose distance der (2) Nose distance 2der (3) TTI distance (4) TTI distance der (5) TTI distance 2der
+(0) Nose-Nose distance (1) Nose-Nose distance der (2) Nose-Nose distance 2der (3) TTI-TTI distance (4) TTI-TTI distance der (5) TTI-TTI distance 2der
 (6) Nose-TTI distance (7) Nose-TTI distance der (8) Nose-TTI distance 2der (9) TTI-Nose distance (10) TTI-Nose distance der (11) TTI-Nose distance 2der
 (12) Yaw-Nose (13) Yaw-Nose der (14) Yaw-Nose 2der (15) Nose-Yaw (16) Nose-Yaw der (17) Nose-Yaw 2der
 (18) Yaw-TTI (19) Yaw-TTI der (20) Yaw-TTI 2der (21) TTI-Yaw (22) TTI-Yaw der (23) TTI-Yaw 2der
@@ -165,7 +165,7 @@ def calculate_derivatives(
     input_arr (np.ndarray)
          A (n_frames, n_features) shape ndarray containing feature data to compute derivatives on.
     diff_bins : int
-        Number of bins for the central difference derivative; defaults to None.
+        Number of bins for the central difference derivative; required.
     is_angle (bool)
         Is the feature data in angles or not; defaults to False.
     capture_fr (int / float)
@@ -445,7 +445,7 @@ def get_egocentric_direction(
 
         yaw   = atan2(v_local.y, v_local.x)            in (-180, 180] deg
         pitch = atan2(v_local.z, sqrt(v_local.x^2 + v_local.y^2))
-                                                       in (-90, 90] deg
+                                                       in [-90, 90] deg
 
     Geometric interpretation:
         - `yaw` is the signed left/right offset of the target from the
@@ -561,9 +561,9 @@ def calculate_speed(
          A (n_frames, n_nodes, n_dimensions)
          shape ndarray of tracked points.
     capture_framerate (int / float)
-        Recording camera framerate; defaults to None (fps).
+        Recording camera framerate, in fps; required.
     smoothing_time_window (int / float)
-        Time window to perform smoothing over; defaults to None (s).
+        Time window to perform smoothing over, in seconds; required.
 
     Returns
     -------
@@ -954,7 +954,8 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
     -----------
     Computes Euler angles for the back:
         pitch: angle between the back and the horizontal plane
-        yaw: angle between the back and the z-axis
+        yaw: azimuthal angle of the back in the horizontal (XY) plane,
+             i.e. rotation about the z-axis (signed, from -arctan2(y, x))
 
     Parameters
     ----------
@@ -1043,7 +1044,13 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
         """
 
         # rotate around yaw and roll to center around zero
-        rot_check, rot_m = get_rotation([0.0, argument_ang[0], argument_ang[1]])
+        rot_check, _ = get_rotation([0.0, argument_ang[0], argument_ang[1]])
+        # the unconstrained Nelder-Mead simplex can probe |roll| > pi/2, for
+        # which get_rotation returns the list sentinel [-1] instead of an
+        # array; return a large finite objective so the optimizer is steered
+        # away from out-of-range candidates rather than crashing on rot_check[:, 0]
+        if isinstance(rot_check, list):
+            return np.inf
         check_vec = np.array(
             [
                 np.nanmean(rot_check[:, 0]),
@@ -1074,7 +1081,7 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
     )
 
     temp_angles_back = res.x
-    rotated_back_directions, back_rotator = get_rotation(
+    rotated_back_directions, _ = get_rotation(
         [0.0, temp_angles_back[0], temp_angles_back[1]]
     )
 
@@ -2078,7 +2085,7 @@ class FeatureZoo:
                 capture_fr=empirical_camera_sr,
             )
 
-            # # tail curvature (arbitrary units
+            # # tail curvature (arbitrary units)
             tail_curvature_arr = np.array(
                 [
                     mouse_data[
@@ -2401,8 +2408,9 @@ class FeatureZoo:
                 # current pair, expressed in the observer's anatomical head
                 # frame: yaw = signed left/right of observer's gaze axis,
                 # pitch = signed elevation above/below observer's gaze axis.
-                # Layout: columns 0..3 = yaw to {m2.Nose, m1.Nose seen from m2,
-                # m2.TTI, m1.TTI seen from m2}; columns 4..7 = matching pitch.
+                # Layout: columns 0..3 = yaw of {m2.Nose seen from m1,
+                # m1.Nose seen from m2, m2.TTI seen from m1, m1.TTI seen
+                # from m2}; columns 4..7 = matching pitch.
                 social_angles = np.zeros((mouse_data.shape[0], 8))
 
                 head1 = mouse_data[:, mouse1_idx, mouse_nodes.index("Head"), :]

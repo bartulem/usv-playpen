@@ -705,14 +705,17 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         cross-correlation reflects the timing of features relative
         to every event the model actually sees.
 
-    The kwarg names (`bout_onset_event_key`,
-    `precomputed_bout_onset_times`, `bout_onset_times_per_session`)
-    retain the historical "bout-onset" wording from when the audit
-    was first written; treat them as the **generalized model-event
-    impulse source**, with the per-pipeline granularity documented
-    above. Built via `_binary_event_trace`, which marks the integer
-    frame index of each onset (one `1.0` per event, no within-event
-    duty cycle).
+    The kwarg names retain the historical "bout-onset" wording from
+    when the audit was first written; treat them all as the
+    **generalized model-event impulse source**, with the per-pipeline
+    granularity documented above. Only `bout_onset_times_per_session`
+    is a parameter of this function; `bout_onset_event_key` and
+    `precomputed_bout_onset_times` are wrapper-side kwargs of
+    `run_predictor_audits` (in `modeling_utils`) that ultimately
+    resolve into the `bout_onset_times_per_session` dict passed here.
+    The trace is built via `_binary_event_trace`, which marks the
+    integer frame index of each onset (one `1.0` per event, no
+    within-event duty cycle).
 
     The pooled `positive_events ∪ negative_events` definition was
     explicitly removed because it mixed bout-start frames with
@@ -803,6 +806,37 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         When supplied, embedded under the reserved key
         `_input_metadata` of the saved payload so this artifact is
         independently provenance-complete.
+    shuffle_range_seconds : tuple, default (20.0, 60.0)
+        `(shuffle_min_seconds, shuffle_max_seconds)` bounds for the
+        within-session circular shifts that build both the ACF and the
+        signal-correlation nulls. Both bounds are positive and chosen
+        well past the slowest feature's autocorrelation timescale so
+        the sampled null lags sit in the ACF tail where the true
+        correlation has decayed (a Bartlett-style honest null).
+    event_intervals_per_session : dict, optional but required at runtime
+        Mapping `session_id -> (starts, stops)` of per-USV `[start,
+        stop)` arrays (in seconds), used solely for the empirical
+        IBI-percentile report block (inter-USV gaps `gap_i =
+        start[i+1] - stop[i]`, directly comparable to the GMM-derived
+        `ibi_threshold`). Not a source of `Y`. Passing `None` raises a
+        `ValueError`; pipelines that expose bout onsets but no per-USV
+        `[start, stop)` arrays should supply an empty dict, in which
+        case the IBI percentiles come back NaN.
+    bout_onset_times_per_session : dict, optional but required at runtime
+        Mapping `session_id -> np.ndarray` of per-session model-event
+        onset times (in seconds). This is the audit's sole source of
+        the binary `Y(t)` impulse trace (see the "Binary `Y`
+        definition" section above). Passing `None` raises a
+        `ValueError`. Sessions absent from this dict are excluded from
+        the signal-correlation computation.
+    signal_floor_seconds : float, default 0.5
+        Recorded into the payload for downstream plot / provenance use
+        only; does not gate any computation in this function (it sets a
+        marker threshold in `modeling_plots.py`).
+    signal_min_run_seconds : float, default 0.2
+        Recorded into the payload for downstream plot / provenance use
+        only; does not gate any computation in this function (it sets a
+        marker threshold in `modeling_plots.py`).
 
     Returns
     -------
@@ -992,9 +1026,19 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             pool = pool[:pool_idx]
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', RuntimeWarning)
-                acf_null_mean[f_i, :] = np.mean(pool, axis=0)
-                acf_null_p0_5[f_i, :] = np.percentile(pool, 0.5, axis=0)
-                acf_null_p99_5[f_i, :] = np.percentile(pool, 99.5, axis=0)
+                # Use nan-aware reductions: a session shorter than
+                # `acf_extended_max_lag` passes the finite-`acf[0]` gate
+                # above but carries a NaN tail from `_per_session_acf`,
+                # so its window rows contain NaN at the longer lags.
+                # Plain `np.mean` / `np.percentile` would collapse the
+                # entire null to NaN at any such lag; `nan*` variants
+                # keep the contributions of the full-length sessions,
+                # matching the display-ACF (`acf_median`/`p25`/`p75`)
+                # and signal-correlation-null reductions elsewhere in
+                # this module.
+                acf_null_mean[f_i, :] = np.nanmean(pool, axis=0)
+                acf_null_p0_5[f_i, :] = np.nanpercentile(pool, 0.5, axis=0)
+                acf_null_p99_5[f_i, :] = np.nanpercentile(pool, 99.5, axis=0)
         del pool
         if (f_i + 1) % 5 == 0 or (f_i + 1) == n_features:
             elapsed = time.monotonic() - acf_null_t0
@@ -1321,6 +1365,8 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         'signal_lags_frames': signal_lag_grid_frames,
         'signal_lags_seconds': signal_lag_grid_seconds,
         'rho_signal': rho_signal_per_session_mean,
+        # Self-documenting alias of `rho_signal` for external readers;
+        # in-repo plotting consumers read only `rho_signal`.
         'rho_signal_per_session_mean': rho_signal_per_session_mean,
         'rho_signal_per_session_sem': rho_signal_per_session_sem,
         'rho_signal_null_mean': rho_signal_null_mean,

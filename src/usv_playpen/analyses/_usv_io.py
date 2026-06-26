@@ -25,7 +25,7 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
     Description
     -----------
     This method extracts core experimental metadata from a session directory, including
-    mouse track names, recording frame rate, and experimental codes.
+    animal identity strings (male_id, female_id), recording frame rate, and the experimental code.
 
     It searches for the metric H5 tracking file within the provided
     directory and extracts identity strings for the animals involved. It is
@@ -93,8 +93,8 @@ def load_and_filter_usv_data(
     Returns
     -------
     usv_info (pls.DataFrame)
-        Contains USV starts, durations, emitters, and a newly calculated 'frame_index',
-        with all identified noise removed.
+        All columns from the USV summary CSV with noise rows removed, plus a newly
+        calculated 'frame_index' column.
     """
 
     session_path = Path(session_root)
@@ -106,9 +106,11 @@ def load_and_filter_usv_data(
 
     usv_info = pls.read_csv(str(usv_file))
 
-    # Remove noise across all categories provided in the list
+    # Remove noise across all categories provided in the list; rows whose noise value is
+    # null are not in noise_categories, so fill_null(True) retains them rather than letting
+    # the three-valued (~null -> null) logic silently drop them via filter()
     usv_info_clean = usv_info.filter(
-        ~pls.col(noise_col_id).is_in(noise_categories)
+        pls.col(noise_col_id).is_in(noise_categories).not_().fill_null(True)
     )
 
     return usv_info_clean.with_columns(

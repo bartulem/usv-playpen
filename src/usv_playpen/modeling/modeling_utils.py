@@ -2,15 +2,18 @@
 @author: bartulem
 Shared data-preparation helpers for the USV modeling pipelines.
 
-This module consolidates the recurring prologue of every `extract_and_save_*`
+This module consolidates two layers shared across the modeling pipelines:
+(1) the recurring data-preparation prologue of every `extract_and_save_*`
 method across the five pipeline classes (`VocalOnsetModelingPipeline`,
 `BoutParameterPipeline`, `VocalCategoryModelingPipeline`,
-`MultinomialModelingPipeline`, `ContinuousModelingPipeline`). The helpers are
-module-level free functions — they take the settings dictionary and the raw
-per-session inputs explicitly, so they can be invoked from any pipeline without
-class coupling.
+`MultinomialModelingPipeline`, `ContinuousModelingPipeline`), and (2) the
+cross-pipeline evaluation-metric helpers plus the audit-orchestration wrapper
+used at modeling-input-pickle creation time. The helpers are module-level
+free functions — they take the settings dictionary and the raw per-session
+inputs explicitly, so they can be invoked from any pipeline without class
+coupling.
 
-Each helper targets one distinct stage of the shared prologue:
+Each prologue helper targets one distinct stage of the shared prologue:
 
 A. `prepare_modeling_sessions`    — seed the RNG and load the session-path list.
 C. `resolve_mouse_roles`          — derive predictor/target indices and names.
@@ -63,6 +66,28 @@ N. `bounded_test_proportion`      — clamp `test_proportion` up to the minimum
 
 Block B (`load_behavioral_feature_data`) is intentionally NOT wrapped here —
 callers should import it directly from `load_input_files`.
+
+Metrics & audit orchestration
+-----------------------------
+The remaining helpers are the cross-pipeline evaluation-metric functions and
+the single audit-orchestration entry point:
+
+- `brier_score_multi`          — multiclass Brier score (strictly proper
+                                 scoring rule for calibration + sharpness).
+- `expected_calibration_error` — top-label Expected Calibration Error (ECE)
+                                 over equal-width confidence bins.
+- `safe_matthews_corrcoef`     — NaN-safe wrapper around sklearn's MCC for
+                                 degenerate (single-class) folds.
+- `safe_confusion_matrix`      — confusion matrix with explicit `labels` so
+                                 every fold yields the canonical (K, K) shape.
+- `align_probs_to_canonical`   — reorder a per-fold probability matrix onto
+                                 the project-wide canonical class ordering.
+- `pearson_r_safe`             — Pearson's r with a zero-variance NaN guard.
+- `root_mean_squared_error`    — RMSE between two 1-D arrays.
+- `mean_absolute_error_1d`     — MAE between two 1-D arrays.
+- `run_predictor_audits`       — non-fatal collinearity + timescale audit
+                                 orchestration at modeling-input-pickle
+                                 creation time.
 """
 
 from pathlib import Path
@@ -1021,7 +1046,8 @@ def expected_calibration_error(y_true: np.ndarray,
     Returns
     -------
     float
-        The top-label expected calibration error on [0, 1].
+        The top-label expected calibration error on [0, 1], or `NaN` when
+        `y_true` is empty (`n_total == 0`).
     """
 
     y_true = np.asarray(y_true)
@@ -1068,8 +1094,12 @@ def safe_matthews_corrcoef(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
     If both `y_true` and `y_pred` collapse to a single class (i.e., every
     entry of the confusion matrix is zero except one cell), MCC is
-    mathematically undefined; scikit-learn returns `0.0` in that case and
-    this wrapper preserves that behavior.
+    mathematically undefined; scikit-learn already returns `0.0` in that
+    degenerate case (and for empty inputs) without raising, and that `0.0`
+    is passed through unchanged. The behavior this wrapper actually *adds*
+    is to catch the `ValueError` that scikit-learn raises for inputs it
+    rejects outright and return `NaN` instead, so a single bad fold yields
+    a missing value rather than aborting the surrounding metric loop.
 
     Parameters
     ----------
@@ -1081,7 +1111,8 @@ def safe_matthews_corrcoef(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     Returns
     -------
     float
-        The Matthews correlation coefficient.
+        The Matthews correlation coefficient, or `NaN` when scikit-learn
+        raises a `ValueError` on the supplied inputs.
     """
 
     try:
@@ -1179,7 +1210,22 @@ def align_probs_to_canonical(probabilities: np.ndarray,
     # `np.searchsorted` finds each model class's position in the sorted
     # canonical ordering in O((K_model + K_canon) log K_canon), replacing
     # the explicit Python for-loop in the callers.
-    target_cols = np.searchsorted(canonical_arr, model_classes)
+    model_classes_arr = np.asarray(model_classes)
+    target_cols = np.searchsorted(canonical_arr, model_classes_arr)
+    # `np.searchsorted` only returns an insertion index; it does NOT verify
+    # that each model class is actually present in `canonical_classes`. A
+    # model class that falls between two canonical values would silently
+    # write probabilities to the wrong canonical column, and a value above
+    # all canonical values would yield `index == len(canonical_arr)` and an
+    # out-of-bounds assignment. The docstring asserts subset membership, so
+    # enforce it loudly here (mirroring the ascending-order check above)
+    # rather than corrupting the probability matrix silently.
+    if np.any(target_cols >= len(canonical_arr)) or not np.all(canonical_arr[target_cols] == model_classes_arr):
+        raise ValueError(
+            "align_probs_to_canonical requires every `model_classes` value "
+            "to be present in `canonical_classes`; got a model class absent "
+            "from the canonical ordering."
+        )
     probs_canonical[:, target_cols] = probabilities
     return probs_canonical
 
@@ -1557,7 +1603,13 @@ def run_predictor_audits(processed_beh_dict: dict,
             ibi_thresholds = {}
             for sex in ('male', 'female'):
                 params = gmm_params[sex]
-                if gmm_idx < len(params['means']):
+                # Lower-bound the index too: a negative `gmm_idx` would pass a
+                # bare `< len(...)` guard and then index `params['means']` from
+                # the end of the array, silently selecting the wrong GMM
+                # component. Require a non-negative in-range index so any
+                # out-of-range value (negative or too large) falls to the NaN
+                # branch instead.
+                if 0 <= gmm_idx < len(params['means']):
                     ibi_thresholds[sex] = float(_calculate_ibi_threshold(
                         params['means'][gmm_idx], params['sds'][gmm_idx], gmm_z
                     ))

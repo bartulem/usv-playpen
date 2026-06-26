@@ -95,10 +95,17 @@ def _parse_smartspim_metadata(metadata_path: Path) -> dict:
         fields = [f.strip() for f in line.split('\t')]
         if fields and fields[0] == 'Obj' and idx + 1 < len(lines):
             data = [f.strip() for f in lines[idx + 1].split('\t')]
-            return {
-                'pixel_size_um': float(data[4]),
-                'z_step_um': float(data[5]),
-            }
+            # Only treat this as the data row when it has the expected
+            # column count; a short/blank row (e.g. a trailing empty line
+            # that splits to ['']) would otherwise raise a bare IndexError
+            # on data[4]/data[5], bypassing the descriptive ValueError
+            # below. Falling through keeps scanning and ultimately raises
+            # the informative error that carries the metadata path.
+            if len(data) > 5:
+                return {
+                    'pixel_size_um': float(data[4]),
+                    'z_step_um': float(data[5]),
+                }
     raise ValueError(
         f"Could not parse pixel size / Z step from {metadata_path}."
     )
@@ -244,9 +251,17 @@ def _make_bevel_weights(
     edge, divided by ``feather_pixels`` and clipped to a small
     positive floor (``1e-3``) and ``1``. The result is a bevel-shaped
     weight map that ramps from a small positive value at the tile
-    boundary up to ``1`` inside the central plateau. Using a strictly
-    positive floor instead of zero keeps the per-pixel normalization
-    well-defined for canvas pixels covered by a single tile.
+    boundary up to ``1`` inside the central plateau.
+
+    The boundary weight is strictly positive because the edge distance
+    is 1-based (the outermost row/column has distance ``1``, never
+    ``0``), so the ramp value at the boundary is ``1 / feather_pixels``
+    (~0.0156 at the default ``feather_pixels=64``). The ``1e-3`` floor
+    is a defensive lower bound that does not engage for normal feather
+    widths -- it only takes effect when ``feather_pixels`` is so large
+    that ``1 / feather_pixels < 1e-3`` (i.e. ``feather_pixels > 1000``).
+    Either way the per-pixel normalization stays well-defined for canvas
+    pixels covered by a single tile.
 
     Parameters
     ----------
@@ -268,6 +283,10 @@ def _make_bevel_weights(
     height, width = tile_shape_yx
     rows = np.arange(height, dtype=np.float32)
     cols = np.arange(width, dtype=np.float32)
+    # 1-based distance to the nearest edge: the ``+ 1.0`` on only the
+    # top/left side makes the outermost row/column get distance 1 (not 0),
+    # so the boundary ramp value is 1/feather_pixels and is never fully
+    # zero-weighted. This is intentional, not an off-by-one.
     row_edge_dist = np.minimum(rows + 1.0, height - rows)
     col_edge_dist = np.minimum(cols + 1.0, width - cols)
     row_weight = np.clip(row_edge_dist / feather_pixels, 1e-3, 1.0)
@@ -511,6 +530,10 @@ def stitch_smartspim_tiles(
                     0.0,
                 )
                 stitched = np.clip(stitched, 0, dtype_max).astype(tile_dtype)
+                # Append this 2D plane as the next Z slice; contiguous=True
+                # together with the axes='ZYX' tag makes tifffile build a
+                # single ZYX BigTIFF across loop iterations (do not drop
+                # contiguous=True or change the axes tag, or stacking breaks).
                 writer.write(stitched, metadata={'axes': 'ZYX'}, contiguous=True)
 
         written.append(out_path)

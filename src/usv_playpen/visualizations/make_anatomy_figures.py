@@ -741,6 +741,13 @@ class AnatomyFigureMaker:
         filter_outliers (bool)
             When True, drop dots whose stereotaxic coordinates fall
             outside their bucket's Allen mesh bounding box.
+        rasterize_dense (bool, default True)
+            When True, flatten the six translucent Allen-CCF bucket
+            meshes to an embedded raster layer inside the SVG (the
+            dominant filesize contributor), keeping the brain-shell
+            point cloud, the per-unit dots, axis labels and the legend
+            vector. Set False to emit a fully vector SVG. See
+            `make_unit_positions_figure` for the fuller note.
 
         Returns
         -------
@@ -928,7 +935,7 @@ class AnatomyFigureMaker:
             `[view_azim_start, view_azim_start + 360)`.
         n_frames (int)
             Number of frames in the sweep. With `fps=30` and
-            `n_frames=180` the video is 6 s long.
+            `n_frames=240` the video is 8 s long.
         fps (int)
             Output frame rate (frames per second).
         video_format (str)
@@ -1061,33 +1068,65 @@ class AnatomyFigureMaker:
 
         Parameters
         ----------
-        out_dir (str | pathlib.Path)
-            Output directory; created if absent.
         mouse_id (str)
             Catalog `mouse_id` for the session.
         session_id (str)
             Session timestamp string, e.g. `'20241115_162223'`.
+        out_dir (str | pathlib.Path | None)
+            Output directory override; `None` falls back to
+            `figures.save_directory`.
         probes (tuple[str, ...])
             Probes to search across when ranking clusters.
+        probe_to_hemisphere (dict[str, str] | None)
+            Mapping of probe id to hemisphere (`'R'`/`'L'`). Ignored by
+            this view (kept for signature compatibility); `None` falls
+            back to `{'imec0': 'R', 'imec1': 'L'}`.
         ephys_root (str | pathlib.Path)
             Root containing `<YYYYMMDD>_imec<i>/` per-day directories.
-        n_top_units (int)
+        histology_root (str | pathlib.Path)
+            Root for IBL histology output. Ignored by this view (kept
+            for signature compatibility); the schematic reads the
+            module constant `_DEFAULT_HISTOLOGY_ROOT` instead.
+        n_top_units (int | None)
             Number of top-amplitude clusters to render (left to right).
+            `None` renders every ranked SU-somatic cluster.
+        probe_filter (str | None)
+            When set, keep only units on this probe (e.g. `'imec0'`);
+            `None` keeps both probes.
+        shank_filter (int | None)
+            When set, keep only units whose peak channel sits on this
+            shank; `None` keeps all shanks.
+        lateral_jitter_um (float)
+            Half-range of the deterministic per-unit lateral jitter so
+            units sharing a peak channel don't fully overlap.
         waveform_width_um (float)
             Lateral-axis width allocated to each waveform.
         peak_amplitude_target_um (float)
             Axial-µm height that the largest rendered unit's peak
             amplitude maps to. One fixed scale across all units, so peak
             amplitudes vary visibly across the row.
+        inter_shank_wspace (float)
+            Width-space between the per-shank subplots; this gap is the
+            visible inter-shank break.
+        schematic_side (str)
+            Side the probe schematic panel is drawn on (`'left'` or
+            `'right'`).
         opacity_sigma_um (float)
             Gaussian σ for opacity vs probe-local distance from peak.
         n_neighbors_each_side (int)
             Number of nearest same-shank channels above and below the
             peak (peak's row sibling is added separately).
+        ap_padding_um (float)
+            Extra lateral padding added on each side of every shank's
+            x-axis bounds.
+        dv_padding_um (float)
+            Extra axial padding added above and below the shared y-axis
+            bounds.
         fig_size_inches (tuple[float, float])
             Figure size in inches.
-        fig_format (str)
-            Output format (e.g. `'svg'`, `'pdf'`, `'png'`).
+        fig_format (str | None)
+            Output format override (e.g. `'svg'`, `'pdf'`, `'png'`);
+            `None` falls back to `figures.fig_format`.
 
         Returns
         -------
@@ -1104,9 +1143,11 @@ class AnatomyFigureMaker:
         clusters = self._collect_session_clusters(mouse_id, rec_date)
 
         # Per-probe templates / cluster bookkeeping. The
-        # `probe_to_hemisphere` / `histology_root` args are no longer
-        # used for this view (we plot in probe-local coords) — kept in
-        # the signature so older callers don't have to change.
+        # `probe_to_hemisphere` / `histology_root` parameters are
+        # ignored: we plot in probe-local coords, and the schematic
+        # reads the module constant `_DEFAULT_HISTOLOGY_ROOT` (not the
+        # `histology_root` argument). Both are kept in the signature so
+        # older callers don't have to change.
         del histology_root, probe_to_hemisphere
         per_probe: dict[str, dict] = {}
         for probe in probes:
@@ -1357,9 +1398,12 @@ class AnatomyFigureMaker:
             )
         contact_colours = [
             self.brain_area_colors[pool_brain_area(
-                pos_to_region.get(
+                pos_to_region[
                     (int(positions_full[ch, 0]), int(positions_full[ch, 1]))
-                )
+                ]
+                if (int(positions_full[ch, 0]), int(positions_full[ch, 1]))
+                in pos_to_region
+                else None
             )]
             for ch in range(n_channels)
         ]
@@ -1766,18 +1810,20 @@ class AnatomyFigureMaker:
         -----------
         Same neighbour-selection logic as `_draw_single_unit_waveforms`
         (12 channels on the same shank: peak + sibling + N nearest
-        above + N nearest below), but the waveforms are placed at the
-        IBL brain `(AP, DV)` of each channel instead of the probe-local
-        `(lateral, axial)`. Used to put multiple units in one shared
-        anatomical panel.
+        above + N nearest below). Each waveform is placed at the
+        channel's probe-local `(lateral, axial)`, with the whole
+        12-channel group shifted sideways by `lateral_offset_um` so
+        units that share a peak channel don't fully overlap. Used to
+        put multiple units in one shared per-shank panel.
 
         Parameters
         ----------
         ax (plt.Axes)
             Target axes.
         ctx (dict)
-            Per-probe context dict. Must additionally contain
-            `brain_coords` (output of `_load_ibl_brain_coords`).
+            Per-probe context dict from
+            `_gather_probe_context_for_unit`; reads
+            `channel_positions`, `ks_dir` and `cluster_to_bucket`.
         cluster_num (int)
             Cluster ID (catalog `cluster_num`).
         template (np.ndarray)
@@ -1785,20 +1831,24 @@ class AnatomyFigureMaker:
         peakch (int)
             True peak channel of the template (`ptp(...).argmax()`).
         waveform_width_um (float)
-            AP-axis width allocated to one waveform.
+            Lateral-axis width allocated to one waveform.
         waveform_voltage_uv_scale (float)
-            Multiplier mapping template voltage units to DV µm.
+            Multiplier mapping template voltage units to axial µm.
         opacity_sigma_um (float)
             Gaussian σ for opacity vs probe-local distance from peak.
         n_neighbors_each_side (int)
             Number of nearest same-shank channels above and below the
             peak.
+        lateral_offset_um (float)
+            Lateral µm shift applied to the whole 12-channel group so
+            units sharing a peak channel don't fully overlap.
 
         Returns
         -------
-        (ap_drawn, dv_drawn) (tuple[np.ndarray, np.ndarray])
-            Brain AP and DV centres of every channel that was
-            rendered; used by the caller to compute axis bounds.
+        (plot_lat, plot_axi) (tuple[np.ndarray, np.ndarray])
+            Probe-local lateral (shifted by `lateral_offset_um`) and
+            axial µm centres of every channel that was rendered; used
+            by the caller to compute axis bounds.
         """
 
         positions = ctx["channel_positions"].astype(float)
@@ -1927,6 +1977,8 @@ class AnatomyFigureMaker:
         template (np.ndarray)
             `(n_samples, n_channels)` Kilosort mean template for this
             cluster (already extracted from `templates.npy`).
+        peakch (int)
+            True peak channel of the template (`ptp(...).argmax()`).
         waveform_width_um (float)
             Lateral-axis width allocated to one waveform.
         waveform_voltage_uv_scale (float)

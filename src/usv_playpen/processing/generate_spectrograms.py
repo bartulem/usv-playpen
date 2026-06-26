@@ -9,9 +9,9 @@ spectrogram is the **variance-weighted average across all audio channels** (so
 the channels carrying the most signal energy dominate), matching the
 representation the QLVM was trained on.
 
-This module is the in-house, JAX-native (torch-free) port of the external
+This module is the in-house, torch-free port of the external
 ``generate_spectrograms.py`` + ``spec_func.get_spec_librosa``; the spectrogram
-math is plain ``librosa`` and the memmap is parsed exactly as
+math is plain ``librosa``/``numpy`` and the memmap is parsed exactly as
 ``das_inference.summarize_das_findings`` parses it (sampling rate, sample count,
 channel count and dtype encoded in the ``*.mmap`` filename).
 
@@ -73,7 +73,7 @@ def compute_usv_spectrogram(
         Audio sampling rate in Hz.
     spec_params (dict)
         Spectrogram parameters: ``num_freq_bins``, ``num_time_bins``,
-        ``nperseg``, ``noverlap``, ``min_freq``, ``max_freq``, ``hop_length``,
+        ``nperseg``, ``min_freq``, ``max_freq``, ``hop_length``,
         ``window``.
     normalize (bool)
         Whether to min-max normalize the averaged spectrogram. Defaults to True.

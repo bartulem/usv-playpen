@@ -182,6 +182,10 @@ def _build_ks_keyed_block(
             int(channel_positions[ks_row, 0]),
             int(channel_positions[ks_row, 1]),
         )
+        # Positions absent from the IBL map (e.g. reference/disconnected
+        # sites) become a literal "unknown" region; `_runs_to_ranges`
+        # emits it as its own first-class key, so downstream
+        # `find_region_by_channel` can return "unknown" as a brain region.
         region = pos_to_region[pos] if pos in pos_to_region else "unknown"
         per_row_region.append(region)
     return _runs_to_ranges(per_row_region)
@@ -235,7 +239,9 @@ def regenerate_anatomy_converter(
     ephys_root = pathlib.Path(ephys_root)
     histology_root = pathlib.Path(histology_root)
     if probe_to_hemisphere is None:
-        probe_to_hemisphere = _PROBE_TO_HEMISPHERE
+        # Defensive copy of the shared module constant so any future
+        # in-function mutation cannot corrupt the global for later calls.
+        probe_to_hemisphere = dict(_PROBE_TO_HEMISPHERE)
 
     with converter_path.open() as fh:
         existing = json.load(fh)
@@ -357,7 +363,7 @@ def _cli() -> None:
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="Print the diff summary without writing anything.",
+        help="Compute and print the regeneration counts summary without writing the converter back to disk.",
     )
     args = parser.parse_args()
 

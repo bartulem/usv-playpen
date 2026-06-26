@@ -22,7 +22,7 @@ artifacts into the output directory:
   ``qlvm_model.decoder_forward`` reconstructs.
 
 The model has no learned encoder: the torus is a fixed lattice and only the
-decoder is trained. Each epoch applies a fresh random torus shift to the whole
+decoder is trained. Each batch applies a fresh random torus shift to the whole
 lattice (the QMC integration trick). The heavy compute dependencies (``torch``,
 the vendored kernels) are imported lazily inside :meth:`QLVMTrainer.train` so
 importing this module never pulls in torch.

@@ -113,7 +113,8 @@ def zscore_different_sessions_together(data_dict: dict,
     abs_features_set = set(abs_features)
     smooth_abs_set = set(smooth_abs_features.keys())
 
-    # Clean the data *in place* in the DataFrames
+    # Clean the data, reassigning each session's DataFrame in the dict
+    # (`with_columns` returns a new frame; only the dict entry is mutated)
     for one_beh_session, df in data_dict.items():
         cols_to_update = []
         for column in df.columns:
@@ -155,8 +156,14 @@ def zscore_different_sessions_together(data_dict: dict,
         for dd_df in data_dict.values():
             for column in dd_df.columns:
                 if column.split('.')[-1] == one_feature:
+                    # No `break` here: `harmonize_session_columns` fills
+                    # BOTH `self.{suffix}` and `other.{suffix}` for every
+                    # non-dyadic ego feature, so a single session may hold
+                    # two columns sharing this suffix. All of them must
+                    # contribute to the pooled statistics, matching the
+                    # (also break-free) z-score loop below, which normalizes
+                    # every matching column with these pooled stats.
                     pooled_series_list.append(dd_df[column].cast(pls.Float32))
-                    break
 
         if not pooled_series_list:
             continue
@@ -187,8 +194,9 @@ def zscore_different_sessions_together(data_dict: dict,
             cols_to_zscore = []
             for column in df.columns:
                 if column.split('.')[-1] == one_feature:
-                    # Apply z-score as a Polars expression
-                    # This operates in-place and preserves height
+                    # Apply z-score as a Polars expression; `with_columns`
+                    # preserves row count (height) and yields a new frame
+                    # reassigned into the dict below
                     cols_to_zscore.append(
                         ((pls.col(column) - global_mean) / global_std).alias(column)
                     )

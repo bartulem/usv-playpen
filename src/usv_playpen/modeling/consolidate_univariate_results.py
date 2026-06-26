@@ -67,7 +67,7 @@ Backwards-compat
 Per-feature pickles produced before the metadata schema rolled out have
 no `_input_metadata` / `_run_metadata` blocks. With `--allow_legacy`,
 the consolidator processes them too: it warns once, skips the equality
-asserts, and writes the consolidated artifact under a `legacy_<ts>.pkl`
+asserts, and writes the consolidated artifact under a `legacy_univariate_<ts>.pkl`
 filename without the cohort tag. Without `--allow_legacy`, the
 consolidator aborts on the first legacy file.
 """
@@ -142,16 +142,46 @@ def _build_default_output_filename(input_metadata: dict) -> str:
     return f"univariate_{tag}_{cohort}_{ts}.pkl"
 
 
-def _diff_metadata(a: dict, b: dict, prefix: str = '') -> list:
+def _diff_metadata(a: dict, b: dict, prefix: str = '', ignore_keys: tuple = ()) -> list:
     """
-    Returns a flat list of `'<path>: <a_val> != <b_val>'` strings
-    enumerating every leaf-level disagreement between two metadata
-    blocks. Used by the equality check to give an actionable error
-    message rather than a generic "blocks differ" abort.
+    Returns a flat list of human-readable strings enumerating every
+    leaf-level disagreement between two metadata blocks. Used by the
+    equality check to give an actionable error message rather than a
+    generic "blocks differ" abort.
+
+    Two output forms are emitted:
+        `'<path>: <a_val> != <b_val>'`
+            A leaf key present in both blocks whose values differ.
+        `'<path><key>: missing in B'` / `'<path><key>: missing in A'`
+            A key present in only one of the two blocks (`A` is the
+            first argument `a`, `B` is the second argument `b`).
+
+    Parameters
+    ----------
+    a : dict
+        First metadata block (the canonical / "A" side).
+    b : dict
+        Second metadata block (the current / "B" side).
+    prefix : str, optional
+        Dotted-path prefix accumulated during recursion into nested
+        sub-dicts. Callers leave this at its default.
+    ignore_keys : tuple of str, optional
+        Top-level keys excluded from the diff, mirroring
+        `metadata_blocks_equal`. Applied at the top level only (the
+        recursion does not propagate it), so the reported diff lists
+        only the keys that actually drive the equality check's verdict
+        and never the intentionally-ignored provenance keys.
+
+    Returns
+    -------
+    list of str
+        One string per disagreement; empty when the (non-ignored)
+        blocks are structurally equal.
     """
 
     diffs = []
-    keys_a, keys_b = set(a.keys()), set(b.keys())
+    keys_a = set(a.keys()) - set(ignore_keys)
+    keys_b = set(b.keys()) - set(ignore_keys)
     for k in (keys_a - keys_b):
         diffs.append(f"{prefix}{k}: missing in B")
     for k in (keys_b - keys_a):
@@ -193,7 +223,7 @@ def consolidate(input_dir: str,
         filename is built from `_input_metadata['analysis_tag']` and
         `_input_metadata['experimental_condition']`. For legacy runs
         (no metadata) the filename is forced to
-        `legacy_<utc-ts>.pkl`.
+        `legacy_univariate_<utc-ts>.pkl`.
     delete_individuals_after : bool, default False
         When True, removes every per-feature pickle that was
         successfully merged. The consolidator never deletes a file it
@@ -202,7 +232,7 @@ def consolidate(input_dir: str,
         When True, processes per-feature pickles that lack the
         `_input_metadata` / `_run_metadata` blocks. Skips the equality
         assert and writes the consolidated artifact under
-        `legacy_<utc-ts>.pkl`. Default is to abort on the first such
+        `legacy_univariate_<utc-ts>.pkl`. Default is to abort on the first such
         file.
     ignore_provenance_keys : tuple of str, default
         `('git_commit', 'git_dirty', 'package_version')`
@@ -241,12 +271,17 @@ def consolidate(input_dir: str,
     consolidated = {}
     canonical_input_md = None
     canonical_run_md = None
+    # Path of the file that actually contributed the canonical metadata
+    # blocks. With --allow_legacy the leading sorted files may be legacy
+    # (no metadata), so the canonical block can come from a later file;
+    # mismatch errors reference this path rather than pkl_files[0].
+    canonical_md_path = None
     legacy_run_seen = False
 
     successfully_merged_paths = []
     successfully_merged_timestamps = []
 
-    for idx, fp in enumerate(pkl_files):
+    for fp in pkl_files:
         with open(fp, 'rb') as fh:
             payload = pickle.load(fh)
         feat_dict, md_blocks = extract_metadata_blocks(payload)
@@ -281,6 +316,7 @@ def consolidate(input_dir: str,
             if canonical_input_md is None:
                 canonical_input_md = cur_in
                 canonical_run_md = cur_run
+                canonical_md_path = fp
             else:
                 # Equality is structural. Top-level "provenance" keys
                 # listed in `ignore_provenance_keys` are excluded
@@ -289,16 +325,18 @@ def consolidate(input_dir: str,
                 # configuration.
                 if not metadata_blocks_equal(canonical_input_md, cur_in,
                                              ignore_keys=ignore_provenance_keys):
-                    diffs = _diff_metadata(canonical_input_md, cur_in)
+                    diffs = _diff_metadata(canonical_input_md, cur_in,
+                                           ignore_keys=ignore_provenance_keys)
                     raise ValueError(
-                        f"`_input_metadata` mismatch between {pkl_files[0].name} "
+                        f"`_input_metadata` mismatch between {canonical_md_path.name} "
                         f"and {fp.name}:\n  - " + "\n  - ".join(diffs)
                     )
                 if not metadata_blocks_equal(canonical_run_md, cur_run,
                                              ignore_keys=ignore_provenance_keys):
-                    diffs = _diff_metadata(canonical_run_md, cur_run)
+                    diffs = _diff_metadata(canonical_run_md, cur_run,
+                                           ignore_keys=ignore_provenance_keys)
                     raise ValueError(
-                        f"`_run_metadata` mismatch between {pkl_files[0].name} "
+                        f"`_run_metadata` mismatch between {canonical_md_path.name} "
                         f"and {fp.name}:\n  - " + "\n  - ".join(diffs)
                     )
 

@@ -183,10 +183,14 @@ def validate_sequence(pos_events: np.ndarray,
 
 class Synchronizer:
 
-    """In the dictionary below, you can find px values
-    for extracting intensity changes from sync LEDs
-    NB: changes in camera positions will change
-    these values!
+    """
+    Synchronizes the recorded data streams of a session.
+
+    This class cross-checks the audio (.wav), video (tracking) and e-phys
+    (Neuropixels) recordings of a session: it crops the audio to the video
+    duration, finds and matches the audio/video sync trains (via sync-LED
+    intensity changes and least-significant-bit pulses), and validates that
+    the e-phys recording duration matches the video duration.
     """
 
     @staticmethod
@@ -196,6 +200,9 @@ class Synchronizer:
         -----------
         Builds and returns a fresh LED pixel coordinate dictionary for each
         Synchronizer instance to avoid shared mutable state between instances.
+        The dictionary holds the pixel coordinates used to extract intensity
+        changes from the sync LEDs.
+        NB: changes in camera positions will change these values!
 
         Parameters
         ----------
@@ -303,7 +310,7 @@ class Synchronizer:
             total_frame_number_least = camera_frame_count_dict['total_frame_number_least']
             total_video_time_least = camera_frame_count_dict['total_video_time_least']
 
-        for npx_idx, npx_recording in enumerate(sorted(pathlib.Path(self.root_directory).rglob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin"))):
+        for npx_recording in sorted(pathlib.Path(self.root_directory).rglob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin")):
 
             # parse metadata file for channel and headstage information
             with open(npx_recording.parent / (npx_recording.name[:-3] + 'meta')) as meta_data_file:
@@ -338,10 +345,10 @@ class Synchronizer:
             # search for tracking start and end
             ch_sync_data = np.load(file=f'{sync_ch_file}.npy')
             (tracking_start, tracking_end, largest_break_duration,
-             ttl_break_end_samples, largest_break_end_hop) = self.find_lsb_changes(relevant_array=ch_sync_data, lsb_bool=False, total_frame_number=total_frame_number_least)
+             _, _) = self.find_lsb_changes(relevant_array=ch_sync_data, lsb_bool=False, total_frame_number=total_frame_number_least)
 
             largest_break_duration_sec = round(largest_break_duration / float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn]), 3)
-            if (tracking_start, tracking_end) != (None, None) or largest_break_duration_sec < 2:
+            if (tracking_start, tracking_end) != (None, None) and largest_break_duration_sec < 2:
                 spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
                 total_npx_recording_duration = (tracking_end - tracking_start) / spike_glx_sr
 
@@ -425,7 +432,8 @@ class Synchronizer:
         start_first_relevant_sample, end_last_relevant_sample,
         largest_break_duration, ttl_break_end_samples, largest_break_end_hop (tuple)
             Start and end of tracking in audio/e-phys samples, the duration of largest break,
-            all TTL break end samples, and sample position of the largest break.
+            all TTL break end samples, and the index ('hop') into ttl_break_end_samples that
+            marks the end of the largest break (i.e. the recording-start hop), not a sample position.
         """
 
         if lsb_bool:
@@ -438,7 +446,7 @@ class Synchronizer:
 
         largest_break_duration = np.max(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1])
 
-        if (total_frame_number + largest_break_end_hop) <= ttl_break_end_samples.shape[0]:
+        if (total_frame_number + largest_break_end_hop) < ttl_break_end_samples.shape[0]:
             return int(ttl_break_end_samples[largest_break_end_hop] + 1), int(ttl_break_end_samples[largest_break_end_hop + total_frame_number] + 1), int(largest_break_duration), ttl_break_end_samples, largest_break_end_hop
         else:
             return None, None, int(largest_break_duration), ttl_break_end_samples, largest_break_end_hop
@@ -471,7 +479,7 @@ class Synchronizer:
         # get the least significant bit array
         lsb_array = sound_array & 1
 
-        # get switches from ON to OFF and vice versa (both look at the 0 value positions)
+        # falling edges (1->0) mark IPI starts; rising edges (0->1) mark IPI ends
         ipi_start_samples = np.where(np.diff(lsb_array) < 0)[0] + 1
         ipi_end_samples = np.where(np.diff(lsb_array) > 0)[0]
 
@@ -501,7 +509,7 @@ class Synchronizer:
         """
         Description
         -----------
-        This method takes find sync LEDs in video frames,
+        This method finds the sync LEDs in video frames,
         and gathers information about their intensity changes
         over time.
 
@@ -530,6 +538,7 @@ class Synchronizer:
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
+        # scan the first ~1.5 s of frames (1.5x fps) to locate the brightest LED frame
         max_frame_num = int(round(sync_camera_fps + (sync_camera_fps / 2)))
         led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
         led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
@@ -738,8 +747,8 @@ class Synchronizer:
         Returns
         -------
         (np.ndarray, dict)
-            A tuple containing an array of the OFF-event start frames (as per user
-            definition) and a dictionary of the matched IPI sequences for each camera.
+            A tuple containing an array of the start frames of each detected IPI (the frame
+            following each ON edge) and a dictionary of the matched IPI sequences for each camera.
         """
 
         sync_sequence_dict = {}
@@ -826,6 +835,11 @@ class Synchronizer:
         -----------
         This method takes audio files and identifies sync events (from the least
         significant bit inputs) to check sync between different data streams.
+
+        NB: This method also has consequential side effects. It caches the NIDQ IPI
+        data to disk (sync/nidq_ipi_data.npy), and, when the audio/video sync passes
+        the divergence tolerance, it irreversibly deletes the original (uncropped)
+        audio directory (audio/original) via shutil.rmtree.
 
         Parameters
         ----------

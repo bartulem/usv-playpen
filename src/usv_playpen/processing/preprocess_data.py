@@ -90,10 +90,11 @@ class Stylist:
         ----------
         exp_settings_dict (dict)
             Experimental settings; defaults to None.
+        input_parameter_dict (dict)
+            Processing parameters carrying the processing booleans and
+            module-specific settings used to drive preprocessing; defaults to None.
         root_directories (list)
             Root directories for data; defaults to None.
-        input_parameter_dict (dict)
-            Analyses parameters; defaults to None.
         message_output (function)
             Defines output messages; defaults to None.
 
@@ -115,27 +116,43 @@ class Stylist:
         """
         Description
         -----------
-        This method performs the following data preprocessing steps:
+        This method performs the following data preprocessing steps,
+        organized into the two execution branches the method body uses.
+
+        Branch A (run once across ALL root directories at the same time;
+        gated on conduct_ephys_file_chaining / split_cluster_spikes /
+        prepare_sleap_cluster):
+        (1) concatenates e-phys binary files
+        (2) splits e-phys clusters to individual sessions
+        (3) prepares SLEAP inference cluster job for videos
+
+        Branch B (run separately for EACH root directory, in the order
+        below; taken only when none of the Branch A booleans are set):
         (1) concatenates video files (necessary for sessions >15 min)
         (2) re-encodes videos (compresses and adjusts sampling rate)
-        (3) prepares SLEAP inference cluster job for videos
-        (4) converts SLP to H5 files after proofreading
-        (5) conducts SLEAP-Anipose calibration
-        (6) conducts SLEAP-Anipose triangulation
-        (7) conducts SLEAP-Anipose coordinate transformation
-        (8) splits multichannel to single-channel audio files
-        (9) crops audio files to match video length
-        (10) cleans audio background with harmonic-percussive source separation
-        (11) band-pass filters audio files
-        (12) vertically stacks all audio files in one memmap file
-        (13) conducts DAS inference on audio data
-        (14) summarizes DAS findings across different audio channels
-        (15) extracts phidget-measured data during the experiment
-        (16) checks audio-video sync using  Arduino-controlled IR lights pulses
-        (17) plots the summary of AV sync and phidget measurements
-        (18) concatenates e-phys binary files
-        (19) splits e-phys clusters to individual sessions
-        (20) conducts ephys-video sync validation
+        (3) splits multichannel to single-channel audio files
+        (4) crops audio files to match video length
+        (5) checks audio-video sync using Arduino-controlled IR light pulses
+            and plots the summary of AV sync and phidget measurements
+        (6) conducts ephys-video sync validation
+        (7) cleans audio background with harmonic-percussive source separation
+        (8) band-pass filters audio files
+        (9) vertically stacks all audio files in one memmap file
+        (10) converts SLP to H5 files after proofreading
+        (11) conducts SLEAP-Anipose calibration
+        (12) conducts SLEAP-Anipose triangulation
+        (13) conducts SLEAP-Anipose coordinate transformation
+        (14) conducts DAS inference on audio data
+        (15) summarizes DAS findings across different audio channels
+        (16) prepares data for vocal assignment (Vocalocator)
+        (17) assigns vocalizations to mice (Vocalocator / Vocalocator-SSL)
+        (18) generates USV spectrograms
+        (19) generates USV masks
+        (20) computes USV acoustic features
+        (21) infers QLVM latents
+
+        Note: extraction of phidget-measured data during the experiment is
+        performed as part of the audio-video sync step (step 5 above).
 
 
         Parameters
@@ -202,12 +219,13 @@ class Stylist:
 
                     _stamp_processing_version(one_directory)
 
-                    # # # configure video properties via ffmpeg
+                    # # # concatenate video files
                     if self.input_parameter_dict['processing_booleans']['conduct_video_concatenation']:
                         Operator(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,
                                  message_output=self.message_output).concatenate_video_files()
 
+                    # # # rectify video fps (re-encode)
                     if self.input_parameter_dict['processing_booleans']['conduct_video_fps_change']:
                         Operator(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,

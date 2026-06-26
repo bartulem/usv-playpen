@@ -238,7 +238,7 @@ class Vocalocator:
             arena_dims = np.array(model_config['DATA']['ARENA_DIMS'])
             true_locs = ctx['scaled_locations'][:]
 
-        conf_sets, _, pdfs = get_conf_sets_6d(raw_output, arena_dims, 1.0, True)
+        conf_sets, _, _ = get_conf_sets_6d(raw_output, arena_dims, 1.0, True)
 
         pts_in_set = np.stack([are_points_in_conf_set(conf_sets, true_locs[:, mouse_idx, ...], arena_dims,) for mouse_idx in range(2)],axis=1,)
 
@@ -254,11 +254,11 @@ class Vocalocator:
         assignments[mouse_two_vocalizations] = 1  # Mouse 2
         assignments[two_in_set] = 2  # Both (ambiguous)
 
-        self.message_output(f"Vocalization percentage attributed to NO mouse: {none_in_set.sum()}")
-        self.message_output(f"Vocalization percentage attributed to ONE mouse: {one_in_set.sum()}")
-        self.message_output(f"Vocalization percentage attributed to mouse #1: {mouse_one_vocalizations.sum()}")
-        self.message_output(f"Vocalization percentage attributed to mouse #2: {mouse_two_vocalizations.sum()}")
-        self.message_output(f"Vocalization percentage attributed to BOTH mice: {two_in_set.sum()}")
+        self.message_output(f"Vocalization count attributed to NO mouse: {none_in_set.sum()}")
+        self.message_output(f"Vocalization count attributed to ONE mouse: {one_in_set.sum()}")
+        self.message_output(f"Vocalization count attributed to mouse #1: {mouse_one_vocalizations.sum()}")
+        self.message_output(f"Vocalization count attributed to mouse #2: {mouse_two_vocalizations.sum()}")
+        self.message_output(f"Vocalization count attributed to BOTH mice: {two_in_set.sum()}")
 
         np.save(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy', assignments)
 
@@ -330,7 +330,7 @@ class Vocalocator:
         )
 
         try:
-            # Locate the calibration file or raise an error if not found
+            # Locate the calibration NPZ file; if none is found the resulting StopIteration is caught below and the method logs a warning and returns (no error propagates to the caller)
             cal_file = next(f.name for f in sorted(pathlib.Path(model_directory).glob("*cal*.npz")))
 
             conda_exe = os.environ.get('CONDA_EXE', 'conda')

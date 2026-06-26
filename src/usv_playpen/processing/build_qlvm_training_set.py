@@ -67,8 +67,12 @@ def compute_selected_indices(
     all-zero placeholders for invalid USVs and are excluded), optionally
     subsampled so the total kept count
     approaches ``dataset_size_constraint`` (an absolute count if ``> 1``, a
-    proportion if in ``(0, 1]``, all data if ``None``). Lets later phases read
-    only the needed rows from disk.
+    proportion if in ``(0, 1]``, all data if ``None``). Subsampling applies an
+    equal per-session quota (``target_total // n_sessions``) rather than a
+    proportional one, so the kept set is balanced across sessions, not weighted
+    by session size; sessions with fewer valid spectrograms than the quota keep
+    all of theirs, so the realized total may fall below the target. Lets later
+    phases read only the needed rows from disk.
 
     Parameters
     ----------
@@ -328,13 +332,15 @@ class QLVMTrainingSetBuilder:
         Runs the full pipeline: load durations → select indices (length filter +
         optional subsample) → load selected specs → combine → train/val split (or
         full) → resize/time-stretch → write ``.npz`` outputs + ``metadata.npz``.
+        Writes ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) plus a
+        ``metadata.npz`` sidecar to ``output_directory``.
 
         Parameters
         ----------
 
         Returns
         -------
-        ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``.
+        None
         """
 
         self.message_output(
@@ -442,6 +448,9 @@ class QLVMTrainingSetBuilder:
             f"a detected SAM mask (the rest keep an all-ones mask)."
         )
 
+        # Phase 4 (above): combine the per-session selected arrays into single
+        # cross-session arrays (+ zero-mask placeholders under "none") and report
+        # mask coverage.
         # Phases 5-6: split (or full) + resize + (under "sam") binarize-and-apply + save.
         if full_dataset:
             splits = {"full_data.npz": (all_specs, all_masks, all_masks_len, all_durations, all_spec_ids)}

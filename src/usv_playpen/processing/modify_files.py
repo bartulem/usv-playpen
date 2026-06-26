@@ -101,7 +101,7 @@ class Operator:
         Returns
         -------
          spike times (np.ndarray)
-            Arrays that contain spike times: seconds (row 0) and frames (row 1).;
+            Arrays that contain spike times: seconds (row 0) and frames (row 1);
             saved as .npy files in a separate directory.
         """
 
@@ -193,7 +193,9 @@ class Operator:
                                                   float(calibrated_sr_config['CalibratedHeadStages'][binary_files_info[session_key]['headstage_sn']]))
 
                             session_spikes_fps = np.round(session_spikes_sec * esr_dict[session_key])
-                            session_spikes_fps[session_spikes_fps == frame_least_dict[session_key]] = frame_least_dict[session_key]-1
+                            # clamp any frame index at or beyond the least total frame count to the last valid frame,
+                            # so row 1 of session_spikes never indexes out of bounds into an array of length frame_least
+                            session_spikes_fps[session_spikes_fps >= frame_least_dict[session_key]] = frame_least_dict[session_key]-1
 
                             session_spikes = np.vstack((session_spikes_sec, session_spikes_fps))
 
@@ -251,7 +253,7 @@ class Operator:
         # create list of directories to save concatenated files in
         concat_save_dir = []
         available_probes = []
-        for ord_idx, one_root_dir in enumerate(self.root_directory):
+        for one_root_dir in self.root_directory:
             ephys_save_dir_base = str(ephys_base_for_data_root(one_root_dir) / pathlib.Path(one_root_dir).name.split('_')[0])
             for one_probe_dir in sorted((pathlib.Path(one_root_dir) / 'ephys').iterdir()):
                 if one_probe_dir.is_dir() and 'imec' in one_probe_dir.name:
@@ -268,7 +270,7 @@ class Operator:
             concatenation_command = 'copy /b ' if os.name == 'nt' else 'cat '
             total_size_bytes = 0
             total_time_secs = 0.0
-            for ord_idx, one_root_dir in enumerate(self.root_directory):
+            for one_root_dir in self.root_directory:
                 ephys_probe_dir = pathlib.Path(one_root_dir) / 'ephys' / probe_id
                 if ephys_probe_dir.is_dir():
                     for one_file, one_meta in zip(sorted(ephys_probe_dir.glob(f"*{npx_file_type}.bin*")),
@@ -405,7 +407,7 @@ class Operator:
         Description
         -----------
         This method splits multichannel audio file into single channel files and
-        concatenates single channel files via Sox, since multichannel files where
+        concatenates single channel files via Sox, since multichannel files were
         split due to a size limitation.
 
         Parameters
@@ -532,7 +534,7 @@ class Operator:
                                             hop_length=self.input_parameter_dict['hpss_audio']['stft_window_length_hop_size'][1])
 
             # perform HPSS on the spectrogram data
-            D_harmonic, D_percussive = librosa.decompose.hpss(S=spectrogram_data,
+            D_harmonic, _ = librosa.decompose.hpss(S=spectrogram_data,
                                                               kernel_size=self.input_parameter_dict['hpss_audio']['kernel_size'],
                                                               power=self.input_parameter_dict['hpss_audio']['hpss_power'],
                                                               mask=False,
@@ -631,7 +633,7 @@ class Operator:
         Returns
         -------
         memmap file
-            Concatenated wave file (shape: n_channels X n_samples).
+            Concatenated wave file (shape: n_samples X n_channels).
         """
 
         self.message_output(f"Audio concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -786,7 +788,7 @@ class Operator:
         camera_idx = 0
 
         fsp_subprocesses = []
-        for sd_idx, sub_directory in enumerate(sorted(video_dir.iterdir())):
+        for sub_directory in sorted(video_dir.iterdir()):
             if (sub_directory.is_dir()
                     and '.' in sub_directory.name
                     and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
@@ -855,7 +857,7 @@ class Operator:
         )
 
         # move files to special directory
-        for sd_idx, sub_directory in enumerate(sorted(video_dir.iterdir())):
+        for sub_directory in sorted(video_dir.iterdir()):
             if (sub_directory.is_dir()
                     and '.' in sub_directory.name
                     and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
@@ -882,8 +884,10 @@ class Operator:
                                 dst=dest_base / 'calibration_images' / new_file)
 
                 # clean video directory of all unnecessary files
+                # guard on the file actually being unlinked (target_file); for calibration
+                # sub-directories target_file is '000000.<ext>', not '<conv_target>_<serial>.<ext>'
                 if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
-                    if (current_working_dir / f"{conv_target}_{cam_serial}.{vid_ext}").is_file():
+                    if (current_working_dir / target_file).is_file():
                         (current_working_dir / target_file).unlink()
 
         # save camera_frame_count_dict to a file

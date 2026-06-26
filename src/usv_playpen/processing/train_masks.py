@@ -110,6 +110,16 @@ class MaskDetectorTrainer:
         device = cfg['device']
         run_name = cfg['run_name']
 
+        # Guard against None directories: reachable only via direct programmatic
+        # construction (the CLI marks both required=True). pathlib.Path(None) would
+        # otherwise raise an opaque TypeError; raise the clear error the docstrings promise.
+        if self.dataset_directory is None:
+            error_message = "dataset_directory must be provided (got None)."
+            raise ValueError(error_message)
+        if self.output_directory is None:
+            error_message = "output_directory must be provided (got None)."
+            raise ValueError(error_message)
+
         dataset_dir = pathlib.Path(self.dataset_directory)
         data_yaml = dataset_dir / "data.yaml"
         if not data_yaml.is_file():

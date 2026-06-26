@@ -121,7 +121,7 @@ def _nudge_button_icon_up(button: QPushButton, shift_px: int = 1) -> None:
         The button whose icon to shift.
     shift_px (int)
         Logical pixels to move the icon content upward -- equivalently, how far
-        the text sits lower relative to the icon (default 2).
+        the text sits lower relative to the icon (default 1).
 
     Returns
     -------
@@ -225,6 +225,8 @@ class YamlHighlighter(QSyntaxHighlighter):
 
         Parameters
         ----------
+        text (str)
+            The line of text Qt passes for this block to be highlighted.
 
         Returns
         -------
@@ -1053,11 +1055,11 @@ def replace_name_in_path(experimenter_list: list = None,
     Parameters
     ----------
     experimenter_list (list)
-        Path to be modified.
+        Experimenter names searched for within each destination path.
     recording_files_destinations (list)
-        New name to be used.
+        Destination paths to be rewritten with the inserted experiment ID.
     exp_id (str)
-        Experiment ID to be inserted.
+        Experiment ID to be inserted in place of the matched name.
 
     Returns
     -------
@@ -1151,25 +1153,6 @@ class Record(QWidget):
         None
         """
         super(Record, self).__init__(parent)
-
-
-class AudioSettings(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
-        """
-        Description
-        -----------
-        Initializes the AudioSettings class.
-
-        Parameters
-        ----------
-        parent (QWidget)
-            Parent widget; defaults to Main.
-
-        Returns
-        -------
-        None
-        """
-        super(AudioSettings, self).__init__(parent)
 
 
 class VideoSettings(QWidget):
@@ -2216,6 +2199,8 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        index_to_remove (int)
+            Position of the subject to pop from the 'Subjects' list.
 
         Returns
         -------
@@ -2494,7 +2479,7 @@ class USVPlaypenWindow(QMainWindow):
         avisoft_base_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
         avisoft_base_dir_btn.move(625, 70)
         avisoft_base_dir_btn.setStyleSheet('QPushButton { min-width: 64px; min-height: 12px; max-width: 64px; max-height: 13px; }')
-        open_avisoft_base_dir_dialog = partial(self._open_directory_dialog, self.avisoft_base_edit, 'Select Avisoft sase directory')
+        open_avisoft_base_dir_dialog = partial(self._open_directory_dialog, self.avisoft_base_edit, 'Select Avisoft base directory')
         avisoft_base_dir_btn.clicked.connect(open_avisoft_base_dir_dialog)
 
         avisoft_config_dir_label = QLabel('Avisoft config directory:', self.Record)
@@ -6161,7 +6146,8 @@ class USVPlaypenWindow(QMainWindow):
         """
         Description
         -----------
-        Audio device camera input combo box.
+        Combo box handler for selecting which Trgbox-USGH device(s) receive the
+        recording input (master, slave, or both).
 
         Parameters
         ----------
@@ -6979,7 +6965,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-        target_line_ediT (QLineEdit)
+        target_line_edit (QLineEdit)
             QLineEdit to be updated with the selected directory.
         dialog_title (str)
             Title of the dialog window.
@@ -7134,19 +7120,21 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.appendPlainText(s)
 
 
-def initialize_main_window(no_splash: bool = False) -> QMainWindow:
+def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMainWindow]:
     """
     Description
     -----------
-    Initialize the main GUI window and return the object.
+    Initialize the main GUI application and window and return them as a pair.
 
     Parameters
     ----------
-    no_splash: Whether to display the splash screen or not.
+    no_splash (bool)
+        Whether to suppress the splash screen on startup; defaults to False.
 
     Returns
     -------
-    The initialized GUI windows.
+    (usv_playpen_app, usv_playpen_window) (tuple[QApplication, QMainWindow])
+        The initialized GUI application and its main window.
     """
 
     # Handle high-resolution displays:

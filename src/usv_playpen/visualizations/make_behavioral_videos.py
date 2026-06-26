@@ -834,7 +834,7 @@ def plot_behavioral_features(plot_axes: plt.Axes,
         beh_window_size_frames (int)
             Window size in frames.
         beh_window_size_sec (int / float)
-            Window size in seconds.
+            Half window size in seconds (per-side +/- x-axis bound; equals beh_features_window_size / 2).
         beh_half_window_size_frames (int)
             Half window size in frames.
         beh_features_ylabels (dict)
@@ -1072,7 +1072,7 @@ def plot_arena_corners_mics(data: np.ndarray,
         active_mic_bool (bool)
             If True, plots active mic.
         active_mic_position (int)
-            Channel of active mic; defaults to 0.
+            Channel of active mic (required; the caller supplies 0 when no spectrogram channel is selected).
         active_mic_color (str)
             Color of active mic.
         inactive_mic_bool (bool)
@@ -1109,10 +1109,10 @@ def plot_arena_corners_mics(data: np.ndarray,
                               c=inactive_mic_color, s=20, alpha=arena_mics_opacity)
 
     if plot_corners_bool:
-        plot_axes.scatter(data[0, 0, arena_node_names.index('North'), 0], data[0, 0, arena_node_names.index('North'), 1], data[0, 0, arena_node_names.index('North'), 2], c='red', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, arena_node_names.index('West'), 0], data[0, 0, arena_node_names.index('West'), 1], data[0, 0, arena_node_names.index('West'), 2], c='yellow', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, arena_node_names.index('South'), 0], data[0, 0, arena_node_names.index('South'), 1], data[0, 0, arena_node_names.index('South'), 2], c='green', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, arena_node_names.index('East'), 0], data[0, 0, arena_node_names.index('East'), 1], data[0, 0, arena_node_names.index('East'), 2], c='blue', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, arena_node_names.index('North'), 0], data[0, 0, arena_node_names.index('North'), 1], data[0, 0, arena_node_names.index('North'), 2], c='#FF0000', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, arena_node_names.index('West'), 0], data[0, 0, arena_node_names.index('West'), 1], data[0, 0, arena_node_names.index('West'), 2], c='#FFFF00', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, arena_node_names.index('South'), 0], data[0, 0, arena_node_names.index('South'), 1], data[0, 0, arena_node_names.index('South'), 2], c='#008000', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, arena_node_names.index('East'), 0], data[0, 0, arena_node_names.index('East'), 1], data[0, 0, arena_node_names.index('East'), 2], c='#0000FF', s=corner_size, alpha=corner_opacity)
 
     # plot bottom sides
     plot_axes.plot([data[0, 0, arena_node_names.index('North'), 0], data[0, 0, arena_node_names.index('West'), 0]],
@@ -2248,7 +2248,7 @@ class Create3DVideo:
                 animation_file_path = str(putative_save_directory / f"{animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}")
 
                 if self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec'] is not None:
-                    # create a custom writer for NVIDIA GPU acceleration
+                    # create a custom writer for the configured codec (e.g. h264_nvenc for NVIDIA GPU acceleration)
                     animation_writer = FFMpegWriter(
                         fps=int(np.floor(empirical_camera_sr)),
                         codec=self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec'],
@@ -2262,7 +2262,7 @@ class Create3DVideo:
 
                 try:
                     if isinstance(animation_writer, FFMpegWriter):
-                        self.message_output("Using GPU (h264_nvenc) for video encoding...")
+                        self.message_output(f"Using configured codec ({self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_codec']}) for video encoding...")
                         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
                         anima.save(filename=animation_file_path,
                                    writer=animation_writer,

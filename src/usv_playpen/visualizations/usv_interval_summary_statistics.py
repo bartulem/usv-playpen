@@ -6,7 +6,8 @@ plotting helpers.
 These helpers are thin wrappers around :mod:`usv_playpen.analyses.mixture_model_utils`
 intended to keep the inter-USV interval notebook declarative. Plot functions follow
 the convention used in :mod:`usv_playpen.visualizations.usv_summary_statistics`:
-they return ``(fig, ax, stats_dict)``.
+most single-axis plot functions return ``(fig, ax, stats_dict)``; multi-axis
+panels deviate as documented per function.
 """
 
 from __future__ import annotations
@@ -368,8 +369,12 @@ def plot_ic_curves(
     axes (tuple)
         ``(ax_left, ax_right)`` — the male and female axes.
     stats (dict)
-        Mapping ``key -> {'best_n_comp', 'best_ic', 'parsimonious_n_comp',
-        'parsimonious_ic', 'delta_vs_best'}``.
+        Mapping ``sex -> {'min_ic_per_K', 'selected_n_components'}``,
+        where ``'min_ic_per_K'`` is a dict mapping ``int K`` to its
+        minimum ``float`` IC value across reps and
+        ``'selected_n_components'`` is the ``int`` K nominated by the
+        bootstrap-LRT step-up rule (or ``None`` when no selection was
+        supplied for that sex).
     """
 
     f, ax_left = plt.subplots(figsize=figsize)
@@ -397,8 +402,9 @@ def plot_ic_curves(
         # uniform-size data points; no argmin / parsimony markers
         ax.plot(n_arr, b_arr, "-o", color=col, markersize=8)
 
-        # outlined (not filled) black square at the K selected by the
-        # bootstrap-LRT step-up procedure (passed in by the caller)
+        # filled circle (in the sex colour) outlined in black at the K
+        # selected by the bootstrap-LRT step-up procedure (passed in by
+        # the caller)
         if selected_n_components is not None and sex in selected_n_components:
             sel_n = int(selected_n_components[sex])
             n_list = list(int(x) for x in n_arr)
@@ -884,7 +890,8 @@ def _draw_qq_into_axes(
         Number of quantile probabilities; defaults to 200.
     inset (bool)
         If True, render in compact mode (smaller dots, smaller tick
-        font, no axis labels). Defaults to False.
+        font, compact axis labels (Observed (s) / Model (s)) and no
+        plot title). Defaults to False.
 
     Returns
     -------

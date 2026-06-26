@@ -756,7 +756,7 @@ class ExperimentController:
         Parameters
         ----------
         camera_fr (int / float)
-            Camera sampling rate; defaults to None.
+            Camera sampling rate.
 
         Returns
         -------
@@ -771,7 +771,7 @@ class ExperimentController:
                 lin_dir_elements = lin_directory.split('/')[0:3]
                 mount_check_bool = self.check_remote_mount(hostname=ip_address_pc, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path='/'.join(lin_dir_elements))
                 if not mount_check_bool:
-                    raise RuntimeError(f"Mount point {lin_directory} on {ip_address} is not valid; fix the mount and try again.")
+                    raise RuntimeError(f"Mount point {lin_directory} on {ip_address_pc} is not valid; fix the mount and try again.")
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
@@ -807,7 +807,7 @@ class ExperimentController:
                 api.call(f"camera/{self.exp_settings_dict['video']['general']['expected_cameras'][0]}/configure", AcquisitionFrameRate=camera_fr)
                 self.message_output(f"The camera frame rate is set to {camera_fr} fps for {self.exp_settings_dict['video']['general']['expected_cameras'][0]}.")
             else:
-                api.call(f'cameras/configure', MotifMulticamFrameRate=camera_fr)
+                api.call('cameras/configure', MotifMulticamFrameRate=camera_fr)
                 self.message_output(f"The camera frame rate is set to {camera_fr} fps for all chosen cameras.")
 
             # monitor recording via browser
@@ -1116,7 +1116,7 @@ class ExperimentController:
                 run_avisoft_command = f"Start-Process -FilePath '{avisoft_recorder_program_name}' -ArgumentList '/CFG=avisoft_config.ini', '/AUT' -Verb RunAs"
 
                 # add priority/affinity only if they exist
-                if run_avisoft_command or (affinity_arg and affinity_arg.strip()):
+                if cpu_priority or (affinity_arg and affinity_arg.strip()):
                     run_avisoft_command += "; Start-Sleep 2; $proc = Get-Process 'rec_usgh' -ErrorAction SilentlyContinue; if ($proc) {"
 
                     if cpu_priority:

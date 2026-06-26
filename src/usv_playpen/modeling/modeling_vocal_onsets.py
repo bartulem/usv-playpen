@@ -118,6 +118,17 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         except KeyError as e:
             raise KeyError(f"Setting missing for history_frames calculation: {e}")
 
+        # Fail fast on a sub-frame history window: a `filter_history` shorter
+        # than one camera frame floors to 0 here, which would silently yield
+        # (0, 0)-shaped window arrays and degenerate empty downstream results
+        # instead of a clear configuration error.
+        if self.history_frames < 1:
+            raise ValueError(
+                f"history_frames computed as {self.history_frames} (< 1) from "
+                f"filter_history={filter_history_sec}s at camera_rate={camera_rate}fps; "
+                f"the history window must span at least one frame."
+            )
+
         FeatureZoo.__init__(self)
 
         for kw_arg, kw_val in kwargs.items():
@@ -393,10 +404,18 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
             noise_vocal_categories_excluded=list(voc_settings['usv_noise_categories']),
+            # `build_vocal_signal_columns` emits exactly these per-mouse suffixes
+            # (from `continuous_vocal_signals`): the scalar `usv_event` /
+            # `usv_rate` traces and any number of per-category `usv_cat_<int>`
+            # syntax traces. Match on the bare suffix by equality (scalar traces)
+            # or the `usv_cat_` prefix (category traces) rather than testing
+            # substring membership against the `usv_predictor_type` mode string
+            # (e.g. 'categories_rate'), which is a configuration label, not a
+            # column suffix.
             vocal_signal_columns_added=sorted({
                 c for c in kept_columns_first_sess
-                if c.split('.', 1)[-1] in (voc_settings['usv_predictor_type'] or '')
-                or any(tok in c for tok in ('usv_rate', 'usv_cat_'))
+                if (c.split('.', 1)[-1] in ('usv_event', 'usv_rate')
+                    or c.split('.', 1)[-1].startswith('usv_cat_'))
             }),
             filter_history_seconds=float(max_hist_sec),
             filter_history_frames=int(self.history_frames),
@@ -435,8 +454,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         print("Extracting epochs per session and renaming features...")
         modeling_final_data_dict = {}
 
-        for session_idx, beh_session_id in enumerate(tqdm(processed_beh_feature_data_dict.keys(), desc='Extracting Epochs')):
+        for beh_session_id in tqdm(processed_beh_feature_data_dict.keys(), desc='Extracting Epochs'):
             session_df = processed_beh_feature_data_dict[beh_session_id]
+            # `predictor_mouse_idx`/`target_mouse_idx` carry the value left by
+            # the per-session `resolve_mouse_roles` loop above; they are
+            # session-invariant by contract (driven by the fixed
+            # `model_predictor_mouse_index` setting), so reusing them here, in
+            # the audit, and in `harmonize_session_columns` is safe.
             predictor_mouse_name = mouse_track_names_dict[beh_session_id][predictor_mouse_idx]
             target_mouse_name = mouse_track_names_dict[beh_session_id][target_mouse_idx]
 
@@ -688,7 +712,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 X_pos_train, X_neg_train = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
                 X_pos_test, X_neg_test = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
 
-                # Balance the *training set ONLY
+                # Balance the TRAINING set ONLY (test fold keeps the natural class prior).
                 X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train, X_neg_train)
 
                 if X_pos_train_bal.shape[0] == 0:
@@ -762,11 +786,18 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             - `auc` : threshold-free ranking quality (binary ROC-AUC);
               imbalance-robust but blind to calibration.
             - `score` : balanced accuracy (mean per-class recall).
-            - `recall` : positive-class recall; kept because macro-F1 already
-              summarizes the precision/recall trade-off.
+            - `recall` : positive-class recall (sensitivity); retained alongside
+              binary F1 because it isolates the false-negative rate that F1
+              blends together with precision.
             - `f1` : binary F1 (harmonic mean of precision and recall).
             - `ll` : log-loss; strictly proper probabilistic score that punishes
               confident wrong predictions.
+            - `deviance_explained` : McFadden-style effect size `1 - LL / ln(2)`,
+              where the balanced-trained 0.5-intercept null gives `LL_chance = ln(2)`.
+              This is the proper-scoring-rule effect size the univariate plots and
+              downstream model selection rank / threshold on (balanced accuracy and
+              AUC are improper rank/threshold statistics and are NOT a valid
+              significance basis).
             - `brier` : Brier score (mean squared error of the positive-class
               probability). Quadratic counterpart to log-loss, more robust to
               occasional overconfidence.
@@ -984,7 +1015,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             training labels permuted (a label-shuffle permutation test),
             evaluated against the real test labels.
 
-        Tho code covers the following steps:
+        The code covers the following steps:
         1.  It fits a `pygam.LogisticGAM` model. The core of
             this model is a `te(0, 1, ...)` term (tensor product spline). This
             fits a single, smooth 2D *surface* that represents the log-odds
@@ -1027,6 +1058,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                - `score` : balanced accuracy.
                - `recall`, `f1` : standard imbalance-robust summaries.
                - `ll` : log-loss (strictly proper probabilistic score).
+               - `deviance_explained` : McFadden-style effect size `1 - LL / ln(2)`
+                 (balanced-trained 0.5-intercept null), matching the sklearn branch;
+                 the proper-scoring significance basis used downstream.
                - `brier` : mean squared error on predicted probabilities.
                - `ece` : top-label calibration error (10 equal-width bins).
                - `mcc` : Matthews correlation coefficient.

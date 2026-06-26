@@ -233,11 +233,10 @@ def compute_filter_shapes_per_fold_bout_onset(
     Refit the final multivariate ``LogisticGAM`` once per CV fold
     and extract the per-feature temporal-filter shape for that fold.
 
-    The bout-onset selector's final-refit block calls this; the
-    ``recompute_filter_shapes`` recovery utility for legacy
-    consolidated pickles calls it too. Keeping the loop in one
-    place guarantees both code paths exercise the same fitting,
-    balancing, and partial-dependence-extraction logic.
+    The bout-onset selector's final-refit block is this helper's
+    single caller; the loop is factored out here purely for
+    readability, isolating the per-fold fitting, balancing, and
+    partial-dependence-extraction logic from the selector body.
 
     For each fold:
       1. Pull this fold's train pos/neg arrays for every feature in
@@ -262,32 +261,32 @@ def compute_filter_shapes_per_fold_bout_onset(
 
     Parameters
     ----------
-    cv_folds (list of dict)
+    cv_folds : list of dict
         Fold definitions. Each must have a ``'type'`` key of either
         ``'session'`` (with ``'train_sessions'``) or ``'mixed'``
         (with ``'train_idx'``, ``'n_pos_total'``, ``'n_neg_total'``).
-    current_model_features (list of str)
+    current_model_features : list of str
         Features to include in the multivariate model. Must all be
         present in ``all_feature_data`` (for session folds) and in
         ``pooled_feature_cache`` (for mixed folds).
-    all_feature_data (dict)
+    all_feature_data : dict
         Per-feature, per-session raw data. Consumed only for
         ``'session'`` folds.
-    pooled_feature_cache (dict)
+    pooled_feature_cache : dict
         Pre-pooled balanced design matrices keyed by feature.
         Values are dicts with ``'X_full'``. Consumed only for
         ``'mixed'`` folds.
-    history_frames (int)
+    history_frames : int
         Number of time frames per filter.
-    n_splines_value, n_splines_time (int)
+    n_splines_value, n_splines_time : int
         pyGAM spline counts for the value and time axes,
         respectively.
-    gam_kwargs (dict)
+    gam_kwargs : dict
         Keyword args forwarded to ``LogisticGAM(**gam_kwargs)``.
-    random_seed (int)
+    random_seed : int
         Base RNG seed. Each fold uses ``random_seed + fold_idx``
         so the balancing draws are reproducible across reruns.
-    time_indices (np.ndarray)
+    time_indices : np.ndarray
         Vector ``np.arange(history_frames, dtype=float)`` used to
         construct the partial-dependence base grid. Passed in to
         avoid re-allocating it per call.
@@ -456,7 +455,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     """
 
     print("--- Starting Model Selection ---")
-    chance_ll = np.log(2)
+    chance_ll = np.log(2)  # mean log-loss of a balanced 50/50 coin: the binary chance floor
 
     if settings_path is None:
         settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
@@ -768,7 +767,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                 ))
                 gam_diffs = gam.logs_['diffs']
                 metrics['n_iter'].append(float(len(gam_diffs)))
-                metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
+                metrics['converged'].append(bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter']))
                 metrics['fit_time'].append(fit_time)
 
                 del gam, X_tr_gam, X_te_gam
@@ -789,7 +788,9 @@ def bout_onset_model_selection(univariate_results_path: str,
         valid_ll = [x for x in metrics['ll'] if np.isfinite(x)]
         if valid_ll:
             best_current_score = np.mean(valid_ll)
-            best_current_se = np.std(valid_ll, ddof=1) / np.sqrt(len(valid_ll))
+            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            best_current_se = np.std(valid_ll, ddof=1) / np.sqrt(len(valid_ll)) if len(valid_ll) > 1 else 0.0
 
             # Step 0 Save
             step_0_metadata = {
@@ -920,7 +921,7 @@ def bout_onset_model_selection(univariate_results_path: str,
                     ))
                     gam_diffs = gam.logs_['diffs']
                     metrics['n_iter'].append(float(len(gam_diffs)))
-                    metrics['converged'].append(bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol']))
+                    metrics['converged'].append(bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter']))
                     metrics['fit_time'].append(fit_time)
 
                     del gam, X_tr_gam, X_te_gam
@@ -940,7 +941,10 @@ def bout_onset_model_selection(univariate_results_path: str,
             valid = [x for x in metrics['ll'] if np.isfinite(x)]
 
             if valid:
-                mean_ll, se_ll = np.mean(valid), np.std(valid, ddof=1) / np.sqrt(len(valid))
+                # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+                # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+                mean_ll = np.mean(valid)
+                se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
                 print(f" LL: {mean_ll:.4f} (range: {min(valid):.4f}-{max(valid):.4f})")
 
                 step_results_metadata['candidates_summary'][feat] = {
@@ -991,9 +995,9 @@ def bout_onset_model_selection(univariate_results_path: str,
     # failed: ...')`` that hid every subsequent failure), and the
     # lost per-fold filter data was only spotted after a 6-day run.
     #
-    # The loop body is in ``compute_filter_shapes_per_fold_bout_onset``
-    # so the legacy-pickle recovery utility
-    # (``recompute_filter_shapes``) can reuse the same code path.
+    # The loop body is factored into
+    # ``compute_filter_shapes_per_fold_bout_onset`` purely for
+    # readability (this is its single caller).
     # Safety nets are layered here (caller side) rather than inside
     # the helper:
     #   * Per-fold exceptions are caught inside the helper and
@@ -1235,7 +1239,7 @@ def vocal_category_model_selection(
     """
 
     print("--- Starting Vocal Category Model Selection ---")
-    chance_ll = np.log(2)
+    chance_ll = np.log(2)  # mean log-loss of a balanced 50/50 coin: the binary chance floor
 
     if settings_path is None:
         settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
@@ -1603,7 +1607,7 @@ def vocal_category_model_selection(
                     y_pred = (y_proba >= 0.5).astype(int)
                     gam_diffs = gam.logs_['diffs']
                     fold_n_iter = float(len(gam_diffs))
-                    fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+                    fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
 
                 metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
                 metrics['auc'].append(roc_auc_score(y_te, y_proba))
@@ -1636,7 +1640,9 @@ def vocal_category_model_selection(
         valid = [s for s in metrics['ll'] if np.isfinite(s)]
         if valid:
             best_current_score = np.mean(valid)
-            best_current_se = np.std(valid, ddof=1) / np.sqrt(len(valid))
+            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            best_current_se = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
             step_results = {
                 'step_idx': 0, 'current_features': list(current_model_features),
                 'baseline_score': best_current_score,
@@ -1758,7 +1764,7 @@ def vocal_category_model_selection(
                         y_pred = (y_proba >= 0.5).astype(int)
                         gam_diffs = gam.logs_['diffs']
                         fold_n_iter = float(len(gam_diffs))
-                        fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+                        fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
 
                     metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
                     metrics['auc'].append(roc_auc_score(y_te, y_proba))
@@ -1795,7 +1801,9 @@ def vocal_category_model_selection(
                 continue
 
             mean_ll = np.mean(valid)
-            se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid))
+            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
             print(f" LL: {mean_ll:.4f} | AUC: {np.nanmean(metrics['auc']):.3f}")
 
             step_results_metadata['candidates_summary'][feat] = {
@@ -2183,6 +2191,14 @@ def bout_parameter_model_selection(
     n_bins = max(2, min(10, len(y_global) // n_splits))
     bins = np.unique(np.percentile(y_global, np.linspace(0, 100, n_bins + 1)))
     if len(bins) < 2:
+        # Right-skewed targets with many tied values can collapse every
+        # percentile edge to a single distinct value, leaving fewer than two
+        # bins. The all-zeros fallback below makes StratifiedShuffleSplit /
+        # StratifiedGroupKFold silently degrade to unstratified splitting, so
+        # surface the loss of stratification in the run log (it is otherwise
+        # invisible: the metadata/console still report the configured strategy).
+        print("  WARNING: quantile binning collapsed to a single bin; "
+              "stratification is disabled and splits degrade to unstratified.")
         y_binned = np.zeros(len(y_global))
     else:
         y_binned = np.digitize(y_global, bins[1:-1])
@@ -2367,7 +2383,7 @@ def bout_parameter_model_selection(
                     y_pred = np.exp(np.mean(eta_te, axis=1))
                     gam_diffs = gam.logs_['diffs']
                     fold_n_iter = float(len(gam_diffs))
-                    fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+                    fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
 
                 # Robust Metric Calculation
                 y_te_safe = np.maximum(y_te, 1e-6)
@@ -2417,7 +2433,9 @@ def bout_parameter_model_selection(
             mean_anchor_score = np.mean(valid_dev)
             if mean_anchor_score > 0:
                 best_current_score = mean_anchor_score
-                best_current_se = np.std(valid_dev, ddof=1) / np.sqrt(len(valid_dev))
+                # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+                # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+                best_current_se = np.std(valid_dev, ddof=1) / np.sqrt(len(valid_dev)) if len(valid_dev) > 1 else 0.0
                 current_model_features = [anchor]
 
                 step_0_res = {
@@ -2505,7 +2523,7 @@ def bout_parameter_model_selection(
                         y_pred = np.exp(np.mean(eta_te, axis=1))
                         gam_diffs = gam.logs_['diffs']
                         fold_n_iter = float(len(gam_diffs))
-                        fold_converged = bool(gam_diffs and gam_diffs[-1] < gam_kwargs['tol'])
+                        fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
 
                     y_te_safe = np.maximum(y_te, 1e-6)
                     y_pred_safe = np.maximum(y_pred, 1e-6)
@@ -2552,7 +2570,10 @@ def bout_parameter_model_selection(
                 print(" Failed (no finite folds).")
                 continue
 
-            m_dev, s_dev = np.mean(valid), np.std(valid, ddof=1) / np.sqrt(len(valid))
+            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            m_dev = np.mean(valid)
+            s_dev = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
             print(f" D^2: {m_dev:.4f}")
 
             step_results['candidates_summary'][feat] = {
@@ -2724,7 +2745,9 @@ def multinomial_vocal_category_model_selection(
     - 'step_idx' (int): The current iteration number.
     - 'current_features' (list): Features selected prior to this step.
     - 'selected_feature' (str or None): The winning feature added in this step.
-    - 'baseline_score' (float): The AUC of the current_features model.
+    - 'baseline_score' (float): The macro OvR AUC of the current_features model;
+       at Step 0 current_features is the empty list and this is instead the
+       model-free marginal-prior baseline AUC (the `null_model_free` entry).
     - 'candidates_summary' (dict): Maps each tested feature to its detailed results:
         - 'mean_auc', 'se_auc': Aggregated AUC metrics used for the 1SE rule.
         - 'classes': Array of original USV category string labels.
@@ -3205,8 +3228,14 @@ def multinomial_vocal_category_model_selection(
                 baseline_data['classes'] = unique_classes
 
         valid_auc = [m for m in baseline_data['folds']['metrics']['auc'] if not np.isnan(m)]
-        best_current_score = np.mean(valid_auc)
-        best_current_se = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
+        # Guard against the all-NaN / single-fold cases the way the manifold
+        # baseline does: an empty `valid_auc` would make `np.mean([])` NaN and a
+        # single finite fold would make `np.std([x], ddof=1)` NaN (ddof drives the
+        # divisor to zero). Either NaN poisons every subsequent 1SE accept test
+        # (`> NaN` is always False), silently rejecting the anchor and every
+        # forward feature and terminating with an empty model.
+        best_current_score = float(np.mean(valid_auc)) if valid_auc else float('-inf')
+        best_current_se = float(np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))) if len(valid_auc) > 1 else 0.0
 
         print(f"  Baseline Global AUC established at: {best_current_score:.4f}")
 
@@ -3359,7 +3388,9 @@ def multinomial_vocal_category_model_selection(
         valid_auc = [m for m in cand_data['folds']['metrics']['auc'] if np.isfinite(m)]
         if valid_auc:
             mean_anc_auc = np.mean(valid_auc)
-            se_anc_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
+            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            se_anc_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc)) if len(valid_auc) > 1 else 0.0
 
             cand_data['mean_auc'] = mean_anc_auc
             cand_data['se_auc'] = se_anc_auc
@@ -3381,7 +3412,7 @@ def multinomial_vocal_category_model_selection(
                     pickle.dump(_wrap_step(step_1_res), f)
                 step_counter = 2
             else:
-                print("  *** ANCHOR REJECTED: Failed to beat spatial baseline. Continuing from Empty Model. ***")
+                print("  *** ANCHOR REJECTED: Failed to beat the model-free marginal-prior baseline. Continuing from Empty Model. ***")
         else:
             print(
                 "  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
@@ -3556,7 +3587,9 @@ def multinomial_vocal_category_model_selection(
                 continue
 
             mean_auc = np.mean(valid_auc)
-            se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))
+            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
+            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc)) if len(valid_auc) > 1 else 0.0
             print(f" AUC: {mean_auc:.4f}")
             cand_data['mean_auc'], cand_data['se_auc'] = mean_auc, se_auc
             step_results['candidates_summary'][feat] = cand_data

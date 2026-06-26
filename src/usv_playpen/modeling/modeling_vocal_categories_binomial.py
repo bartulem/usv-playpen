@@ -441,6 +441,16 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             except KeyError:
                 continue
 
+            # `find_usv_categories` initializes 'target_events'/'other_events'
+            # to None and only fills them for mice that retain USVs after the
+            # noise/history filters. A target mouse that never vocalized in a
+            # session therefore leaves the keys present but None; skip it here
+            # so the None never reaches `_collect_category_windows`, where
+            # `np.round(None * sampling_rate)` would raise an uncaught
+            # TypeError and abort the whole epoch-extraction loop.
+            if target_times is None or other_times is None:
+                continue
+
             fps = cam_fps_dict[sess_id]
             hist_frames = self.history_frames
 
@@ -693,13 +703,16 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         4.  Metric aggregation: Computes fold-wise classification statistics for both
             actual and null models to enable significance testing.
 
-        Metrics saved per split (see the `results[key][...]` layout):
+        Metrics saved per split (see the `results[strat][...]` layout):
         - `auc` : threshold-free ranking quality (ROC-AUC).
         - `score` : balanced accuracy; imbalance-robust hard-label accuracy.
         - `recall` : positive-class recall (precision is derivable from the
           saved confusion matrix on demand).
         - `f1` : binary F1 (harmonic mean of precision and recall).
         - `ll` : log-loss; strictly proper probabilistic score.
+        - `deviance_explained` : McFadden-style `1 - LL / ln(2)` relative to the
+          balanced-trained 0.5-intercept null (`LL_chance = ln(2)`); the
+          proper-scoring effect size used for the univariate plots.
         - `brier` : Brier score on the positive-class probability; quadratic
           counterpart to log-loss, robust to occasional overconfidence.
         - `ece` : top-label Expected Calibration Error (10 equal-width bins);
@@ -735,7 +748,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         n_splits = self.modeling_settings['model_params']['split_num']
 
         # Scalar per-split metrics. `precision` is dropped because it is
-        # derivable on demand from the saved confusion matrices and macro-F1
+        # derivable on demand from the saved confusion matrices and binary F1
         # already summarizes the precision / recall trade-off.
         metrics = ['auc', 'score', 'recall', 'f1', 'll', 'deviance_explained', 'brier', 'ece', 'mcc']
         results = {
@@ -768,7 +781,6 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             # test), evaluated against the real test labels. This replaced the
             # former `null_other` (Other-vs-Other pseudo-class) baseline.
             splitter = self.create_category_splits(feature_data, strategy='actual')
-            key = strat
 
             for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
                 if split_idx >= n_splits: break
@@ -831,6 +843,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             results['actual']['filter_shapes'][split_idx, :] = filter_shape_actual
 
                     elif model_type == 'pygam':
+                        # The pyGAM engine fits per-frame rows: each window is
+                        # unrolled into `history_frames` (value, time) rows and
+                        # each window-level label is repeated across those frames,
+                        # so the spline sees one observation per frame. Per-frame
+                        # predicted probabilities are averaged back to one
+                        # probability per window below (line with `np.mean(...)`).
                         X_tr_gam = unroll_history_matrix(X_tr)
                         X_te_gam = unroll_history_matrix(X_te)
                         y_tr_gam = np.repeat(y_tr, self.history_frames).astype(int)
@@ -856,6 +874,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                               f"Final Δ: {diffs[-1] if diffs else 0.0:.2e} (Tol: {gam_args['tol']:.2e}) | "
                               f"Deviance: {gam.logs_['deviance'][-1]:.2f}")
 
+                        # Average the per-frame predicted probabilities back to
+                        # one probability per window (reshape to (n_windows,
+                        # history_frames) then mean over the frame axis), matching
+                        # the per-frame label expansion of the training rows above.
                         y_prob_frame = gam.predict_proba(X_te_gam)
                         y_prob = np.mean(y_prob_frame.reshape(X_te.shape), axis=1)
                         y_pred = (y_prob > 0.5).astype(int)
@@ -870,37 +892,47 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
                     if y_prob is not None and y_pred is not None:
                         y_prob_clipped = np.clip(y_prob, 1e-15, 1 - 1e-15)
-                        y_proba_2d = np.column_stack([1.0 - y_prob, y_prob])
+                        # Feed the SAME clipped probabilities to the calibration
+                        # metric that log-loss uses, so an exact 0.0/1.0 mean
+                        # probability (possible on the pyGAM averaging path)
+                        # cannot make 1.0 - y_prob land exactly on a bin edge.
+                        y_proba_2d = np.column_stack([1.0 - y_prob_clipped, y_prob_clipped])
 
-                        results[key]['auc'][split_idx] = roc_auc_score(y_te, y_prob)
-                        results[key]['ll'][split_idx] = log_loss(y_te, y_prob_clipped)
+                        # ROC-AUC is undefined when the test fold is single-class
+                        # (a held-out session or a tiny minority class can land
+                        # entirely on one side); guard it specifically so it stays
+                        # NaN for that fold instead of raising and aborting the
+                        # remaining single-class-valid metrics in this block.
+                        if len(np.unique(y_te)) > 1:
+                            results[strat]['auc'][split_idx] = roc_auc_score(y_te, y_prob)
+                        results[strat]['ll'][split_idx] = log_loss(y_te, y_prob_clipped)
                         # McFadden-style deviance explained: 1 - LL / LL_chance, where the
                         # balanced-trained intercept model predicts 0.5 -> LL_chance = ln(2).
                         # Proper-scoring-rule effect size for the univariate plots (balanced
                         # accuracy / AUC are improper and not a valid significance basis).
-                        results[key]['deviance_explained'][split_idx] = 1.0 - results[key]['ll'][split_idx] / np.log(2)
+                        results[strat]['deviance_explained'][split_idx] = 1.0 - results[strat]['ll'][split_idx] / np.log(2)
 
-                        results[key]['score'][split_idx] = balanced_accuracy_score(y_te, y_pred)
-                        results[key]['recall'][split_idx] = recall_score(y_te, y_pred, zero_division=0.0)
-                        results[key]['f1'][split_idx] = f1_score(y_te, y_pred, average='binary', zero_division=0.0)
-                        results[key]['brier'][split_idx] = float(brier_score_loss(y_te, y_prob))
+                        results[strat]['score'][split_idx] = balanced_accuracy_score(y_te, y_pred)
+                        results[strat]['recall'][split_idx] = recall_score(y_te, y_pred, zero_division=0.0)
+                        results[strat]['f1'][split_idx] = f1_score(y_te, y_pred, average='binary', zero_division=0.0)
+                        results[strat]['brier'][split_idx] = float(brier_score_loss(y_te, y_prob))
                         try:
-                            results[key]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10)
+                            results[strat]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10)
                         except Exception as e:
-                            print(f"[warn] fold diagnostic metric could not be recorded: {e}")
-                        results[key]['mcc'][split_idx] = safe_matthews_corrcoef(y_te, y_pred)
-                        results[key]['confusion_matrix'][split_idx] = safe_confusion_matrix(
+                            print(f"[warn] ECE (calibration) metric could not be recorded: {e}")
+                        results[strat]['mcc'][split_idx] = safe_matthews_corrcoef(y_te, y_pred)
+                        results[strat]['confusion_matrix'][split_idx] = safe_confusion_matrix(
                             y_te, y_pred, labels=np.array([0, 1])
                         )
-                        results[key]['n_iter'][split_idx] = fold_n_iter
-                        results[key]['converged'][split_idx] = float(fold_converged) if fold_converged is not None else np.nan
-                        results[key]['fit_time'][split_idx] = fit_time
+                        results[strat]['n_iter'][split_idx] = fold_n_iter
+                        results[strat]['converged'][split_idx] = float(fold_converged) if fold_converged is not None else np.nan
+                        results[strat]['fit_time'][split_idx] = fit_time
 
                         print(f"    > {strat.capitalize()} Fold {split_idx} (Train N={len(y_tr)}, Test N={len(y_te)}): "
-                              f"AUC={results[key]['auc'][split_idx]:.3f}, "
-                              f"LL={results[key]['ll'][split_idx]:.3f}, "
-                              f"Brier={results[key]['brier'][split_idx]:.3f}, "
-                              f"MCC={results[key]['mcc'][split_idx]:.3f}")
+                              f"AUC={results[strat]['auc'][split_idx]:.3f}, "
+                              f"LL={results[strat]['ll'][split_idx]:.3f}, "
+                              f"Brier={results[strat]['brier'][split_idx]:.3f}, "
+                              f"MCC={results[strat]['mcc'][split_idx]:.3f}")
 
                 except Exception as e:
                     print(f"Fit error {feature_name} ({strat}), fold {split_idx}: {e}")

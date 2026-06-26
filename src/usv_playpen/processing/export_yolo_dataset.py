@@ -57,22 +57,23 @@ def spec_to_yolo_image(spec: np.ndarray, duration: int, colormap: str) -> tuple[
     -----------
     Renders one spectrogram to the YOLO training image exactly as the inference
     detector renders it: flip vertically (``np.flipud``), slice to the signal
-    window ``[0, min(duration, T))``, and colour-map to a uint8 RGB image. Returns
-    the image plus its ``(width, height)`` for label normalization.
+    window ``[0, max(1, min(duration, T)))``, and colour-map to a uint8 RGB image.
+    Returns the image plus its ``(width, height)`` for label normalization. The
+    ``max(1, ...)`` floor guarantees a non-empty image (at least one time bin).
 
     Parameters
     ----------
     spec (np.ndarray)
         A ``(F, T)`` spectrogram (unflipped, as stored in the H5).
     duration (int)
-        Native signal length in time bins (the window width is ``min(duration, T)``).
+        Native signal length in time bins (the window width is ``max(1, min(duration, T))``).
     colormap (str)
         Matplotlib colormap name (must match the detector's ``colormap``).
 
     Returns
     -------
     image (np.ndarray)
-        A uint8 ``(H, W, 3)`` RGB image (``H == F``, ``W == min(duration, T)``).
+        A uint8 ``(H, W, 3)`` RGB image (``H == F``, ``W == max(1, min(duration, T))``).
     width (int)
         Image width ``W`` (for normalizing box x/width).
     height (int)
@@ -178,7 +179,8 @@ class YOLODatasetExporter:
         sessions to a YOLO image, attaches box labels per ``label_source``, splits
         the spectrograms into train/val as an exact, reproducible
         ``validation_split`` fraction (a seeded permutation over the whole dataset,
-        so the val set is never accidentally empty), and writes the Ultralytics
+        which removes per-image coin-flip variance; the val set is empty only when
+        ``round(n_total * validation_split)`` is zero), and writes the Ultralytics
         dataset (``images/{train,val}/{spec_id}.png``,
         ``labels/{train,val}/{spec_id}.txt``, ``data.yaml``) to the output
         directory.
@@ -188,7 +190,8 @@ class YOLODatasetExporter:
 
         Returns
         -------
-        A YOLO dataset directory (``images/``, ``labels/``, ``data.yaml``).
+        None (writes a YOLO dataset directory -- ``images/``, ``labels/``,
+        ``data.yaml`` -- to the output directory as a side effect).
         """
 
         self.message_output(
@@ -281,9 +284,12 @@ class YOLODatasetExporter:
                         (output_dir / "labels" / split / f"{spec_id}.txt").write_text("\n".join(lines))
                         n_boxes += len(lines)
 
-        # Quote the path so a value with spaces / a Windows drive letter stays valid YAML.
+        # Single-quote the path so a value with spaces / a Windows drive letter
+        # stays valid YAML. A double-quoted YAML scalar processes backslash escapes
+        # (so Windows separators like "\new" / "\test" corrupt or fail to parse),
+        # whereas a single-quoted scalar takes backslashes literally.
         data_yaml = (
-            f'path: "{output_dir}"\n'
+            f"path: '{output_dir}'\n"
             f"train: images/train\n"
             f"val: images/val\n"
             f"nc: 1\n"

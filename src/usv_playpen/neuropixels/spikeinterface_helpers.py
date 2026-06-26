@@ -43,6 +43,17 @@ Four groups of functions live here:
    underlying prominence-based detector now come directly from stock
    :mod:`spikeinterface.metrics.template.metrics` — see
    :meth:`usv_playpen.neuropixels.spike_quality_metrics.SpikeQualityMetricsExtractor._compute_template_metrics`.
+
+4. Single-unit amplitude-spread metrics — :func:`compute_amplitude_cv`,
+   :func:`compute_sd_ratio`. These are owned single-unit ports of
+   SpikeInterface's ``compute_amplitude_cv_metrics`` and
+   ``compute_sd_ratio``. Stock SI reads every spike's amplitude from the
+   ``spike_amplitudes`` extension (a full recording sweep); these ports
+   instead take a per-spike amplitude array directly — in the pipeline,
+   the amplitudes of the random-spike subsample derived from the
+   windowed waveform extraction — so the metrics can be computed without
+   materialising the ``spike_amplitudes`` extension the pipeline
+   deliberately avoids.
 """
 
 from __future__ import annotations
@@ -245,6 +256,8 @@ def classify_somatic(
     peak_after_index = peaks_info['peak_after_index']
 
     def _size(index):
+        # Absolute amplitude at `index`; a None index (the detector's
+        # "not found" sentinel) yields size 0.0, mirroring _width.
         return abs(float(template_single[index])) if index is not None else 0.0
 
     def _width(index, signal):
@@ -305,13 +318,53 @@ def classify_somatic(
 
 def transform_column_range(template, channel_locations, column_range, depth_direction="y"):
     """
-    Transform template and channel locations based on column range.
+    Description
+    -----------
+    Restrict a template and its channel locations to the channels lying
+    within ``+/- column_range`` (in um) of the peak channel along the
+    LATERAL axis — the axis perpendicular to depth. This narrows the
+    channel set to a single probe column before the spread is measured
+    along depth, so the spread is not contaminated by channels on
+    laterally distant columns.
+
+    The peak channel is the channel with the largest peak-to-peak
+    template amplitude. When ``column_range`` is ``None`` the template
+    and locations are returned unchanged.
+
+    Parameters
+    ----------
+    template : numpy.ndarray
+        ``(num_samples, num_channels)`` template waveform.
+    channel_locations : numpy.ndarray
+        ``(num_channels, 2)`` channel coordinates.
+    column_range : float or None
+        Half-width (um) of the lateral band, centred on the peak
+        channel, that channels must fall within to be kept. ``None``
+        keeps every channel.
+    depth_direction : str, default "y"
+        Which axis is depth; this selects the LATERAL (column) axis as
+        the OTHER one. Note this is the inverse axis sense of
+        :func:`sort_template_and_locations` / :func:`get_spread`, which
+        use ``depth_direction`` to pick the depth axis itself.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        ``(template_column_range, channel_locations_column_range)`` — the
+        template (columns sub-selected on its channel axis) and channel
+        locations restricted to the lateral band.
     """
+    # `column_dim` is the LATERAL axis (perpendicular to depth): for
+    # depth_direction == "y" depth is axis 1, so the lateral axis is 0.
+    # This is the inverse of `depth_dim` in sort_template_and_locations /
+    # get_spread, which select the depth axis instead.
     column_dim = 0 if depth_direction == "y" else 1
     if column_range is None:
         template_column_range = template
         channel_locations_column_range = channel_locations
     else:
+        # Lateral coordinate of the peak (max peak-to-peak) channel; the
+        # lateral band that `column_mask` keeps is centred on this value.
         max_channel_x = channel_locations[np.argmax(np.ptp(template, axis=0)), 0]
         column_mask = np.abs(channel_locations[:, column_dim] - max_channel_x) <= column_range
         template_column_range = template[:, column_mask]
@@ -321,7 +374,32 @@ def transform_column_range(template, channel_locations, column_range, depth_dire
 
 def sort_template_and_locations(template, channel_locations, depth_direction="y"):
     """
-    Sort template and locations.
+    Description
+    -----------
+    Reorder a template's channels and the matching channel locations so
+    that channels run ascending along DEPTH. The depth axis is the one
+    selected by ``depth_direction`` (the opposite axis sense from
+    :func:`transform_column_range` directly above, which uses
+    ``depth_direction`` to pick the lateral axis). The template is
+    reindexed on its channel axis (axis 1) in lockstep with the rows of
+    ``channel_locations`` so the two stay aligned.
+
+    Parameters
+    ----------
+    template : numpy.ndarray
+        ``(num_samples, num_channels)`` template waveform.
+    channel_locations : numpy.ndarray
+        ``(num_channels, 2)`` channel coordinates.
+    depth_direction : str, default "y"
+        Which axis is depth; channels are sorted ascending along this
+        axis. ``"y"`` selects axis 1, otherwise axis 0.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        ``(template_sorted, channel_locations_sorted)`` — the template
+        with its channel axis reordered by ascending depth and the
+        channel locations reordered to match.
     """
     depth_dim = 1 if depth_direction == "y" else 0
     sort_indices = np.argsort(channel_locations[:, depth_dim])
@@ -350,6 +428,9 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
         The exponential decay of the template amplitude
     """
     def exp_decay(x, decay, amp0, offset):
+        # x: distance (um) from the peak channel; amp0: peak-channel
+        # amplitude; offset: far-field baseline amplitude; decay: the
+        # 1/um decay constant returned as the metric (popt[0]).
         return amp0 * np.exp(-decay * x) + offset
 
     assert "exp_peak_function" in kwargs, "exp_peak_function must be given as kwarg"
@@ -361,6 +442,11 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
         fun = np.ptp
     elif exp_peak_function == "min":
         fun = np.min
+    else:
+        # Match stock SI: any unrecognised value falls back to peak-to-peak
+        # rather than leaving `fun` unbound (which would raise an uncaught
+        # UnboundLocalError before the try/except NaN fallback below).
+        fun = np.ptp
     peak_amplitudes = np.abs(fun(template, axis=0))
     max_channel_location = channel_locations[np.argmax(peak_amplitudes)]
     channel_distances = np.array([np.linalg.norm(cl - max_channel_location) for cl in channel_locations])
@@ -432,6 +518,9 @@ def get_spread(template, channel_locations, sampling_frequency, **kwargs) -> flo
     template, channel_locations = transform_column_range(template, channel_locations, column_range)
     template, channel_locations = sort_template_and_locations(template, channel_locations, depth_direction)
 
+    # MM: per-channel peak-to-peak amplitude profile across depth — the
+    # quantity the spread is measured on (smoothed, normalised, thresholded
+    # below).
     MM = np.ptp(template, 0)
     channel_depths = channel_locations[:, depth_dim]
 

@@ -14,14 +14,15 @@ This is the in-house, torch-free port of ``qmc_deep_gen``'s
 (``full_data.pt``) index-aligned with ``latent_coords``; here the per-USV latent
 coordinates AND the spectrograms both come from the consolidated H5 (per-session
 ``spectrogram/<key>/qlvm_dim`` -- written once by a one-off enrichment -- and
-``spectrogram/<key>/spectrograms``), pooled into one ordered array. The arrays
-``.npz`` is used only for the ``heatmap`` background, ``ws_labels_periodic``
+``spectrogram/<key>/spectrograms``), pooled into one ordered array. The ``.npz``
+arrays file is used only for the ``heatmap`` background, ``ws_labels_periodic``
 contours, and cluster ``centers``.
 
 Layout:
   left  = [0,1]^2 latent map (heatmap + watershed contours, no axes/ticks) with a
-          recency-coloured trajectory trail (cyan at the moving head, fading to
-          white going back) and a cyan head marker during traversals.
+          recency-coloured trajectory trail (accent-colored at the moving head,
+          fading to white going back) and an accent-colored head marker during
+          traversals.
   right = phase-specific spectrogram panel -- a concentric ring of tiles
           (Part 1) or a 5x15 = 75-slot grid (Parts 2 & 3). All spectrograms are
           SAM2-masked and centred with equal padding on both sides.
@@ -29,8 +30,8 @@ Layout:
 Phases (each preceded by a full-figure white title card):
   * Part 1 -- Cluster peaks. For each cluster the right ring shows the peak
     (center tile) surrounded by its ``m`` nearest samples in up to three
-    concentric rings; the active cluster is outlined in a thick pulsating cyan
-    contour with a cyan dot at its centre.
+    concentric rings; the active cluster is outlined in a thick pulsating
+    accent-colored contour with an accent-colored dot at its centre.
   * Part 2 -- Peak-to-peak walks (up to 5). Shortest torus path + small smooth
     jitter between random cluster peaks; the right 5x15 grid fills row-major.
   * Part 3 -- Boundary crossings (5). Curved walks that wrap edges/corners; the
@@ -394,15 +395,15 @@ class QLVMTorusTraversalVideo:
         -----------
         Loads the QLVM arrays + pools per-USV latent coords / spectrograms from
         the consolidated H5, builds the phase script, and renders the two-panel
-        animation to ``output_path`` (``.gif`` via Pillow, otherwise ``.mp4`` via
-        FFmpeg).
+        animation, writing a video file to ``output_path`` (``.gif`` via Pillow,
+        otherwise ``.mp4`` via FFmpeg).
 
         Parameters
         ----------
 
         Returns
         -------
-        A video file at ``output_path``.
+        None
         """
         self.message_output(
             f"QLVM torus-traversal video started at: "
@@ -552,6 +553,10 @@ class QLVMTorusTraversalVideo:
             grid_nrows = 5
             grid_ncols = 15
             n_grid_slots = grid_nrows * grid_ncols
+            # Maps each of the 5 grid rows (top -> bottom) to a nearest-neighbour
+            # rank, placing the peak (rank 0) in the middle row so the boundary
+            # walk's NN ranks fan out symmetrically around it. boundary_mid_row is
+            # that middle row (the one given the accent-colored border).
             boundary_row_nn = [2, 1, 0, 3, 4]
             boundary_mid_row = boundary_row_nn.index(0)
 
@@ -629,7 +634,7 @@ class QLVMTorusTraversalVideo:
             active_contour_ci = {'value': None}
 
             def show_cluster_contour(ci):
-                """Show cluster ``ci``'s cyan outline on the left panel, hiding any prior."""
+                """Show cluster ``ci``'s accent-colored outline on the left panel, hiding any prior."""
                 prev = active_contour_ci['value']
                 if prev is not None and prev != ci and prev in cluster_contours:
                     _contour_visible(cluster_contours[prev], False)
@@ -647,15 +652,16 @@ class QLVMTorusTraversalVideo:
                     _contour_visible(cluster_contours[prev], False)
                 active_contour_ci['value'] = None
 
-            # Trajectory trail: a recency-colored line (cyan at the current
-            # position, fading to white going back) instead of inset thumbnails.
+            # Trajectory trail: a recency-colored line (accent-colored at the
+            # current position, fading to white going back) instead of inset
+            # thumbnails.
             trail_lc = LineCollection([], cmap=trail_cmap, linewidths=4.0, zorder=6)
             trail_lc.set_clim(0.0, 1.0)
             ax_l.add_collection(trail_lc)
             head_marker = ax_l.scatter([], [], c=accent_color, s=70, marker='o',
                                         edgecolors=_C_BLACK, linewidths=1.0, zorder=11)
-            # Cyan circle marking the active cluster's center (Part 1); pulses
-            # with the cluster outline.
+            # Accent-colored circle marking the active cluster's center (Part 1);
+            # pulses with the cluster outline.
             cluster_center_marker = ax_l.scatter([], [], c=accent_color, s=120, marker='o',
                                                  edgecolors=_C_BLACK, linewidths=1.2, zorder=12)
             title = ax_l.set_title('', fontsize=13, loc='left', fontweight='light')
@@ -722,7 +728,7 @@ class QLVMTorusTraversalVideo:
             set_grid_visible(False)
             set_ring_visible(False)
 
-            state = {'last_phase': -1, 'last_reveal_count': 0, 'reached_part': 0}
+            state = {'last_phase': -1, 'last_reveal_count': 0}
 
             def on_phase_enter(pi):
                 """Reconfigure all shared artists for the first frame of phase ``pi``."""
@@ -735,8 +741,6 @@ class QLVMTorusTraversalVideo:
                 cluster_center_marker.set_offsets(np.empty((0, 2)))
 
                 if ph['name'] == 'title_card':
-                    part = ph['part']
-                    state['reached_part'] = max(state['reached_part'], part)
                     set_grid_visible(False)
                     set_ring_visible(False)
                     ax_card.set_visible(True)
@@ -774,7 +778,7 @@ class QLVMTorusTraversalVideo:
                                        f'rows = {boundary_neighbors} nearest neighbors')
                     else:
                         sup.set_text(f"Peak-to-peak walk  -  {ph['sub']}")
-                        title.set_text('Red trail = path on torus  -  '
+                        title.set_text('Accent trail = path on torus  -  '
                                        'right grid fills as samples are visited')
 
                 state['last_reveal_count'] = 0
@@ -791,8 +795,8 @@ class QLVMTorusTraversalVideo:
                     return []
 
                 if ph['name'] == 'cluster':
-                    # Pulsate the active cluster's (thick) cyan outline so it is
-                    # clearly visible: width + opacity oscillate over ~24 frames.
+                    # Pulsate the active cluster's (thick) accent-colored outline
+                    # so it is clearly visible: width + opacity oscillate over ~24 frames.
                     pulse = 0.5 + 0.5 * np.sin(2 * np.pi * fi / 24.0)
                     cs = cluster_contours.get(ph['active_ci'])
                     if cs is not None:
@@ -805,9 +809,9 @@ class QLVMTorusTraversalVideo:
                 segs, recency = _fading_trail_segments(traj_unit)
                 trail_lc.set_segments(segs)
                 trail_lc.set_array(recency)
-                # The cyan ball rides the current head of the walk (where the
-                # right-panel spectrogram is sampled); the trail is cyan next to
-                # it and fades to white going back into the past.
+                # The accent-colored ball rides the current head of the walk
+                # (where the right-panel spectrogram is sampled); the trail is
+                # accent-colored next to it and fades to white going back into the past.
                 head_marker.set_offsets([[traj[fi, 0] % 1.0, traj[fi, 1] % 1.0]])
 
                 reveal_frames = ph['reveal_frames']

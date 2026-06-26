@@ -47,7 +47,6 @@ class FindMouseVocalizations:
         self,
         root_directory: str | None = None,
         input_parameter_dict: dict | None = None,
-        exp_settings_dict: dict | None = None,
         message_output: Callable | None = None,
     ) -> None:
         """
@@ -61,8 +60,6 @@ class FindMouseVocalizations:
             Root directory for data; defaults to None.
         input_parameter_dict (dict)
             Processing parameters; defaults to None.
-        exp_settings_dict (dict)
-            Experimental settings; defaults to None.
         message_output (function)
             Function to output messages; defaults to None.
 
@@ -81,7 +78,6 @@ class FindMouseVocalizations:
             self.input_parameter_dict = input_parameter_dict["usv_inference"]["FindMouseVocalizations"]
 
         self.root_directory = root_directory
-        self.exp_settings_dict = exp_settings_dict
         self.message_output = message_output or print
 
         self.app_context_bool = is_gui_context()
@@ -192,8 +188,8 @@ class FindMouseVocalizations:
         -------
         .csv summary file
             CSV file w/ information about all detected USV segments,
-            shape: (N_USV, START, STOP, DURATION, PEAK_AMP_CH,
-            MEAN_AMP_CH, CHs_COUNT, CHS_DETECTED, EMMITER).
+            shape: (N_USV, USV_ID, START, STOP, DURATION, PEAK_AMP_CH,
+            MEAN_AMP_CH, CHS_COUNT, CHS_DETECTED, EMITTER).
         """
 
         self.message_output(
@@ -247,7 +243,7 @@ class FindMouseVocalizations:
                 if m is None:
                     self.message_output(
                         f"Skipping {one_file.name}: filename does not match expected "
-                        f"DAS annotation pattern '<device>_..._<chXX>_annotations.csv'."
+                        f"DAS annotation pattern '<device>_..._<chXX>_...annotations.csv'."
                     )
                     continue
                 file_id = f"{m.group(1)}_{m.group(2)}"
@@ -315,6 +311,12 @@ class FindMouseVocalizations:
                     label="concatenated audio mmap",
                 )
                 audio_file_name = audio_file_loc.name
+                # The mmap filename encodes its array metadata as the last four
+                # underscore-separated tokens, in the trailing layout
+                # '..._<sampling_rate>_<sample_num>_<channel_num>_<dtype>.mmap'.
+                # Parsing right-to-left: [-1][:-5] is the dtype with the trailing
+                # '.mmap' (5 chars) stripped, [-2] the channel count, [-3] the
+                # sample count, [-4] the sampling rate.
                 data_type, channel_num, sample_num, audio_sampling_rate = (
                     audio_file_name.split("_")[-1][:-5],
                     int(audio_file_name.split("_")[-2]),
@@ -385,7 +387,7 @@ class FindMouseVocalizations:
                             msg = (
                                 f"lower_bin ({lower_bin}) exceeds STFT freq-axis "
                                 f"length ({spectrogram_data_selected_ch.shape[1]}); "
-                                "check `freq_lower_bound` vs `nfft` / sampling rate"
+                                "check `low_freq_cutoff` vs `len_win_signal` / sampling rate"
                             )
                             raise ValueError(msg)
                         reshaped_spectrogram = spectrogram_data_selected_ch[
@@ -413,18 +415,34 @@ class FindMouseVocalizations:
                             / np.max(spectrogram_data_selected_ch)
                         )
 
-                noise_corr_cutoff = max(
-                    float(np.nanpercentile(mean_signal_correlations, q=6)),
-                    self.input_parameter_dict["summarize_das_findings"][
-                        "noise_corr_cutoff_min"
-                    ],
-                )
-                noise_var_cutoff = min(
-                    float(np.nanpercentile(signal_variance, q=94)),
-                    self.input_parameter_dict["summarize_das_findings"][
-                        "noise_var_cutoff_max"
-                    ],
-                )
+                # mean_signal_correlations is filled only on the multi-channel branch
+                # and signal_variance only on the single-channel branch, so either array
+                # can be entirely NaN (e.g. every USV detected on a single channel leaves
+                # mean_signal_correlations all-NaN). np.nanpercentile over an all-NaN
+                # array raises a RuntimeWarning and returns NaN, which would propagate
+                # into max()/min() order-dependently and defeat the configured floor/
+                # ceiling. Guard each percentile and fall back to the configured cutoff
+                # so the threshold is deterministic when no descriptor values exist.
+                noise_corr_cutoff_min = self.input_parameter_dict["summarize_das_findings"][
+                    "noise_corr_cutoff_min"
+                ]
+                noise_var_cutoff_max = self.input_parameter_dict["summarize_das_findings"][
+                    "noise_var_cutoff_max"
+                ]
+                if np.any(~np.isnan(mean_signal_correlations)):
+                    noise_corr_cutoff = max(
+                        float(np.nanpercentile(mean_signal_correlations, q=6)),
+                        noise_corr_cutoff_min,
+                    )
+                else:
+                    noise_corr_cutoff = noise_corr_cutoff_min
+                if np.any(~np.isnan(signal_variance)):
+                    noise_var_cutoff = min(
+                        float(np.nanpercentile(signal_variance, q=94)),
+                        noise_var_cutoff_max,
+                    )
+                else:
+                    noise_var_cutoff = noise_var_cutoff_max
                 self.message_output(
                     f"Spectrogram correlation cutoff (6th percentile of distribution): {noise_corr_cutoff:.2f}"
                 )
@@ -520,6 +538,12 @@ class FindMouseVocalizations:
                     label="concatenated audio mmap",
                 )
                 audio_file_name = audio_file_loc.name
+                # The mmap filename encodes its array metadata as the last four
+                # underscore-separated tokens, in the trailing layout
+                # '..._<sampling_rate>_<sample_num>_<channel_num>_<dtype>.mmap'.
+                # Parsing right-to-left: [-1][:-5] is the dtype with the trailing
+                # '.mmap' (5 chars) stripped, [-2] the channel count, [-3] the
+                # sample count, [-4] the sampling rate.
                 data_type, channel_num, sample_num, audio_sampling_rate = (
                     audio_file_name.split("_")[-1][:-5],
                     int(audio_file_name.split("_")[-2]),

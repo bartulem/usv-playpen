@@ -1,6 +1,12 @@
 """
 @author: bartulem
-Creates perceptually uniform colormaps (per Crameri, F. et al., Nat. Commun. (2020))
+Builds linearly-interpolated matplotlib colormaps between user-specified RGB anchors.
+
+This module constructs sequential (two-anchor) and diverging (three-anchor) colormaps
+by linearly interpolating each RGB channel with ``numpy.linspace`` between the supplied
+start, end and (for diverging maps) opposite-start RGB colors, with optional HLS
+luminance and saturation equalization of the spectrum ends. It also provides a helper
+for selecting per-animal colors by sex.
 """
 
 from __future__ import annotations
@@ -13,7 +19,7 @@ from matplotlib.colors import ListedColormap
 
 def choose_animal_colors(
     exp_info_dict: dict | None = None, visualizations_parameter_dict: dict | None = None
-) -> list | None:
+) -> list:
     """
     Description
     -----------
@@ -51,9 +57,9 @@ def choose_animal_colors(
 def luminance_equalizer(
     color_start: tuple | None = None,
     color_end: tuple | None = None,
-    luminance: bool | None = False,
+    luminance: bool | float | None = False,
     match_by: str | None = None,
-    saturation: bool | None = False,
+    saturation: bool | float | None = False,
 ) -> tuple | None:
     """
     Description
@@ -67,11 +73,16 @@ def luminance_equalizer(
     color_end (tuple)
         RGB of spectrum end color.
     luminance (bool / float)
-        Equalizes luminance of spectrum ends.
+        Equalizes luminance of spectrum ends; a float value both enables
+        equalization and, when match_by='set', is used directly as the
+        target luminance applied to both spectrum ends.
     match_by (str)
-        Match luminance by 'max', 'min' or 'mean'; defaults to 'max'.
+        Match luminance by 'max', 'min', 'mean' or 'set'; required (no
+        default) whenever luminance equalization is requested.
     saturation (bool / float)
-        Change saturation of spectrum ends.
+        Change saturation of spectrum ends; only a float value takes effect
+        (it sets both ends to that saturation), while any non-float (e.g. the
+        default False) leaves the original saturation unchanged.
 
     Returns
     -------

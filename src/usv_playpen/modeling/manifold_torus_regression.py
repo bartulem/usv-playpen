@@ -61,11 +61,13 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
 
     Overrides only :meth:`fit` (the closed-form embedding solve and the
     metric-aware train statistics) and :meth:`predict` (decode the 4-D output
-    to 2-D coordinates before the optional manifold snap). Everything else --
-    notably :meth:`evaluate_metrics`, which consumes :meth:`predict` output and
-    the inherited ``train_mean_`` / ``train_cov_inv_`` / ``_train_kdtree`` --
+    to 2-D coordinates). Everything else -- notably :meth:`evaluate_metrics`,
+    which consumes :meth:`predict` output and the ``train_mean_`` /
+    ``train_cov_inv_`` computed as in the coordinate model's torus branch --
     is inherited unchanged, so the persisted metric bundle is identical in
-    schema to the coordinate model.
+    schema to the coordinate model. The one exception is ``_train_kdtree``,
+    which :meth:`fit` deliberately sets to ``None`` (snapping disabled) rather
+    than building the parent's :class:`scipy.spatial.cKDTree`.
 
     Parameters
     ----------
@@ -175,12 +177,14 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         components. Because the problem is convex, ``converged_`` is always
         ``True`` and ``n_iter_`` is ``1``.
 
-        The training-set statistics (kd-tree on the 4-D torus embedding for
-        snapping, circular-mean centroid and wrap-aware inverse covariance for
-        the Mahalanobis metric) are computed exactly as in
-        :class:`SmoothBivariateRegression` so the inherited
-        :meth:`evaluate_metrics` and :meth:`predict` snap behaviour are
-        unchanged.
+        The training-set statistics are the circular-mean centroid and the
+        wrap-aware inverse covariance for the Mahalanobis metric, computed
+        exactly as in :class:`SmoothBivariateRegression`'s torus branch. NO
+        snap kd-tree is built: ``self._train_kdtree`` is deliberately set to
+        ``None`` so snapping is disabled (see the inline rationale below where
+        ``_train_kdtree`` is assigned). The inherited :meth:`evaluate_metrics`
+        and the overridden :meth:`predict` therefore operate on the raw decoded
+        coordinates rather than snapped ones.
 
         Parameters
         ----------

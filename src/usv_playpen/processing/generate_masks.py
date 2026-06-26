@@ -162,7 +162,7 @@ class MaskGenerator:
         """
         Description
         -----------
-        Reads the session's per-USV spectrograms, runs the YOLO box detector +
+        Reads the session's per-USV spectrograms, runs the selected box detector +
         SAM2 box-prompt segmenter over the valid (``duration > 0``) USVs, and writes
         the resulting instance masks into the SAME
         ``audio/spectrograms/<session>_spectrograms.h5`` under a ``mask/<session>``
@@ -175,6 +175,11 @@ class MaskGenerator:
         includes every ``duration == 0`` placeholder), so the returned dictionary is
         already keyed by the native usv_summary row index. An existing
         ``mask/<session>`` group is overwritten so re-runs are idempotent.
+
+        The detector is selectable: ``detector='yolo'`` builds a learned ``detect_fn``
+        that proposes one box per call, while ``detector='cc'`` builds no ``detect_fn``
+        and the kernel falls back to its connected-component detector (the no-weights
+        path).
 
         The heavy compute libraries (``torch``, ``sam2``, ``ultralytics``) are
         imported here, not at module load. The SAM2 checkpoint/config and YOLO
@@ -205,7 +210,14 @@ class MaskGenerator:
         sam2_model_dir = configure_path(cfg['sam2_model_dir'])
         sam2_model_cfg = cfg['sam2_model_cfg']
         sam2_model_path = configure_path(cfg['sam2_model_path'])
-        yolo_weights = configure_path(cfg['yolo_weights'])
+        # Only translate yolo_weights when the YOLO detector is actually selected and a
+        # path is configured: configure_path raises on None, so the documented cc no-weights
+        # fallback (yolo_weights set to JSON null) must skip the translation entirely.
+        yolo_weights = (
+            configure_path(cfg['yolo_weights'])
+            if (detector == 'yolo' and cfg['yolo_weights'])
+            else cfg['yolo_weights']
+        )
 
         if method != 'boxprompt':
             error_message = (
@@ -258,7 +270,10 @@ class MaskGenerator:
             durations = session_group["durations"][:]
 
         num_specs, num_freq_bins, num_time_bins = specs.shape
-        valid_count = int(np.count_nonzero(durations > 0))
+        # Match the kernel's segmentation threshold (it skips rows shorter than
+        # duration_min, not just duration==0 placeholders) so this up-front count
+        # reflects exactly what will be segmented.
+        valid_count = int(np.count_nonzero(durations >= cfg['duration_min']))
         self.message_output(
             f"Segmenting {valid_count} valid USVs (of {num_specs}) for session {session_id}."
         )
@@ -315,7 +330,7 @@ class MaskGenerator:
             specs,
             durations,
             predictor,
-            None,
+            None,  # detector_cfg: cc connected-component config is unused here (yolo uses detect_fn below)
             cmap,
             duration_min=cfg['duration_min'],
             batch_size=cfg['batch_size'],

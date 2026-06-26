@@ -52,10 +52,11 @@ CLI
         [--allow_legacy] \\
         [--ignore_provenance_keys git_commit,git_dirty,package_version]
 
-If `--prefix` is omitted, the consolidator infers it as the longest
-common `model_selection_*_step_` prefix shared across the directory's
-`*.pkl` files. When the directory mixes prefixes the consolidator
-aborts and asks for an explicit `--prefix`.
+If `--prefix` is omitted, the consolidator infers it as the single
+`model_selection_<descriptor>_step_` prefix shared by every `*.pkl`
+file in the directory. When the directory carries more than one
+distinct such prefix the consolidator aborts and asks for an explicit
+`--prefix`.
 
 Backwards-compat
 ----------------
@@ -90,6 +91,26 @@ def _parse_step_idx(filename: str, prefix: str) -> int:
     Returns the integer step index for a per-step filename matching
     `<prefix><k>.pkl`, or `-1` if the filename does not parse against
     `prefix`.
+
+    The body between `prefix` and the `.pkl` suffix must be a pure run
+    of digits (the forward-selection step `k`); anything else (a
+    non-matching prefix, a missing `.pkl` suffix, or a non-numeric body)
+    yields the `-1` sentinel so the caller can skip the file rather than
+    raise.
+
+    Parameters
+    ----------
+    filename : str
+        The bare filename (no directory component) to parse.
+    prefix : str
+        The per-step prefix the filename must start with (e.g.
+        `'model_selection_..._step_'`).
+
+    Returns
+    -------
+    int
+        The parsed step index, or `-1` when `filename` does not parse
+        against `prefix` (wrong prefix/suffix or a non-numeric index).
     """
 
     if not filename.startswith(prefix) or not filename.endswith('.pkl'):
@@ -148,7 +169,22 @@ def _infer_prefix(pkl_files: list) -> str:
 def _file_mtime_iso(path) -> str:
     """
     Returns the file modification time as an ISO-8601 UTC string.
-    Accepts a `str` or `pathlib.Path`.
+
+    The on-disk `st_mtime` is read, converted to UTC, truncated to
+    whole seconds (microseconds stripped), and rendered with a trailing
+    `'Z'` in place of the `'+00:00'` UTC offset.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Path to the file whose modification time is read.
+
+    Returns
+    -------
+    str
+        The file's modification time as an ISO-8601 UTC timestamp with a
+        trailing `'Z'` and no sub-second component (e.g.
+        `'20260511T203829Z'`-style `'2026-05-11T20:38:29Z'`).
     """
 
     ts = datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
@@ -269,17 +305,52 @@ def _build_default_output_filename(input_metadata: dict,
     )
 
 
-def _diff_metadata(a: dict, b: dict, prefix: str = '') -> list:
+def _diff_metadata(a: dict, b: dict, prefix: str = '',
+                   ignore_keys: tuple = ()) -> list:
     """
-    Returns a flat list of `'<path>: <a_val> != <b_val>'` strings
-    enumerating every leaf-level disagreement between two metadata
+    Returns a flat list of disagreement strings between two metadata
     blocks. See `consolidate_univariate_results._diff_metadata` —
     duplicated here to keep the two consolidators independent of each
     other.
+
+    For every leaf-level value that differs, a
+    `'<path>: <a_val> != <b_val>'` string is emitted; for every key
+    present in only one block, a `'<path><key>: missing in B'` (present
+    in `a` only) or `'<path><key>: missing in A'` (present in `b` only)
+    string is emitted instead. Nested dicts are recursed into so the
+    `<path>` is the dotted key chain to the leaf.
+
+    `ignore_keys` mirrors `metadata_blocks_equal`: the named keys are
+    dropped from the *top-level* key sets only (not from nested dicts),
+    so the reported diff reflects exactly the keys that can drive an
+    equality failure — provenance fields such as `git_commit` /
+    `git_dirty` / `package_version` are excluded and never surface as
+    spurious noise.
+
+    Parameters
+    ----------
+    a, b : dict
+        Metadata blocks to compare. `a` is the "A" side and `b` the "B"
+        side referenced in the `missing in A` / `missing in B` strings.
+    prefix : str, default ''
+        Dotted-key prefix prepended to each emitted path; used by the
+        recursion to build the full leaf path and normally left empty by
+        external callers.
+    ignore_keys : tuple of str, default ()
+        Top-level keys to exclude from the comparison, mirroring
+        `metadata_blocks_equal`. Applied only to the outermost key sets.
+
+    Returns
+    -------
+    list of str
+        One string per disagreement: either `'<path>: <a> != <b>'` for
+        differing leaves or `'<path><key>: missing in A/B'` for keys
+        present in only one block. Empty when the blocks agree.
     """
 
     diffs = []
-    keys_a, keys_b = set(a.keys()), set(b.keys())
+    keys_a = set(a.keys()) - set(ignore_keys)
+    keys_b = set(b.keys()) - set(ignore_keys)
     for k in (keys_a - keys_b):
         diffs.append(f"{prefix}{k}: missing in B")
     for k in (keys_b - keys_a):
@@ -410,30 +481,45 @@ def consolidate(input_dir: str,
             if canonical_input_md is None:
                 canonical_input_md = cur_in
                 canonical_run_md = cur_run
-                canonical_univariate_md = cur_univ
             else:
                 if not metadata_blocks_equal(canonical_input_md, cur_in,
                                              ignore_keys=ignore_provenance_keys):
-                    diffs = _diff_metadata(canonical_input_md, cur_in)
+                    diffs = _diff_metadata(canonical_input_md, cur_in,
+                                           ignore_keys=ignore_provenance_keys)
                     raise ValueError(
                         f"`_input_metadata` mismatch between earlier "
                         f"step file and {fp.name}:\n  - " + "\n  - ".join(diffs)
                     )
                 if not metadata_blocks_equal(canonical_run_md, cur_run,
                                              ignore_keys=ignore_provenance_keys):
-                    diffs = _diff_metadata(canonical_run_md, cur_run)
+                    diffs = _diff_metadata(canonical_run_md, cur_run,
+                                           ignore_keys=ignore_provenance_keys)
                     raise ValueError(
                         f"`_run_metadata` mismatch between earlier "
                         f"step file and {fp.name}:\n  - " + "\n  - ".join(diffs)
                     )
-                if cur_univ is not None and canonical_univariate_md is not None:
-                    if not metadata_blocks_equal(canonical_univariate_md, cur_univ,
-                                                 ignore_keys=ignore_provenance_keys):
-                        diffs = _diff_metadata(canonical_univariate_md, cur_univ)
-                        raise ValueError(
-                            f"`_univariate_metadata` mismatch between earlier "
-                            f"step file and {fp.name}:\n  - " + "\n  - ".join(diffs)
-                        )
+
+            # Adopt the `_univariate_metadata` block lazily and
+            # independently of the input/run blocks: a step file may
+            # carry the input + run blocks but omit the univariate one
+            # (legacy Level-2 runs). Binding it only inside the
+            # `canonical_input_md is None` branch above would discard the
+            # block whenever the first metadata-bearing file lacked it,
+            # silently dropping Level-2 provenance in an order-dependent
+            # way. Instead, take it from the first file that actually
+            # carries it, and assert equality only when both the
+            # canonical and current blocks are present.
+            if cur_univ is not None:
+                if canonical_univariate_md is None:
+                    canonical_univariate_md = cur_univ
+                elif not metadata_blocks_equal(canonical_univariate_md, cur_univ,
+                                               ignore_keys=ignore_provenance_keys):
+                    diffs = _diff_metadata(canonical_univariate_md, cur_univ,
+                                           ignore_keys=ignore_provenance_keys)
+                    raise ValueError(
+                        f"`_univariate_metadata` mismatch between earlier "
+                        f"step file and {fp.name}:\n  - " + "\n  - ".join(diffs)
+                    )
 
         step_payloads.append((step_idx, clean))
         successfully_merged_paths.append(str(fp.resolve()))
@@ -510,9 +596,9 @@ if __name__ == '__main__':
     parser.add_argument('--input_dir', required=True,
                         help="Directory containing the per-step pickles.")
     parser.add_argument('--prefix', default=None,
-                        help="Step-filename prefix (defaults to the longest "
-                             "common `model_selection_*_step_` shared by every "
-                             "input file).")
+                        help="Step-filename prefix (defaults to the single "
+                             "`model_selection_*_step_` prefix shared by every "
+                             "input file; aborts if the directory mixes prefixes).")
     parser.add_argument('--output_dir', default=None,
                         help="Output directory. Defaults to --input_dir.")
     parser.add_argument('--output_filename', default=None,

@@ -4,10 +4,16 @@ Single source of truth for the usv-playpen matplotlib style.
 
 `apply_plot_style()` registers the five bundled Helvetica TTF
 weights with matplotlib's font manager and activates the project
-mplstyle at ``_config/usv_playpen.mplstyle``. The call is
-idempotent — matplotlib's `font_manager.addfont` and
-`pyplot.style.use` are both no-op-on-repeat — so callers can invoke
-it freely without coordinating.
+mplstyle at ``_config/usv_playpen.mplstyle``. The visual result is
+stable across repeated calls — the bundled faces stay authoritative
+and the active style is unchanged — so callers can invoke it freely
+without coordinating. Note, however, that the call is not a true
+no-op on repeat: `font_manager.addfont` unconditionally *appends* to
+the manager's ``ttflist`` (it does not deduplicate), so each
+invocation re-parses the bundled TTFs and grows ``ttflist`` with
+fresh bundled-Helvetica entries that the de-shadowing prune below
+deliberately keeps. Repeated calls within a long-lived session are
+therefore correctness-safe but not free.
 
 Two intended callsites:
 
@@ -54,10 +60,13 @@ def apply_plot_style() -> None:
     -----------
     Register the five bundled Helvetica TTFs with matplotlib's font
     manager, ensure they win lookups over any same-named system font,
-    and activate ``_config/usv_playpen.mplstyle``. Safe to call
-    repeatedly — both matplotlib operations no-op on already-registered
-    fonts and already-applied styles, and the de-shadowing prune is
-    idempotent.
+    and activate ``_config/usv_playpen.mplstyle``. The rendered result
+    is stable when called repeatedly, but the call is not a literal
+    no-op: ``font_manager.addfont`` always appends to ``ttflist``
+    rather than skipping already-registered fonts, so each invocation
+    re-parses the bundled TTFs and adds fresh bundled-Helvetica entries
+    (the de-shadowing prune keeps every bundled entry, so duplicates
+    accumulate). ``plt.style.use`` re-applies the same style each time.
 
     `font_manager.addfont` only *appends* to the manager's font list,
     so a system face that happens to be named "Helvetica" (e.g. a

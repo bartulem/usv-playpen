@@ -5,7 +5,6 @@ Requirements
 
 This page explains how to set up your equipment and PCs before using the *usv-playpen* GUI for behavioral recordings.
 
-Hardware Requirements
 Audio recording essentials
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -42,7 +41,7 @@ Video recording essentials
 * `IR filter LP780-37.5: FILTER NIR LONGPASS M37.5 <https://midopt.com/filters/lp780/>`_ (5x)
 * `Light phidget <https://phidgets.com/?tier=3&catid=8&pcid=6&prodid=707>`_ (1x)
 * `Humidity/temperature phidget <https://phidgets.com/?tier=3&catid=14&pcid=12&prodid=1179>`_ (1x)
-* `Loopbio Triggerbox <http://loopbio.com/recording/>`_  with 5 *Trigger Ports* and 8 *State Ports* (1x): comes with Binder (3-pole) connectors for triggering cameras (5x), and Binder (6-pole) connectors for synchronization with external hardware (3x)
+* `Loopbio Triggerbox <http://loopbio.com/recording/>`_  with 5 *Trigger Ports* and 8 *State Ports* (1x): comes with Binder (3-pole) connectors for triggering cameras (5x), and Binder (6-pole) connectors for synchronization with external hardware (8x)
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/video_recording_hardware.png
    :width: 800
@@ -111,7 +110,7 @@ You can verify that the installation was successful by running the following com
 `Avisoft Recorder USGH <https://avisoft.com/downloads/>`_ works on Windows 11. You should download a version of the software that does not require an USB license key. There is a known issue that the configuration file can occasionally contain invalid settings that lead to various unexpected behaviors. This potential issue can be avoided by disabling the automatic saving of the configuration when the program is closed (*Options > Configuration management > Save mode on exit > Save current configuration automatically*).
 `CoolTerm <https://coolterm.en.lo4d.com/windows>`_ is a serial port terminal application, which allows you to record and keep Arduino print statements in the form of a text file. In the *usv-playpen/_config* directory,
 you can find a CoolTerm configuration file, *coolterm_config.stc*, which you can import into CoolTerm. If you are setting CoolTerm up for the first time, it is best to unpack it in *D:\\CoolTerm* and further create two directories: *D:\\CoolTerm\\Connection_settings* (place the *coolterm_config.stc* file here) and *D:\\CoolTerm\\Data*. Open the config file in CoolTerm and ensure that the location of saved files is *D:\\CoolTerm\\Data* and not *D:\\CoolTerm*. An additional important point to consider is which port to set it to
-(by default it is set to COM5). If you are using the existing Arduino UNO, it is sufficient to plug it into a port (ideally COM5, which would require no changes to the CoolTerm configuration file), as the sketch was already uploaded. However,
+(by default it is set to COM7). If you are using the existing Arduino UNO, it is sufficient to plug it into a port (ideally COM7, which would require no changes to the CoolTerm configuration file), as the sketch was already uploaded. However,
 if you want to upload the sketch to a different Arduino device, you will need to install the `Arduino IDE <https://www.arduino.cc/en/software/>`_, compile and upload the following sketch: *usv-playpen/other/synchronization/generate_sync_pulses.ino*.
 
 To control Ethernet connection status from the command line (more on this in the *Record* section), one needs to run Powershell in administrator mode. To ensure Powershell is in administrator mode all the time:

@@ -143,7 +143,7 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
 
         if metric == 'torus':
             # Lattice-replicate so wrap-straddling clusters are handled.
-            # The KDE consumes the (3*N, 2) replicated point cloud; the
+            # The KDE consumes the (9*N, 2) replicated point cloud; the
             # density on the canonical cell sums contributions from all
             # nine shifts of the original points.
             shifts = np.array(

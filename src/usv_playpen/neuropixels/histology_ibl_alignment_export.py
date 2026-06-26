@@ -421,7 +421,6 @@ class IBLAlignmentExporter:
         self.kilosort_version = str(kilosort_version)
 
         self.brainreg_path = self.os_cup_loc / histology_dirname / mouse_id
-        self.tracks_output_path = self.brainreg_path
         ephys_base_dir = f"{session_date}_{probe_id}"
         self.ephys_path = self.os_cup_loc / ephys_dirname / ephys_base_dir
         self.ks_path = self.ephys_path / f"kilosort{self.kilosort_version}"
@@ -470,8 +469,9 @@ class IBLAlignmentExporter:
         ``xyz_picks_shank{n}.json`` files the IBL alignment GUI loads to
         place each shank's track in CCF space.
 
-        Iterates over ``{hemisphere}*.npy`` files in :attr:`brainreg_
-        path` in lexicographic order, applies
+        Iterates over ``{hemisphere}*.npy`` files found by a recursive
+        ``**`` glob of :attr:`brainreg_path` (descending into every
+        subdirectory), in lexicographic order of full path, applies
         :func:`ccf_apdvml_to_xyz_mlapdv_um` to convert each track's
         point cloud to bregma-origin (ML, AP, DV) µm, and writes one
         JSON per shank into :attr:`ephys_out_path` with the schema
@@ -592,10 +592,19 @@ class IBLAlignmentExporter:
         FileNotFoundError
             If a ``channel_locations_shank{n}.json`` referenced by the
             IMRO table is missing from :attr:`ephys_out_path`.
+        KeyError
+            If a per-shank JSON has fewer ``channel_{i}`` entries than
+            the IMRO table claims for that shank (the per-shank
+            ``channel_{0..m-1}`` key being looked up is absent). This
+            can leave earlier shanks already rewritten on disk.
         """
         if not self.is_multishank:
             return []
 
+        # imro_rows[0] is the SpikeGLX ~imroTbl header group
+        # ((probe_type, n_channels)), not a per-channel row; the
+        # per-channel (channel, shank, bank, refid, elecid) rows start
+        # at index 1, hence the [1:] slice here and below.
         shank_indices_in_imro = [row[1] for row in self.imro_rows[1:]]
         n_shanks = int(np.max(shank_indices_in_imro)) + 1
 
@@ -697,7 +706,10 @@ class IBLAlignmentExporter:
         would. The loaded arrays are kept in memory for the duration of
         the export because they are reused across cluster/template/spike
         passes and they are typically small (≤ a few GB) compared to
-        the raw binary.
+        the raw binary. The one exception is ``pc_features``, which is
+        opened as a read-only memmap (``mmap_mode='r'``) and consumed in
+        batches by :meth:`_compute_spike_depths` rather than held fully
+        in memory, since it can be the largest of these arrays.
 
         Loaded keys:
             ``spike_times`` (n_spikes,), ``spike_clusters`` (n_spikes,),
@@ -1015,9 +1027,12 @@ class IBLAlignmentExporter:
         any combination of phy splits and merges.
 
         Implementation uses ``np.unique`` on the encoded
-        ``cluster_id * (n_templates + 1) + template_id`` pair integers
-        so the per-spike Python loop in phylib is replaced with one
-        vectorised sort.
+        ``cluster_id * n_templates_max + template_id`` pair integers
+        (where ``n_templates_max = spike_templates.max() + 1``) so the
+        per-spike Python loop in phylib is replaced with one vectorised
+        sort. The multiplier is chosen strictly greater than every
+        template id so the ``(cluster_id, template_id)`` pairing is
+        lossless and recoverable by floor-division / modulo.
 
         Parameters
         ----------

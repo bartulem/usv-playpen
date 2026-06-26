@@ -82,7 +82,7 @@ def signed_diff(a: np.ndarray, b: np.ndarray, *,
 
     For `metric='euclidean'` this is just `a - b`. For `metric='torus'`
     each component is shifted by an integer multiple of `period` so it
-    lies in `(-period/2, period/2]`, i.e. the shortest-wrap-direction
+    lies in `[-period/2, period/2]`, i.e. the shortest-wrap-direction
     representation. Used everywhere that needs a directional residual:
     loss gradients, regression coefficients, signed bias diagnostics.
 
@@ -100,7 +100,7 @@ def signed_diff(a: np.ndarray, b: np.ndarray, *,
     -------
     np.ndarray
         Same shape as `a - b`, with each component wrapped into
-        `(-period/2, period/2]` on torus.
+        `[-period/2, period/2]` on torus.
     """
 
     _validate_metric_period(metric, period)
@@ -156,7 +156,7 @@ def pairwise_distance(a: np.ndarray, b: np.ndarray, *,
     Returns the per-row Euclidean norm of the wrap-aware signed diff.
 
     On euclidean this is just `||a - b||_2` along the last axis. On
-    torus each component is wrapped into `(-period/2, period/2]` first,
+    torus each component is wrapped into `[-period/2, period/2]` first,
     then squared and summed; the result is the **shortest** path on
     the torus between `a` and `b`, identical to the user's reference
     `torus_dist` helper.
@@ -187,7 +187,7 @@ def _geodesic_distance_matrix(Y: np.ndarray, *, metric: str, period: float) -> n
     -----------
     Full ``(n, n)`` pairwise wrap-aware distance matrix for a set of manifold
     coordinates, built by broadcasting :func:`signed_diff` over all pairs. On
-    the torus each per-axis difference is wrapped into ``(-period/2, period/2]``
+    the torus each per-axis difference is wrapped into ``[-period/2, period/2]``
     before the Euclidean norm, so entry ``(i, j)`` is the shortest geodesic
     distance between point ``i`` and point ``j``; on euclidean it reduces to
     the ordinary pairwise Euclidean distance. This is the building block of the
@@ -417,10 +417,10 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         return float(np.dot(a_c, b_c) / denom)
 
     def _spear(a, b):
-        try:
-            value = spearmanr(a, b)[0]
-        except ValueError:
-            return float('nan')
+        # `spearmanr` signals a degenerate/constant input by returning
+        # `nan` (with a ConstantInputWarning), not by raising, so the
+        # `np.isfinite` guard below is the real degeneracy handler.
+        value = spearmanr(a, b)[0]
         return float(value) if np.isfinite(value) else float('nan')
 
     if metric == 'torus':
@@ -554,13 +554,15 @@ def total_dispersion(Y: np.ndarray, *,
     Returns
     -------
     float
-        `sum_i w_i * ||Y_i - centroid||_2 ^ 2` (under the metric).
-        Note the `w_i` are renormalised to unit sum inside, so when
-        called with uniform weights this reduces to the unweighted
-        sum of squared distances times `1/N`. The R^2 numerator and
-        denominator must therefore be computed with the **same**
-        weight convention; the consumers in this project pass
-        `weights=None` on both sides, so the `1/N` cancels.
+        `sum_i w_i * ||Y_i - centroid||_2 ^ 2` (under the metric),
+        rescaled by `len(Y)`. Note the `w_i` are renormalised to unit
+        sum inside; the trailing `* len(Y)` factor exactly cancels that
+        `1/N`, so when called with uniform weights this reduces to the
+        plain unweighted sum of squared distances (no residual `1/N`).
+        The `weights=None` path returns that same plain sum directly.
+        The R^2 numerator and denominator must therefore be computed
+        with the **same** weight convention; the consumers in this
+        project pass `weights=None` on both sides.
     """
 
     _validate_metric_period(metric, period)
@@ -594,12 +596,12 @@ def sin_cos_encode_jax(y: jnp.ndarray, period: float) -> jnp.ndarray:
 
     The output stacks the per-axis components in the order
     `(sin_1, cos_1, sin_2, cos_2, ...)` along the last axis: this is
-    the same layout the CNN's final dense layer produces and matches
-    the canonical 4-D torus embedding used by `torus_embed` (up to the
-    `concat([cos, sin])` ordering — `torus_embed` is for KMeans /
-    KDTree consumers and chooses the order they expect; the CNN loss
-    uses per-axis interleaving so each 2-D slice corresponds to one
-    coordinate).
+    the same layout the CNN's final dense layer produces. It differs
+    from the canonical 4-D torus embedding used by `torus_embed`, which
+    is `concat([cos, sin])` = cosines-first `(c_1, c_2, s_1, s_2)`;
+    `torus_embed` is for KMeans / KDTree consumers and chooses the
+    order they expect, whereas the CNN loss uses per-axis interleaving
+    so each 2-D slice corresponds to one coordinate.
 
     Parameters
     ----------
@@ -623,9 +625,10 @@ def sin_cos_encode_jax(y: jnp.ndarray, period: float) -> jnp.ndarray:
     c = jnp.cos(angles)
     # Interleave per-axis: (s_1, c_1, s_2, c_2, ...). The stack-then-
     # reshape pattern keeps the per-axis grouping explicit; a direct
-    # `jnp.concatenate([s, c], axis=-1)` would emit
-    # (s_1, s_2, c_1, c_2), which is the `torus_embed` ordering and is
-    # NOT what the CNN's per-axis loss block expects.
+    # `jnp.concatenate([s, c], axis=-1)` would emit the sines-first
+    # block (s_1, s_2, c_1, c_2), which is NOT what the CNN's per-axis
+    # loss block expects. (Note `torus_embed` uses the cosines-first
+    # block (c_1, c_2, s_1, s_2), a different ordering again.)
     stacked = jnp.stack([s, c], axis=-1)
     return stacked.reshape(*y.shape[:-1], 2 * y.shape[-1])
 

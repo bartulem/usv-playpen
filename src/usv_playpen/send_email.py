@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Send e-mail notifying users the PC is busy.
+Send e-mail notifying users about pipeline status (PC busy / available again / run completion).
 """
 
 from __future__ import annotations
@@ -56,6 +56,8 @@ class Messenger:
 
         self.credentials_file = credentials_file or ''
         self.receivers = receivers if receivers is not None else []
+        # Retained for interface compatibility / future SMTP routing, but
+        # currently unused by any Messenger method.
         self.exp_settings_dict = exp_settings_dict
         self.message_output = message_output or print
         self.no_receivers_notification = no_receivers_notification
@@ -73,7 +75,8 @@ class Messenger:
         Returns
         -------
         email_host (str), email_port (str), email_address (str), email_password (str)
-            Lab e-mail address and password.
+            SMTP host and port plus the lab e-mail address and password used to
+            authenticate and send a message.
 
         Raises
         ------
@@ -104,7 +107,8 @@ class Messenger:
         """
         Description
         -----------
-        This method sends e-mails about 165B PC usage.
+        This method sends pipeline status/completion e-mails (PC-busy and
+        run-completion notifications) to the configured receivers.
 
         Failure reporting:
         * Returns True when the message was handed off to the SMTP server.

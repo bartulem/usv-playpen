@@ -165,12 +165,12 @@ QM_PARAMS = {
     'rp_violation': {'refractory_period_ms': 1.0, 'censored_period_ms': 0.0},
     'synchrony': {},
     'firing_range': {'bin_size_s': 5, 'percentiles': (5, 95)},
-    'amplitude_cv': {'average_num_spikes_per_bin': 50, 'percentiles': (5, 95), 'min_num_bins': 10, 'amplitude_extension': 'spike_amplitudes'},
+    'amplitude_cv': {'average_num_spikes_per_bin': 50, 'percentiles': (5, 95), 'min_num_bins': 10},
     'amplitude_cutoff': {'peak_sign': 'both', 'num_histogram_bins': 100, 'histogram_smoothing_value': 3, 'amplitudes_bins_min_ratio': 5},
     'amplitude_median': {'peak_sign': 'both'},
     'sd_ratio': {'censored_period_ms': 4.0, 'correct_for_drift': True, 'correct_for_template_itself': True},
     'nearest_neighbor': {'max_spikes': 10000, 'n_neighbors': 5},
-    'silhouette': {'method': ('simplified',)},
+    'silhouette': {'method': 'simplified'},
     'd_prime': {},
 }
 
@@ -276,6 +276,13 @@ class SpikeQualityMetricsExtractor:
         within-shank offset, regardless of whether ``channel_locations.
         json`` stores ``lateral`` within-shank or with the full
         multi-shank offset baked in.
+    somatic_classifier : dict or None, default None
+        Override for the somatic-classification parameters. When given,
+        it is merged onto :func:`classify_somatic`'s default somatic
+        params (forwarded as its ``params`` argument in
+        :meth:`_compute_template_metrics`), so only the keys supplied are
+        overridden. When ``None``, :func:`classify_somatic`'s built-in
+        defaults are used unchanged.
     histology_dirname : str, default ``"histology"``
         Top-level directory name under ``os_cup_loc`` holding per-animal
         histology output.
@@ -1153,12 +1160,20 @@ class SpikeQualityMetricsExtractor:
                 unit_id_strings[unit_id],
                 cluster_group,
                 template_metrics['somatic'],
+                # spiking_profile is a deliberate placeholder filled by a
+                # later/downstream step; it is never computed here
                 np.nan,
+                # triangulation axes map to anatomy as x -> ML, y -> AP,
+                # z -> DV, hence loc_ap = location[1], loc_ml = location[0],
+                # loc_dv = location[2]
                 unit_location['location'][1],
                 unit_location['location'][0],
                 unit_location['location'][2],
                 unit_location['closest_channel'],
                 unit_location['brain_region'],
+                # firing_rate is the cross-session median rate; the
+                # SpikeInterface single-session rate is written separately
+                # below as firing_rate_si (quality_metrics['firing_rate'])
                 cross_session_info['median_fr'],
                 noise_levels[one_peak_ch],
                 template_metrics['peak_to_valley'],

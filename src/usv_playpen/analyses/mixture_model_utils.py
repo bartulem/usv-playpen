@@ -12,7 +12,13 @@ Two mixture families are supported in this module:
 * **Student-t mixtures** (custom :class:`TMixture` + EM): see
   :func:`fit_log_t_mixture`, :func:`t_mixture_icl`,
   :func:`t_mixture_cv_neg_loglik`, :func:`report_t_mixture_stats`,
-  :func:`t_mixture_cdf_logspace`, :func:`t_mixture_quantile_logspace`.
+  :func:`summarize_best_t_mixture`, :func:`t_mixture_cdf_logspace`,
+  :func:`t_mixture_quantile_logspace`.
+* **Parametric bootstrap likelihood-ratio test (LRT)** for the number
+  of components (family-agnostic, dispatches on ``model_class``): see
+  :func:`bootstrap_lrt` and :func:`select_n_components_step_up_lrt`
+  (with internal helpers :func:`_sample_from_mixture` and
+  :func:`_lr_statistic`).
 
 Functions prefixed ``gmm_`` are Gaussian-only; functions prefixed
 ``t_mixture_`` are Student-t-only. The two families share the same
@@ -917,7 +923,9 @@ def gmm_cv_neg_loglik(
         Cross-validated deviance-equivalent: ``-2 * sum_i loglik(x_i)``
         evaluated on the fold in which sample ``i`` is held out.
         Lower is better. Returns ``np.inf`` if any fold has fewer
-        training samples than ``n_components``.
+        training samples than ``n_components``. Also returns ``np.inf``
+        when there are fewer samples than ``n_folds`` (KFold cannot be
+        constructed).
     """
 
     log_x = np.log(intervals_sec).reshape(-1, 1)
@@ -1058,9 +1066,9 @@ def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) ->
     Solves the 1D Peel & McLachlan equation for the degrees-of-freedom
     update of one t-component, given current responsibilities and
     latent weights. Brent's method on a wide bracket; falls back to a
-    near-Gaussian default when the equation does not change sign in
-    the bracket (which happens when the component is effectively
-    Gaussian and ``nu`` is unidentifiable above ~50).
+    near-Gaussian default of ``nu = 50.0`` when the equation does not
+    change sign in the bracket (which happens when the component is
+    effectively Gaussian and ``nu`` is unidentifiable above ~50).
 
     Parameters
     ----------
@@ -1422,8 +1430,18 @@ def fit_log_t_mixture(
                 break
             prev_ll = ll
 
-        if ll > best_ll:
-            best_ll = ll
+        # ``ll`` above is computed from the parameters at the TOP of the last
+        # iteration (i.e. one M-step stale relative to the final mu/sigma2/nu/w).
+        # Recompute the log-likelihood of the final parameters so the restart
+        # ranking and the stored ``best_ll`` correspond exactly to ``best_model``.
+        final_log_w_pdf = np.array([
+            np.log(w[k]) + _t_logpdf_1d(log_x, mu[k], sigma2[k], nu[k])
+            for k in range(n_components)
+        ])
+        final_ll = float(np.sum(np.logaddexp.reduce(final_log_w_pdf, axis=0)))
+
+        if final_ll > best_ll:
+            best_ll = final_ll
             best_model = TMixture(weights=w, means=mu, covariances=sigma2, nus=nu)
 
     if best_model is None:
@@ -1515,7 +1533,9 @@ def t_mixture_cv_neg_loglik(
     cv_neg_loglik (float)
         ``-2 * sum_i loglik(x_i)`` evaluated on the fold in which
         ``x_i`` is held out. ``np.inf`` if any fold has fewer training
-        samples than ``n_components``.
+        samples than ``n_components``. Also returns ``np.inf`` when
+        there are fewer samples than ``n_folds`` (KFold cannot be
+        constructed).
     """
 
     log_x = np.log(np.asarray(intervals_sec, dtype=float))
@@ -1743,10 +1763,10 @@ def summarize_best_t_mixture(
 # distribution of -2 log Lambda directly, then comparing the observed
 # value to the simulated reference.
 #
-# For large datasets we subsample to ``n_subsample`` so observed and
+# For large datasets we subsample to ``n_subsample`` so the observed and
 # bootstrap LR statistics are on the same N scale; this keeps the
-# tractable while preserving validity (the LRT is asymptotic and
-# converges at any sufficiently large N_subsample).
+# computation tractable while preserving validity (the LRT is asymptotic
+# and converges for any sufficiently large ``n_subsample``).
 # =====================================================================
 
 
@@ -1780,7 +1800,13 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
     """
 
     K = int(model.n_components)
+    # Renormalize before sampling: TMixture weights are stored straight from
+    # the final M-step (w = n_k / N) without an explicit renormalization, so
+    # their sum is 1 only up to float accumulation. numpy's rng.choice rejects
+    # p whose sum drifts by more than ~1.49e-8, which would otherwise abort a
+    # bootstrap replicate; renormalizing makes the draw robust.
     weights = np.asarray(model.weights_).flatten()
+    weights = weights / weights.sum()
     comp = rng.choice(K, size=N, p=weights)
     out = np.empty(N)
 

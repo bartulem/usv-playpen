@@ -88,8 +88,7 @@ def _data_at_3d(x: float, y: float, z: float, alpha: float,
 
 def make_initial_guess_and_bounds_3d(wf_data: np.ndarray,
                                      local_contact_locations: np.ndarray,
-                                     max_distance_um: float,
-                                     initial_z: float | None = None) -> tuple:
+                                     max_distance_um: float) -> tuple:
     """
     Description
     -----------
@@ -98,11 +97,11 @@ def make_initial_guess_and_bounds_3d(wf_data: np.ndarray,
 
     The initial ``(x, y, z)`` is the amplitude-weighted centre of mass
     of the contact cloud; the initial ``alpha`` is the distance from
-    that centre of mass to the highest-amplitude contact multiplied by
-    that contact's amplitude (i.e. the ``alpha`` that would reproduce
-    the peak amplitude under the monopolar model). When the feature
-    vector has effectively zero total weight, uniform weights are used
-    so the centre of mass is still defined.
+    that centre of mass to the contact with the largest absolute
+    amplitude, multiplied by that contact's (signed) amplitude (i.e. the
+    ``alpha`` that would reproduce the peak amplitude under the monopolar
+    model). When the feature vector has effectively zero total weight,
+    uniform weights are used so the centre of mass is still defined.
 
     Bounds on ``x``, ``y`` and ``z`` are the per-axis extent of the
     contact cloud expanded by ``max_distance_um`` on each side; the
@@ -119,9 +118,6 @@ def make_initial_guess_and_bounds_3d(wf_data: np.ndarray,
     max_distance_um : float
         How far beyond the contact cloud (per axis) the source is
         allowed to lie, and the multiplier used to bound ``alpha``.
-    initial_z : float or None, default None
-        Unused; retained for signature compatibility with callers that
-        pass an explicit starting z.
 
     Returns
     -------
@@ -267,9 +263,11 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
       ``alpha`` solved analytically at each step; returns the length-3
       position.
 
-    On optimiser failure the function prints the exception and returns a
-    tuple of NaNs of the appropriate length, so a single unit's failure
-    does not abort a batch.
+    On optimiser failure — either a hard exception or a result whose
+    ``success`` flag is ``False`` (non-convergence / maximum iterations
+    reached) — the function returns a tuple of NaNs of the appropriate
+    length, so a single unit's failure does not abort a batch. Hard
+    exceptions are additionally printed.
 
     Parameters
     ----------
@@ -291,6 +289,9 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
         For ``"least_square"``: ``(x, y, z, alpha)``.
         For ``"minimize_with_log_penality"``: ``(x, y, z)``.
         A tuple of NaNs of the matching length on optimiser failure.
+    None
+        If ``optimizer`` is not one of the two recognised values, neither
+        branch executes and the function returns ``None``.
     """
     x0, bounds = make_initial_guess_and_bounds_3d(wf_data, local_contact_locations, max_distance_um)
 
@@ -303,6 +304,10 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
                 bounds=bounds,
                 args=args
             )
+            # scipy does not raise on non-convergence; honour the documented
+            # NaN-on-failure contract by gating on the success flag.
+            if not output.success:
+                return (np.nan, np.nan, np.nan, np.nan)
             return tuple(output["x"])
         except Exception as e:
             print(f"scipy.optimize.least_squares error: {e}")
@@ -324,6 +329,10 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
                 bounds=bounds_3d,
                 args=args
             )
+            # scipy does not raise on non-convergence; honour the documented
+            # NaN-on-failure contract by gating on the success flag.
+            if not output.success:
+                return (np.nan, np.nan, np.nan)
             x_opt, y_opt, z_opt = output["x"]
             return (x_opt, y_opt, z_opt)
         except Exception as e:

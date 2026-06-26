@@ -164,7 +164,7 @@ def get_session_behavioral_features(session_root: str) -> pls.DataFrame:
     """
     Description
     -----------
-    This method loads the behavioral features CSV (e.g., distances, angles) for a
+    This function loads the behavioral features CSV (e.g., distances, angles) for a
     specific session.
 
     This function specifically targets the file containing calculated
@@ -202,7 +202,7 @@ def merge_usv_and_behavioral_features(
     """
     Description
     -----------
-    This method merges ultrasonic vocalization (USV) timing, assignment, and category data
+    This function merges ultrasonic vocalization (USV) timing, assignment, and category data
     with frame-by-frame continuous behavioral features.
 
     It extracts the specified distance and angle metrics from the broad behavioral
@@ -281,7 +281,7 @@ def build_master_usv_dataframe(
     """
     Description
     -----------
-    This method is the primary data extraction and aggregation entry point for the
+    This function is the primary data extraction and aggregation entry point for the
     USV summary statistics pipeline. It replaces the multiple per-analysis session
     loops previously scattered across the analysis notebook with a single,
     comprehensive pass over all session directories.
@@ -520,7 +520,7 @@ def plot_assignment_stacked_bars(
     """
     Description
     -----------
-    This method generates a horizontal stacked bar chart showing either the total
+    This function generates a horizontal stacked bar chart showing either the total
     number of USVs or the relative proportion of USVs assigned to males, females,
     and the unassigned category per recording session.
 
@@ -610,7 +610,7 @@ def plot_assignment_summary_panel(
     """
     Description
     -----------
-    This method generates a comprehensive 3-panel figure summarizing USV assignments.
+    This function generates a comprehensive 3-panel figure summarizing USV assignments.
 
     Panel 1: A scatter plot showing variability in USV counts on a log scale.
     Panel 2: A horizontal Seaborn violin plot showing distributions and IQRs.
@@ -765,7 +765,7 @@ def plot_animal_participation_stats(
     """
     Description
     -----------
-    This method visualizes individual animal participation by generating two side-by-side
+    This function visualizes individual animal participation by generating two side-by-side
     horizontal bar charts. The first panel displays the number of sessions each animal
     participated in, and the second displays their average USV vocal rate per session.
 
@@ -1004,7 +1004,7 @@ def plot_behavior_duration_regressions(
     """
     Description
     -----------
-    This method generates a 2x2 grid of Seaborn regression plots assessing the
+    This function generates a 2x2 grid of Seaborn regression plots assessing the
     relationship between behavioral features (distance, angle) and USV duration
     for both sexes.
 
@@ -1119,7 +1119,7 @@ def plot_distance_by_assignment_kde_anova(
     """
     Description
     -----------
-    This method generates an overlaid KDE plot comparing nose-to-nose distances
+    This function generates an overlaid KDE plot comparing nose-to-nose distances
     between male, female, and unassigned USV categories.
 
     It computes a One-Way ANOVA, effect size (Omega-Squared), and Tukey's HSD
@@ -1244,7 +1244,7 @@ def plot_unassigned_proportion_vs_distance_jointplot(
     """
     Description
     -----------
-    This method generates a Seaborn JointGrid mapping the correlation between
+    This function generates a Seaborn JointGrid mapping the correlation between
     the median nose-to-nose distance in a session and the overall proportion
     of unassigned USVs in that session.
 
@@ -1313,7 +1313,7 @@ def plot_duration_histograms_by_sex(
     """
     Description
     -----------
-    This method generates stacked histograms displaying the distribution of
+    This function generates stacked histograms displaying the distribution of
     individual USV durations for males and females.
 
     It computes the mean and median durations for each sex, plots them as
@@ -1402,7 +1402,7 @@ def plot_hourly_regressions(
     """
     Description
     -----------
-    This method generates a two-panel Seaborn regression plot (male top, female bottom)
+    This function generates a two-panel Seaborn regression plot (male top, female bottom)
     mapping the hour of the day against a specified continuous USV metric (e.g.,
     USV count per session or individual USV duration) to assess global vocal fatigue.
 
@@ -1527,7 +1527,7 @@ def plot_local_fatigue_binned_trends(
     """
     Description
     -----------
-    This method visualizes within-session temporal dynamics (local vocal fatigue)
+    This function visualizes within-session temporal dynamics (local vocal fatigue)
     by plotting aggregated metrics across discrete time bins.
 
     It generates two vertically stacked line plots (male and female) displaying
@@ -1785,7 +1785,18 @@ def plot_estrous_ratio_scatter(
 
     Returns
     -------
-    fig (plt.Figure), ax (plt.Axes), stats_dict (dict)
+    fig (plt.Figure)
+        The matplotlib Figure object.
+    ax (plt.Axes)
+        The matplotlib Axes object containing the jittered scatter.
+    stats_dict (dict)
+        A per-category mapping (keyed by estrous stage character) whose values
+        are dictionaries with the keys 'n' (number of valid sessions), 'mean'
+        (arithmetic mean ratio), 'sem' (arithmetic standard error of the mean),
+        'geom_mean' (geometric mean of strictly-positive ratios), 'log_sem'
+        (standard error of log10 ratios), and 'ci_lower'/'ci_upper'
+        (confidence-interval bounds at confidence_level). Entries are NaN for
+        stages with no valid sessions.
     """
 
     fig, ax = plt.subplots(figsize=(4, 3))
@@ -1930,7 +1941,7 @@ def plot_estrous_usv_rates(
     """
     Description
     -----------
-    This method generates a side-by-side bar chart visualizing the average number
+    This function generates a side-by-side bar chart visualizing the average number
     of USVs emitted per session, split by sex and categorized by the female's
     estrous stage.
 
@@ -2033,7 +2044,14 @@ def plot_estrous_stage_pie_chart(
 
     Returns
     -------
-    fig, ax, stats_dict
+    fig (plt.Figure)
+        The matplotlib Figure object.
+    ax (plt.Axes)
+        The matplotlib Axes object containing the donut pie chart.
+    stats_dict (dict)
+        A dictionary mapping each full estrous-stage name (via label_map) to that
+        stage's percentage of the total number of sessions (0.0 when there are no
+        sessions).
     """
 
     # Force the biological order (DO NOT sort by frequency/count)
@@ -2088,7 +2106,7 @@ def plot_category_prevalence_and_embedding(
     boundary_color: str = '#00FF00',
     log_scale_bars: bool = False,
     grid_res: int = 300
-):
+) -> tuple[plt.Figure, np.ndarray]:
     """
     Description
     -----------
@@ -2672,7 +2690,7 @@ def plot_category_estrous_ratio_grid(
         axes_cats_flat[j].axis('off')
     fig_cats.tight_layout()
 
-    # Figure 2: Eestus stage facets
+    # Figure 2: Estrous stage facets
     fig_stages, axes_stages = plt.subplots(2, 2, figsize=(12, 12), sharey=True)
     axes_stages_flat = axes_stages.flatten()
 

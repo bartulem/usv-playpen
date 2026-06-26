@@ -112,9 +112,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         continuous bout features (e.g., duration, complexity).
 
         Key Logical & Scientific Configurations:
-        1. Vocal feature configuration (vocal_output_type & vocal_output_partner_only):
-           - If 'vocal_output_partner_only' is True: Only the partner's USV signals are ingested.
-           - If 'vocal_output_partner_only' is False (Full syntax mode): Both mice's USV signals
+        1. Vocal feature configuration (usv_predictor_type & usv_predictor_partner_only):
+           - If 'usv_predictor_partner_only' is True: Only the partner's USV signals are ingested.
+           - If 'usv_predictor_partner_only' is False (Full syntax mode): Both mice's USV signals
              are ingested. This allows the model to determine if the subject's own prior vocal
              patterns (syntax) influence the parameters of the current bout.
         2. Scientific guardrail (self-predictor filtering):
@@ -877,9 +877,19 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         Evaluation and permutation control:
         - Original scale metrics: Predictions are back-transformed via exp(\hat{y}_{log}).
-          Performance is evaluated using Spearman's Rank Correlation (to assess monotonic
-          ranking accuracy independent of scale) and Mean Squared Logarithmic Error
-          (MSLE, to assess magnitude accuracy in the log-space relevant to the distribution).
+          The same Gamma-GLM scoring bundle as the pyGAM engine is computed on the
+          back-transformed predictions (see the 'Metrics Calculated' block in
+          `_run_model_for_feature_pygam`):
+          * `explained_deviance` (D^2): `1 - (Residual Deviance / Null Deviance)`,
+            the Gamma-equivalent of R^2 (higher is better).
+          * `residual_deviance`: raw Gamma deviance on the test set (lower is better).
+          * `spearman_r`: rank-correlation between predicted and true values; assesses
+            monotonic ranking accuracy independent of scale.
+          * `pearson_r`: linear-scale correlation on the back-transformed predictions.
+          * `msle` (Mean Squared Logarithmic Error): magnitude accuracy in the log-space
+            relevant to the distribution.
+          * `mae` (Mean Absolute Error): interpretable per-trial miss in native units.
+          * `rmse` (Root Mean Squared Error): heavy-tail sensitive counterpart to MAE.
         - Permutation test: Parallel to the actual model, a "shuffled" control is executed
           by permuting the target labels. This provides a null distribution for these
           metrics to verify that the behavioral history contains more predictive information
@@ -1047,7 +1057,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 results['null']['converged'].append(True)
                 results['null']['fit_time'].append(fit_time_null)
 
-            except (ValueError, ZeroDivisionError, Exception) as e:
+            except Exception as e:
                 print(f"Fit failed for Null Split {split_idx + 1}: {e}")
                 # Ridge null branch does not emit filter shapes; every other
                 # per-fold key gets a NaN placeholder to keep lengths aligned.

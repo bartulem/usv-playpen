@@ -1166,15 +1166,17 @@ class NeuronalTuning(FeatureZoo):
     tuning_parameters_dict (dict)
         Settings dictionary; keys read by behavioral path:
         `temporal_offsets`, `n_shuffles`, `total_bin_num`,
-        `n_spatial_bins`, `spatial_scale_cm`. Keys read by vocal path:
+        `n_spatial_bins`, `spatial_scale_cm`, `smoothing_sd`,
+        `shuffle_seed`, `behavioral_min_occupancy_seconds`,
+        `circular_features`. Keys read by vocal path:
         `n_shuffles`, `total_bin_num`, `shuffle_seconds_range`,
         `peth_window_seconds`, `peth_bin_seconds`, `bout_quiet_seconds`,
         `vocal_require_clean_post_anchor`,
         `vocal_require_clean_prior_anchor`, `n_usv_min_self`,
         `n_usv_min_partner`, `n_usv_min_category`,
         `usv_property_min_occupancy_seconds`,
-        `include_partner_vocalization_tuning_bool`,
-        `shuffle_chunk_size`.
+        `include_partner_vocalization_tuning_bool`, `smoothing_sd`,
+        `shuffle_seed`.
     message_output (Callable)
         Logger; defaults to print.
     """
@@ -1186,9 +1188,10 @@ class NeuronalTuning(FeatureZoo):
         Initialize the unified per-cluster compute. Loads `FeatureZoo`
         feature definitions (boundaries / labels / vocal segmentation
         metadata), validates and stashes the keyword arguments as attributes,
-        records GUI-vs-CLI execution context, and pins the path of the
-        bundled USV latent-embedding segmentation file used by the
-        categorical vocal compute.
+        and records GUI-vs-CLI execution context. The categorical vocal
+        compute reads its category labels straight from the
+        `vae_*` / `qlvm_*` columns of the `*_usv_summary.csv`, not from any
+        bundled segmentation file.
 
         Parameters
         ----------
@@ -1212,11 +1215,6 @@ class NeuronalTuning(FeatureZoo):
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
         self.app_context_bool = is_gui_context()
-        self._segmentation_path = (
-            pathlib.Path(__file__).parent.parent
-            / "_config"
-            / "usv_latent_embedding_segmentation.npz"
-        )
 
     # pkl merge helper (used by both paths)
 
@@ -1619,7 +1617,7 @@ class NeuronalTuning(FeatureZoo):
                     # statistically correct order: it tightens the null
                     # distribution coherently rather than blurring an
                     # already-reduced percentile array.
-                    # Plain D NaN policy: BOTH observed rate AND each
+                    # Plain 1D NaN policy: BOTH observed rate AND each
                     # shuffle's rate map are smoothed with
                     # `preserve_nan=False` so the weighted Gaussian
                     # interpolates over low-occupancy gaps. This keeps
@@ -1837,11 +1835,24 @@ class NeuronalTuning(FeatureZoo):
             anchor_categorical: dict[str, dict] = {}
             for cat_feat in CATEGORICAL_FEATURES:
                 cat_values = usv_df[cat_feat].to_numpy()[anchor_idx]
-                non_null = (
-                    cat_values[cat_values >= 0]
-                    if cat_values.dtype.kind in "iu"
-                    else cat_values
-                )
+                # Drop null sentinels regardless of dtype before building the
+                # category set: polars `.to_numpy()` on an integer column that
+                # contains nulls yields a float (NaN) or object (None) array,
+                # so a dtype-gated integer-only filter would let those
+                # sentinels reach `sorted(set(...))` / `int(c)` below and
+                # crash. For integer dtypes the original `>= 0` filter is kept
+                # (drops the -1 "unassigned" sentinel).
+                if cat_values.dtype.kind in "iu":
+                    non_null = cat_values[cat_values >= 0]
+                else:
+                    non_null = np.array(
+                        [
+                            c
+                            for c in cat_values.tolist()
+                            if c is not None
+                            and not (isinstance(c, float) and np.isnan(c))
+                        ]
+                    )
                 unique_cats = np.array(sorted(set(non_null.tolist())))
                 cat_to_idx = {int(c): i for i, c in enumerate(unique_cats)}
 
@@ -2069,8 +2080,8 @@ class NeuronalTuning(FeatureZoo):
         ----------
         partial (dict)
             The vocal compute payload. Must already contain the four
-            vocal blocks plus `triage_stats["vmi"]` (added by the VMI
-            block above).
+            vocal blocks plus `triage_stats["vmi"]` (added by
+            `_compute_one_cluster_vocal` before this method is invoked).
         params (dict)
             `calculate_neuronal_tuning_curves` settings block (currently
             unused here; reserved for future thresholds).
@@ -2531,8 +2542,9 @@ class NeuronalTuning(FeatureZoo):
         -------
         partial (dict)
             Top-level keys (`usv_peth`, `usv_property_tuning`, `usv_category_tuning`,
-            `usv_category_peth`, `usv_metadata`) ready to merge into the
-            cluster pkl.
+            `usv_category_peth`, `usv_metadata`, and `triage_stats` carrying
+            the `vmi` block plus per-modality vocal triage blocks) ready to
+            merge into the cluster pkl.
         """
 
         params = self.tuning_parameters_dict
@@ -2579,6 +2591,9 @@ class NeuronalTuning(FeatureZoo):
                     (n_shuffles + 1, n_bins_prop), np.nan, dtype=float
                 )
 
+            # q3w_rates feeds `usv_category_tuning` (within-USV per-category
+            # firing rate); one (n_shuffles + 1, n_cats) array per categorical
+            # feature (observed row 0, shuffles 1..n_shuffles).
             q3w_rates: dict[str, np.ndarray] = {}
             for cat_feat in CATEGORICAL_FEATURES:
                 n_cats = ps["anchor_categorical"][cat_feat]["unique_cats"].size
@@ -2586,6 +2601,9 @@ class NeuronalTuning(FeatureZoo):
                     (n_shuffles + 1, n_cats), np.nan, dtype=float
                 )
 
+            # q3p_rates feeds `usv_category_peth` (per-category time-resolved
+            # peri-USV PETH); one (n_shuffles + 1, n_cats, n_peth_bins) array
+            # per categorical feature (observed row 0, shuffles 1..n_shuffles).
             q3p_rates: dict[str, np.ndarray] = {}
             for cat_feat in CATEGORICAL_FEATURES:
                 n_cats = ps["anchor_categorical"][cat_feat]["unique_cats"].size
@@ -2635,9 +2653,12 @@ class NeuronalTuning(FeatureZoo):
                 per_anchor_bin_count = (cnt_hi - cnt_lo).astype(np.int64)
                 per_anchor_bin_count[~peth_valid] = 0
 
-                # within-USV per-anchor spike count
+                # within-USV per-anchor spike count over the closed
+                # [start, stop] window (side="left" for start, side="right"
+                # for stop), matching the VMI within-USV convention in
+                # `_compute_vmi_for_emitter`.
                 wcnt_lo = np.searchsorted(spike_times, anchor_starts, side="left")
-                wcnt_hi = np.searchsorted(spike_times, anchor_stops, side="left")
+                wcnt_hi = np.searchsorted(spike_times, anchor_stops, side="right")
                 per_anchor_within_count = (wcnt_hi - wcnt_lo).astype(np.int64)
                 per_anchor_within_count[~within_valid] = 0
 
@@ -2775,7 +2796,7 @@ class NeuronalTuning(FeatureZoo):
                 **peth_stats,
             }
             if smoothing_sd > 0:
-                # plain D NaN policy (see _compute_one_cluster_behavioral):
+                # plain 1D NaN policy (see _compute_one_cluster_behavioral):
                 # observed and per-shuffle rate maps both fill sparse-bin
                 # gaps via the weighted Gaussian, so smoothed rate and
                 # smoothed null bands cover the same x-extent.

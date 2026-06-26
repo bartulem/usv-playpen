@@ -553,7 +553,9 @@ def wait_for_subprocesses(
         Hard timeout for the entire group. A TimeoutError is raised if the
         group does not finish within this budget (unless raise_on_timeout is
         False, in which case the still-running subprocesses are terminated and
-        their slots in the returned list are left as None).
+        their slots in the returned list carry whatever return code poll()
+        reports after termination -- typically a negative signal code, or None
+        only if a process still has not exited at the final poll).
     label (str)
         Short human-readable label used in log / exception messages so the
         caller knows which phase timed out (e.g., 'audio file copy').
@@ -572,7 +574,10 @@ def wait_for_subprocesses(
     -------
     return_codes (list[Optional[int]])
         The return code of each subprocess, in the same order as the input.
-        Slots are None for subprocesses that had to be terminated on timeout.
+        Slots for subprocesses that had to be terminated on timeout carry the
+        return code poll() reports after termination (typically a negative
+        signal code), or None only if a process still has not exited at the
+        final poll.
     """
 
     log = message_output or print

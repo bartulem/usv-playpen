@@ -262,7 +262,8 @@ def sync_equipment_dynamic_fields(metadata_settings: dict, exp_settings_dict: di
       Equipment.sync_LEDs.device_port
           <- exp_settings_dict['arduino_sync_port']
       Equipment.audio_Avisoft.device_sync
-          <- exp_settings_dict['audio']['usgh_devices_sync']
+          <- bool(exp_settings_dict['audio']['usgh_devices_sync'])
+             (always coerced to a Python bool regardless of source type)
       Equipment.audio_Avisoft.device_sr
           <- exp_settings_dict['audio']['devices']['fabtast']
       Equipment.video_Loopbio.device_sr
@@ -276,8 +277,10 @@ def sync_equipment_dynamic_fields(metadata_settings: dict, exp_settings_dict: di
       Equipment.video_Loopbio.sensor_count
           <- len(exp_settings_dict['video']['general']['expected_cameras'])
       Equipment.video_Loopbio.sensor_sn
-          <- sorted ascending list of expected_cameras (matches the YAML's
-             original numeric-ascending order)
+          <- sorted list of expected_cameras (sorted numerically when every
+             serial is a digit string, else lexicographically; matches the
+             YAML's original numeric-ascending order). Digit-string serials
+             are emitted as ints, not as the raw expected_cameras elements.
       Equipment.video_Loopbio.sensor_exposure_time
           <- [exp_settings_dict['video']['cameras_config'][sn]['exposure_time']
               for sn in sorted_expected_cameras]

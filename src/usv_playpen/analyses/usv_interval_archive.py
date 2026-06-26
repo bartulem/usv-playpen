@@ -9,7 +9,7 @@ self-describing HDF5 file, structured as::
     usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5
     ├── /attrs                  analysis-level provenance (every JSON
     │                           parameter that drove the run, plus
-    │                           created_at / git_sha / source_lists /
+    │                           created_at_iso / git_sha / source_lists /
     │                           n_sessions_loaded)
     ├── /<mode>/                mode group (``s2s`` and/or ``e2s``)
     │   ├── /attrs              mode-level provenance
@@ -401,11 +401,19 @@ def _decode_attr(v: Any) -> Any:
     if isinstance(v, str):
         if v == "null":
             return None
-        # Best-effort JSON decode; non-JSON strings (most attrs) pass through.
-        try:
-            return json.loads(v)
-        except (ValueError, TypeError):
-            return v
+        # The writer (``_attr_value``) only ever JSON-encodes containers
+        # (list / tuple / dict), which serialise to strings beginning with
+        # "[" or "{"; plain scalar strings are stored verbatim. Restrict the
+        # decode attempt to those container prefixes so a coincidentally
+        # parseable scalar string -- e.g. an all-digit git short SHA like
+        # "1234567" -- is not silently retyped to an int on read-back.
+        stripped = v.lstrip()
+        if stripped[:1] in ("[", "{"):
+            try:
+                return json.loads(v)
+            except (ValueError, TypeError):
+                return v
+        return v
     if isinstance(v, np.ndarray):
         return v.tolist()
     if isinstance(v, (np.integer,)):
@@ -443,10 +451,13 @@ def reconstruct_best_model(
     immediately. For Student-t mixtures, a :class:`mixture_model_utils.TMixture`
     is constructed directly.
 
-    Components are returned in ascending log-mean order, matching the
-    ``model_order`` convention used elsewhere; the reconstructed model
-    is "pre-sorted" (its component slots are already in canonical
-    order) so the returned ``gmm_order`` is simply ``arange(K)``.
+    Assumes the archived per-component columns were already stored in
+    ascending log-mean order by the compute path (matching the
+    ``model_order`` convention used elsewhere). This function does not
+    sort or verify that ordering; it preserves the stored column order
+    and returns ``gmm_order = arange(K)`` unconditionally, so the
+    returned components are in ascending log-mean order only insofar as
+    the writer stored them that way.
 
     Parameters
     ----------
@@ -462,16 +473,19 @@ def reconstruct_best_model(
         Number of components for the row to extract.
     ic_col (str)
         Information criterion used to pick the "best" rep within
-        ``(sex, K)``. Defaults to ``"cv_neg_loglik"``; falls back to
-        ``"bic"`` when CV values are NaN (e.g. tiny samples).
+        ``(sex, K)``. Defaults to ``"cv_neg_loglik"``; only when left at
+        that default and all CV values in the ``(sex, K)`` slice are NaN
+        (e.g. tiny samples) does selection fall back to ``"bic"``. A
+        non-default ``ic_col`` is used as-is with no fallback.
 
     Returns
     -------
     model (GaussianMixture | TMixture)
         Reconstructed mixture; ``score_samples`` etc. work directly.
     gmm_order (np.ndarray)
-        ``np.arange(K)`` -- the model is pre-sorted by ascending
-        log-mean.
+        ``np.arange(K)`` -- returned unconditionally, reflecting the
+        stored column order (assumed ascending log-mean per the compute
+        path; not re-sorted or verified here).
     """
 
     sub = gmm_fits.filter(

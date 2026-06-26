@@ -253,6 +253,9 @@ class AudioGenerator:
 
         Parameters
         ----------
+        None
+            Inputs are read from ``self.create_playback_settings_dict`` (the
+            ``create_naturalistic_usv_playback_wav`` settings block) and ``self.exp_id``.
 
         Returns
         -------
@@ -299,9 +302,11 @@ class AudioGenerator:
         )
 
         # `playback_seed` is None by default (fresh entropy, non-reproducible);
-        # set it to an integer to generate a documented, repeatable stimulus
-        # set. A local random.Random is used instead of the global `random`
-        # module so the draw is reproducible without mutating global state.
+        # set it to an integer to generate a documented, repeatable stimulus set.
+        # It seeds BOTH a numpy Generator (`rng`, which drives the ISI/IUI interval
+        # draws and the sequence-length draw -- i.e. the substantive interval/length
+        # structure) and a local random.Random (`py_rng`, used only for USV-file
+        # selection); the latter avoids mutating the global `random` module state.
         playback_seed = self.create_playback_settings_dict['playback_seed']
         rng = np.random.default_rng(playback_seed)
         py_rng = random.Random(playback_seed)
@@ -336,14 +341,15 @@ class AudioGenerator:
                     if total_playback_time_created + isi >= total_acceptable_playback_time:
                         break
 
+                    # `wav_sampling_rate` is stored in kHz (e.g. 250), so multiplying by
+                    # 1e3 converts it to samples-per-second (Hz) before scaling by seconds
                     isi_samples = int(np.ceil(isi * wav_sampling_rate * 1e3))
 
-                    if total_playback_time_created == 0:
-                        replay_wav_arr = np.zeros(isi_samples, dtype=np.int16)
-                        usv_id_txt_file.write('ISI \n')
-                    else:
-                        replay_wav_arr = np.concatenate((replay_wav_arr, np.zeros(isi_samples, dtype=np.int16)))
-                        usv_id_txt_file.write('ISI \n')
+                    # `replay_wav_arr` is seeded as an empty int16 array, so concatenating
+                    # the ISI silence onto it is correct on the first iteration too (no
+                    # special-casing of the empty-array start is needed)
+                    replay_wav_arr = np.concatenate((replay_wav_arr, np.zeros(isi_samples, dtype=np.int16)))
+                    usv_id_txt_file.write('ISI \n')
 
                     total_playback_time_created += isi
                     replay_txt_file.write(f'{isi_samples} \n')
@@ -454,7 +460,7 @@ class AudioGenerator:
                   open(output_file_dir / f"usv_playback_n={total_usv_number}_{current_time}_usvids.txt",
                        'w+') as usv_id_txt_file):
                 replay_txt_file.write(f'{ipi_duration_samples} \n')
-                for usv_num in tqdm(range(total_usv_number)):
+                for _ in tqdm(range(total_usv_number)):
                     random_wav_file = py_rng.choice(wav_files_list)
                     _, random_wav_file_data = wavfile.read(random_wav_file)
                     replay_wav_arr = np.concatenate((replay_wav_arr, random_wav_file_data, arr_start_with_ipi))
@@ -487,7 +493,7 @@ class AudioGenerator:
             avoid clipping; -90 (dB) for the initial volume will work fine for a clip that
             starts with near silence; the delay of 0.2 (seconds) has the effect of causing
             the compander to react a bit more quickly to sudden volume changes
-`       (3) stationary noise reduction is applied to the signal
+        (3) stationary noise reduction is applied to the signal
             3 standard deviations above mean to place the threshold between
             signal and noise
         (4) tempo is adjusted to match the duration of the original audio segment

@@ -30,7 +30,8 @@ Density-weighted Huber regression on the 2-D residual:
 
     L(W, b) =  mean_i  w_i * huber_delta( ||y_true_i - (X_i W + b)||_2 )
              + 0.5 * lam_l2 * ||W||_2^2
-             + 0.5 * lam_smooth * sum over second-time-derivatives of W**2
+             + 0.5 * lam_smooth * sum over the smoothness_derivative_order-th
+                                  (1st- or 2nd-order) time-derivatives of W**2
 
 - `w_i` is the inverse-density sample weight (KDE), normalised to unit mean
   so the loss scale is invariant to the caller's weighting convention and
@@ -39,9 +40,10 @@ Density-weighted Huber regression on the 2-D residual:
   cannot dominate the gradient. The delta parameter is exposed via
   `huber_delta`; setting `huber_delta=np.inf` recovers pure squared loss.
 - L2 constrains absolute weight magnitude; the temporal smoothness term
-  penalises the discrete second derivative of the weights along the time
-  axis, just as in the old Gaussian model, so learned kinematic filters
-  remain biologically plausible smooth curves.
+  penalises the discrete `smoothness_derivative_order`-th derivative (1st-
+  or 2nd-order, configurable) of the weights along the time axis, just as
+  in the old Gaussian model, so learned kinematic filters remain
+  biologically plausible smooth curves.
 
 Manifold-bounded predictions
 ----------------------------
@@ -387,19 +389,21 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         self.period = float(period)
         # Opt-in fused training loop. When True, the full descent is
         # wrapped in a single `jax.lax.while_loop` inside a `@jax.jit`
-        # closure — eliminates per-iteration Python dispatch at the cost
-        # of a large one-time compile. Because the jitted function
-        # closes over `X_j`, `Y_j` and the regularisation scalars, the
-        # cache is keyed per-instance rather than per-shape, so any
-        # caller that constructs many short-lived estimators (notably
-        # the joint inner-CV tuner, which builds ~175 per outer fold)
-        # pays the full compile cost per instance and can stall for
-        # hours on wide-feature graphs (e.g. bin=1 with 600 time bins).
-        # Default is False: the standard Python for-loop path has no
-        # compilation issues at any scale and is the correct choice for
-        # the tuning path. Set to True only on the outer-fit path when
-        # `max_iter` is very large (e.g. 10000+) on shapes that compile
-        # quickly; the speedup is 1.3-1.8x on GPU in that regime.
+        # call — eliminates per-iteration Python dispatch at the cost of
+        # a large one-time compile. The fused path delegates to the
+        # module-scope `_bivariate_train_loop_jit`, whose cache is keyed
+        # on input shape + the static integers (`n_feats`, `n_time`,
+        # `smoothness_derivative_order`), so estimators with matching
+        # shapes share the same compiled graph. Even so the up-front
+        # per-shape compile is large enough that any caller constructing
+        # many short-lived estimators across varied shapes (notably the
+        # joint inner-CV tuner, which builds ~175 per outer fold) can
+        # stall for hours on wide-feature graphs (e.g. bin=1 with 600
+        # time bins). Default is False: the standard Python for-loop path
+        # has no compilation issues at any scale and is the correct
+        # choice for the tuning path. Set to True only on the outer-fit
+        # path when `max_iter` is very large (e.g. 10000+) on shapes that
+        # compile quickly; the speedup is 1.3-1.8x on GPU in that regime.
         self._use_lax_loop = bool(_use_lax_loop)
 
     @staticmethod
@@ -407,9 +411,9 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         """
         Initialises the linear-transformation weights `W` and bias `b`.
 
-        Weights are initialised with Xavier/Glorot normal scaling so variance
-        gradients stay stable in the early Adam steps. Biases start at zero
-        and are learned alongside the weights.
+        Weights are initialised with Xavier/Glorot normal scaling so the
+        variance of the gradients stays stable in the early Adam steps.
+        Biases start at zero and are learned alongside the weights.
 
         Parameters
         ----------
@@ -493,6 +497,17 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             build the temporal-smoothness penalty on `W`. Static JIT
             argument. See the class docstring for the interpretability
             tradeoff between first- and second-difference penalties.
+        metric : str
+            Residual geometry selector, `'euclidean'` or `'torus'`. Static
+            JIT argument. On `'euclidean'` the residual is the plain
+            `Y_true - Y_pred` flat-space difference; on `'torus'` it is the
+            wrap-aware shortest-path signed difference (`signed_diff_jax`),
+            so points on opposite sides of the wrap boundary are scored by
+            their `period - |raw_diff|` distance.
+        period : float
+            Per-axis wrap period. Used only on the `metric='torus'` path to
+            fold each residual component into the shortest-wrap
+            representation before squaring; ignored on the euclidean path.
 
         Returns
         -------
@@ -580,6 +595,23 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             sample_weight = np.ones(n_samples)
         else:
             sample_weight = check_array(sample_weight, ensure_2d=False)
+            if sample_weight.shape[0] != n_samples:
+                raise ValueError(
+                    f"sample_weight has length {sample_weight.shape[0]}, but X has "
+                    f"{n_samples} samples; lengths must match."
+                )
+
+        # Guard against a degenerate (all-zero / non-positive-mean) weight
+        # vector: dividing by `np.mean + 1e-12` would not raise but would
+        # collapse every weight to ~0, so the model would train only on the
+        # L2 + smoothness regularisers with no data signal. Mirror the
+        # `circular_mean` / `total_dispersion` convention in `manifold_metric`,
+        # which raise on non-positive weight sums.
+        if np.mean(sample_weight) <= 0:
+            raise ValueError(
+                "sample_weight must have a positive mean; an all-zero / non-positive "
+                "weight vector would silently zero out the data term of the loss."
+            )
 
         # Normalise to unit mean so the loss magnitude is invariant to the
         # caller's weighting convention (raw KDE densities, counts, or
@@ -876,6 +908,16 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         if weights is None:
             weights = np.ones(Y_true.shape[0])
+        else:
+            # Validate the caller-supplied weights the same way `fit` does:
+            # a wrong-length or 2-D array would otherwise broadcast silently
+            # in `euclidean_mae_weighted` and corrupt only that one metric.
+            weights = check_array(weights, ensure_2d=False)
+            if weights.shape[0] != Y_true.shape[0]:
+                raise ValueError(
+                    f"weights has length {weights.shape[0]}, but Y_true has "
+                    f"{Y_true.shape[0]} samples; lengths must match."
+                )
 
         # Wrap-aware signed differences. On `metric='euclidean'` this is
         # `Y_true - Y_pred` element-wise; on torus each component is

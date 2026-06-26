@@ -53,6 +53,13 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
         sess_id = beh_root.name
         features_csv_file_path = next((beh_root / 'video').glob('**/*_points3d_translated_rotated_metric_behavioral_features.csv'), None)
         track_file_path = next((beh_root / 'video').glob('**/[!speaker]*_points3d_translated_rotated_metric.h5'), None)
+        # Guard against missing input files (glob found no match) before passing
+        # the path to h5py/polars, mirroring the `csv_path is None` skip in the
+        # sibling USV loaders. Passing None to h5py.File/pls.read_csv would raise
+        # an opaque low-level TypeError/OSError instead of a clear warning.
+        if features_csv_file_path is None or track_file_path is None:
+            print(f"Warning: Missing behavioral feature/track file for {sess_id}. Skipping.")
+            continue
         with h5py.File(name=track_file_path, mode='r') as h5_file_mouse_obj:
             camera_fr_dict[sess_id] = float(h5_file_mouse_obj['recording_frame_rate'][()])
             mouse_track_names_dict[sess_id] = [item.decode('utf-8') for item in list(h5_file_mouse_obj['track_names'])]
@@ -245,7 +252,7 @@ def find_bout_epochs(root_directories: list = None,
     csv_sep : str, optional
         Separator used in the .csv file.
     proportion_smoothing_sd : int / float
-        Smoothing sigma (in bins) for USV proportion.
+        Smoothing sigma (in frames) for USV proportion.
     filter_history : int / float
         Amount of time (in s) preceding each event.
     prediction_mode : str, optional
@@ -263,10 +270,11 @@ def find_bout_epochs(root_directories: list = None,
         GMM component index for IBI threshold calculation (default 0).
     gmm_z_score : float
         Z-score for IBI threshold calculation (default 2.58).
-    gmm_params : dict, optional
+    gmm_params : dict
         A dict with 'male' and 'female' keys, each containing 'means' and 'sds' lists
-        for the sex-specific IBI GMM components. If None, falls back to hard-coded defaults.
-        Typically loaded from modeling_settings['gmm_params'].
+        for the sex-specific IBI GMM components. Required: it is dereferenced
+        unconditionally (gmm_params['male'] / gmm_params['female']), so passing
+        None raises TypeError. Typically loaded from modeling_settings['gmm_params'].
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
         - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
@@ -301,7 +309,16 @@ def find_bout_epochs(root_directories: list = None,
     -------
     usv_data_dict : dict
         Nested dictionary: session - mouseID - data.
-        Includes unbalanced 'positive_events' and 'negative_events' event time arrays.
+        Per-mouse keys exported:
+            'start': np.array of positive-source USV start times (category-filtered
+                only in 'individual' mode with a target_category, else all USVs).
+            'stop': np.array of positive-source USV stop times.
+            'usv_count': raw binary occupancy trace (0/1) over the full per-mouse USV set.
+            'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
+            'continuous_vocal_signals': dict of continuous predictor traces keyed by
+                vocal_output_type ('usv_event'/'usv_rate'/'usv_cat_X').
+            'positive_events': unbalanced array of POSITIVE event times (seconds).
+            'negative_events': unbalanced array of NEGATIVE (no-USV) event times (seconds).
     """
 
     # GMM parameters (modeling inter-USV interval distributions)
@@ -600,6 +617,11 @@ def find_usv_categories(root_directories: list = None,
         columns is missing from the CSV for a given session/mouse, no continuous
         targets are written for that mouse. When None or empty, continuous target
         extraction is skipped entirely.
+    noise_column : str, default 'usv_supercategory'
+        Name of the supercategory column used for global noise filtering (removing
+        the categories in `noise_vocal_categories`). Kept separate from
+        `category_column` so the cohort-stable noise scheme stays fixed regardless
+        of which experimental-category column the caller varies.
 
     Returns
     -------
@@ -614,6 +636,12 @@ def find_usv_categories(root_directories: list = None,
             'continuous_onsets': np.array of start times for valid USVs (used for continuous models).
             'continuous_targets': np.array of shape (N, D) stacking the configured
                 manifold columns in the order given by `manifold_column_names`.
+            'continuous_supercategory': np.array of per-USV supercategory labels,
+                aligned 1:1 with 'continuous_onsets'. Present only when the
+                '<manifold_prefix>_supercategory' column exists in the source CSV.
+            'continuous_category': np.array of per-USV category labels, aligned 1:1
+                with 'continuous_onsets'. Present only when the
+                '<manifold_prefix>_category' column exists in the source CSV.
     """
 
     usv_data_dict = {}
@@ -679,7 +707,7 @@ def find_usv_categories(root_directories: list = None,
             if mouse_usvs.height == 0:
                 continue
 
-            # Get data is target-vs-other structure
+            # Get data in target-vs-other structure
             if target_category is not None:
                 target_usvs = mouse_usvs.filter(pls.col(category_column) == target_category)
                 other_usvs = mouse_usvs.filter(pls.col(category_column) != target_category)
@@ -823,8 +851,8 @@ def find_variable_length_bouts(root_directories: list = None,
     1.  Noise Filtering: Immediately removes rows where `usv_category` matches
         any integer in `noise_vocal_categories`. This prevents noise from acting as a "bridge"
         that merges distinct bouts and ensures continuous signals represent only biological audio.
-    2.  GMM Thresholding: Selects sex-specific GMM parameters (from `gmm_params` or hard-coded
-        defaults). Calculates a dynamic inter-bout interval (IBI) threshold using the log-mean
+    2.  GMM Thresholding: Selects sex-specific GMM parameters (from `gmm_params`).
+        Calculates a dynamic inter-bout interval (IBI) threshold using the log-mean
         and log-sd of the specified component (usually respiratory rhythm) plus a Z-score buffer.
     3.  Continuous Signal Generation:
         - Based on `vocal_output_type`, generates aggregate or category-specific signals.
@@ -853,10 +881,11 @@ def find_variable_length_bouts(root_directories: list = None,
         GMM component index to use for IBI threshold calculation.
     gmm_z_score : float, default 2.58
         Z-score to apply to the GMM component statistics.
-    gmm_params : dict, optional
+    gmm_params : dict
         A dict with 'male' and 'female' keys, each containing 'means' and 'sds' lists
-        for the sex-specific IBI GMM components. If None, falls back to hard-coded defaults.
-        Typically loaded from modeling_settings['gmm_params'].
+        for the sex-specific IBI GMM components. Required: it is dereferenced
+        unconditionally (gmm_params['male'] / gmm_params['female']), so passing
+        None raises TypeError. Typically loaded from modeling_settings['gmm_params'].
     min_vocalizations : int, default 2
         Minimum number of syllables required to form a valid bout.
     filter_history : float, default 4.0
@@ -873,6 +902,16 @@ def find_variable_length_bouts(root_directories: list = None,
         List of USV category integers to exclude (e.g., [0, 19]). When `None`,
         no category-based noise filtering is applied — pass an explicit list
         if you want noise rows dropped before bout detection.
+    category_column : str, default 'usv_category'
+        Name of the per-USV experimental-category column in the summary .csv,
+        used for the per-category continuous predictor signals ('usv_cat_X')
+        when `vocal_output_type` requests them. May vary independently between
+        runs.
+    noise_column : str, default 'usv_supercategory'
+        Name of the supercategory column used for global noise filtering
+        (removing the categories in `noise_vocal_categories`). Kept separate from
+        `category_column` so the cohort-stable noise scheme stays fixed regardless
+        of which experimental-category column the caller varies.
 
     Returns
     -------
@@ -906,7 +945,8 @@ def find_variable_length_bouts(root_directories: list = None,
         has_category = category_column in usv_summary_data.columns
         has_noise_col = noise_column in usv_summary_data.columns
         if not has_mask:
-            print(f"Warning: 'mask_number' missing in {session_id}. Complexity = 0.")
+            print(f"Warning: 'mask_number' missing in {session_id}. "
+                  f"Complexity defaults to the per-bout syllable count (mask = 1 per USV).")
 
         # Strict membership check + direct lookup (no `.get()`
         # default). A session listed in the input directory but not

@@ -220,10 +220,13 @@ def compute_acoustic_features(
 
     # peak frequency (row of the loudest in-window pixel)
     flat_argmax = masked_specs.reshape(_n, -1).argmax(axis=1)
+    # `// n_time` maps the flat (F*T) argmax index back to its frequency-row index.
     peak_freq = freq_axis[flat_argmax // n_time]
 
     # frequency bandwidth: span between cumulative-energy crossings
     cumsum = freq_power_norm.cumsum(axis=1)
+    # The count of bins below the threshold == index of the first bin whose
+    # cumulative energy crosses it (clamped to the last bin).
     low_bin = np.minimum((cumsum < low_energy_frac).sum(axis=1), n_freq - 1)
     high_bin = np.minimum((cumsum < high_energy_frac).sum(axis=1), n_freq - 1)
     bandwidth = freq_axis[high_bin] - freq_axis[low_bin]
@@ -287,8 +290,9 @@ class USVAcousticFeatureExtractor:
         -----------
         Reads the per-session spectrogram H5 and the USV summary CSV, computes
         the acoustic features, and writes them into the matching summary rows
-        (joined on the per-USV index encoded in each ``spec_id``). USVs absent
-        from the H5 (e.g. skipped during generation) get null features. Any
+        (joined on ``_usv_row``, the positional index of each USV row in the
+        summary CSV, which is 1:1 with the spectrogram rows). USVs absent from
+        the H5 (e.g. skipped during generation) get null features. Any
         pre-existing feature columns are replaced.
 
         Parameters

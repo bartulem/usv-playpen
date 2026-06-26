@@ -2,7 +2,7 @@
 @author: bartulem
 Renders spectrograms for multi-channel USV recordings.
 
-Three rendering modes are exposed by ``USVSpectrogramPlotter``:
+Four rendering modes are exposed by ``USVSpectrogramPlotter``:
 (1) ``plot_single_channel`` — one channel's spectrogram, optionally
     stacked above the raw waveform of that channel.
 (2) ``plot_all_channels`` — every channel's spectrogram in a single
@@ -13,6 +13,10 @@ Three rendering modes are exposed by ``USVSpectrogramPlotter``:
     (from the consolidated HDF5 store) at their on-session start
     times. Gaps between USVs are zero. Resolves the store as the newest
     ``spectrograms_*.h5`` under ``shared_resources['spectrograms_dir']``.
+(4) ``plot_sequence`` — a per-session figure pairing the cohort
+    embedding landscape (left) with one continuous stitched
+    session-timeline spectrogram over the same window (right); the
+    window's USVs are numbered in time order across both panels.
 
 Audio is read from the session's ``*_int16.mmap*`` file (the canonical
 concatenated multi-channel int16 memmap), and spectrograms are computed
@@ -149,8 +153,8 @@ class USVSpectrogramPlotter:
     """
     Description
     -----------
-    Renders single-channel, all-channel and variance-weighted average
-    USV spectrograms for a session. Audio is loaded from the session's
+    Renders single-channel, all-channel, stitched session-timeline and
+    sequence USV spectrograms for a session. Audio is loaded from the session's
     concatenated ``*_int16.mmap*`` file as a numpy memmap. Rendering
     parameters (window, NFFT, frequency/amplitude limits, colormap,
     output paths, etc.) are read from
@@ -402,9 +406,9 @@ class USVSpectrogramPlotter:
         Render a raw-waveform panel for a single channel/window. The
         x-axis is hidden because the panel is meant to sit immediately
         above the corresponding spectrogram, which carries the shared
-        time axis. Y-limits are auto-scaled to the actual min/max of
-        ``audio_segment`` and only two y-tick labels are shown (the
-        floor and ceiling of the window's amplitude range).
+        time axis. Y-limits are set symmetrically about zero at
+        ``±1.05×`` the window's absolute peak amplitude, with the two
+        y-tick labels at ``-peak`` and ``+peak``.
 
         Parameters
         ----------
@@ -484,8 +488,9 @@ class USVSpectrogramPlotter:
             Window start in seconds (used to label the x-axis).
         freq_limits_hz (tuple of float)
             Lower / upper frequency limits in Hz.
-        cmap (str)
-            Matplotlib colormap name.
+        cmap (str | matplotlib.colors.Colormap)
+            Matplotlib colormap name or ``Colormap`` instance (whatever
+            ``specshow``'s ``cmap=`` accepts).
         vmin (float | None)
             Minimum dB value for color normalization. ``None`` lets
             matplotlib auto-scale.
@@ -574,7 +579,7 @@ class USVSpectrogramPlotter:
             Figure to save.
         suffix (str)
             Mode/channel descriptor inserted into the filename
-            (e.g. ``"ch03"``, ``"all_channels"``, ``"avg"``).
+            (e.g. ``"ch03"``, ``"all_channels"``, ``"stitched"``).
         file_basename (str)
             Memmap basename, used to derive a prefix for the output
             filename.
@@ -1467,10 +1472,9 @@ class USVSpectrogramPlotter:
         ``make_usv_spectrograms.mode``: ``"single"`` →
         ``plot_single_channel``; ``"all"`` → ``plot_all_channels``;
         ``"stitched"`` → ``plot_stitched``; ``"sequence"`` →
-        ``plot_sequence``. This is the entry point that the
-        visualization pipeline (``visualize_data.py``) is expected to
-        call once a ``make_usv_spectrograms_bool`` toggle has been
-        wired through.
+        ``plot_sequence``. This is the entry point invoked by the
+        visualization pipeline (``visualize_data.py``) when the
+        ``make_usv_spectrograms_bool`` toggle is set.
 
         Parameters
         ----------
@@ -2340,6 +2344,10 @@ def build_pooled_embeddings_df(
             vae_category, vae_supercategory (Int64)
             qlvm_dim1, qlvm_dim2 (Float64)
             qlvm_category, qlvm_supercategory (Int64)
+            sex (Utf8)
+            duration (Float64)
+            mean_freq_hz, peak_freq_hz, freq_bandwidth_hz,
+            mean_amplitude, max_amplitude, spectral_entropy (Float64)
         Columns missing from individual sessions become nulls in the
         pooled output (diagonal concat).
     """
@@ -2890,13 +2898,11 @@ def _pick_category_samples(
       box, keep up to ``n_per`` evenly spaced grid points, and for
       each pick the nearest data point that hasn't been picked yet.
     - ``"spiral"``: Archimedean spiral expanding from the cluster's
-      **medoid** (geometric-median snapped to the nearest data point
-      via Weiszfeld) out to the farthest in-category point; at each of
+      **arithmetic centroid** (the mean of the in-category embedding
+      coordinates) out to the farthest in-category point; at each of
       ``n_per`` evenly spaced spiral positions take the nearest
       unused data point. Gives an ordered "central → peripheral"
-      coverage. Using the medoid instead of the arithmetic centroid
-      keeps the spiral's origin inside the cluster's dense region
-      even for elongated / asymmetric clusters (e.g. VAE UMAP).
+      coverage.
 
     Returns
     -------
@@ -3028,6 +3034,34 @@ def _knn_boundary_grid(
     boundaries themselves still follow point density via k-NN, not
     centroid Voronoi geometry.
 
+    Parameters
+    ----------
+    x (np.ndarray)
+        1-D array of scatter-point x-coordinates.
+    y (np.ndarray)
+        1-D array of scatter-point y-coordinates.
+    labels (np.ndarray)
+        1-D array of integer category labels aligned to ``x`` / ``y``.
+    x_lo (float)
+        Lower x-bound of the grid extent.
+    x_hi (float)
+        Upper x-bound of the grid extent.
+    y_lo (float)
+        Lower y-bound of the grid extent.
+    y_hi (float)
+        Upper y-bound of the grid extent.
+    n_neighbors (int)
+        Number of neighbors for the k-NN classifier (clamped to the
+        number of points); defaults to 15.
+    grid_resolution (int)
+        Number of grid samples per axis; defaults to 200.
+    density_smoothing_sigma (float)
+        Gaussian sigma (in grid cells) used to smooth the 2D point-density
+        histogram before masking; defaults to 2.5.
+    density_min_count (float)
+        Smoothed-density threshold below which grid cells are set to NaN
+        (and thus skipped by ``ax.contour``); defaults to 0.2.
+
     Returns
     -------
     xx, yy (np.ndarray)
@@ -3136,10 +3170,10 @@ def plot_embedding_with_category_thumbnails(
 
     The pooled embeddings DataFrame is built by
     ``build_pooled_embeddings_df`` (or supplied directly via
-    ``pooled_df`` to skip the loader). The function flips each mask
-    along the frequency axis before applying it because masks are
-    stored with image (top-down) row convention while spectrograms are
-    drawn with audio (``origin='lower'``) convention.
+    ``pooled_df`` to skip the loader). Each mask is applied directly to
+    its spectrogram with no frequency-axis flip, matching the production
+    acoustic-feature path (``compute_usv_acoustic_features.build_mask_region_masks``
+    / ``compute_acoustic_features``) that generates the embeddings shown here.
 
     Parameters
     ----------
@@ -3157,9 +3191,10 @@ def plot_embedding_with_category_thumbnails(
         How many spectrograms to display per category row.
     apply_mask (bool)
         Master toggle for SAM2 mask application.
-    mask_excluded_categories (tuple of int)
+    mask_excluded_categories (tuple of int | int | None)
         Categories whose spectrograms should be shown WITHOUT a mask
-        even when ``apply_mask=True``.
+        even when ``apply_mask=True``. A bare ``int`` is normalized to a
+        one-element tuple and ``None`` to an empty tuple.
     category_colors (dict | None)
         Optional mapping ``{category_int: hex_color}``. If ``None``,
         uses ``tab10`` / ``tab20`` automatically.
@@ -3223,7 +3258,7 @@ def plot_embedding_with_category_thumbnails(
         ``None``).
     scatter_max_points (int)
         Optional cap on points rendered in the scatter (random sample
-        with ``seed=42``); the per-category sampling still draws from
+        using the ``seed`` argument); the per-category sampling still draws from
         the full pool so all categories are represented in the grid.
     scatter_point_size, scatter_point_alpha
         Marker size and alpha for the scatter.

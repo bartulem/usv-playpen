@@ -17,7 +17,11 @@ class Gatherer:
     Description
     -----------
     Reads the phidget sensor logs (illumination, temperature, humidity) recorded
-    alongside a session's video and returns them as aligned per-sample arrays.
+    alongside a session's video and returns them as three arrays that are
+    index-aligned by ascending acquisition timestamp ('sensor_time'). Each array
+    holds NaN at any index where that sensor's value was absent from the
+    corresponding record, so a given index is not guaranteed to carry all three
+    sensor values.
     """
 
     def __init__(
@@ -30,10 +34,12 @@ class Gatherer:
 
         Parameters
         ----------
+        input_parameter_dict (dict)
+            Processing parameters; defaults to None. When provided, it must
+            contain the nesting ['extract_phidget_data']['Gatherer'] (with a
+            'prepare_data_for_analyses' sub-dict providing 'extra_data_camera').
         root_directory (str)
             Root directory for data; defaults to None.
-        input_parameter_dict (dict)
-           Processing parameters; defaults to None.
 
         Returns
         -------
@@ -78,6 +84,11 @@ class Gatherer:
         FileNotFoundError
             If the video directory, the requested camera sub-directory, or the
             phidget '*extra_data*.json' files within it are missing.
+        KeyError
+            If any loaded phidget record lacks the 'sensor_time' key, which is
+            required on every record because the exported arrays are sorted and
+            index-aligned by it (unlike the optional sensor keys hum_h/lux/hum_t,
+            which are guarded with 'in' and default to NaN when absent).
         """
 
         # Find the camera sub-directory holding the phidget data. Iterate sorted
@@ -115,7 +126,9 @@ class Gatherer:
             with open(one_phidget_file) as phidget_file:
                 phidget_data += json.load(phidget_file)
 
-        # sort phidget_data by particular dictionary key
+        # Sort records by their acquisition timestamp (sensor_time) so the
+        # exported arrays are chronological; multi-file loads above are
+        # concatenated in filename order, not time order.
         phidget_data_sorted = sorted(
             phidget_data, key=itemgetter("sensor_time")
         )
@@ -127,6 +140,11 @@ class Gatherer:
             "temperature": np.full((len(phidget_data_sorted),), np.nan),
         }
 
+        # Map the raw record keys onto the exported sensors: 'hum_h' is humidity
+        # (%) and 'hum_t' is temperature (degrees Celsius) from the same combined
+        # humidity/temperature sensor (note 'hum_t' is temperature despite its
+        # 'hum_' prefix), while 'lux' is illumination. Each key is filled
+        # independently so absent keys leave the pre-allocated NaN in place.
         for one_dict_idx, one_dict in enumerate(phidget_data_sorted):
             if "hum_h" in one_dict:
                 phidget_data_dictionary["humidity"][one_dict_idx] = one_dict["hum_h"]

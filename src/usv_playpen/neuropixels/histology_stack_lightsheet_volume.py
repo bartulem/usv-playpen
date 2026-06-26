@@ -18,9 +18,10 @@ In both layouts:
 
 * ``C00`` is the autofluorescence channel (488 nm).
 * ``C01`` is the excitation channel (561 nm).
-* ``UltraII Filter000{0,1}.ome.tif`` sidecars hold illumination-side
-  metadata (left/right LaVision lightsheet) and are excluded from the
-  stack.
+* Any OME-TIFF whose filename contains the substring ``'Filter'``
+  (the LaVision illumination sidecars, e.g.
+  ``UltraII Filter000{0,1}.ome.tif``, which hold left/right
+  lightsheet illumination-side metadata) is excluded from the stack.
 
 Z-direction control
 -------------------
@@ -32,6 +33,12 @@ on how the brain was mounted in the LaVision holder and on the
 orientation downstream tools expect (``napari`` / ``brainglobe``
 render coronal and sagittal views with plane 0 at the bottom, so
 ventral-first input yields dorsal-at-top).
+
+With the default ``skip_first=True``, the first acquisition plane
+(``Z0000``) is omitted, so the written volume begins at acquisition
+slice 1 rather than slice 0; account for this one-plane offset during
+plane-index bookkeeping (e.g. atlas registration). See the
+``skip_first`` parameter documentation for the rationale.
 """
 
 from __future__ import annotations
@@ -247,6 +254,14 @@ def stack_lightsheet_volume(
                 f"{sorted(_LAVISION_CHANNEL_FROM_WAVELENGTH)}, got {wl!r}."
             )
 
+    # validate xy_flip up front so an invalid value fails before any
+    # output directory is created or BigTIFF file is opened (it is
+    # otherwise only checked lazily inside _apply_xy_flip, per plane)
+    if xy_flip not in _XY_FLIP_OPTIONS:
+        raise ValueError(
+            f"xy_flip must be one of {_XY_FLIP_OPTIONS}, got {xy_flip!r}."
+        )
+
     output_path_template = str(output_path)
     has_placeholder = '{wavelength_nm}' in output_path_template
     if len(wavelengths) > 1 and not has_placeholder:
@@ -267,7 +282,17 @@ def stack_lightsheet_volume(
             )
 
         if skip_first:
+            original_count = len(files)
             files = files[1:]
+            # guard against a degenerate single-plane acquisition: dropping
+            # the only file would leave an empty list and produce a
+            # header-only, page-less BigTIFF that is still reported as success
+            if not files:
+                raise ValueError(
+                    f"channel {channel_token} has no planes left after "
+                    f"skip_first; only {original_count} file(s) found in "
+                    f"{raw_path}."
+                )
 
         if z_flip:
             files = list(reversed(files))

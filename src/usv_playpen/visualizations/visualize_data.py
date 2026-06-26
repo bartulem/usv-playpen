@@ -100,6 +100,7 @@ class Visualizer:
         """
 
         Messenger(message_output=self.message_output,
+                  no_receivers_notification=False,
                   receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
                   credentials_file=pathlib.Path(self.input_parameter_dict['credentials_directory']) / 'email_config.ini',
                   exp_settings_dict=None).send_message(subject=f"{self.input_parameter_dict['send_email']['visualizations_pc_choice']} PC is busy, do NOT attempt to remote in!",
@@ -176,7 +177,7 @@ class Visualizer:
             completion_message = (f"Data visualizations finished at "
                                   f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
                                   f"by @{self.input_parameter_dict['send_email']['experimenter']}, but "
-                                  f"{len(failed_directories)} of {len(self.root_directories)} director(ies) failed:\n"
+                                  f"{len(failed_directories)} item(s) failed:\n"
                                   f"{failure_summary}\n\n"
                                   f"See the run log / traceback for details. \n \n "
                                   f"***This is an automatic e-mail, please do NOT respond.***")
@@ -246,7 +247,7 @@ class Visualizer:
 @click.option('--nodes/--no-nodes', 'node_bool', default=None, help='Display mouse nodes.')
 @click.option('--node-size', 'node_size', type=float, default=None, required=False, help='Size of the mouse nodes.')
 @click.option('--node-opacity', 'node_opacity', type=float, default=None, required=False, help='Opacity of the mouse nodes.')
-@click.option('--node-lw', 'node_lw', type=float, default=None, required=False, help='Line width for the mouse node connections.')
+@click.option('--node-lw', 'node_lw', type=float, default=None, required=False, help='Line width (edge) for the mouse node markers.')
 @click.option('--node-connection-lw', 'node_connection_lw', type=float, default=None, required=False, help='Line width for mouse node connections.')
 @click.option('--body-opacity', 'body_opacity', type=float, default=None, required=False, help='Opacity of the mouse body.')
 @click.option('--history-point', 'history_point', type=str, default=None, required=False, help="Node to use for the history trail.")
@@ -261,7 +262,7 @@ class Visualizer:
 @click.option('--spectrogram-plot-window-size', 'spectrogram_plot_window_size', type=int, default=None, required=False, help='Window size for the spectrogram plot (s).')
 @click.option('--spectrogram-power-limit', 'spectrogram_power_limit', nargs=2, type=int, default=None, required=False, help='Power limits (min/max) for spectrogram color scale.')
 @click.option('--spectrogram-frequency-limit', 'spectrogram_frequency_limit', nargs=2, type=int, default=None, required=False, help='Frequency limits (min/max) for spectrogram y-axis (Hz).')
-@click.option('--spectrogram-yticks', 'spectrogram_yticks', multiple=True, type=int, default=None, required=False, help='Y-tick position for spectrogram')
+@click.option('--spectrogram-yticks', 'spectrogram_yticks', multiple=True, type=int, default=None, required=False, help='Y-tick position(s) for the spectrogram y-axis (Hz).')
 @click.option('--spectrogram-stft-nfft', 'spectrogram_stft_nfft', type=int, default=None, required=False, help='NFFT for the spectrogram STFT calculation.')
 @click.option('--plot-usv-segments/--no-plot-usv-segments', 'plot_usv_segments_bool', default=None, help='Display USV assignments on the spectrogram.')
 @click.option('--usv-segments-ypos', 'usv_segments_ypos', type=int, default=None, required=False, help='Y-axis position for USV segment markers (Hz).')

@@ -61,11 +61,14 @@ class Analyst:
         """
         Description
         -----------
-        This method performs the following analyses:
-        (1) computes behavioral features and plots their distributions
-        (2) computes per-cluster neuronal tuning curves (behavioral + vocal)
-        (3) generates playback WAV files
-        (4) frequency shifts audio segments
+        This method performs the following analyses (listed in execution
+        order):
+        (1) computes inter-USV-interval distributions across one or more
+            session lists
+        (2) generates (regular and/or naturalistic) USV playback WAV files
+        (3) computes behavioral features and plots their distributions
+        (4) computes per-cluster neuronal tuning curves (behavioral + vocal)
+        (5) frequency shifts audio segments
 
         Parameters
         ----------
@@ -234,7 +237,7 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
     Description
     -----------
-    A command-line tool to generate USV playback WAV files.
+    A command-line tool to generate naturalistic USV playback WAV files.
 
     Parameters
     ----------
@@ -290,9 +293,12 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     None
     """
 
+    parameters_lists = ['temporal_offsets', 'peth_window_seconds']
+
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
     analyses_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
+                                                                    parameters_lists=parameters_lists,
                                                                     provided_params=provided_params,
                                                                     settings_dict='analyses_settings')
     NeuronalTuning(root_directory=root_directory,

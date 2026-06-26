@@ -576,6 +576,47 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
 
         @partial(jax.jit, static_argnums=(4, 5))
         def step(params, opt_state, X_batch, Y_batch, n_feats, n_time, w_batch):
+            """
+            Performs a single JIT-compiled Adam descent step on the
+            multinomial loss.
+
+            Computes the gradient of `_loss_fn` with respect to the
+            current `(W, b)` parameters, runs it through the clipped-Adam
+            optimizer, and applies the resulting update.
+
+            Parameters
+            ----------
+            params : tuple
+                `(W, b)` tuple of current model parameters, with `W`
+                shape `(n_features * n_time, n_classes)` and `b` shape
+                `(n_classes,)`.
+            opt_state : optax.OptState
+                Current optimizer state carried across descent steps.
+            X_batch : jnp.ndarray
+                Design matrix of shape `(n_samples, n_features * n_time)`.
+            Y_batch : jnp.ndarray
+                One-hot target matrix of shape `(n_samples, n_classes)`.
+            n_feats : int
+                Number of distinct physical features. Static JIT argument
+                (`static_argnums=4`) because `_loss_fn` reshapes `W` into
+                `(n_features, n_time, n_classes)` to apply the smoothness
+                penalty along the time axis.
+            n_time : int
+                Number of time bins per feature. Static JIT argument
+                (`static_argnums=5`), same reshape purpose as `n_feats`.
+            w_batch : jnp.ndarray
+                Unit-mean per-class weight vector of shape `(n_classes,)`,
+                reused inside `_loss_fn` both as the focal-loss alpha and
+                as the per-class scaler on the smoothness penalty.
+
+            Returns
+            -------
+            params : tuple
+                Updated `(W, b)` parameters after one optimizer step.
+            opt_state : optax.OptState
+                Advanced optimizer state to feed into the next step.
+            """
+
             grads = jax.grad(self._loss_fn)(
                 params, X_batch, Y_batch,
                 n_feats, n_time,
@@ -610,7 +651,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                     diff = jnp.sqrt(w_diff ** 2 + b_diff ** 2)
                     if diff < self.tol:
                         if self.verbose:
-                            print(f"Converged at iteration {i} with combined-update norm {diff:.2e}")
+                            print(f"Converged at iteration {i + 1} with combined-update norm {diff:.2e}")
                         converged = True
                         break
 
@@ -672,7 +713,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         Parameters
         ----------
         X : np.ndarray
-            Input data, shape (n_samples, n_features).
+            Input data, shape (n_samples, n_features * n_time_bins).
         balanced : bool, default=False
             If True, subtracts the stored training log-priors (`self.log_priors_`)
             from the logits before the softmax. This cleanly neutralizes the
@@ -711,7 +752,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         Parameters
         ----------
         X : np.ndarray
-            Input data, shape (n_samples, n_features).
+            Input data, shape (n_samples, n_features * n_time_bins).
         balanced : bool, default=False
             If True, makes predictions based purely on the behavioral feature evidence
             by neutralizing the class priors (intercepts) before calculating the argmax.

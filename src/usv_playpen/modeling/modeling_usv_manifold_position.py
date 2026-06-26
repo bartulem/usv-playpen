@@ -209,6 +209,17 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
     widen_every : int, default 1000
         (For 'session' strategy only). Number of failed attempts between
         successive tolerance widenings.
+    metric : str, default 'euclidean'
+        Manifold geometry used to define the K-Means proxy clusters.
+        `'euclidean'` runs flat-space K-Means directly on `Y` (legacy
+        behaviour). `'torus'` first maps `Y` onto the canonical 4-D
+        sin/cos torus embedding `(cos(2pi x/P), sin(2pi x/P),
+        cos(2pi y/P), sin(2pi y/P))` so centroids near the wrap boundary
+        pick up neighbours from both sides of the period; the returned
+        labels still index back into the original (un-embedded) `Y`.
+    period : float, default 1.0
+        Per-axis wrap period `P` used to build the torus embedding;
+        ignored when `metric='euclidean'`.
 
     Returns
     -------
@@ -254,6 +265,19 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
     else:
         unique_sessions = np.unique(groups)
         n_test_sessions = int(len(unique_sessions) * test_prop)
+
+        # `int(...)` truncates toward zero, so a small cohort or a small
+        # `test_prop` can collapse `n_test_sessions` to 0 (empty test set)
+        # and the symmetric case can leave the train set empty. Either
+        # produces an opaque `np.concatenate` "need at least one array"
+        # error from deep inside the rejection loop below; surface it as a
+        # clear precondition instead.
+        if not (0 < n_test_sessions < len(unique_sessions)):
+            raise ValueError(
+                f"test_prop={test_prop} with {len(unique_sessions)} unique sessions yields "
+                f"n_test_sessions={n_test_sessions}; need 0 < n_test_sessions < "
+                f"{len(unique_sessions)} so both train and test sessions are non-empty."
+            )
 
         _, global_counts = np.unique(proxy_labels, return_counts=True)
         global_dist = global_counts / len(proxy_labels)
@@ -458,6 +482,20 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     regressor_cls : callable
         The estimator class (injected so the function is unit-testable
         without importing the JAX estimator at module scope).
+    smoothness_derivative_order : int
+        Order of the discrete time derivative penalised by the smoothness
+        term; forwarded unchanged to `regressor_cls` on every inner fit.
+    use_lax_loop : bool
+        Whether the estimator's fused `lax`-scan training loop is enabled;
+        forwarded unchanged to `regressor_cls` on every inner fit.
+    metric : str
+        Manifold geometry (`'euclidean'` or `'torus'`) forwarded both to
+        the inner spatial splitter (`get_stratified_spatial_splits_stable`)
+        and to every inner `regressor_cls` fit, so inner-CV scoring uses
+        the same flat-space vs wrap-aware residual as the outer run.
+    period : float
+        Per-axis wrap period used by the torus geometry; forwarded to the
+        inner splitter and inner fits, ignored when `metric='euclidean'`.
 
     Returns
     -------
@@ -1092,30 +1130,32 @@ class ContinuousModelingPipeline(FeatureZoo):
             print("No valid data extracted. Aborting save.")
             return
 
+        # `final_data` is guaranteed non-empty here (the early return above
+        # handles the empty case), so `feature_names` always has at least one
+        # entry and `sample_feat` is always defined.
         feature_names = sorted(list(final_data.keys()))
         n_feats = len(feature_names)
-        sample_feat = feature_names[0] if n_feats > 0 else None
+        sample_feat = feature_names[0]
 
-        if sample_feat:
-            n_sessions = len(final_data[sample_feat])
-            all_Y = np.vstack([final_data[sample_feat][s]['Y'] for s in final_data[sample_feat]])
-            all_w = np.concatenate([final_data[sample_feat][s]['w'] for s in final_data[sample_feat]])
-            total_samples = len(all_Y)
+        n_sessions = len(final_data[sample_feat])
+        all_Y = np.vstack([final_data[sample_feat][s]['Y'] for s in final_data[sample_feat]])
+        all_w = np.concatenate([final_data[sample_feat][s]['w'] for s in final_data[sample_feat]])
+        total_samples = len(all_Y)
 
-            print("\n" + "=" * 60)
-            print("CONTINUOUS PROBABILISTIC EXTRACTION SUMMARY")
-            print("=" * 60)
-            print(f"Total Unique Features:  {n_feats}")
-            print(f"Total Valid Sessions:   {n_sessions}")
-            print(f"Total USVs included (N): {total_samples}")
-            print(f"Global Weights Mean:    {np.mean(all_w):.4f}")
-            print(f"Global Weights Max:     {np.max(all_w):.4f}")
-            print("-" * 60)
+        print("\n" + "=" * 60)
+        print("CONTINUOUS PROBABILISTIC EXTRACTION SUMMARY")
+        print("=" * 60)
+        print(f"Total Unique Features:  {n_feats}")
+        print(f"Total Valid Sessions:   {n_sessions}")
+        print(f"Total USVs included (N): {total_samples}")
+        print(f"Global Weights Mean:    {np.mean(all_w):.4f}")
+        print(f"Global Weights Max:     {np.max(all_w):.4f}")
+        print("-" * 60)
 
-            print("EXTRACTED FEATURES:")
-            for i in range(0, len(feature_names), 4):
-                print("  " + "".join(f"{name: <25}" for name in feature_names[i:i + 4]))
-            print("=" * 60 + "\n")
+        print("EXTRACTED FEATURES:")
+        for i in range(0, len(feature_names), 4):
+            print("  " + "".join(f"{name: <25}" for name in feature_names[i:i + 4]))
+        print("=" * 60 + "\n")
 
         save_dir = Path(self.modeling_settings['io']['save_directory'])
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -1305,6 +1345,15 @@ class ContinuousModelRunner:
                 N, T = X_sess.shape
                 if bin_size > 1:
                     new_T = T // bin_size
+                    # `bin_size > T` would make `new_T == 0`, reshaping `X_sess`
+                    # to `(N, 0)` and silently collapsing the design matrix to
+                    # zero time bins; the empty matrix then fails far downstream
+                    # with no clear diagnostic, so reject it at the source.
+                    if new_T < 1:
+                        raise ValueError(
+                            f"bin_size={bin_size} exceeds the history window length T={T} for "
+                            f"feature '{feat}', collapsing X to zero time bins."
+                        )
                     X_sess = X_sess[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
 
                 X_list.append(X_sess)
@@ -1529,7 +1578,8 @@ class ContinuousModelRunner:
         # Canonical set of metric keys emitted by `evaluate_metrics`. Used
         # both to initialise the per-fold metric dict and to summarise at
         # the end so the two stay in lockstep. `r2_spatial` is first
-        # because it is the selection score.
+        # because it is the selection score on Euclidean/VAE/UMAP manifolds
+        # (on the torus the selection score is `dcor_xy`).
         metric_keys = [
             'r2_spatial',
             'euclidean_mae',

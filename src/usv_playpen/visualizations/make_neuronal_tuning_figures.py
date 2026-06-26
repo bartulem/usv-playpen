@@ -414,12 +414,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Unit-selection filter (applied at the figure layer; the aggregator
         # pickle holds every unit). Defaults reproduce the historical
         # good + somatic scope.
-        self.kslabels = frozenset(kwargs.get("kslabels", ("good",)))
+        self.kslabels = frozenset(kwargs["kslabels"]) if "kslabels" in kwargs else frozenset(("good",))
         if not self.kslabels:
             raise ValueError(
                 "kslabels must be a non-empty collection of Kilosort labels."
             )
-        self.somatic_filter = kwargs.get("somatic_filter", "somatic")
+        self.somatic_filter = kwargs["somatic_filter"] if "somatic_filter" in kwargs else "somatic"
         if self.somatic_filter not in ("somatic", "non_somatic", "both"):
             raise ValueError(
                 "somatic_filter must be one of 'somatic', 'non_somatic', "
@@ -460,18 +460,21 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if not self._segmentation_path.exists():
             self._segmentation_cache = {}
             return self._segmentation_cache
-        data = np.load(self._segmentation_path, allow_pickle=True)
         out: dict[str, dict] = {}
-        for cat_feat in CATEGORICAL_FEATURES:
-            if f"{cat_feat}__label_grid" not in data.files:
-                continue
-            out[cat_feat] = {
-                "label_grid": data[f"{cat_feat}__label_grid"],
-                "xx": data[f"{cat_feat}__xx"],
-                "yy": data[f"{cat_feat}__yy"],
-                "bounds": data[f"{cat_feat}__bounds"],
-                "unique_labels": data[f"{cat_feat}__unique_labels"].tolist(),
-            }
+        # np.load on a .npz returns a lazy NpzFile that keeps the underlying
+        # zip handle open; use a context manager so it is closed once every
+        # array has been copied out into the cache dict.
+        with np.load(self._segmentation_path, allow_pickle=True) as data:
+            for cat_feat in CATEGORICAL_FEATURES:
+                if f"{cat_feat}__label_grid" not in data.files:
+                    continue
+                out[cat_feat] = {
+                    "label_grid": data[f"{cat_feat}__label_grid"],
+                    "xx": data[f"{cat_feat}__xx"],
+                    "yy": data[f"{cat_feat}__yy"],
+                    "bounds": data[f"{cat_feat}__bounds"],
+                    "unique_labels": data[f"{cat_feat}__unique_labels"].tolist(),
+                }
         self._segmentation_cache = out
         return out
 
@@ -692,8 +695,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             # Skip whenever nothing can actually render: behavioral needs
             # both behavioral payload AND a populated mouse_id_list, vocal
             # needs vocal payload. If neither is renderable, do not open a
-            # PdfPages — closing one with zero pages raises and the broad
-            # except below would then mask the real cause.
+            # PdfPages — on the installed matplotlib (3.10.7) closing one
+            # with zero pages writes no file (it does not raise), so the
+            # guard avoids producing an empty/zero-page artifact.
             behavioral_renderable = has_behavioral and bool(mouse_id_list)
             if not (behavioral_renderable or has_vocal):
                 continue
@@ -1649,8 +1653,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render the magnitude × consistency diagnostic — a 2×4 panel
-        grid where the first seven cells scatter each good + somatic
-        unit's `max |VMI|` (across all valid per-session entries)
+        grid where the first seven cells scatter each unit passing the
+        configured unit filter (default good + somatic) by its
+        `max |VMI|` (across all valid per-session entries)
         against its per-session consistency
         (`n_significant / n_tested`), one cell per brain-area group.
         The eighth cell stacks each region's units into three tiers:
@@ -2371,20 +2376,23 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render the PAG anatomical-gradient diagnostic on the sagittal
-        projection (`loc_ap` x `loc_dv`) across three panels:
+        projection (`loc_ap` x `loc_dv`) across four panels:
 
-          1. Per-unit scatter — every good + somatic PAG unit colored
-             by best-session signed VMI (sig +VMI = full opacity PAG
-             palette color, sig -VMI = same color at 50 % opacity
-             with a black edge, non-sig = unassigned-gray).
-          2. 2-D KDE density of the sig +VMI subpopulation, rendered
+          1. Per-unit scatter — every PAG unit passing the configured
+             unit filter (default good + somatic) colored by signed
+             VMI (sig +VMI = full opacity PAG palette color, sig -VMI =
+             same color at 50 % opacity with a black edge, non-sig =
+             unassigned-gray).
+          2. Occupancy-normalized sig +VMI fraction — the local
+             fraction of recorded cells that are sig +VMI, rendered
              with the `figures.cmap` colormap from settings
              (defaults to `inferno`).
-          3. 2-D KDE density of the sig -VMI subpopulation, same
-             colormap, same axes extent so the two heatmaps and the
-             scatter share a coordinate frame.
+          3. Occupancy-normalized sig -VMI fraction — same metric for
+             the sig -VMI subpopulation, same colormap and axes extent.
+          4. Divergent sig +VMI − sig −VMI fraction difference,
+             highlighting where one polarity dominates the other.
 
-        All three panels span the same `(loc_ap, loc_dv)` range
+        All four panels span the same `(loc_ap, loc_dv)` range
         (computed once from the full unit set), so spatial clustering
         of either polarity can be compared directly against the
         whole-population scatter.
@@ -2853,8 +2861,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Render per-region histograms of best-session signed VMI for
-        every good + somatic unit, with significant +VMI and −VMI
+        Render per-region histograms of one signed VMI value per unit
+        (hybrid median/max/min, see below) for every unit passing the
+        configured unit filter (default good + somatic), with
+        significant +VMI and −VMI
         sub-distributions overlaid on top of the full-population
         background. Layout matches the 2×4 grid convention from
         figs 1–5:
@@ -2869,8 +2879,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             line per region in its palette color, for direct
             comparison of skew across regions.
 
-        Bins span [−1, 1] uniformly. One signed VMI value per unit (good
-        + somatic) via `_collect_vmi_distribution_per_unit`: non-sig units
+        Bins span [−1, 1] uniformly. One signed VMI value per unit
+        (configured unit filter, default good + somatic) via
+        `_collect_vmi_distribution_per_unit`: non-sig units
         use their per-session median, sig +VMI-only units the maximum of
         their sig +VMI sessions, sig −VMI-only units the minimum of their
         sig −VMI sessions, and sig-both units collapse onto the direction
@@ -2917,9 +2928,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
         bins = np.linspace(-1.0, 1.0, n_bins + 1)
 
-        # Track the global histogram y-max so the seven scatter
-        # panels share a y-axis — directly comparable across regions.
-        y_max_per_panel: list[int] = []
+        # The seven per-region histogram panels auto-scale independently.
 
         for region, idx in zip(VMI_REGION_ORDER, panel_xy):
             ax = fig.add_subplot(gs[idx])
@@ -2937,7 +2946,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             vmi_neg = np.array(buckets["sig_neg"])
 
             # Background — entire region population.
-            counts_bg, _, _ = ax.hist(
+            _, _, _ = ax.hist(
                 vmi_all, bins=bins,
                 color=bg_color, alpha=0.35,
                 histtype="stepfilled", edgecolor=COLOR_BLACK, linewidth=0.5,
@@ -2958,7 +2967,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     histtype="stepfilled",
                     edgecolor=COLOR_BLACK, linewidth=0.4,
                 )
-            y_max_per_panel.append(int(np.max(counts_bg)) if counts_bg.size else 0)
 
             ax.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
             ax.set_xlim(-1.05, 1.05)
@@ -3221,8 +3229,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Render the per-region distribution of consistent excit-PETH
-        anticipatory response timing. Layout is a 2×7 grid with one
+        Render the per-region distribution of consistent PETH
+        anticipatory response timing for the requested `direction`
+        (excit or suppress). Layout is a 2×7 grid with one
         column per brain-area group:
 
           * Top row — histogram of each region's consistent units'
@@ -3249,6 +3258,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV. Defaults to the
             `catalog_path` embedded in the triage pickle.
+        direction (str)
+            PETH response direction to aggregate — either 'excit' or
+            'suppress' (validated). Defaults to 'excit'.
         tol_s (float)
             Full-width tolerance for the consistency check (default
             0.100 s).
@@ -3401,7 +3413,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Walk the unit-triage pickle and, for every unit passing the
         configured unit filter (default good + somatic)
-        with at least two significant `usv_property_self_<property>_excit`
+        with at least two significant `usv_property_self_<property>_<direction>`
         sessions whose `peak_bin_value` values cluster within `tol`
         (largest in-tolerance subset of size `k_min` or more, optionally
         accounting for at least 50 % of the unit's sig sessions),
@@ -3431,6 +3443,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to `unit_catalog.csv`. Defaults to the
             `catalog_path` field embedded in the triage pickle.
+        direction (str)
+            Tuning response direction selecting the
+            `usv_property_self_<property>_<direction>` modality key —
+            either 'excit' or 'suppress' (validated). Defaults to
+            'excit'.
         tol (float | None)
             Full-width tolerance applied to the per-session
             `peak_bin_value` values during the consistency check.
@@ -3568,13 +3585,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Render the per-region distribution of consistent excit-tuned
+        Render the per-region distribution of consistent tuned
         units' peak property-value for a single USV acoustic
-        property. Layout is the same 2×4 grid used by the VMI
+        property and the requested `direction` (excit or suppress).
+        Layout is the same 2×4 grid used by the VMI
         distribution and PETH timing figures:
 
           * Seven per-region histograms of `median peak_bin_value`
-            (consistent excit units only, region color, stepfilled).
+            (consistent units of the requested direction only, region
+            color, stepfilled).
           * 8th panel — overlaid ECDFs of the same per-region pools
             for direct across-region comparison.
 
@@ -3600,6 +3619,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV. Defaults to the
             `catalog_path` embedded in the triage pickle.
+        direction (str)
+            Tuning response direction to aggregate — either 'excit' or
+            'suppress' (validated; threaded into the caption and output
+            stem). Defaults to 'excit'.
         tol (float | None)
             Full-width tolerance for the consistency check (defaults
             to the per-property entry in `USV_PROPERTY_META`).
@@ -3786,6 +3809,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Absolute path to the `unit_triage_*.pkl` artifact.
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV.
+        direction (str)
+            Tuning response direction — either 'excit' or 'suppress';
+            forwarded to each per-property figure. Defaults to 'excit'.
         k_min (int)
             Minimum in-tolerance subset size (default 2).
         require_majority (bool)
@@ -4242,7 +4268,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             # line is purely a visual aid for the negative trend.
             rho_str = ""
             if x.size >= 5 and np.unique(x).size >= 2:
-                rho, p_val = spearmanr(x, y)
+                rho, _ = spearmanr(x, y)
                 if np.isfinite(rho):
                     rho_str = f"  ρ={rho:+.2f}"
                 sns.regplot(
@@ -5123,7 +5149,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Render a 3-set Venn diagram (Behavioral / Social / Vocal)
+        Render a 3-set Venn diagram (Kinematics / Social Features / Vocal)
         summarising the population-level overlap between cells with
         behavioral self-feature tuning (`pose OR movement` from
         figure 1's rule), social/dyadic tuning, and vocal tuning
@@ -5141,10 +5167,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         numeric annotations carry the actual counts anyway.
 
         Set definitions:
-          * **Behavioral** = `pose OR movement` from
+          * **Kinematics** = `pose OR movement` from
             `_compute_behavioral_bucket_flags`. 29 self features (9
             pose + 20 movement) on the recorded mouse.
-          * **Social** = the same helper's social flag — partner-
+          * **Social Features** = the same helper's social flag — partner-
             pooled dyadic consistency over 42 dyadic features.
           * **Vocal** = `_compute_vocal_flag` — any of VMI / USV-PETH
             / USV-property / USV-category / USV-category-PETH passes
@@ -5587,8 +5613,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         # behavioral occupancy threshold lives on the analyses side (it's
         # a tuning-curve config alongside usv_property_min_occupancy_seconds);
-        # compute writes it into behavioral_metadata, plotter reads from
-        # there with a sane fallback for older pkls.
+        # compute writes it into behavioral_metadata, and the plotter reads
+        # it from there directly (the key is required; older pkls without it
+        # will KeyError).
         occ_threshold_setting = float(
             cluster_data["behavioral_metadata"]["behavioral_min_occupancy_seconds"]
         )
@@ -6154,10 +6181,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         x_lo, x_hi = -2.0, 2.0
 
-        # USV-bar color: anchor's own sex for anchor-emitter USVs, the
-        # opposite sex for any other emitter's USVs falling in the window.
+        # USV-bar color: anchor's own sex for anchor-emitter USVs;
+        # gray (COLOR_LIGHT) for unassigned-emitter USVs. Partner-emitter
+        # USVs are skipped below, so no partner color is ever needed.
         anchor_sex = cluster_data["usv_peth"][emitter]["sex"]
-        anchor_partner_sex = "female" if anchor_sex == "male" else "male"
 
         # for each bout, draw spikes (black) and USV-bars (sex-colored)
         # within [-2, +2] of the bout onset
@@ -6172,18 +6199,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 s = max(all_starts[j] - t0, x_lo)
                 e = min(all_stops[j] - t0, x_hi)
                 em = emitters[j]
-                if em == emitter:
-                    color = self._sex_color(anchor_sex)
-                else:
-                    color = self._sex_color(anchor_partner_sex) if em is not None else COLOR_LIGHT
-                # USV bars at the TOP of each row (just inside the upper edge);
-                # spikes occupy the body of the row centered at row_idx + 0.5.
                 # plot only anchor-emitter USVs (sex-colored) and
                 # unassigned USVs (gray); skip partner-emitter USVs
                 # entirely so the raster reflects this side's vocal
                 # activity uncluttered by the other animal's calls.
                 if em is not None and em != emitter:
                     continue
+                color = self._sex_color(anchor_sex) if em == emitter else COLOR_LIGHT
+                # USV bars at the TOP of each row (just inside the upper edge);
+                # spikes occupy the body of the row centered at row_idx + 0.5.
                 ax.hlines(y=row_idx + 0.95, xmin=s, xmax=e, colors=color, linewidth=1.5)
 
             # spikes in window:

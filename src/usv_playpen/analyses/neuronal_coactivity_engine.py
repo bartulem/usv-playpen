@@ -536,8 +536,12 @@ def perform_chained_circular_shuffle(
         List of total durations (seconds) for each session.
     window_s : float
         Analysis window size in seconds.
-    n_shuffles : int
-        Number of global shuffle iterations.
+    min_shift_s : float, optional
+        The minimum allowable random time shift, by default 20.0.
+    max_shift_s : float, optional
+        The maximum allowable random time shift, by default 60.0.
+    n_shuffles : int, optional
+        Number of global shuffle iterations, by default 1000.
     seed : int | None, optional
         Seed for the NumPy random generator that draws each session's
         per-shuffle circular offset. Pass a fixed integer to make the
@@ -551,8 +555,9 @@ def perform_chained_circular_shuffle(
     """
     # 1. Initialize results by checking metric keys from a dummy run
     dummy_matrices = []
-    for onsets, neural, duration in zip(session_onsets, session_neural_data, session_durations):
-        # We only need a small slice to get the keys
+    for onsets, neural, _duration in zip(session_onsets, session_neural_data, session_durations):
+        # We only need a small slice to get the keys (durations are unused here;
+        # they are only needed in the real shuffle loop below).
         dummy_matrices.append(extract_snippet_matrix(onsets[:2], neural, window_s))
 
     combined_dummy = np.hstack(dummy_matrices)
@@ -622,8 +627,8 @@ def perform_label_permutation_test(
     Returns
     -------
     dict[str, dict[str, Any]]
-        Mapping `metric -> {observed_delta, null, p_a_gt_b,
-        p_two_tailed, z_score}`. `metric` covers every key returned
+        Mapping `metric -> {observed_delta, null, null_mean, null_std,
+        p_a_gt_b, p_two_tailed, z_score}`. `metric` covers every key returned
         by `compute_coactivity_metrics` (`r_sc`, `similarity`,
         `pop_corr`).
     """
@@ -702,7 +707,8 @@ def compute_sliding_coactivity(
     Returns
     -------
     dict[str, np.ndarray]
-        Arrays of 'r_sc' and 'similarity' for each time bin.
+        Dictionary with 'time_bins' (per-step onset offsets in seconds),
+        'r_sc', and 'similarity', each a length-n_steps array.
     """
 
     sliding_rsc = np.zeros(n_steps)
@@ -932,8 +938,8 @@ def load_animal_sessions(
         Somatic-only flag, forwarded to :func:`filter_units_by_catalog`.
     brain_areas : set[str]
         Allowed brain areas, forwarded to :func:`filter_units_by_catalog`.
-    message_output : Callable, optional
-        Diagnostic sink; defaults to the built-in ``print``.
+    message_output : Any, optional
+        Diagnostic sink; defaults to None, in which case the built-in ``print`` is used.
 
     Returns
     -------
@@ -1038,8 +1044,8 @@ def compute_group_acoustics(
         Either ``"group_a_df"`` or ``"group_b_df"``.
     window_s : float
         Snippet length in seconds, measured from each onset.
-    message_output : Callable, optional
-        Diagnostic sink; defaults to the built-in ``print``.
+    message_output : Any, optional
+        Diagnostic sink; defaults to None, in which case the built-in ``print`` is used.
 
     Returns
     -------

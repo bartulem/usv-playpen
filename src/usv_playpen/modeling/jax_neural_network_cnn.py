@@ -11,10 +11,13 @@ Key Architectural Choices:
 1.  Depthwise Separable Convolutions: Isolates temporal motif extraction per kinematic
     feature before mixing synergies, vastly reducing parameter bloat and overfitting.
 2.  Residual Pooling Blocks: Combines a Pointwise Shortcut (1x1 Conv, Stride 2) with
-    a Heavy Path (Depthwise -> Pointwise -> MaxPool) to smoothly halve the temporal
+    a Heavy Path (Depthwise -> Pointwise -> AvgPool) to smoothly halve the temporal
     dimension while preserving gradient flow.
 3.  Translation Variance (Flattening): Preserves the absolute timing of behavioral
     motifs by flattening the final temporal matrix instead of globally averaging it.
+    When `use_hybrid_flatten` is active, the flattened features are additionally
+    concatenated with a global-average-pooled summary so both the strictly-timed
+    motifs and the time-invariant averages reach the dense head.
 4.  Pure Functional JAX: Explicitly manages all convolutional and Batch Normalization
     states without relying on high-level OOP wrappers like Flax or Haiku.
 """
@@ -274,6 +277,21 @@ def _output_axes_count(hp: Dict[str, Any]) -> int:
     `qlvm_dim{1,2}`); this helper centralises that constant so the
     output-head sizing logic doesn't sprinkle bare `2`s through
     `init_cnn_params_and_state`, `cnn_forward`, and the loss block.
+
+    Parameters
+    ----------
+    hp : dict
+        Hyperparameter dictionary. Currently unused (reserved): the
+        axis count is a hard-coded constant (`2`) and is NOT derived
+        from any `hp` key. The argument is kept so a future modality
+        shipping a `D != 2` manifold can switch this helper to a
+        config-driven lookup without touching the call sites in
+        `init_cnn_params_and_state`.
+
+    Returns
+    -------
+    int
+        The number of manifold axes the CNN regresses (always 2).
     """
 
     return 2
@@ -761,7 +779,8 @@ class NeuralContinuousCNNRunner:
        ('null_model_free').
     4. Post-Hoc Permutation Importance: Decouples specific kinematic channels
        during inference to quantify their individual physical significance via
-       Delta Euclidean Error.
+       Delta manifold-distance error (Euclidean or wrap-aware torus, per
+       manifold_metric).
     """
 
     def __init__(self, modeling_settings: dict | None) -> None:
@@ -1066,11 +1085,13 @@ class NeuralContinuousCNNRunner:
         # to centroid" w.r.t. the input, exactly what the euclidean /
         # raw heads already compute.
         torus_sin_cos = _use_sin_cos_torus_output(self.hp)
-        period_for_decode = jnp.asarray(self.manifold_period)
 
         def _decode(preds_raw):
             if torus_sin_cos:
-                return angle_decode_jax(preds_raw, period_for_decode)
+                # Build the period array only on the torus `sin_cos` path; on
+                # euclidean / legacy `'raw'` runs the decode is the identity and
+                # the period is never consulted.
+                return angle_decode_jax(preds_raw, jnp.asarray(self.manifold_period))
             return preds_raw
 
         def region_scalar_fn(x_single):
@@ -1449,7 +1470,10 @@ class NeuralContinuousCNNRunner:
                 return loss, new_state
 
             grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-            (loss, s_new), grads = grad_fn(p, s)
+            # value_and_grad with has_aux returns ((loss, new_state), grads); the
+            # scalar loss is unused here (early-stopping RMSE is recomputed in the
+            # epoch loop), so it is bound to `_loss` to mark it intentionally dead.
+            (_loss, s_new), grads = grad_fn(p, s)
 
             return grads, s_new, rng_key
 
@@ -1512,7 +1536,7 @@ class NeuralContinuousCNNRunner:
                     )))
                     fold_results['Y_pred_null_model_free'] = Y_pred
                     fold_results['error_null_model_free'] = err
-                    print(f"  > [Model-free prior] Euclidean Err: {err:.4f}")
+                    print(f"  > [Model-free prior] {self.manifold_metric.capitalize()} Err: {err:.4f}")
                     continue
 
                 elif strategy == 'null':
@@ -1603,7 +1627,7 @@ class NeuralContinuousCNNRunner:
                         warps = rng.uniform(1.0 - warp_range, 1.0 + warp_range, len(idx))
                         X_batch = apply_temporal_warping(X_tr[idx], warps)
 
-                        # 2. Kinematic Masking (Dynamic Interception)
+                        # 2. Kinematic Masking (1D Cutout: randomly blind feature channels)
                         if self.hp['use_kinematic_masking']:
                             X_batch = apply_kinematic_masking(
                                 X_batch,
@@ -1643,7 +1667,7 @@ class NeuralContinuousCNNRunner:
                 fold_results[f'Y_pred_{strategy}'] = Y_pred_final
                 fold_results[f'error_{strategy}'] = best_err
 
-                print(f"  > [{strategy.capitalize():<6}] Euclidean Err: {best_err:.4f}")
+                print(f"  > [{strategy.capitalize():<6}] {self.manifold_metric.capitalize()} Err: {best_err:.4f}")
 
                 if strategy == 'actual':
                     actual_errors.append(best_err)
@@ -1721,7 +1745,7 @@ class NeuralContinuousCNNRunner:
             if snr > 3.0:
                 significant_features.append(feat_name)
 
-            print(f"   [{feat_name:<25}] Delta E: {mu:+.4f} (±{sigma:.4f}) | SNR: {snr:.2f} {sig_flag}")
+            print(f"   [{feat_name:<25}] Delta Err: {mu:+.4f} (±{sigma:.4f}) | SNR: {snr:.2f} {sig_flag}")
 
         sorted_features = sorted(importance_means.keys(), key=lambda x: importance_means[x], reverse=True)
 

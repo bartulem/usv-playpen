@@ -61,7 +61,6 @@ from typing import Optional
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 
-from .auxiliary_plot_functions import create_colormap
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
 from ..analyses.compute_behavioral_features import FeatureZoo
@@ -88,7 +87,6 @@ DYADIC_COLOR = _VIZ_SETTINGS["social_colors"][0]
 NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
-MISSING_AUDIO_COLOR = "#FF0000"     # "Audio Missing" placeholder title (was 'red')
 REFERENCE_LINE_COLOR = "#808080"    # dashed zero / chance reference lines (was 'gray')
 
 # Timescale-audit palette overrides: zero / axis lines stay black, so
@@ -101,41 +99,6 @@ TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'g
 # Global default colormap — shared with `figures.cmap` so the
 # multinomial / continuous heatmap defaults match the rest of the repo.
 _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
-
-# Initialize custom colormaps (for males and females)
-female_cmap = create_colormap(input_parameter_dict={
-    "cm_length": 255,
-    "cm_name": "female_cm",
-    "cm_type": "sequential",
-    "cm_start": (
-        int(female_color[1:3], 16),
-        int(female_color[3:5], 16),
-        int(female_color[5:7], 16),
-    ),
-    "cm_end": (255, 255, 255),
-    "equalize_luminance": True,
-    "match_luminance_by": "max",
-    "change_saturation": 0.5,
-    "cm_opacity": 1,
-})
-
-male_cmap = create_colormap(input_parameter_dict={
-    "cm_length": 255,
-    "cm_name": "male_cm",
-    "cm_type": "sequential",
-    "cm_start": (
-        int(male_color[1:3], 16),
-        int(male_color[3:5], 16),
-        int(male_color[5:7], 16),
-    ),
-    "cm_end": (255, 255, 255),
-    "equalize_luminance": True,
-    "match_luminance_by": "max",
-    "change_saturation": 0.5,
-    "cm_opacity": 1,
-})
-
-
 
 def plot_feature_ranking(
         results_file_loc: str,
@@ -293,7 +256,6 @@ def plot_feature_ranking(
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6, 5), dpi=300, tight_layout=True)
         fig.patch.set_facecolor('#FFFFFF')
         ax.set_facecolor('#FFFFFF')
-        TEXT_COLOR = '#202020'
 
         for spine in ax.spines.values():
             spine.set_edgecolor(TEXT_COLOR)
@@ -397,9 +359,10 @@ def plot_significant_filters(
         Absolute path to the .pkl results file containing per-feature
         'actual' and 'shuffled'/'null' fold-level metrics and filter shapes.
     metric : str, default 'auc'
-        Metric used to determine significance (e.g., 'auc' or 'll'). For
-        lower-is-better metrics (ll, nll, rmse, mse, loss) the comparison
-        direction is automatically inverted.
+        Metric used to determine significance (e.g., 'auc' or 'll'). The
+        lower-is-better metric 'll' has its comparison direction inverted
+        (significant when the actual mean falls below the lower null
+        threshold); all other metrics are treated as higher-is-better.
     ignore_features : list of str, optional
         Feature names to skip. If None, no features are excluded.
     p_val : float, default 0.01
@@ -531,9 +494,12 @@ def plot_significant_filters(
             out_name = pathlib.Path(output_dir) / f"{results_path.stem}_filter_{safe_name}.svg"
             fig.savefig(out_name, bbox_inches='tight', dpi=300, facecolor='#FFFFFF', transparent=False)
             print(f"Saved: {out_name.name}")
-            plt.close(fig)
 
         plt.show()
+        # Close the figure unconditionally so per-feature figures don't
+        # accumulate (and trip matplotlib's >20-open-figures warning)
+        # when save_plot is False.
+        plt.close(fig)
 
 
 def plot_significant_filters_grid(
@@ -1139,10 +1105,11 @@ def plot_model_selection_results(
          self / other / dyadic palette used in the filter grid. A
          rejected final step, if any, is drawn below a thin
          separator in desaturated grey.
-       * **Right panel** -- three vertical bars on a balanced-
+       * **Right panel** -- two vertical bars on a balanced-
          classification axis (chance = 0.5):
-         best univariate single-feature model, final accepted
-         multivariate model, and final + rejected (drawn grey).
+         best univariate single-feature model and final accepted
+         multivariate model. A rejected final step, if any, appears
+         as a grey row in the left panel, not as a right-panel bar.
          The features composing each model are listed above the
          corresponding bar.
 
@@ -3021,7 +2988,7 @@ def plot_multinomial_selection_diagnosis(
         output_dir = configure_path(str(output_dir))
     BG_COLOR = '#FFFFFF'
 
-    selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
+    selection_steps, _, selection_metadata = load_selection_results(selection_results_path)
     if not selection_steps:
         print(f"No multinomial step data found in {selection_results_path}")
         return
@@ -3956,7 +3923,8 @@ class DeepResultsVisualizer:
             from the default JSON configuration file.
         visualization_settings : dict
             A nested dictionary containing visualization settings, including
-            animal colors, etc.
+            animal colors, etc. If None is provided, it loads from the default
+            visualizations_settings.json configuration file.
         """
 
         results_pkl_path = configure_path(str(results_pkl_path))
@@ -4315,7 +4283,7 @@ class DeepResultsVisualizer:
         feats = [f for f in imp_data['ranked_features'] if f != 'knockoff_probe']
 
         # 2. Extract means and stds from their respective sub-dictionaries
-        # This is where I messed up before by ignoring the 'means'/'stds' keys
+        # Pull per-feature means and stds from their dedicated 'means'/'stds' keys.
         actual_means = np.array([imp_data['means'][f] for f in feats])
         actual_stds = np.array([imp_data['stds'][f] for f in feats])
 
@@ -6115,10 +6083,11 @@ def _compute_timescale_horizons(payload: dict,
     Returns
     -------
     tuple
-        `(acf_horizons, xc_horizons)` where each is a dict
-        `{feature_name: lag_seconds}`. The XC dict additionally
-        records the exceeds-window flag in
-        `xc_exceeds[feature_name]`.
+        `(acf_horizons, xc_horizons, xc_exceeds)` where each is a
+        `{feature_name: ...}` dict: `acf_horizons` and `xc_horizons`
+        map to the marker lag in seconds, while `xc_exceeds` maps to
+        the boolean exceeds-window flag (True when the XC run reaches
+        `+max_lag`).
     """
 
     feature_names = list(payload['features'])
@@ -6220,8 +6189,8 @@ def plot_timescale_audit(timescale_pkl_path: str,
     labels are coloured to match each row's bar, and the y-tick
     *marks* are suppressed (the colour-coded labels are sufficient).
 
-    Both panels share an x-axis range `[0, ceil(max_horizon / 2) * 2]`
-    so they're directly comparable; tick marks are placed every 2 s,
+    Both panels share an x-axis range `[0, ceil(max_horizon)]`
+    so they're directly comparable; tick marks are placed every 1 s,
     but only the first and last ticks receive labels — leaving room
     below the axis for the bold mean annotation and the x-axis
     label.
@@ -6523,19 +6492,20 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
       at ρ ≈ 0.3 with cohort-mean null at ±0.001). A triangle
       marker on the *positive lag axis* indicates the cross-
       correlation right-side significance horizon, defined as the
-      end (largest lag) of the **longest sign-consistent
+      end (largest lag) of the **earliest-starting sign-consistent
       outside-null run** on the positive lag axis. Above-null and
-      below-null runs are tracked separately and compete for
-      "longest"; the winner's direction sets the marker shape (▽
+      below-null runs are tracked separately; the earliest-starting
+      qualifying run wins (ties broken toward the smaller end index)
+      and its direction sets the marker shape (▽
       for above-null, △ for below-null). Two filters apply before
-      the longest-run pick: runs whose last bin is below
+      the earliest-run pick: runs whose last bin is below
       `signal_floor_seconds` are excluded (so very-near-zero noise
       cannot anchor a marker), and runs shorter than
       `signal_min_run_seconds` (in seconds, converted to bins via
       the lag-axis spacing) are excluded as scattered fragments.
-      Reading: "the largest sustained excursion of the curve away
+      Reading: "the first sustained excursion of the curve away
       from the shuffled distribution ends at this lag." When the
-      longest qualifying run extends to `+max_lag`, the marker
+      earliest qualifying run extends to `+max_lag`, the marker
       lands at the right edge of the panel and the lag annotation
       gets a trailing `+`. Same min-x text clamp as the ACF marker
       prevents the label from overrunning the y-axis when the

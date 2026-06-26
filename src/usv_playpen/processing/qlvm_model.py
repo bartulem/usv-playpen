@@ -349,6 +349,10 @@ def posterior_over_lattice(atlas: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray
         A ``(B, K)`` posterior over lattice points.
     """
     lls = binary_lp(atlas, data)                                     # (B, K)
+    # `evidence` is a per-row constant (log-mean-exp of the row); subtracting a
+    # per-row constant from the softmax logits leaves the softmax unchanged
+    # (softmax is shift-invariant). It is retained here only for exact
+    # line-by-line parity with QMCLVM.posterior_probability.
     evidence = jax.scipy.special.logsumexp(lls, axis=1, keepdims=True) - jnp.log(atlas.shape[0])
     return jax.nn.softmax(lls - evidence, axis=1)
 

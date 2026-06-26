@@ -32,33 +32,22 @@ class DataLoader:
         None
         """
 
+        # Maps a numpy array's dtype name (numpy.dtype.name) onto the canonical
+        # string stored under the "dtype" sub-key. Only the bare numpy scalar
+        # names that numpy.dtype.name can actually produce are listed here; the
+        # WAV data returned by scipy/librosa never yields any other dtype name.
         self.known_dtypes = {
-            "int": int,
-            "np.int8": "int8",
             "int8": "int8",
-            "np.int16": "int16",
             "int16": "int16",
-            "np.int32": "int32",
             "int32": "int32",
-            "np.int64": "int64",
             "int64": "int64",
-            "np.uint8": "uint8",
             "uint8": "uint8",
-            "np.uint16": "uint16",
             "uint16": "uint16",
-            "np.uint32": "uint32",
             "uint32": "uint32",
-            "np.uint64": "uint64",
             "uint64": "uint64",
-            "float": float,
-            "np.float16": "float16",
             "float16": "float16",
-            "np.float32": "float32",
             "float32": "float32",
-            "np.float64": "float64",
             "float64": "float64",
-            "str": str,
-            "dict": dict,
         }
 
         if input_parameter_dict is None:
@@ -84,7 +73,7 @@ class DataLoader:
         -------
         wave_data_dict (dict)
             A dictionary with all desired sound outputs;
-            starting key in the dictionary is "session_id",
+            the top-level key is the WAV file's name (one_file.name),
             with "sampling_rate", "wav_data" and "dtype" as sub-keys.
         """
 
@@ -109,7 +98,11 @@ class DataLoader:
                         ]
                     )
 
-                if ".wav" in one_file.name and additional_condition:
+                if (
+                    one_file.is_file()
+                    and one_file.suffix.lower() == ".wav"
+                    and additional_condition
+                ):
                     wave_data_dict[one_file.name] = {
                         "sampling_rate": 0,
                         "wav_data": 0,
@@ -176,8 +169,11 @@ class DataLoader:
                                 wave_data_dict[one_file.name]["wav_data"],
                                 wave_data_dict[one_file.name]["sampling_rate"],
                             ) = librosa.load(one_file)
+                    # Read the dtype name straight off the array (numpy.dtype.name)
+                    # rather than materializing a scalar via .ravel()[0], which would
+                    # raise IndexError on an empty/zero-sample WAV.
                     wave_data_dict[one_file.name]["dtype"] = self.known_dtypes[
-                        type(wave_data_dict[one_file.name]["wav_data"].ravel()[0]).__name__
+                        wave_data_dict[one_file.name]["wav_data"].dtype.name
                     ]
 
         return wave_data_dict

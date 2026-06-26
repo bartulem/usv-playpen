@@ -47,7 +47,7 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
 
     Parameters
     ----------
-    experiment_code (str)
+    experiment_code (str | None)
         Code that describes the experiment, defaults to None.
 
     Returns
@@ -55,6 +55,8 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
     output_dict (dict)
         Contains information about the experiment:
         experiment type, mouse number, mouse sex, mouse housing and mouse estrus.
+    None
+        Returned when experiment_code is None or not a string.
     """
 
     if experiment_code is not None and isinstance(experiment_code, str):

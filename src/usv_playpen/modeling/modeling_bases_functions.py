@@ -52,6 +52,8 @@ def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normali
                 if normalize:
                     v = v / np.linalg.norm(v)
                 B.append(v)
+    if not B:
+        raise ValueError(f'laplacian_pyramid produced no basis vectors for width={width}, levels={levels}, step={step}')
     return np.stack(B).T
 
 
@@ -125,7 +127,7 @@ def raised_cosine(neye: int, ncos: int, kpeaks: list, b: int, w: int = None, nba
     b : int
         Offset for non-linear scaling (larger = more linear).
     w : int, optional
-        Desired number of time points (window length). Padds or discards as needed.
+        Desired number of time points (window length). Pads or discards as needed.
     nbasis : int, optional
         Desired total number of basis vectors.
 
@@ -214,6 +216,9 @@ def bsplines(width: int, positions: list, degree: int = 3, periodic: bool = Fals
     n_positions = len(positions)
     y_dummy = np.zeros(n_positions)
 
+    # si.splrep returns the full knot vector (longer than the input positions) and the
+    # spline order k; these intentionally overwrite the input positions/degree names with
+    # splrep's own (semantically different) outputs used for evaluation below.
     positions, coe_ffs, degree = si.splrep(positions,
                                            y_dummy,
                                            k=degree,

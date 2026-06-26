@@ -42,10 +42,11 @@ class StringTuple(click.ParamType):
 
         Returns
         -------
-        converted
-            The successfully converted value. Calls `self.fail(...)` on
-            invalid input, which raises a `click.BadParameter` and never
-            returns.
+        converted (tuple[str, str])
+            On success, a 2-tuple of the two comma-separated, stripped
+            components (e.g. "Head, Nose" -> ('Head', 'Nose')). On invalid
+            input, calls `self.fail(...)`, which raises a `click.BadParameter`
+            and never returns.
         """
         try:
             # Split the input string by the comma
@@ -143,11 +144,16 @@ def modify_settings_json_for_cli(
         Click context containing the parameters.
     provided_params (list)
         Parameters provided via the command line interface.
-    parameters_lists (list)
+    parameters_lists (list | None)
         List of parameters that are expected to be lists.
         If a parameter is not in this list, it is treated as a single value.
-    settings_dict (str)
-        Settings dictionary file (analyses, processing or visualizations).
+        None (the default) is normalized to an empty list, so each provided
+        parameter is applied as a single value.
+    settings_dict (str | None)
+        Basename (without the ``.json`` extension) of the settings file under
+        ``_parameter_settings/`` to load and modify (analyses, processing or
+        visualizations); used as ``f"_parameter_settings/{settings_dict}.json"``.
+        Defaults to None.
 
     Returns
     -------
@@ -321,6 +327,11 @@ def override_toml_values(overrides: list, exp_settings_dict: dict) -> dict:
     overrides (list)
         A list of strings in the format "key.path=value" where:
         - `key.path` is the dot-separated path to the value to be set.
+        - `value` is coerced via ``_convert_value`` ('true'/'false' -> bool,
+          numeric -> int/float, otherwise a string with surrounding quotes
+          stripped). A comma-containing value is split on commas and becomes a
+          list of such coerced items.
+        Override strings lacking an ``=`` separator are silently ignored.
     exp_settings_dict (dict)
         The dictionary to modify with the overrides.
         The keys are dot-separated paths to the values to be set.
@@ -332,6 +343,7 @@ def override_toml_values(overrides: list, exp_settings_dict: dict) -> dict:
     """
 
     for override_str in overrides:
+        # skip malformed overrides lacking a '=' separator
         if "=" not in override_str:
             continue
 

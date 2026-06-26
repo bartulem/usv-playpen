@@ -45,15 +45,17 @@ def _to_jsonable(o: Any) -> Any:
     Description
     -----------
     Coerce numpy / non-finite scalar types into JSON-friendly Python
-    natives so `json.dump` survives without per-call cleanup. NaN and
-    +/- inf become `None` (JSON has no native NaN representation).
+    natives. NaN and +/- inf become `None` (JSON has no native NaN
+    representation). This module pickles its output rather than calling
+    `json.dump`, so this helper is a standalone numpy/non-finite ->
+    native coercion utility retained for external callers and tests.
 
     Parameters
     ----------
     o (Any)
         Value to coerce. Handled types: `np.integer`, `np.floating`,
-        `np.bool_`, `np.ndarray`, `pathlib.PurePath`. Everything else is
-        passed through and will hit `json.dump`'s default error.
+        `np.bool_`, `np.ndarray`, `pathlib.PurePath`. Everything else
+        raises `TypeError`.
 
     Returns
     -------
@@ -133,10 +135,14 @@ def _extract_vmi_metrics(payload: dict) -> dict:
     """
 
     _n_valid = payload.get("n_valid_pairs")
+    # Coerce n_bouts via _safe_float first so a NaN stored on a bad block
+    # (int(float("nan")) raises ValueError) becomes 0 rather than aborting the
+    # whole aggregation, matching the None-guarded treatment of n_valid_pairs.
+    _n_bouts = _safe_float(payload["n_bouts"])
     return {
         "vmi": _safe_float(payload["vmi"]),
         "p": _safe_float(payload["wilcoxon_pvalue"]),
-        "n_bouts": int(payload["n_bouts"]),
+        "n_bouts": int(_n_bouts) if _n_bouts is not None else 0,
         "n_valid_pairs": int(_n_valid) if _n_valid is not None else None,
         "fr_baseline": _safe_float(payload["fr_baseline"]),
         "fr_usv": _safe_float(payload["fr_usv"]),
@@ -476,15 +482,6 @@ def _emitter_role_map(cluster_data: dict) -> dict:
                     if emitter in out:
                         break
     return out
-
-
-# Administrative keys that `flag_one_cluster` attaches to each record
-# alongside the metric scalars. Consumers that only want the metric
-# values filter these out via `_FLAG_ADMIN_KEYS`.
-_FLAG_ADMIN_KEYS = frozenset(
-    {"tested", "significant", "role", "property",
-     "cat_feat", "feature", "offset"}
-)
 
 
 # Per-cluster significance builder
@@ -836,6 +833,11 @@ def _aggregate_modality_stats(mod_key: str, per_session: list[dict]) -> dict:
         (only when NOT a `usv_category_peth_*` key)
       * everything else      -> max_abs_peak_z, median_peak_z
 
+    The aggregates summarize the full distribution across *all* tested
+    sessions in `per_session` regardless of each session's `significant`
+    flag (they are not filtered to the significant subset); the
+    significant-only counts live in `n_significant` / `consistency`.
+
     Missing / non-finite per-session values are skipped; if no usable
     values remain, the relevant aggregate field is `None`.
 
@@ -929,7 +931,9 @@ def aggregate_units_across_conditions(
     per-cluster `*_tuning_curves_data.pkl` files under
     `<data_root>/<session>/ephys/tuning_curves/` are loaded, run through
     `flag_one_cluster`, and joined with `unit_catalog.csv` to enrich
-    each cluster with `mouse_id`, `rec_date`, and `brain_area`.
+    each cluster with `mouse_id`, `rec_date`, and `brain_area` (the
+    catalog's `brain_area` column is surfaced in the output as
+    `anatomy_region`).
 
     Because per-day Kilosort sorts are concatenated, the same physical
     unit appears under the same `unit_id` in every same-day session;
@@ -967,6 +971,9 @@ def aggregate_units_across_conditions(
                 "modalities": {
                   "<modality_key>": {
                     "n_significant": int, "n_tested": int,
+                    # consistency = n_significant / n_tested (fraction of
+                    # tested sessions flagged significant; 0.0 when
+                    # n_tested == 0)
                     "consistency": float,
                     "aggregate": { ...modality-specific scalars... },
                     "per_session": [
@@ -1109,11 +1116,21 @@ def aggregate_units_across_conditions(
             raise FileNotFoundError(
                 f"session list for condition {cond!r} not found: {lst_path}"
             )
+        # De-duplicate session basenames (preserve first-seen order): a literal
+        # repeat — or two distinct full paths whose basenames collide — would
+        # otherwise process the same session's pkls twice and inflate every
+        # per_session list (n_tested / n_significant / consistency / medians),
+        # leaving the output internally inconsistent with the deduped
+        # `sessions_tested`. Dropping repeats here also avoids redundant pkl I/O.
         sessions = []
+        seen_sessions: set[str] = set()
         for line in lst_path.read_text().splitlines():
             stripped = line.strip()
             if stripped:
-                sessions.append(pathlib.Path(stripped).name)
+                name = pathlib.Path(stripped).name
+                if name not in seen_sessions:
+                    seen_sessions.add(name)
+                    sessions.append(name)
         condition_sessions[cond] = sessions
 
     # 4. Iterate condition -> session -> pkl; build unit records.
