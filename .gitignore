@@ -158,3 +158,6 @@ src/*/_version.py
 
 # nbsphinx: package notebooks copied into the docs tree at build time
 docs/notebooks/
+
+# code-review scratch artifacts (not part of the package)
+REVIEW_*.md
