@@ -93,24 +93,28 @@ def flatten_session_masks(
         the spectrogram it belongs to.
     """
 
-    seg_rows: list[np.ndarray] = []
-    index_rows: list[int] = []
+    total_masks = sum(len(processed_masks[spec_row]) for spec_row in processed_masks)
 
+    if total_masks == 0:
+        segmentations = np.zeros((0, num_freq_bins, num_time_bins), dtype=bool)
+        spectrogram_index = np.zeros((0,), dtype=np.int64)
+        return segmentations, spectrogram_index
+
+    # Preallocate the full ``(M, F, T)`` output (zero-initialised, so any
+    # columns beyond ``valid_cols`` stay ``False``) and fill each mask row in
+    # place, avoiding the previous per-mask zero frame plus the second full
+    # ``np.stack`` copy. ``spectrogram_index`` is filled in lockstep.
+    segmentations = np.zeros((total_masks, num_freq_bins, num_time_bins), dtype=bool)
+    spectrogram_index = np.empty((total_masks,), dtype=np.int64)
+
+    row_idx = 0
     for spec_row in sorted(processed_masks.keys()):
         for mask in processed_masks[spec_row]:
             seg = np.asarray(mask['segmentation'], dtype=bool)
-            frame = np.zeros((num_freq_bins, num_time_bins), dtype=bool)
             valid_cols = min(seg.shape[1], num_time_bins)
-            frame[:, :valid_cols] = seg[:, :valid_cols]
-            seg_rows.append(frame)
-            index_rows.append(int(spec_row))
-
-    if seg_rows:
-        segmentations = np.stack(seg_rows, axis=0)
-        spectrogram_index = np.asarray(index_rows, dtype=np.int64)
-    else:
-        segmentations = np.zeros((0, num_freq_bins, num_time_bins), dtype=bool)
-        spectrogram_index = np.zeros((0,), dtype=np.int64)
+            segmentations[row_idx, :, :valid_cols] = seg[:, :valid_cols]
+            spectrogram_index[row_idx] = int(spec_row)
+            row_idx += 1
 
     return segmentations, spectrogram_index
 

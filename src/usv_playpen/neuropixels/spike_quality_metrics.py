@@ -1287,22 +1287,24 @@ class SpikeQualityMetricsExtractor:
             This session's catalog rows — freshly computed, or, when
             skipped, the rows already present in the global catalog.
         """
-        if write and not overwrite and self.is_session_in_catalog(catalog_path):
+        if write and not overwrite:
             catalog_path = self._resolve_catalog_path(catalog_path)
-            existing_catalog = pd.read_csv(catalog_path)
-            this_session = (
-                (existing_catalog['rec_date'] == int(self.session_date))
-                & (existing_catalog['mouse_id'].astype(str) == str(self.mouse_id))
-                & (existing_catalog['unit_id'].astype(str).str.startswith(f"{self.probe_id}_"))
-            )
-            session_catalog = existing_catalog[this_session].reset_index(drop=True)
-            print(  # noqa: T201 - interactive skip-notice when the session is already catalogued
-                f"{self.session_date} {self.probe_id} already in {catalog_path} "
-                f"({session_catalog.shape[0]} units); skipping — pass overwrite=True to recompute."
-            )
-            self.catalog_path = catalog_path
-            self.session_catalog = session_catalog
-            return session_catalog
+            if catalog_path.exists():
+                existing_catalog = pd.read_csv(catalog_path)
+                this_session = (
+                    (existing_catalog['rec_date'] == int(self.session_date))
+                    & (existing_catalog['mouse_id'].astype(str) == str(self.mouse_id))
+                    & (existing_catalog['unit_id'].astype(str).str.startswith(f"{self.probe_id}_"))
+                )
+                if this_session.any():
+                    session_catalog = existing_catalog[this_session].reset_index(drop=True)
+                    print(  # noqa: T201 - interactive skip-notice when the session is already catalogued
+                        f"{self.session_date} {self.probe_id} already in {catalog_path} "
+                        f"({session_catalog.shape[0]} units); skipping — pass overwrite=True to recompute."
+                    )
+                    self.catalog_path = catalog_path
+                    self.session_catalog = session_catalog
+                    return session_catalog
         self.load()
         self.compute_metrics()
         self.compute_recording_dependent_metrics()

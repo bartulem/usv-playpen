@@ -313,12 +313,12 @@ def find_bout_epochs(root_directories: list = None,
             'start': np.array of positive-source USV start times (category-filtered
                 only in 'individual' mode with a target_category, else all USVs).
             'stop': np.array of positive-source USV stop times.
-            'usv_count': raw binary occupancy trace (0/1) over the full per-mouse USV set.
-            'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
             'continuous_vocal_signals': dict of continuous predictor traces keyed by
                 vocal_output_type ('usv_event'/'usv_rate'/'usv_cat_X').
             'positive_events': unbalanced array of POSITIVE event times (seconds).
             'negative_events': unbalanced array of NEGATIVE (no-USV) event times (seconds).
+            'usv_count': raw binary occupancy trace (0/1) over the full per-mouse USV set.
+            'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
     """
 
     # GMM parameters (modeling inter-USV interval distributions)
@@ -754,8 +754,7 @@ def find_usv_categories(root_directories: list = None,
                         )
 
             # Save raw category streams (for potential future use, e.g., custom signal generation or validation)
-            unique_cats_raw = mouse_usvs[category_column].unique().to_list()
-            for cat_id in unique_cats_raw:
+            for cat_id in unique_cats:
                 cat_df = mouse_usvs.filter(pls.col(category_column) == cat_id)
                 if cat_df.height > 0:
                     usv_data_dict[session_id][mouse_name]['category_streams'][cat_id] = {

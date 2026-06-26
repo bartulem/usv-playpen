@@ -264,7 +264,7 @@ class YOLODatasetExporter:
                     for row in np.flatnonzero(durations > 0):
                         split = "val" if position in val_positions else "train"
                         position += 1
-                        spec = specs[row].astype(np.float32)
+                        spec = specs[row]
                         duration = int(durations[row])
                         spec_id = f"{session_id}_{int(row)}"
 

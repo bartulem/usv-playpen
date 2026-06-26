@@ -484,9 +484,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         if final_features:
             anchor_feat = final_features[0]
             grp = final_data_dict[anchor_feat]['groups']
-            for sess_id in np.unique(grp):
+            uniq, counts = np.unique(grp, return_counts=True)
+            for sess_id, sess_count in zip(uniq, counts):
                 n_events_per_session[str(sess_id)] = {
-                    'bout_onsets': int(np.sum(grp == sess_id)),
+                    'bout_onsets': int(sess_count),
                 }
         input_metadata['n_events_per_session'] = n_events_per_session
         input_metadata['feature_zoo_kept'] = sorted(final_data_dict.keys())

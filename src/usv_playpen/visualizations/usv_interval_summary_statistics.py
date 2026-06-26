@@ -385,8 +385,9 @@ def plot_ic_curves(
     stats: dict = {}
     edge_color = "#202020"
 
+    present_sexes = set(df_results['sex'].unique().to_list())
     for sex in ("male", "female"):
-        if sex not in df_results['sex'].unique().to_list():
+        if sex not in present_sexes:
             continue
         sub = df_results.filter(pls.col('sex') == sex)
         min_ic = (

@@ -496,8 +496,12 @@ def perform_circular_shuffle(
     """
 
     # Initialize storage based on keys from a test calculation
-    # We run a dummy calculation to dynamically identify available metrics
-    sample_matrix = extract_snippet_matrix(onsets, neural_data, window_s)
+    # We run a dummy calculation to dynamically identify available metrics.
+    # Probe over onsets[:2] only (mirroring the chained variant): the metric
+    # keys are structural and independent of which/how many onsets are used,
+    # so a 2-onset snippet matrix yields the same keys without paying a full
+    # corrcoef/cosine pass over every onset just to discard the result.
+    sample_matrix = extract_snippet_matrix(onsets[:2], neural_data, window_s)
     metric_keys = compute_coactivity_metrics(sample_matrix).keys()
 
     results = {key: np.zeros(n_shuffles) for key in metric_keys}

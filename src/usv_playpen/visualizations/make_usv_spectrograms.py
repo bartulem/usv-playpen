@@ -1722,7 +1722,6 @@ def plot_usv_property_histograms(
         values_disp = values_native[np.isfinite(values_native)] * factor
 
         bins = np.linspace(lo_disp, hi_disp, HISTOGRAM_N_BINS + 1)
-        hist_counts, hist_edges = np.histogram(values_disp, bins=bins)
         ax.hist(
             values_disp,
             bins=bins,
@@ -1750,6 +1749,13 @@ def plot_usv_property_histograms(
             label_y = hist_top * 1.12
             ax.set_ylim(0, hist_top * 1.22)
             if p == "freq_bandwidth_hz":
+                # Only this panel consumes the explicit histogram counts/edges
+                # (for bimodal-peak detection); the other panels draw via
+                # ``ax.hist`` which bins independently. Computing it here over
+                # the same ``values_disp``/``bins`` yields identical arrays to
+                # the previous unconditional call while skipping it for the
+                # four panels that never use the result.
+                hist_counts, hist_edges = np.histogram(values_disp, bins=bins)
                 bin_centers = (hist_edges[:-1] + hist_edges[1:]) / 2.0
                 smoothed_counts = gaussian_filter1d(
                     hist_counts.astype(float), sigma=BANDWIDTH_PEAK_SMOOTH_SIGMA_BINS
@@ -3768,6 +3774,12 @@ def plot_embedding_with_category_thumbnails(
 
     with h5py.File(consolidated_h5_path, "r") as h5:
         mask_index_cache: dict[str, np.ndarray] = {}
+        # Per-session full ``durations`` arrays, read once and indexed in
+        # both the unstretched pre-pass and the main draw loop. Indexing the
+        # cached array yields the same stored value as a fresh
+        # ``grp["durations"][spec_idx]`` scalar read, so results are
+        # byte-identical while collapsing the doubled per-pick HDF5 latency.
+        dur_cache: dict[str, np.ndarray] = {}
 
         def _strip_ax_chrome(ax: plt.Axes) -> None:
             """Hide ticks + every spine + the axes frame so no
@@ -3804,7 +3816,9 @@ def plot_embedding_with_category_thumbnails(
                         continue
                     grp = h5[spec_group_key]
                     n_time_max = int(grp["spectrograms"].shape[2])
-                    d = int(grp["durations"][spec_idx])
+                    if sess not in dur_cache:
+                        dur_cache[sess] = grp["durations"][:]
+                    d = int(dur_cache[sess][spec_idx])
                     d = max(1, min(d, n_time_max))
                     if d > max_dur:
                         max_dur = d
@@ -3837,7 +3851,9 @@ def plot_embedding_with_category_thumbnails(
                     continue
                 grp = h5[spec_group_key]
                 spec = grp["spectrograms"][spec_idx, :, :].astype(np.float32)
-                dur = int(grp["durations"][spec_idx])
+                if sess not in dur_cache:
+                    dur_cache[sess] = grp["durations"][:]
+                dur = int(dur_cache[sess][spec_idx])
                 dur = max(1, min(dur, spec.shape[1]))
                 spec_valid = spec[:, :dur]
 

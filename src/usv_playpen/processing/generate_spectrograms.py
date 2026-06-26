@@ -101,6 +101,19 @@ def compute_usv_spectrogram(
     per_channel_vars: list[float] = []
     original_time_bins = 0
 
+    # The FFT-frequency axis, the band mask and the frequency-resample
+    # interpolation grids depend only on call-invariant parameters
+    # (``sampling_rate``, ``nperseg``, ``min_freq``, ``max_freq`` and
+    # ``num_freq_bins``), so they are computed once here rather than
+    # rebuilt on every channel iteration. ``freq_orig`` is the
+    # interpolation grid over the band-masked bin count, which equals
+    # ``int(freq_mask.sum())`` for every channel that reaches the
+    # resample branch.
+    freqs = librosa.fft_frequencies(sr=sampling_rate, n_fft=nperseg)
+    freq_mask = (freqs >= min_freq) & (freqs <= max_freq)
+    freq_interp = np.linspace(0, 1, num_freq_bins)
+    freq_orig = np.linspace(0, 1, int(freq_mask.sum()))
+
     for ch_idx in range(n_channels):
         audio_segment = audio_segment_channels[:, ch_idx].astype(np.float64)
         if audio_segment.shape[0] < nperseg:
@@ -121,15 +134,11 @@ def compute_usv_spectrogram(
             ** 2
         )
 
-        freqs = librosa.fft_frequencies(sr=sampling_rate, n_fft=nperseg)
-        freq_mask = (freqs >= min_freq) & (freqs <= max_freq)
         power_spec = power_spec[freq_mask]
         spec_db = librosa.power_to_db(power_spec, ref=np.max)
 
         # Resample along the frequency axis to the target bin count.
         if spec_db.shape[0] != num_freq_bins:
-            freq_interp = np.linspace(0, 1, num_freq_bins)
-            freq_orig = np.linspace(0, 1, spec_db.shape[0])
             spec_db = np.stack(
                 [np.interp(freq_interp, freq_orig, spec_slice) for spec_slice in spec_db.T]
             ).T

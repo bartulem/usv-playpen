@@ -1161,14 +1161,13 @@ class IBLAlignmentExporter:
         nbatch = 50_000
         for start in range(0, n_spikes, nbatch):
             stop = min(start + nbatch, n_spikes)
-            ispi = np.arange(start, stop)
-            features = np.asarray(pc_features[ispi, 0, :], dtype=np.float64)
+            features = np.asarray(pc_features[start:stop, 0, :], dtype=np.float64)
             features = np.maximum(features, 0.0) ** 2
-            ichannels = pc_feature_ind[spike_templates[ispi]]
+            ichannels = pc_feature_ind[spike_templates[start:stop]]
             ypos = channel_positions[ichannels, 1]
             denom = features.sum(axis=1)
             with np.errstate(divide='ignore', invalid='ignore'):
-                spike_depths[ispi] = np.where(
+                spike_depths[start:stop] = np.where(
                     denom > 0,
                     (ypos * features).sum(axis=1) / denom,
                     np.nan,

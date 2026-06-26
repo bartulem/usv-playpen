@@ -157,9 +157,11 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         # Grid covers the original per-label data range (not the replicated
         # one) with a small margin so the returned centre is inside the
         # canonical cell on torus.
-        margin = 0.05 * (pts.max(axis=0) - pts.min(axis=0)).max()
-        xmin, ymin = pts.min(axis=0) - margin
-        xmax, ymax = pts.max(axis=0) + margin
+        pmin = pts.min(axis=0)
+        pmax = pts.max(axis=0)
+        margin = 0.05 * (pmax - pmin).max()
+        xmin, ymin = pmin - margin
+        xmax, ymax = pmax + margin
 
         if metric == 'torus':
             xmin = max(xmin, 0.0)

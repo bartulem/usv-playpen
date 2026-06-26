@@ -1134,6 +1134,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         time_indices = np.arange(history_frames, dtype=np.float32)
 
+        # Partial-dependence grids depend only on history_frames and
+        # time_indices, so they are identical across every split and both
+        # the actual and null branches; build them once here.
+        grid_X_0 = np.stack([np.zeros(history_frames, dtype=np.float32), time_indices], axis=1)
+        grid_X_1 = np.stack([np.ones(history_frames, dtype=np.float32), time_indices], axis=1)
+
         def unroll_data_for_gam(X):
             return unroll_history_matrix(X, time_indices=time_indices)
 
@@ -1181,8 +1187,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     y_proba_mean_epoch = np.mean(y_proba_tiled.reshape(X_test.shape), axis=1)
                     y_pred_mean_epoch = (y_proba_mean_epoch > 0.5).astype(int)
 
-                    grid_X_0 = np.stack([np.zeros(history_frames, dtype=np.float32), time_indices], axis=1)
-                    grid_X_1 = np.stack([np.ones(history_frames, dtype=np.float32), time_indices], axis=1)
                     # predict_mu returns the Bernoulli mean (probability), not log-odds.
                     prob_0 = gam_actual.predict_mu(grid_X_0).astype(np.float32)
                     prob_1 = gam_actual.predict_mu(grid_X_1).astype(np.float32)
@@ -1256,11 +1260,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     y_proba_shuffled_mean = np.mean(y_proba_shuffled_tiled.reshape(X_test.shape), axis=1)
                     y_pred_shuffled_mean = (y_proba_shuffled_mean > 0.5).astype(int)
 
-                    grid_X_0_null = np.stack([np.zeros(history_frames, dtype=np.float32), time_indices], axis=1)
-                    grid_X_1_null = np.stack([np.ones(history_frames, dtype=np.float32), time_indices], axis=1)
                     # predict_mu returns the Bernoulli mean (probability), not log-odds.
-                    prob_0_null = gam_shuffled.predict_mu(grid_X_0_null).astype(np.float32)
-                    prob_1_null = gam_shuffled.predict_mu(grid_X_1_null).astype(np.float32)
+                    # grid_X_0/grid_X_1 are loop-invariant and identical to the
+                    # actual branch, so they are reused here.
+                    prob_0_null = gam_shuffled.predict_mu(grid_X_0).astype(np.float32)
+                    prob_1_null = gam_shuffled.predict_mu(grid_X_1).astype(np.float32)
                     filter_shape_null = (prob_1_null - prob_0_null).flatten()
                     results['null']['filter_shapes'][split_idx, :] = filter_shape_null
 

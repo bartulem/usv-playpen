@@ -310,8 +310,9 @@ class ExperimentController:
             if not wavs:
                 return None, 0
             try:
-                newest = max(wavs, key=lambda p: p.stat().st_ctime)
-                return newest, newest.stat().st_size
+                stats = {p: p.stat() for p in wavs}
+                newest = max(stats, key=lambda p: stats[p].st_ctime)
+                return newest, stats[newest].st_size
             except (OSError, ValueError):
                 return None, 0
 
@@ -781,15 +782,16 @@ class ExperimentController:
             if 1 < len(self.exp_settings_dict['video']['general']['expected_cameras']) < 5:
                 temp_camera_serial_num = [camera_dict['serial'] for camera_dict in api.call('cameras')['cameras']]
 
+                cameras_to_connect = set(self.exp_settings_dict['video']['general']['expected_cameras']) - set(temp_camera_serial_num)
+                cameras_to_disconnect = set(temp_camera_serial_num) - set(self.exp_settings_dict['video']['general']['expected_cameras'])
+
                 # connect cameras if necessary
-                if len(list(set(self.exp_settings_dict['video']['general']['expected_cameras'])-set(temp_camera_serial_num))) > 0:
-                    for camera_serial in list(set(self.exp_settings_dict['video']['general']['expected_cameras'])-set(temp_camera_serial_num)):
-                        api.call(f'multicam/connect_camera/{camera_serial}')
+                for camera_serial in cameras_to_connect:
+                    api.call(f'multicam/connect_camera/{camera_serial}')
 
                 # disconnect cameras if necessary
-                if len(list(set(temp_camera_serial_num) - set(self.exp_settings_dict['video']['general']['expected_cameras']))) > 0:
-                    for camera_serial in list(set(temp_camera_serial_num) - set(self.exp_settings_dict['video']['general']['expected_cameras'])):
-                        api.call(f'multicam/disconnect_camera/{camera_serial}')
+                for camera_serial in cameras_to_disconnect:
+                    api.call(f'multicam/disconnect_camera/{camera_serial}')
 
             available_cameras = api.call('cameras')['cameras']
             self.camera_serial_num = [camera_dict['serial'] for camera_dict in available_cameras]

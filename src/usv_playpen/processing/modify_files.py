@@ -671,10 +671,11 @@ class Operator:
                 data_dict = DataLoader(input_parameter_dict={'wave_data_loc': [str(audio_type_dir)],
                                                              'load_wavefile_data': {'library': 'scipy', 'conditional_arg': []}}).load_wavefile_data()
 
-                name_origin = list(data_dict.keys())[0].split('_')[1]
-                dim_1 = data_dict[list(data_dict.keys())[0]]['wav_data'].shape[0]
+                first_key = next(iter(data_dict.keys()))
+                name_origin = first_key.split('_')[1]
+                dim_1 = data_dict[first_key]['wav_data'].shape[0]
                 dim_2 = len(data_dict.keys())
-                sr = data_dict[list(data_dict.keys())[0]]['sampling_rate']
+                sr = data_dict[first_key]['sampling_rate']
                 complete_mm_file_name = str(audio_type_dir / f"{name_origin}_concatenated_audio_{audio_file_type}_{sr}_{dim_1}_{dim_2}_int16.mmap")
 
                 audio_mm_arr = np.memmap(filename=complete_mm_file_name,

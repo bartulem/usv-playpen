@@ -569,9 +569,9 @@ def get_conf_sets_6d(
 
     conf_sets = np.array([result[0] for result in results])
     conf_sets_noangle = np.array([result[1] for result in results])
-    pdfs = np.array([result[2] for result in results])
 
     if return_pdf:
+        pdfs = np.array([result[2] for result in results])
         return conf_sets, conf_sets_noangle, pdfs
 
     return conf_sets, conf_sets_noangle

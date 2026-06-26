@@ -362,8 +362,9 @@ class Synchronizer:
                     # save tracking start and end in changepoint information JSON file
                     root_ephys = str(ephys_base_for_data_root(self.root_directory) / f'{recording_date}_{imec_probe_id}')
                     pathlib.Path(root_ephys).mkdir(parents=True, exist_ok=True)
-                    if len(sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))) > 0:
-                        with open(sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))[0], 'r') as binary_info_input_file:
+                    existing_changepoint_files = sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))
+                    if len(existing_changepoint_files) > 0:
+                        with open(existing_changepoint_files[0], 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
 
                         if recording_file_name[:-7] not in binary_files_info:

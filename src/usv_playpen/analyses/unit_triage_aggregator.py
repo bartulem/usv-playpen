@@ -1092,7 +1092,8 @@ def aggregate_units_across_conditions(
     # rec_date -> mouse_id (each date maps to exactly one mouse). Enforce the
     # invariant rather than silently taking the first: a date mapping to more
     # than one mouse would mis-attribute every unit recorded that day.
-    date_mouse_counts = catalog.groupby("rec_date")["mouse_id"].nunique()
+    rec_date_mouse_grp = catalog.groupby("rec_date")["mouse_id"]
+    date_mouse_counts = rec_date_mouse_grp.nunique()
     ambiguous_dates = date_mouse_counts[date_mouse_counts > 1]
     if not ambiguous_dates.empty:
         details = "; ".join(
@@ -1104,9 +1105,7 @@ def aggregate_units_across_conditions(
             "unit_catalog.csv maps a rec_date to multiple mouse_ids "
             f"(expected one-date-one-mouse): {details}"
         )
-    date_to_mouse: dict[int, str] = (
-        catalog.groupby("rec_date")["mouse_id"].first().to_dict()
-    )
+    date_to_mouse: dict[int, str] = rec_date_mouse_grp.first().to_dict()
 
     # 3. Read condition session lists.
     condition_sessions: dict[str, list[str]] = {}

@@ -147,7 +147,7 @@ class Vocalocator:
             onsets_in_video_frames = (onsets_in_seconds * video_frame_rate).astype(int)
             track_locations_at_usv_onsets = tracks[onsets_in_video_frames] * 1000
 
-            audio = [to_float(np.array(handle[onset:offset, :])) for onset, offset in tqdm(zip(usv_onsets_in_samples, usv_offsets_in_samples),
+            audio = [to_float(handle[onset:offset, :]) for onset, offset in tqdm(zip(usv_onsets_in_samples, usv_offsets_in_samples),
                                                                                            total=usv_segments.shape[0])]
             audio_lengths = usv_offsets_in_samples - usv_onsets_in_samples
             length_idx = np.cumsum(np.insert(audio_lengths, obj=0, values=0))

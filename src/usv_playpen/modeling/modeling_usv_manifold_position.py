@@ -308,10 +308,10 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
             tr_idx = np.concatenate([session_to_rows[s] for s in tr_sess])
 
             tr_clusters = np.unique(proxy_labels[tr_idx])
-            te_clusters = np.unique(proxy_labels[te_idx])
+            te_labels = proxy_labels[te_idx]
+            te_unique, te_counts = np.unique(te_labels, return_counts=True)
 
-            if len(tr_clusters) == n_clusters and len(te_clusters) == n_clusters:
-                _, te_counts = np.unique(proxy_labels[te_idx], return_counts=True)
+            if len(tr_clusters) == n_clusters and len(te_unique) == n_clusters:
                 te_dist = te_counts / len(te_idx)
                 dist_error = np.max(np.abs(te_dist - global_dist))
 

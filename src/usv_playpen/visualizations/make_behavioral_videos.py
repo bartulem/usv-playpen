@@ -159,7 +159,7 @@ _VIDEO_LAYOUT = {
 }
 
 
-@njit(parallel=True)
+@njit
 def read_ttl_events(input_array: np.ndarray) -> tuple:
     """
     Description
@@ -183,7 +183,7 @@ def read_ttl_events(input_array: np.ndarray) -> tuple:
     return off_to_on[0], on_to_off[0]
 
 
-@njit(parallel=True)
+@njit
 def filter_spikes_for_raster(input_arr: np.ndarray,
                              ra_st_fr: int,
                              ra_end_fr: int,
@@ -886,6 +886,7 @@ def plot_behavioral_features(plot_axes: plt.Axes,
 
     for feature_idx, feature_name in enumerate(beh_features_to_plot):
         ax_num = 3 + feature_idx
+        feature_col_idx = beh_feature_data.columns.index(feature_name)
         if remove_axes_bool:
             plot_axes[ax_num].remove()
 
@@ -949,12 +950,12 @@ def plot_behavioral_features(plot_axes: plt.Axes,
         plot_axes[ax_num].set_facecolor(color_mode_preferences['background_color'])
         plot_axes[ax_num].plot(range(beh_window_size_frames),
                                beh_feature_data[feature_ts_fr_start:feature_ts_fr_end,
-                               beh_feature_data.columns.index(feature_name)],
+                               feature_col_idx],
                                ls='-',
                                lw=.5,
                                color=feature_color)
         plot_axes[ax_num].plot(beh_half_window_size_frames,
-                               beh_feature_data[feature_ts_fr_middle, beh_feature_data.columns.index(feature_name)],
+                               beh_feature_data[feature_ts_fr_middle, feature_col_idx],
                                marker='o',
                                markersize=2,
                                color=feature_color,

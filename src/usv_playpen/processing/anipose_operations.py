@@ -675,6 +675,7 @@ class ConvertTo3D:
             arena_nodes.index("South"),
             arena_nodes.index("West"),
         ]
+        north_i, east_i, south_i, west_i = node_list_indices
         arena_corners = redefine_cage_reference_nodes(
             arena_input_data=arena_data, node_list_indices=node_list_indices
         )
@@ -707,13 +708,11 @@ class ConvertTo3D:
             arena_corners[0, 1] - arena_corners[2, 1],
             arena_corners[0, 0] - arena_corners[2, 0],
         )
-        arena_data_temp = arena_data.copy()
-        arena_data = rotate_z(arena_data_temp, z_theta)
+        arena_data = rotate_z(arena_data, z_theta)
         arena_corners = redefine_cage_reference_nodes(
             arena_input_data=arena_data, node_list_indices=node_list_indices
         )
 
-        arena_data_temp = arena_data.copy()
         y_theta = (
             math.atan2(
                 arena_corners[0, 2] - arena_corners[2, 2],
@@ -721,112 +720,85 @@ class ConvertTo3D:
             )
             + math.pi
         )
-        arena_data = rotate_y(arena_data_temp, y_theta)
+        arena_data = rotate_y(arena_data, y_theta)
         arena_corners = redefine_cage_reference_nodes(
             arena_input_data=arena_data, node_list_indices=node_list_indices
         )
 
-        arena_data_temp = arena_data.copy()
         x_theta = -math.atan2(
             arena_corners[1, 2] - arena_corners[3, 2],
             arena_corners[1, 1] - arena_corners[3, 1],
         )
-        arena_data = rotate_x(arena_data_temp, x_theta)
+        arena_data = rotate_x(arena_data, x_theta)
 
         # Apply a fixed -pi/4 (-45 deg) Z rotation: after the geometry-derived
         # X/Y/Z rotations the North/East/South/West corners sit on the diagonals,
         # so this extra turn aligns them onto the X/Y axes, which lets the
         # per-corner signed offset correction below operate axis-by-axis.
-        arena_data_temp = arena_data.copy()
         z_theta_extra = -math.pi / 4
-        arena_data = rotate_z(arena_data_temp, z_theta_extra)
+        arena_data = rotate_z(arena_data, z_theta_extra)
 
         # take same distance to all corners and correct corners to be the outer edge of rail instead of inside corner
         # NB: the +/-0.025 offsets below are the rail offset in meters that move
         # each corner from the inner edge to the outer rail edge.
+        corner_xy = arena_data[0, 0, [north_i, west_i, south_i, east_i], :2]
         arena_center_out_distance = np.max(
             [
-                np.abs(
-                    np.nanmin(
-                        arena_data[
-                            0,
-                            0,
-                            [
-                                arena_nodes.index("North"),
-                                arena_nodes.index("West"),
-                                arena_nodes.index("South"),
-                                arena_nodes.index("East"),
-                            ],
-                            :2,
-                        ]
-                    )
-                ),
-                np.nanmax(
-                    arena_data[
-                        0,
-                        0,
-                        [
-                            arena_nodes.index("North"),
-                            arena_nodes.index("West"),
-                            arena_nodes.index("South"),
-                            arena_nodes.index("East"),
-                        ],
-                        :2,
-                    ]
-                ),
+                np.abs(np.nanmin(corner_xy)),
+                np.nanmax(corner_xy),
             ]
         )
 
-        arena_data[0, 0, arena_nodes.index("East"), :] = [
+        arena_data[0, 0, east_i, :] = [
             (
-                np.sign(arena_data[0, 0, arena_nodes.index("East"), 0])
+                np.sign(arena_data[0, 0, east_i, 0])
                 * arena_center_out_distance
             )
             + 0.025,
             (
-                np.sign(arena_data[0, 0, arena_nodes.index("East"), 1])
-                * arena_center_out_distance
-            )
-            + 0.025,
-            0,
-        ]
-
-        arena_data[0, 0, arena_nodes.index("West"), :] = [
-            (
-                np.sign(arena_data[0, 0, arena_nodes.index("West"), 0])
-                * arena_center_out_distance
-            )
-            - 0.025,
-            (
-                np.sign(arena_data[0, 0, arena_nodes.index("West"), 1])
-                * arena_center_out_distance
-            )
-            - 0.025,
-            0,
-        ]
-
-        arena_data[0, 0, arena_nodes.index("North"), :] = [
-            (
-                np.sign(arena_data[0, 0, arena_nodes.index("North"), 0])
-                * arena_center_out_distance
-            )
-            - 0.025,
-            (
-                np.sign(arena_data[0, 0, arena_nodes.index("North"), 1])
+                np.sign(arena_data[0, 0, east_i, 1])
                 * arena_center_out_distance
             )
             + 0.025,
             0,
         ]
 
-        arena_data[0, 0, arena_nodes.index("South"), :] = [
+        arena_data[0, 0, west_i, :] = [
             (
-                np.sign(arena_data[0, 0, arena_nodes.index("South"), 0])
+                np.sign(arena_data[0, 0, west_i, 0])
+                * arena_center_out_distance
+            )
+            - 0.025,
+            (
+                np.sign(arena_data[0, 0, west_i, 1])
+                * arena_center_out_distance
+            )
+            - 0.025,
+            0,
+        ]
+
+        arena_data[0, 0, north_i, :] = [
+            (
+                np.sign(arena_data[0, 0, north_i, 0])
+                * arena_center_out_distance
+            )
+            - 0.025,
+            (
+                np.sign(arena_data[0, 0, north_i, 1])
+                * arena_center_out_distance
+            )
+            + 0.025,
+            0,
+        ]
+
+        arena_data[0, 0, south_i, :] = [
+            (
+                np.sign(arena_data[0, 0, south_i, 0])
                 * arena_center_out_distance
             )
             + 0.025,
             (
-                np.sign(arena_data[0, 0, arena_nodes.index("South"), 1])
+                np.sign(arena_data[0, 0, south_i, 1])
                 * arena_center_out_distance
             )
             - 0.025,
@@ -872,17 +844,13 @@ class ConvertTo3D:
             mouse_data = mouse_data * metric_conversion_coefficient
             mouse_data = mouse_data - cage_midpoint
 
-            mouse_data_temp = mouse_data.copy()
-            mouse_data = rotate_z(mouse_data_temp, z_theta)
+            mouse_data = rotate_z(mouse_data, z_theta)
 
-            mouse_data_temp = mouse_data.copy()
-            mouse_data = rotate_y(mouse_data_temp, y_theta)
+            mouse_data = rotate_y(mouse_data, y_theta)
 
-            mouse_data_temp = mouse_data.copy()
-            mouse_data = rotate_x(mouse_data_temp, x_theta)
+            mouse_data = rotate_x(mouse_data, x_theta)
 
-            mouse_data_temp = mouse_data.copy()
-            mouse_data = rotate_z(mouse_data_temp, z_theta_extra)
+            mouse_data = rotate_z(mouse_data, z_theta_extra)
 
             # set all negative mouse z-coordinates to 0
             negative_z_indices = np.where(mouse_data[:, :, :, 2] < 0)

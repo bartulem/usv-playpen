@@ -1692,14 +1692,16 @@ class AnatomyFigureMaker:
         ks_dir = probe_dir / "kilosort4"
 
         probe_clusters = clusters[clusters["probe"] == probe]
-        cluster_to_bucket = {
-            int(row["cluster_num"]): row["bucket"]
-            for _, row in probe_clusters.iterrows()
-        }
-        cluster_to_peakch = {
-            int(row["cluster_num"]): int(row["closest_ch"])
-            for _, row in probe_clusters.iterrows()
-        }
+        # Build both per-cluster lookups in a single iterrows pass over the
+        # same frame instead of two; for any duplicated `cluster_num` the
+        # last row still wins (identical iteration order), so the resulting
+        # dicts are byte-identical to the two-pass comprehensions.
+        cluster_to_bucket = {}
+        cluster_to_peakch = {}
+        for _, row in probe_clusters.iterrows():
+            cluster_num_key = int(row["cluster_num"])
+            cluster_to_bucket[cluster_num_key] = row["bucket"]
+            cluster_to_peakch[cluster_num_key] = int(row["closest_ch"])
 
         # Per-cluster primary template: mode of `spike_templates` over
         # the cluster's spikes. Robust to manual merges where one

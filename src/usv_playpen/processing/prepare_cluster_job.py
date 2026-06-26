@@ -85,9 +85,10 @@ class PrepareClusterJob:
         else:
             spock_converted_second_model_path = to_cluster_path(self.input_parameter_dict['centered_instance_model_path'])
 
-        pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir'])).mkdir(parents=True, exist_ok=True)
+        inference_root = pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir']))
+        inference_root.mkdir(parents=True, exist_ok=True)
 
-        with open(pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir'])) / 'job_list.txt', mode='w') as job_list_file:
+        with open(inference_root / 'job_list.txt', mode='w') as job_list_file:
             for root_dir in self.root_directory:
 
                 spock_converted_root_dir = to_cluster_path(root_dir)

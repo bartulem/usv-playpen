@@ -1690,10 +1690,14 @@ class NeuralContinuousCNNRunner:
                 # Active Patience limit read from dict
                 patience_limit = self.hp['null_patience'] if strategy == 'null' else self.hp['patience']
 
+                # Normalize KDE inverse-density weights to sum to 1.0. w_tr is
+                # fixed per fold/strategy, so this is epoch-invariant and hoisted
+                # out of the epoch loop.
+                if self.hp['use_kde_weights']:
+                    p_weights = w_tr / np.sum(w_tr)
+
                 for epoch in range(self.hp['epochs']):
                     if self.hp['use_kde_weights']:
-                        # Normalize KDE inverse-density weights to sum to 1.0
-                        p_weights = w_tr / np.sum(w_tr)
                         # Draw a full epoch of samples using true continuous probabilities
                         b_idx = rng.choice(len(Y_tr), size=len(Y_tr), p=p_weights, replace=True)
                     else:

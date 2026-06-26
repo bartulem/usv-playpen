@@ -521,7 +521,8 @@ def stitch_smartspim_tiles(
                     y_off, x_off = layout[tile_xy]
                     y_slice = slice(y_off, y_off + tile_height)
                     x_slice = slice(x_off, x_off + tile_width)
-                    accumulator[y_slice, x_slice] += tile_img * weights_2d
+                    tile_img *= weights_2d
+                    accumulator[y_slice, x_slice] += tile_img
                     weight_sum[y_slice, x_slice] += weights_2d
                 # Normalize in place: the bevel floor guarantees weight_sum >= 1e-3
                 # at every covered pixel and exactly 0 at uncovered pixels, so a

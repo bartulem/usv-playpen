@@ -48,27 +48,21 @@ class StringTuple(click.ParamType):
             input, calls `self.fail(...)`, which raises a `click.BadParameter`
             and never returns.
         """
-        try:
-            # Split the input string by the comma
-            parts = [part.strip() for part in value.split(",")]
+        # Split the input string by the comma
+        parts = [part.strip() for part in value.split(",")]
 
-            # Validate that there are exactly two parts
-            if len(parts) != 2:
-                # This is the standard way to raise a validation error in a custom type
-                self.fail(
-                    f"'{value}' is not a valid pair. "
-                    "Please provide two strings separated by a comma (e.g., 'Head,Nose').",
-                    param,
-                    ctx,
-                )
-
-            # Return the validated and converted value
-            return tuple(parts)
-
-        except ValueError:
+        # Validate that there are exactly two parts
+        if len(parts) != 2:
+            # This is the standard way to raise a validation error in a custom type
             self.fail(
-                f"'{value}' could not be parsed as a comma-separated pair.", param, ctx
+                f"'{value}' is not a valid pair. "
+                "Please provide two strings separated by a comma (e.g., 'Head,Nose').",
+                param,
+                ctx,
             )
+
+        # Return the validated and converted value
+        return tuple(parts)
 
 
 def find_nested_key_paths(d: dict, target_key: str) -> list[str]:

@@ -613,6 +613,11 @@ def gmm_modes(
             (log_p[1:-1] > log_p[:-2]) & (log_p[1:-1] > log_p[2:])
         )[0] + 1
 
+        # Loop-invariant across every peak and every Newton iteration
+        # (``Sig`` never changes), so compute the per-component inverse
+        # variances once instead of re-deriving the identical array inside
+        # the Newton loop; the value used downstream is byte-identical.
+        inv_var = 1.0 / Sig[:, 0, 0]
         polished = []
         for i in peaks_idx:
             x = float(grid[i, 0])
@@ -628,7 +633,6 @@ def gmm_modes(
                 r = np.exp(logs - m)
                 r = r / r.sum()
                 # d/dx log p(x) = sum_k r_k * (mu_k - x) / sigma_k^2
-                inv_var = 1.0 / Sig[:, 0, 0]
                 grad = float(np.sum(r * (mu - x) * inv_var))
                 # d^2/dx^2 log p(x) (curvature) — Newton step
                 term1 = -float(np.sum(r * inv_var))

@@ -112,6 +112,17 @@ VMI_REGION_GROUPS: dict[str, set[str]] = {
 VMI_REGION_ORDER: tuple[str, ...] = (
     "PAG", "MRN", "VTA", "MB", "CENT", "SC", "Other",
 )
+# Inverted lookup (anatomy region -> canonical group bucket), computed
+# once from the invariant `VMI_REGION_GROUPS` constant. The source
+# group->regions sets are disjoint, so each region maps to exactly one
+# group and the inversion is unambiguous. Collectors reference this
+# module-level mapping instead of rebuilding the identical dict on every
+# call.
+VMI_REGION_TO_GROUP: dict[str, str] = {
+    region: group
+    for group, regions in VMI_REGION_GROUPS.items()
+    for region in regions
+}
 
 # Per-USV-property metadata for the population property-tuning
 # distribution figures. Keys mirror the modality suffixes used by
@@ -788,11 +799,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         alpha = float(triage["thresholds_used"]["vmi_alpha"])
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
 
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
         for u in triage["units"].values():
@@ -1114,11 +1121,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         alpha = float(triage["thresholds_used"]["vmi_alpha"])
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
         for u in triage["units"].values():
@@ -1583,11 +1586,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         alpha = float(triage["thresholds_used"]["vmi_alpha"])
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
         for u in triage["units"].values():
@@ -2009,11 +2008,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         alpha = float(triage["thresholds_used"]["vmi_alpha"])
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         tally: dict[str, dict[str, int]] = {
             g: {"sig_pos_only": 0, "sig_neg_only": 0, "sig_both": 0,
                 "never_sig":    0, "n_total":      0}
@@ -2772,11 +2767,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
         alpha = float(triage["thresholds_used"]["vmi_alpha"])
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, dict[str, list[float]]] = {
             g: {"all": [], "sig_pos": [], "sig_neg": []}
             for g in VMI_REGION_ORDER
@@ -3129,11 +3120,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
         if direction not in ("excit", "suppress"):
@@ -3486,11 +3473,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
         if direction not in ("excit", "suppress"):
@@ -3936,11 +3919,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
         modality_key = f"usv_category_self_{segmentation}"
 
@@ -4746,11 +4725,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_region: dict[str, Counter] = {g: Counter() for g in VMI_REGION_ORDER}
         n_eligible = 0
 
@@ -5290,11 +5265,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
-        region_to_group = {
-            region: group
-            for group, regions in VMI_REGION_GROUPS.items()
-            for region in regions
-        }
+        region_to_group = VMI_REGION_TO_GROUP
         per_region: dict[str, Counter] = {g: Counter() for g in VMI_REGION_ORDER}
         n_total = 0
 

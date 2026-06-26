@@ -889,7 +889,7 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
         roll, pitch, yaw.
     """
 
-    rot_matrix_reshaped = np.reshape(rot_matrix, shape=(rot_matrix.shape[0], 9)).copy()
+    rot_matrix_reshaped = np.reshape(rot_matrix, shape=(rot_matrix.shape[0], 9))
 
     temp = np.sqrt(
         (rot_matrix_reshaped[:, 8] * rot_matrix_reshaped[:, 8])
@@ -1804,6 +1804,12 @@ class FeatureZoo:
             mouse_nodes = [
                 elem.decode("utf-8") for elem in tracking_data_3d["node_names"]
             ]
+            # Map each node name to its column index once. The tracking
+            # node names are unique, so this dict lookup returns the same
+            # integer as the repeated per-mouse linear name scans it
+            # replaces, making every downstream lookup byte-identical while
+            # collapsing the O(n_nodes) scans recomputed per mouse.
+            node_idx = {name: i for i, name in enumerate(mouse_nodes)}
             track_names = [
                 elem.decode("utf-8") for elem in tracking_data_3d["track_names"]
             ]
@@ -1864,15 +1870,15 @@ class FeatureZoo:
         for mouse_num in range(mouse_data.shape[1]):
             # # head position (in cm)
             head_position[mouse_num, :, :] = (
-                    mouse_data[:, mouse_num, mouse_nodes.index("Head"), :] * 100
+                    mouse_data[:, mouse_num, node_idx["Head"], :] * 100
             )
 
             # # speed (cm/s) and acceleration (cm/s^2)
             exclude_tail_points = [
-                mouse_nodes.index(self.behavioral_parameters_dict["tail_points"][1]),
-                mouse_nodes.index(self.behavioral_parameters_dict["tail_points"][2]),
-                mouse_nodes.index(self.behavioral_parameters_dict["tail_points"][3]),
-                mouse_nodes.index(self.behavioral_parameters_dict["tail_points"][4]),
+                node_idx[self.behavioral_parameters_dict["tail_points"][1]],
+                node_idx[self.behavioral_parameters_dict["tail_points"][2]],
+                node_idx[self.behavioral_parameters_dict["tail_points"][3]],
+                node_idx[self.behavioral_parameters_dict["tail_points"][4]],
             ]
             exclude_tail_mask = np.ones(mouse_data.shape[2], dtype=bool)
             exclude_tail_mask[exclude_tail_points] = False
@@ -1894,7 +1900,7 @@ class FeatureZoo:
 
             # # neck elevation (cm)
             neck_elevation_temp = (
-                    mouse_data[:, mouse_num, mouse_nodes.index("Neck"), 2] * 100
+                    mouse_data[:, mouse_num, node_idx["Neck"], 2] * 100
             )
             neck_elevation_temp[neck_elevation_temp < 0] = np.nan
             neck_elevation[mouse_num, :, 0] = neck_elevation_temp
@@ -1914,33 +1920,33 @@ class FeatureZoo:
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["head_points"][0]
-                        ),
+                        ],
                         :,
                     ],
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["head_points"][1]
-                        ),
+                        ],
                         :,
                     ],
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["head_points"][2]
-                        ),
+                        ],
                         :,
                     ],
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["head_points"][3]
-                        ),
+                        ],
                         :,
                     ],
                 ]
@@ -1966,12 +1972,12 @@ class FeatureZoo:
             back_root_inv_oriented = get_back_root(
                 point_data_3d=mouse_data,
                 mouse_id=mouse_num,
-                neck_point_pos=mouse_nodes.index(
+                neck_point_pos=node_idx[
                     self.behavioral_parameters_dict["back_root_points"][0]
-                ),
-                tti_point_pos=mouse_nodes.index(
+                ],
+                tti_point_pos=node_idx[
                     self.behavioral_parameters_dict["back_root_points"][2]
-                ),
+                ],
                 root_method="other",
             )
 
@@ -2006,12 +2012,12 @@ class FeatureZoo:
             back_root_inv = get_back_root(
                 point_data_3d=mouse_data,
                 mouse_id=mouse_num,
-                neck_point_pos=mouse_nodes.index(
+                neck_point_pos=node_idx[
                     self.behavioral_parameters_dict["back_root_points"][0]
-                ),
-                tti_point_pos=mouse_nodes.index(
+                ],
+                tti_point_pos=node_idx[
                     self.behavioral_parameters_dict["back_root_points"][2]
-                ),
+                ],
                 root_method="root_inv",
             )
 
@@ -2019,17 +2025,17 @@ class FeatureZoo:
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["back_root_points"][0]
-                        ),
+                        ],
                         :,
                     ]
                     - mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["back_root_points"][1]
-                        ),
+                        ],
                         :,
                     ]
             )
@@ -2059,12 +2065,12 @@ class FeatureZoo:
             back_root = get_back_root(
                 point_data_3d=mouse_data,
                 mouse_id=mouse_num,
-                neck_point_pos=mouse_nodes.index(
+                neck_point_pos=node_idx[
                     self.behavioral_parameters_dict["back_root_points"][0]
-                ),
-                tti_point_pos=mouse_nodes.index(
+                ],
+                tti_point_pos=node_idx[
                     self.behavioral_parameters_dict["back_root_points"][2]
-                ),
+                ],
                 root_method="default",
             )
 
@@ -2085,41 +2091,41 @@ class FeatureZoo:
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["tail_points"][0]
-                        ),
+                        ],
                         :,
                     ],
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["tail_points"][1]
-                        ),
+                        ],
                         :,
                     ],
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["tail_points"][2]
-                        ),
+                        ],
                         :,
                     ],
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["tail_points"][3]
-                        ),
+                        ],
                         :,
                     ],
                     mouse_data[
                         :,
                         mouse_num,
-                        mouse_nodes.index(
+                        node_idx[
                             self.behavioral_parameters_dict["tail_points"][4]
-                        ),
+                        ],
                         :,
                     ],
                 ]
@@ -2353,8 +2359,8 @@ class FeatureZoo:
                 # nose to nose distance
                 social_distances[:, 0] = (
                         np.linalg.norm(
-                            mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :]
-                            - mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :],
+                            mouse_data[:, mouse1_idx, node_idx["Nose"], :]
+                            - mouse_data[:, mouse2_idx, node_idx["Nose"], :],
                             axis=1,
                         )
                         * 100
@@ -2363,8 +2369,8 @@ class FeatureZoo:
                 # TTI to TTI distance
                 social_distances[:, 1] = (
                         np.linalg.norm(
-                            mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :]
-                            - mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :],
+                            mouse_data[:, mouse1_idx, node_idx["TTI"], :]
+                            - mouse_data[:, mouse2_idx, node_idx["TTI"], :],
                             axis=1,
                         )
                         * 100
@@ -2373,8 +2379,8 @@ class FeatureZoo:
                 # nose (mouse1) to TTI (mouse2) distance
                 social_distances[:, 2] = (
                         np.linalg.norm(
-                            mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :]
-                            - mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :],
+                            mouse_data[:, mouse1_idx, node_idx["Nose"], :]
+                            - mouse_data[:, mouse2_idx, node_idx["TTI"], :],
                             axis=1,
                         )
                         * 100
@@ -2383,8 +2389,8 @@ class FeatureZoo:
                 # TTI (mouse1) to nose (mouse2) distance
                 social_distances[:, 3] = (
                         np.linalg.norm(
-                            mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :]
-                            - mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :],
+                            mouse_data[:, mouse1_idx, node_idx["TTI"], :]
+                            - mouse_data[:, mouse2_idx, node_idx["Nose"], :],
                             axis=1,
                         )
                         * 100
@@ -2407,12 +2413,12 @@ class FeatureZoo:
                 # from m2}; columns 4..7 = matching pitch.
                 social_angles = np.zeros((mouse_data.shape[0], 8))
 
-                head1 = mouse_data[:, mouse1_idx, mouse_nodes.index("Head"), :]
-                head2 = mouse_data[:, mouse2_idx, mouse_nodes.index("Head"), :]
-                nose1 = mouse_data[:, mouse1_idx, mouse_nodes.index("Nose"), :]
-                nose2 = mouse_data[:, mouse2_idx, mouse_nodes.index("Nose"), :]
-                tti1 = mouse_data[:, mouse1_idx, mouse_nodes.index("TTI"), :]
-                tti2 = mouse_data[:, mouse2_idx, mouse_nodes.index("TTI"), :]
+                head1 = mouse_data[:, mouse1_idx, node_idx["Head"], :]
+                head2 = mouse_data[:, mouse2_idx, node_idx["Head"], :]
+                nose1 = mouse_data[:, mouse1_idx, node_idx["Nose"], :]
+                nose2 = mouse_data[:, mouse2_idx, node_idx["Nose"], :]
+                tti1 = mouse_data[:, mouse1_idx, node_idx["TTI"], :]
+                tti2 = mouse_data[:, mouse2_idx, node_idx["TTI"], :]
                 root1 = global_head_roots[mouse1_idx, :, :, :]
                 root2 = global_head_roots[mouse2_idx, :, :, :]
 
@@ -2576,40 +2582,40 @@ class FeatureZoo:
                                                                 speed_arr=speed[mouse1_idx, :, 0],
                                                                 observer_idx=mouse1_idx,
                                                                 observed_idx=mouse2_idx,
-                                                                observed_node_idx=mouse_nodes.index("Nose"),
-                                                                idx_nose=mouse_nodes.index("Nose"),
-                                                                idx_tti=mouse_nodes.index("TTI"),
-                                                                idx_head=mouse_nodes.index("Head"))
+                                                                observed_node_idx=node_idx["Nose"],
+                                                                idx_nose=node_idx["Nose"],
+                                                                idx_tti=node_idx["TTI"],
+                                                                idx_head=node_idx["Head"])
 
                 # mouse1-mouse2 anogenital SEI
                 social_engagement_indices[:, 1] = calculate_sei(tracks=mouse_data,
                                                                 speed_arr=speed[mouse1_idx, :, 0],
                                                                 observer_idx=mouse1_idx,
                                                                 observed_idx=mouse2_idx,
-                                                                observed_node_idx=mouse_nodes.index("TTI"),
-                                                                idx_nose=mouse_nodes.index("Nose"),
-                                                                idx_tti=mouse_nodes.index("TTI"),
-                                                                idx_head=mouse_nodes.index("Head"))
+                                                                observed_node_idx=node_idx["TTI"],
+                                                                idx_nose=node_idx["Nose"],
+                                                                idx_tti=node_idx["TTI"],
+                                                                idx_head=node_idx["Head"])
 
                 # mouse2-mouse1 orofacial SEI
                 social_engagement_indices[:, 2] = calculate_sei(tracks=mouse_data,
                                                                 speed_arr=speed[mouse2_idx, :, 0],
                                                                 observer_idx=mouse2_idx,
                                                                 observed_idx=mouse1_idx,
-                                                                observed_node_idx=mouse_nodes.index("Nose"),
-                                                                idx_nose=mouse_nodes.index("Nose"),
-                                                                idx_tti=mouse_nodes.index("TTI"),
-                                                                idx_head=mouse_nodes.index("Head"))
+                                                                observed_node_idx=node_idx["Nose"],
+                                                                idx_nose=node_idx["Nose"],
+                                                                idx_tti=node_idx["TTI"],
+                                                                idx_head=node_idx["Head"])
 
                 # mouse2-mouse1 anogenital SEI
                 social_engagement_indices[:, 3] = calculate_sei(tracks=mouse_data,
                                                                 speed_arr=speed[mouse2_idx, :, 0],
                                                                 observer_idx=mouse2_idx,
                                                                 observed_idx=mouse1_idx,
-                                                                observed_node_idx=mouse_nodes.index("TTI"),
-                                                                idx_nose=mouse_nodes.index("Nose"),
-                                                                idx_tti=mouse_nodes.index("TTI"),
-                                                                idx_head=mouse_nodes.index("Head"))
+                                                                observed_node_idx=node_idx["TTI"],
+                                                                idx_nose=node_idx["Nose"],
+                                                                idx_tti=node_idx["TTI"],
+                                                                idx_head=node_idx["Head"])
 
                 # compute derivatives for SEI
                 social_engagement_indices_1st_der, social_engagement_indices_2nd_der = calculate_derivatives(
@@ -2689,16 +2695,12 @@ class FeatureZoo:
                 ) = generate_feature_distributions(
                     feature_arr=np.stack(
                         arrays=(
-                            np.array(
-                                behavioral_features_df.select(
-                                    f"{column.split('.')[0]}.spaceX"
-                                ).to_numpy()
-                            ),
-                            np.array(
-                                behavioral_features_df.select(
-                                    f"{column.split('.')[0]}.spaceY"
-                                ).to_numpy()
-                            ),
+                            behavioral_features_df.select(
+                                f"{column.split('.')[0]}.spaceX"
+                            ).to_numpy(),
+                            behavioral_features_df.select(
+                                f"{column.split('.')[0]}.spaceY"
+                            ).to_numpy(),
                         ),
                         axis=1,
                     ),
