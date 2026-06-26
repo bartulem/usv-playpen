@@ -58,6 +58,22 @@ def test_stretch_specs_outputs_target_shape():
     assert out_ts.shape == (3, 128, 128)
 
 
+def test_simple_resize_preserves_full_signal_on_time_upsampling():
+    """The non-warp (time_stretch=False) resize must keep the WHOLE signal window
+    when time-upsampling (target wider than the native spec). A regression that
+    slices the zoomed array with a native-coordinate length would truncate it to
+    the first ``duration`` columns and discard the rest of the signal."""
+    n_f, n_t, target_t = 8, 10, 100
+    spec = np.ones((n_f, n_t), dtype=np.float32)   # the entire spectrogram is signal
+    durations = np.array([n_t])
+    out = stretch_specs(spec[None], durations, (n_f, target_t), time_stretch=False)[0]
+    # The all-ones signal (duration=10) zoomed by 100/10=10 fills all 100 target
+    # columns; a native-coordinate slice would keep only ~10 and zero the other 90.
+    nonzero_cols = int(np.count_nonzero(out.sum(axis=0)))
+    assert nonzero_cols == target_t, f"expected {target_t} signal columns, got {nonzero_cols}"
+    assert out.sum() == pytest.approx(n_f * target_t, rel=0.02)
+
+
 def _write_session_h5(tmp_path, session_id, n, n_f=32, n_t=40, with_masks=False):
     """Create a session root holding ``audio/spectrograms/<session>_spectrograms.h5``
     (consolidated layout: top-level ``frequency_bins`` + a ``spectrogram/<session>``

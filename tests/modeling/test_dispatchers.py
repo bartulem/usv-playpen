@@ -654,7 +654,12 @@ class TestDispatcherCLI:
             '--anchor',
             '--target_variable', 'total_mask_complexity',
         ])
-        runpy.run_module('usv_playpen.modeling.main_model_selection_dispatcher',
-                         run_name='__main__')
+        # __main__ now propagates the dispatcher's exit code via sys.exit, so a
+        # successful run raises SystemExit(0) (this is what lets SLURM/`set -e`
+        # detect a crashed run, which would exit non-zero).
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_module('usv_playpen.modeling.main_model_selection_dispatcher',
+                             run_name='__main__')
+        assert exc.value.code == 0
         assert calls['target_variable'] == 'total_mask_complexity'
         assert calls['use_top_rank_as_anchor'] is True

@@ -190,11 +190,22 @@ def test_create_colormap_diverging_returns_listed_colormap():
     None
     """
 
-    # The diverging two-sided fill assumes an odd length (the project default
-    # is 255); both halves span cm_length // 2 + 1 samples.
+    # The project default diverging length is the odd 255; both halves span
+    # cm_length // 2 + 1 and cm_length - cm_length // 2 samples respectively.
     cm = create_colormap(_cm_params(cm_type="diverging", cm_length=65, change_saturation=0.5))
     assert isinstance(cm, ListedColormap)
     assert cm.N == 65
+
+
+def test_create_colormap_diverging_even_length():
+    """A diverging map with an EVEN length must build without a broadcast error.
+    The second half's slice `[cm_length//2:]` has length cm_length - cm_length//2,
+    which differs from cm_length//2 + 1 for even lengths; the old fill used the
+    latter for the linspace and raised ValueError for any even cm_length."""
+
+    cm = create_colormap(_cm_params(cm_type="diverging", cm_length=64, change_saturation=0.5))
+    assert isinstance(cm, ListedColormap)
+    assert cm.N == 64
 
 
 def test_create_colormap_unknown_type_raises():

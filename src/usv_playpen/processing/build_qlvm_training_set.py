@@ -171,7 +171,12 @@ def _apply_simple_resize(spec: np.ndarray, duration: int, target_shape: tuple[in
 
     zoom_factors = (target_shape[0] / spec.shape[0], target_shape[1] / spec.shape[1])
     spec_interp = zoom(spec, zoom_factors, order=1)
-    signal_length = min(duration, target_shape[1])
+    # The signal window occupies `duration` columns in NATIVE coordinates, but
+    # after the zoom it spans `duration * zoom_factors[1]` columns in the resized
+    # array. Slice in zoomed coordinates so time-upsampling (target wider than the
+    # native spec) keeps the whole signal instead of truncating it to the first
+    # `duration` columns.
+    signal_length = min(int(round(duration * zoom_factors[1])), target_shape[1])
     signal_portion = spec_interp[:, :signal_length]
     left_pad = (target_shape[1] - signal_length) // 2
     right_pad = target_shape[1] - signal_length - left_pad

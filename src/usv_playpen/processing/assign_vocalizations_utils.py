@@ -244,7 +244,9 @@ def eval_pdf_with_angle(
 
     If the covariance matrix is singular (np.linalg.LinAlgError on inversion),
     the function falls back to placing all mass on the spatial grid point closest
-    to the mean (the returned array is unnormalized in this degenerate case).
+    to the mean, spread uniformly over the angular bins and normalized to sum to 1
+    (a proper distribution, like the main path) so the downstream cumsum-based
+    confidence set is non-empty.
 
     Parameters
     ----------
@@ -292,7 +294,13 @@ def eval_pdf_with_angle(
     except np.linalg.LinAlgError:
         closest_point_idx = np.argmin(np.linalg.norm(points_spatial - mean_2d, axis=-1))
         probs = np.zeros((points_spatial.shape[0], len(points_angular)))
-        probs[closest_point_idx, :] = 1
+        # Normalize the degenerate fallback to a proper distribution (sums to 1),
+        # matching the main path's `probs /= probs.sum()`. An unnormalized fallback
+        # (summing to len(points_angular)) makes the downstream cumsum-based
+        # get_confidence_set hit 1.0 on the first point, so the strict `< alpha`
+        # mask is all-False and an EMPTY confidence set is returned for any
+        # vocalization with a singular covariance.
+        probs[closest_point_idx, :] = 1.0 / len(points_angular)
 
         return probs.reshape(*points_orig_shape, len(points_angular))
 

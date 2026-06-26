@@ -524,8 +524,12 @@ def _multinomial_feature_entry(rng, n_classes: int, sig: bool,
             ll = rng.uniform(0.1, 0.3, size=n_folds)
         else:
             ll = rng.uniform(0.6, 0.9, size=n_folds)
-        y_true = [rng.integers(0, n_classes, size=n_samples) for _ in range(n_folds)]
-        y_pred = [rng.integers(0, n_classes, size=n_samples) for _ in range(n_folds)]
+        # Draw labels from `classes` (not bare ints) so y_true / y_pred share the
+        # dtype of the class labels, as they do in the real pipeline (both come
+        # from the model's string category labels); the confusion matrices are
+        # now built with labels=class_names, which requires this consistency.
+        y_true = [rng.choice(classes, size=n_samples) for _ in range(n_folds)]
+        y_pred = [rng.choice(classes, size=n_samples) for _ in range(n_folds)]
         # Per-fold weight tensor (n_folds, n_classes, n_time_bins) consumed
         # by the multinomial filter-grid heatmap plotter.
         weights = rng.standard_normal(size=(n_folds, n_classes, 16))
@@ -573,6 +577,49 @@ class TestPlotUnivariateMultinomialPerformance:
             output_dir=str(out_dir),
         )
         assert len(list(out_dir.glob("*_ranking.svg"))) == 1
+        assert len(list(out_dir.glob("*_confusion_trio.svg"))) == 1
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    @pytest.mark.filterwarnings("ignore:This figure includes Axes:UserWarning")
+    def test_confusion_trio_when_null_omits_a_category(self, tmp_path):
+        """Regression: the null model predicting only the majority class — with a
+        category that never appears as a true label — must not crash the
+        actual-minus-null subtraction. Without labels=class_names the 'actual'
+        matrix (which sees the extra predicted category) and the 'null' matrix
+        would be different shapes and broadcast-error."""
+
+        rng = np.random.default_rng(7)
+        classes = ["cat0", "cat1", "cat2"]
+        n_folds, n = 6, 30
+
+        def _block(actual: bool) -> dict:
+            ll = rng.uniform(0.1, 0.3, n_folds) if actual else rng.uniform(0.6, 0.9, n_folds)
+            # True labels never include 'cat2'. The ACTUAL model still predicts it
+            # sometimes; the NULL model predicts only the majority 'cat0'. So
+            # without labels= the actual matrix is 3x3 and the null matrix 2x2.
+            y_true = [rng.choice(["cat0", "cat1"], size=n) for _ in range(n_folds)]
+            y_pred = ([rng.choice(classes, size=n) for _ in range(n_folds)] if actual
+                      else [np.array(["cat0"] * n) for _ in range(n_folds)])
+            return {
+                'folds': {
+                    'metrics': {'ll': ll,
+                                'score': rng.uniform(0.4, 0.7, n_folds),
+                                'auc': rng.uniform(0.55, 0.85, n_folds)},
+                    'y_true': y_true, 'y_pred': y_pred,
+                    'weights': rng.standard_normal((n_folds, len(classes), 16)),
+                },
+                'classes': classes,
+            }
+
+        data = {'self.speed': {'actual': _block(True), 'null': _block(False)}}
+        pkl = tmp_path / "multinomial_male_hist4.0s.pkl"
+        with pkl.open('wb') as fh:
+            pickle.dump(data, fh)
+        out_dir = tmp_path / "omit_out"
+        out_dir.mkdir()
+        plot_univariate_multinomial_performance(
+            results_file_loc=str(pkl), save_plot=True, output_dir=str(out_dir),
+        )
         assert len(list(out_dir.glob("*_confusion_trio.svg"))) == 1
 
 

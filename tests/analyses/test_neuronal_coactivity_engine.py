@@ -118,6 +118,19 @@ def test_apply_circular_shift_wraps_and_resorts():
     np.testing.assert_array_equal(shifted["a"], [2.0, 4.0, 8.0])
 
 
+def test_apply_circular_shift_matches_sort_reference():
+    """The O(log N) rotation must equal the reference np.sort((spikes+shift)%dur)
+    for arbitrary sorted inputs and shifts, including no-wrap, half, near-full, and
+    over-duration (modulo) shifts."""
+    rng = np.random.default_rng(0)
+    dur = 100.0
+    spikes = np.sort(rng.uniform(0.0, dur, size=500))
+    for shift in (0.0, 7.3, dur / 2.0, dur - 1e-6, 250.0):
+        ref = np.sort((spikes + shift) % dur)
+        got = engine.apply_circular_shift({"a": spikes}, shift, dur)["a"]
+        np.testing.assert_allclose(got, ref, atol=1e-6)
+
+
 @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
 @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
 def test_compute_sliding_coactivity_shapes_and_time_bins():

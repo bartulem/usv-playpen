@@ -183,6 +183,32 @@ class TestDeriveClusterCenters:
             f"wrap-aware error={wrap_aware_err:.4f}"
         )
 
+    def test_torus_wrap_recovers_seam_with_recommended_bandwidth(self):
+        """Regression: with the docstring-recommended ``kde_bandwidth=0.8`` a
+        TIGHT seam-straddling cluster must still recover the seam centre. Fitting
+        the KDE on the 9x lattice-replicated cloud (the previous approach) made
+        ``gaussian_kde`` infer a period-scale bandwidth, over-smoothing the density
+        so its peak collapsed to the cell centre ``(0.5, 0.5)``."""
+
+        period = 1.0
+        Y, labels, _ = _make_torus_wrap_cluster(scale=0.03, period=period)
+        out = derive_cluster_centers_empirically(
+            Y, labels,
+            drop_label=None,
+            metric='torus',
+            period=period,
+            kde_bandwidth=0.8,
+            grid_resolution=400,
+        )
+        c_est = out[1]
+        d_axis = np.minimum(c_est % period, period - (c_est % period))
+        wrap_aware_err = float(np.linalg.norm(d_axis))
+        # The cell-centre collapse would give err ~0.7; require seam recovery.
+        assert wrap_aware_err < 0.1, (
+            f"seam cluster collapsed with bw=0.8: estimate={c_est}, "
+            f"wrap-aware error={wrap_aware_err:.4f}"
+        )
+
     def test_validates_metric_and_period(self):
         """`metric` must be one of `'euclidean'` / `'torus'` and `period`
         must be positive when torus — the shared validator raises."""

@@ -13,9 +13,10 @@ future region-conditional analysis:
    This is the principled "where does cluster X actually live on the
    manifold" answer, robust to outliers (unlike the arithmetic mean) and
    independent of any upstream watershed-or-other clustering algorithm's
-   bookkeeping. On a torus the KDE is built on a 3x3 lattice-replicated
-   copy of the points so a cluster straddling the wrap boundary is not
-   spuriously pulled toward the geometric centre of `[0, period)^2`.
+   bookkeeping. On a torus the KDE is fit on the original points and its
+   density is summed over the 3x3 lattice shifts at evaluation (a periodic
+   kernel sum), so a cluster straddling the wrap boundary is not spuriously
+   pulled toward the geometric centre of `[0, period)^2`.
 
 2. **Per-cluster radius** — given a set of centres, derive a circular
    region of inclusion per cluster, either *adaptive* (each cluster gets
@@ -71,12 +72,14 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
     KDE mode is the principled stand-in for the arithmetic mean of a
     cluster's points (robust to outliers).
 
-    On a torus the KDE is fit on a `3x3` lattice-replicated copy of the
-    label's points so a cluster straddling the wrap boundary returns a
-    centre on the actual cluster instead of on the antipode. The grid the
-    KDE is evaluated on is built from the *original* (un-replicated)
-    per-label data range, with a small margin, so the returned centre is
-    always inside the canonical `[0, period)^2` cell on torus.
+    On a torus the KDE is fit on the label's original points (so its
+    bandwidth tracks the intra-cluster spread, not the period) and its
+    density is summed over the `3x3` lattice shifts of the evaluation grid
+    (a periodic kernel sum), so a cluster straddling the wrap boundary
+    returns a centre on the actual cluster instead of on the antipode. The
+    grid is built from the *original* per-label data range, with a small
+    margin, so the returned centre is always inside the canonical
+    `[0, period)^2` cell on torus.
 
     Parameters
     ----------
@@ -141,20 +144,15 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         if n_total > max_points_per_label:
             pts = pts[rng.choice(n_total, max_points_per_label, replace=False)]
 
-        if metric == 'torus':
-            # Lattice-replicate so wrap-straddling clusters are handled.
-            # The KDE consumes the (9*N, 2) replicated point cloud; the
-            # density on the canonical cell sums contributions from all
-            # nine shifts of the original points.
-            shifts = np.array(
-                [(dx, dy) for dx in (-period, 0.0, period) for dy in (-period, 0.0, period)],
-                dtype=np.float64,
-            )
-            pts_kde = np.concatenate([pts + s for s in shifts], axis=0)
-        else:
-            pts_kde = pts
-
-        kde = gaussian_kde(pts_kde.T, bw_method=kde_bandwidth)
+        # Fit the KDE on the ORIGINAL cluster points so its inferred bandwidth
+        # reflects the intra-cluster spread. Fitting on a 9x lattice-replicated
+        # cloud (the previous approach) made gaussian_kde infer a bandwidth
+        # dominated by the period spacing, which over-smoothed seam-straddling
+        # clusters and collapsed the density peak to the cell centre. Wrap-
+        # awareness is instead applied at evaluation below, as a periodic sum
+        # over the lattice shifts (mathematically the same kernel sum, but with
+        # the correct intra-cluster bandwidth).
+        kde = gaussian_kde(pts.T, bw_method=kde_bandwidth)
 
         # Grid covers the original per-label data range (not the replicated
         # one) with a small margin so the returned centre is inside the
@@ -171,7 +169,18 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
 
         xx, yy = np.mgrid[xmin:xmax:complex(0, grid_resolution),
                           ymin:ymax:complex(0, grid_resolution)]
-        zz = kde(np.vstack([xx.ravel(), yy.ravel()])).reshape(xx.shape)
+        grid = np.vstack([xx.ravel(), yy.ravel()])
+        if metric == 'torus':
+            # Periodic (torus) density: sum the KDE over the 3x3 lattice shifts of
+            # the evaluation grid, so a cluster straddling the 0/period seam
+            # accumulates its full mass on the canonical cell.
+            shifts = np.array(
+                [(dx, dy) for dx in (-period, 0.0, period) for dy in (-period, 0.0, period)],
+                dtype=np.float64,
+            )
+            zz = sum(kde(grid - s[:, None]) for s in shifts).reshape(xx.shape)
+        else:
+            zz = kde(grid).reshape(xx.shape)
         idx = np.unravel_index(int(np.argmax(zz)), zz.shape)
         out[lbl] = np.array([float(xx[idx]), float(yy[idx])])
 

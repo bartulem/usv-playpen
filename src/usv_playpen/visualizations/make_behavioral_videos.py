@@ -1245,8 +1245,17 @@ def create_spike_sound_file(audio_duration: int|float,
 
     for event in spike_array:
         sound_start = int(np.floor((event / tracking_esr) * spike_sound_sr))
-        new_spike_sound_array[sound_start:sound_start + spike_sound.shape[0]] = spike_sound
-    new_spike_sound_array = np.asarray(new_spike_sound_array, dtype=np.int16)
+        # Clip the write to what fits before the array end -- a spike landing
+        # within spike_sound.shape[0] samples of the end would otherwise make the
+        # left-hand slice shorter than spike_sound and raise a broadcast error.
+        end = min(sound_start + spike_sound.shape[0], new_spike_sound_array.shape[0])
+        # ADD (mix) rather than overwrite, so spikes closer together than the spike
+        # sound's duration sum into an audible buzz instead of the later spike
+        # clobbering the earlier one (which silently dropped spikes in dense bursts).
+        new_spike_sound_array[sound_start:end] += spike_sound[:end - sound_start]
+    # Clip BEFORE the int16 cast: summed overlaps can exceed the int16 range, and a
+    # bare astype(int16) would wrap around to garbage rather than saturating.
+    new_spike_sound_array = np.clip(new_spike_sound_array, -32768, 32767).astype(np.int16)
 
     sound_filename = pathlib.Path(sound_save_directory) / f"{sound_session_id}_3D_{sound_frame_start}-{sound_frame_start + sound_frame_span}fr_spike_sound_{unit_id}.wav"
     wavfile.write(filename=sound_filename,

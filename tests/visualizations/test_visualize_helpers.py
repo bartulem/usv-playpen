@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from scipy.io import wavfile
 
 # Force a non-interactive backend before importing the visualization modules
 import matplotlib
@@ -242,6 +243,48 @@ def test_create_spike_sound_file_writes_wav(tmp_path):
     assert len(wavs) == 1
     # Filename mirrors the documented pattern: <session>_3D_<start>-<end>fr_spike_sound_<unit>.wav
     assert wavs[0].name == "sess1_3D_0-600fr_spike_sound_cl_001.wav"
+
+
+def test_create_spike_sound_file_spike_at_window_end_does_not_crash(tmp_path):
+    """A spike landing at the very end of the audio window must not raise: its
+    spike-sound write is clipped to the buffer end rather than broadcast-erroring."""
+    out = tmp_path / "spike_audio"
+    out.mkdir()
+    # frame 749 is the last tracking frame of a 5 s @ 150 esr window, so the
+    # spike sound starts < spike.wav length from the buffer end.
+    create_spike_sound_file(
+        audio_duration=5.0,
+        spike_array=np.array([749], dtype=np.int64),
+        sound_save_directory=str(out),
+        sound_session_id="end",
+        sound_frame_start=0,
+        sound_frame_span=600,
+        tracking_esr=150.0,
+        unit_id="u",
+    )
+    assert len(list(out.glob("*.wav"))) == 1
+
+
+def test_create_spike_sound_file_overlapping_spikes_sum(tmp_path):
+    """Spikes closer together than the spike-sound duration are summed (additive
+    mix), not overwritten: two coincident spikes are ~2x the single-spike peak
+    (spike.wav peaks at 4008, so 2x stays well under the int16 ceiling)."""
+    one_dir = tmp_path / "one"
+    one_dir.mkdir()
+    two_dir = tmp_path / "two"
+    two_dir.mkdir()
+    common = dict(audio_duration=5.0, sound_frame_start=0, sound_frame_span=600,
+                  tracking_esr=150.0, unit_id="u")
+    create_spike_sound_file(spike_array=np.array([100], dtype=np.int64),
+                            sound_save_directory=str(one_dir), sound_session_id="one", **common)
+    create_spike_sound_file(spike_array=np.array([100, 100], dtype=np.int64),
+                            sound_save_directory=str(two_dir), sound_session_id="two", **common)
+    _, one = wavfile.read(str(next(one_dir.glob("*.wav"))))
+    _, two = wavfile.read(str(next(two_dir.glob("*.wav"))))
+    one_peak = int(np.abs(one.astype(np.int64)).max())
+    two_peak = int(np.abs(two.astype(np.int64)).max())
+    # Overwrite would give two_peak == one_peak; additive gives ~2x.
+    assert two_peak > one_peak * 1.5, f"expected additive (~2x); one={one_peak}, two={two_peak}"
 
 
 # ===========================================================================

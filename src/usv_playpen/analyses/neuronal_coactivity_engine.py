@@ -414,11 +414,20 @@ def apply_circular_shift(
     """
 
     shifted_data = {}
+    # The input spike arrays are already sorted (Kilosort output, see the binary-
+    # search helpers above), so a circular shift is a ROTATION: the spikes that
+    # wrap past the session end (>= total_duration_s - shift_s) move to the front
+    # in [0, shift_s), and the rest move to [shift_s, total_duration_s). Splitting
+    # at the wrap point and concatenating the two already-sorted halves is O(log N)
+    # per neuron instead of an O(N log N) np.sort -- and this runs n_shuffles
+    # (default 1000) times per session.
+    shift_s = shift_s % total_duration_s
     for n_id, spikes in neural_data.items():
-        # Apply shift and wrap using modulo
-        shifted_spikes = (spikes + shift_s) % total_duration_s
-        # Sort is required for subsequent snippet extraction
-        shifted_data[n_id] = np.sort(shifted_spikes)
+        split = np.searchsorted(spikes, total_duration_s - shift_s, side='left')
+        shifted_data[n_id] = np.concatenate([
+            (spikes[split:] + shift_s) - total_duration_s,
+            spikes[:split] + shift_s,
+        ])
     return shifted_data
 
 def perform_circular_shuffle(

@@ -316,7 +316,9 @@ class AudioGenerator:
             current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
 
             wav_files_list = sorted(playback_snippets_dir.glob('*.wav'))
-            replay_wav_arr = np.array(object=[], dtype=np.int16)
+            # Accumulate chunks in a list, concatenated ONCE after the while loop
+            # (O(N)); per-iteration np.concatenate recopies the whole buffer -> O(N^2).
+            replay_chunks = []
 
             total_playback_time_created = 0
             last_time_updated = 0  # Variable to track progress for tqdm
@@ -345,10 +347,7 @@ class AudioGenerator:
                     # 1e3 converts it to samples-per-second (Hz) before scaling by seconds
                     isi_samples = int(np.ceil(isi * wav_sampling_rate * 1e3))
 
-                    # `replay_wav_arr` is seeded as an empty int16 array, so concatenating
-                    # the ISI silence onto it is correct on the first iteration too (no
-                    # special-casing of the empty-array start is needed)
-                    replay_wav_arr = np.concatenate((replay_wav_arr, np.zeros(isi_samples, dtype=np.int16)))
+                    replay_chunks.append(np.zeros(isi_samples, dtype=np.int16))
                     usv_id_txt_file.write('ISI \n')
 
                     total_playback_time_created += isi
@@ -373,11 +372,12 @@ class AudioGenerator:
                             iui_samples = int(np.ceil(iui * wav_sampling_rate * 1e3))
                             total_playback_time_created += iui
 
-                            replay_wav_arr = np.concatenate((replay_wav_arr, random_wav_file_data, np.zeros(iui_samples, dtype=np.int16)))
+                            replay_chunks.append(random_wav_file_data)
+                            replay_chunks.append(np.zeros(iui_samples, dtype=np.int16))
                             replay_txt_file.write(f'{iui_samples} \n')
                             usv_id_txt_file.write('IUI \n')
                         else:
-                            replay_wav_arr = np.concatenate((replay_wav_arr, random_wav_file_data))
+                            replay_chunks.append(random_wav_file_data)
 
                     # manually update the progress bar at the end of each loop
                     update_amount = int(np.floor(total_playback_time_created - last_time_updated))
@@ -387,6 +387,8 @@ class AudioGenerator:
                 if pbar.n < pbar.total:
                     pbar.update(pbar.total - pbar.n)
 
+            replay_wav_arr = (np.concatenate(replay_chunks) if replay_chunks
+                              else np.array([], dtype=np.int16))
             target_samples = int(total_acceptable_playback_time * wav_sampling_rate * 1e3)
             replay_wav_arr = replay_wav_arr[:target_samples]
 
@@ -453,7 +455,10 @@ class AudioGenerator:
             ipi_duration_samples = int(np.ceil(ipi_duration * wav_sampling_rate * 1e3))
 
             arr_start_with_ipi = np.zeros(ipi_duration_samples).astype(np.int16)
-            replay_wav_arr = arr_start_with_ipi.copy()
+            # Accumulate chunks in a list and concatenate ONCE after the loop (O(N));
+            # re-growing the array with np.concatenate every USV recopies the whole
+            # buffer -> O(N^2) (the source of the docstring's "~18 minutes for 10k USVs").
+            replay_chunks = [arr_start_with_ipi.copy()]
 
             with (open(output_file_dir / f"usv_playback_n={total_usv_number}_{current_time}_spacing.txt",
                        'w+') as replay_txt_file,
@@ -463,11 +468,13 @@ class AudioGenerator:
                 for _ in tqdm(range(total_usv_number)):
                     random_wav_file = py_rng.choice(wav_files_list)
                     _, random_wav_file_data = wavfile.read(random_wav_file)
-                    replay_wav_arr = np.concatenate((replay_wav_arr, random_wav_file_data, arr_start_with_ipi))
+                    replay_chunks.append(random_wav_file_data)
+                    replay_chunks.append(arr_start_with_ipi)
                     replay_txt_file.write(f'{random_wav_file_data.shape[0]} \n')
                     replay_txt_file.write(f'{ipi_duration_samples} \n')
                     usv_id_txt_file.write(f'{random_wav_file.name} \n')
 
+            replay_wav_arr = np.concatenate(replay_chunks)
             self.message_output(f"The total duration of the generated playback file is {round(replay_wav_arr.shape[0] / (wav_sampling_rate * 1e3) / 60, 2)} min.")
 
             wavfile.write(filename=output_file_dir / f"usv_playback_n={total_usv_number}_{current_time}.wav",

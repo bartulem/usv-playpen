@@ -492,12 +492,16 @@ def build_master_usv_dataframe(
         )
         raise RuntimeError(msg)
 
-    usv_df = pls.concat(all_usv_rows)
+    # `vertical_relaxed` upcasts numeric columns whose dtype was inferred
+    # differently per session CSV (e.g. an acoustic feature or start/duration read
+    # as Int64 in one file and Float64 in another) to a common supertype, instead
+    # of raising a SchemaError on a heterogeneous session set.
+    usv_df = pls.concat(all_usv_rows, how='vertical_relaxed')
     # Return an empty-but-typed background frame so downstream column access
     # ('distance'/'mf_angle'/'fm_angle') does not raise when no session carried
     # behavioral features.
     background_df = (
-        pls.concat(all_bg_rows)
+        pls.concat(all_bg_rows, how='vertical_relaxed')
         if all_bg_rows
         else pls.DataFrame(schema={
             'session_id': pls.Utf8,
@@ -3016,16 +3020,26 @@ def plot_estrous_category_kde_grid(
     n_points: dict[tuple, int] = {}
     all_norm_values: list[float] = []
 
+    # Filter on the (function-wide constant) sex once, then partition by
+    # (category, estrous_stage) in a single pass, instead of re-scanning the whole
+    # master frame with three chained .filter() calls for every (cat, stage) cell.
+    sex_subset = (
+        usv_pls
+        .filter(pls.col('sex') == sex_key)
+        .select(['category', 'estrous_stage', 'distance', angle_key])
+    )
+    partitions = sex_subset.partition_by(['category', 'estrous_stage'], as_dict=True)
+
     for cat in categories:
         for stage in valid_stages:
-            subset = (
-                usv_pls
-                .filter(pls.col('category') == cat)
-                .filter(pls.col('estrous_stage') == stage)
-                .filter(pls.col('sex') == sex_key)
-                .select(['distance', angle_key])
-                .drop_nulls()
-            )
+            part = partitions.get((cat, stage))
+            if part is None:
+                # No rows for this (category, stage) -- identical to the old
+                # empty-subset path (n_valid == 0, density skipped).
+                n_points[(cat, stage)] = 0
+                cell_densities[(cat, stage)] = None
+                continue
+            subset = part.select(['distance', angle_key]).drop_nulls()
 
             u_dist = subset['distance'].to_numpy()
             u_angle_rad = np.deg2rad(np.abs(subset[angle_key].to_numpy()))

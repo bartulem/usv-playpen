@@ -239,7 +239,12 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
                     / input_parameter_dict["cm_length"],
                     input_parameter_dict["cm_end"][rgb]
                     / input_parameter_dict["cm_length"],
-                    input_parameter_dict["cm_length"] // 2 + 1,
+                    # length must equal the target slice `[cm_length//2:]` length,
+                    # i.e. cm_length - cm_length//2 (== cm_length//2 + 1 for odd
+                    # cm_length, but one shorter for even cm_length, which the old
+                    # `cm_length//2 + 1` over-counted into a broadcast error).
+                    input_parameter_dict["cm_length"]
+                    - input_parameter_dict["cm_length"] // 2,
                 )
             )
     else:

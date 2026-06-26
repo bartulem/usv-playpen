@@ -1953,7 +1953,13 @@ def plot_univariate_multinomial_performance(
         for strategy in ['actual', 'null']:
             y_t = np.concatenate(modeling_data[top_sig_feat['name']][strategy]['folds']['y_true'])
             y_p = np.concatenate(modeling_data[top_sig_feat['name']][strategy]['folds']['y_pred'])
-            mats.append(confusion_matrix(y_t, y_p, normalize='true'))
+            # Pass the canonical class order so both the 'actual' and 'null'
+            # matrices are K x K with identical row/column ordering: the null
+            # model often predicts only the majority class, so without labels=
+            # sklearn would infer a smaller label set for null_cm and the
+            # actual_cm - null_cm subtraction below would broadcast-error or
+            # silently subtract mismatched categories.
+            mats.append(confusion_matrix(y_t, y_p, labels=class_names, normalize='true'))
 
         actual_cm, null_cm = mats[0], mats[1]
         diff_cm = actual_cm - null_cm

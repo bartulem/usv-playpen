@@ -25,6 +25,7 @@ Computational Strategy:
 """
 
 import argparse
+import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -72,7 +73,7 @@ def validate_paths(
             raise FileNotFoundError(f"Missing required file or mount point: {p}")
 
 
-def dispatch_model_selection(args: argparse.Namespace) -> None:
+def dispatch_model_selection(args: argparse.Namespace) -> int:
     """
     Routes the model selection task to the specific algorithm implementation.
 
@@ -169,13 +170,20 @@ def dispatch_model_selection(args: argparse.Namespace) -> None:
 
         else:
             print(f"FATAL: Unknown analysis type: {args.analysis_type}")
-            return
+            return 1
 
         print(f"[{datetime.now()}] Model selection process completed successfully.")
+        return 0
 
     except Exception as e:
+        # Catch + log the failure here (so callers/tests still see the verbose
+        # traceback and 'CRITICAL FAILURE' rather than an opaque crash), but
+        # report it via a NON-ZERO exit code so `__main__`'s sys.exit propagates
+        # it: the cluster script's `set -e` / `--mail-type=FAIL` only detect a
+        # crashed selection run if the process exits non-zero.
         print(f"!!! CRITICAL FAILURE DURING {args.analysis_type.upper()} SELECTION: {e}")
         traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
@@ -208,4 +216,4 @@ if __name__ == "__main__":
                         help='[Params Only] The continuous target variable to model.')
 
     args = parser.parse_args()
-    dispatch_model_selection(args)
+    sys.exit(dispatch_model_selection(args))

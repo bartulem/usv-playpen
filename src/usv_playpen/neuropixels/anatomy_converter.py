@@ -40,6 +40,7 @@ import argparse
 import json
 import pathlib
 import re
+import warnings
 from collections import defaultdict
 from typing import Any
 
@@ -284,9 +285,29 @@ def regenerate_anatomy_converter(
                         f"{mouse_id}/{session_id}/{probe}: no IBL channel_locations.json"
                     )
                     continue
-                new_probes_entry[probe] = _build_ks_keyed_block(
-                    ks_dir, pos_to_region,
-                )
+                ks_block = _build_ks_keyed_block(ks_dir, pos_to_region)
+                # A block whose ONLY region is "unknown" means every Kilosort
+                # channel failed the IBL (lateral, axial) position join (e.g. a
+                # wrong-hemisphere file, a units/coordinate mismatch, or a stale
+                # channel_positions.npy). Since this module exists to FIX the
+                # converter, silently overwriting a probe with an all-"unknown"
+                # block is the worst outcome (find_region_by_channel then returns
+                # "unknown"/None for every cluster), so warn loudly, record it in
+                # skipped_reasons, and leave that probe's converter entry untouched
+                # rather than counting it as a successful regeneration. A handful
+                # of legitimately-unknown sites (reference/disconnected channels)
+                # still produce real regions and so are unaffected.
+                if set(ks_block) == {"unknown"}:
+                    msg = (
+                        f"{mouse_id}/{session_id}/{probe}: every channel mapped to "
+                        f"'unknown' (IBL position join failed -- wrong-hemisphere file, "
+                        f"units/coordinate mismatch, or stale channel_positions.npy); "
+                        f"probe skipped, converter NOT overwritten for it."
+                    )
+                    warnings.warn(msg, stacklevel=2)
+                    skipped.append(msg)
+                    continue
+                new_probes_entry[probe] = ks_block
                 n_done += 1
             if new_probes_entry:
                 new_mouse_entry[session_id] = new_probes_entry

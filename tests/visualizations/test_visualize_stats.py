@@ -395,6 +395,29 @@ def test_build_master_usv_dataframe_returns_two_frames_and_count(tmp_path):
         assert col in usv_df.columns
 
 
+def test_build_master_usv_dataframe_handles_heterogeneous_session_dtypes(tmp_path):
+    """Per-session CSVs are read with per-file dtype inference, so the same
+    column can come back Int64 in one session and Float64 in another. The master
+    concat must upcast (vertical_relaxed) rather than raising a SchemaError."""
+    sess1 = tmp_path / "20260101_120000"
+    sess2 = tmp_path / "20260102_120000"
+    _make_synthetic_session(sess1)
+    _make_synthetic_session(sess2)
+    # Rewrite session 2's USV CSV so `start` is integer-typed (re-read as Int64),
+    # diverging from session 1's Float64 `start`.
+    csv2 = sess2 / "audio" / f"{sess2.name}_usv_summary.csv"
+    pls.read_csv(csv2).with_columns(pls.col("start").cast(pls.Int64)).write_csv(csv2)
+    usv_df, _bg, _n = build_master_usv_dataframe(
+        session_roots=[str(sess1), str(sess2)],
+        noise_col_id="cluster", noise_categories=[99],
+        usv_category_col="usv_supercategory",
+        distance_suffix="nose-nose",
+        mf_angle_suffix="allo_yaw-nose",
+        fm_angle_suffix="nose-allo_yaw",
+    )
+    assert usv_df.height > 0
+
+
 def test_build_master_usv_dataframe_raises_when_all_skipped(tmp_path):
     """Every session missing → RuntimeError with diagnostic message."""
     with pytest.raises(RuntimeError, match="loaded 0 sessions"):

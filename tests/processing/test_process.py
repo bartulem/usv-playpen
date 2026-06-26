@@ -1911,7 +1911,9 @@ def test_eval_pdf_with_angle_handles_singular_covariance():
         histogram=histogram,
     )
     assert out.shape == (5, 5, 4)
-    assert out.sum() == pytest.approx(4.0)
+    # The singular-covariance fallback is a proper normalized distribution
+    # (all mass on the closest grid point, uniform over angular bins, summing to 1).
+    assert out.sum() == pytest.approx(1.0)
 
 
 def test_estimate_angle_pdf_returns_normalized_histogram():
