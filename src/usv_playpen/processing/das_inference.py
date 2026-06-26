@@ -352,12 +352,16 @@ class FindMouseVocalizations:
                 ):
                     start_usv = int(np.floor(usv['start'] * audio_sampling_rate))
                     stop_usv = int(np.ceil(usv['stop'] * audio_sampling_rate))
+                    # Materialize the USV sample window once: each fresh memmap index
+                    # re-reads the same byte range from disk, and this window is used
+                    # three times (peak/mean amplitude channel + the STFT input below).
+                    window = np.asarray(audio_file_data[start_usv:stop_usv, :])
                     peak_amp_ch = np.unravel_index(
-                        np.argmax(audio_file_data[start_usv:stop_usv, :]),
-                        audio_file_data.shape,
+                        np.argmax(window),
+                        window.shape,
                     )[1]
                     mean_amp_ch = np.argmax(
-                        np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0)
+                        np.abs(window).mean(axis=0)
                     )
                     usv['peak_amp_ch'] = int(peak_amp_ch)
                     usv['mean_amp_ch'] = int(mean_amp_ch)
@@ -373,7 +377,7 @@ class FindMouseVocalizations:
                     if len(usv_detected_chs) > 1:
                         spectrogram_data_selected_ch = np.abs(
                             librosa.stft(
-                                audio_file_data[start_usv:stop_usv, usv_detected_chs]
+                                window[:, usv_detected_chs]
                                 .astype("float32")
                                 .T,
                                 n_fft=len_win_signal,
@@ -402,7 +406,7 @@ class FindMouseVocalizations:
                         spectrogram_data_selected_ch = (
                             np.abs(
                                 librosa.stft(
-                                    audio_file_data[start_usv:stop_usv, usv_detected_chs[0]]
+                                    window[:, usv_detected_chs[0]]
                                     .astype("float32")
                                     .T,
                                     n_fft=len_win_signal,
@@ -559,12 +563,15 @@ class FindMouseVocalizations:
                 lone_usv = merged[0]
                 start_usv = int(np.floor(lone_usv['start'] * audio_sampling_rate))
                 stop_usv = int(np.ceil(lone_usv['stop'] * audio_sampling_rate))
+                # Single merged USV: read the window once and reuse for the peak +
+                # mean amplitude channels (same pattern as the per-USV loop above).
+                window = np.asarray(audio_file_data[start_usv:stop_usv, :])
                 peak_amp_ch = np.unravel_index(
-                    np.argmax(audio_file_data[start_usv:stop_usv, :]),
-                    audio_file_data.shape,
+                    np.argmax(window),
+                    window.shape,
                 )[1]
                 mean_amp_ch = np.argmax(
-                    np.abs(audio_file_data[start_usv:stop_usv, :]).mean(axis=0)
+                    np.abs(window).mean(axis=0)
                 )
                 lone_usv['peak_amp_ch'] = int(peak_amp_ch)
                 lone_usv['mean_amp_ch'] = int(mean_amp_ch)

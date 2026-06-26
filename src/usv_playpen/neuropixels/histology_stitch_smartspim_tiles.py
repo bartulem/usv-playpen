@@ -523,13 +523,17 @@ def stitch_smartspim_tiles(
                     x_slice = slice(x_off, x_off + tile_width)
                     accumulator[y_slice, x_slice] += tile_img * weights_2d
                     weight_sum[y_slice, x_slice] += weights_2d
-                safe_weights = np.where(weight_sum > 0.0, weight_sum, 1.0)
-                stitched = np.where(
-                    weight_sum > 0.0,
-                    accumulator / safe_weights,
-                    0.0,
-                )
-                stitched = np.clip(stitched, 0, dtype_max).astype(tile_dtype)
+                # Normalize in place: the bevel floor guarantees weight_sum >= 1e-3
+                # at every covered pixel and exactly 0 at uncovered pixels, so a
+                # single mask + in-place divide reproduces the old np.where result
+                # without three full-canvas temporaries (safe_weights, the division,
+                # and the np.where output) over a multi-megapixel canvas per plane.
+                # accumulator is a fresh np.zeros per plane, so the in-place mutation
+                # is safe.
+                covered = weight_sum > 0.0
+                accumulator[covered] /= weight_sum[covered]
+                accumulator[~covered] = 0.0
+                stitched = np.clip(accumulator, 0, dtype_max).astype(tile_dtype)
                 # Append this 2D plane as the next Z slice; contiguous=True
                 # together with the axes='ZYX' tag makes tifffile build a
                 # single ZYX BigTIFF across loop iterations (do not drop

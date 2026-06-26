@@ -997,7 +997,11 @@ class SpikeQualityMetricsExtractor:
                     hs_ids.append(changepoints_info[session_id]['headstage_sn'])
 
                     cluster_data_dir = Path(root_directory) / 'ephys' / self.probe_id / 'cluster_data'
-                    loaded_spike_times = np.load(cluster_data_dir / unit_file_name)
+                    # mmap_mode='r' reads only the .npy header (shape/dtype), not the
+                    # payload -- only shape[1] is needed, so this avoids pulling the
+                    # whole per-unit spike-time array over the I/O-bound network mount
+                    # once per (unit, session) pair.
+                    loaded_spike_times = np.load(cluster_data_dir / unit_file_name, mmap_mode='r')
                     firing_rate_dict[session_id] = round(
                         loaded_spike_times.shape[1] / session_video_time[session_id], 3
                     )

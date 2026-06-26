@@ -180,11 +180,33 @@ class Operator:
 
                 smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
+                # Group spike indices by cluster id in a single argsort pass instead
+                # of re-scanning the whole spike_clusters array (millions of spikes)
+                # once per cluster: O(n_spikes log n_spikes) once vs O(n_clusters *
+                # n_spikes). A STABLE argsort keeps each cluster's indices ascending,
+                # so cluster_order[run] equals the old np.sort(np.where(== cid)[0])
+                # exactly (verified byte-identical against real Kilosort data);
+                # ravel() makes it correct for both (N,) and (N, 1) spike_clusters.
+                flat_spike_clusters = np.asarray(spike_clusters).ravel()
+                cluster_order = np.argsort(flat_spike_clusters, kind='stable')
+                sorted_cluster_ids = flat_spike_clusters[cluster_order]
+                unique_cluster_ids, cluster_run_starts = np.unique(sorted_cluster_ids, return_index=True)
+                cluster_run_bounds = np.append(cluster_run_starts, sorted_cluster_ids.shape[0])
+                cluster_indices_by_id = {
+                    int(unique_cluster_ids[ci]): cluster_order[cluster_run_bounds[ci]:cluster_run_bounds[ci + 1]]
+                    for ci in range(unique_cluster_ids.shape[0])
+                }
+
                 for idx in tqdm(range(cluster_info.shape[0])):
                     if cluster_info[idx, 'group'] in ('good', 'mua'):
 
-                        # collect all spikes for any given cluster
-                        cluster_indices = np.sort(np.where(spike_clusters == cluster_info[idx, 'cluster_id'])[0])
+                        # collect all spikes for any given cluster (from the precomputed group)
+                        cluster_id_val = int(cluster_info[idx, 'cluster_id'])
+                        cluster_indices = (
+                            cluster_indices_by_id[cluster_id_val]
+                            if cluster_id_val in cluster_indices_by_id
+                            else np.empty(0, dtype=cluster_order.dtype)
+                        )
                         spike_events = np.take(spike_times, cluster_indices)
 
                         # filter spikes for each session

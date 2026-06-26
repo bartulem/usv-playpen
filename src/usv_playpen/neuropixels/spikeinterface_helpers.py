@@ -449,7 +449,10 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
         fun = np.ptp
     peak_amplitudes = np.abs(fun(template, axis=0))
     max_channel_location = channel_locations[np.argmax(peak_amplitudes)]
-    channel_distances = np.array([np.linalg.norm(cl - max_channel_location) for cl in channel_locations])
+    # Vectorized row-wise Euclidean distance from the peak channel to every channel
+    # (identical to the per-row np.linalg.norm list comprehension, without the
+    # per-channel Python overhead -- this runs once per unit).
+    channel_distances = np.linalg.norm(channel_locations - max_channel_location, axis=1)
     distances_sort_indices = np.argsort(channel_distances)
 
     # longdouble is float128 when the platform supports it, otherwise it is float64

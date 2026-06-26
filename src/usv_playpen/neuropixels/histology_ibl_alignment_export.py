@@ -1276,12 +1276,21 @@ class IBLAlignmentExporter:
 
         templates_inds = np.zeros((n_waveforms, ncw), dtype=np.int64)
         templates_sparse = np.zeros((n_waveforms, n_samples, ncw), dtype=np.float64)
+        # `keep` (the nearest-channel indices) depends only on the peak channel, not
+        # the waveform, and many waveforms share a peak (at most n_channels distinct
+        # peaks vs potentially many more waveforms). Memoize the distance + argsort
+        # per peak so it is computed once per distinct peak instead of once per
+        # waveform; only the per-waveform gather varies. Byte-identical output (the
+        # same argsort result per peak).
+        keep_by_peak = {}
         for t in range(n_waveforms):
             peak = int(peak_channels[t])
-            distances = np.sum(
-                np.abs(channel_positions - channel_positions[peak]), axis=1
-            ).astype(np.float64)
-            keep = np.argsort(distances)[:ncw]
+            if peak not in keep_by_peak:
+                distances = np.sum(
+                    np.abs(channel_positions - channel_positions[peak]), axis=1
+                ).astype(np.float64)
+                keep_by_peak[peak] = np.argsort(distances)[:ncw]
+            keep = keep_by_peak[peak]
             templates_inds[t] = keep
             templates_sparse[t] = waveforms_full[t][:, keep]
         return templates_inds, templates_sparse
