@@ -1258,9 +1258,11 @@ class NeuralContinuousCNNRunner:
         n_feats = len(features)
         n_bins = data_blocks['num_bins']
 
-        # Center/Scale boundaries to bind final tanh predictions
-        Y_center = jnp.array((np.max(Y, 0) + np.min(Y, 0)) / 2.0)
-        Y_scale = jnp.array((np.max(Y, 0) - np.min(Y, 0)) / 2.0 * 1.1)
+        # Center/Scale boundaries that bind the tanh prediction head are computed
+        # PER FOLD from the training split only (see the fold loop below). Deriving
+        # them from the full Y here would let each fold's held-out test coordinates
+        # co-define its prediction bounding box -- a mild train/test leakage that
+        # optimistically biases the cross-validated generalization estimate.
 
         # Pull training dials directly from dict (Passivity Check: No .get())
         n_folds = self.hp['n_folds']
@@ -1519,6 +1521,12 @@ class NeuralContinuousCNNRunner:
             X_tr, X_te = X_seq[train_idx], X_seq[test_idx]
             Y_tr_base, Y_te = Y[train_idx], Y[test_idx]
             w_tr = w[train_idx]
+
+            # Center/Scale boundaries that bind the tanh prediction head, derived
+            # from THIS fold's training split only (Y_tr_base) so the held-out test
+            # coordinates do not leak into the prediction bounding box.
+            Y_center = jnp.array((np.max(Y_tr_base, 0) + np.min(Y_tr_base, 0)) / 2.0)
+            Y_scale = jnp.array((np.max(Y_tr_base, 0) - np.min(Y_tr_base, 0)) / 2.0 * 1.1)
 
             fold_results = {'fold_idx': fold, 'test_indices': test_idx, 'Y_true': Y_te}
 

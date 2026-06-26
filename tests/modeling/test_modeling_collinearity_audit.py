@@ -760,6 +760,34 @@ def _make_timescale_inputs(n_frames: int, fps: float, n_sessions: int):
     'ignore:invalid value encountered in scalar divide:RuntimeWarning')
 class TestAuditPredictorTimescales:
 
+    def test_raises_when_max_lag_exceeds_shuffle_floor(self, tmp_path):
+        """A config where max_lag_seconds > shuffle_range_seconds[0] would make the
+        signal-correlation null's slice start index negative (silently wrapping and
+        corrupting the null); the audit raises a clear ValueError up front instead."""
+        fps = 10.0
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
+            n_frames=800, fps=fps, n_sessions=3,
+        )
+        with pytest.raises(ValueError, match="must be >= max_lag_frames"):
+            audit_predictor_timescales(
+                processed_beh_dict=beh,
+                mouse_names_dict=names,
+                target_idx=0,
+                predictor_idx=1,
+                configured_filter_history=1.0,
+                camera_fps_dict=cam,
+                max_lag_seconds=5.0,                  # 50 frames @ 10 fps
+                n_shuffles=8,
+                ibi_thresholds={'male': 0.25, 'female': 0.30},
+                save_path=str(tmp_path / 'ts' / 'timescales.pkl'),
+                source_pickle='input.pkl',
+                random_seed=0,
+                input_metadata={'pipeline': 'vocal_onsets'},
+                shuffle_range_seconds=(3.0, 6.0),     # floor 30 frames < 50 -> invalid
+                event_intervals_per_session=intervals,
+                bout_onset_times_per_session=bouts,
+            )
+
     def test_full_payload_structure_and_artifact(self, tmp_path):
         """A populated timescale audit returns ACF and signal-correlation
         blocks with the documented shapes, the symmetric vs positive lag

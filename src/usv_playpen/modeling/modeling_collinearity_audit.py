@@ -945,6 +945,24 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     shuffle_min_frames = int(np.floor(shuffle_min_seconds * fps))
     shuffle_max_frames = int(np.floor(shuffle_max_seconds * fps))
 
+    # The circular-shift signal-correlation null reads
+    # xcorr_full[S - max_lag_frames : S + max_lag_frames + 1] with the shift
+    # S >= shuffle_min_frames. If shuffle_min_frames < max_lag_frames the start
+    # index goes negative and numpy silently WRAPS the slice, corrupting the null
+    # with no error (the upstream validator only enforces 0 < shuffle_min <
+    # shuffle_max, never tying shuffle_min to max_lag). Require the shuffle floor
+    # to clear the lag window.
+    if shuffle_min_frames < max_lag_frames:
+        raise ValueError(
+            f"shuffle_min_frames ({shuffle_min_frames}, {shuffle_min_seconds:.1f}s) "
+            f"must be >= max_lag_frames ({max_lag_frames}, {max_lag_seconds:.1f}s): the "
+            f"circular-shift signal-correlation null indexes "
+            f"xcorr_full[S - max_lag : S + max_lag + 1] with S >= shuffle_min, so a "
+            f"smaller shuffle floor produces a negative start index and a silently "
+            f"wrapped (corrupt) null. Increase shuffle_range_seconds[0] or decrease "
+            f"max_lag_seconds."
+        )
+
     # ACF + circular-shift null
     # The circular-shift null preserves the autocorrelation structure
     # of `x` (we shift, we don't permute) while breaking the alignment

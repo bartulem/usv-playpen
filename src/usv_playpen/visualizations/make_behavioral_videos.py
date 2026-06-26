@@ -291,7 +291,7 @@ def find_region_by_channel(cluster_id: str,
                            brain_area_dict: dict,
                            brain_color_scheme: dict,
                            return_only_color: bool = True,
-                           return_only_area: bool = False) -> tuple[Any, Any] | None | Any:
+                           return_only_area: bool = False) -> tuple[Any, Any] | Any:
     """
     Description
     -----------
@@ -335,7 +335,16 @@ def find_region_by_channel(cluster_id: str,
                         return brain_region
                     return brain_region, _resolve_brain_area_color(brain_region, brain_color_scheme)
 
-    return None
+    # Channel falls outside every labelled anatomy range -> assign the 'other'
+    # bucket (region 'other', bucket-resolved colour) instead of returning None,
+    # so callers (eventplot colours / (region, colour) unpacking) receive a valid
+    # value rather than crashing on None. Unlabelled clusters render in the
+    # 'other' colour and still pool to the 'other' bucket for area filtering.
+    if return_only_color:
+        return _resolve_brain_area_color('other', brain_color_scheme)
+    if return_only_area:
+        return 'other'
+    return 'other', _resolve_brain_area_color('other', brain_color_scheme)
 
 
 def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:

@@ -403,6 +403,22 @@ class TestBoutParameterExtraction:
         # n_events_per_session is backfilled from the anchor feature's groups.
         assert sum(v['bout_onsets'] for v in md['n_events_per_session'].values()) == n_bouts
 
+    def test_extraction_refuses_to_write_misaligned_artifact(self, tmp_path, monkeypatch):
+        """If intra-session alignment fails (a feature's session groups diverge
+        from the reference feature), extract_and_save raises RuntimeError and
+        writes NO pickle -- rather than persisting a known-misaligned regression
+        artifact that pairs predictors with the wrong USV targets."""
+        settings, save_dir = _build_settings(
+            tmp_path, model_engine='sklearn', usv_predictor_type='categories_rate'
+        )
+        pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
+        # Force the intra-session group-alignment check (the only np.array_equal in
+        # this code path) to fail, simulating an upstream extraction misalignment.
+        monkeypatch.setattr(bout_params_module.np, "array_equal", lambda *a, **k: False)
+        with pytest.raises(RuntimeError, match="alignment FAILED"):
+            pipeline.extract_and_save_modeling_input_data()
+        assert list(save_dir.glob('modeling_bout_durations_*.pkl')) == []
+
 
 class TestUnivariateParamsDispatcher:
     """The univariate 'params' dispatcher on a synthetic strong-signal pickle."""

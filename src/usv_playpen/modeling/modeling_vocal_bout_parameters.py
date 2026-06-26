@@ -457,6 +457,24 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             print("      (This will cause the model to misalign behavioral predictors with USV targets!)")
         print("=" * 105 + "\n")
 
+        # Refuse to persist a known-misaligned regression artifact: when the
+        # per-feature bout counts / session groupings do not match the reference
+        # feature, the predictors are paired with the wrong USV targets, so writing
+        # the pickle would silently feed scientifically invalid data to downstream
+        # model selection. The ALERT above already warned; raise so the run fails
+        # loudly and the upstream feature extraction is fixed, rather than emitting
+        # a corrupt artifact that looks like a normal output.
+        if not alignment_passed:
+            msg = (
+                f"Intra-session alignment FAILED for target '{target_variable}': "
+                f"behavioral predictors are misaligned with USV targets for "
+                f"feature(s) {mismatched_features} (mismatched bout count or session "
+                f"grouping vs the reference feature). Refusing to write a "
+                f"known-misaligned regression artifact; fix the upstream feature "
+                f"extraction and re-run."
+            )
+            raise RuntimeError(msg)
+
         save_dir = Path(self.modeling_settings['io']['save_directory'])
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / fname

@@ -198,12 +198,18 @@ def test_find_region_by_channel_returns_pair_when_neither_flag():
     assert out == ("PAG", "#aabbcc")
 
 
-def test_find_region_by_channel_returns_none_for_unknown_channel():
-    """Channel outside any group → None (signalling 'unknown')."""
+def test_find_region_by_channel_returns_other_for_unknown_channel():
+    """Channel outside any labelled group → the 'other' bucket fallback (never
+    None), so eventplot colours / (region, colour) unpacking cannot crash."""
     brain_areas = {"probeA": {"V1": [(0, 50)]}}
-    colors = {"V1": "#aabbcc"}
-    out = find_region_by_channel("cl_ch200_probeA", brain_areas, colors)
-    assert out is None
+    colors = {"V1": "#aabbcc", "other": "#B8B8B8"}
+    # default (return_only_color=True) -> the 'other' colour
+    assert find_region_by_channel("cl_ch200_probeA", brain_areas, colors) == "#B8B8B8"
+    # area-only and the (region, colour) pair also fall back to 'other'
+    assert find_region_by_channel("cl_ch200_probeA", brain_areas, colors,
+                                  return_only_color=False, return_only_area=True) == "other"
+    assert find_region_by_channel("cl_ch200_probeA", brain_areas, colors,
+                                  return_only_color=False, return_only_area=False) == ("other", "#B8B8B8")
 
 
 def test_load_audio_data_reads_mmap_with_correct_shape(tmp_path):
