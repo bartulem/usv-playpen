@@ -14,7 +14,6 @@ synthetic session and writes a real summary figure to `<root>/sync/`.
 from __future__ import annotations
 
 import json
-import pathlib
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -163,7 +162,6 @@ def test_preprocessing_summary_writes_figure(tmp_path, mocker):
     }
 
     plotter = SummaryPlotter(
-        input_parameter_dict={"SummaryPlotter": {}},
         root_directory=str(root),
         message_output=lambda *_a, **_k: None,
     )
@@ -291,7 +289,6 @@ def test_preprocessing_summary_no_metadata_parses_motif_fields(tmp_path, mocker)
     }
 
     SummaryPlotter(
-        input_parameter_dict={"SummaryPlotter": {}},
         root_directory=str(root),
         message_output=lambda *_a, **_k: None,
     ).preprocessing_summary(
@@ -329,7 +326,6 @@ def test_preprocessing_summary_missing_wav_raises(tmp_path, mocker):
                "temperature": rng.uniform(20, 25, 10)}
 
     plotter = SummaryPlotter(
-        input_parameter_dict={"SummaryPlotter": {}},
         root_directory=str(root),
         message_output=lambda *_a, **_k: None,
     )

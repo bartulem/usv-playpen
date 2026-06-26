@@ -127,25 +127,33 @@ def build_master_usv_interval_dataframe(
             n_dropped[interval_type]["male"] += usv_interval["n_dropped_male"]
             n_dropped[interval_type]["female"] += usv_interval["n_dropped_female"]
 
-            for v in usv_interval["male"]:
+            # Vectorise the per-element `np.log` into one reduction per
+            # sex; `np.log` over the array yields the same float64
+            # values as the scalar calls did, but avoids a Python-level
+            # `np.log` invocation for every interval.
+            male_intervals = np.asarray(usv_interval["male"], dtype=float)
+            female_intervals = np.asarray(usv_interval["female"], dtype=float)
+            male_log = np.log(male_intervals)
+            female_log = np.log(female_intervals)
+            for v, log_v in zip(male_intervals, male_log):
                 rows.append({
                     "session_id": session_id,
                     "source_list": source_list,
                     "interval_type": interval_type,
                     "sex": "male",
                     "interval_s": float(v),
-                    "log_interval": float(np.log(v)),
+                    "log_interval": float(log_v),
                     "male_id": usv_interval["male_id"],
                     "female_id": usv_interval["female_id"],
                 })
-            for v in usv_interval["female"]:
+            for v, log_v in zip(female_intervals, female_log):
                 rows.append({
                     "session_id": session_id,
                     "source_list": source_list,
                     "interval_type": interval_type,
                     "sex": "female",
                     "interval_s": float(v),
-                    "log_interval": float(np.log(v)),
+                    "log_interval": float(log_v),
                     "male_id": usv_interval["male_id"],
                     "female_id": usv_interval["female_id"],
                 })
@@ -1734,7 +1742,7 @@ def selected_K_from_h5(
             msg
         )
 
-    attrs = mode.get("attrs", {})
+    attrs = mode["attrs"]
     selected: dict = {}
     for sex_key, attr_key in (("male", "K_selected_male"), ("female", "K_selected_female")):
         val = attrs.get(attr_key)

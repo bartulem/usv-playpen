@@ -352,8 +352,39 @@ def gmm_quantile_logspace(q: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     q = np.asarray(q, dtype=float).ravel()
     mu = gmm.means_.flatten()
     sd = np.sqrt(gmm.covariances_.flatten())
+    w = gmm.weights_.flatten()
     lo = float(mu.min() - 8.0 * sd.max())
     hi = float(mu.max() + 8.0 * sd.max())
+
+    # Pre-extract the per-component (mu, sd, w) arrays ONCE so each brentq
+    # evaluation runs the closed-form weighted-Gaussian CDF over those fixed
+    # arrays instead of re-calling ``gmm_cdf_logspace`` (which re-flattens
+    # ``gmm.means_`` / ``gmm.covariances_`` / ``gmm.weights_`` on every probe).
+    # brentq evaluates the objective dozens of times per quantile, so this
+    # removes O(n_quantiles * n_brentq_evals) redundant attribute extractions.
+    # The summed value is identical to the wrapper up to fp reassociation
+    # (~1e-16).
+    def _cdf_scalar(v: float) -> float:
+        """
+        Description
+        -----------
+        Closed-form mixture CDF at a single log-space point ``v``, evaluated
+        over the pre-extracted ``mu`` / ``sd`` / ``w`` component arrays. Used
+        as the brentq objective so root-finding never re-extracts the model
+        parameters.
+
+        Parameters
+        ----------
+        v (float)
+            Scalar log-space evaluation point.
+
+        Returns
+        -------
+        cdf (float)
+            Weighted sum of component Gaussian CDFs at ``v``.
+        """
+
+        return float(np.sum(w * norm.cdf((v - mu) / sd)))
 
     out = np.empty_like(q)
     for i, qi in enumerate(q):
@@ -361,7 +392,7 @@ def gmm_quantile_logspace(q: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
         # the loop variable by reference (functionally fine in this
         # synchronous call but ruff B023 flags the pattern as
         # fragile; the bind makes the intent explicit).
-        out[i] = brentq(lambda v, qi=qi: gmm_cdf_logspace(v, gmm) - qi, lo, hi)
+        out[i] = brentq(lambda v, qi=qi: _cdf_scalar(v) - qi, lo, hi)
     return out
 
 
@@ -1675,8 +1706,40 @@ def t_mixture_quantile_logspace(q: np.ndarray, model: TMixture) -> np.ndarray:
     q = np.asarray(q, dtype=float).ravel()
     mu = model.means_.flatten()
     sd = np.sqrt(model.covariances_.flatten())
+    w = model.weights_.flatten()
+    nu = model.nus_.flatten()
     lo = float(mu.min() - 8.0 * sd.max())
     hi = float(mu.max() + 8.0 * sd.max())
+
+    # Pre-extract the per-component (mu, sd, w, nu) arrays ONCE so each brentq
+    # evaluation runs the closed-form weighted-Student-t CDF over those fixed
+    # arrays instead of re-calling ``t_mixture_cdf_logspace`` (which re-flattens
+    # the model attributes and rebuilds per-component floats inside a Python loop
+    # on every probe). brentq evaluates the objective dozens of times per
+    # quantile, so this removes O(n_quantiles * n_brentq_evals) redundant
+    # extractions; the summed value is identical to the wrapper up to fp
+    # reassociation (~1e-16).
+    def _cdf_scalar(v: float) -> float:
+        """
+        Description
+        -----------
+        Closed-form mixture CDF at a single log-space point ``v``, evaluated
+        over the pre-extracted ``mu`` / ``sd`` / ``w`` / ``nu`` component
+        arrays. Used as the brentq objective so root-finding never re-extracts
+        the model parameters.
+
+        Parameters
+        ----------
+        v (float)
+            Scalar log-space evaluation point.
+
+        Returns
+        -------
+        cdf (float)
+            Weighted sum of component Student-t CDFs at ``v``.
+        """
+
+        return float(np.sum(w * t_dist.cdf((v - mu) / sd, df=nu)))
 
     out = np.empty_like(q)
     for i, qi in enumerate(q):
@@ -1684,7 +1747,7 @@ def t_mixture_quantile_logspace(q: np.ndarray, model: TMixture) -> np.ndarray:
         # the loop variable by reference (see ``gmm_quantile_logspace``
         # for the same defensive pattern).
         out[i] = brentq(
-            lambda v, qi=qi: t_mixture_cdf_logspace(v, model) - qi, lo, hi
+            lambda v, qi=qi: _cdf_scalar(v) - qi, lo, hi
         )
     return out
 

@@ -77,7 +77,6 @@ from spikeinterface.metrics.template.metrics import (
 )
 
 from usv_playpen.neuropixels.histology_ibl_alignment_export import (
-    parse_imro_table,
     read_ap_meta,
 )
 from usv_playpen.neuropixels.monopolar_triangulation import (
@@ -360,15 +359,6 @@ class SpikeQualityMetricsExtractor:
             raise RuntimeError(msg)
         self.meta_path = meta_candidates[0]
         self.meta = read_ap_meta(self.meta_path)
-        self.imro_rows = parse_imro_table(self.meta['imroTbl'])
-        # snsGeomMap is the authoritative source for physical channel
-        # positions and shank assignment — Kilosort / SpikeInterface
-        # both read it for `channel_positions.npy` and
-        # `channel_shanks.npy`. The IMRO table's shank column is
-        # unreliable for NP 2.0 multi-shank probes (e.g. probe type
-        # 2013), so any code that needs a per-channel shank label
-        # must key off `geom_rows`, not `imro_rows`.
-        self.geom_rows = parse_imro_table(self.meta['snsGeomMap'])
 
         # Populated by the step methods.
         self.recording = None

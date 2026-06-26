@@ -114,6 +114,25 @@ def get_basis_matrix_standardized(
         p = settings['hyperparameters']['basis_functions']['bspline']
         max_k = max(0, w - p['degree'])
         knots = np.linspace(0, max_k, p['n_splines'] - p['degree'] + 1).astype(int)
+        # When the temporal history is short relative to the requested spline
+        # count (`history_frames < n_splines`), the integer truncation of the
+        # evenly-spaced float knot positions collapses adjacent knots onto the
+        # same frame index, producing a non-strictly-increasing knot vector.
+        # `scipy.interpolate.splrep` (called inside `bsplines`) requires the
+        # knot abscissae to be strictly increasing and would otherwise raise an
+        # opaque error. `np.unique` both sorts and de-duplicates, yielding a
+        # valid strictly-increasing knot set; the realised spline count then
+        # tracks the number of distinct knots that the short history can
+        # actually support, and `splrep` needs at least `degree + 1` of them.
+        knots = np.unique(knots)
+        if len(knots) < p['degree'] + 1:
+            raise ValueError(
+                f"B-spline basis is under-determined for history_frames={w} and "
+                f"degree={p['degree']}: only {len(knots)} distinct knot(s) remain "
+                f"after de-duplicating the truncated knot positions, but splrep "
+                f"needs at least degree + 1 = {p['degree'] + 1}. Reduce "
+                f"`n_splines`/`degree` or increase the temporal history."
+            )
         basis_matrix = _normalizecols(
             bsplines(
                 width=w,

@@ -575,9 +575,23 @@ def parse_geom_map(meta: dict[str, str]) -> ShankCoords:
     shank_pitch_um = float(header_fields[2])
     shank_width_um = float(header_fields[3])
 
-    # parts[0] is the header; parts[-1] is "" after the final ')';
-    # everything in between is one per-channel group.
-    channel_entries = parts[1:-1]
+    # parts[0] is the header; everything after it is one per-channel
+    # group. A well-formed snsGeomMap value ends with ')', so the final
+    # split fragment is the empty string -- but slicing off parts[-1]
+    # unconditionally would silently drop a real channel if the value is
+    # truncated and does NOT end with ')'. Instead, drop the header and
+    # filter out only genuinely empty fragments (the trailing '' and any
+    # stray whitespace between groups), keeping every channel that carries
+    # content. Assert the value was '(...)'-terminated so a malformed
+    # (truncated) map fails loudly here rather than producing a geometry
+    # that is silently one channel short.
+    if not meta["snsGeomMap"].rstrip().endswith(")"):
+        msg = (
+            "snsGeomMap value is not ')'-terminated; the channel list is "
+            "likely truncated and would otherwise be parsed one channel short"
+        )
+        raise ValueError(msg)
+    channel_entries = [frag for frag in parts[1:] if frag.strip() != ""]
     n_channels = len(channel_entries)
 
     shank_index = np.zeros(n_channels, dtype=np.int64)

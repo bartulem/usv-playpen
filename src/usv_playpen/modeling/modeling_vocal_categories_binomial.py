@@ -27,6 +27,7 @@ Key scientific capabilities:
 from datetime import datetime
 import json
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from pathlib import Path
 import pickle
 import time
@@ -104,13 +105,19 @@ def _collect_category_windows(times: np.ndarray,
     if not np.any(valid_mask):
         return np.empty((0, history_frames), dtype=column_data.dtype)
     valid_starts = starts[valid_mask]
-    valid_ends = ends[valid_mask]
-    out = np.empty((valid_starts.size, history_frames), dtype=column_data.dtype)
-    for row_idx, (s, e) in enumerate(zip(valid_starts, valid_ends)):
-        chunk = column_data[s:e].copy()
-        chunk[np.isnan(chunk)] = 0.0
-        out[row_idx, :] = chunk
-    return out
+    # NaN -> 0 over the whole trace once (matches the old per-chunk
+    # `chunk[np.isnan(chunk)] = 0.0`), then gather every valid history window in
+    # a single fancy-index op instead of slicing row-by-row. Each window has
+    # fixed width `history_frames`, so `sliding_window_view`'s row `s` is exactly
+    # `column_data[s : s + history_frames]` == the old `column_data[s:e]`
+    # (`e == s + history_frames`). `valid_mask` guarantees `0 <= s` and
+    # `e <= max_frame_idx <= len(column_data)`, so every gathered start lies in
+    # the view's legal range and the result is byte-identical to the loop (same
+    # dtype, same NaN treatment). The `.copy()` detaches the gathered rows from
+    # the cleaned-trace buffer.
+    clean = np.nan_to_num(column_data, nan=0.0)
+    windows = sliding_window_view(clean, history_frames)
+    return windows[valid_starts].copy()
 
 
 class VocalCategoryModelingPipeline(FeatureZoo):

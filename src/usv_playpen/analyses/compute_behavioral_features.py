@@ -102,13 +102,16 @@ def generate_feature_distributions(
         bins_in_one_dir = int(np.ceil(np.sqrt(num_bins)))
         bin_edges = np.linspace(min_val, max_val, bins_in_one_dir + 1)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        # Vectorized (lo, hi] occupancy in one pass instead of bins_in_one_dir^2
-        # full-array passes. searchsorted(side='left') - 1 reproduces the
-        # edge[k] < x <= edge[k+1] -> bin k convention exactly (incl. dropping a
-        # value exactly at min_val and points outside [min, max]), so the result is
-        # byte-identical to the old double loop.
+        # Vectorized occupancy in one pass instead of bins_in_one_dir^2
+        # full-array passes. searchsorted(side='left') - 1 maps
+        # edge[k] < x <= edge[k+1] -> bin k; the lower edge is then made
+        # inclusive by folding a sample sitting exactly on min_val (which would
+        # otherwise land at index -1) into the first bin, so the convention is
+        # [min_val, edge[1]] for bin 0 and (edge[k], edge[k+1]] thereafter.
         ix = np.searchsorted(bin_edges, feature_arr[:, 0], side='left') - 1
         iy = np.searchsorted(bin_edges, feature_arr[:, 1], side='left') - 1
+        ix[feature_arr[:, 0] == min_val] = 0
+        iy[feature_arr[:, 1] == min_val] = 0
         valid = (ix >= 0) & (ix < bins_in_one_dir) & (iy >= 0) & (iy < bins_in_one_dir)
         occ_array = np.zeros((bins_in_one_dir, bins_in_one_dir))
         np.add.at(occ_array, (ix[valid], iy[valid]), 1)
@@ -116,9 +119,12 @@ def generate_feature_distributions(
     else:
         bin_edges = np.linspace(min_val, max_val, num_bins + 1)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        # Vectorized (lo, hi] occupancy, byte-identical to the old per-bin loop
-        # (see the 2D branch comment for the searchsorted convention).
+        # Vectorized occupancy (see the 2D branch comment for the searchsorted
+        # convention); a sample sitting exactly on min_val is folded into the
+        # first bin so the lower edge is inclusive ([min_val, edge[1]] for bin 0,
+        # (edge[k], edge[k+1]] thereafter).
         idx = np.searchsorted(bin_edges, feature_arr, side='left') - 1
+        idx[feature_arr == min_val] = 0
         valid = (idx >= 0) & (idx < num_bins)
         occ_array = np.bincount(idx[valid], minlength=num_bins).astype(np.float64) / camera_fr
 
@@ -394,6 +400,12 @@ def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     segment_vectors = np.diff(input_arr, axis=1)
     segment_lengths = np.linalg.norm(segment_vectors, axis=2)
 
+    # Two near-coincident tracked tail nodes give a ~zero segment length, which
+    # appears in the denominator of both the unit-tangent and the curvature
+    # estimate below; flooring those tiny norms to NaN propagates a clean NaN for
+    # that frame/segment instead of an inf/overflow from dividing by ~0.
+    segment_lengths = np.where(segment_lengths < 1e-12, np.nan, segment_lengths)
+
     # unit tangent vectors per segment
     tangent_vectors = segment_vectors / segment_lengths[..., np.newaxis]
 
@@ -565,8 +577,12 @@ def calculate_speed(
         A (n_frames) shape ndarray of centroid speed data.
     """
 
+    # A short smoothing window (or low framerate) can make
+    # floor(smoothing_time_window * capture_framerate) == 0; a zero-stddev
+    # Gaussian1DKernel is degenerate and convolves the trace to all-NaN, so the
+    # stddev is clamped to a minimum of 1 sample.
     speed_smoothing_kernel = Gaussian1DKernel(
-        stddev=int(np.floor(smoothing_time_window * capture_framerate))
+        stddev=max(int(np.floor(smoothing_time_window * capture_framerate)), 1)
     )
 
     speed = np.zeros((tracked_points_array.shape[0], 1))
@@ -1692,9 +1708,16 @@ class FeatureZoo:
                                     labelpad=1,
                                 )
                                 temp_ymin, temp_ymax = ax.get_ylim()
+                                # The upper occupancy tick is the rounded axis top
+                                # minus a 10 s headroom; for a sparsely occupied
+                                # feature (temp_ymax < 10) that subtraction goes
+                                # negative, producing an unordered/negative tick
+                                # pair. Clamp it to a minimum of 1 so the two ticks
+                                # stay ordered and non-negative.
+                                upper_ytick = max(int(np.ceil(temp_ymax)) - 10, 1)
                                 ax.set_yticks(
-                                    ticks=[0, int(np.ceil(temp_ymax)) - 10],
-                                    labels=["0", f"{int(np.ceil(temp_ymax)) - 10}"],
+                                    ticks=[0, upper_ytick],
+                                    labels=["0", f"{upper_ytick}"],
                                     rotation=0,
                                     fontsize=2,
                                 )

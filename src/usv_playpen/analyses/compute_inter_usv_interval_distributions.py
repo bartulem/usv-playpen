@@ -709,14 +709,20 @@ class InterUSVIntervalCalculator:
                 n_dropped_total["female"] += usv_interval["n_dropped_female"]
 
                 for sex_label, arr in (("male", usv_interval["male"]), ("female", usv_interval["female"])):
-                    for v in arr:
+                    # Take the logarithm of the whole interval array in one
+                    # vectorized np.log call instead of an element-by-element
+                    # scalar np.log inside the row loop (which paid the numpy
+                    # dispatch overhead once per interval); the per-element
+                    # values are identical.
+                    log_arr = np.log(arr)
+                    for v, log_v in zip(arr, log_arr):
                         tidy_rows.append({
                             "session_id": session_id,
                             "source_list": source_list,
                             "interval_type": interval_type,
                             "sex": sex_label,
                             "interval_s": float(v),
-                            "log_interval": float(np.log(v)),
+                            "log_interval": float(log_v),
                             "male_id": usv_interval["male_id"],
                             "female_id": usv_interval["female_id"],
                         })

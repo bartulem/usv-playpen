@@ -398,20 +398,21 @@ def _latest_other_stop_before_anchor(
     """
 
     out = np.full(anchor_idx.size, -np.inf, dtype=float)
-    for k, ai in enumerate(anchor_idx):
-        anchor_start = starts[ai]
-        end = int(np.searchsorted(starts, anchor_start, side="left"))
-        if end == 0:
-            continue
-        candidate_stops = stops[:end]
-        # if anchor itself is in [:end] (start equal to anchor_start and at index ai < end),
-        # exclude it
-        if ai < end:
-            candidate_stops = np.concatenate(
-                (candidate_stops[:ai], candidate_stops[ai + 1:])
-            )
-        if candidate_stops.size > 0:
-            out[k] = float(candidate_stops.max())
+    if starts.size == 0:
+        return out
+
+    # `starts` is sorted, so `end = searchsorted(starts, starts[ai], 'left')` is the
+    # count of USVs whose start is STRICTLY before the anchor's start, and the answer
+    # for that anchor is max(stops[:end]). Because the anchor's own start equals
+    # starts[ai], `end <= ai` always holds, so the anchor is already excluded from
+    # the prefix and the old `ai < end` exclusion branch was unreachable. A single
+    # prefix maximum over `stops` therefore replaces the per-anchor O(end) reduction:
+    # the latest qualifying stop is `prefix_max[end - 1]` (or -inf when end == 0).
+    # Vectorized across all anchors; byte-identical to the old O(n*m) loop.
+    prefix_max = np.maximum.accumulate(stops)
+    end = np.searchsorted(starts, starts[anchor_idx], side="left")
+    has_prior = end > 0
+    out[has_prior] = prefix_max[end[has_prior] - 1]
     return out
 
 
@@ -534,10 +535,14 @@ def _anchor_bin_validity_grid(
             cand = cand[cand != ai]
             if cand.size == 0:
                 continue
-            cand_stops = stops[cand]
-            for i in range(n_bins):
-                if (cand_stops > bin_lo_abs[k, i]).any():
-                    validity[k, i] = False
+            # A bin is invalidated iff ANY candidate stop lies past its lower edge,
+            # i.e. iff max(cand_stops) > bin_lo_abs[k, i]; equivalently the bin stays
+            # valid iff bin_lo_abs[k, i] >= max(cand_stops). Reducing the candidates
+            # to their single maximum stop once lets the per-bin test run as one
+            # vectorized comparison across the whole bin row instead of an
+            # any()-per-bin Python loop. Byte-identical to the old nested loop.
+            cand_max_stop = stops[cand].max()
+            validity[k, :] &= bin_lo_abs[k, :] >= cand_max_stop
 
     return validity
 
@@ -2559,27 +2564,39 @@ class NeuronalTuning(FeatureZoo):
         fr_baseline_per_bout = np.full(n_bouts, np.nan, dtype=float)
         fr_usv_per_bout = np.full(n_bouts, np.nan, dtype=float)
 
-        for b in range(n_bouts):
-            bs = float(bout_starts[b])
-            if bs >= bout_quiet_s:
-                lo_idx = int(np.searchsorted(spike_times, bs - bout_quiet_s, side="left"))
-                hi_idx = int(np.searchsorted(spike_times, bs, side="left"))
-                fr_baseline_per_bout[b] = (hi_idx - lo_idx) / bout_quiet_s
-            # else: leave NaN (pre-recording)
+        # Per-bout baseline firing rate: count spikes in the pre-bout
+        # [bout_start - bout_quiet_s, bout_start] window for every bout in two
+        # vectorized searchsorted passes; bouts whose baseline window starts
+        # before t = 0 are left NaN (cannot deliver an honest pre-bout estimate).
+        baseline_ok = bout_starts >= bout_quiet_s
+        if baseline_ok.any():
+            ok_starts = bout_starts[baseline_ok]
+            base_lo = np.searchsorted(spike_times, ok_starts - bout_quiet_s, side="left")
+            base_hi = np.searchsorted(spike_times, ok_starts, side="left")
+            fr_baseline_per_bout[baseline_ok] = (base_hi - base_lo) / bout_quiet_s
 
-            usv_indices = np.where(bout_idx == b)[0]
-            usv_rates = []
-            for i_usv in usv_indices:
-                us = float(em_starts[i_usv])
-                ue = float(em_stops[i_usv])
-                ud = float(em_durations[i_usv])
-                if ud <= 0:
-                    continue
-                lo_idx = int(np.searchsorted(spike_times, us, side="left"))
-                hi_idx = int(np.searchsorted(spike_times, ue, side="right"))
-                usv_rates.append((hi_idx - lo_idx) / ud)
-            if usv_rates:
-                fr_usv_per_bout[b] = float(np.mean(usv_rates))
+        # Per-bout USV firing rate: each USV's rate is (#spikes in
+        # [usv_start, usv_stop]) / usv_duration; the per-bout value is the mean
+        # over that bout's USVs. The per-USV spike counts come from two
+        # vectorized searchsorted passes over ALL USVs at once, USVs with a
+        # non-positive duration are dropped, and the surviving rates are grouped
+        # into per-bout sums / counts with np.add.at (an O(n_usvs) scatter-add)
+        # instead of an O(n_bouts * n_usvs) `np.where(bout_idx == b)` rescan per
+        # bout. fr_usv_per_bout = sum / count where a bout has >= 1 valid USV,
+        # NaN otherwise. The grouped float64 summation reassociates the per-bout
+        # mean, so results match the old per-bout np.mean to ~1e-15.
+        usv_lo = np.searchsorted(spike_times, em_starts, side="left")
+        usv_hi = np.searchsorted(spike_times, em_stops, side="right")
+        usv_valid = em_durations > 0
+        usv_rates = np.zeros(em_starts.size, dtype=float)
+        usv_rates[usv_valid] = (usv_hi[usv_valid] - usv_lo[usv_valid]) / em_durations[usv_valid]
+        usv_sum_per_bout = np.zeros(n_bouts, dtype=float)
+        usv_count_per_bout = np.zeros(n_bouts, dtype=float)
+        valid_bout_idx = bout_idx[usv_valid]
+        np.add.at(usv_sum_per_bout, valid_bout_idx, usv_rates[usv_valid])
+        np.add.at(usv_count_per_bout, valid_bout_idx, 1.0)
+        has_usv = usv_count_per_bout > 0
+        fr_usv_per_bout[has_usv] = usv_sum_per_bout[has_usv] / usv_count_per_bout[has_usv]
 
         if np.isnan(fr_baseline_per_bout).all() or np.isnan(fr_usv_per_bout).all():
             fr_baseline = np.nan

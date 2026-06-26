@@ -104,7 +104,9 @@ def build_lattice(lattice_type: str, latent_dim: int, korobov_a: int, n_points: 
     ----------
     lattice_type (str)
         ``"korobov"`` (Korobov lattice), ``"roberts"`` (Roberts low-discrepancy
-        sequence), or anything else (Fibonacci lattice, 2D only).
+        sequence), or ``"fibonacci"`` (Fibonacci lattice, 2D only). The token
+        ``"fibonacci"`` matches the JAX inference path (``qlvm_latents.py``) so
+        train and inference name the same generator identically.
     latent_dim (int)
         Torus latent dimensionality.
     korobov_a (int)
@@ -130,13 +132,19 @@ def build_lattice(lattice_type: str, latent_dim: int, korobov_a: int, n_points: 
         return gen_korobov_basis(korobov_a, latent_dim, n_points)
     if lattice_type == "roberts":
         return roberts_sequence(n_points, latent_dim)
-    if latent_dim != 2:
-        error_message = (
-            f"lattice_type={lattice_type!r} uses the Fibonacci lattice, which is 2D only, "
-            f"but latent_dim={latent_dim}. Use 'korobov' or 'roberts' for latent_dim != 2."
-        )
-        raise ValueError(error_message)
-    return gen_fib_basis(m=fib_m)
+    if lattice_type == "fibonacci":
+        if latent_dim != 2:
+            error_message = (
+                f"lattice_type={lattice_type!r} uses the Fibonacci lattice, which is 2D only, "
+                f"but latent_dim={latent_dim}. Use 'korobov' or 'roberts' for latent_dim != 2."
+            )
+            raise ValueError(error_message)
+        return gen_fib_basis(m=fib_m)
+    error_message = (
+        f"build_lattice: unknown lattice_type {lattice_type!r} "
+        f"(expected korobov|roberts|fibonacci)."
+    )
+    raise ValueError(error_message)
 
 
 class QLVMTrainer:
@@ -295,6 +303,10 @@ class QLVMTrainer:
         from .qlvm_training.qmc_base import QMCLVM, TorusBasis  # noqa: PLC0415 (lazy)
 
         torch.manual_seed(seed)
+        # torch.manual_seed seeds the actual training RNG (dataloader shuffling,
+        # the per-batch torus shifts); this np.random.seed is retained
+        # deliberately so any incidental legacy-numpy draw in the vendored
+        # qlvm_training kernels stays reproducible across runs.
         np.random.seed(seed)
 
         if torch.cuda.is_available():
@@ -306,6 +318,16 @@ class QLVMTrainer:
         self.message_output(f"Training QLVM (latent_dim={latent_dim}, lattice={lattice_type}) on device: {device}.")
 
         train_dataset, n_train = self._load_split(train_path)
+        # An empty training split would yield zero batches per epoch, so every
+        # `np.mean(batch_losses)` below collapses to NaN (with a RuntimeWarning)
+        # and the checkpoint captures an untrained decoder. Fail loudly here
+        # instead, before the (otherwise silent) NaN-loss training loop runs.
+        if n_train < 1:
+            error_message = (
+                f"Training split {train_path.name} contains {n_train} spectrograms; "
+                f"need at least 1 to train. Re-run build-qlvm-training-set."
+            )
+            raise ValueError(error_message)
         train_loader = torch.utils.data.DataLoader(
             train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
         )
@@ -372,7 +394,7 @@ class QLVMTrainer:
 @click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write the checkpoint + decoder-weights .npz.')
 @click.option('--n-epochs', 'n_epochs', type=int, default=None, required=False, help='Number of training epochs.')
 @click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Torus latent dimensionality.')
-@click.option('--lattice-type', 'lattice_type', type=click.Choice(['korobov', 'roberts', 'fib']), default=None, required=False, help='Quasi-random lattice generator.')
+@click.option('--lattice-type', 'lattice_type', type=click.Choice(['korobov', 'roberts', 'fibonacci']), default=None, required=False, help='Quasi-random lattice generator.')
 @click.option('--korobov-a', 'korobov_a', type=int, default=None, required=False, help='Korobov generating integer.')
 @click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Training batch size.')
 @click.option('--learning-rate', 'learning_rate', type=float, default=None, required=False, help='Adam learning rate.')

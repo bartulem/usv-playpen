@@ -1596,7 +1596,7 @@ class TestDeepResultsVisualizer:
         pkl = _write_cnn_results_pickle(tmp_path, rng)
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
-            modeling_settings={},
+            modeling_settings={"model_params": {"random_seed": 0}},
             visualization_settings={},
         )
         out_dir = tmp_path / "cnn_perm_out"

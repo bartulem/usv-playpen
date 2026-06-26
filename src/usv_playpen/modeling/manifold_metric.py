@@ -241,7 +241,16 @@ def distance_correlation(A: np.ndarray, B: np.ndarray) -> float:
     """
 
     def _double_center(M: np.ndarray) -> np.ndarray:
-        return M - M.mean(axis=0, keepdims=True) - M.mean(axis=1, keepdims=True) + M.mean()
+        # The grand mean equals the mean of the per-column means (each column
+        # mean already averages a full column, and averaging those over the
+        # columns averages every entry exactly once), so it is reused from the
+        # column-mean reduction rather than recomputed in a third full pass over
+        # M. Numerically equal to M.mean() up to reduction-order fp reassociation
+        # (~1e-16, sub-epsilon).
+        col_mean = M.mean(axis=0, keepdims=True)
+        row_mean = M.mean(axis=1, keepdims=True)
+        grand_mean = col_mean.mean()
+        return M - col_mean - row_mean + grand_mean
 
     a_c, b_c = _double_center(A), _double_center(B)
     # einsum fuses the elementwise product and the reduction, avoiding three full
@@ -433,7 +442,11 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     else:
         dcor_xy = float('nan')
 
-    ss_res = float(np.sum(dx ** 2 + dy ** 2))
+    # ss_res reuses the already-computed per-row squared Euclidean distance
+    # (euclidean_dist == sqrt(dx**2 + dy**2)), so squaring it recovers
+    # dx**2 + dy**2 without a second dx/dy reduction. The round-trip through
+    # sqrt introduces only sub-epsilon fp noise (~1e-16).
+    ss_res = float(np.sum(euclidean_dist ** 2))
     denom = total_dispersion(Y_true, metric=metric, period=period)
     r2_spatial = float(1.0 - (ss_res / denom)) if denom > 0 else 0.0
 

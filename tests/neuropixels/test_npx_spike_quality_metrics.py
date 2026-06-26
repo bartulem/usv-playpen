@@ -354,10 +354,9 @@ def test_constructor_resolves_paths_and_parses_meta(tmp_path):
     """
     Description
     -----------
-    Construction resolves the EPHYS / Kilosort / channel-locations paths,
-    parses the single ``concatenated_*.ap.meta`` into ``meta``, and
-    decodes the IMRO and snsGeomMap tables — all without reading any
-    recording data.
+    Construction resolves the EPHYS / Kilosort / channel-locations paths
+    and parses the single ``concatenated_*.ap.meta`` into ``meta`` — all
+    without reading any recording data.
     """
 
     _make_meta(tmp_path / "EPHYS" / "20240101_imec0")
@@ -368,8 +367,6 @@ def test_constructor_resolves_paths_and_parses_meta(tmp_path):
     assert extractor.ks_path == tmp_path / "EPHYS" / "20240101_imec0" / "kilosort4"
     assert extractor.channel_locations_file.name == "channel_locations.json"
     assert extractor.meta["imSampRate"] == "30000.0"
-    assert extractor.imro_rows[0] == [2013, 384]
-    assert extractor.geom_rows[1] == [0, 27, 0, 1]
 
 
 def test_constructor_rejects_invalid_hemisphere(tmp_path):

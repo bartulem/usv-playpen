@@ -254,7 +254,6 @@ class Stylist:
                                                             message_output=self.message_output).find_audio_sync_trains()
 
                         SummaryPlotter(root_directory=one_directory,
-                                       input_parameter_dict=self.input_parameter_dict,
                                        message_output=self.message_output).preprocessing_summary(ipi_discrepancy_dict=ipi_discrepancy_dict,
                                                                                                  phidget_data_dictionary=phidget_data_dictionary)
 
@@ -309,6 +308,12 @@ class Stylist:
                                         message_output=self.message_output).translate_rotate_metric(session_idx=one_directory_idx)
                         else:
                             self.message_output("Please provide the experimental code for each session in the root directory, their number does not match.")
+                            # The requested anipose translate/rotate/metric step
+                            # was skipped (experimental-code count mismatch), so
+                            # record it as a failure instead of silently dropping
+                            # it -- otherwise the run reports success despite the
+                            # 3D transform never running for this session.
+                            failed_preprocessing.append((one_directory, "anipose_trm skipped: experimental-code count does not match the number of root directories"))
 
                     # # # conduct DAS inference on audio data
                     if self.input_parameter_dict['processing_booleans']['das_infer']:
@@ -588,7 +593,6 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 
     SummaryPlotter(
         root_directory=root_directory,
-        input_parameter_dict=processing_settings_dict
     ).preprocessing_summary(
         ipi_discrepancy_dict=ipi_discrepancy_dict,
         phidget_data_dictionary=phidget_data_dictionary

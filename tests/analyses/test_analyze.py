@@ -6,7 +6,6 @@ Test analyses module.
 import json
 import math
 import pathlib
-import pickle as _pickle
 import subprocess as _subprocess
 from unittest.mock import MagicMock
 
@@ -360,7 +359,7 @@ def test_extract_information_lighting_decoded():
 
 @pytest.mark.parametrize(
     ("estrus_letter", "expected"),
-    [("p", "proestrus"), ("e", "estrus"), ("m", "matestrus"), ("d", "diestrus")],
+    [("p", "proestrus"), ("e", "estrus"), ("m", "metestrus"), ("d", "diestrus")],
 )
 def test_extract_information_estrus_letters(estrus_letter, expected):
     out = extract_information(f"B1F{estrus_letter}")

@@ -174,13 +174,37 @@ def apply_temporal_warping(x_seq: np.ndarray, warp_factors: np.ndarray) -> np.nd
     batch_size, n_feats, n_bins = x_seq.shape
     input_t = np.arange(n_bins)
     center = (n_bins - 1) / 2.0
-    warped_batch = np.zeros_like(x_seq)
 
-    for i in range(batch_size):
-        t_query = center + (input_t - center) * warp_factors[i]
-        t_query = np.clip(t_query, 0.0, n_bins - 1)
-        for f in range(n_feats):
-            warped_batch[i, f, :] = np.interp(t_query, input_t, x_seq[i, f, :])
+    # Per-sequence query times, shared across feature channels:
+    # `t_query[i] = center + (input_t - center) * warp_factors[i]`, clipped to
+    # the valid index range. Shape (Batch, Time).
+    t_query = center + (input_t[None, :] - center) * warp_factors[:, None]
+    t_query = np.clip(t_query, 0.0, n_bins - 1)
+
+    # Vectorised linear interpolation replacing the per-(batch, feature)
+    # `np.interp` loop. Because every query lies in `[0, n_bins - 1]`, the
+    # left index `t0 = floor(t_query)` and right index `t1 = min(t0 + 1,
+    # n_bins - 1)` bracket it, and the result is the lerp
+    # `x[t0] * (1 - frac) + x[t1] * frac` with `frac = t_query - t0`. At an
+    # exact integer / right-edge query `frac == 0` (and `t1 == t0` at the
+    # edge), reproducing `np.interp`'s endpoint clamp. For the pipeline's
+    # float32 kinematics this is bit-identical to the previous per-channel
+    # `np.interp` (verified on random data); in float64 it differs only by
+    # sub-epsilon (~1e-16) reduction-order noise.
+    t0 = np.clip(np.floor(t_query).astype(int), 0, n_bins - 1)
+    t1 = np.minimum(t0 + 1, n_bins - 1)
+    frac = (t_query - t0)[:, None, :]                       # (Batch, 1, Time)
+
+    b_idx = np.arange(batch_size)[:, None, None]
+    f_idx = np.arange(n_feats)[None, :, None]
+    x0 = x_seq[b_idx, f_idx, t0[:, None, :]]                # (Batch, Feats, Time)
+    x1 = x_seq[b_idx, f_idx, t1[:, None, :]]
+    # `frac` is float64 (derived from the float64 `t_query`), so the lerp
+    # promotes to float64; cast back to the input dtype to match the original
+    # loop, which wrote float64 `np.interp` results into a `np.zeros_like(x_seq)`
+    # buffer (downcasting to `x_seq.dtype` on assignment). For float32 input this
+    # round-trip is bit-identical to that per-element downcast.
+    warped_batch = (x0 * (1.0 - frac) + x1 * frac).astype(x_seq.dtype)
 
     return warped_batch
 
@@ -400,9 +424,29 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
 
         if i == 0 and use_inception:
             # === Multi-Scale Inception Block 0 ===
-            # Initialize N parallel depthwise kernels for different temporal fields
+            # Initialize N parallel depthwise kernels for different temporal fields.
+            #
+            # The per-kernel PRNG keys are drawn from a dedicated, disjoint
+            # offset (`inc_dw_key_offset`) rather than from `k[j]`. The previous
+            # `k[j]` indexing collided with the per-block reserved key layout
+            # used everywhere else (block `i` consumes `k[i*10 .. i*10+4]`): for
+            # block 0 those are the depthwise/pointwise/shortcut keys `k[0..2]`
+            # and the SE keys `k[3]`, `k[4]`. With four or more inception
+            # kernels, `k[3]` / `k[4]` would be reused for both a depthwise
+            # kernel and an SE matrix, correlating their initial weights. The
+            # offset of 40 sits clear of every per-block slot (`k[0..34]` for
+            # blocks 0-3) and of the dense-head keys (`k[-2]`, `k[-1]`), so the
+            # kernels are independently seeded for any supported kernel count.
+            inc_dw_key_offset = 40
+            if inc_dw_key_offset + len(inc_kernels) > len(k):
+                raise ValueError(
+                    f"Too many inception kernels ({len(inc_kernels)}) for the reserved "
+                    f"PRNG-key budget: keys {inc_dw_key_offset}..{inc_dw_key_offset + len(inc_kernels) - 1} "
+                    f"would exceed the {len(k)} split keys. Reduce "
+                    f"`inception_kernel_sizes` or widen the `jax.random.split` count."
+                )
             for j, k_size in enumerate(inc_kernels):
-                params[f'b0_dw_w_{j}'] = jax.random.normal(k[j], (c_in, 1, k_size)) * jnp.sqrt(2.0 / k_size)
+                params[f'b0_dw_w_{j}'] = jax.random.normal(k[inc_dw_key_offset + j], (c_in, 1, k_size)) * jnp.sqrt(2.0 / k_size)
 
             # Pointwise mixes parallel scales (N_kernels * in_channels -> c_out)
             pw_in_dim = c_in * len(inc_kernels)
@@ -1268,6 +1312,19 @@ class NeuralContinuousCNNRunner:
         print(" EXECUTING 1D-CNN TRAINING PIPELINE (RESIDUAL & PURE JAX)")
         print("=" * 75)
 
+        # The per-fold training loop tracks `best_params` across epochs,
+        # starting at `None` and only assigning inside the epoch loop. With
+        # `epochs == 0` the loop never runs, `best_params` stays `None`, and the
+        # post-loop `evaluate_batched(best_params, ...)` crashes with an opaque
+        # error deep in the JIT trace. Fail fast and explicitly here instead.
+        # `raise` rather than `assert` so the check survives under `python -O`.
+        if int(self.hp['epochs']) < 1:
+            raise ValueError(
+                f"hyperparameters.deep_learning.cnn_continuous.epochs must be >= 1; "
+                f"got {self.hp['epochs']!r}. With zero epochs no parameters are ever "
+                f"trained and the final evaluation has no model to score."
+            )
+
         X_seq = data_blocks['X_seq']
         Y = data_blocks['Y']
         w = data_blocks['w']
@@ -1639,7 +1696,18 @@ class NeuralContinuousCNNRunner:
                 if self.hp['use_kde_weights']:
                     steps_per_epoch = len(Y_tr) // self.hp['batch_size']
                 else:
-                    steps_per_epoch = len(get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'], rng=rng)) // self.hp['batch_size']
+                    # Size `steps_per_epoch` from the grid-balanced index count
+                    # WITHOUT consuming the shared training `rng`. The number of
+                    # indices `get_grid_balanced_indices` returns depends only on
+                    # the per-cell densities (each cell contributes a
+                    # deterministic `max(1, ceil(...))` rows), not on the random
+                    # draw, so a throwaway sizing rng yields the same length while
+                    # leaving the shared `rng` state untouched for the epoch loop
+                    # below. The previous code drew through `rng` here, advancing
+                    # its state by one full grid-balanced sample before the first
+                    # epoch's own `get_grid_balanced_indices(..., rng=rng)` draw.
+                    sizing_rng = np.random.default_rng(self.random_seed + fold)
+                    steps_per_epoch = len(get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'], rng=sizing_rng)) // self.hp['batch_size']
 
                 lr_schedule = build_lr_schedule(self.hp['learning_rate'], self.hp['epochs'], steps_per_epoch) if self.hp['use_scheduler'] else self.hp['learning_rate']
 

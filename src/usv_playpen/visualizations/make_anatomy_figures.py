@@ -336,7 +336,16 @@ class AnatomyFigureMaker:
         if _EXCLUDED_MOUSE_IDS:
             df = df[~df["mouse_id"].isin(_EXCLUDED_MOUSE_IDS)].reset_index(drop=True)
         df["bucket"] = df["brain_area"].map(pool_brain_area)
-        df["cell_type"] = df.apply(self._classify_cell_type, axis=1)
+        # Vectorised equivalent of `_classify_cell_type` applied row-wise:
+        # `mua` clusters -> Multi-unit regardless of the somatic flag;
+        # everything else splits Somatic / Non-somatic on `somatic`'s
+        # truthiness. Produces byte-identical string labels to the prior
+        # `df.apply(self._classify_cell_type, axis=1)` call.
+        df["cell_type"] = np.where(
+            df["cluster_group"] == "mua",
+            "Multi-unit",
+            np.where(df["somatic"], "Somatic", "Non-somatic"),
+        )
         return df
 
     @staticmethod
@@ -488,7 +497,7 @@ class AnatomyFigureMaker:
         ax.tick_params(axis="x", length=0)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.set_ylim(0, max(totals) * 1.12)
+        ax.set_ylim(0, (totals.max() if totals.size else 1) * 1.12)
         ax.legend(
             loc="upper right",
             fontsize=6,
@@ -559,7 +568,7 @@ class AnatomyFigureMaker:
         ax.tick_params(axis="x", length=0)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.set_ylim(0, max(totals) * 1.12)
+        ax.set_ylim(0, (totals.max() if totals.size else 1) * 1.12)
         # Anchor the legend just outside the right axis edge so it no
         # longer overlaps the rightmost bar at higher unit counts.
         ax.legend(
@@ -1380,7 +1389,14 @@ class AnatomyFigureMaker:
         # agree on, then look up each KS channel's region by its
         # physical position.
         n_channels = positions_full.shape[0]
-        hemisphere = "R" if str(probe_filter).endswith("0") else "L"
+        # Derive the hemisphere from the probe of the units actually
+        # rendered (the schematic reads `top_units[0]["ctx"]`, so its
+        # channel layout belongs to that unit's probe) rather than from
+        # `probe_filter`. With `probe_filter is None` the old
+        # `str(probe_filter).endswith("0")` test silently collapsed to
+        # `"None"` -> `"L"`, mislabelling every imec0 (RH) contact.
+        schematic_probe = top_units[0]["probe"]
+        hemisphere = "R" if str(schematic_probe).endswith("0") else "L"
         ibl_dir = "ibl_RH" if hemisphere == "R" else "ibl_LH"
         ibl_path = (
             _DEFAULT_HISTOLOGY_ROOT

@@ -1213,7 +1213,11 @@ def plot_distance_by_assignment_kde_anova(
     stats_dict['descriptive'] = {}
     for cat, data in [('Male', male_dist), ('Female', female_dist), ('Unassigned', unassigned_dist)]:
         if len(data) > 0:
-            mean_val, sem_val = np.mean(data), sem(data)
+            # `scipy.stats.sem` of a single observation is NaN (and emits
+            # a divide-by-zero RuntimeWarning); only compute it when the
+            # group has at least two observations and report NaN otherwise.
+            mean_val = np.mean(data)
+            sem_val = sem(data) if len(data) > 1 else float('nan')
             stats_dict['descriptive'][cat] = {'mean': float(mean_val), 'sem': float(sem_val)}
             stats_lines.append(f"{cat}: {mean_val:.2f} ± {sem_val:.2f}")
         else:
@@ -1922,8 +1926,22 @@ def plot_estrous_ratio_scatter(
     if use_log_scale:
         ax.set_yscale('log')
         if global_min != float('inf'):
-            # Provide breathing room at the bottom and top
-            ax.set_ylim(bottom=global_min * 0.8, top=global_max * 1.5)
+            # Provide breathing room at the bottom and top. A log axis
+            # rejects a non-positive lower limit, so when the smallest
+            # ratio is zero / negative fall back to the smallest strictly
+            # positive ratio (or to matplotlib's autoscaled bottom when
+            # no positive ratio exists at all).
+            bottom = global_min * 0.8
+            if bottom <= 0:
+                positive_min = min(
+                    (v for v in (global_min, global_max) if v > 0),
+                    default=None,
+                )
+                bottom = positive_min * 0.8 if positive_min is not None else None
+            if bottom is not None:
+                ax.set_ylim(bottom=bottom, top=global_max * 1.5)
+            else:
+                ax.set_ylim(top=global_max * 1.5)
     else:
         if global_min != float('inf'):
             padding = (global_max - global_min) * 0.05

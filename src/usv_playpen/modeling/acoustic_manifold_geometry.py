@@ -140,7 +140,19 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         if n_total < min_points_per_label:
             continue
 
-        pts = Y[mask]
+        pts_full = Y[mask]
+        # Grid bounds are derived from the FULL per-label point cloud, before any
+        # sub-sampling, so the evaluation grid always spans the cluster's true
+        # extent. Deriving them from the (possibly sub-sampled) `pts` would let a
+        # draw that happens to omit the extreme points shrink the grid and miss a
+        # seam-straddling tail, biasing the recovered centre. The KDE itself is
+        # fit on the (sub-sampled) `pts` for bounded wall-clock, but the bounds
+        # are fixed by the full cloud.
+        pmin = pts_full.min(axis=0)
+        pmax = pts_full.max(axis=0)
+        margin = 0.05 * (pmax - pmin).max()
+
+        pts = pts_full
         if n_total > max_points_per_label:
             pts = pts[rng.choice(n_total, max_points_per_label, replace=False)]
 
@@ -157,9 +169,6 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         # Grid covers the original per-label data range (not the replicated
         # one) with a small margin so the returned centre is inside the
         # canonical cell on torus.
-        pmin = pts.min(axis=0)
-        pmax = pts.max(axis=0)
-        margin = 0.05 * (pmax - pmin).max()
         xmin, ymin = pmin - margin
         xmax, ymax = pmax + margin
 

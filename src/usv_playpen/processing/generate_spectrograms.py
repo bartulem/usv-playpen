@@ -96,6 +96,18 @@ def compute_usv_spectrogram(
     window = spec_params['window']
     hop_length = spec_params['hop_length'] if spec_params['hop_length'] is not None else nperseg // 4
 
+    # Validate the frequency band up front. If min_freq >= max_freq the band
+    # mask below is empty, `freq_orig` collapses to a zero-length grid, and the
+    # per-slice np.interp later fails with an opaque "array of sample points is
+    # empty" error deep in the channel loop. Raise a clear, actionable message
+    # here instead.
+    if min_freq >= max_freq:
+        error_message = (
+            f"generate_spectrograms requires min_freq < max_freq, got "
+            f"min_freq={min_freq}, max_freq={max_freq}."
+        )
+        raise ValueError(error_message)
+
     n_channels = audio_segment_channels.shape[1]
     per_channel_specs: list[np.ndarray] = []
     per_channel_vars: list[float] = []
@@ -288,8 +300,12 @@ class SpectrogramGenerator:
         for usv_idx in range(usv_summary_df.height):
             t0 = float(starts[usv_idx]) - offset
             t1 = float(stops[usv_idx]) + offset
-            s0 = max(0, round(t0 * audio_sampling_rate))
-            s1 = min(sample_num, round(t1 * audio_sampling_rate))
+            # Match the DAS segment-bound convention (das_inference: floor the
+            # onset, ceil the offset) so a USV's spectrogram spans exactly the
+            # same samples DAS attributed to it. round() on both ends could drop
+            # the boundary frame on either side and desync the two pipelines.
+            s0 = max(0, int(np.floor(t0 * audio_sampling_rate)))
+            s1 = min(sample_num, int(np.ceil(t1 * audio_sampling_rate)))
             spectrogram = None
             original_time_bins = 0
             if s1 > s0:

@@ -123,7 +123,8 @@ def make_initial_guess_and_bounds_3d(wf_data: np.ndarray,
     -------
     numpy.ndarray
         ``x0`` — the length-4 initial guess ``[x, y, z, alpha]``
-        (float32).
+        (float64), clipped into the returned bound box so it is always
+        feasible for the optimiser.
     tuple[list, list]
         ``(low_bounds, high_bounds)`` — each a length-4 list bounding
         ``[x, y, z, alpha]``.
@@ -139,7 +140,11 @@ def make_initial_guess_and_bounds_3d(wf_data: np.ndarray,
     # Amplitude-weighted 3D centre of mass as the starting point.
     com_3d = np.sum(weights[:, np.newaxis] * local_contact_locations, axis=0) / np.sum(weights)
 
-    x0 = np.zeros(4, dtype="float32")
+    # Build the initial guess in float64 so it shares the dtype of the
+    # float64 bounds below; a float32 x0 can round a coordinate that sits
+    # exactly on a bound to the wrong side, handing scipy an initial guess
+    # that is (marginally) infeasible and raising before the fit starts.
+    x0 = np.zeros(4, dtype="float64")
     x0[:3] = com_3d
 
     dist_to_max = np.linalg.norm(x0[:3] - local_contact_locations[ind_max, :])
@@ -161,6 +166,13 @@ def make_initial_guess_and_bounds_3d(wf_data: np.ndarray,
         max_coords[2] + max_distance_um,
         max_alpha
     ]
+
+    # Clip the initial guess into the closed bound box so scipy always
+    # receives a feasible x0. The amplitude-weighted centre of mass already
+    # lies inside the spatial extent, but the expanded-by-max_distance_um
+    # margin and the analytically-derived alpha can land marginally outside,
+    # which scipy rejects with "x0 is infeasible" before optimising.
+    x0 = np.clip(x0, low_bounds, high_bounds)
 
     return x0, (low_bounds, high_bounds)
 
@@ -236,6 +248,13 @@ def estimate_distance_error_with_log_3d(vec: np.ndarray, wf_data: np.ndarray,
     q = _data_at_3d(x, y, z, 1.0, local_contact_locations)
 
     alpha_norm = (q * wf_data / max_data).sum() / (q * q).sum()
+    # The source magnitude is bounded to [0, max_alpha] in the optimiser's
+    # parameter space; the closed-form least-squares scale can go negative
+    # when the observed feature vector anti-correlates with the unit model,
+    # which would otherwise let this objective explore an alpha the bounds
+    # forbid. Clamp to 0 to keep the analytic alpha consistent with the bound.
+    if alpha_norm < 0.0:
+        alpha_norm = 0.0
     model_data_norm = _data_at_3d(x, y, z, alpha_norm, local_contact_locations)
 
     err = np.square(wf_data / max_data - model_data_norm).mean()

@@ -41,7 +41,7 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
 
     p - proestrus
     e - estrus
-    m - matestrus
+    m - metestrus
     d - diestrus
 
 
@@ -81,7 +81,7 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
             "G": "group",
             "p": "proestrus",
             "e": "estrus",
-            "m": "matestrus",
+            "m": "metestrus",
             "d": "diestrus",
         }
 

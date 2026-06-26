@@ -356,6 +356,12 @@ class AudioGenerator:
             current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
 
             wav_files_list = sorted(playback_snippets_dir.glob('*.wav'))
+            if not wav_files_list:
+                msg = (
+                    f"create_naturalistic_usv_playback_wav: no .wav playback snippets found in "
+                    f"{playback_snippets_dir!s}; cannot draw USV files for the playback sequence."
+                )
+                raise FileNotFoundError(msg)
             # Preload + validate each unique snippet once (snippets are drawn with
             # replacement from a small fixed pool, so the same files would otherwise
             # be re-read thousands of times across the build); the seeded draw
@@ -513,6 +519,12 @@ class AudioGenerator:
             current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
 
             wav_files_list = sorted(playback_snippets_dir.glob('*.wav'))
+            if not wav_files_list:
+                msg = (
+                    f"create_usv_playback_wav: no .wav playback snippets found in "
+                    f"{playback_snippets_dir!s}; cannot draw USV files for the playback sequence."
+                )
+                raise FileNotFoundError(msg)
             # Preload + validate each unique snippet once (snippets are drawn with
             # replacement from a small fixed pool, so the same files would otherwise
             # be re-read thousands of times across the build); the seeded draw

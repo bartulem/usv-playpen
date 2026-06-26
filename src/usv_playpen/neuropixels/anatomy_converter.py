@@ -109,7 +109,11 @@ def _load_ibl_position_to_region(
     for key, entry in ibl.items():
         if not key.startswith("channel_"):
             continue
-        pos_to_region[(int(entry["lateral"]), int(entry["axial"]))] = (
+        # Round (not truncate) before the integer (lateral, axial) join:
+        # int() floors toward zero, so a coordinate stored as 31.9999 on one
+        # side and 32.0 on the other would key to 31 vs 32 and never join.
+        # Both sides of the join must round identically.
+        pos_to_region[(int(round(entry["lateral"])), int(round(entry["axial"])))] = (
             entry["brain_region"]
         )
     return pos_to_region
@@ -179,9 +183,12 @@ def _build_ks_keyed_block(
     channel_positions = np.load(ks_dir / "channel_positions.npy")
     per_row_region: list[str] = []
     for ks_row in range(channel_positions.shape[0]):
+        # Round (not truncate) to match the IBL side of the join in
+        # `_load_ibl_position_to_region`; int() floors toward zero and would
+        # desync the two integer keys at sub-unit coordinate differences.
         pos = (
-            int(channel_positions[ks_row, 0]),
-            int(channel_positions[ks_row, 1]),
+            int(round(channel_positions[ks_row, 0])),
+            int(round(channel_positions[ks_row, 1])),
         )
         # Positions absent from the IBL map (e.g. reference/disconnected
         # sites) become a literal "unknown" region; `_runs_to_ranges`

@@ -1920,7 +1920,8 @@ class Create3DVideo:
                                           usv_stop - self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'])
                                          for usv_start, usv_stop in zip(frame_usv_summary_df['start'], frame_usv_summary_df['stop'], strict=True)]
 
-                    usv_segments_colors = [animal_colors_dict.get(emitter_id, '#FFFFFF') for emitter_id in frame_usv_summary_df['emitter']]
+                    _unassigned = self.visualizations_parameter_dict["unassigned_colors"][0]
+                    usv_segments_colors = [animal_colors_dict.get(emitter_id, _unassigned) for emitter_id in frame_usv_summary_df['emitter']]
                 else:
                     usv_segments_list = []
                     usv_segments_colors = []
@@ -2050,7 +2051,7 @@ class Create3DVideo:
                                          beh_features_to_plot=beh_features_to_plot,
                                          beh_feature_data=beh_feature_data,
                                          beh_features_fig_position=beh_features_fig_position,
-                                         beh_window_size_sec=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['beh_features_window_size'] // 2,
+                                         beh_window_size_sec=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['beh_features_window_size'] / 2,
                                          beh_window_size_frames=beh_window_size_frames,
                                          beh_half_window_size_frames=beh_half_window_size_frames,
                                          beh_features_ylabels=self.beh_features_ylabels,
@@ -2240,7 +2241,7 @@ class Create3DVideo:
                                              beh_features_to_plot=beh_features_to_plot,
                                              beh_feature_data=beh_feature_data,
                                              beh_features_fig_position=beh_features_fig_position,
-                                             beh_window_size_sec=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['beh_features_window_size'] // 2,
+                                             beh_window_size_sec=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['beh_features_window_size'] / 2,
                                              beh_window_size_frames=beh_window_size_frames,
                                              beh_half_window_size_frames=beh_half_window_size_frames,
                                              beh_features_ylabels=self.beh_features_ylabels,

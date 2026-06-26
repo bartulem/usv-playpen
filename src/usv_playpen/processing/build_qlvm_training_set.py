@@ -278,11 +278,22 @@ def build_session_masks(
     mask_group = h5_file[mask_group_key]
     segmentations = mask_group["segmentations"][:]
     spectrogram_index = mask_group["spectrogram_index"][:]
-    for position, summary_row in enumerate(selected_indices):
-        mask_rows = np.flatnonzero(spectrogram_index == int(summary_row))
-        if mask_rows.size > 0:
+    # Group the mask rows by their spectrogram_index once (argsort + searchsorted)
+    # instead of rescanning the whole spectrogram_index array per selected row
+    # (the previous O(n_selected x n_masks) flatnonzero loop). For each selected
+    # summary row, the contiguous block of the sort order gives exactly the same
+    # set of mask rows the equality scan produced; np.any over axis 0 and the row
+    # count are both order-independent, so the result is byte-for-byte identical.
+    sort_order = np.argsort(spectrogram_index, kind="stable")
+    sorted_index = spectrogram_index[sort_order]
+    summary_rows = selected_indices.astype(sorted_index.dtype, copy=False)
+    lo = np.searchsorted(sorted_index, summary_rows, side="left")
+    hi = np.searchsorted(sorted_index, summary_rows, side="right")
+    for position in range(n_selected):
+        if hi[position] > lo[position]:
+            mask_rows = sort_order[lo[position]:hi[position]]
             masks[position] = np.any(segmentations[mask_rows], axis=0).astype(np.float32)
-            masks_len[position] = int(mask_rows.size)
+            masks_len[position] = int(hi[position] - lo[position])
     return masks, masks_len
 
 

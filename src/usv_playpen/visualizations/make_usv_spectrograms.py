@@ -2790,8 +2790,13 @@ def _pick_spiral_with_grid(
         gy_lo, gy_hi = float(yy[0]), float(yy[-1])
         res_x = labels_grid.shape[1]
         res_y = labels_grid.shape[0]
-        px = ((xs_d - gx_lo) / (gx_hi - gx_lo) * (res_x - 1)).astype(int)
-        py = ((ys_d - gy_lo) / (gy_hi - gy_lo) * (res_y - 1)).astype(int)
+        # Guard against a degenerate (zero-width / zero-height) grid
+        # extent, which would otherwise raise a divide-by-zero when the
+        # grid axis has a single distinct coordinate (gx_hi == gx_lo).
+        gx_span = (gx_hi - gx_lo) or 1.0
+        gy_span = (gy_hi - gy_lo) or 1.0
+        px = ((xs_d - gx_lo) / gx_span * (res_x - 1)).astype(int)
+        py = ((ys_d - gy_lo) / gy_span * (res_y - 1)).astype(int)
         inside_box = (
             (xs_d >= gx_lo) & (xs_d <= gx_hi)
             & (ys_d >= gy_lo) & (ys_d <= gy_hi)

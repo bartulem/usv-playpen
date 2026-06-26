@@ -123,7 +123,16 @@ def _build_event_summary_matrix(processed_beh_dict: dict,
         fps = camera_fps_dict[sess_id]
         n_frames = sess_df.height
 
-        ends = np.round(np.asarray(ev_times) * fps).astype(int)
+        # Event-time -> frame-index mapping uses `np.floor`, matching the
+        # `_binary_event_trace` helper that the sibling timescale audit builds
+        # its `Y(t)` impulse train from, as well as the per-event onset->frame
+        # convention in the modeling input loaders (`load_input_files`
+        # `start_indices = np.floor(event_starts * fps)`; the multinomial
+        # pipeline). Unifying both audits on `np.floor` means an event onset
+        # resolves to the same frame index everywhere. The previous `np.round`
+        # here resolved onsets up to half a frame later than the trace the model
+        # is fit on, leaving the two audits split across two conventions.
+        ends = np.floor(np.asarray(ev_times) * fps).astype(int)
         starts = ends - history_frames
         valid_mask = (starts >= 0) & (ends <= n_frames)
         starts = starts[valid_mask]
@@ -1031,6 +1040,14 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     acf_null_p99_5 = np.full((n_features, max_lag_frames + 1), np.nan, dtype=np.float32)
     rng_acf = np.random.default_rng(random_seed + 1)
     acf_null_t0 = time.monotonic()
+    # Per-shuffle lag-window offsets. Each shift `S` reads the contiguous
+    # window `acf_long_stack[f, s, S : S + max_lag_frames + 1]`; broadcasting
+    # `shifts[:, None] + acf_null_window[None, :]` builds the full
+    # `(n_shuffles, max_lag_frames + 1)` index matrix so all per-session
+    # windows are gathered in one fancy-index op instead of a per-shift slice
+    # loop. The shifts are still drawn in the same order, so the pooled rows
+    # are byte-identical to the previous loop.
+    acf_null_window = np.arange(max_lag_frames + 1)
     for f_i in range(n_features):
         pool = np.empty((n_sess_total * n_shuffles, max_lag_frames + 1),
                         dtype=np.float32)
@@ -1040,9 +1057,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 continue
             shifts = rng_acf.integers(shuffle_min_frames, shuffle_max_frames + 1,
                                       size=n_shuffles)
-            for S in shifts:
-                pool[pool_idx, :] = acf_long_stack[f_i, s_i, int(S):int(S) + max_lag_frames + 1]
-                pool_idx += 1
+            gather_idx = shifts[:, None] + acf_null_window[None, :]
+            pool[pool_idx:pool_idx + n_shuffles, :] = acf_long_stack[f_i, s_i][gather_idx]
+            pool_idx += n_shuffles
         if pool_idx > 0:
             pool = pool[:pool_idx]
             with warnings.catch_warnings():

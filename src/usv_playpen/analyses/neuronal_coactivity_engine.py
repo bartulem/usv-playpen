@@ -270,7 +270,14 @@ def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
     """
 
     num_neurons, num_trials = count_matrix.shape
-    if num_neurons < 2:
+    # A single neuron has no neuron-pair correlation, and a single trial has no
+    # trial-pair similarity/correlation: in both degenerate cases the triu-indexed
+    # off-diagonal sets are empty and every metric is undefined. Return the same
+    # all-NaN sentinel up front so callers see a uniform "no estimate" shape rather
+    # than a mix of sentinel-NaNs (1 neuron) and incidental NaNs (1 trial). The
+    # num_trials >= 2 guarantee here also lets the population-similarity reduction
+    # below divide by num_trials*(num_trials - 1) unconditionally.
+    if num_neurons < 2 or num_trials < 2:
         return {"r_sc": np.nan, "similarity": np.nan, "pop_corr": np.nan}
 
     # Pairwise spike count correlation (r_sc)
@@ -296,10 +303,9 @@ def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
     normalized_cols = np.zeros(count_matrix.shape, dtype=np.float64)
     normalized_cols[:, valid_cols] = count_matrix[:, valid_cols] / col_norms[valid_cols]
     col_vector_sum = normalized_cols.sum(axis=1)
-    if num_trials > 1:
-        mean_pop_sim = (col_vector_sum @ col_vector_sum - n_valid) / (num_trials * (num_trials - 1))
-    else:
-        mean_pop_sim = np.nan
+    # num_trials >= 2 is guaranteed by the degenerate-case early return above, so
+    # the num_trials*(num_trials - 1) denominator is always positive.
+    mean_pop_sim = (col_vector_sum @ col_vector_sum - n_valid) / (num_trials * (num_trials - 1))
 
     # Correlation of population vectors (Pearson correlation)
     # This is the "mean-centered" version of cosine similarity.

@@ -116,83 +116,92 @@ class Analyst:
                                                                f"and run by @{self.input_parameter_dict['send_email']['experimenter']}. "
                                                                f"You will be notified upon completion. \n \n ***This is an automatic e-mail, please do NOT respond.***")
 
-        # # # compute inter-vocalization-interval distributions across one or more session lists
-        if self.input_parameter_dict['analyses_booleans']['compute_inter_usv_interval_distributions_bool']:
-            InterUSVIntervalCalculator(input_parameter_dict=self.input_parameter_dict,
-                          message_output=self.message_output).save_inter_usv_interval_distributions_to_file()
-
-        # # # create USV playback WAV files
-        if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool'] or self.input_parameter_dict['analyses_booleans']['create_naturalistic_usv_playback_wav_bool']:
-            if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool']:
-                AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
-                               create_playback_settings_dict=self.input_parameter_dict['create_usv_playback_wav'],
-                               message_output=self.message_output).create_usv_playback_wav()
-            else:
-                AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
-                               create_playback_settings_dict=self.input_parameter_dict['create_naturalistic_usv_playback_wav'],
-                               message_output=self.message_output).create_naturalistic_usv_playback_wav()
-
+        # The "PC available again" completion e-mail is sent from a `finally`
+        # so that whoever is waiting on the notification is always released --
+        # even when an exception type OUTSIDE the per-directory `except` tuple
+        # (e.g. KeyboardInterrupt, a settings KeyError raised by the pre-loop
+        # IVI/playback steps, or any other unexpected error) propagates out of
+        # the analysis body. `failed_directories` is initialised before the
+        # `try` so the `finally` can report status regardless of where the run
+        # stopped.
         failed_directories = []
-        for one_directory in self.root_directories:
-            try:
-                self.message_output(f"Analyzing data in {one_directory} started at: "
-                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
+        try:
+            # # # compute inter-vocalization-interval distributions across one or more session lists
+            if self.input_parameter_dict['analyses_booleans']['compute_inter_usv_interval_distributions_bool']:
+                InterUSVIntervalCalculator(input_parameter_dict=self.input_parameter_dict,
+                              message_output=self.message_output).save_inter_usv_interval_distributions_to_file()
 
-                # # # compute behavioral features and plot their distributions
-                if self.input_parameter_dict['analyses_booleans']['compute_behavioral_features_bool']:
-                    FeatureZoo(root_directory=one_directory,
-                               behavioral_parameters_dict=self.input_parameter_dict['compute_behavioral_features'],
-                               message_output=self.message_output).save_behavioral_features_to_file()
+            # # # create USV playback WAV files
+            if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool'] or self.input_parameter_dict['analyses_booleans']['create_naturalistic_usv_playback_wav_bool']:
+                if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool']:
+                    AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
+                                   create_playback_settings_dict=self.input_parameter_dict['create_usv_playback_wav'],
+                                   message_output=self.message_output).create_usv_playback_wav()
+                else:
+                    AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
+                                   create_playback_settings_dict=self.input_parameter_dict['create_naturalistic_usv_playback_wav'],
+                                   message_output=self.message_output).create_naturalistic_usv_playback_wav()
 
-                # # # compute neuronal tuning curves (behavioral and vocal in a single pass)
-                if self.input_parameter_dict['analyses_booleans']['compute_neuronal_tuning_bool']:
-                    NeuronalTuning(root_directory=one_directory,
-                                   tuning_parameters_dict=self.input_parameter_dict['calculate_neuronal_tuning_curves'],
-                                   message_output=self.message_output).calculate_neuronal_tuning_curves()
+            for one_directory in self.root_directories:
+                try:
+                    self.message_output(f"Analyzing data in {one_directory} started at: "
+                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-                # # # frequency shift audio segments
-                if self.input_parameter_dict['analyses_booleans']['frequency_shift_audio_segment_bool']:
-                    AudioGenerator(root_directory=one_directory,
-                                   freq_shift_settings_dict=self.input_parameter_dict['frequency_shift_audio_segment'],
-                                   message_output=self.message_output).frequency_shift_audio_segment()
+                    # # # compute behavioral features and plot their distributions
+                    if self.input_parameter_dict['analyses_booleans']['compute_behavioral_features_bool']:
+                        FeatureZoo(root_directory=one_directory,
+                                   behavioral_parameters_dict=self.input_parameter_dict['compute_behavioral_features'],
+                                   message_output=self.message_output).save_behavioral_features_to_file()
 
-                self.message_output(f"Analyzing data in {one_directory} finished at: "
-                                    f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
+                    # # # compute neuronal tuning curves (behavioral and vocal in a single pass)
+                    if self.input_parameter_dict['analyses_booleans']['compute_neuronal_tuning_bool']:
+                        NeuronalTuning(root_directory=one_directory,
+                                       tuning_parameters_dict=self.input_parameter_dict['calculate_neuronal_tuning_curves'],
+                                       message_output=self.message_output).calculate_neuronal_tuning_curves()
 
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
-                self.message_output(traceback.format_exc())
-                failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
+                    # # # frequency shift audio segments
+                    if self.input_parameter_dict['analyses_booleans']['frequency_shift_audio_segment_bool']:
+                        AudioGenerator(root_directory=one_directory,
+                                       freq_shift_settings_dict=self.input_parameter_dict['frequency_shift_audio_segment'],
+                                       message_output=self.message_output).frequency_shift_audio_segment()
 
-        # The completion e-mail must report failures honestly: previously it
-        # always announced success even when every directory had errored and
-        # been swallowed by the except above, so a silent total failure looked
-        # like a clean run to whoever was waiting on the notification.
-        if failed_directories:
-            failure_summary = "\n".join(f"  - {failed_dir}: {failure_reason}"
-                                        for failed_dir, failure_reason in failed_directories)
-            completion_subject = (f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, "
-                                  f"analyses completed with {len(failed_directories)} failure(s)")
-            completion_message = (f"Data analyses finished at "
-                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
-                                  f"by @{self.input_parameter_dict['send_email']['experimenter']}, but "
-                                  f"{len(failed_directories)} of {len(self.root_directories)} director(ies) failed:\n"
-                                  f"{failure_summary}\n\n"
-                                  f"See the run log / traceback for details. \n \n "
-                                  f"***This is an automatic e-mail, please do NOT respond.***")
-        else:
-            completion_subject = (f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, "
-                                  f"analyses have been completed")
-            completion_message = (f"Data analyses have been completed at "
-                                  f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
-                                  f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
-                                  f"You will be notified about further PC usage "
-                                  f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+                    self.message_output(f"Analyzing data in {one_directory} finished at: "
+                                        f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-        Messenger(message_output=self.message_output,
-                  no_receivers_notification=False,
-                  receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
-                  credentials_file=pathlib.Path(configure_path(self.input_parameter_dict['credentials_directory'])) / 'email_config.ini',
-                  exp_settings_dict=None).send_message(subject=completion_subject, message=completion_message)
+                except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+                    self.message_output(traceback.format_exc())
+                    failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
+        finally:
+            # The completion e-mail must report failures honestly: previously it
+            # always announced success even when every directory had errored and
+            # been swallowed by the except above, so a silent total failure looked
+            # like a clean run to whoever was waiting on the notification.
+            if failed_directories:
+                failure_summary = "\n".join(f"  - {failed_dir}: {failure_reason}"
+                                            for failed_dir, failure_reason in failed_directories)
+                completion_subject = (f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, "
+                                      f"analyses completed with {len(failed_directories)} failure(s)")
+                completion_message = (f"Data analyses finished at "
+                                      f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                      f"by @{self.input_parameter_dict['send_email']['experimenter']}, but "
+                                      f"{len(failed_directories)} of {len(self.root_directories)} director(ies) failed:\n"
+                                      f"{failure_summary}\n\n"
+                                      f"See the run log / traceback for details. \n \n "
+                                      f"***This is an automatic e-mail, please do NOT respond.***")
+            else:
+                completion_subject = (f"{self.input_parameter_dict['send_email']['analyses_pc_choice']} PC is available again, "
+                                      f"analyses have been completed")
+                completion_message = (f"Data analyses have been completed at "
+                                      f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d} "
+                                      f"by @{self.input_parameter_dict['send_email']['experimenter']}. "
+                                      f"You will be notified about further PC usage "
+                                      f"should it occur. \n \n ***This is an automatic e-mail, please do NOT respond.***")
+
+            Messenger(message_output=self.message_output,
+                      no_receivers_notification=False,
+                      receivers=self.input_parameter_dict['send_email']['send_message']['receivers'],
+                      credentials_file=pathlib.Path(configure_path(self.input_parameter_dict['credentials_directory'])) / 'email_config.ini',
+                      exp_settings_dict=None).send_message(subject=completion_subject, message=completion_message)
 
 
 @click.command(name='generate-usv-playback')
@@ -279,7 +288,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     -----------
     A command-line tool to compute neuronal tuning curves: behavioral
     (spike-vs-3D-feature ratemaps) and vocal (Q1 pre-USV PETH, Q2 within-USV
-    continuous-property tuning, Q3 within-USV categorical, Q3 per-category
+    continuous-property tuning, Q3a within-USV categorical, Q3b per-category
     PETH). Each subset is produced if its corresponding input is present in
     the session: behavioral runs when the `*_behavioral_features.csv` is
     present, vocal runs when the `*_usv_summary.csv` is present. Sessions

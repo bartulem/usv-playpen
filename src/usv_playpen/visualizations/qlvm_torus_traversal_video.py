@@ -833,6 +833,12 @@ class QLVMTorusTraversalVideo:
                         for s in range(last_count, count):
                             if s >= boundary_positions_per_walk:
                                 break
+                            # `s` is also the grid COLUMN index
+                            # (slot = row * grid_ncols + s); once it
+                            # reaches `grid_ncols` the slot computation
+                            # would spill into the next row, so stop.
+                            if s >= grid_ncols:
+                                break
                             nn = ph['reveal_nn'][s]
                             is_current = (s == count - 1)
                             for row in range(grid_nrows):

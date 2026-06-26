@@ -97,8 +97,13 @@ class DataLoader:
                 if (
                     one_file.is_file()
                     and one_file.suffix.lower() == ".wav"
+                    and not one_file.stem.endswith("_correct")
                     and additional_condition
                 ):
+                    # A "_correct.wav" file is the intermediate sox writes while
+                    # repairing a malformed header; an interrupted/aborted repair
+                    # (crash, kill) can leave one behind. Skipping it here prevents
+                    # that stray temporary from being loaded as a real recording.
                     wave_data_dict[one_file.name] = {
                         "sampling_rate": 0,
                         "wav_data": 0,

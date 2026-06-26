@@ -206,6 +206,16 @@ class YOLODatasetExporter:
         colormap = cfg['colormap']
         manual_labels_directory = cfg['manual_labels_directory']
 
+        # validation_split is a held-out fraction, so it must lie in [0, 1].
+        # A value outside that range silently produces a nonsensical split
+        # (a negative n_val, or n_val > n_total) downstream; validate up front.
+        if not 0.0 <= validation_split <= 1.0:
+            error_message = (
+                f"export_yolo_dataset validation_split must be in [0, 1], "
+                f"got {validation_split}."
+            )
+            raise ValueError(error_message)
+
         if label_source in ("manual", "merge") and not manual_labels_directory:
             error_message = (
                 f"label_source='{label_source}' requires "

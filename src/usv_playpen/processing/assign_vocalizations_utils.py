@@ -12,7 +12,6 @@ import h5py
 import numpy as np
 import polars as pls
 from joblib import Parallel, delayed
-from scipy.stats import vonmises as sp_vonmises
 from tqdm import tqdm
 
 from ..os_utils import atomic_output_path
@@ -207,8 +206,16 @@ def write_to_h5(
         if extra_metadata is not None:
             for k, v in extra_metadata.items():
                 f.attrs[k] = v
+        # np.concatenate raises on an empty sequence, so a session with zero USV
+        # segments would crash here. Fall back to an empty (0, n_channels) float16
+        # array (n_channels taken from the first segment when available, else 0)
+        # so the 'audio' dataset is still written with a consistent dtype/rank.
+        if len(audio) > 0:
+            audio_data = np.concatenate(audio, axis=0)
+        else:
+            audio_data = np.empty((0, 0), dtype=np.float16)
         f.create_dataset(
-            name="audio", data=np.concatenate(audio, axis=0), dtype=np.float16
+            name="audio", data=audio_data, dtype=np.float16
         )
         f.create_dataset(name="node_names", data=node_names)
         f.create_dataset(name="locations", data=locations)
@@ -223,9 +230,7 @@ def eval_pdf_with_angle(
     points_angular: np.ndarray,
     mean_2d: np.ndarray,
     cov_2d: np.ndarray,
-    center_rad: float | None = None,
-    concentration: float | None = None,
-    histogram: np.ndarray | None = None,
+    histogram: np.ndarray,
 ) -> np.ndarray:
     """
     Description
@@ -234,13 +239,11 @@ def eval_pdf_with_angle(
     of points, returning a discrete normalized PMF (not a continuous MVN value).
     The spatial component is a 2D Gaussian with the supplied mean and covariance
     (evaluated as the einsum log-probability against the precision matrix); the
-    angular component is either a von Mises distribution (when `histogram` is
-    None, parameterized by `center_rad` and `concentration`) or, otherwise, the
-    supplied `histogram` renormalized to sum to 1. The two components are
-    combined in log space, the per-grid maximum is subtracted for numerical
-    stability, exponentiated, and the whole array is normalized to sum to 1 over
-    the (spatial x angular) grid. Assumes the points and the mean are in the same
-    coordinate system.
+    angular component is the supplied `histogram` renormalized to sum to 1. The
+    two components are combined in log space, the per-grid maximum is subtracted
+    for numerical stability, exponentiated, and the whole array is normalized to
+    sum to 1 over the (spatial x angular) grid. Assumes the points and the mean
+    are in the same coordinate system.
 
     If the covariance matrix is singular (np.linalg.LinAlgError on inversion),
     the function falls back to placing all mass on the spatial grid point closest
@@ -258,12 +261,9 @@ def eval_pdf_with_angle(
         Mean of the multivariate normal distribution. Shape: (2,)
     cov_2d (np.ndarray)
         Covariance matrix of the multivariate normal distribution. Shape: (2, 2)
-    center_rad (float)
-        Center of the von Mises distribution in radians.
-    concentration (float)
-        Concentration parameter of the von Mises distribution.
     histogram (np.ndarray)
-        Histogram of the angular distribution. Shape: (n_bins,)
+        Histogram of the angular distribution, renormalized internally to sum
+        to 1. Shape: (n_bins,)
 
     Returns
     -------
@@ -275,12 +275,7 @@ def eval_pdf_with_angle(
     points_spatial = points_spatial.reshape(-1, 2)
     diff = points_spatial - mean_2d
 
-    if histogram is None:
-        angular_pdf = sp_vonmises.pdf(
-            points_angular, loc=center_rad, kappa=concentration
-        )
-    else:
-        angular_pdf = histogram / histogram.sum()
+    angular_pdf = histogram / histogram.sum()
     try:
         precision = np.linalg.inv(cov_2d)
         log_prob = -0.5 * np.einsum("ij,jk,ik->i", diff, precision, diff)
@@ -420,8 +415,18 @@ def get_confidence_set(
     orig_shape = pdf.shape
     flat_pdf = pdf.flatten()
     sorted_indices = np.argsort(flat_pdf)[::-1]
-    cumsum = np.cumsum(flat_pdf[sorted_indices])
-    idx_in_confidence_set = sorted_indices[cumsum < confidence_level]
+    sorted_pdf = flat_pdf[sorted_indices]
+    cumsum = np.cumsum(sorted_pdf)
+    # Include the cell that crosses the confidence threshold, not just the
+    # cells strictly below it. A cell is in the set iff the cumulative mass
+    # *before* it (cumsum minus the cell's own mass) is still below the level;
+    # this is the minimal high-density region whose total mass is >= the
+    # requested confidence_level. The old `cumsum < confidence_level` mask
+    # dropped the boundary-crossing cell, so the realised coverage was always
+    # one cell short of the nominal level (under-coverage). This convention
+    # still yields the empty set at confidence_level == 0 (the first cell's
+    # pre-mass of 0 is not < 0) and the full set at confidence_level == 1.
+    idx_in_confidence_set = sorted_indices[(cumsum - sorted_pdf) < confidence_level]
     confidence_set = np.zeros_like(flat_pdf, dtype=bool)
     confidence_set[idx_in_confidence_set] = True
 
@@ -611,16 +616,35 @@ def are_points_in_conf_set(
     # out-of-range index; the angle is intentionally left unclipped because its
     # bins already span the full [-pi, pi) circle.
     nose_points = np.clip(points[:, 0, :2], -arena_dims[:2] / 2, arena_dims[:2] / 2)
-    # These bin grids must match the grid/histogram used to build the PDF in
-    # get_conf_sets_6d (100x100 spatial grid, 45 angular bins).
-    y_bins = np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, 100)
-    x_bins = np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, 100)
-    angle_bins = np.linspace(-np.pi, np.pi, 45, endpoint=False)
-    # np.digitize returns 1-based bin indices, so subtract 1 to index the
-    # 0-based confidence-set arrays.
-    y_bin_indices = np.digitize(nose_points[:, 1], y_bins) - 1
-    x_bin_indices = np.digitize(nose_points[:, 0], x_bins) - 1
+    # The PDF (and hence the confidence set) is *sampled at* the 100 grid
+    # coordinates `linspace(-dim/2, dim/2, 100)` along each spatial axis (see
+    # make_xy_grid in get_conf_sets_6d), so confidence_set[..., i, ...] is the
+    # PDF value at grid coordinate `grid[i]`. To look a query point up against
+    # that grid it must be mapped to its NEAREST grid coordinate, which means
+    # digitizing against the MIDPOINTS between adjacent grid coordinates -- not
+    # against the grid coordinates themselves. Digitizing against the grid
+    # coordinates (the previous behaviour) shifted every point by half a cell,
+    # so a point sitting just past a grid coordinate was assigned the lower cell
+    # even though the upper grid coordinate was closer. The angular axis is
+    # genuinely binned (a 45-bin histogram with edges `linspace(-pi, pi, 46)`),
+    # so it is digitized against those 46 bin edges, matching estimate_angle_pdf.
+    y_grid = np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, 100)
+    x_grid = np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, 100)
+    y_bins = 0.5 * (y_grid[1:] + y_grid[:-1])
+    x_bins = 0.5 * (x_grid[1:] + x_grid[:-1])
+    angle_bins = np.linspace(-np.pi, np.pi, 46, endpoint=True)
+    # Digitizing a (clipped) point against the 99 midpoints returns its nearest
+    # grid index directly in [0, 99] -- NO -1 offset (the -1 only applied to the
+    # old grid-coordinate-as-edge scheme). A point below the first midpoint maps
+    # to grid cell 0; one above the last maps to grid cell 99.
+    y_bin_indices = np.digitize(nose_points[:, 1], y_bins)
+    x_bin_indices = np.digitize(nose_points[:, 0], x_bins)
+    # The angular axis carries 45 bins; digitizing against the 46 histogram
+    # edges yields indices 0..45, where index 45 only occurs for yaw == +pi
+    # (the closed right edge of the last bin). Fold that single boundary value
+    # back into the last bin so the index never runs past the 45-wide axis.
     angle_bin_indices = np.digitize(head_to_nose_yaw, angle_bins) - 1
+    angle_bin_indices = np.clip(angle_bin_indices, 0, angle_bins.shape[0] - 2)
 
     if len(confidence_sets.shape) == 3:  # no angles in the confidence set
         in_set = confidence_sets[

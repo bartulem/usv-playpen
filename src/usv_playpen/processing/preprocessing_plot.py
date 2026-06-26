@@ -24,7 +24,7 @@ apply_plot_style()
 
 class SummaryPlotter:
     def __init__(
-        self, input_parameter_dict: dict = None, root_directory: str = None, message_output: Callable | None = None
+        self, root_directory: str = None, message_output: Callable | None = None
     ) -> None:
         """
         Description
@@ -35,8 +35,6 @@ class SummaryPlotter:
         ----------
         root_directory (str)
             Root directory for data; defaults to None.
-        input_parameter_dict (dict)
-           Processing parameters; defaults to None.
         message_output (Callable | None)
             Logging/message callback used to surface progress and warnings;
             defaults to None, in which case the built-in ``print`` is used.
@@ -46,14 +44,13 @@ class SummaryPlotter:
         None
         """
 
-        if input_parameter_dict is None or root_directory is None:
+        if root_directory is None:
             with open(
                 pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
             ) as json_file:
                 _settings = json.load(json_file)["preprocessing_plot"]
 
         self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
-        self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else _settings["SummaryPlotter"]
         self.message_output = message_output if message_output is not None else print
 
     def preprocessing_summary(
@@ -302,13 +299,19 @@ class SummaryPlotter:
 
         # optimize histogram
         for device_id in plot_statistics_dict:
-            plot_statistics_dict[device_id]["most_extreme_value"] = int(
-                np.round(
-                    np.nanmax(
-                        np.abs(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"])
-                    )
-                )
+            abs_discrepancies = np.abs(
+                ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"]
             )
+            # An empty or all-NaN discrepancy array makes np.nanmax return NaN
+            # (with a RuntimeWarning), and int(round(NaN)) raises ValueError.
+            # Fall back to 0 in that case so the histogram still uses the fixed
+            # +/-10.5 ms window selected by the `< 10` branch below.
+            if abs_discrepancies.size == 0 or np.all(np.isnan(abs_discrepancies)):
+                plot_statistics_dict[device_id]["most_extreme_value"] = 0
+            else:
+                plot_statistics_dict[device_id]["most_extreme_value"] = int(
+                    np.round(np.nanmax(abs_discrepancies))
+                )
             if plot_statistics_dict[device_id]["most_extreme_value"] >= 10:
                 plot_statistics_dict[device_id]["plot_x_min"] = (
                     -plot_statistics_dict[device_id]["most_extreme_value"] - 1.5
@@ -755,20 +758,26 @@ class SummaryPlotter:
                 )
 
             if "s_" in device_id:
-                phidget_data_dictionary["humidity"] = phidget_data_dictionary[
-                    "humidity"
-                ][~np.isnan(phidget_data_dictionary["humidity"])]
+                # Filter NaNs into local arrays instead of writing the filtered
+                # results back into phidget_data_dictionary. The dict is the
+                # caller's object, so mutating it here would shorten the arrays
+                # for any code that reads them after this plotting call (and the
+                # earlier nanmin/nanmedian summary stats were computed on the
+                # full arrays, so the two would silently disagree).
+                humidity_clean = phidget_data_dictionary["humidity"][
+                    ~np.isnan(phidget_data_dictionary["humidity"])
+                ]
                 axin1 = ax[0, device_num].inset_axes(
                     [0.05, 0.8, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
-                axin1.hist(phidget_data_dictionary["humidity"], color="#8EE5EE")
+                axin1.hist(humidity_clean, color="#8EE5EE")
                 axin1.set_yticks([])
                 try:
                     axin1.set_xticks(
                         [
-                            round(phidget_data_dictionary["humidity"].min(), 2),
-                            round(phidget_data_dictionary["humidity"].mean(), 2),
-                            round(phidget_data_dictionary["humidity"].max(), 2),
+                            round(humidity_clean.min(), 2),
+                            round(humidity_clean.mean(), 2),
+                            round(humidity_clean.max(), 2),
                         ]
                     )
                 except ValueError:
@@ -779,26 +788,26 @@ class SummaryPlotter:
                     [0.225, 0.8, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
                 axin2.plot(
-                    phidget_data_dictionary["humidity"], ls="-", lw=0.3, color="#8EE5EE"
+                    humidity_clean, ls="-", lw=0.3, color="#8EE5EE"
                 )
                 axin2.set_xticks([])
                 axin2.set_yticks([])
                 axin2.set_xlabel("time (s)")
 
-                phidget_data_dictionary["lux"] = phidget_data_dictionary["lux"][
+                lux_clean = phidget_data_dictionary["lux"][
                     ~np.isnan(phidget_data_dictionary["lux"])
                 ]
                 axin3 = ax[0, device_num].inset_axes(
                     [0.05, 0.5, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
-                axin3.hist(phidget_data_dictionary["lux"], color="#EEB422")
+                axin3.hist(lux_clean, color="#EEB422")
                 axin3.set_yticks([])
                 try:
                     axin3.set_xticks(
                         [
-                            round(phidget_data_dictionary["lux"].min(), 2),
-                            round(phidget_data_dictionary["lux"].mean(), 2),
-                            round(phidget_data_dictionary["lux"].max(), 2),
+                            round(lux_clean.min(), 2),
+                            round(lux_clean.mean(), 2),
+                            round(lux_clean.max(), 2),
                         ]
                     )
                 except ValueError:
@@ -809,26 +818,26 @@ class SummaryPlotter:
                     [0.225, 0.5, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
                 axin4.plot(
-                    phidget_data_dictionary["lux"], ls="-", lw=0.3, color="#EEB422"
+                    lux_clean, ls="-", lw=0.3, color="#EEB422"
                 )
                 axin4.set_xticks([])
                 axin4.set_yticks([])
                 axin4.set_xlabel("time (s)")
 
-                phidget_data_dictionary["temperature"] = phidget_data_dictionary[
-                    "temperature"
-                ][~np.isnan(phidget_data_dictionary["temperature"])]
+                temperature_clean = phidget_data_dictionary["temperature"][
+                    ~np.isnan(phidget_data_dictionary["temperature"])
+                ]
                 axin5 = ax[0, device_num].inset_axes(
                     [0.05, 0.2, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
-                axin5.hist(phidget_data_dictionary["temperature"], color="#FF7F50")
+                axin5.hist(temperature_clean, color="#FF7F50")
                 axin5.set_yticks([])
                 try:
                     axin5.set_xticks(
                         [
-                            round(phidget_data_dictionary["temperature"].min(), 2),
-                            round(phidget_data_dictionary["temperature"].mean(), 2),
-                            round(phidget_data_dictionary["temperature"].max(), 2),
+                            round(temperature_clean.min(), 2),
+                            round(temperature_clean.mean(), 2),
+                            round(temperature_clean.max(), 2),
                         ]
                     )
                 except ValueError:
@@ -839,7 +848,7 @@ class SummaryPlotter:
                     [0.225, 0.2, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
                 axin6.plot(
-                    phidget_data_dictionary["temperature"],
+                    temperature_clean,
                     ls="-",
                     lw=0.3,
                     color="#FF7F50",

@@ -74,6 +74,7 @@ consolidator aborts on the first legacy file.
 
 import argparse
 import pickle
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,10 +94,22 @@ def _parse_feature_idx(filename: str) -> int:
     Extracts the feature index from a per-feature filename.
 
     The dispatcher's filename schema is
-    `univariate_<analysis_tag>_<idx:04d>_<safe_feat>_<ts>.pkl`. The
-    legacy schema was `univariate_<idx>_<safe_feat>_<ts>.pkl`. Both
-    use the same split-on-underscore strategy: the first integer
-    token after the tag (or after `'univariate'`) is the index.
+    `univariate_<analysis_tag>_<idx:04d>_<safe_feat>_<ts>.pkl`, where the
+    index is always zero-padded to exactly four digits (see
+    `main_univariate_dispatcher.dispatch_univariate_job`, which formats it
+    with `{args.feature_idx:04d}`). The index is therefore located by the
+    *first* `_<NNNN>_` token — a delimiter-anchored run of exactly four
+    digits. This anchoring is robust to all-digit `<analysis_tag>` or
+    `<safe_feat>` tokens that the previous "first all-digit token" scan
+    would have mis-parsed (e.g. a feature whose sanitized name begins with
+    an integer), and it cannot collide with the trailing
+    `<ts>` block, whose `%Y%m%d_%H%M%S` form is an 8-digit date token and a
+    6-digit time token — neither is exactly four digits.
+
+    The legacy schema was `univariate_<idx>_<safe_feat>_<ts>.pkl` with an
+    un-padded index, so no `_<NNNN>_` four-digit group is guaranteed; for
+    those names the function falls back to the original behaviour (the
+    first all-digit token after `'univariate'`).
 
     Parameters
     ----------
@@ -110,6 +123,14 @@ def _parse_feature_idx(filename: str) -> int:
     """
 
     base = Path(filename).stem
+    # Modern schema: the zero-padded `_<NNNN>_` index is the first
+    # exactly-four-digit, delimiter-anchored token. Anchored so that an
+    # all-digit tag/feature token cannot be mistaken for the index.
+    modern = re.search(r'_(\d{4})_', base)
+    if modern is not None:
+        return int(modern.group(1))
+    # Legacy schema (un-padded index): first all-digit token after the
+    # leading `'univariate'` token.
     parts = base.split('_')
     for tok in parts[1:]:
         if tok.isdigit():

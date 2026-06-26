@@ -95,10 +95,18 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
     for col, dtype in df.schema.items():
         if dtype in (pls.Utf8,):
             np_fields.append((col, str_dtype))
-        elif dtype in (pls.Int8, pls.Int16, pls.Int32, pls.Int64):
-            np_fields.append((col, np.int64))
-        elif dtype in (pls.UInt8, pls.UInt16, pls.UInt32, pls.UInt64):
-            np_fields.append((col, np.uint64))
+        elif dtype in (pls.Int8, pls.Int16, pls.Int32, pls.Int64,
+                       pls.UInt8, pls.UInt16, pls.UInt32, pls.UInt64):
+            # A nullable integer column cannot fill an integer structured-array
+            # field: its nulls arrive as Python ``None`` and raise TypeError on
+            # assignment. Promote such columns to float64 so nulls map to NaN;
+            # all-valid integer columns keep their exact int64/uint64 dtype.
+            if df[col].null_count() > 0:
+                np_fields.append((col, np.float64))
+            elif dtype in (pls.Int8, pls.Int16, pls.Int32, pls.Int64):
+                np_fields.append((col, np.int64))
+            else:
+                np_fields.append((col, np.uint64))
         elif dtype in (pls.Float32, pls.Float64):
             np_fields.append((col, np.float64))
         elif dtype == pls.Boolean:
@@ -114,7 +122,15 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
         # the to_list path for strings and for any nullable column (where the two
         # diverge), so the filled structured-array values stay byte-identical.
         if np_dtype == str_dtype or series.null_count() > 0:
-            arr[col] = series.to_list()
+            if np_dtype == np.float64 and series.null_count() > 0:
+                # Nullable numeric column (int promoted to float64 above, or a
+                # natively nullable float column): cast through a float-typed
+                # numpy array so polars nulls become NaN rather than the Python
+                # ``None`` objects that ``to_list`` would yield -- an integer
+                # field cannot accept ``None`` and would raise TypeError.
+                arr[col] = series.cast(pls.Float64).to_numpy()
+            else:
+                arr[col] = series.to_list()
         else:
             arr[col] = series.to_numpy()
 

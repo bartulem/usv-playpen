@@ -3492,6 +3492,29 @@ def multinomial_vocal_category_model_selection(
         }
         best_cand, best_cand_score, best_cand_se = None, 0.0, 0.0
 
+        # The already-selected base block is identical across every candidate in
+        # this step, so build it once per fold here instead of re-hstacking it
+        # inside the candidate loop. `tr_idx_model` (the balanced-train index
+        # selection) depends only on `(tr_idx, fold_idx)` — not on the
+        # candidate — so it is also fold-invariant within the step and cached
+        # alongside. `None` marks the step-0 empty base (np.hstack of [] would
+        # raise); the candidate loop then slices only the new feature and
+        # hstacks it on. Byte-identical: hstack is associative column-wise, so
+        # hstack([base, new]) == hstack(base_cols + [new]). Mirrors the
+        # bout-parameter selector's fold_base_proj caching.
+        fold_tr_idx_model, fold_base_tr, fold_base_te = [], [], []
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+            tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
+            fold_tr_idx_model.append(tr_idx_model)
+            fold_base_tr.append(
+                np.hstack([binned_data[f][tr_idx_model] for f in current_model_features])
+                if current_model_features else None
+            )
+            fold_base_te.append(
+                np.hstack([binned_data[f][te_idx] for f in current_model_features])
+                if current_model_features else None
+            )
+
         for i_feat, feat in enumerate(ranked_features):
             if feat in current_model_features:
                 continue
@@ -3521,9 +3544,16 @@ def multinomial_vocal_category_model_selection(
 
             for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
                 try:
-                    tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
-                    X_tr_stacked = np.hstack([binned_data[f][tr_idx_model] for f in trial_feats])
-                    X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
+                    # Reuse the per-fold cached balanced-train index and base
+                    # block; project/slice only the new candidate and hstack it
+                    # on. Byte-identical to hstacking the full trial set.
+                    tr_idx_model = fold_tr_idx_model[fold_idx]
+                    new_tr = binned_data[feat][tr_idx_model]
+                    new_te = binned_data[feat][te_idx]
+                    base_tr = fold_base_tr[fold_idx]
+                    base_te = fold_base_te[fold_idx]
+                    X_tr_stacked = np.hstack([base_tr, new_tr]) if base_tr is not None else new_tr
+                    X_te_stacked = np.hstack([base_te, new_te]) if base_te is not None else new_te
                     y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
 
                     # Per-fold hyperparameters. When tuning is off, the
@@ -4595,6 +4625,24 @@ def continuous_vocal_manifold_model_selection(
         # `-inf` so any finite candidate score is an improvement.
         best_cand, best_cand_score, best_cand_se = None, float('-inf'), 0.0
 
+        # The already-selected base block is identical across every candidate in
+        # this step, so build it once per fold here instead of re-hstacking it
+        # inside the candidate loop. `None` marks the step-0 empty base
+        # (np.hstack of [] would raise); the candidate loop then slices only the
+        # new feature and hstacks it on. Byte-identical: hstack is associative
+        # column-wise, so hstack([base, new]) == hstack(base_cols + [new]).
+        # Mirrors the bout-parameter / multinomial selectors' base caching.
+        fold_base_tr, fold_base_te = [], []
+        for tr_idx, te_idx in cv_folds:
+            fold_base_tr.append(
+                np.hstack([binned_data[f][tr_idx] for f in current_model_features])
+                if current_model_features else None
+            )
+            fold_base_te.append(
+                np.hstack([binned_data[f][te_idx] for f in current_model_features])
+                if current_model_features else None
+            )
+
         for i_feat, feat in enumerate(ranked_features):
             if feat in current_model_features: continue
             gc.collect()
@@ -4607,8 +4655,15 @@ def continuous_vocal_manifold_model_selection(
 
             for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
                 try:
-                    X_tr_stacked = np.hstack([binned_data[f][tr_idx] for f in trial_feats])
-                    X_te_stacked = np.hstack([binned_data[f][te_idx] for f in trial_feats])
+                    # Reuse the per-fold cached base block; slice only the new
+                    # candidate and hstack it on. Byte-identical to hstacking
+                    # the full trial set.
+                    new_tr = binned_data[feat][tr_idx]
+                    new_te = binned_data[feat][te_idx]
+                    base_tr = fold_base_tr[fold_idx]
+                    base_te = fold_base_te[fold_idx]
+                    X_tr_stacked = np.hstack([base_tr, new_tr]) if base_tr is not None else new_tr
+                    X_te_stacked = np.hstack([base_te, new_te]) if base_te is not None else new_te
                     Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
                     w_tr, w_te = w_global[tr_idx], w_global[te_idx]
                     groups_tr = groups_global[tr_idx]

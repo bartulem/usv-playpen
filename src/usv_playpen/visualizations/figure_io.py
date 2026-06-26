@@ -151,6 +151,17 @@ def resolve_save_path(
                 "`viz_settings['figures']['save_directory']` is set."
             )
     else:
+        # An empty-string `override_dir` would otherwise pass through
+        # `configure_path("")` and silently resolve to the current
+        # working directory; reject it explicitly so the caller fixes
+        # the (mis-)configured path instead of scattering figures into
+        # the CWD.
+        if str(override_dir).strip() == "":
+            raise ValueError(
+                "`override_dir` is an empty string; pass a real "
+                "directory or `None` to fall back to "
+                "`viz_settings['figures']['save_directory']`."
+            )
         save_dir = override_dir
     save_dir = pathlib.Path(configure_path(str(save_dir)))
     save_dir.mkdir(parents=True, exist_ok=True)

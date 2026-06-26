@@ -1874,12 +1874,15 @@ def test_get_confidence_set_zero_level_gives_empty_set():
     assert out.sum() == 0
 
 
-def test_get_confidence_set_one_level_includes_all_but_last():
+def test_get_confidence_set_one_level_includes_all():
     rng = np.random.default_rng(2)
     pdf = rng.random((6, 6))
     pdf /= pdf.sum()
     out = get_confidence_set(pdf, confidence_level=1.0)
-    assert out.sum() == pdf.size - 1
+    # The confidence set now includes the cell that crosses the threshold, so a
+    # confidence_level of 1.0 retains every cell (full coverage) rather than
+    # dropping the final, highest-cumsum cell.
+    assert out.sum() == pdf.size
 
 
 def test_eval_pdf_with_angle_returns_normalized_pdf():

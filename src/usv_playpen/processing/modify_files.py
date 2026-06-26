@@ -295,11 +295,25 @@ class Operator:
             for one_root_dir in self.root_directory:
                 ephys_probe_dir = pathlib.Path(one_root_dir) / 'ephys' / probe_id
                 if ephys_probe_dir.is_dir():
-                    for one_file, one_meta in zip(sorted(ephys_probe_dir.glob(f"*{npx_file_type}.bin*")),
-                                                  sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))):
+                    for one_file in sorted(ephys_probe_dir.glob(f"*{npx_file_type}.bin*")):
+                        # Derive each .meta from its own .bin (same stem, .meta
+                        # extension) instead of zipping two independent sorted
+                        # globs: the two globs can have different lengths / sort
+                        # orders (e.g. a stray .bin without a sibling .meta), and
+                        # zip would then silently pair a .bin with the WRONG
+                        # session's .meta. `.bin` is always the final suffix here,
+                        # so swapping it for `.meta` is exact.
+                        one_meta = one_file.with_name(one_file.name[:-len(".bin")] + ".meta") if one_file.name.endswith(".bin") else one_file.with_suffix(".meta")
                         if one_file.is_file() and one_meta.is_file():
 
-                            # parse metadata file for channel and headstage information
+                            # parse metadata file for channel and headstage information.
+                            # Initialise every parsed variable up front so a .meta
+                            # missing one of these keys fails loudly below instead
+                            # of silently reusing the previous file's value.
+                            total_num_channels = None
+                            headstage_sn = None
+                            spike_glx_sr = None
+                            imec_probe_sn = None
                             with open(one_meta) as meta_data_file:
                                 for line in meta_data_file:
                                     key, value = line.strip().split("=")
@@ -315,6 +329,25 @@ class Operator:
                                     elif key == 'fileTimeSecs':
                                         total_time_secs += float(value)
 
+                            # Validate that the required keys were present; any
+                            # of these being None means the .meta is malformed
+                            # and the downstream channel/sample arithmetic would
+                            # otherwise crash cryptically (or reuse stale state).
+                            missing_meta_keys = [
+                                meta_key
+                                for meta_key, meta_val in (
+                                    ('acqApLfSy', total_num_channels),
+                                    ('imDatHs_sn', headstage_sn),
+                                    ('imDatPrb_sn', imec_probe_sn),
+                                )
+                                if meta_val is None
+                            ]
+                            if missing_meta_keys:
+                                raise KeyError(
+                                    f"{one_meta} is missing required meta key(s): "
+                                    f"{', '.join(missing_meta_keys)}."
+                                )
+
                             binary_file_info_id = one_file.name[:-7]
                             binary_files_info[binary_file_info_id] = {'session_start_end': [np.nan, np.nan],
                                                                       'tracking_start_end': [np.nan, np.nan],
@@ -325,22 +358,28 @@ class Operator:
                                                                       'headstage_sn': headstage_sn,
                                                                       'imec_probe_sn': imec_probe_sn}
 
+                            # Only the total sample count is needed from the
+                            # binary; read its length, then release the memmap
+                            # immediately so its file handle / mapping is not held
+                            # open across the whole (potentially many-file) loop.
                             one_recording = np.memmap(filename=one_file, mode='r', dtype='int16', order='C')
+                            one_recording_length = int(one_recording.shape[0])
+                            del one_recording
 
-                            self.message_output(f"File {pathlib.Path(one_file).name}, recorded with hs #{headstage_sn} & probe #{imec_probe_sn} has total length {one_recording.shape[0]}, or {one_recording.shape[0] // total_num_channels} "
-                                                f"samples on {total_num_channels} channels, totaling {round((one_recording.shape[0] // total_num_channels) / (spike_glx_sr * 60), 2)} minutes of recording.")
+                            self.message_output(f"File {pathlib.Path(one_file).name}, recorded with hs #{headstage_sn} & probe #{imec_probe_sn} has total length {one_recording_length}, or {one_recording_length // total_num_channels} "
+                                                f"samples on {total_num_channels} channels, totaling {round((one_recording_length // total_num_channels) / (spike_glx_sr * 60), 2)} minutes of recording.")
 
-                            binary_files_info[binary_file_info_id]['file_duration_samples'] = int(one_recording.shape[0] // total_num_channels)
+                            binary_files_info[binary_file_info_id]['file_duration_samples'] = int(one_recording_length // total_num_channels)
 
                             if len(changepoints) == 1:
                                 binary_files_info[binary_file_info_id]['session_start_end'][0] = 0
-                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording.shape[0] // total_num_channels)
-                                changepoints.append(int(one_recording.shape[0] // total_num_channels))
+                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording_length // total_num_channels)
+                                changepoints.append(int(one_recording_length // total_num_channels))
                                 concatenation_command += '{} '.format(one_file)
                             else:
                                 binary_files_info[binary_file_info_id]['session_start_end'][0] = changepoints[-1]
-                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording.shape[0] // total_num_channels) + changepoints[-1]
-                                changepoints.append(int(one_recording.shape[0] // total_num_channels) + changepoints[-1])
+                                binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording_length // total_num_channels) + changepoints[-1]
+                                changepoints.append(int(one_recording_length // total_num_channels) + changepoints[-1])
                                 if os.name == 'nt':
                                     concatenation_command += '+ {} '.format(one_file)
                                 else:

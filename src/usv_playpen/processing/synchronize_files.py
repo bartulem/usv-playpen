@@ -440,10 +440,17 @@ class Synchronizer:
         if lsb_bool:
             lsb_array = relevant_array & 1
             ttl_break_end_samples = np.where((lsb_array[1:] - lsb_array[:-1]) > 0)[0]
-            largest_break_end_hop = np.argmax(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1]) + 1
         else:
             ttl_break_end_samples = np.where((relevant_array[1:] - relevant_array[:-1]) > 0)[0]
-            largest_break_end_hop = np.argmax(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1]) + 1
+
+        # With fewer than two TTL break-ends the inter-break diff array is empty,
+        # so np.argmax / np.max would raise on a degenerate signal (no usable sync
+        # pulses). Return the same None-start/None-end sentinel the
+        # out-of-range branch below uses so the caller handles it uniformly.
+        if ttl_break_end_samples.shape[0] < 2:
+            return None, None, 0, ttl_break_end_samples, 0
+
+        largest_break_end_hop = np.argmax(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1]) + 1
 
         largest_break_duration = np.max(ttl_break_end_samples[1:] - ttl_break_end_samples[:-1])
 
@@ -483,6 +490,15 @@ class Synchronizer:
         # falling edges (1->0) mark IPI starts; rising edges (0->1) mark IPI ends
         ipi_start_samples = np.where(np.diff(lsb_array) < 0)[0] + 1
         ipi_end_samples = np.where(np.diff(lsb_array) > 0)[0]
+
+        # A channel with no detectable Arduino pulses yields an empty start or
+        # end array, and the `[0]` comparison below would raise. Return empty
+        # duration / start-sample arrays as the sentinel so the caller's
+        # size-based handling treats the channel as carrying no IPIs.
+        if ipi_start_samples.size == 0 or ipi_end_samples.size == 0:
+            empty_durations = np.zeros(0, dtype=np.float64)
+            empty_starts = np.zeros(0, dtype=ipi_start_samples.dtype)
+            return empty_durations, empty_starts
 
         # find IPI starts and durations in milliseconds
         if ipi_start_samples[0] < ipi_end_samples[0]:
@@ -535,110 +551,115 @@ class Synchronizer:
 
         cap = cv2.VideoCapture(video_of_interest)
 
-        # get video dimensions
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        # Release the VideoCapture in a finally so an exception anywhere in the
+        # decode/centroid loops below (a corrupt frame, an OpenCV error) cannot
+        # leak the open capture / its file handle.
+        try:
+            # get video dimensions
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
-        # scan the first ~1.5 s of frames (1.5x fps) to locate the brightest LED frame
-        max_frame_num = int(round(sync_camera_fps + (sync_camera_fps / 2)))
-        led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
-        led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
-        used_camera = camera_id
+            # scan the first ~1.5 s of frames (1.5x fps) to locate the brightest LED frame
+            max_frame_num = int(round(sync_camera_fps + (sync_camera_fps / 2)))
+            led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
+            led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
+            used_camera = camera_id
 
-        led_positions = list(self.led_px_dict[led_px_version][used_camera].keys())
+            led_positions = list(self.led_px_dict[led_px_version][used_camera].keys())
 
-        # Define each LED's search ROI once (around its approximate coordinate).
-        roi_by_led = {}
-        for led_position in led_positions:
-            led_dim1, led_dim2 = self.led_px_dict[led_px_version][used_camera][led_position]
-            roi_by_led[led_position] = (
-                max(0, led_dim1 - led_px_dev),
-                min(frame_height, led_dim1 + led_px_dev),
-                max(0, led_dim2 - led_px_dev),
-                min(frame_width, led_dim2 + led_px_dev),
-            )
+            # Define each LED's search ROI once (around its approximate coordinate).
+            roi_by_led = {}
+            for led_position in led_positions:
+                led_dim1, led_dim2 = self.led_px_dict[led_px_version][used_camera][led_position]
+                roi_by_led[led_position] = (
+                    max(0, led_dim1 - led_px_dev),
+                    min(frame_height, led_dim1 + led_px_dev),
+                    max(0, led_dim2 - led_px_dev),
+                    min(frame_width, led_dim2 + led_px_dev),
+                )
 
-        peak_intensity = {led_position: -1 for led_position in led_positions}
-        peak_intensity_frame_loc = {led_position: -1 for led_position in led_positions}
+            peak_intensity = {led_position: -1 for led_position in led_positions}
+            peak_intensity_frame_loc = {led_position: -1 for led_position in led_positions}
 
-        # Single sequential pass over the first max_frame_num frames: decode and
-        # grayscale-convert each frame ONCE and update every LED's peak tracker,
-        # instead of re-seeking (CAP_PROP_POS_FRAMES) and re-decoding the same frames
-        # once per LED. Sequential reads return frames pixel-identical to the
-        # per-frame seeks here (verified on real H.264 video: 225/225 frames, zero
-        # pixel diffs), so each LED's brightest frame is unchanged.
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        for frame_num in range(max_frame_num):
-            ret, frame = cap.read()
-            if not ret: continue
+            # Single sequential pass over the first max_frame_num frames: decode and
+            # grayscale-convert each frame ONCE and update every LED's peak tracker,
+            # instead of re-seeking (CAP_PROP_POS_FRAMES) and re-decoding the same frames
+            # once per LED. Sequential reads return frames pixel-identical to the
+            # per-frame seeks here (verified on real H.264 video: 225/225 frames, zero
+            # pixel diffs), so each LED's brightest frame is unchanged.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            for frame_num in range(max_frame_num):
+                ret, frame = cap.read()
+                if not ret: continue
 
-            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                for led_position in led_positions:
+                    y_start, y_end, x_start, x_end = roi_by_led[led_position]
+                    roi_intensity = np.max(frame_gray[y_start:y_end, x_start:x_end])
+                    if roi_intensity > peak_intensity[led_position]:
+                        peak_intensity[led_position] = roi_intensity
+                        peak_intensity_frame_loc[led_position] = frame_num
+
+            # For each LED, seek to its brightest frame and find the LED-spot centroid.
             for led_position in led_positions:
                 y_start, y_end, x_start, x_end = roi_by_led[led_position]
-                roi_intensity = np.max(frame_gray[y_start:y_end, x_start:x_end])
-                if roi_intensity > peak_intensity[led_position]:
-                    peak_intensity[led_position] = roi_intensity
-                    peak_intensity_frame_loc[led_position] = frame_num
+                cap.set(cv2.CAP_PROP_POS_FRAMES, peak_intensity_frame_loc[led_position])
+                ret, frame = cap.read()
+                if ret:
+                    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    roi = frame_gray[y_start:y_end, x_start:x_end]
 
-        # For each LED, seek to its brightest frame and find the LED-spot centroid.
-        for led_position in led_positions:
-            y_start, y_end, x_start, x_end = roi_by_led[led_position]
-            cap.set(cv2.CAP_PROP_POS_FRAMES, peak_intensity_frame_loc[led_position])
-            ret, frame = cap.read()
-            if ret:
-                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                roi = frame_gray[y_start:y_end, x_start:x_end]
+                    # use Otsu's method to automatically find the best threshold
+                    # to separate the bright LED from the darker background within the ROI.
+                    _, binary_roi = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-                # use Otsu's method to automatically find the best threshold
-                # to separate the bright LED from the darker background within the ROI.
-                _, binary_roi = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    # calculate image moments of the resulting binary mask
+                    M = cv2.moments(binary_roi)
 
-                # calculate image moments of the resulting binary mask
-                M = cv2.moments(binary_roi)
+                    # compute centroid
+                    if M['m00'] != 0:
+                        # find the center (cx, cy) *relative to the top-left corner of the small ROI box*
+                        cx_relative = int(M['m10'] / M['m00'])
+                        cy_relative = int(M['m01'] / M['m00'])
 
-                # compute centroid
-                if M['m00'] != 0:
-                    # find the center (cx, cy) *relative to the top-left corner of the small ROI box*
-                    cx_relative = int(M['m10'] / M['m00'])
-                    cy_relative = int(M['m01'] / M['m00'])
+                        # crucially, add the box's offset (y_start, x_start) to convert back to full-frame coordinates
+                        final_y = y_start + cy_relative
+                        final_x = x_start + cx_relative
 
-                    # crucially, add the box's offset (y_start, x_start) to convert back to full-frame coordinates
-                    final_y = y_start + cy_relative
-                    final_x = x_start + cx_relative
+                        self.led_px_dict[led_px_version][used_camera][led_position] = [final_y, final_x]
+                        self.message_output(f"For {led_position}, centroid found at frame {peak_intensity_frame_loc[led_position]}: ({final_y}, {final_x})")
+                    else:
+                        self.message_output(f"Could not find centroid for {led_position}, using original coordinate.")
 
-                    self.led_px_dict[led_px_version][used_camera][led_position] = [final_y, final_x]
-                    self.message_output(f"For {led_position}, centroid found at frame {peak_intensity_frame_loc[led_position]}: ({final_y}, {final_x})")
+            mm_arr = np.memmap(filename=pathlib.Path(self.root_directory) / 'sync' / f'sync_px_{video_name[:-4]}',
+                               dtype=np.uint8, mode='w+', shape=(total_frame_number, 3, 3))
+
+            led_coords = np.array([
+                self.led_px_dict[led_px_version][used_camera]['LED_top'],
+                self.led_px_dict[led_px_version][used_camera]['LED_middle'],
+                self.led_px_dict[led_px_version][used_camera]['LED_bottom']
+            ])
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+            for fr_idx in range(total_frame_number):
+                ret, frame = cap.read()
+
+                if not ret:
+                    self.message_output(f"WARNING: Reached end of decodable frames at index {fr_idx}, while total_frame_number was {total_frame_number}.")
+                    break
+
+                if frame.ndim == 3:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pixel_values = frame_rgb[led_coords[:, 0], led_coords[:, 1]]
+                    mm_arr[fr_idx] = pixel_values
                 else:
-                    self.message_output(f"Could not find centroid for {led_position}, using original coordinate.")
+                    pixel_values = frame[led_coords[:, 0], led_coords[:, 1]]
+                    mm_arr[fr_idx] = np.repeat(pixel_values[:, np.newaxis], repeats=3, axis=1)
 
-        mm_arr = np.memmap(filename=pathlib.Path(self.root_directory) / 'sync' / f'sync_px_{video_name[:-4]}',
-                           dtype=np.uint8, mode='w+', shape=(total_frame_number, 3, 3))
-
-        led_coords = np.array([
-            self.led_px_dict[led_px_version][used_camera]['LED_top'],
-            self.led_px_dict[led_px_version][used_camera]['LED_middle'],
-            self.led_px_dict[led_px_version][used_camera]['LED_bottom']
-        ])
-
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-        for fr_idx in range(total_frame_number):
-            ret, frame = cap.read()
-
-            if not ret:
-                self.message_output(f"WARNING: Reached end of decodable frames at index {fr_idx}, while total_frame_number was {total_frame_number}.")
-                break
-
-            if frame.ndim == 3:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pixel_values = frame_rgb[led_coords[:, 0], led_coords[:, 1]]
-                mm_arr[fr_idx] = pixel_values
-            else:
-                pixel_values = frame[led_coords[:, 0], led_coords[:, 1]]
-                mm_arr[fr_idx] = np.repeat(pixel_values[:, np.newaxis], repeats=3, axis=1)
-
-        cap.release()
-        mm_arr.flush()
+            mm_arr.flush()
+        finally:
+            cap.release()
 
     def attempt_sequence_match(self, brightness_signal: np.ndarray,
                                 camera_fps: float,
@@ -893,7 +914,20 @@ class Synchronizer:
         # find video sync trains
         video_ipi_start_frames, video_sync_sequence_dict = self.find_video_sync_trains(total_frame_number=total_frame_number,
                                                                                        camera_fps=camera_fr)
-        video_sync_sequence_array = np.array(list(video_sync_sequence_dict.values()))
+        # Every camera's recovered sync sequence must be the same length before
+        # stacking into a 2D array; a ragged set would make np.array build an
+        # object array (or raise), and the all-equal check downstream would then
+        # silently misbehave. Validate the lengths and fail with a clear message.
+        video_sync_sequences = list(video_sync_sequence_dict.values())
+        sync_sequence_lengths = {len(seq) for seq in video_sync_sequences}
+        if len(sync_sequence_lengths) > 1:
+            error_message = (
+                f"Per-camera video sync sequences have mismatched lengths "
+                f"{ {key: len(seq) for key, seq in video_sync_sequence_dict.items()} }; "
+                f"cannot stack them into a single comparison array."
+            )
+            raise ValueError(error_message)
+        video_sync_sequence_array = np.array(video_sync_sequences)
 
         # find NIDQ sync trains
         nidq_file = next(iter(sorted(pathlib.Path(self.root_directory).glob("**/*.nidq.bin"))), None)

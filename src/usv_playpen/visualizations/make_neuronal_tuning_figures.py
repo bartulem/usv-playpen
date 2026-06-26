@@ -442,6 +442,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             / "usv_latent_embedding_segmentation.npz"
         )
         self._segmentation_cache: dict | None = None
+        # Memoize the deterministic triage-pickle unpickle and the
+        # catalog-CSV `(mouse_id, rec_date, unit_id)` lookup, each keyed
+        # by absolute path string, so the many per-figure collectors that
+        # all re-open the SAME triage pickle / catalog CSV (e.g. the eight
+        # per-property tuning figures) read each file once per maker.
+        self._triage_pickle_cache: dict[str, dict] = {}
+        self._catalog_lookup_cache: dict[str, dict[tuple[str, int, str], dict]] = {}
 
     # segmentation loading (lazy)
 
@@ -488,6 +495,74 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 }
         self._segmentation_cache = out
         return out
+
+    def _load_triage_pickle(self, triage_pkl_path: str | pathlib.Path) -> dict:
+        """
+        Description
+        -----------
+        Load the unit-triage pickle, memoized by its absolute path so
+        the many figure collectors that all read the SAME artifact (the
+        eight per-property tuning figures, the FR-confound figure and its
+        best-session collector, ...) unpickle it once per maker instead
+        of once per call. The unpickle is deterministic, so returning the
+        shared object is byte-identical to re-reading it; callers treat
+        the returned dict as read-only.
+
+        Parameters
+        ----------
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+
+        Returns
+        -------
+        triage (dict)
+            The unpickled triage dictionary (`thresholds_used`,
+            `catalog_path`, `units`, ... blocks).
+        """
+
+        cache_key = str(pathlib.Path(triage_pkl_path))
+        if cache_key in self._triage_pickle_cache:
+            return self._triage_pickle_cache[cache_key]
+        with open(pathlib.Path(triage_pkl_path), "rb") as fh:
+            triage = pickle.load(fh)
+        self._triage_pickle_cache[cache_key] = triage
+        return triage
+
+    def _load_catalog_lookup(
+            self, catalog_csv_path: str | pathlib.Path
+    ) -> dict[tuple[str, int, str], dict]:
+        """
+        Description
+        -----------
+        Build the `(mouse_id, rec_date, unit_id) -> catalog row` lookup
+        from `unit_catalog.csv`, memoized by absolute path so collectors
+        that all read the SAME catalog parse it once per maker. The parse
+        is deterministic (last duplicate key wins, matching the prior
+        inline `csv.DictReader` loops), so the shared dict is byte-
+        identical to a fresh read; callers treat it as read-only.
+
+        Parameters
+        ----------
+        catalog_csv_path (str | pathlib.Path)
+            Absolute path to the unit catalog CSV pairing each
+            `(mouse_id, rec_date, unit_id)` tuple with its row.
+
+        Returns
+        -------
+        cat_lookup (dict[tuple[str, int, str], dict])
+            Mapping from `(mouse_id, rec_date, unit_id)` to the catalog
+            row dict (`cluster_group`, `somatic`, ... columns).
+        """
+
+        cache_key = str(pathlib.Path(catalog_csv_path))
+        if cache_key in self._catalog_lookup_cache:
+            return self._catalog_lookup_cache[cache_key]
+        cat_lookup: dict[tuple[str, int, str], dict] = {}
+        with open(pathlib.Path(catalog_csv_path)) as fh:
+            for row in csv.DictReader(fh):
+                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+        self._catalog_lookup_cache[cache_key] = cat_lookup
+        return cat_lookup
 
     # color resolution
 
@@ -785,16 +860,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
-            triage = pickle.load(fh)
+        triage = self._load_triage_pickle(triage_pkl_path)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
-        cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
-            for row in csv.DictReader(fh):
-                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+        cat_lookup = self._load_catalog_lookup(catalog_csv_path)
 
         alpha = float(triage["thresholds_used"]["vmi_alpha"])
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
@@ -922,8 +993,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         non_sig_color = self.visualizations_parameter_dict["unassigned_colors"][0]
 
-        with open(pathlib.Path(triage_pkl_path), "rb") as fh:
-            triage = pickle.load(fh)
+        # Reuse the memoized triage dict (the collector above already
+        # loaded it through the same cache) instead of re-reading the
+        # pickle just for the two thresholds.
+        triage = self._load_triage_pickle(triage_pkl_path)
         alpha = float(triage["thresholds_used"]["vmi_alpha"])
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
 
@@ -3462,16 +3535,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             tol = float(USV_PROPERTY_META[property_name]["tol"])
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
-            triage = pickle.load(fh)
+        triage = self._load_triage_pickle(triage_pkl_path)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
-        cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
-            for row in csv.DictReader(fh):
-                cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
+        cat_lookup = self._load_catalog_lookup(catalog_csv_path)
 
         region_to_group = VMI_REGION_TO_GROUP
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
@@ -6736,14 +6805,23 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 strict=False,
             )
         )
-        flat = label_grid.ravel()
-        value_grid = np.array(
+        # Build the per-pixel value image with a vectorised LUT instead
+        # of a Python list-comp over every pixel: map each DISTINCT label
+        # to its `cat_to_value` entry (or NaN) once, then gather by the
+        # label's sorted-unique index via `np.searchsorted`. Each pixel
+        # receives the exact same `cat_to_value[int(l)]` / NaN float as
+        # the old comprehension, so the resulting grid is identical.
+        unique_grid_labels = np.unique(label_grid)
+        value_lut = np.array(
             [
                 cat_to_value[int(l)] if int(l) in cat_to_value else np.nan
-                for l in flat
+                for l in unique_grid_labels
             ],
             dtype=float,
-        ).reshape(label_grid.shape)
+        )
+        value_grid = value_lut[
+            np.searchsorted(unique_grid_labels, label_grid)
+        ].reshape(label_grid.shape)
 
         # shade: hatched gray where NaN; sequential colormap elsewhere
         finite = np.isfinite(value_grid)
@@ -6774,10 +6852,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             )
 
         # 1-NN boundary contours
-        # remap label_grid to dense indices for clean half-integer contours
+        # remap label_grid to dense indices for clean half-integer contours.
+        # `np.unique` returns the labels sorted, and every `label_grid`
+        # entry is one of them, so the dense index of a label is exactly
+        # its insertion point in the sorted unique array — `np.searchsorted`
+        # is a vectorised LUT that reproduces the old per-element
+        # `np.vectorize(label_to_dense.get)` mapping byte-for-byte while
+        # avoiding the Python-level dict lookup over every pixel.
         unique_labels_in_grid = np.unique(label_grid)
-        label_to_dense = {int(l): i for i, l in enumerate(unique_labels_in_grid)}
-        dense = np.vectorize(label_to_dense.get)(label_grid).astype(np.int32)
+        dense = np.searchsorted(unique_labels_in_grid, label_grid).astype(np.int32)
         ax.contour(
             xx, yy, dense,
             levels=np.arange(unique_labels_in_grid.size + 1) - 0.5,

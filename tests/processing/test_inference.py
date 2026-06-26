@@ -936,13 +936,17 @@ def test_are_points_in_conf_set_angle_binning():
     """
     Description
     -----------
-    Lock the angular-bin convention shared by `estimate_angle_pdf` (a 45-bin
-    histogram with edges `linspace(-pi, pi, 46, endpoint=True)`) and
-    `are_points_in_conf_set` (which digitizes head->nose yaw against
-    `linspace(-pi, pi, 45, endpoint=False)` — exactly the 45 left edges of those
-    same bins). A point is reported in-set iff the matching 4D-confidence-set
-    cell is True, guarding against a future divergence of the two binnings
-    (which would silently mis-assign vocalizations by angle).
+    Lock the bin convention shared by the PDF grid built in `get_conf_sets_6d`
+    and the lookup `are_points_in_conf_set` performs. Spatially, the PDF is
+    sampled at the 100 grid coordinates `linspace(-dim/2, dim/2, 100)` per axis,
+    so a query point is mapped to its nearest grid coordinate by digitizing
+    against the 99 MIDPOINTS between adjacent grid coordinates. Angularly, the
+    45-bin histogram has edges `linspace(-pi, pi, 46, endpoint=True)`, so
+    head->nose yaw is digitized against those 46 edges (with the closed +pi
+    right edge folded back into the last bin). A point is reported in-set iff
+    the matching 4D-confidence-set cell is True, guarding against a future
+    divergence of the two binnings (which would silently mis-assign
+    vocalizations).
 
     Parameters
     ----------
@@ -959,9 +963,14 @@ def test_are_points_in_conf_set_angle_binning():
 
     # replicate exactly the indexing are_points_in_conf_set performs
     yaw = np.arctan2(20.0, 10.0)
-    y_idx = int(np.digitize(20.0, np.linspace(-50.0, 50.0, 100)) - 1)
-    x_idx = int(np.digitize(10.0, np.linspace(-50.0, 50.0, 100)) - 1)
-    a_idx = int(np.digitize(yaw, np.linspace(-np.pi, np.pi, 45, endpoint=False)) - 1)
+    y_grid = np.linspace(-50.0, 50.0, 100)
+    x_grid = np.linspace(-50.0, 50.0, 100)
+    y_bins = 0.5 * (y_grid[1:] + y_grid[:-1])
+    x_bins = 0.5 * (x_grid[1:] + x_grid[:-1])
+    angle_bins = np.linspace(-np.pi, np.pi, 46, endpoint=True)
+    y_idx = int(np.digitize(20.0, y_bins))
+    x_idx = int(np.digitize(10.0, x_bins))
+    a_idx = int(np.clip(np.digitize(yaw, angle_bins) - 1, 0, angle_bins.shape[0] - 2))
     assert 0 <= a_idx <= 44
 
     conf = np.zeros((1, 100, 100, 45), dtype=bool)

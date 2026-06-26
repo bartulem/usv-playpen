@@ -1341,7 +1341,16 @@ class USVPlaypenWindow(QMainWindow):
             _id = QFontDatabase.addApplicationFont(str(Path(__file__).parent / 'fonts' / _ttf))
             if font_file_loc is None and _id != -1:
                 font_file_loc = _id
-        self.font_id = QFontDatabase.applicationFontFamilies(font_file_loc)[0]
+        # `applicationFontFamilies` returns an empty list when the font
+        # failed to register (e.g. the bundled .ttf files are missing or
+        # `font_file_loc` is still `None`); fall back to a generic family
+        # name instead of indexing `[0]` on an empty list and crashing.
+        _font_families = (
+            QFontDatabase.applicationFontFamilies(font_file_loc)
+            if font_file_loc is not None
+            else []
+        )
+        self.font_id = _font_families[0] if _font_families else 'Helvetica'
 
         if platform.system() == 'Darwin':
             self.font_size_increase = 4
@@ -2098,9 +2107,17 @@ class USVPlaypenWindow(QMainWindow):
         button_index = 0
         if subjects:
             for subject in subjects:
+                # `_open_edit_intervention_dialog` looks the subject up by
+                # `subject_id` (matching `s['subject_id']`), so a subject
+                # with a missing / blank id can never be found — the old
+                # `'Unknown'` fallback produced dead buttons. Skip those
+                # subjects entirely rather than rendering buttons that
+                # silently no-op when clicked.
+                subject_id = subject.get('subject_id')
+                if not subject_id:
+                    continue
                 if 'interventions' in subject and isinstance(subject['interventions'], dict):
                     for interv_key in subject['interventions']:
-                        subject_id = subject.get('subject_id', 'Unknown')
                         row, col = divmod(button_index, 3)
                         button_x = x_pos_interv_buttons + (col * 130)
                         button_y = y_pos_interv_buttons + (row * 30)

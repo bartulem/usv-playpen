@@ -50,7 +50,12 @@ def find_mouse_names(root_directory: str = None,
 
     track_names = []
     if metadata is None:
-        for sub_directory in (pathlib.Path(root_directory) / 'video').iterdir():
+        # Sort the video subdirectories for determinism: this loop breaks on the
+        # first matching directory, so an unsorted iterdir() (filesystem-ordered)
+        # would make which subdirectory's metadata is read non-deterministic when
+        # more than one matches. Mirrors the sorted iterdir at the candidate-dir
+        # resolution below.
+        for sub_directory in sorted((pathlib.Path(root_directory) / 'video').iterdir(), key=lambda p: p.name):
             if (
                 sub_directory.is_dir()
                 and "." in sub_directory.name
@@ -61,10 +66,13 @@ def find_mouse_names(root_directory: str = None,
                 user_meta_data = img_store.user_metadata
 
                 if "cage" in user_meta_data and "subject" in user_meta_data:
+                    # strict=True so a ragged cage/subject pairing (unequal
+                    # comma-counts in the metadata) raises instead of silently
+                    # dropping the trailing animal of the longer list.
                     for cage, subject in zip(
                         user_meta_data["cage"].split(","),
                         user_meta_data["subject"].split(","),
-                        strict=False,
+                        strict=True,
                     ):
                         if subject != "":
                             track_names.append(f"{cage}_{subject}")

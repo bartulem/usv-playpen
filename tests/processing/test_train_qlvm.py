@@ -123,7 +123,7 @@ def test_build_lattice_fib_requires_2d():
     """The Fibonacci lattice is 2D only; latent_dim != 2 raises rather than
     silently producing a lattice that mismatches the decoder input width."""
     with pytest.raises(ValueError, match="Fibonacci"):
-        build_lattice("fib", latent_dim=3, korobov_a=3, n_points=17, fib_m=5)
+        build_lattice("fibonacci", latent_dim=3, korobov_a=3, n_points=17, fib_m=5)
 
 
 def test_train_full_dataset_no_val(tmp_path, mocker):

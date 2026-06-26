@@ -33,6 +33,7 @@ Key Scientific and Computational Components:
 
 from datetime import datetime
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from pathlib import Path
 import pickle
 import gc
@@ -366,6 +367,24 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             targets = bout_data_dict[sess_id][t_name][target_variable]
             onset_frames = np.round(onsets * camera_fr_dict[sess_id]).astype(int)
 
+            # The per-bout validity test (`start >= 0 and frame_idx <= n_frames`)
+            # and the resulting window-start indices depend only on the onset
+            # frames and the session length, not on the feature column, so they
+            # are computed once per session here rather than re-derived inside
+            # the per-column / per-bout double loop. Every column of a polars
+            # session frame shares `df.height` rows, so the mask is column-
+            # invariant. `valid_starts` indexes a `sliding_window_view` of the
+            # cleaned column below; `valid` (>= 0 and <= n_frames) guarantees
+            # every start lies in `[0, n_frames - history_frames]`, the full
+            # legal range of that view, so the gather is byte-identical to the
+            # old per-bout `col_data[start:frame_idx]` slices.
+            n_frames = df.height
+            starts = onset_frames - self.history_frames
+            valid = (starts >= 0) & (onset_frames <= n_frames)
+            valid_starts = starts[valid]
+            valid_targets = targets[valid]
+            n_valid = int(valid.sum())
+
             for col in df.columns:
                 base_feature = col.split('.')[-1]
                 if base_feature.isdigit(): continue
@@ -383,15 +402,18 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 if generic_key not in final_data_dict:
                     final_data_dict[generic_key] = {'X': [], 'y': [], 'groups': []}
 
-                col_data = df[col].to_numpy()
-                for i, frame_idx in enumerate(onset_frames):
-                    start = frame_idx - self.history_frames
-                    if start >= 0 and frame_idx <= len(col_data):
-                        chunk = col_data[start:frame_idx].copy()
-                        chunk[np.isnan(chunk)] = 0.0
-                        final_data_dict[generic_key]['X'].append(chunk)
-                        final_data_dict[generic_key]['y'].append(targets[i])
-                        final_data_dict[generic_key]['groups'].append(sess_id)
+                if n_valid == 0:
+                    continue
+
+                # NaN -> 0 over the whole column once (matches the old per-chunk
+                # `chunk[np.isnan(chunk)] = 0.0`), then gather every valid
+                # history window in one fancy-index op. `valid` guarantees
+                # n_frames >= history_frames, so the sliding view is well-formed.
+                col_data = np.nan_to_num(df[col].to_numpy(), nan=0.0)
+                windows = sliding_window_view(col_data, self.history_frames)
+                final_data_dict[generic_key]['X'].extend(windows[valid_starts].copy())
+                final_data_dict[generic_key]['y'].extend(valid_targets)
+                final_data_dict[generic_key]['groups'].extend([sess_id] * n_valid)
 
         for feat in final_data_dict:
             for k in ['X', 'y', 'groups']:
@@ -421,8 +443,14 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     mismatched_features.append(feat)
 
         if total_covariates > 0:
+            # `first_feat` is the reference/anchor feature; its unique session
+            # groups (and their counts) are needed both here for the summary's
+            # session count and below for the per-session bout-count backfill.
+            # Compute the `np.unique(return_counts=True)` once and reuse it for
+            # both, rather than walking the same `groups` array twice.
+            ref_uniq, ref_counts = np.unique(ref_groups, return_counts=True)
             total_n = len(final_data_dict[first_feat]['y'])
-            unique_sess_count = len(np.unique(final_data_dict[first_feat]['groups']))
+            unique_sess_count = len(ref_uniq)
             hist_len = final_data_dict[first_feat]['X'].shape[1]
         else:
             total_n = unique_sess_count = hist_len = 0
@@ -479,13 +507,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / fname
 
-        # Backfill per-session counts from the anchor feature's groups.
+        # Backfill per-session counts from the anchor feature's groups. The
+        # anchor feature is `final_features[0]` (== `first_feat`), whose unique
+        # groups + counts were already computed above as `ref_uniq` /
+        # `ref_counts`; reuse them rather than re-running `np.unique`.
         n_events_per_session = {}
         if final_features:
-            anchor_feat = final_features[0]
-            grp = final_data_dict[anchor_feat]['groups']
-            uniq, counts = np.unique(grp, return_counts=True)
-            for sess_id, sess_count in zip(uniq, counts):
+            for sess_id, sess_count in zip(ref_uniq, ref_counts):
                 n_events_per_session[str(sess_id)] = {
                     'bout_onsets': int(sess_count),
                 }

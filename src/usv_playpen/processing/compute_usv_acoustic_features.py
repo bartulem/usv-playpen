@@ -140,8 +140,17 @@ def build_mask_region_masks(
     for i in range(n_valid):
         summary_row = int(usv_indices[i])
         mask_rows = np.flatnonzero(spectrogram_index == summary_row)
-        if mask_rows.size > 0:
-            region_masks[i] = np.any(segmentations[mask_rows], axis=0).astype(np.float32)
+        union_mask = (
+            np.any(segmentations[mask_rows], axis=0) if mask_rows.size > 0
+            else None
+        )
+        # Use the SAM mask only when it actually selects at least one pixel. A
+        # mask row that exists but is entirely empty (all-False union) would
+        # otherwise leave region_masks[i] all-zero, which makes every masked
+        # feature downstream degenerate (NaN / undefined). Treat that case
+        # exactly like "no mask row" and fall back to the time-window region.
+        if union_mask is not None and union_mask.any():
+            region_masks[i] = union_mask.astype(np.float32)
         else:
             signal_len = int(min(max(int(durations[i]), 1), n_time))
             region_masks[i, :, :signal_len] = 1.0
@@ -229,12 +238,15 @@ def compute_acoustic_features(
     region_full = np.broadcast_to(region, specs.shape)              # [N, F, T] view (no copy when broadcast)
     masked_specs = specs * region                                  # background zeroed
 
-    n_region = region_full.sum(axis=(1, 2))                          # [N] unmasked-pixel count
-    sum_region = masked_specs.sum(axis=(1, 2))                       # [N]
-
     # Time-averaged power per frequency bin (over unmasked columns of that row
     # only), then normalized to a per-row probability distribution over frequency.
     region_counts = region_full.sum(axis=2)                          # [N, F] unmasked cols per freq row
+    # n_region (total unmasked pixels per spectrogram) is the row-sum of the
+    # per-frequency unmasked-column counts, so derive it from region_counts
+    # instead of a second full (1, 2)-axis reduction over region_full.
+    n_region = region_counts.sum(axis=1)                             # [N] unmasked-pixel count
+    sum_region = masked_specs.sum(axis=(1, 2))                       # [N]
+
     freq_power = masked_specs.sum(axis=2) / (region_counts + _EPS)   # [N, F]
     freq_power_norm = freq_power / (freq_power.sum(axis=1, keepdims=True) + _EPS)
 

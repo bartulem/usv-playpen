@@ -4092,6 +4092,13 @@ class DeepResultsVisualizer:
         # Compute Actual Skill Score: 1 - (Actual / Null)
         actual_skill = 1.0 - (actual_errors / null_free_errors)
 
+        # Seed the global RNG BEFORE the first stochastic draw so the
+        # null permutation below is reproducible too (it previously ran
+        # ahead of the seed and so varied run-to-run). The seed value is
+        # read from the modeling settings rather than hard-coded so it
+        # tracks the same `random_seed` every other modeling routine uses.
+        np.random.seed(self.modeling_settings['model_params']['random_seed'])
+
         # COMPUTE PERMUTED NULL SKILL: 1 - (Null_shuffled / Null)
         # This gives the Null "width" so it doesn't break the Y-axis scaling
         shuffled_null_errors = np.random.permutation(null_free_errors)
@@ -4101,7 +4108,6 @@ class DeepResultsVisualizer:
         actual_mean_skill = np.mean(actual_skill)
 
         # 2. Bootstrap the distributions
-        np.random.seed(42)
 
         # Euclidean Error Bootstrapping (Panel A)
         null_dist = [np.mean(np.random.choice(null_free_errors, size=len(null_free_errors), replace=True))

@@ -145,11 +145,23 @@ class Vocalocator:
             tracks, node_names = load_tracks_from_h5(track_file_path)
             onsets_in_seconds = usv_segments[:, 0]
             onsets_in_video_frames = (onsets_in_seconds * video_frame_rate).astype(int)
+            # A USV onset that lands at or beyond the last tracked video frame
+            # (rounding, a recording that ends mid-vocalization, or a track that
+            # is a few frames shorter than the audio) would index past the end of
+            # `tracks` and raise IndexError. Clamp the frame index to the last
+            # valid frame so those edge-of-recording USVs reuse the final pose
+            # rather than aborting the whole assignment run.
+            onsets_in_video_frames = np.clip(onsets_in_video_frames, 0, tracks.shape[0] - 1)
             track_locations_at_usv_onsets = tracks[onsets_in_video_frames] * 1000
 
             audio = [to_float(handle[onset:offset, :]) for onset, offset in tqdm(zip(usv_onsets_in_samples, usv_offsets_in_samples),
                                                                                            total=usv_segments.shape[0])]
-            audio_lengths = usv_offsets_in_samples - usv_onsets_in_samples
+            # Derive each segment length from the audio array actually sliced out
+            # of the memmap, not from the nominal (offset - onset). A USV whose
+            # offset sample exceeds the recording length is silently truncated by
+            # the slice, so the nominal length would overstate it and desync the
+            # `length_idx` offsets from the concatenated `audio` written to disk.
+            audio_lengths = np.array([segment.shape[0] for segment in audio], dtype=np.int64)
             length_idx = np.cumsum(np.insert(audio_lengths, obj=0, values=0))
 
             # write data to file
@@ -240,7 +252,7 @@ class Vocalocator:
 
         conf_sets, _, _ = get_conf_sets_6d(raw_output, arena_dims, 1.0, True)
 
-        pts_in_set = np.stack([are_points_in_conf_set(conf_sets, true_locs[:, mouse_idx, ...], arena_dims,) for mouse_idx in range(2)],axis=1,)
+        pts_in_set = np.stack([are_points_in_conf_set(conf_sets, true_locs[:, mouse_idx, ...], arena_dims,) for mouse_idx in range(true_locs.shape[1])],axis=1,)
 
         none_in_set = pts_in_set.sum(axis=1) == 0
         one_in_set = pts_in_set.sum(axis=1) == 1
@@ -272,13 +284,23 @@ class Vocalocator:
 
         sound_loc_assignment_arr = np.load(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy')
 
+        # Initialise every emitter to None, then set only the assigned rows.
+        # Building the column off `pls.col('emitter')` would let an unassigned
+        # USV (sound_loc_assignment_arr == -1) keep whatever stale emitter the
+        # CSV already held from a prior assignment pass; starting from None
+        # guarantees the emitter reflects only this run's assignments.
+        emitter_expression = pls.lit(value=None, dtype=pls.String)
+
         for mouse_idx, mouse in enumerate(track_names):
-            usv_summary_df = usv_summary_df.with_columns(
+            emitter_expression = (
                 pls.when(pls.lit(sound_loc_assignment_arr == mouse_idx))
                 .then(pls.lit(mouse))
-                .otherwise(pls.col('emitter'))
-                .alias('emitter')
+                .otherwise(emitter_expression)
             )
+
+        usv_summary_df = usv_summary_df.with_columns(
+            emitter_expression.alias('emitter')
+        )
 
         usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
 

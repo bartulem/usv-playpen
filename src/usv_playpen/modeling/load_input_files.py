@@ -163,6 +163,87 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
 
     return np.array(all_valid_t)
 
+def _build_binary_occupancy(event_starts: np.ndarray,
+                            event_stops: np.ndarray,
+                            duration_frames: int,
+                            fps: float) -> np.ndarray:
+    """
+    Convert USV start/stop timestamps into a binary occupancy trace.
+
+    Each event spans the frames `[floor(start * fps), ceil(stop * fps))`,
+    clipped to the session bounds, and contributes `1.0` to those frames; a
+    sub-frame event (`stop` index not past `start` index) marks the single
+    `start` frame. This is the raw occupancy array that
+    :func:`_generate_vocal_trace` optionally smooths, factored out so a caller
+    that needs *both* the binary and the smoothed trace for the same event set
+    can build the occupancy once and reuse it (see :func:`_smooth_occupancy`)
+    rather than rasterising the same timestamps twice.
+
+    Parameters
+    ----------
+    event_starts : np.ndarray
+        Array of start times in seconds.
+    event_stops : np.ndarray
+        Array of stop times in seconds.
+    duration_frames : int
+        Total number of frames in the session (to define array length).
+    fps : float
+        Camera frames per second.
+
+    Returns
+    -------
+    trace : np.ndarray
+        Binary occupancy trace (0/1) of shape `(duration_frames,)`, dtype
+        `float`.
+    """
+    trace = np.zeros(duration_frames, dtype=float)
+
+    start_indices = np.floor(event_starts * fps).astype(int)
+    stop_indices = np.ceil(event_stops * fps).astype(int)
+
+    # Clip indices to ensure they stay within session boundaries
+    start_indices = np.clip(start_indices, 0, duration_frames)
+    stop_indices = np.clip(stop_indices, 0, duration_frames)
+
+    for s, e in zip(start_indices, stop_indices):
+        if e > s:
+            trace[s:e] = 1.0
+        elif s < duration_frames:
+            # Handle edge case where USV duration is sub-frame
+            trace[s] = 1.0
+
+    return trace
+
+
+def _smooth_occupancy(binary_trace: np.ndarray, smooth_sd: float) -> np.ndarray:
+    """
+    Gaussian-smooth a precomputed binary occupancy trace.
+
+    Applies the same `Gaussian1DKernel` convolution that
+    :func:`_generate_vocal_trace` uses, factored out so a caller holding an
+    already-built occupancy trace (from :func:`_build_binary_occupancy`) can
+    smooth it directly without rebuilding the binary trace from the raw
+    timestamps. Producing the smoothed trace this way is bit-identical to
+    calling `_generate_vocal_trace(..., smooth_sd=smooth_sd)`, because the
+    convolution input (the binary occupancy) is the same array.
+
+    Parameters
+    ----------
+    binary_trace : np.ndarray
+        Binary occupancy trace as returned by :func:`_build_binary_occupancy`.
+    smooth_sd : float
+        Standard deviation (in frames) for the Gaussian smoothing kernel.
+
+    Returns
+    -------
+    trace : np.ndarray
+        Gaussian-smoothed density trace, same shape as `binary_trace`.
+    """
+    kernel = Gaussian1DKernel(stddev=smooth_sd)
+    return convolve(binary_trace, kernel, boundary='extend',
+                    nan_treatment='interpolate', preserve_nan=True)
+
+
 def _generate_vocal_trace(event_starts: np.ndarray,
                           event_stops: np.ndarray,
                           duration_frames: int,
@@ -172,7 +253,11 @@ def _generate_vocal_trace(event_starts: np.ndarray,
     Core utility to convert USV timestamps into a continuous temporal trace.
 
     This function handles the conversion of start/stop times into a binary
-    occupancy array and optionally applies Gaussian smoothing.
+    occupancy array and optionally applies Gaussian smoothing. The binary
+    rasterisation and the smoothing are factored into
+    :func:`_build_binary_occupancy` and :func:`_smooth_occupancy`; callers that
+    need both the binary and the smoothed trace for the same event set should
+    call those two helpers directly so the occupancy is built only once.
 
     Parameters
     ----------
@@ -193,26 +278,10 @@ def _generate_vocal_trace(event_starts: np.ndarray,
     trace : np.ndarray
         The generated temporal trace (either binary or smoothed density).
     """
-    trace = np.zeros(duration_frames, dtype=float)
-
-    start_indices = np.floor(event_starts * fps).astype(int)
-    stop_indices = np.ceil(event_stops * fps).astype(int)
-
-    # Clip indices to ensure they stay within session boundaries
-    start_indices = np.clip(start_indices, 0, duration_frames)
-    stop_indices = np.clip(stop_indices, 0, duration_frames)
-
-    for s, e in zip(start_indices, stop_indices):
-        if e > s:
-            trace[s:e] = 1.0
-        elif s < duration_frames:
-            # Handle edge case where USV duration is sub-frame
-            trace[s] = 1.0
+    trace = _build_binary_occupancy(event_starts, event_stops, duration_frames, fps)
 
     if smooth_sd is not None and smooth_sd > 0:
-        kernel = Gaussian1DKernel(stddev=smooth_sd)
-        trace = convolve(trace, kernel, boundary='extend',
-                         nan_treatment='interpolate', preserve_nan=True)
+        trace = _smooth_occupancy(trace, smooth_sd)
 
     return trace
 
@@ -407,13 +476,24 @@ def find_bout_epochs(root_directories: list = None,
             # USV set (`mouse_usvs_df`), never the category-filtered positive
             # source, so an onset category filter cannot leak into the
             # 'usv_rate'/'usv_count' predictors or the 'state'-mode labels.
-            usv_frame_events = _generate_vocal_trace(mouse_usvs_df['start'].to_numpy(),
-                                                     mouse_usvs_df['stop'].to_numpy(),
-                                                     session_duration_frames, session_fps, smooth_sd=None)
+            # Build the binary occupancy once and reuse it for both the binary
+            # `usv_count` trace and the smoothed `usv_rate` trace. The previous
+            # code rasterised the same start/stop timestamps twice (once with
+            # `smooth_sd=None`, once with the smoothing sd), rebuilding an
+            # identical binary occupancy inside the second call before smoothing
+            # it. Smoothing the shared occupancy here is bit-identical to that
+            # second `_generate_vocal_trace` call. The `else` branch preserves
+            # the original behaviour when `proportion_smoothing_sd` is None or 0
+            # (in which case `_generate_vocal_trace` returned the raw binary
+            # trace).
+            usv_frame_events = _build_binary_occupancy(mouse_usvs_df['start'].to_numpy(),
+                                                       mouse_usvs_df['stop'].to_numpy(),
+                                                       session_duration_frames, session_fps)
 
-            usv_frame_rate = _generate_vocal_trace(mouse_usvs_df['start'].to_numpy(),
-                                                         mouse_usvs_df['stop'].to_numpy(),
-                                                         session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd)
+            if proportion_smoothing_sd is not None and proportion_smoothing_sd > 0:
+                usv_frame_rate = _smooth_occupancy(usv_frame_events, proportion_smoothing_sd)
+            else:
+                usv_frame_rate = usv_frame_events
 
             usv_data_dict[session_id][mouse_name]['usv_count'] = usv_frame_events
             usv_data_dict[session_id][mouse_name]['usv_rate'] = usv_frame_rate
