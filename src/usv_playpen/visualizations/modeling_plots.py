@@ -886,6 +886,12 @@ def plot_raw_feature_difference(
     time_in_seconds = np.linspace(-4, 0, n_time_points)
 
     print(f"Total Epochs -> {label_target}: {all_target_epochs.shape[0]}, {label_other}: {all_other_epochs.shape[0]}")
+    # A condition with zero epochs leaves an empty (0, 650) array; np.nanmin below
+    # would warn and return nan, and np.random.choice(0, size>=1, replace=False)
+    # would raise. Skip the plot for this degenerate feature instead.
+    if all_target_epochs.shape[0] == 0 or all_other_epochs.shape[0] == 0:
+        print(f"  Skipping raw feature difference plot: no epochs for {label_target} or {label_other}.")
+        return
     print(f"Data Range Check -> Min: {np.nanmin(all_target_epochs):.2f}, Max: {np.nanmax(all_target_epochs):.2f}")
 
     target_subset_size = max(1, int(all_target_epochs.shape[0] * subset_fraction))

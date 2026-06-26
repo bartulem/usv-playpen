@@ -476,6 +476,24 @@ def test_resolve_window_explicit_bounds(tmp_path):
     assert (start_s, end_s) == (0.1, 0.5)
 
 
+def test_resolve_window_clamps_out_of_range_bounds(tmp_path):
+    """A window extending past the recording (or before 0) is clamped to
+    [0, sample_num], with the seconds re-derived from the clamped indices, so a
+    caller's time vector (num = end_signal - start_signal) matches its numpy-
+    clamped data slice instead of raising a length mismatch in ax.plot."""
+    plotter = USVSpectrogramPlotter(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_base_settings(time_window=(-1.0, 10.0)),
+    )
+    # -1 s start -> clamped to 0; 10 s end @ 250 kHz = 2_500_000 > 500_000 samples.
+    start_sig, end_sig, start_s, end_s = plotter._resolve_window(
+        sample_num=500_000, sampling_rate=250_000
+    )
+    assert start_sig == 0
+    assert end_sig == 500_000
+    assert (start_s, end_s) == pytest.approx((0.0, 2.0))
+
+
 # ---- _compute_magnitude_spectrogram ---------------------------------------
 
 

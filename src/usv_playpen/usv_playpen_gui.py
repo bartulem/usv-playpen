@@ -12,7 +12,6 @@ import ctypes
 import json
 import os
 import platform
-import re
 import sys
 from functools import partial
 from importlib import metadata
@@ -1069,11 +1068,19 @@ def replace_name_in_path(experimenter_list: list = None,
 
     if any(name in loc for name in experimenter_list for loc in recording_files_destinations):
         revised_recording_files_destination_win = []
-        for path, name_in_path in zip(recording_files_destinations,
-                                      [name for name in experimenter_list for loc in recording_files_destinations if name in loc]):
-            old_name_path = path
-            name_span = re.search(pattern=name_in_path, string=old_name_path).span()
-            revised_recording_files_destination_win.append(old_name_path[:name_span[0]] + exp_id + old_name_path[name_span[1]:])
+        for path in recording_files_destinations:
+            # Pair each destination with the experimenter name that actually occurs
+            # in IT (not a cross-product over all destinations), and substitute via
+            # literal string find/slice rather than re.search -- so the correct name
+            # is replaced per path, a name with regex metacharacters is handled
+            # literally, and a destination with no matching name is left untouched
+            # instead of crashing on None.span().
+            matched_name = next((name for name in experimenter_list if name in path), None)
+            if matched_name is None:
+                revised_recording_files_destination_win.append(path)
+                continue
+            start = path.find(matched_name)
+            revised_recording_files_destination_win.append(path[:start] + exp_id + path[start + len(matched_name):])
         global_destination = ','.join(revised_recording_files_destination_win)
     else:
         global_destination = ','.join(recording_files_destinations)
@@ -2368,6 +2375,38 @@ class USVPlaypenWindow(QMainWindow):
             # (already guarded inside _update_metadata_preview).
             self._update_metadata_preview()
 
+    def _write_metadata_to_disk(self) -> None:
+        """
+        Description
+        -----------
+        Persist the current ``self.metadata_settings`` to the package
+        ``_config/_metadata.yaml``. This is the bare write, with no UI /
+        central-widget guard, shared by :meth:`_save_metadata_to_yaml` (which first
+        refreshes the VideoSettings form fields and updates the preview) and by the
+        post-recording persistence in :meth:`_start_recording`, where the central
+        widget is ConductRecording (not VideoSettings) so the guarded saver would
+        otherwise return without writing and the recording-updated metadata would be
+        silently lost.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        None
+        """
+
+        metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
+        with open(metadata_path, 'w') as metadata_file:
+            yaml.dump(
+                self.metadata_settings,
+                metadata_file,
+                Dumper=SmartDumper,
+                default_flow_style=False,
+                sort_keys=False,
+                indent=2
+            )
+
     def _save_metadata_to_yaml(self) -> None:
         """
         Description
@@ -2410,16 +2449,7 @@ class USVPlaypenWindow(QMainWindow):
         session['keywords'] = [k.strip() for k in keywords_str.split(',') if k.strip()]
         session['notes'] = self.notes_edit.text()
 
-        metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
-        with open(metadata_path, 'w') as metadata_file:
-            yaml.dump(
-                self.metadata_settings,
-                metadata_file,
-                Dumper=SmartDumper,
-                default_flow_style=False,
-                sort_keys=False,
-                indent=2
-            )
+        self._write_metadata_to_disk()
 
         self._update_metadata_preview()
 
@@ -6753,7 +6783,7 @@ class USVPlaypenWindow(QMainWindow):
 
         if updated_metadata:
             self.metadata_settings = updated_metadata
-            self._save_metadata_to_yaml()
+            self._write_metadata_to_disk()
 
     def _enable_visualize_buttons(self) -> None:
         """

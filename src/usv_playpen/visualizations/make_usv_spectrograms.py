@@ -362,6 +362,18 @@ class USVSpectrogramPlotter:
         start_signal = round(start_time_sec * sampling_rate)
         end_signal = round(end_time_sec * sampling_rate)
 
+        # Clamp to the available samples so every caller's data slice and time
+        # vector stay consistent. An out-of-range window otherwise makes
+        # plot_all_channels' time_vec (num = end_signal - start_signal) longer than
+        # the numpy-clamped data slice, raising in ax.plot, and stretches
+        # plot_single_channel's time axis past the recording. Re-derive the start/
+        # end seconds from the clamped sample indices so the time axis matches the
+        # plotted samples. No-op for normal in-range windows.
+        start_signal = max(0, start_signal)
+        end_signal = min(end_signal, sample_num)
+        start_time_sec = start_signal / sampling_rate
+        end_time_sec = end_signal / sampling_rate
+
         return start_signal, end_signal, start_time_sec, end_time_sec
 
     def _compute_magnitude_spectrogram(

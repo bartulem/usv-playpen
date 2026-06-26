@@ -1536,6 +1536,37 @@ def test_plot_category_prevalence_and_embedding(plot_type):
     plt.close(fig)
 
 
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_plot_category_prevalence_and_embedding_non_contiguous_category_ids():
+    """Territorial boundaries must render for NON-CONTIGUOUS category IDs (e.g.
+    {0, 5, 11}). The boundary contour interpolates ordinal CODES so the integer
+    `arange(N+1)-0.5` levels still land between adjacent categories; the old
+    raw-value interpolation tied the levels to the category count, so boundaries
+    between non-contiguous IDs were mis-placed or omitted. Exercises that path."""
+    rng = np.random.default_rng(7)
+    per_cat = 25
+    # Three well-separated clusters with non-contiguous category IDs.
+    centers = {0: (-4.0, -4.0), 5: (0.0, 4.0), 11: (4.0, -4.0)}
+    dim1, dim2, cats, sexes = [], [], [], []
+    for cat, (cx, cy) in centers.items():
+        dim1.extend(rng.normal(cx, 0.4, per_cat))
+        dim2.extend(rng.normal(cy, 0.4, per_cat))
+        cats.extend([cat] * per_cat)
+        sexes.extend((["male"] * 9) + (["female"] * 9) + (["unassigned"] * 7))
+    df_embedding = pls.DataFrame(
+        {"dim1": dim1, "dim2": dim2, "category": cats, "sex": sexes}
+    )
+    fig, axes = plot_category_prevalence_and_embedding(
+        df_embedding,
+        male_color=_HEX_MALE, female_color=_HEX_FEMALE,
+        unassigned_color=_HEX_UNASSIGNED,
+        plot_type="density", log_scale_bars=True, grid_res=25,
+    )
+    assert axes.shape == (4, 2)
+    plt.close(fig)
+
+
 def test_plot_category_prevalence_and_embedding_bad_plot_type_raises():
     """
     Description

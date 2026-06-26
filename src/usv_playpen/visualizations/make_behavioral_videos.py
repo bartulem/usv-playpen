@@ -1751,6 +1751,14 @@ class Create3DVideo:
                     time_correction_coefficient = 20000  # 80 ms
                     window_start_signal = window_start_signal - ttl_start - time_correction_coefficient
                     window_end_signal = window_end_signal - ttl_start - time_correction_coefficient
+                    # The in-range check above validated the window in camera frames
+                    # BEFORE this TTL/time correction shifted it in sample space; a
+                    # negative start would make speaker_audio_data[start:end] wrap
+                    # (numpy negative indexing) and silently render a spectrogram over
+                    # the wrong audio. Re-validate against the speaker-audio bounds.
+                    if window_start_signal < 0 or window_end_signal > speaker_audio_data.shape[0]:
+                        self.message_output("TTL-corrected spectrogram window falls outside the speaker audio bounds; skipping the spectrogram.")
+                        return
                     spectrogram_data = librosa.stft(y=speaker_audio_data[window_start_signal:window_end_signal].astype(np.float32),
                                                     n_fft=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_stft_nfft'])
                 else:

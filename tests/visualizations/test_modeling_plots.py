@@ -664,6 +664,37 @@ class TestPlotRawFeatureDifference:
         assert len(list(out_dir.glob("*avg_bootstrap.svg"))) == 1
         assert len(list(out_dir.glob("*heatmap.svg"))) == 1
 
+    def test_empty_condition_skips_without_crash(self, tmp_path):
+        """A feature where one condition contributes zero epochs must skip the plot
+        (log a message and return) rather than crash in np.nanmin / np.random.choice
+        ('cannot take a larger sample than population when replace=False')."""
+        n_time = 60
+        feature_key = 'self.speed'
+        rng = np.random.default_rng(31)
+        data = {
+            feature_key: {
+                'session_a': {
+                    'usv_feature_arr': np.empty((0, n_time)),   # zero target epochs
+                    'no_usv_feature_arr': rng.standard_normal((35, n_time)),
+                },
+            }
+        }
+        pkl = tmp_path / "empty_cond_input.pkl"
+        with pkl.open('wb') as fh:
+            pickle.dump(data, fh)
+        out_dir = tmp_path / "raw_empty_out"
+        out_dir.mkdir()
+        # Must not raise; the degenerate feature is skipped so no SVGs are written.
+        plot_raw_feature_difference(
+            pickle_file_path=str(pkl),
+            feature_key=feature_key,
+            subset_fraction=0.5,
+            n_bootstraps=20,
+            save_plots=True,
+            output_dir=str(out_dir),
+        )
+        assert list(out_dir.glob("*.svg")) == []
+
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_vocal_categories_mode_writes_avg_and_heatmap(self, tmp_path):
         """A Vocal-Categories-shaped input pickle (``target_feature_arr`` /

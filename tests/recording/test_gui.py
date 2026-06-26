@@ -12,7 +12,37 @@ from PyQt6.QtWidgets import QPushButton
 from usv_playpen import usv_playpen_gui
 from usv_playpen.usv_playpen_gui import (
     ChemoDialog, EphysDialog, LesionDialog, OptoDialog, _safe_literal_eval,
+    replace_name_in_path,
 )
+
+
+def test_replace_name_in_path_pairs_each_destination_with_its_own_name():
+    """Each destination is rewritten with the experimenter name that occurs in IT
+    (not a cross-product mispairing), names are matched literally (no regex), and a
+    destination with no matching name is left unchanged instead of crashing."""
+    # experimenter_list order is the REVERSE of the destination order: the old
+    # cross-product zip would pair the first path with 'bob' and crash on
+    # re.search(...).span() (None); the per-path lookup substitutes correctly.
+    assert replace_name_in_path(
+        experimenter_list=["bob", "alice"],
+        recording_files_destinations=["/data/alice/sess", "/backup/bob/sess"],
+        exp_id="EXP1",
+    ) == "/data/EXP1/sess,/backup/EXP1/sess"
+
+    # Multi-destination where only one path carries a name: the name-less one is
+    # left untouched (the old code crashed on the mispaired None.span()).
+    assert replace_name_in_path(
+        experimenter_list=["alice"],
+        recording_files_destinations=["/data/alice/sess", "/backup/none/sess"],
+        exp_id="EXP2",
+    ) == "/data/EXP2/sess,/backup/none/sess"
+
+    # A name containing a regex metacharacter is matched literally (not as a regex).
+    assert replace_name_in_path(
+        experimenter_list=["a.b"],
+        recording_files_destinations=["/data/a.b/sess"],
+        exp_id="EXP3",
+    ) == "/data/EXP3/sess"
 
 @pytest.fixture
 def app(qtbot):
@@ -478,15 +508,17 @@ def test_start_handlers_invoke_backends(app):
 
     # Recording that returns no metadata -> no save.
     app.run_exp.conduct_behavioral_recording = MagicMock(return_value=None)
-    app._save_metadata_to_yaml = MagicMock()
+    app._write_metadata_to_disk = MagicMock()
     app._start_recording()
-    app._save_metadata_to_yaml.assert_not_called()
+    app._write_metadata_to_disk.assert_not_called()
 
-    # Recording that returns updated metadata -> persisted.
+    # Recording that returns updated metadata -> persisted DIRECTLY, not via the
+    # VideoSettings-gated _save_metadata_to_yaml (which would return without writing
+    # while the central widget is ConductRecording, silently losing the metadata).
     app.run_exp.conduct_behavioral_recording = MagicMock(return_value={"Session": {}})
     app._start_recording()
     assert app.metadata_settings == {"Session": {}}
-    app._save_metadata_to_yaml.assert_called_once()
+    app._write_metadata_to_disk.assert_called_once()
 
 
 def test_enable_disable_buttons_toggle_state(app):

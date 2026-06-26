@@ -2178,9 +2178,16 @@ def plot_category_prevalence_and_embedding(
         np.linspace(y_min, y_max, grid_res)
     )
 
-    # Interpolate boundaries based on nearest neighbor category
-    Z = griddata((dim1_all, dim2_all), cats_all, (xx, yy), method='nearest')
+    # Interpolate boundaries based on nearest neighbor category. Interpolate the
+    # ordinal CODES (0..N-1), not the raw category values: the contour levels below
+    # are `np.arange(len(unique_cats)+1) - 0.5`, tied to the category COUNT, so they
+    # only land on the boundaries between adjacent categories when the codes are
+    # contiguous. Raw IDs can be non-contiguous (e.g. {0, 2, 5, 11}), which would
+    # place the level lines off the actual boundaries (wrong/missing). `Z` is used
+    # only by the two ax.contour() calls below, so the remap is safe.
     unique_cats = np.unique(cats_all)
+    cat_codes = np.searchsorted(unique_cats, cats_all)
+    Z = griddata((dim1_all, dim2_all), cat_codes, (xx, yy), method='nearest')
 
     # Build a custom "white-base" gradient by taking the project-wide
     # default colormap (`figures.cmap`) and pre-pending a smooth ramp
