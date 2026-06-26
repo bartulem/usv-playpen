@@ -859,6 +859,35 @@ def _bout_feature_data(history_frames: int, n_per_session: int = 25, n_sessions:
 class TestCreateDataSplitsBranches:
     """The ``create_data_splits`` guard / strategy / binning branches."""
 
+    @pytest.mark.parametrize("split_strategy", ["mixed", "session"])
+    def test_degenerate_target_disables_stratification_instead_of_raising(self, split_strategy):
+        """A heavily-skewed target collapses the percentile bins into a singleton
+        stratum; instead of the stratified splitter raising ('least populated
+        class has only 1 member' / 'n_splits greater than members in each class')
+        and aborting the feature, stratification is disabled (single bin) with a
+        warning and the split still yields usable folds."""
+
+        pipeline = _minimal_bout_pipeline(
+            split_strategy=split_strategy, split_num=2, test_proportion=0.25,
+        )
+        n = 20
+        rng = np.random.default_rng(0)
+        # One low outlier among 19 identical values: the median percentile edge
+        # isolates that single sample into its own stratum (count 1), which is too
+        # small for StratifiedShuffleSplit (>=2) and StratifiedGroupKFold (>=n_folds).
+        y = np.concatenate([[0.0], np.ones(n - 1)])
+        feature_data = {
+            'X': rng.standard_normal((n, pipeline.history_frames)),
+            'y': y,
+            'groups': np.repeat(np.arange(4), n // 4),
+        }
+        with pytest.warns(UserWarning, match="Stratification disabled"):
+            splits = list(pipeline.create_data_splits(feature_data))
+        assert len(splits) >= 1
+        for x_train, _y_train, x_test, _y_test in splits:
+            assert x_train.shape[0] > 0
+            assert x_test.shape[0] > 0
+
     def test_test_proportion_out_of_range_raises(self):
         """
         A ``test_proportion`` outside the open interval ``(0, 1)`` trips the

@@ -160,6 +160,46 @@ def _draw_bounded_seconds(
             return float(np.exp(draw))
 
 
+def _read_int16_snippet(snippet_path: Path) -> np.ndarray:
+    """
+    Description
+    -----------
+    Read a playback-snippet WAV and return its sample array, enforcing that it is
+    ``int16``. The playback builders concatenate snippets with explicitly ``int16``
+    silence and write an ``int16`` WAV; a snippet of any other dtype (``int32`` /
+    ``float32`` / ``uint8``) would make ``np.concatenate`` silently upcast the whole
+    buffer, changing the output bit depth, and a ``float32`` snippet in ``[-1, 1]``
+    mixed with ``int16`` zeros would have nonsensical relative amplitude.
+
+    Parameters
+    ----------
+    snippet_path (Path)
+        Path to the snippet ``.wav`` file.
+
+    Returns
+    -------
+    snippet_data (np.ndarray)
+        The snippet samples, guaranteed ``int16``.
+
+    Raises
+    ------
+    ValueError
+        If the snippet WAV is not ``int16``.
+    """
+
+    _, snippet_data = wavfile.read(snippet_path)
+    if snippet_data.dtype != np.int16:
+        msg = (
+            f"playback snippet {Path(snippet_path).name!r} has dtype "
+            f"{snippet_data.dtype} but must be int16 -- the playback silence, seed, "
+            f"and output WAV are all int16, so a non-int16 snippet would upcast the "
+            f"output bit depth and corrupt relative amplitudes. Re-export the "
+            f"snippets as 16-bit PCM."
+        )
+        raise ValueError(msg)
+    return snippet_data
+
+
 class AudioGenerator:
 
     if os.name == 'nt':
@@ -319,6 +359,14 @@ class AudioGenerator:
             # Accumulate chunks in a list, concatenated ONCE after the while loop
             # (O(N)); per-iteration np.concatenate recopies the whole buffer -> O(N^2).
             replay_chunks = []
+            # Collect the per-chunk (sample_count, label) metadata in parallel with the
+            # audio chunks and write the spacing/usvids .txt files AFTER the loop,
+            # clamped to target_samples, so they describe exactly the samples kept in
+            # the sliced WAV. The inner sequence loop can overshoot the time budget;
+            # the WAV is sliced to target_samples but the metadata must match it, or
+            # downstream alignment walking spacing.txt desynchronizes past the cut.
+            meta_entries: list[tuple[int, str]] = []
+            target_samples = int(total_acceptable_playback_time * wav_sampling_rate * 1e3)
 
             total_playback_time_created = 0
             last_time_updated = 0  # Variable to track progress for tqdm
@@ -348,21 +396,17 @@ class AudioGenerator:
                     isi_samples = int(np.ceil(isi * wav_sampling_rate * 1e3))
 
                     replay_chunks.append(np.zeros(isi_samples, dtype=np.int16))
-                    usv_id_txt_file.write('ISI \n')
+                    meta_entries.append((isi_samples, 'ISI'))
 
                     total_playback_time_created += isi
-                    replay_txt_file.write(f'{isi_samples} \n')
 
                     # sequence length: Gaussian(13, 5) clipped to [3, 23]
                     usv_seq_length = int(np.clip(round(rng.normal(13, 5)), 3, 23))
                     for usv_idx in range(usv_seq_length):
                         # pick USV file
                         random_wav_file = py_rng.choice(wav_files_list)
-                        _, random_wav_file_data = wavfile.read(random_wav_file)
+                        random_wav_file_data = _read_int16_snippet(random_wav_file)
                         total_playback_time_created += (random_wav_file_data.shape[0] / (wav_sampling_rate * 1e3))
-
-                        replay_txt_file.write(f'{random_wav_file_data.shape[0]} \n')
-                        usv_id_txt_file.write(f'{random_wav_file.name} \n')
 
                         if usv_idx < (usv_seq_length - 1):
                             # inter-USV interval: draw the within-sequence gap from the
@@ -373,11 +417,12 @@ class AudioGenerator:
                             total_playback_time_created += iui
 
                             replay_chunks.append(random_wav_file_data)
+                            meta_entries.append((random_wav_file_data.shape[0], random_wav_file.name))
                             replay_chunks.append(np.zeros(iui_samples, dtype=np.int16))
-                            replay_txt_file.write(f'{iui_samples} \n')
-                            usv_id_txt_file.write('IUI \n')
+                            meta_entries.append((iui_samples, 'IUI'))
                         else:
                             replay_chunks.append(random_wav_file_data)
+                            meta_entries.append((random_wav_file_data.shape[0], random_wav_file.name))
 
                     # manually update the progress bar at the end of each loop
                     update_amount = int(np.floor(total_playback_time_created - last_time_updated))
@@ -387,9 +432,21 @@ class AudioGenerator:
                 if pbar.n < pbar.total:
                     pbar.update(pbar.total - pbar.n)
 
+                # Write the spacing / usvids metadata clamped to target_samples so it
+                # describes exactly the samples kept in the sliced WAV below: walk the
+                # per-chunk entries, clamp the single chunk that straddles the
+                # truncation boundary to its in-WAV length, and drop everything past it.
+                offset = 0
+                for count, label in meta_entries:
+                    if offset >= target_samples:
+                        break
+                    kept = min(count, target_samples - offset)
+                    replay_txt_file.write(f'{kept} \n')
+                    usv_id_txt_file.write(f'{label} \n')
+                    offset += count
+
             replay_wav_arr = (np.concatenate(replay_chunks) if replay_chunks
                               else np.array([], dtype=np.int16))
-            target_samples = int(total_acceptable_playback_time * wav_sampling_rate * 1e3)
             replay_wav_arr = replay_wav_arr[:target_samples]
 
             actual_total_time_sec = int(np.ceil(replay_wav_arr.shape[0] / (wav_sampling_rate * 1e3)))
@@ -467,7 +524,7 @@ class AudioGenerator:
                 replay_txt_file.write(f'{ipi_duration_samples} \n')
                 for _ in tqdm(range(total_usv_number)):
                     random_wav_file = py_rng.choice(wav_files_list)
-                    _, random_wav_file_data = wavfile.read(random_wav_file)
+                    random_wav_file_data = _read_int16_snippet(random_wav_file)
                     replay_chunks.append(random_wav_file_data)
                     replay_chunks.append(arr_start_with_ipi)
                     replay_txt_file.write(f'{random_wav_file_data.shape[0]} \n')

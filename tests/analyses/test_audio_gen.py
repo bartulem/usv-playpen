@@ -14,8 +14,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+from scipy.io import wavfile
 
-from usv_playpen.analyses.generate_audio_files import AudioGenerator
+from usv_playpen.analyses.generate_audio_files import AudioGenerator, _read_int16_snippet
 from usv_playpen.analyses.mixture_model_utils import TMixture
 
 
@@ -459,6 +460,41 @@ def test_create_naturalistic_usv_playback_wav_emits_sequences(tmp_path, mocker):
     assert any(line.strip().endswith(".wav") for line in usvids)
     # Every spacing entry is an integer sample count.
     assert all(line.strip().isdigit() for line in spacing if line.strip())
+
+
+def test_read_int16_snippet_rejects_non_int16(tmp_path):
+    """A playback snippet that is not int16 (e.g. float32) raises a clear ValueError
+    so it cannot silently upcast the int16 playback buffer / corrupt amplitudes; an
+    int16 snippet is returned unchanged."""
+    bad = tmp_path / "bad.wav"
+    wavfile.write(bad, 250000, np.zeros(8, dtype=np.float32))
+    with pytest.raises(ValueError, match="must be int16"):
+        _read_int16_snippet(bad)
+
+    good = tmp_path / "good.wav"
+    wavfile.write(good, 250000, np.arange(8, dtype=np.int16))
+    out = _read_int16_snippet(good)
+    assert out.dtype == np.int16
+    assert out.shape[0] == 8
+
+
+def test_naturalistic_playback_metadata_matches_truncated_wav(tmp_path, mocker):
+    """The spacing.txt sample counts must sum to EXACTLY the written WAV length.
+    The inner sequence loop overshoots total_acceptable_playback_time and the WAV
+    is sliced to target_samples; the metadata is clamped to match, so a downstream
+    consumer walking spacing.txt does not desync past the truncation point."""
+    spacing, usvids, write_mock = _run_naturalistic_playback(
+        tmp_path, mocker, seed=0, exp_id="natAlign", prefix="male", total_time=2,
+    )
+    wav = write_mock.call_args.kwargs["data"]
+    spacing_counts = [int(line) for line in spacing if line.strip()]
+    usvid_labels = [line for line in usvids if line.strip()]
+    # Metadata describes exactly the samples kept in the (sliced) WAV.
+    assert sum(spacing_counts) == wav.shape[0]
+    assert len(spacing_counts) == len(usvid_labels)   # 1:1 per-chunk metadata
+    # A single ISI (~1 s) + one sequence (~1.8 s) overshoots the 2 s budget, so the
+    # WAV is sliced to target_samples and the clamp path is exercised (not a no-op).
+    assert wav.shape[0] == int(2 * 250 * 1e3)
 
 
 def test_create_naturalistic_usv_playback_wav_seed_reproducible(tmp_path, mocker):

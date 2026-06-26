@@ -3671,7 +3671,7 @@ def continuous_vocal_manifold_model_selection(
         output_directory: str,
         settings_path: str = None,
         use_top_rank_as_anchor: bool = False,
-        p_val: float = 0.05
+        p_val: float = 0.01
 ) -> None:
     """
     Performs forward stepwise selection for continuous manifold-position
@@ -3775,7 +3775,7 @@ def continuous_vocal_manifold_model_selection(
     use_top_rank_as_anchor : bool, default False
         If True, initialises the search by forcing the single highest-ranked
         Wilcoxon feature as Step 1.
-    p_val : float, default 0.05
+    p_val : float, default 0.01
         The overall alpha level, Bonferroni-corrected by dividing it by the
         number of evaluated features.
     """

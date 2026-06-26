@@ -37,6 +37,7 @@ from pathlib import Path
 import pickle
 import gc
 import time
+import warnings
 from pygam import GAM, te
 from scipy.stats import spearmanr
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
@@ -538,6 +539,21 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # 4. Splitting Execution
         if split_strategy == 'mixed':
 
+            # StratifiedShuffleSplit needs every stratum to have >= 2 members (one
+            # for train, one for test); a skewed target can collapse y_binned into
+            # singleton strata. Disable stratification (single bin) in that case so
+            # the split degrades to a plain ShuffleSplit instead of raising "least
+            # populated class has only 1 member" and aborting the feature.
+            bin_counts = np.bincount(y_binned.astype(int))
+            if bin_counts[bin_counts > 0].min() < 2:
+                warnings.warn(
+                    "Stratification disabled for a skewed bout-parameter target "
+                    "(smallest percentile bin < 2 members); using a non-stratified "
+                    "shuffle split for this feature.",
+                    stacklevel=2,
+                )
+                y_binned = np.zeros(len(y), dtype=int)
+
             sss = StratifiedShuffleSplit(
                 n_splits=num_iterations,
                 test_size=test_prop,
@@ -550,7 +566,23 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         elif split_strategy == 'session':
 
             n_folds = int(np.floor(1.0 / test_prop))
-            n_folds = max(2, n_folds)
+            # StratifiedGroupKFold cannot have more folds than groups; clamp to the
+            # number of groups so a session set smaller than the nominal fold count
+            # does not raise "n_splits greater than the number of groups".
+            n_folds = max(2, min(n_folds, len(np.unique(groups))))
+
+            # Disable stratification (single bin -> GroupKFold-like) when the
+            # smallest stratum has fewer than n_folds members, instead of raising
+            # "n_splits cannot be greater than members in each class".
+            bin_counts = np.bincount(y_binned.astype(int))
+            if bin_counts[bin_counts > 0].min() < n_folds:
+                warnings.warn(
+                    "Stratification disabled for a skewed bout-parameter target "
+                    "(smallest percentile bin < n_folds); using a non-stratified "
+                    "grouped split for this feature.",
+                    stacklevel=2,
+                )
+                y_binned = np.zeros(len(y), dtype=int)
 
             for i in range(num_iterations):
                 current_seed = base_seed + i
@@ -562,11 +594,12 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     random_state=current_seed
                 )
 
-                # Take the first valid split for this seed
+                # Take the first valid split for this seed; skip (rather than abort
+                # the feature) if a residual degeneracy still makes the split invalid.
                 try:
                     train_idx, test_idx = next(sgkf.split(X, y_binned, groups=groups))
                     yield X[train_idx], y[train_idx], X[test_idx], y[test_idx]
-                except StopIteration:
+                except (StopIteration, ValueError):
                     continue
         else:
             raise ValueError(f"Unknown split strategy: {split_strategy}")
