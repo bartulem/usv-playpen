@@ -359,6 +359,53 @@ def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
     assert any("calibration NPZ" in m for m in msgs)
 
 
+def test_vocalocator_run_vocalocator_ssl_empty_assignments_no_crash(tmp_path,
+                                                                    processing_settings,
+                                                                    mocker, monkeypatch):
+    """An empty predictions array (zero vocalizations) must not raise
+    ZeroDivisionError in the percentage reporting; the run logs a 'no
+    vocalizations' message and still writes the (empty) emitter column."""
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    (audio_dir / "sound_localization").mkdir()
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    track_h5 = video_dir / "20230207213549_points3d_translated_rotated_metric.h5"
+    with h5py.File(track_h5, "w") as f:
+        f.create_dataset("track_names", data=np.array([b"M", b"F"]))
+    # Empty usv_summary (0 rows) to match the 0 assignments.
+    usv_csv = audio_dir / "x_usv_summary.csv"
+    pls.DataFrame({"usv_id": []}, schema={"usv_id": pls.String}).write_csv(usv_csv)
+
+    # Model dir with a calibration npz so the *cal*.npz glob succeeds.
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    np.savez(model_dir / "calibration.npz", x=np.array([0.0]))
+    processing_settings['vocalocator']['vcl_model_directory'] = str(model_dir)
+
+    # Predictions archive with an EMPTY assignments array.
+    np.savez(audio_dir / "sound_localization" / "model_predictions.npz",
+             assignments=np.array([], dtype=np.int64))
+
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    mocker.patch("usv_playpen.processing.assign_vocalizations.subprocess.run")
+    mocker.patch("usv_playpen.processing.assign_vocalizations.load_session_metadata",
+                 return_value=(None, None))
+
+    msgs: list[str] = []
+    voc = Vocalocator(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=msgs.append,
+    )
+    voc.run_vocalocator_ssl()   # must not raise ZeroDivisionError
+
+    assert any("No vocalizations to assign" in m for m in msgs)
+    out = pls.read_csv(usv_csv)
+    assert "emitter" in out.columns
+    assert out.height == 0
+
+
 # ===========================================================================
 # summarize_das_findings — happy path with synthetic multi-channel data
 # ===========================================================================

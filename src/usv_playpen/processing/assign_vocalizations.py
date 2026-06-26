@@ -386,11 +386,19 @@ class Vocalocator:
         unassigned = value_to_count.get(-1, 0)
         assigned = total - unassigned
 
-        self.message_output(f"Out of {total} vocalizations, {assigned} have been assigned, or {round(assigned*100/total, 2)}%.")
-        self.message_output(f"{unassigned} vocalizations have not been assigned, or {round(unassigned*100/total, 2)}%.")
-        for animal_id, track_id in enumerate(track_names):
-            count = value_to_count.get(animal_id, 0)
-            self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/total, 2)}%.")
+        # Guard the percentage reporting against an empty predictions array
+        # (total == 0 would otherwise raise ZeroDivisionError here, crashing the
+        # run after the expensive SSL subprocesses already finished). The emitter
+        # assignment below still runs, so an empty session keeps its 'emitter'
+        # column (all null) for downstream consumers.
+        if total == 0:
+            self.message_output("No vocalizations to assign (empty predictions array).")
+        else:
+            self.message_output(f"Out of {total} vocalizations, {assigned} have been assigned, or {round(assigned*100/total, 2)}%.")
+            self.message_output(f"{unassigned} vocalizations have not been assigned, or {round(unassigned*100/total, 2)}%.")
+            for animal_id, track_id in enumerate(track_names):
+                count = value_to_count.get(animal_id, 0)
+                self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/total, 2)}%.")
 
         # assign None to all unassigned vocalizations
         emitter_expression = pls.lit(value=None, dtype=pls.String)

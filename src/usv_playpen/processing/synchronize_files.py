@@ -935,7 +935,25 @@ class Synchronizer:
             if af_idx == 0:
                 audio_devices_start_sample_differences = audio_ipi_start_samples
             else:
-                audio_devices_start_sample_differences = audio_devices_start_sample_differences - audio_ipi_start_samples
+                # Guard the elementwise cross-device subtraction against a pulse-
+                # count mismatch: if the master and slave devices detected a
+                # different number of IPI sync pulses (a dropped/extra pulse -- the
+                # very desync this module exists to detect), report it loudly and
+                # compare only the aligned prefix rather than crashing the whole
+                # method with a broadcasting ValueError. Local copies keep the full
+                # audio_ipi_start_samples intact for the video-sync block below.
+                prev = audio_devices_start_sample_differences
+                cur = audio_ipi_start_samples
+                if prev.shape[0] != cur.shape[0]:
+                    self.message_output(
+                        f"WARNING: master/slave audio devices detected a DIFFERENT number of IPI "
+                        f"sync pulses ({prev.shape[0]} vs {cur.shape[0]}) -- a dropped/extra pulse "
+                        f"(device desync). Comparing only the first {min(prev.shape[0], cur.shape[0])} "
+                        f"aligned pulses."
+                    )
+                    n = min(prev.shape[0], cur.shape[0])
+                    prev, cur = prev[:n], cur[:n]
+                audio_devices_start_sample_differences = prev - cur
 
             if (video_sync_sequence_array == video_sync_sequence_array[0]).all():
                 for video_idx, video_key in enumerate(video_sync_sequence_dict.keys()):

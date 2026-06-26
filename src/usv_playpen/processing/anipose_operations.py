@@ -339,12 +339,27 @@ class ConvertTo3D:
         self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
         self.message_output = message_output if message_output is not None else print
 
-        self.session_root_joint_date_dir = pathlib.Path()
-        self.session_root_name = ""
-        for one_object in (pathlib.Path(self.root_directory) / 'video').iterdir():
-            if one_object.is_dir() and "_" not in one_object.name:
-                self.session_root_joint_date_dir = one_object
-                self.session_root_name = one_object.name
+        # Deterministic, loud-failing session-root resolution (mirrors
+        # first_match_or_raise used elsewhere in this file): the joint-date dir is
+        # the underscore-free '<root>/video' subdirectory. Sort for determinism
+        # (iterdir() order is filesystem-dependent, so an unsorted last-wins loop
+        # is non-deterministic on multiple matches) and raise on zero matches
+        # rather than silently leaving the path as cwd ('.'), which would route
+        # downstream reads/writes into the working directory.
+        candidate_dirs = sorted(
+            one_object
+            for one_object in (pathlib.Path(self.root_directory) / 'video').iterdir()
+            if one_object.is_dir() and "_" not in one_object.name
+        )
+        if not candidate_dirs:
+            msg = (
+                f"No session joint-date directory (an underscore-free "
+                f"'<root>/video' subdirectory) found under "
+                f"{pathlib.Path(self.root_directory) / 'video'}."
+            )
+            raise FileNotFoundError(msg)
+        self.session_root_joint_date_dir = candidate_dirs[0]
+        self.session_root_name = candidate_dirs[0].name
 
         self.app_context_bool = is_gui_context()
 

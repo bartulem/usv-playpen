@@ -176,7 +176,12 @@ def compute_acoustic_features(
     Parameters
     ----------
     specs (np.ndarray)
-        Spectrograms, shape ``(N, F, T)``.
+        Spectrograms, shape ``(N, F, T)``. Must be NON-NEGATIVE (a normalized
+        ``[0, 1]`` or linear-power spectrogram): the reductions mask the
+        background to ``0`` and treat in-region values as amplitudes / probability
+        weights, so a dB-scaled spectrogram (negative values, i.e.
+        ``normalize=False`` in :func:`generate_spectrograms`) would make ``0`` the
+        per-pixel maximum and yield ``0`` / ``NaN`` / garbage features.
     durations (np.ndarray)
         Native time-bin counts, shape ``(N,)``.
     freq_axis (np.ndarray)
@@ -194,9 +199,28 @@ def compute_acoustic_features(
     -------
     features (dict[str, np.ndarray])
         Mapping of each name in :data:`FEATURE_COLUMNS` to a length-``N`` array.
+
+    Raises
+    ------
+    ValueError
+        If ``specs`` contains negative values (a dB-scaled / un-normalized
+        spectrogram), for which the masked reductions are undefined.
     """
 
     _n, n_freq, n_time = specs.shape
+
+    # The masked reductions below zero the background and treat in-region values
+    # as amplitudes / probability weights, which requires non-negative input. A
+    # dB-scaled spectrogram (normalize=False) has negative values, so 0 would
+    # become the per-pixel maximum (max_amplitude -> 0, peak_freq on a background
+    # pixel) and the power normalization / entropy would emit garbage / NaN. Fail
+    # loudly instead of silently corrupting the features.
+    if specs.size and specs.min() < 0:
+        raise ValueError(
+            "compute_acoustic_features requires non-negative spectrograms (a "
+            "normalized [0, 1] or linear-power spectrogram); got specs.min() = "
+            f"{specs.min():.4g}. Run generate_spectrograms with normalize=True."
+        )
     if region_masks is None:
         region_time = build_time_window_masks(durations, n_time)    # [N, T]
         region = region_time[:, None, :]                            # [N, 1, T] broadcasts over freq

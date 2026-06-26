@@ -372,6 +372,44 @@ def test_find_audio_sync_trains_matches_video(tmp_path, processing_settings, moc
     assert "ipi_discrepancy_ms" in result[key]
 
 
+def test_find_audio_sync_trains_warns_on_cross_device_pulse_count_mismatch(
+    tmp_path, processing_settings, mocker
+):
+    """When the master and slave audio devices detect a DIFFERENT number of IPI
+    sync pulses (a dropped/extra pulse), the cross-device start-sample subtraction
+    must not crash with a broadcast ValueError -- it logs a clear count-mismatch
+    warning and compares only the aligned prefix."""
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    serial = processing_settings["synchronize_files"]["Synchronizer"]["find_video_sync_trains"]["sync_camera_serial_num"][0]
+    n_frames = _write_video_sync_fixture(tmp_path, serial)
+    (tmp_path / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        serial: [n_frames, 150.0],
+        "total_frame_number_least": n_frames,
+        "total_video_time_least": n_frames / 150.0,
+    }))
+
+    sr = 250000
+    on = np.ones(1000, dtype=np.int16)
+    off = np.zeros(75000, dtype=np.int16)
+    cropped = tmp_path / "audio" / "cropped_to_video"
+    cropped.mkdir(parents=True)
+    # master: 4 IPI gaps; slave: 3 IPI gaps -> cross-device pulse-count mismatch.
+    data_m = np.concatenate([on] + [np.concatenate([off, on]) for _ in range(4)])
+    data_s = np.concatenate([on] + [np.concatenate([off, on]) for _ in range(3)])
+    wavfile.write(cropped / "m_240101_ch02_cropped_to_video.wav", sr, data_m)
+    wavfile.write(cropped / "s_240101_ch02_cropped_to_video.wav", sr, data_s)
+
+    msgs: list[str] = []
+    sync = Synchronizer(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=msgs.append,
+    )
+    sync.find_audio_sync_trains()   # must not raise a broadcast ValueError
+
+    assert any("DIFFERENT number of IPI sync pulses" in m for m in msgs)
+
+
 def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_settings, mocker):
     """
     Description

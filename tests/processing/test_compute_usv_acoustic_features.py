@@ -13,6 +13,7 @@ from __future__ import annotations
 import h5py
 import numpy as np
 import polars as pls
+import pytest
 
 from usv_playpen.processing.compute_usv_acoustic_features import (
     FEATURE_COLUMNS,
@@ -47,6 +48,18 @@ def test_compute_acoustic_features_peak_frequency():
     assert feats["peak_freq_hz"][0] == freq_axis[4]
     assert feats["max_amplitude"][0] == 1.0
     assert np.all(np.isfinite(np.concatenate([feats[c] for c in FEATURE_COLUMNS])))
+
+
+def test_compute_acoustic_features_rejects_negative_spectrograms():
+    """dB-scaled (negative) spectrograms violate the non-negative contract and
+    raise a clear ValueError rather than silently emitting 0 / NaN features (the
+    background would otherwise be the per-pixel maximum)."""
+    n_f, n_t = 16, 16
+    specs = np.full((1, n_f, n_t), -40.0, dtype=np.float64)  # dB-like, all negative
+    specs[0, 4, 2] = -5.0  # loudest in-region pixel, still negative
+    freq_axis = np.linspace(30000.0, 120000.0, n_f)
+    with pytest.raises(ValueError, match="non-negative spectrograms"):
+        compute_acoustic_features(specs, np.array([8]), freq_axis, 0.05, 0.95)
 
 
 def test_build_mask_region_masks_unions_and_falls_back():

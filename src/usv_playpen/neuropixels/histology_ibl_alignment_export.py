@@ -37,9 +37,15 @@ unsupported and any non-2.0 probe type raises ``NotImplementedError``.
 Pre-conditions
 --------------
 * Brain segmentation and track tracing have completed; per-shank track
-  point ``.npy`` files exist under
-  ``{cup_root}/histology/{mouse_id}/`` with filenames starting with the
-  hemisphere letter (``L*.npy`` or ``R*.npy``).
+  point ``.npy`` files exist directly under
+  ``{cup_root}/histology/{mouse_id}/``, named ``{hemisphere}{shank}.npy``
+  where ``shank`` is the 1-indexed **physical** shank number (e.g.
+  ``L1.npy``, ``L4.npy`` for a recording on shanks 1 and 4). The shank
+  number is taken from this filename, so a non-contiguous recorded shank
+  subset keeps its physical identity through the export (the files become
+  ``xyz_picks_shank1.json`` / ``xyz_picks_shank4.json``, not renumbered to
+  1 and 2). The traced shank order is the experimenter's responsibility:
+  shank ``N`` must be the same physical shank in both hemispheres.
 * The concatenated SpikeGLX binary and metadata files exist under
   ``{cup_root}/EPHYS/{session_date}_{probe_id}/`` (``modify_files.
   concatenate_binary_files`` already produces these with the correct
@@ -469,13 +475,17 @@ class IBLAlignmentExporter:
         ``xyz_picks_shank{n}.json`` files the IBL alignment GUI loads to
         place each shank's track in CCF space.
 
-        Iterates over ``{hemisphere}*.npy`` files found by a recursive
-        ``**`` glob of :attr:`brainreg_path` (descending into every
-        subdirectory), in lexicographic order of full path, applies
+        Iterates over the ``{hemisphere}{shank}.npy`` files directly
+        under :attr:`brainreg_path` (a non-recursive top-directory glob,
+        per the module pre-conditions), applies
         :func:`ccf_apdvml_to_xyz_mlapdv_um` to convert each track's
         point cloud to bregma-origin (ML, AP, DV) µm, and writes one
         JSON per shank into :attr:`ephys_out_path` with the schema
-        ``{"xyz_picks": [[ml, ap, dv], ...]}``.
+        ``{"xyz_picks": [[ml, ap, dv], ...]}``. The output is numbered by
+        the **physical** shank parsed from the track filename (``L4.npy``
+        -> ``xyz_picks_shank4.json``), not by a running count, so a
+        non-contiguous recorded shank subset (e.g. shanks 1 and 4) keeps
+        its physical identity rather than being renumbered to 1 and 2.
 
         Per-file skip-if-exists: any ``xyz_picks_shank{n}.json`` that
         already exists in the output directory is left untouched and a
@@ -490,11 +500,35 @@ class IBLAlignmentExporter:
             Files skipped because they already existed are not
             included. Empty if every shank was already present, or if
             no matching ``.npy`` files were found.
+
+        Raises
+        ------
+        ValueError
+            If a track filename does not encode a positive shank number
+            after the hemisphere letter (e.g. not ``L1.npy``/``R4.npy``).
         """
         written: list[Path] = []
-        pattern = f"**{os.sep}{self.hemisphere}*.npy"
-        for one_file_idx, one_file in enumerate(sorted(self.brainreg_path.glob(pattern))):
-            out_name = f"xyz_picks_shank{one_file_idx + 1}.json"
+        # Non-recursive (top-directory) scan: the per-shank track files live
+        # directly under brainreg_path (see the module pre-conditions). A
+        # recursive `**` glob would also pull stray L*/R*.npy from nested
+        # subfolders (intermediate brainreg output, backups, other regions),
+        # producing spurious xyz_picks_shank{n}.json files.
+        pattern = f"{self.hemisphere}*.npy"
+        for one_file in sorted(self.brainreg_path.glob(pattern)):
+            # Derive the (1-indexed, physical) shank number from the track
+            # filename ({hemisphere}{shank}.npy, e.g. 'L4.npy' -> shank 4) rather
+            # than a running enumeration count, so a non-contiguous recorded shank
+            # subset (e.g. shanks 1 and 4) maps to xyz_picks_shank1/shank4 and the
+            # physical shank identity is preserved end-to-end (write -> GUI ->
+            # remap), instead of being silently renumbered to shank1/shank2.
+            shank_label = one_file.stem[len(self.hemisphere):]
+            if not shank_label.isdigit() or int(shank_label) < 1:
+                raise ValueError(
+                    f"track file {one_file.name!r} does not encode a positive shank "
+                    f"number after the hemisphere letter {self.hemisphere!r}; expected "
+                    f"a name like {self.hemisphere}1.npy / {self.hemisphere}4.npy."
+                )
+            out_name = f"xyz_picks_shank{int(shank_label)}.json"
             out_path = self.ephys_out_path / out_name
             if out_path.is_file():
                 print(f"xyz_picks: {out_name} already exists in {self.ephys_out_path}; skipping.")
@@ -606,10 +640,15 @@ class IBLAlignmentExporter:
         # per-channel (channel, shank, bank, refid, elecid) rows start
         # at index 1, hence the [1:] slice here and below.
         shank_indices_in_imro = [row[1] for row in self.imro_rows[1:]]
-        n_shanks = int(np.max(shank_indices_in_imro)) + 1
 
         rewritten: list[Path] = []
-        for shank_num in range(n_shanks):
+        # Iterate only the shanks ACTUALLY present in the IMRO table: a recorded
+        # shank subset can be non-contiguous (e.g. {0, 3}), and the GUI only
+        # produced channel_locations files for the recorded shanks. range(max+1)
+        # would instead demand files for the un-recorded middle shanks and raise.
+        # Each physical shank maps to channel_locations_shank{shank+1}.json, the
+        # same physical numbering write_xyz_picks assigns from the track filenames.
+        for shank_num in sorted(set(shank_indices_in_imro)):
             shank_json = self.ephys_out_path / f"channel_locations_shank{shank_num + 1}.json"
             if not shank_json.exists():
                 raise FileNotFoundError(

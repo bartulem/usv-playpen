@@ -1528,14 +1528,55 @@ class ExperimentController:
 
         # copy the audio, sync and video directories to the backup network drive(s)
         if len(total_dir_name_windows) > 1:
-            for win_dir_idx, win_dir in enumerate(total_dir_name_windows[1:]):
-                subprocess.Popen(
-                    args=['robocopy', total_dir_name_windows[0], win_dir, '/MIR'],
-                    cwd=total_dir_name_windows[0],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.STDOUT,
-                    shell=False
+            if self.app_context_bool:
+                # GUI context: fire-and-forget so the experimenter can start
+                # preparing the next session while the backup mirrors in the
+                # background (the GUI process stays alive to host the children).
+                for win_dir in total_dir_name_windows[1:]:
+                    subprocess.Popen(
+                        args=['robocopy', total_dir_name_windows[0], win_dir, '/MIR'],
+                        cwd=total_dir_name_windows[0],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.STDOUT,
+                        shell=False
+                    )
+            else:
+                # CLI/script context: the runner is about to return and the process
+                # can then exit, orphaning a backgrounded robocopy mid-transfer.
+                # Await the mirror(s) (generous 2-hour budget for a full /MIR of the
+                # session tree over a network drive) and surface any genuine
+                # robocopy failure (rc >= 8) before reporting completion, so a
+                # partial/failed backup is not silently e-mailed as a success.
+                backup_subps = [
+                    (
+                        subprocess.Popen(
+                            args=['robocopy', total_dir_name_windows[0], win_dir, '/MIR'],
+                            cwd=total_dir_name_windows[0],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.STDOUT,
+                            shell=False
+                        ),
+                        win_dir,
+                    )
+                    for win_dir in total_dir_name_windows[1:]
+                ]
+                backup_return_codes = wait_for_subprocesses(
+                    subps=[t[0] for t in backup_subps],
+                    max_seconds=2 * 60 * 60,
+                    label="backup mirror",
+                    poll_interval_s=1,
+                    message_output=self.message_output,
+                    raise_on_nonzero=False,
+                    raise_on_timeout=False,
                 )
+                for (_subp, win_dir), rc in zip(backup_subps, backup_return_codes):
+                    # robocopy rc < 8 is success/info; rc is None or rc >= 8 is a
+                    # genuine failure (or a child terminated on the timeout).
+                    if rc is None or rc >= 8:
+                        self.message_output(
+                            f"[backup mirror] FAILED rc={rc}  "
+                            f"{total_dir_name_windows[0]}  ->  {win_dir}"
+                        )
 
         self.message_output(f"Transferring audio/video files finished at: {datetime.datetime.now().hour:02d}:{datetime.datetime.now().minute:02d}:{datetime.datetime.now().second:02d}")
 

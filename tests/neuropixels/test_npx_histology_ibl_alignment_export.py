@@ -433,6 +433,64 @@ def test_write_xyz_picks_converts_tracks_and_skips_existing(tmp_path):
     assert exporter.write_xyz_picks() == []   # all already present
 
 
+def test_write_xyz_picks_ignores_nested_stray_tracks(tmp_path):
+    """Only the ``{hemisphere}*.npy`` files DIRECTLY under brainreg_path are
+    exported; a stray ``L*.npy`` in a nested subfolder (e.g. intermediate
+    brainreg output or a backup) must not be picked up by a recursive glob and
+    shift the shank numbering."""
+
+    brainreg = tmp_path / "brainreg"
+    out = tmp_path / "out"
+    brainreg.mkdir()
+    out.mkdir()
+    np.save(brainreg / "L1.npy", np.array([[100.0, 200.0, 300.0]]))
+    np.save(brainreg / "L2.npy", np.array([[120.0, 220.0, 320.0]]))
+    # Stray track in a nested subdirectory -- must be ignored.
+    nested = brainreg / "intermediate"
+    nested.mkdir()
+    np.save(nested / "L9.npy", np.array([[1.0, 2.0, 3.0]]))
+    exporter = _bare_exporter(brainreg_path=brainreg, ephys_out_path=out, hemisphere="L")
+
+    written = exporter.write_xyz_picks()
+    assert {p.name for p in written} == {"xyz_picks_shank1.json", "xyz_picks_shank2.json"}
+    # A recursive glob would have picked up the nested L9.npy (-> shank9).
+    assert not (out / "xyz_picks_shank9.json").exists()
+
+
+def test_write_xyz_picks_numbers_by_physical_shank_from_filename(tmp_path):
+    """The output shank number is parsed from the track FILENAME (the physical
+    shank), not a running count: tracing shanks 1 and 4 (``L1.npy``, ``L4.npy``)
+    yields ``xyz_picks_shank1.json`` and ``xyz_picks_shank4.json`` -- preserving
+    the physical identity rather than renumbering to shank1/shank2."""
+
+    brainreg = tmp_path / "brainreg"
+    out = tmp_path / "out"
+    brainreg.mkdir()
+    out.mkdir()
+    np.save(brainreg / "L1.npy", np.array([[100.0, 200.0, 300.0]]))
+    np.save(brainreg / "L4.npy", np.array([[120.0, 220.0, 320.0]]))
+    exporter = _bare_exporter(brainreg_path=brainreg, ephys_out_path=out, hemisphere="L")
+
+    written = exporter.write_xyz_picks()
+    assert {p.name for p in written} == {"xyz_picks_shank1.json", "xyz_picks_shank4.json"}
+
+
+def test_write_xyz_picks_rejects_unparseable_track_filename(tmp_path):
+    """A track filename that does not encode a shank number after the hemisphere
+    letter (e.g. ``La.npy``) raises a clear ValueError rather than silently
+    mis-numbering the output."""
+
+    brainreg = tmp_path / "brainreg"
+    out = tmp_path / "out"
+    brainreg.mkdir()
+    out.mkdir()
+    np.save(brainreg / "La.npy", np.array([[1.0, 2.0, 3.0]]))
+    exporter = _bare_exporter(brainreg_path=brainreg, ephys_out_path=out, hemisphere="L")
+
+    with pytest.raises(ValueError, match="positive shank number"):
+        exporter.write_xyz_picks()
+
+
 def test_remap_channel_ids_to_raw_relabels_per_shank(tmp_path):
     """
     Description
@@ -462,6 +520,37 @@ def test_remap_channel_ids_to_raw_relabels_per_shank(tmp_path):
     shank1 = json.loads((out / "channel_locations_shank1.json").read_text())
     # shank 0 holds raw channels 0 and 2.
     assert set(shank1) == {"channel_0", "channel_2", "origin"}
+
+
+def test_remap_channel_ids_handles_non_contiguous_shanks(tmp_path):
+    """A non-contiguous recorded shank subset (physical shanks 0 and 3) remaps
+    the files the GUI actually produced -- ``channel_locations_shank1.json``
+    (phys 0) and ``shank4.json`` (phys 3) -- and does NOT demand files for the
+    un-recorded middle shanks (no FileNotFoundError for shank2/shank3)."""
+
+    out = tmp_path / "out"
+    out.mkdir()
+    # IMRO header + rows (channel, shank, ...); only physical shanks 0 and 3
+    # carry channels (0, 2 on shank 0; 1, 3 on shank 3).
+    imro_rows = [[2013, 384], [0, 0, 1, 0, 100], [1, 3, 1, 0, 101],
+                 [2, 0, 1, 0, 102], [3, 3, 1, 0, 103]]
+    (out / "channel_locations_shank1.json").write_text(json.dumps(
+        {"channel_0": {"v": "a"}, "channel_1": {"v": "b"}}
+    ))
+    (out / "channel_locations_shank4.json").write_text(json.dumps(
+        {"channel_0": {"v": "c"}, "channel_1": {"v": "d"}}
+    ))
+    exporter = _bare_exporter(
+        is_multishank=True, imro_rows=imro_rows, ephys_out_path=out,
+    )
+    rewritten = exporter.remap_channel_ids_to_raw()
+    assert {p.name for p in rewritten} == {
+        "channel_locations_shank1.json", "channel_locations_shank4.json"}
+    # phys shank 0 -> raw channels 0 and 2; phys shank 3 -> raw channels 1 and 3.
+    assert set(json.loads((out / "channel_locations_shank1.json").read_text())) == {
+        "channel_0", "channel_2"}
+    assert set(json.loads((out / "channel_locations_shank4.json").read_text())) == {
+        "channel_1", "channel_3"}
 
 
 def test_remap_channel_ids_to_raw_single_shank_is_noop():

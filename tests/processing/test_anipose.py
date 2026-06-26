@@ -70,17 +70,35 @@ def test_convert_to_3d_init_resolves_session_root_joint_date_dir(
     assert "conduct_anipose_calibration" in converter.input_parameter_dict
 
 
-def test_convert_to_3d_init_handles_session_with_no_matching_dir(processing_settings, tmp_path):
-    """If no <root>/video subdir matches, both attrs stay at default empty values."""
+def test_convert_to_3d_init_raises_when_no_matching_session_dir(processing_settings, tmp_path):
+    """If no <root>/video subdir matches (an underscore-free directory),
+    construction raises FileNotFoundError instead of silently defaulting the
+    session root to the cwd ('.'), which would route downstream reads/writes
+    into the working directory."""
     (tmp_path / "video").mkdir()
+    with pytest.raises(FileNotFoundError, match="No session joint-date directory"):
+        ConvertTo3D(
+            root_directory=str(tmp_path),
+            input_parameter_dict=processing_settings,
+            message_output=lambda *_a, **_kw: None,
+        )
+
+
+def test_convert_to_3d_init_picks_first_sorted_session_dir(processing_settings, tmp_path):
+    """With multiple underscore-free subdirs the FIRST sorted one is chosen
+    deterministically (not the filesystem-order last entry); underscore-bearing
+    session dirs are ignored."""
+    video = tmp_path / "video"
+    video.mkdir()
+    (video / "20230301").mkdir()
+    (video / "20230101").mkdir()
+    (video / "20230207_213549").mkdir()   # has an underscore -> ignored
     converter = ConvertTo3D(
         root_directory=str(tmp_path),
         input_parameter_dict=processing_settings,
         message_output=lambda *_a, **_kw: None,
     )
-    # session_root_joint_date_dir starts as an empty pathlib.Path()
-    assert str(converter.session_root_joint_date_dir) == "."
-    assert converter.session_root_name == ""
+    assert converter.session_root_name == "20230101"
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +446,7 @@ def test_translate_rotate_metric_arena_branch_writes_transformed_arena(
     mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
     video_dir = tmp_path / "video"
     video_dir.mkdir()
+    (video_dir / "20230101120000").mkdir()   # underscore-free session joint-date dir
     (video_dir / "sess_camera_frame_count_dict.json").write_text(
         json.dumps({"median_empirical_camera_sr": 150.0})
     )
