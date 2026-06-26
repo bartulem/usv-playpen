@@ -356,6 +356,11 @@ class AudioGenerator:
             current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
 
             wav_files_list = sorted(playback_snippets_dir.glob('*.wav'))
+            # Preload + validate each unique snippet once (snippets are drawn with
+            # replacement from a small fixed pool, so the same files would otherwise
+            # be re-read thousands of times across the build); the seeded draw
+            # sequence is unchanged, so the output is byte-identical.
+            wav_cache = {wav_path: _read_int16_snippet(wav_path) for wav_path in wav_files_list}
             # Accumulate chunks in a list, concatenated ONCE after the while loop
             # (O(N)); per-iteration np.concatenate recopies the whole buffer -> O(N^2).
             replay_chunks = []
@@ -405,7 +410,7 @@ class AudioGenerator:
                     for usv_idx in range(usv_seq_length):
                         # pick USV file
                         random_wav_file = py_rng.choice(wav_files_list)
-                        random_wav_file_data = _read_int16_snippet(random_wav_file)
+                        random_wav_file_data = wav_cache[random_wav_file]
                         total_playback_time_created += (random_wav_file_data.shape[0] / (wav_sampling_rate * 1e3))
 
                         if usv_idx < (usv_seq_length - 1):
@@ -508,6 +513,11 @@ class AudioGenerator:
             current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
 
             wav_files_list = sorted(playback_snippets_dir.glob('*.wav'))
+            # Preload + validate each unique snippet once (snippets are drawn with
+            # replacement from a small fixed pool, so the same files would otherwise
+            # be re-read thousands of times across the build); the seeded draw
+            # sequence is unchanged, so the output is byte-identical.
+            wav_cache = {wav_path: _read_int16_snippet(wav_path) for wav_path in wav_files_list}
 
             ipi_duration_samples = int(np.ceil(ipi_duration * wav_sampling_rate * 1e3))
 
@@ -524,7 +534,7 @@ class AudioGenerator:
                 replay_txt_file.write(f'{ipi_duration_samples} \n')
                 for _ in tqdm(range(total_usv_number)):
                     random_wav_file = py_rng.choice(wav_files_list)
-                    random_wav_file_data = _read_int16_snippet(random_wav_file)
+                    random_wav_file_data = wav_cache[random_wav_file]
                     replay_chunks.append(random_wav_file_data)
                     replay_chunks.append(arr_start_with_ipi)
                     replay_txt_file.write(f'{random_wav_file_data.shape[0]} \n')

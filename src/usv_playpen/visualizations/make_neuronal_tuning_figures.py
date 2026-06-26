@@ -3913,6 +3913,17 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 f"expected one of {USV_CATEGORY_SEGMENTATIONS}"
             )
 
+        # Memoize on the full argument tuple: make_all_category_figures renders two
+        # figures per segmentation, each independently collecting the same data (8
+        # pickle reads for 4 distinct collections). The collection is deterministic
+        # (reads the triage pickle + unit_catalog.csv, no RNG) and both render helpers
+        # treat the result read-only, so returning the cached dict is byte-identical.
+        if not hasattr(self, '_category_collection_cache'):
+            self._category_collection_cache = {}
+        cache_key = (str(triage_pkl_path), segmentation, str(catalog_csv_path), int(k_min), bool(require_majority))
+        if cache_key in self._category_collection_cache:
+            return self._category_collection_cache[cache_key]
+
         triage_pkl_path = pathlib.Path(triage_pkl_path)
         with open(triage_pkl_path, "rb") as fh:
             triage = pickle.load(fh)
@@ -3984,6 +3995,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 "median_selectivity":        float(np.median(sel_arr)) if sel_arr.size else float("nan"),
             })
 
+        self._category_collection_cache[cache_key] = per_group
         return per_group
 
     def make_category_peak_distribution_figure(

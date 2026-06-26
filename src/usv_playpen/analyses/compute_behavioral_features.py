@@ -102,31 +102,25 @@ def generate_feature_distributions(
         bins_in_one_dir = int(np.ceil(np.sqrt(num_bins)))
         bin_edges = np.linspace(min_val, max_val, bins_in_one_dir + 1)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        # Vectorized (lo, hi] occupancy in one pass instead of bins_in_one_dir^2
+        # full-array passes. searchsorted(side='left') - 1 reproduces the
+        # edge[k] < x <= edge[k+1] -> bin k convention exactly (incl. dropping a
+        # value exactly at min_val and points outside [min, max]), so the result is
+        # byte-identical to the old double loop.
+        ix = np.searchsorted(bin_edges, feature_arr[:, 0], side='left') - 1
+        iy = np.searchsorted(bin_edges, feature_arr[:, 1], side='left') - 1
+        valid = (ix >= 0) & (ix < bins_in_one_dir) & (iy >= 0) & (iy < bins_in_one_dir)
         occ_array = np.zeros((bins_in_one_dir, bins_in_one_dir))
-        for i in range(1, np.shape(bin_edges)[0], 1):
-            for j in range(1, np.shape(bin_edges)[0], 1):
-                occ_array[i - 1, j - 1] = (
-                    np.sum(
-                        (
-                            (feature_arr[:, 0] > bin_edges[i - 1])
-                            * (feature_arr[:, 0] <= bin_edges[i])
-                        )
-                        * (
-                            (feature_arr[:, 1] > bin_edges[j - 1])
-                            * (feature_arr[:, 1] <= bin_edges[j])
-                        )
-                    )
-                    / camera_fr
-                )
+        np.add.at(occ_array, (ix[valid], iy[valid]), 1)
+        occ_array = occ_array / camera_fr
     else:
         bin_edges = np.linspace(min_val, max_val, num_bins + 1)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        occ_array = np.zeros(num_bins)
-        for i in range(1, np.shape(bin_edges)[0], 1):
-            occ_array[i - 1] = (
-                np.sum((feature_arr > bin_edges[i - 1]) * (feature_arr <= bin_edges[i]))
-                / camera_fr
-            )
+        # Vectorized (lo, hi] occupancy, byte-identical to the old per-bin loop
+        # (see the 2D branch comment for the searchsorted convention).
+        idx = np.searchsorted(bin_edges, feature_arr, side='left') - 1
+        valid = (idx >= 0) & (idx < num_bins)
+        occ_array = np.bincount(idx[valid], minlength=num_bins).astype(np.float64) / camera_fr
 
     return occ_array, bin_centers, bin_edges
 

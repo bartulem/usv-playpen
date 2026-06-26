@@ -34,6 +34,7 @@ with the raster / 3D-video colour code.
 
 from __future__ import annotations
 
+import functools
 import json
 import pathlib
 import urllib.request
@@ -162,6 +163,7 @@ def _download_allen_mesh(structure_id: int) -> pathlib.Path:
     return path
 
 
+@functools.lru_cache(maxsize=None)
 def _load_obj_mesh(path: pathlib.Path) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
@@ -1191,7 +1193,7 @@ class AnatomyFigureMaker:
         if shank_filter is not None:
             keep = []
             for u in top_units:
-                cs = np.load(u["ctx"]["ks_dir"] / "channel_shanks.npy").astype(int)
+                cs = u["ctx"]["channel_shanks"].astype(int)
                 if int(cs[u["peakch"]]) == shank_filter:
                     keep.append(u)
             top_units = keep
@@ -1214,7 +1216,7 @@ class AnatomyFigureMaker:
         # inter-shank break comes from the gap between subplots
         # (`inter_shank_wspace`).
         for u in top_units:
-            cs = np.load(u["ctx"]["ks_dir"] / "channel_shanks.npy").astype(int)
+            cs = u["ctx"]["channel_shanks"].astype(int)
             u["shank"] = int(cs[u["peakch"]])
 
         # Use the probe's full shank set (1..4) so all four bands
@@ -1226,10 +1228,9 @@ class AnatomyFigureMaker:
         # BOTH probes (shank 1 = rostral for RH, shank 4 = rostral
         # for LH).
         schematic_on_left = schematic_side.lower().startswith("l")
-        any_ks_dir = top_units[0]["ctx"]["ks_dir"]
         all_shanks = sorted(
             int(s) for s in np.unique(
-                np.load(any_ks_dir / "channel_shanks.npy").astype(int)
+                top_units[0]["ctx"]["channel_shanks"].astype(int)
             )
         )
         if schematic_on_left:
@@ -1262,7 +1263,7 @@ class AnatomyFigureMaker:
         all_axi: list[np.ndarray] = []
         # Precompute per-shank lateral centre for axis bounds.
         positions_any = top_units[0]["ctx"]["channel_positions"]
-        channel_shanks_any = np.load(any_ks_dir / "channel_shanks.npy").astype(int)
+        channel_shanks_any = top_units[0]["ctx"]["channel_shanks"].astype(int)
         shank_lat_range = {
             int(s): (
                 float(positions_any[channel_shanks_any == s, 0].min()),
@@ -1336,9 +1337,7 @@ class AnatomyFigureMaker:
         # triangles. Y ticks are hidden (redundant with the leftmost
         # data panel).
         positions_full = top_units[0]["ctx"]["channel_positions"]
-        channel_shanks_full = np.load(
-            top_units[0]["ctx"]["ks_dir"] / "channel_shanks.npy"
-        ).astype(int)
+        channel_shanks_full = top_units[0]["ctx"]["channel_shanks"].astype(int)
         axial_lo_rec = float(positions_full[:, 1].min())
         axial_hi_rec = float(positions_full[:, 1].max())
         sch_pad_above = 80.0
@@ -1733,6 +1732,9 @@ class AnatomyFigureMaker:
             "probe_dir": probe_dir,
             "ks_dir": ks_dir,
             "channel_positions": np.load(ks_dir / "channel_positions.npy"),
+            # Loaded once per probe; all units on the probe share it. Read-only at the
+            # use sites (.astype(int) builds fresh arrays; raw uses are masks/indexing).
+            "channel_shanks": np.load(ks_dir / "channel_shanks.npy"),
             "cluster_to_bucket": cluster_to_bucket,
             "cluster_to_peakch": cluster_to_peakch,
             "cluster_templates": cluster_templates,
@@ -1854,9 +1856,7 @@ class AnatomyFigureMaker:
         positions = ctx["channel_positions"].astype(float)
         lateral = positions[:, 0]
         axial = positions[:, 1]
-        channel_shanks = np.load(
-            ctx["ks_dir"] / "channel_shanks.npy"
-        ).astype(int)
+        channel_shanks = ctx["channel_shanks"].astype(int)
         bucket = ctx["cluster_to_bucket"][cluster_num]
         colour = self.brain_area_colors[bucket]
 
@@ -2001,9 +2001,7 @@ class AnatomyFigureMaker:
         positions = ctx["channel_positions"].astype(float)
         lateral = positions[:, 0]
         axial = positions[:, 1]
-        channel_shanks = np.load(
-            ctx["ks_dir"] / "channel_shanks.npy"
-        ).astype(int)
+        channel_shanks = ctx["channel_shanks"].astype(int)
         bucket = ctx["cluster_to_bucket"][cluster_num]
         colour = self.brain_area_colors[bucket]
 

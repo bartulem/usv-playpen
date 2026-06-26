@@ -998,9 +998,96 @@ class NeuralContinuousCNNRunner:
             block['category'] = np.concatenate(cat_list)
         return block
 
+    def _compute_global_saliency_template(self, params: Dict[str, jax.Array], state: Dict[str, jax.Array],
+                                          X_te: jax.Array, Y_center: jax.Array, Y_scale: jax.Array) -> np.ndarray:
+        """
+        Description
+        -----------
+        Compute the cluster-invariant global ("postural baseline") saliency template
+        used by :meth:`compute_centroid_saliency` for its contrastive subtraction.
+
+        The global objective is the wrap-aware L1 magnitude of the prediction from the
+        origin -- it never references any cluster centroid -- so the trial-averaged
+        Input x Gradient template it produces is identical for every cluster. Factoring
+        it out lets the per-cluster saliency loop compute it once instead of re-running
+        a full-batch backward pass per cluster (K redundant passes -> 1). The body is
+        the exact global path previously inlined in compute_centroid_saliency, so the
+        returned template is byte-identical.
+
+        Parameters
+        ----------
+        params : Dict[str, jax.Array]
+            Trainable network weights (Conv kernels, dense matrices, BN gamma/beta).
+        state : Dict[str, jax.Array]
+            Non-trainable network states (BN moving means and variances).
+        X_te : jax.Array
+            The 3D temporal input tensor for the test fold, shape (Batch, Features, Time_Bins).
+        Y_center : jax.Array
+            The 2D spatial center of the training manifold, used for bound-limited tanh scaling.
+        Y_scale : jax.Array
+            The 2D spatial half-width of the training manifold.
+
+        Returns
+        -------
+        np.ndarray
+            The trial-averaged global saliency template of shape (Features, Time_Bins),
+            i.e. ``mean(X_te * |grad_glob|, axis=0)``.
+        """
+
+        torus_sin_cos = _use_sin_cos_torus_output(self.hp)
+
+        def _decode(preds_raw):
+            if torus_sin_cos:
+                return angle_decode_jax(preds_raw, jnp.asarray(self.manifold_period))
+            return preds_raw
+
+        # L1 "distance from origin" baseline (wrap-aware on torus); the origin is the
+        # 2-D zero vector, matching jnp.zeros_like(polygon_centroid_jax) in the
+        # original inlined path.
+        origin_jax = jnp.zeros(2)
+
+        def glob_scalar_fn(x_single):
+            preds_raw, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
+                                       Y_center, Y_scale, self.hp, is_training=False)
+            preds = _decode(preds_raw)
+
+            diff_origin = signed_diff_jax(
+                preds[0], origin_jax,
+                metric=self.manifold_metric, period=self.manifold_period,
+            )
+            return jnp.sum(jnp.abs(diff_origin))
+
+        compute_glob_grad = jax.grad(glob_scalar_fn)
+
+        @jax.jit
+        def get_batched_glob_grads(x_batch):
+            return jax.vmap(compute_glob_grad)(x_batch)
+
+        batch_size = self.hp['batch_size']
+        n_samples = len(X_te)
+        glob_grads_list = []
+
+        for i in range(0, n_samples, batch_size):
+            batch_x = X_te[i:i + batch_size]
+            actual_size = len(batch_x)
+
+            # JAX requires strict static shapes. Pad the final remainder batch.
+            if actual_size < batch_size:
+                pad_width = ((0, batch_size - actual_size), (0, 0), (0, 0))
+                batch_x = jnp.pad(batch_x, pad_width, mode='constant')
+
+            batch_g_grad = get_batched_glob_grads(batch_x)
+            glob_grads_list.append(np.array(batch_g_grad[:actual_size]))
+
+        glob_grads = np.concatenate(glob_grads_list, axis=0)
+        X_te_np = np.array(X_te)
+        glob_saliency = X_te_np * np.abs(glob_grads)
+        return np.mean(glob_saliency, axis=0)
+
     def compute_centroid_saliency(self, params: Dict[str, jax.Array], state: Dict[str, jax.Array],
                                   X_te: jax.Array, Y_center: jax.Array, Y_scale: jax.Array,
-                                  polygon_centroid: Tuple[float, float]) -> Dict[str, np.ndarray]:
+                                  polygon_centroid: Tuple[float, float],
+                                  global_template: np.ndarray) -> Dict[str, np.ndarray]:
         r"""
         Extracts kinematic drivers for a specific manifold region via Contrastive Centroid-Gradient Saliency.
 
@@ -1052,6 +1139,11 @@ class NeuralContinuousCNNRunner:
             The 2D spatial half-width of the training manifold.
         polygon_centroid : Tuple[float, float]
             The (X, Y) coordinate representing the center of mass for the target acoustic cluster.
+        global_template : np.ndarray
+            The cluster-invariant global saliency template of shape (Features, Time_Bins),
+            precomputed once by :meth:`_compute_global_saliency_template` and subtracted
+            from the region-specific saliency. Passed in (rather than recomputed per
+            cluster) because the global baseline does not depend on the centroid.
 
         Returns
         -------
@@ -1106,40 +1198,24 @@ class NeuralContinuousCNNRunner:
             dist_to_centroid = jnp.sqrt(jnp.sum(diff ** 2))
             return -dist_to_centroid
 
-        # 2. Define the global baseline objective. On torus the L1
-        #    "distance from origin" must use the wrap-aware diff so it
-        #    is smooth across the seam; on euclidean
-        #    `signed_diff_jax(..., metric='euclidean')` is the identity
-        #    of `a - b`, so this reduces to the original
-        #    `|preds[0,0]| + |preds[0,1]|`.
-        origin_jax = jnp.zeros_like(polygon_centroid_jax)
+        # The global ("postural baseline") saliency template is cluster-invariant
+        # (its objective is the L1 distance from the origin, not from this centroid),
+        # so it is computed once by `_compute_global_saliency_template` and passed in
+        # via `global_template` instead of being recomputed here for every cluster.
 
-        def glob_scalar_fn(x_single):
-            preds_raw, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
-                                       Y_center, Y_scale, self.hp, is_training=False)
-            preds = _decode(preds_raw)
-
-            diff_origin = signed_diff_jax(
-                preds[0], origin_jax,
-                metric=self.manifold_metric, period=self.manifold_period,
-            )
-            return jnp.sum(jnp.abs(diff_origin))
-
-        # 3. Transform scalars into Gradient functions
+        # 2. Transform the region scalar into its gradient function.
         compute_region_grad = jax.grad(region_scalar_fn)
-        compute_glob_grad = jax.grad(glob_scalar_fn)
 
-        # 4. JIT compile the vectorized functions for fast batched execution
+        # 3. JIT compile the vectorized region-gradient function for fast batched execution
         @jax.jit
         def get_batched_grads(x_batch):
-            return jax.vmap(compute_region_grad)(x_batch), jax.vmap(compute_glob_grad)(x_batch)
+            return jax.vmap(compute_region_grad)(x_batch)
 
-        # 5. Execute in memory-safe mini-batches
+        # 4. Execute in memory-safe mini-batches
         batch_size = self.hp['batch_size']
         n_samples = len(X_te)
 
         region_grads_list = []
-        glob_grads_list = []
 
         for i in range(0, n_samples, batch_size):
             batch_x = X_te[i:i + batch_size]
@@ -1150,23 +1226,19 @@ class NeuralContinuousCNNRunner:
                 pad_width = ((0, batch_size - actual_size), (0, 0), (0, 0))
                 batch_x = jnp.pad(batch_x, pad_width, mode='constant')
 
-            batch_r_grad, batch_g_grad = get_batched_grads(batch_x)
+            batch_r_grad = get_batched_grads(batch_x)
 
             # Truncate any padding and pull directly to CPU RAM as NumPy arrays
             region_grads_list.append(np.array(batch_r_grad[:actual_size]))
-            glob_grads_list.append(np.array(batch_g_grad[:actual_size]))
 
         # Reconstruct the full dataset gradients on the CPU
         region_grads = np.concatenate(region_grads_list, axis=0)
-        glob_grads = np.concatenate(glob_grads_list, axis=0)
 
-        # 6. Input * Gradient Saliency (Computed on CPU to save VRAM)
+        # 5. Input * Gradient Saliency (Computed on CPU to save VRAM)
         X_te_np = np.array(X_te)
         region_saliency = X_te_np * np.abs(region_grads)
-        glob_saliency = X_te_np * np.abs(glob_grads)
 
-        # 7. Contrastive Subtraction
-        global_template = np.mean(glob_saliency, axis=0)
+        # 6. Contrastive Subtraction against the precomputed global template
         contrastive_saliency = region_saliency - global_template
 
         return {
@@ -1853,6 +1925,13 @@ class NeuralContinuousCNNRunner:
                 },
             }
 
+            # The global saliency baseline does not depend on the cluster centroid, so
+            # compute it once here instead of once per cluster inside the loop below.
+            global_saliency_template = self._compute_global_saliency_template(
+                best_params, best_state,
+                jnp.array(X_te_base), Y_center, Y_scale,
+            )
+
             for label, g in geometry.items():
                 centroid = np.asarray(g['centroid'], dtype=np.float64)
                 radius = float(g['radius'])
@@ -1865,6 +1944,7 @@ class NeuralContinuousCNNRunner:
                     best_params, best_state,
                     jnp.array(X_te_base), Y_center, Y_scale,
                     polygon_centroid=tuple(centroid),
+                    global_template=global_saliency_template,
                 )
 
                 # 2. Dual filter: a USV is a true positive for this cluster

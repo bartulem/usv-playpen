@@ -229,23 +229,6 @@ def _set_contour_style(cs, lw, alpha):
             coll.set_alpha(alpha)
 
 
-def _fading_trail_segments(traj_unit, wrap_thresh=0.5):
-    """Consecutive-point segments + a recency array (0 oldest .. 1 newest).
-
-    Wrap discontinuities (jumps > ``wrap_thresh`` on the torus) are dropped so the
-    line never streaks across the panel. The recency array is fed to a colormap
-    so the trail is brightest at the current position and fades going back.
-    """
-    pts = np.asarray(traj_unit)
-    if len(pts) < 2:
-        return np.empty((0, 2, 2)), np.empty((0,))
-    segs = np.stack([pts[:-1], pts[1:]], axis=1)
-    recency = np.linspace(0.0, 1.0, len(pts) - 1)
-    jumps = np.abs(pts[1:] - pts[:-1]).max(axis=1)
-    keep = jumps <= wrap_thresh
-    return segs[keep], recency[keep]
-
-
 # ---------------------------------------------------------------------------
 # Phase-list construction (pure: builds the ordered animation script)
 # ---------------------------------------------------------------------------
@@ -805,8 +788,30 @@ class QLVMTorusTraversalVideo:
                     return []
 
                 traj = ph['traj']
-                traj_unit = traj[:fi + 1] % 1.0
-                segs, recency = _fading_trail_segments(traj_unit)
+                # Precompute the prefix-invariant trail geometry once per phase (the
+                # full %1.0 trajectory's consecutive-point segments and the wrap-keep
+                # mask -- the expensive stack/diff/max), cached on the phase dict. Per
+                # frame we slice up to fi and recompute only the prefix-relative recency
+                # (a linspace normalized to the current prefix length, so it cannot be
+                # precomputed and sliced). Byte-identical to the previous
+                # _fading_trail_segments(traj[:fi + 1] % 1.0); wrap_thresh is its 0.5 default.
+                if 'trail_cache' not in ph:
+                    pts_full = ph['traj'] % 1.0
+                    if len(pts_full) >= 2:
+                        full_segs = np.stack([pts_full[:-1], pts_full[1:]], axis=1)
+                        full_keep = np.abs(pts_full[1:] - pts_full[:-1]).max(axis=1) <= 0.5
+                    else:
+                        full_segs = np.empty((0, 2, 2))
+                        full_keep = np.empty((0,), dtype=bool)
+                    ph['trail_cache'] = (full_segs, full_keep)
+                full_segs, full_keep = ph['trail_cache']
+                if fi >= 1:
+                    prefix_keep = full_keep[:fi]
+                    segs = full_segs[:fi][prefix_keep]
+                    recency = np.linspace(0.0, 1.0, fi)[prefix_keep]
+                else:
+                    segs = np.empty((0, 2, 2))
+                    recency = np.empty((0,))
                 trail_lc.set_segments(segs)
                 trail_lc.set_array(recency)
                 # The accent-colored ball rides the current head of the walk

@@ -41,6 +41,7 @@ import pickle
 import time
 import warnings
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from datetime import datetime
 from pathlib import Path
 from scipy.stats import spearmanr, rankdata
@@ -145,13 +146,15 @@ def _build_event_summary_matrix(processed_beh_dict: dict,
             else:
                 generic_key = col_name
 
-            col_values = sess_df[col_name].to_numpy()
-            window_means = np.empty(starts.size, dtype=np.float32)
-            for i, (s, e) in enumerate(zip(starts, ends)):
-                chunk = col_values[s:e]
-                if np.isnan(chunk).any():
-                    chunk = np.nan_to_num(chunk, nan=0.0)
-                window_means[i] = float(chunk.mean())
+            # Vectorized equivalent of the per-event window-mean loop: sliding_window_view
+            # + mean(axis=1) computes the same per-window np.mean (same dtype, same
+            # per-row pairwise sum) without the O(n_events * history_frames) Python
+            # overhead. Whole-column nan_to_num matches the old per-chunk cleaning
+            # (NaN -> 0 in every window containing it); ends = starts + history_frames
+            # with ends <= n_frames (valid_mask above), so every window is full-width and
+            # `starts` indexes in range. Byte-identical for both float32 and float64.
+            col_values = np.nan_to_num(sess_df[col_name].to_numpy(), nan=0.0)
+            window_means = sliding_window_view(col_values, history_frames).mean(axis=1)[starts].astype(np.float32)
 
             per_feature_session_blocks.setdefault(generic_key, {})[sess_id] = window_means
 
@@ -1258,12 +1261,16 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 # S samples a contiguous window centred at lag S.
                 # `null_per_sess_shuffle[s_i, j, :]` holds the j-th
                 # shuffle's lag window for this session.
-                for j, S in enumerate(shifts):
-                    S_int = int(S)
-                    null_per_sess_shuffle[s_i, j, :] = (
-                        xcorr_full[S_int - max_lag_frames:S_int + max_lag_frames + 1]
-                        / denom
-                    ).astype(np.float32)
+                # Vectorized gather of the per-shuffle lag windows: each shift S samples
+                # xcorr_full[S - max_lag_frames : S + max_lag_frames + 1], an equal-width
+                # window, so shifts[:, None] + offsets indexes all n_shuffles at once.
+                # The shuffle_min_frames >= max_lag_frames check above guarantees
+                # S - max_lag_frames >= 0 (no negative wrap); the upper bound holds since
+                # the old per-row slice-assign would otherwise shape-mismatch. The RNG
+                # draw (shifts) is unchanged, so this is byte-identical.
+                offsets = np.arange(-max_lag_frames, max_lag_frames + 1)
+                null_idx = shifts[:, None] + offsets[None, :]
+                null_per_sess_shuffle[s_i, :, :] = (xcorr_full[null_idx] / denom).astype(np.float32)
 
                 del x_sess, x_sess_r, x_sess_c, x_fft_conj, xcorr_full
 

@@ -828,6 +828,34 @@ def bout_onset_model_selection(univariate_results_path: str,
 
         best_candidate, best_candidate_score, best_candidate_se = None, float('inf'), 0.0
 
+        # 'session' folds: the anchor pooling, the fold's balanced subsample indices
+        # (trial_rng is seeded by fold only, so idx_p/idx_n are identical across
+        # candidates), and the base-feature pooled+subsampled design columns are all
+        # candidate-invariant. Precompute them once per fold here; the candidate loop then
+        # pools only the new feature. pool_session_arrays is a pure per-feature
+        # concatenate, so pool(base+[new]) == pool(base)+pool([new]) -- byte-identical.
+        session_fold_base = {}
+        for fold_i, fold_info in enumerate(cv_folds):
+            if fold_info['type'] != 'session':
+                continue
+            train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
+            anc_data = all_feature_data[anchor_feature]
+            X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+            trial_rng = np.random.default_rng(random_seed + fold_i)
+            n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
+            idx_p = trial_rng.choice(X_p_tr.shape[0], n_k, replace=False)
+            idx_n = trial_rng.choice(X_n_tr.shape[0], n_k, replace=False)
+            y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+            X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+            y_te_fold = np.concatenate((np.ones(X_p_te_anc.shape[0]), np.zeros(X_n_te_anc.shape[0])))
+            base_train_list, base_test_list = [], []
+            for f_name in current_model_features:
+                f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[f_name], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                f_p_te, f_n_te = pool_session_arrays(all_feature_data[f_name], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                base_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
+                base_test_list.append(np.concatenate((f_p_te, f_n_te)))
+            session_fold_base[fold_i] = (train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list)
+
         for i_feat, feat in enumerate(ranked_features):
             if feat in current_model_features: continue
             gc.collect()
@@ -845,23 +873,16 @@ def bout_onset_model_selection(univariate_results_path: str,
                 try:
                     X_train_list, X_test_list = [], []
                     if fold_info['type'] == 'session':
-                        train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
-                        anc_data = all_feature_data[anchor_feature]
-                        X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                        trial_rng = np.random.default_rng(random_seed + fold_i)
-                        n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
-                        idx_p = trial_rng.choice(X_p_tr.shape[0], n_k, replace=False)
-                        idx_n = trial_rng.choice(X_n_tr.shape[0], n_k, replace=False)
-                        y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
-
-                        X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                        y_te_fold = np.concatenate((np.ones(X_p_te_anc.shape[0]), np.zeros(X_n_te_anc.shape[0])))
-
-                        for f_name in trial_features:
-                            f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[f_name], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                            f_p_te, f_n_te = pool_session_arrays(all_feature_data[f_name], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                            X_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
-                            X_test_list.append(np.concatenate((f_p_te, f_n_te)))
+                        # Anchor pool, balanced subsample indices, and base-feature columns
+                        # were precomputed once per fold above; pool only the new feature
+                        # and append (list() copy so the cached base list is not mutated).
+                        train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list = session_fold_base[fold_i]
+                        X_train_list = list(base_train_list)
+                        X_test_list = list(base_test_list)
+                        f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[feat], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                        f_p_te, f_n_te = pool_session_arrays(all_feature_data[feat], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+                        X_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
+                        X_test_list.append(np.concatenate((f_p_te, f_n_te)))
                     elif fold_info['type'] == 'mixed':
                         train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
                         n_pos_total = fold_info['n_pos_total']
@@ -1673,6 +1694,21 @@ def vocal_category_model_selection(
         }
         best_cand_name, best_cand_score, best_cand_se = None, float('inf'), 0.0
 
+        # 'session' branch: pool the already-selected (base) features once per fold here
+        # (identical across candidates within the step), so the candidate loop below only
+        # pools the single new feature. _pool_category_features pools each feature
+        # independently in features_to_load order, so pool(base + [new]) is byte-identical
+        # to pool(base) + pool([new]). Empty when current_model_features is empty (step 0).
+        fold_base_pooled = []
+        if split_strategy == 'session':
+            for tr_idx, te_idx in cv_folds:
+                if current_model_features:
+                    b_tr_t, b_tr_o = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
+                    b_te_t, b_te_o = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[te_idx], history_frames)
+                else:
+                    b_tr_t, b_tr_o, b_te_t, b_te_o = [], [], [], []
+                fold_base_pooled.append((b_tr_t, b_tr_o, b_te_t, b_te_o))
+
         for i_feat, feat in enumerate(ranked_features):
             if feat in current_model_features: continue
             gc.collect()
@@ -1691,8 +1727,14 @@ def vocal_category_model_selection(
             for fold_i, (tr_idx, te_idx) in enumerate(cv_folds):
                 try:
                     if split_strategy == 'session':
-                        X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, trial_feats, all_sessions_arr[tr_idx], history_frames)
-                        X_te_t_raw, X_te_o_raw = _pool_category_features(all_feature_data, trial_feats, all_sessions_arr[te_idx], history_frames)
+                        # Pool only the new candidate feature; the base features were
+                        # pooled once per fold above. List order matches trial_feats
+                        # (base first, then the new feat), so this is byte-identical.
+                        b_tr_t, b_tr_o, b_te_t, b_te_o = fold_base_pooled[fold_i]
+                        n_tr_t, n_tr_o = _pool_category_features(all_feature_data, [feat], all_sessions_arr[tr_idx], history_frames)
+                        n_te_t, n_te_o = _pool_category_features(all_feature_data, [feat], all_sessions_arr[te_idx], history_frames)
+                        X_tr_t_raw, X_tr_o_raw = b_tr_t + n_tr_t, b_tr_o + n_tr_o
+                        X_te_t_raw, X_te_o_raw = b_te_t + n_te_t, b_te_o + n_te_o
                     else:
                         # Reassemble the per-trial feature list from the
                         # pre-pooled cache so every fold reuses the same dense
@@ -2464,6 +2506,20 @@ def bout_parameter_model_selection(
             fold_base_X_tr.append([all_feature_data[f]['X'][tr_idx] for f in current_model_features])
             fold_base_X_te.append([all_feature_data[f]['X'][te_idx] for f in current_model_features])
 
+        # For the sklearn path the basis projection of the already-selected features is
+        # identical across every candidate in this step, so project the fixed base once
+        # per fold here instead of re-projecting it inside the candidate loop. `None`
+        # marks the step-0 empty base (np.hstack of [] would raise); the candidate loop
+        # then projects only the new feature and hstacks it on. Byte-identical: hstack is
+        # associative, so hstack([base_proj, new_proj]) == hstack(base_projs + [new_proj]).
+        fold_base_proj_tr, fold_base_proj_te = [], []
+        if model_type == 'sklearn':
+            for fold_idx in range(len(cv_folds)):
+                base_tr = fold_base_X_tr[fold_idx]
+                base_te = fold_base_X_te[fold_idx]
+                fold_base_proj_tr.append(np.hstack([np.dot(x, basis_matrix) for x in base_tr]) if base_tr else None)
+                fold_base_proj_te.append(np.hstack([np.dot(x, basis_matrix) for x in base_te]) if base_te else None)
+
         best_cand, best_cand_score, best_cand_se = None, -float('inf'), 0.0
         step_results = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
@@ -2496,8 +2552,14 @@ def bout_parameter_model_selection(
                     y_tr, y_te = y_global[tr_idx], y_global[te_idx]
 
                     if model_type == 'sklearn':
-                        X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in trial_tr])
-                        X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in trial_te])
+                        # Project only the new candidate feature; the fixed base
+                        # projection was precomputed once per fold above and hstacked on.
+                        new_proj_tr = np.dot(all_feature_data[feat]['X'][tr_idx], basis_matrix)
+                        new_proj_te = np.dot(all_feature_data[feat]['X'][te_idx], basis_matrix)
+                        base_proj_tr = fold_base_proj_tr[fold_idx]
+                        base_proj_te = fold_base_proj_te[fold_idx]
+                        X_tr_stacked = np.hstack([base_proj_tr, new_proj_tr]) if base_proj_tr is not None else new_proj_tr
+                        X_te_stacked = np.hstack([base_proj_te, new_proj_te]) if base_proj_te is not None else new_proj_te
 
                         y_tr_log = np.log(y_tr + 1e-6)
                         fit_start = time.perf_counter()

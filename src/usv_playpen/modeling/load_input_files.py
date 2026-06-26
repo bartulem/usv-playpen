@@ -502,21 +502,17 @@ def find_bout_epochs(root_directories: list = None,
                 # vocalisations leak into the No-Bout class.
                 all_usv_starts = usv_start_mouse_and_uncategorized
 
-                neg_list = []
-                for t_onset in all_clean_onsets:
-                    t_future_end = t_onset + usv_bout_time
-
-                    # Count USVs (any source) in the "future" window
-                    usvs_in_future = np.sum(
-                        (all_usv_starts >= t_onset) &
-                        (all_usv_starts < t_future_end)
-                    )
-
-                    # Only add if there are zero USVs in the future window
-                    if usvs_in_future == 0:
-                        neg_list.append(t_onset)
-
-                usv_events_negative = np.array(neg_list)
+                # Vectorized equivalent of the per-onset future-window count: keep each
+                # clean onset only if zero USVs (any source) fall in
+                # [t_onset, t_onset + usv_bout_time). all_usv_starts is sorted, so two
+                # side='left' searchsorted calls give every window's count at once --
+                # `lo` counts USVs strictly before the onset (those >= t_onset are
+                # kept) and `hi` counts USVs strictly before the window end (< the
+                # future end), so `hi - lo` is exactly the old boolean-AND reduction.
+                # Byte-identical, including the all_clean_onsets ordering of kept events.
+                lo = np.searchsorted(all_usv_starts, all_clean_onsets, side='left')
+                hi = np.searchsorted(all_usv_starts, all_clean_onsets + usv_bout_time, side='left')
+                usv_events_negative = all_clean_onsets[(hi - lo) == 0]
 
             ### Mode 2: 'individual' (USV pre-vocalization periods can be "dirty" and no-USV must be clean)
             elif prediction_mode == 'individual':

@@ -657,12 +657,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         random_state = self.modeling_settings['model_params']['random_seed']
 
         all_sessions = list(feature_data.keys())
-        X_pos_all, X_neg_all = pool_session_arrays(feature_data, all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
-        n_pos_total = X_pos_all.shape[0]
-        n_neg_total = X_neg_all.shape[0]
 
         ### Strategy 1: 'mixed' (all sessions together)
         if split_strategy == 'mixed':
+            # Pool the feature's entire positive/negative data across all sessions.
+            # Only the 'mixed' branch consumes this; the 'session' branch re-pools per
+            # train/test subset below and never references it, so this full concatenate
+            # is moved inside here to avoid running (and discarding) it when
+            # split_strategy == 'session'. pool_session_arrays is a pure concatenate
+            # (no RNG), so this is byte-identical.
+            X_pos_all, X_neg_all = pool_session_arrays(feature_data, all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+            n_pos_total = X_pos_all.shape[0]
+            n_neg_total = X_neg_all.shape[0]
+
             if n_pos_total == 0 or n_neg_total == 0:
                 print(f"Warning: No data for one of the classes (pos={n_pos_total}, neg={n_neg_total}). Skipping splits.")
                 return

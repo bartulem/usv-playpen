@@ -14,7 +14,6 @@ import h5py
 import librosa
 import numpy as np
 import polars as pls
-from sklearn.metrics.pairwise import cosine_similarity
 
 from ..os_utils import first_match_or_raise
 
@@ -282,12 +281,25 @@ def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
     r_sc_values = neuron_corr_mat[np.triu_indices(num_neurons, k=1)]
     mean_r_sc = np.nanmean(r_sc_values)
 
-    # Population vector similarity (cosine similarity)
-    # Angle between raw population vectors (columns)
-    # Transpose to (trials, neurons) for cosine_similarity
-    sim_matrix = cosine_similarity(count_matrix.T)
-    pop_sim_values = sim_matrix[np.triu_indices(num_trials, k=1)]
-    mean_pop_sim = np.nanmean(pop_sim_values)
+    # Population vector similarity (mean off-diagonal cosine between trial vectors).
+    # Computed as an O(N*T) reduction over L2-normalized columns instead of
+    # materializing the full (num_trials x num_trials) cosine matrix every
+    # bootstrap/shuffle iteration. With normalized columns U (zero-norm trials -> 0,
+    # matching sklearn.cosine_similarity, which returns 0 -- not NaN -- for zero
+    # vectors), the diagonal of (U.sum @ U.sum) is n_valid (1 per nonzero column),
+    # so mean_offdiag = (U.sum @ U.sum - n_valid) / (num_trials*(num_trials-1)).
+    # Equal to the old np.nanmean(cosine_similarity(...)) up to fp reassociation
+    # (~1e-15); zero columns count as 0 in both.
+    col_norms = np.linalg.norm(count_matrix, axis=0)
+    valid_cols = col_norms > 0
+    n_valid = int(valid_cols.sum())
+    normalized_cols = np.zeros(count_matrix.shape, dtype=np.float64)
+    normalized_cols[:, valid_cols] = count_matrix[:, valid_cols] / col_norms[valid_cols]
+    col_vector_sum = normalized_cols.sum(axis=1)
+    if num_trials > 1:
+        mean_pop_sim = (col_vector_sum @ col_vector_sum - n_valid) / (num_trials * (num_trials - 1))
+    else:
+        mean_pop_sim = np.nan
 
     # Correlation of population vectors (Pearson correlation)
     # This is the "mean-centered" version of cosine similarity.

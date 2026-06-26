@@ -474,22 +474,30 @@ def plot_mouse_data(data: np.ndarray,
     None
     """
 
+    # Resolve every node name to its index once: this function runs once per animation
+    # frame and the mapping never changes, so the repeated O(n) animal_node_names.index(...)
+    # scans in the loops below are pure repeated work. setdefault in enumerate order stores
+    # each name's first occurrence, exactly matching list.index.
+    node_idx = {}
+    for _i_node, _node_name in enumerate(animal_node_names):
+        node_idx.setdefault(_node_name, _i_node)
+
     for mouse_idx in range(data.shape[1]):
         if history_bool:
             # plot history of animal paths
             for hist_point_idx, hist_point in enumerate(range(frame_number - history_frame_span, frame_number)):
-                plot_axes.plot([data[hist_point, mouse_idx, animal_node_names.index(history_point), 0], data[hist_point + 1, mouse_idx, animal_node_names.index(history_point), 0]],
-                               [data[hist_point, mouse_idx, animal_node_names.index(history_point), 1], data[hist_point + 1, mouse_idx, animal_node_names.index(history_point), 1]],
-                               [data[hist_point, mouse_idx, animal_node_names.index(history_point), 2], data[hist_point + 1, mouse_idx, animal_node_names.index(history_point), 2]],
+                plot_axes.plot([data[hist_point, mouse_idx, node_idx[history_point], 0], data[hist_point + 1, mouse_idx, node_idx[history_point], 0]],
+                               [data[hist_point, mouse_idx, node_idx[history_point], 1], data[hist_point + 1, mouse_idx, node_idx[history_point], 1]],
+                               [data[hist_point, mouse_idx, node_idx[history_point], 2], data[hist_point + 1, mouse_idx, node_idx[history_point], 2]],
                                color=animal_cm[mouse_idx](int(255*hist_point_idx/history_frame_span)), ls=history_ls, lw=history_lw)
 
         # plot node connection lines
         for nc_idx, nc in enumerate(node_connections):
             line_color = body_edge_color if nc_idx <= 7 else animal_color[mouse_idx]
             nc = nc.split('-')
-            plot_axes.plot([data[frame_number, mouse_idx, animal_node_names.index(nc[0]), 0], data[frame_number, mouse_idx, animal_node_names.index(nc[1]), 0]],
-                           [data[frame_number, mouse_idx, animal_node_names.index(nc[0]), 1], data[frame_number, mouse_idx, animal_node_names.index(nc[1]), 1]],
-                           [data[frame_number, mouse_idx, animal_node_names.index(nc[0]), 2], data[frame_number, mouse_idx, animal_node_names.index(nc[1]), 2]],
+            plot_axes.plot([data[frame_number, mouse_idx, node_idx[nc[0]], 0], data[frame_number, mouse_idx, node_idx[nc[1]], 0]],
+                           [data[frame_number, mouse_idx, node_idx[nc[0]], 1], data[frame_number, mouse_idx, node_idx[nc[1]], 1]],
+                           [data[frame_number, mouse_idx, node_idx[nc[0]], 2], data[frame_number, mouse_idx, node_idx[nc[1]], 2]],
                            c=line_color, lw=animal_line_width)
 
         # plot node polygon shading
@@ -497,9 +505,9 @@ def plot_mouse_data(data: np.ndarray,
             npol = npol.split('-')
             xs, ys, zs = np.zeros(len(npol)), np.zeros(len(npol)), np.zeros(len(npol))
             for i in range(len(npol)):
-                xs[i] = data[frame_number, mouse_idx, animal_node_names.index(npol[i]), 0]
-                ys[i] = data[frame_number, mouse_idx, animal_node_names.index(npol[i]), 1]
-                zs[i] = data[frame_number, mouse_idx, animal_node_names.index(npol[i]), 2]
+                xs[i] = data[frame_number, mouse_idx, node_idx[npol[i]], 0]
+                ys[i] = data[frame_number, mouse_idx, node_idx[npol[i]], 1]
+                zs[i] = data[frame_number, mouse_idx, node_idx[npol[i]], 2]
 
             vertices = [list(zip(xs, ys, zs, strict=True))]
             plot_axes.add_collection3d(Poly3DCollection(verts=vertices, facecolors=[polygon_color[mouse_idx]], alpha=polygon_opacity))
@@ -1103,6 +1111,14 @@ def plot_arena_corners_mics(data: np.ndarray,
     None
     """
 
+    # Resolve every node name to its index once: this function runs once per animation
+    # frame and the arena geometry is frame-invariant, so the dozens of O(n)
+    # arena_node_names.index(...) scans below are pure repeated work. setdefault in
+    # enumerate order stores each name's first occurrence, exactly matching list.index.
+    node_idx = {}
+    for _i_node, _node_name in enumerate(arena_node_names):
+        node_idx.setdefault(_node_name, _i_node)
+
     if active_mic_bool:
         plot_axes.scatter(data[0, 0, 4 + active_mic_position, 0],
                           data[0, 0, 4 + active_mic_position, 1],
@@ -1118,69 +1134,69 @@ def plot_arena_corners_mics(data: np.ndarray,
                               c=inactive_mic_color, s=20, alpha=arena_mics_opacity)
 
     if plot_corners_bool:
-        plot_axes.scatter(data[0, 0, arena_node_names.index('North'), 0], data[0, 0, arena_node_names.index('North'), 1], data[0, 0, arena_node_names.index('North'), 2], c='#FF0000', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, arena_node_names.index('West'), 0], data[0, 0, arena_node_names.index('West'), 1], data[0, 0, arena_node_names.index('West'), 2], c='#FFFF00', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, arena_node_names.index('South'), 0], data[0, 0, arena_node_names.index('South'), 1], data[0, 0, arena_node_names.index('South'), 2], c='#008000', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, arena_node_names.index('East'), 0], data[0, 0, arena_node_names.index('East'), 1], data[0, 0, arena_node_names.index('East'), 2], c='#0000FF', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['North'], 1], data[0, 0, node_idx['North'], 2], c='#FF0000', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, node_idx['West'], 0], data[0, 0, node_idx['West'], 1], data[0, 0, node_idx['West'], 2], c='#FFFF00', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, node_idx['South'], 0], data[0, 0, node_idx['South'], 1], data[0, 0, node_idx['South'], 2], c='#008000', s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, node_idx['East'], 0], data[0, 0, node_idx['East'], 1], data[0, 0, node_idx['East'], 2], c='#0000FF', s=corner_size, alpha=corner_opacity)
 
     # plot bottom sides
-    plot_axes.plot([data[0, 0, arena_node_names.index('North'), 0], data[0, 0, arena_node_names.index('West'), 0]],
-                   [data[0, 0, arena_node_names.index('North'), 1], data[0, 0, arena_node_names.index('West'), 1]],
-                   [data[0, 0, arena_node_names.index('North'), 2], data[0, 0, arena_node_names.index('West'), 2]],
+    plot_axes.plot([data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['West'], 0]],
+                   [data[0, 0, node_idx['North'], 1], data[0, 0, node_idx['West'], 1]],
+                   [data[0, 0, node_idx['North'], 2], data[0, 0, node_idx['West'], 2]],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
-    plot_axes.plot([data[0, 0, arena_node_names.index('North'), 0], data[0, 0, arena_node_names.index('East'), 0]],
-                   [data[0, 0, arena_node_names.index('North'), 1], data[0, 0, arena_node_names.index('East'), 1]],
-                   [data[0, 0, arena_node_names.index('North'), 2], data[0, 0, arena_node_names.index('East'), 2]],
+    plot_axes.plot([data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['East'], 0]],
+                   [data[0, 0, node_idx['North'], 1], data[0, 0, node_idx['East'], 1]],
+                   [data[0, 0, node_idx['North'], 2], data[0, 0, node_idx['East'], 2]],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
-    plot_axes.plot([data[0, 0, arena_node_names.index('South'), 0], data[0, 0, arena_node_names.index('West'), 0]],
-                   [data[0, 0, arena_node_names.index('South'), 1], data[0, 0, arena_node_names.index('West'), 1]],
-                   [data[0, 0, arena_node_names.index('South'), 2], data[0, 0, arena_node_names.index('West'), 2]],
+    plot_axes.plot([data[0, 0, node_idx['South'], 0], data[0, 0, node_idx['West'], 0]],
+                   [data[0, 0, node_idx['South'], 1], data[0, 0, node_idx['West'], 1]],
+                   [data[0, 0, node_idx['South'], 2], data[0, 0, node_idx['West'], 2]],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
-    plot_axes.plot([data[0, 0, arena_node_names.index('South'), 0], data[0, 0, arena_node_names.index('East'), 0]],
-                   [data[0, 0, arena_node_names.index('South'), 1], data[0, 0, arena_node_names.index('East'), 1]],
-                   [data[0, 0, arena_node_names.index('South'), 2], data[0, 0, arena_node_names.index('East'), 2]],
+    plot_axes.plot([data[0, 0, node_idx['South'], 0], data[0, 0, node_idx['East'], 0]],
+                   [data[0, 0, node_idx['South'], 1], data[0, 0, node_idx['East'], 1]],
+                   [data[0, 0, node_idx['South'], 2], data[0, 0, node_idx['East'], 2]],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
     # plot vertical sides
-    plot_axes.plot([data[0, 0, arena_node_names.index('North'), 0], data[0, 0, arena_node_names.index('North'), 0]],
-                   [data[0, 0, arena_node_names.index('North'), 1], data[0, 0, arena_node_names.index('North'), 1]],
-                   [data[0, 0, arena_node_names.index('North'), 2], .25],
+    plot_axes.plot([data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['North'], 0]],
+                   [data[0, 0, node_idx['North'], 1], data[0, 0, node_idx['North'], 1]],
+                   [data[0, 0, node_idx['North'], 2], .25],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
-    plot_axes.plot([data[0, 0, arena_node_names.index('West'), 0], data[0, 0, arena_node_names.index('West'), 0]],
-                   [data[0, 0, arena_node_names.index('West'), 1], data[0, 0, arena_node_names.index('West'), 1]],
-                   [data[0, 0, arena_node_names.index('West'), 2], .25],
+    plot_axes.plot([data[0, 0, node_idx['West'], 0], data[0, 0, node_idx['West'], 0]],
+                   [data[0, 0, node_idx['West'], 1], data[0, 0, node_idx['West'], 1]],
+                   [data[0, 0, node_idx['West'], 2], .25],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
-    plot_axes.plot([data[0, 0, arena_node_names.index('South'), 0], data[0, 0, arena_node_names.index('South'), 0]],
-                   [data[0, 0, arena_node_names.index('South'), 1], data[0, 0, arena_node_names.index('South'), 1]],
-                   [data[0, 0, arena_node_names.index('South'), 2], .25],
+    plot_axes.plot([data[0, 0, node_idx['South'], 0], data[0, 0, node_idx['South'], 0]],
+                   [data[0, 0, node_idx['South'], 1], data[0, 0, node_idx['South'], 1]],
+                   [data[0, 0, node_idx['South'], 2], .25],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
-    plot_axes.plot([data[0, 0, arena_node_names.index('East'), 0], data[0, 0, arena_node_names.index('East'), 0]],
-                   [data[0, 0, arena_node_names.index('East'), 1], data[0, 0, arena_node_names.index('East'), 1]],
-                   [data[0, 0, arena_node_names.index('East'), 2], .25],
+    plot_axes.plot([data[0, 0, node_idx['East'], 0], data[0, 0, node_idx['East'], 0]],
+                   [data[0, 0, node_idx['East'], 1], data[0, 0, node_idx['East'], 1]],
+                   [data[0, 0, node_idx['East'], 2], .25],
                    c=color_mode_preferences['arena_line_color'], lw=arena_axes_lw)
 
     # plot mesh walls
     if plot_mesh_walls_bool:
         for wall in ['North-West', 'North-East', 'South-West', 'South-East']:
             wall = wall.split('-')
-            mesh_wall = [[data[0, 0, arena_node_names.index(wall[0]), :],
-                         np.array([data[0, 0, arena_node_names.index(wall[0]), 0], data[0, 0, arena_node_names.index(wall[0]), 1], 0.25]),
-                         np.array([data[0, 0, arena_node_names.index(wall[1]), 0], data[0, 0, arena_node_names.index(wall[1]), 1], 0.25]),
-                         data[0, 0, arena_node_names.index(wall[1]), :]]]
+            mesh_wall = [[data[0, 0, node_idx[wall[0]], :],
+                         np.array([data[0, 0, node_idx[wall[0]], 0], data[0, 0, node_idx[wall[0]], 1], 0.25]),
+                         np.array([data[0, 0, node_idx[wall[1]], 0], data[0, 0, node_idx[wall[1]], 1], 0.25]),
+                         data[0, 0, node_idx[wall[1]], :]]]
             plot_axes.add_collection3d(Poly3DCollection(verts=mesh_wall, facecolors=mesh_color, alpha=mesh_opacity))
 
     if arena_node_connections_bool:
         for arena_nc in arena_node_connections:
             arena_nc = arena_nc.split('-')
-            plot_axes.plot([data[0, 0, arena_node_names.index(arena_nc[0]), 0], data[0, 0, arena_node_names.index(arena_nc[1]), 0]],
-                           [data[0, 0, arena_node_names.index(arena_nc[0]), 1], data[0, 0, arena_node_names.index(arena_nc[1]), 1]],
-                           [0, data[0, 0, arena_node_names.index(arena_nc[1]), 2]],
+            plot_axes.plot([data[0, 0, node_idx[arena_nc[0]], 0], data[0, 0, node_idx[arena_nc[1]], 0]],
+                           [data[0, 0, node_idx[arena_nc[0]], 1], data[0, 0, node_idx[arena_nc[1]], 1]],
+                           [0, data[0, 0, node_idx[arena_nc[1]], 2]],
                            c=color_mode_preferences['arena_line_color'], lw=arena_mics_lw, alpha=arena_mics_opacity)
 
     plot_axes.text2D(x=text_start_coords[0],

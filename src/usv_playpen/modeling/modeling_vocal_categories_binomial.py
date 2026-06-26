@@ -775,14 +775,21 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         strategies = ['actual', 'null']
         time_indices = np.arange(self.history_frames, dtype=np.float32)
 
-        for strat in strategies:
-            # Both passes use the real Target-vs-Other splits; the `null` pass
-            # permutes the training labels per split (a label-shuffle permutation
-            # test), evaluated against the real test labels. This replaced the
-            # former `null_other` (Other-vs-Other pseudo-class) baseline.
-            splitter = self.create_category_splits(feature_data, strategy='actual')
+        # Both passes use the real Target-vs-Other splits; the `null` pass permutes
+        # the training labels per split (a label-shuffle permutation test), evaluated
+        # against the real test labels. This replaced the former `null_other`
+        # (Other-vs-Other pseudo-class) baseline.
+        #
+        # The splitter is fully seeded (random_state=rand_seed), so both strategies
+        # would regenerate identical splits -- materialize them once and reuse instead
+        # of rerunning pooling/balancing/shuffling (and StratifiedShuffleSplit) per
+        # strategy. Reuse is byte-identical: neither model path mutates
+        # X_tr/y_tr/X_te/y_te in place (they fit on np.dot / unroll / repeat copies),
+        # and the null pass's permutation returns a fresh array.
+        cached_splits = list(self.create_category_splits(feature_data, strategy='actual'))
 
-            for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
+        for strat in strategies:
+            for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(cached_splits):
                 if split_idx >= n_splits: break
 
                 if strat == 'null':

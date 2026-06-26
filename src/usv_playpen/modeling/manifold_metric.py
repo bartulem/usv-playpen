@@ -244,9 +244,12 @@ def distance_correlation(A: np.ndarray, B: np.ndarray) -> float:
         return M - M.mean(axis=0, keepdims=True) - M.mean(axis=1, keepdims=True) + M.mean()
 
     a_c, b_c = _double_center(A), _double_center(B)
-    dcov2 = float((a_c * b_c).mean())
-    dvar_a = float((a_c * a_c).mean())
-    dvar_b = float((b_c * b_c).mean())
+    # einsum fuses the elementwise product and the reduction, avoiding three full
+    # (n, n) ~50 MB temporaries per call (x n_rep per bundle). Numerically equal to
+    # (a_c * b_c).mean() up to reduction-order fp reassociation (~1e-17, sub-epsilon).
+    dcov2 = float(np.einsum('ij,ij->', a_c, b_c)) / a_c.size
+    dvar_a = float(np.einsum('ij,ij->', a_c, a_c)) / a_c.size
+    dvar_b = float(np.einsum('ij,ij->', b_c, b_c)) / b_c.size
     if dvar_a <= 0.0 or dvar_b <= 0.0:
         return 0.0
     ratio = dcov2 / np.sqrt(dvar_a * dvar_b)

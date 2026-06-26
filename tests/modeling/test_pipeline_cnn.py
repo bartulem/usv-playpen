@@ -759,9 +759,15 @@ class TestComputeCentroidSaliencyDirect:
         n_take = batch_size + 1
         X_te = jnp.array(block['X_seq'][:n_take])
 
+        # The global saliency baseline is now computed once (cluster-invariant) and
+        # passed in; mirror the production call path here.
+        global_template = runner._compute_global_saliency_template(
+            params, state, X_te, Y_center, Y_scale,
+        )
         out = runner.compute_centroid_saliency(
             params, state, X_te, Y_center, Y_scale,
             polygon_centroid=(float(Y_center[0]), float(Y_center[1])),
+            global_template=global_template,
         )
 
         sal = out['contrastive_saliency']

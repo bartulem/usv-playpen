@@ -172,6 +172,98 @@ def _multinomial_train_loop_jit(
     return params_final, i_final, converged_final
 
 
+@partial(
+    jax.jit,
+    static_argnames=('loss_fn', 'n_feats', 'n_time', 'smoothness_derivative_order', 'max_iter'),
+)
+def _multinomial_default_step(
+        params,
+        opt_state,
+        X_batch,
+        Y_batch,
+        class_weights,
+        lambda_smooth,
+        l2_reg,
+        focal_gamma,
+        learning_rate,
+        loss_fn,
+        n_feats: int,
+        n_time: int,
+        smoothness_derivative_order: int,
+        max_iter: int,
+):
+    """
+    One clipped-Adam descent step on the multinomial loss, hoisted to MODULE
+    scope so JAX's jit cache (keyed on the stable function object + the static
+    shapes / loss_fn / max_iter) is reused across same-shape estimators -- the
+    previous nested-closure ``step`` defined inside ``fit`` recompiled once per
+    constructed estimator (~175 per inner-CV fold). The optimizer is stateless and
+    reconstructed here exactly as the closure built it; the cosine-decay learning
+    rate is driven by the step count carried in ``opt_state``, so this is
+    numerically identical to closing over one optimizer instance (mirrors
+    ``_multinomial_train_loop_jit``'s optimizer setup, with ``max_iter`` static
+    because the cosine schedule needs it as a Python int at trace time). ``loss_fn``
+    is the same ``_loss_fn`` the closure used, passed as a static argument so the
+    cache key stays stable across estimators.
+
+    Parameters
+    ----------
+    params : tuple
+        ``(W, b)`` tuple of current model parameters.
+    opt_state : optax.OptState
+        Current optimizer state carried across descent steps.
+    X_batch : jnp.ndarray
+        Design matrix of shape ``(n_samples, n_features * n_time)``.
+    Y_batch : jnp.ndarray
+        One-hot target matrix of shape ``(n_samples, n_classes)``.
+    class_weights : jnp.ndarray
+        Unit-mean per-class weight vector of shape ``(n_classes,)``.
+    lambda_smooth : float
+        Temporal-smoothness penalty strength (traced).
+    l2_reg : float
+        L2 (Ridge) penalty strength (traced).
+    focal_gamma : float
+        Focal-loss gamma (traced).
+    learning_rate : float
+        Cosine-decay initial learning rate (traced).
+    loss_fn : callable
+        The jitted multinomial loss (the class ``_loss_fn`` staticmethod); static
+        JIT argument.
+    n_feats : int
+        Number of distinct physical features. Static JIT argument.
+    n_time : int
+        Number of time bins per feature. Static JIT argument.
+    smoothness_derivative_order : int
+        Derivative order for the smoothness penalty. Static JIT argument.
+    max_iter : int
+        Total iterations, used as the cosine schedule's ``decay_steps``. Static
+        JIT argument.
+
+    Returns
+    -------
+    params : tuple
+        Updated ``(W, b)`` parameters after one optimizer step.
+    opt_state : optax.OptState
+        Advanced optimizer state to feed into the next step.
+    """
+
+    scheduler = optax.cosine_decay_schedule(init_value=learning_rate, decay_steps=max_iter)
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adam(scheduler),
+    )
+    grads = jax.grad(loss_fn)(
+        params, X_batch, Y_batch,
+        n_feats, n_time,
+        lambda_smooth, l2_reg,
+        class_weights, focal_gamma,
+        smoothness_derivative_order,
+    )
+    updates, opt_state = optimizer.update(grads, opt_state)
+    params = optax.apply_updates(params, updates)
+    return params, opt_state
+
+
 class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
     """
     Multinomial logistic regression with temporal smoothing (JAX implementation).
@@ -574,60 +666,6 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         )
         opt_state = optimizer.init(params)
 
-        @partial(jax.jit, static_argnums=(4, 5))
-        def step(params, opt_state, X_batch, Y_batch, n_feats, n_time, w_batch):
-            """
-            Performs a single JIT-compiled Adam descent step on the
-            multinomial loss.
-
-            Computes the gradient of `_loss_fn` with respect to the
-            current `(W, b)` parameters, runs it through the clipped-Adam
-            optimizer, and applies the resulting update.
-
-            Parameters
-            ----------
-            params : tuple
-                `(W, b)` tuple of current model parameters, with `W`
-                shape `(n_features * n_time, n_classes)` and `b` shape
-                `(n_classes,)`.
-            opt_state : optax.OptState
-                Current optimizer state carried across descent steps.
-            X_batch : jnp.ndarray
-                Design matrix of shape `(n_samples, n_features * n_time)`.
-            Y_batch : jnp.ndarray
-                One-hot target matrix of shape `(n_samples, n_classes)`.
-            n_feats : int
-                Number of distinct physical features. Static JIT argument
-                (`static_argnums=4`) because `_loss_fn` reshapes `W` into
-                `(n_features, n_time, n_classes)` to apply the smoothness
-                penalty along the time axis.
-            n_time : int
-                Number of time bins per feature. Static JIT argument
-                (`static_argnums=5`), same reshape purpose as `n_feats`.
-            w_batch : jnp.ndarray
-                Unit-mean per-class weight vector of shape `(n_classes,)`,
-                reused inside `_loss_fn` both as the focal-loss alpha and
-                as the per-class scaler on the smoothness penalty.
-
-            Returns
-            -------
-            params : tuple
-                Updated `(W, b)` parameters after one optimizer step.
-            opt_state : optax.OptState
-                Advanced optimizer state to feed into the next step.
-            """
-
-            grads = jax.grad(self._loss_fn)(
-                params, X_batch, Y_batch,
-                n_feats, n_time,
-                self.lambda_smooth, self.l2_reg,
-                w_batch, self.focal_gamma,
-                self.smoothness_derivative_order,
-            )
-            updates, opt_state = optimizer.update(grads, opt_state)
-            params = optax.apply_updates(params, updates)
-            return params, opt_state
-
         if self.verbose:
             print(f"Starting JAX optimization for {self.max_iter} iterations...")
 
@@ -643,7 +681,12 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             converged = False
             completed_iter = 0
             for i in range(self.max_iter):
-                params, opt_state = step(params, opt_state, X_j, Y_j, self.n_features, self.n_time_bins, c_weights)
+                params, opt_state = _multinomial_default_step(
+                    params, opt_state, X_j, Y_j, c_weights,
+                    self.lambda_smooth, self.l2_reg, self.focal_gamma, self.learning_rate,
+                    self._loss_fn, self.n_features, self.n_time_bins,
+                    self.smoothness_derivative_order, self.max_iter,
+                )
                 completed_iter = i + 1
                 if i > 0 and i % 100 == 0:
                     w_diff = jnp.linalg.norm(params[0] - last_check_params[0])

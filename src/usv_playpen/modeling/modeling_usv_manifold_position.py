@@ -1085,8 +1085,6 @@ class ContinuousModelingPipeline(FeatureZoo):
             weights = data_packet['weights']
 
             slice_starts = onsets - self.history_frames
-            slice_ends = onsets
-            num_samples = len(onsets)
 
             for col_name in sess_df.columns:
                 suffix = col_name.split('.')[-1]
@@ -1100,15 +1098,17 @@ class ContinuousModelingPipeline(FeatureZoo):
                 if feat_key not in final_data:
                     final_data[feat_key] = {}
 
-                X_arr = np.empty((num_samples, self.history_frames), dtype=np.float32)
                 col_values = sess_df[col_name].to_numpy()
 
-                for i in range(num_samples):
-                    s, e = slice_starts[i], slice_ends[i]
-                    chunk = col_values[s:e]
-                    if np.isnan(chunk).any():
-                        chunk = np.nan_to_num(chunk, nan=0.0)
-                    X_arr[i, :] = chunk
+                # Vectorized strided gather of every fixed-width window (the valid-onset
+                # filter guarantees in-bounds), replacing the per-sample Python slice +
+                # per-row isnan branch. np.where(isnan -> 0) reproduces the old
+                # nan_to_num(nan=0.0)-then-cast exactly for NaN-or-finite data (the
+                # behavioral feature case) and is used instead of nan_to_num so an inf is
+                # left as inf, matching the old float64 -> float32 overflow path.
+                idx = slice_starts[:, None] + np.arange(self.history_frames)[None, :]
+                gathered = col_values[idx].astype(np.float32)
+                X_arr = np.where(np.isnan(gathered), np.float32(0.0), gathered)
 
                 # Labels carry through to every feature's per-session
                 # entry for symmetry with X/Y/w (the CNN runner reads them

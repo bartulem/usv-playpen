@@ -79,6 +79,68 @@ MASK_NUMBER_BIN_COUNT = 12
 # behavioral-path free helpers
 
 
+def _compute_occupancy(
+    feature_arr: np.ndarray,
+    min_val: int,
+    max_val: int,
+    num_bins: int,
+    camera_fr: int | float,
+    space_bool: bool = False,
+) -> tuple:
+    """
+    Description
+    -----------
+    Compute the offset-invariant occupancy side of :func:`generate_ratemaps`:
+    the bin edges/centers and the per-bin occupancy (in seconds). Factored out so
+    the caller can compute it once per (feature column, num_bins) and pass it back
+    into generate_ratemaps across the temporal-offset loop -- the occupancy depends
+    only on feature_arr / bin edges, not on the shifted spike side, so recomputing
+    it per offset (and per cluster) is wasted work. The ``(left, right]`` binning
+    (searchsorted side='left' then ``-1``) matches generate_ratemaps bit-for-bit.
+
+    Parameters
+    ----------
+    feature_arr (np.ndarray)
+        A (n_frames,) 1D feature array, or (n_frames, 2) for the spatial case.
+    min_val (int)
+        Minimum possible value the feature could attain.
+    max_val (int)
+        Maximum possible value the feature could attain.
+    num_bins (int)
+        Number of bins to divide the feature(s) into.
+    camera_fr (int | float)
+        Camera sampling rate (frames per second) used to convert occupancy
+        counts to seconds.
+    space_bool (bool)
+        When True, computes the 2D spatial occupancy.
+
+    Returns
+    -------
+    bin_edges, bin_centers, occupancy_seconds (tuple)
+        ``bin_edges`` (n_edges,) and ``bin_centers`` per axis, and the per-bin
+        occupancy in seconds -- shape ``(num_bins,)`` for the 1D case and
+        ``(bins_in_one_dir, bins_in_one_dir)`` for the spatial case.
+    """
+
+    if space_bool:
+        bins_in_one_dir = int(np.ceil(np.sqrt(num_bins)))
+        bin_edges = np.linspace(min_val, max_val, bins_in_one_dir + 1)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        ox_idx = np.searchsorted(bin_edges, feature_arr[:, 0], side="left") - 1
+        oy_idx = np.searchsorted(bin_edges, feature_arr[:, 1], side="left") - 1
+        ov = (ox_idx >= 0) & (ox_idx < bins_in_one_dir) & (oy_idx >= 0) & (oy_idx < bins_in_one_dir)
+        occ_flat = ox_idx[ov] * bins_in_one_dir + oy_idx[ov]
+        occ_2d = np.bincount(occ_flat, minlength=bins_in_one_dir * bins_in_one_dir).reshape(bins_in_one_dir, bins_in_one_dir)
+        return bin_edges, bin_centers, occ_2d / camera_fr
+
+    bin_edges = np.linspace(min_val, max_val, num_bins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    occ_idx = np.searchsorted(bin_edges, feature_arr, side="left") - 1
+    occ_v = (occ_idx >= 0) & (occ_idx < num_bins)
+    occ_counts = np.bincount(occ_idx[occ_v], minlength=num_bins)
+    return bin_edges, bin_centers, occ_counts / camera_fr
+
+
 def generate_ratemaps(
     feature_arr: np.ndarray,
     spike_arr: np.ndarray,
@@ -88,6 +150,7 @@ def generate_ratemaps(
     num_bins: int,
     camera_fr: int | float,
     space_bool: bool = False,
+    precomputed_occupancy: tuple | None = None,
 ) -> (
     tuple[np.ndarray, np.ndarray, np.ndarray]
     | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
@@ -153,8 +216,14 @@ def generate_ratemaps(
 
     if space_bool:
         bins_in_one_dir = int(np.ceil(np.sqrt(num_bins)))
-        bin_edges = np.linspace(min_val, max_val, bins_in_one_dir + 1)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        # Occupancy (bin edges/centers + occupancy-in-seconds) is offset-invariant;
+        # reuse the caller-precomputed value when supplied, else compute it once.
+        if precomputed_occupancy is not None:
+            bin_edges, bin_centers, occupancy_seconds = precomputed_occupancy
+        else:
+            bin_edges, bin_centers, occupancy_seconds = _compute_occupancy(
+                feature_arr, min_val, max_val, num_bins, camera_fr, space_bool=True
+            )
         spike_events_x = np.take(a=feature_arr[:, 0], indices=spike_arr)
         spike_events_y = np.take(a=feature_arr[:, 1], indices=spike_arr)
         # `(left, right]` semantics: val exactly at edge[i] (i >= 1) belongs
@@ -162,35 +231,33 @@ def generate_ratemaps(
         # side='left' followed by `-1` gives precisely that mapping.
         sx_idx = np.searchsorted(bin_edges, spike_events_x, side="left") - 1
         sy_idx = np.searchsorted(bin_edges, spike_events_y, side="left") - 1
-        ox_idx = np.searchsorted(bin_edges, feature_arr[:, 0], side="left") - 1
-        oy_idx = np.searchsorted(bin_edges, feature_arr[:, 1], side="left") - 1
         sv = (sx_idx >= 0) & (sx_idx < bins_in_one_dir) & (sy_idx >= 0) & (sy_idx < bins_in_one_dir)
-        ov = (ox_idx >= 0) & (ox_idx < bins_in_one_dir) & (oy_idx >= 0) & (oy_idx < bins_in_one_dir)
         spike_flat = sx_idx[sv] * bins_in_one_dir + sy_idx[sv]
-        occ_flat = ox_idx[ov] * bins_in_one_dir + oy_idx[ov]
         spike_2d = np.bincount(spike_flat, minlength=bins_in_one_dir * bins_in_one_dir).reshape(bins_in_one_dir, bins_in_one_dir)
-        occ_2d = np.bincount(occ_flat, minlength=bins_in_one_dir * bins_in_one_dir).reshape(bins_in_one_dir, bins_in_one_dir)
         ratemap = np.zeros((bins_in_one_dir, bins_in_one_dir, 2))
         ratemap[:, :, 0] = spike_2d.astype(float)
-        ratemap[:, :, 1] = occ_2d / camera_fr
+        ratemap[:, :, 1] = occupancy_seconds
 
         return ratemap, bin_centers, bin_edges
 
-    bin_edges = np.linspace(min_val, max_val, num_bins + 1)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    # Occupancy (bin edges/centers + occupancy-in-seconds) is offset-invariant;
+    # reuse the caller-precomputed value when supplied, else compute it once.
+    if precomputed_occupancy is not None:
+        bin_edges, bin_centers, occupancy_seconds = precomputed_occupancy
+    else:
+        bin_edges, bin_centers, occupancy_seconds = _compute_occupancy(
+            feature_arr, min_val, max_val, num_bins, camera_fr, space_bool=False
+        )
 
-    # observed spike + occupancy counts via searchsorted -> bincount.
+    # observed spike counts via searchsorted -> bincount.
     # `(left, right]` semantics matches the legacy implementation
     # bit-exactly: spike at val=bin_edges[i] (i>=1) goes to bin i-1;
     # spike at val=min_val is excluded.
     spike_event_features = np.take(a=feature_arr, indices=spike_arr)
     spike_idx = np.searchsorted(bin_edges, spike_event_features, side="left") - 1
-    occ_idx = np.searchsorted(bin_edges, feature_arr, side="left") - 1
     spike_v = (spike_idx >= 0) & (spike_idx < num_bins)
-    occ_v = (occ_idx >= 0) & (occ_idx < num_bins)
     spike_counts = np.bincount(spike_idx[spike_v], minlength=num_bins)
-    occ_counts = np.bincount(occ_idx[occ_v], minlength=num_bins)
-    ratemap = np.column_stack([spike_counts.astype(float), occ_counts / camera_fr])
+    ratemap = np.column_stack([spike_counts.astype(float), occupancy_seconds])
 
     # shuffled spike counts: vectorized across (n_shuffles, n_spikes) via
     # one bincount over flattened (shuffle, bin) indices.
@@ -1560,6 +1627,43 @@ class NeuronalTuning(FeatureZoo):
         cluster_data_frames_original = np.load(file=cluster_file)[1, :]
         partial: dict = {}
 
+        # Materialize each behavioral column to numpy once: the polars->numpy
+        # conversion is independent of the temporal offset and of the cluster, but was
+        # re-run inside both loops below (and for every cluster). generate_ratemaps
+        # treats feature_arr as read-only, so the cached arrays are reused directly.
+        behavioral_columns_np = {column: np.asarray(behavioral_data[column]) for column in behavioral_data.columns}
+
+        # Occupancy is offset-invariant -- precompute it once per (1D feature column)
+        # and per (animal 2D space) here, and pass it into generate_ratemaps inside
+        # the offset loop, so the searchsorted + bincount over n_frames is not
+        # repeated for every temporal offset. Byte-identical to per-offset recompute.
+        spatial_suffixes = ("spaceX", "spaceY", "spaceZ")
+        occupancy_1d = {
+            column: _compute_occupancy(
+                behavioral_columns_np[column],
+                self.feature_boundaries[column.split(".")[-1]][0],
+                self.feature_boundaries[column.split(".")[-1]][1],
+                params["total_bin_num"],
+                empirical_camera_sr,
+                space_bool=False,
+            )
+            for column in behavioral_data.columns
+            if column.split(".")[-1] not in spatial_suffixes
+        }
+        occupancy_2d = {}
+        for animal_id in animal_ids:
+            spaceX_col = f"{animal_id}.spaceX"
+            spaceY_col = f"{animal_id}.spaceY"
+            if spaceX_col in behavioral_data.columns and spaceY_col in behavioral_data.columns:
+                occupancy_2d[animal_id] = _compute_occupancy(
+                    np.stack((behavioral_columns_np[spaceX_col], behavioral_columns_np[spaceY_col]), axis=1),
+                    -params["spatial_scale_cm"],
+                    params["spatial_scale_cm"],
+                    params["n_spatial_bins"],
+                    empirical_camera_sr,
+                    space_bool=True,
+                )
+
         for one_offset in params["temporal_offsets"]:
             cluster_data_frames = cluster_data_frames_original.astype(np.int32) + int(
                 np.floor(one_offset * empirical_camera_sr)
@@ -1585,7 +1689,7 @@ class NeuronalTuning(FeatureZoo):
                 if column.split(".")[-1] in ("spaceX", "spaceY", "spaceZ"):
                     continue
                 ratemap_counts, sh_counts, bin_centers, bin_edges = generate_ratemaps(
-                    feature_arr=np.array(behavioral_data[column]),
+                    feature_arr=behavioral_columns_np[column],
                     spike_arr=cluster_data_frames,
                     shuffled_spike_arr=cluster_data_shuffled,
                     min_val=self.feature_boundaries[column.split(".")[-1]][0],
@@ -1593,6 +1697,7 @@ class NeuronalTuning(FeatureZoo):
                     num_bins=params["total_bin_num"],
                     camera_fr=empirical_camera_sr,
                     space_bool=False,
+                    precomputed_occupancy=occupancy_1d[column],
                 )
                 spike_count = ratemap_counts[:, 0]
                 occupancy_s = ratemap_counts[:, 1]
@@ -1652,8 +1757,8 @@ class NeuronalTuning(FeatureZoo):
                 ratemap_2d, sp_bin_centers, sp_bin_edges = generate_ratemaps(
                     feature_arr=np.stack(
                         arrays=(
-                            np.array(behavioral_data[spaceX_col]),
-                            np.array(behavioral_data[spaceY_col]),
+                            behavioral_columns_np[spaceX_col],
+                            behavioral_columns_np[spaceY_col],
                         ),
                         axis=1,
                     ),
@@ -1664,6 +1769,7 @@ class NeuronalTuning(FeatureZoo):
                     num_bins=params["n_spatial_bins"],
                     camera_fr=empirical_camera_sr,
                     space_bool=True,
+                    precomputed_occupancy=occupancy_2d[animal_id],
                 )
                 spike_count_2d = ratemap_2d[:, :, 0]
                 occupancy_s_2d = ratemap_2d[:, :, 1]
@@ -1901,9 +2007,15 @@ class NeuronalTuning(FeatureZoo):
                 peth_denom_per_cat_bin = np.zeros(
                     (n_cats, n_peth_bins), dtype=float
                 )
+                # Precompute the per-category boolean membership masks (k-invariant)
+                # for the non-empty categories, so the shuffle k-loop does not rebuild
+                # `cat_idx == i_c` every iteration x feature x category. Insertion
+                # order is ascending i_c, matching the old `for i_c in range(n_cats)`.
+                peth_members: dict[int, np.ndarray] = {}
                 for i_c in range(n_cats):
                     member = anchor_cat_idx_dense == i_c
                     if member.any():
+                        peth_members[i_c] = member
                         peth_denom_per_cat_bin[i_c, :] = (
                             peth_valid[member].sum(axis=0).astype(float) * peth_bin_s
                         )
@@ -1913,6 +2025,10 @@ class NeuronalTuning(FeatureZoo):
                     "count_per_cat": count_per_cat,
                     "occ_seconds_per_cat": occ_seconds_per_cat,
                     "peth_denom_per_cat_bin": peth_denom_per_cat_bin,
+                    # k-invariant masks/indices reused inside the shuffle loop.
+                    "peth_members": peth_members,
+                    "cat_valid_mask": anchor_cat_idx_dense >= 0,
+                    "valid_cat_idx": np.where(anchor_cat_idx_dense >= 0, anchor_cat_idx_dense, 0),
                 }
 
             side_precompute[side["role"]] = {
@@ -2693,19 +2809,20 @@ class NeuronalTuning(FeatureZoo):
                 # usv_category_tuning & usv_category_peth
                 for cat_feat in CATEGORICAL_FEATURES:
                     cat_info = anchor_categorical[cat_feat]
-                    cat_idx = cat_info["anchor_cat_idx_dense"]
                     n_cats = cat_info["unique_cats"].size
                     occ_per_cat = cat_info["occ_seconds_per_cat"]
                     count_per_cat = cat_info["count_per_cat"]
                     peth_denom_per_cat_bin = cat_info["peth_denom_per_cat_bin"]
+                    cat_valid_mask = cat_info["cat_valid_mask"]
+                    valid_cat_idx = cat_info["valid_cat_idx"]
+                    peth_members = cat_info["peth_members"]
 
                     counts_per_cat = np.zeros(n_cats, dtype=float)
                     contrib = np.where(
-                        within_valid & (cat_idx >= 0),
+                        within_valid & cat_valid_mask,
                         per_anchor_within_count,
                         0,
                     ).astype(float)
-                    valid_cat_idx = np.where(cat_idx >= 0, cat_idx, 0)
                     np.add.at(counts_per_cat, valid_cat_idx, contrib)
                     rate_q3w = np.full(n_cats, np.nan, dtype=float)
                     enough = (count_per_cat >= n_min_category) & (occ_per_cat > 0)
@@ -2713,11 +2830,8 @@ class NeuronalTuning(FeatureZoo):
                     per_side_acc[role]["q3w_rates"][cat_feat][k, :] = rate_q3w
 
                     rate_q3p = np.full((n_cats, rel_bin_lo.size), np.nan, dtype=float)
-                    for i_c in range(n_cats):
+                    for i_c, member in peth_members.items():
                         if count_per_cat[i_c] < n_min_category:
-                            continue
-                        member = cat_idx == i_c
-                        if not member.any():
                             continue
                         num_per_bin = (
                             per_anchor_bin_count[member].sum(axis=0).astype(float)

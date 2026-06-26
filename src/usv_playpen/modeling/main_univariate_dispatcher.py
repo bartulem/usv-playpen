@@ -51,7 +51,6 @@ from .modeling_vocal_categories_binomial import VocalCategoryModelingPipeline
 from .modeling_vocal_bout_parameters import BoutParameterPipeline
 from .modeling_vocal_categories_multinomial import MultinomialModelingPipeline, MultinomialModelRunner
 from .modeling_usv_manifold_position import ContinuousModelingPipeline, ContinuousModelRunner
-from .load_input_files import load_pickle_modeling_data
 from .modeling_bases_functions import (raised_cosine, bsplines, identity,
                                       laplacian_pyramid, _normalizecols)
 from .modeling_metadata import (build_run_metadata, inject_metadata, RESERVED_METADATA_KEYS)
@@ -221,17 +220,24 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             loaded = pickle.load(f)
             input_metadata = loaded['_input_metadata'] if '_input_metadata' in loaded else None
             all_features = sorted([k for k in loaded.keys() if k not in RESERVED_METADATA_KEYS])
+
+            # Guard both bounds: a negative index would otherwise wrap via
+            # Python negative indexing into a valid-but-wrong feature, silently
+            # writing a result pickle for the wrong feature with a negative
+            # index embedded in the filename.
+            if args.feature_idx < 0 or args.feature_idx >= len(all_features):
+                print(f"FATAL: Index {args.feature_idx} out of bounds.")
+                return
+
+            feature_name = all_features[args.feature_idx]
+            # Capture this feature's data from THIS load so the CPU branch below does
+            # not re-deserialize the whole pickle again (load_pickle_modeling_data is
+            # a bare pickle.load of the same file); the JAX branches defer loading and
+            # never use feat_data. `del loaded` then frees the other features --
+            # feat_data holds only this one, so the memory profile is unchanged.
+            feat_data = loaded[feature_name] if args.analysis_type in ['onset', 'category', 'params'] else None
             del loaded
 
-        # Guard both bounds: a negative index would otherwise wrap via
-        # Python negative indexing into a valid-but-wrong feature, silently
-        # writing a result pickle for the wrong feature with a negative
-        # index embedded in the filename.
-        if args.feature_idx < 0 or args.feature_idx >= len(all_features):
-            print(f"FATAL: Index {args.feature_idx} out of bounds.")
-            return
-
-        feature_name = all_features[args.feature_idx]
         print(f"[{timestamp}] Mapped Index {args.feature_idx} -> Feature: {feature_name}")
         if input_metadata is None:
             print(f"[{timestamp}] WARNING: input pickle has no `_input_metadata` block "
@@ -252,9 +258,6 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
     try:
         # CATEGORY A: CPU-based Modeling (Onset, Category, Params)
         if args.analysis_type in ['onset', 'category', 'params']:
-
-            data_dict = load_pickle_modeling_data(args.input_data)
-            feat_data = data_dict[feature_name]
 
             if args.analysis_type == 'onset':
 

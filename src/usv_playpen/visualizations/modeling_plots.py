@@ -4520,6 +4520,12 @@ class DeepResultsVisualizer:
         global_x_min, global_x_max = Y_true[:, 0].min() - 1, Y_true[:, 0].max() + 1
         global_y_min, global_y_max = Y_true[:, 1].min() - 1, Y_true[:, 1].max() + 1
 
+        # The KDE evaluation grid is built from the global (loop-invariant) bounds, so
+        # hoist it (and the flattened 2 x 10000 query) out of the per-patch loop -- only
+        # the kde object changes per patch (mirrors the torus branch). Byte-identical.
+        xi_grid, yi_grid = np.mgrid[global_x_min:global_x_max:100j, global_y_min:global_y_max:100j]
+        grid_pts = np.vstack([xi_grid.flatten(), yi_grid.flatten()])
+
         for idx, patch in enumerate(selected_patches):
             ax = axes[idx]
             ax.set_facecolor('#FFFFFF')
@@ -4552,9 +4558,8 @@ class DeepResultsVisualizer:
                 ax.set_ylim(global_y_min, global_y_max)
                 continue
 
-            # Alignment Grid
-            xi_grid, yi_grid = np.mgrid[global_x_min:global_x_max:100j, global_y_min:global_y_max:100j]
-            zi_grid = kde(np.vstack([xi_grid.flatten(), yi_grid.flatten()])).reshape(xi_grid.shape)
+            # Alignment Grid (xi_grid / yi_grid / grid_pts hoisted above the loop)
+            zi_grid = kde(grid_pts).reshape(xi_grid.shape)
 
             peak_idx = np.unravel_index(np.argmax(zi_grid), zi_grid.shape)
             peak_coord = (xi_grid[peak_idx], yi_grid[peak_idx])

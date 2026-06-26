@@ -267,8 +267,6 @@ class TestDispatchUnivariate:
                             return_value=fake_pipeline)
         mocker.patch.object(uni, 'get_basis_matrix_standardized',
                             return_value=np.eye(4))
-        mocker.patch.object(uni, 'load_pickle_modeling_data', return_value={
-            'self.speed': {'session_0': {}}})
 
         uni.dispatch_univariate_job(_uni_args('onset', 0, inp, out_dir))
         out = capsys.readouterr().out
@@ -296,8 +294,6 @@ class TestDispatchUnivariate:
                             return_value=fake_pipeline)
         mocker.patch.object(uni, 'get_basis_matrix_standardized',
                             return_value=np.eye(4))
-        mocker.patch.object(uni, 'load_pickle_modeling_data', return_value={
-            'other.speed': {'session_0': {}}, 'self.speed': {'session_0': {}}})
 
         uni.dispatch_univariate_job(_uni_args('onset', 0, inp, out_dir))
 
@@ -325,8 +321,6 @@ class TestDispatchUnivariate:
                             return_value=fake_pipeline)
         mocker.patch.object(uni, 'get_basis_matrix_standardized',
                             return_value=None)
-        mocker.patch.object(uni, 'load_pickle_modeling_data', return_value={
-            'self.speed': {'session_0': {}}})
 
         uni.dispatch_univariate_job(_uni_args('onset', 0, inp, tmp_path / 'out'))
         fake_pipeline._run_model_for_feature_pygam.assert_called_once()
@@ -345,8 +339,6 @@ class TestDispatchUnivariate:
                             return_value=fake_pipeline)
         mocker.patch.object(uni, 'get_basis_matrix_standardized',
                             return_value=np.eye(4))
-        mocker.patch.object(uni, 'load_pickle_modeling_data', return_value={
-            'self.speed': {'session_0': {}}})
 
         uni.dispatch_univariate_job(_uni_args('category', 0, inp, tmp_path / 'out'))
         fake_pipeline._run_modeling_category.assert_called_once()
@@ -366,8 +358,6 @@ class TestDispatchUnivariate:
         mocker.patch.object(uni, 'BoutParameterPipeline', return_value=fake_pipeline)
         mocker.patch.object(uni, 'get_basis_matrix_standardized',
                             return_value=np.eye(4))
-        mocker.patch.object(uni, 'load_pickle_modeling_data', return_value={
-            'self.speed': {'session_0': {}}})
 
         uni.dispatch_univariate_job(_uni_args('params', 0, inp, tmp_path / 'out'))
         fake_pipeline._run_model_for_feature_sklearn.assert_called_once()
@@ -387,8 +377,6 @@ class TestDispatchUnivariate:
         mocker.patch.object(uni, 'BoutParameterPipeline', return_value=fake_pipeline)
         mocker.patch.object(uni, 'get_basis_matrix_standardized',
                             return_value=None)
-        mocker.patch.object(uni, 'load_pickle_modeling_data', return_value={
-            'self.speed': {'session_0': {}}})
 
         uni.dispatch_univariate_job(_uni_args('params', 0, inp, tmp_path / 'out'))
         fake_pipeline._run_model_for_feature_pygam.assert_called_once()
@@ -421,8 +409,6 @@ class TestDispatchUnivariate:
                             return_value=fake_pipeline)
         mocker.patch.object(uni, 'get_basis_matrix_standardized',
                             return_value=np.eye(4))
-        mocker.patch.object(uni, 'load_pickle_modeling_data', return_value={
-            'self.speed': {'session_0': {}}})
         mocker.patch.object(uni.pickle, 'dump',
                             side_effect=OSError('disk full'))
 
@@ -478,8 +464,14 @@ class TestDispatchUnivariate:
         inp = _input_pickle(tmp_path, ['self.speed'])
         out_dir = tmp_path / 'out'
 
-        mocker.patch.object(uni, 'load_pickle_modeling_data',
-                            side_effect=RuntimeError('fit blew up'))
+        # Raise from inside the modeling block (the dispatcher now reads the feature
+        # data from the single input-pickle load, so the failure is injected via the
+        # pipeline's fit method rather than a separate load_pickle_modeling_data call).
+        fake_pipeline = mocker.MagicMock()
+        fake_pipeline.history_frames = 4
+        fake_pipeline._run_model_for_feature_sklearn.side_effect = RuntimeError('fit blew up')
+        mocker.patch.object(uni, 'VocalOnsetModelingPipeline', return_value=fake_pipeline)
+        mocker.patch.object(uni, 'get_basis_matrix_standardized', return_value=np.eye(4))
         uni.dispatch_univariate_job(_uni_args('onset', 0, inp, out_dir))
         assert 'FATAL ERROR' in capsys.readouterr().out
         assert not list(out_dir.glob('univariate_*.pkl'))
