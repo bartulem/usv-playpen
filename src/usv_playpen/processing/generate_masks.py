@@ -47,7 +47,7 @@ import numpy as np
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import configure_path, first_match_or_raise
+from ..os_utils import configure_path, derive_spectrogram_model_paths, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 
 
@@ -204,6 +204,7 @@ class MaskGenerator:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
+        derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['generate_masks']
         method = cfg['method']
         detector = cfg['detector']

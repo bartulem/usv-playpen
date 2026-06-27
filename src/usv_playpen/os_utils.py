@@ -356,6 +356,62 @@ def rebase_experimenter_in_paths(obj: object = None,
     return obj
 
 
+def derive_spectrogram_model_paths(settings: dict = None) -> dict:
+    """
+    Description
+    -----------
+    Fills the six spectrogram-pipeline model paths from the single
+    ``spectrograms_root`` setting, so the user configures one directory
+    instead of six. The shipped ``processing_settings.json`` leaves the six
+    granular keys empty and carries only ``spectrograms_root``; this helper
+    resolves the conventional layout beneath it:
+
+    * ``generate_masks.sam2_model_dir``  -> ``<root>/sam``
+    * ``generate_masks.sam2_model_path`` -> ``<root>/sam/checkpoint.pt``
+    * ``generate_masks.yolo_weights``    -> ``<root>/sam/best.pt``
+    * ``infer_qlvm_latents.weights_npz_path`` -> ``<root>/qlvm/qmc_decoder_weights.npz``
+    * ``infer_qlvm_latents.reference_arrays_fine_npz_path``   -> ``<root>/qlvm/arrays_fine.npz``
+    * ``infer_qlvm_latents.reference_arrays_coarse_npz_path`` -> ``<root>/qlvm/arrays_coarse.npz``
+
+    A granular key is filled only when it is empty, so an explicit path set in
+    the JSON (or via a CLI flag) wins -- the root supplies defaults, it never
+    overrides. ``generate_masks.sam2_model_cfg`` is a SAM2 config NAME resolved
+    by the installed package's Hydra search path (not a file under the root),
+    so it is left untouched. The derived paths keep the canonical
+    ``/mnt/falkner`` / ``{experimenter}`` form; ``configure_path`` translates
+    them to the host mount downstream, exactly like the other model paths. The
+    mutation is in place and idempotent.
+
+    Parameters
+    ----------
+    settings (dict)
+        The full processing-settings dictionary; must contain the
+        ``spectrograms_root`` key and the ``generate_masks`` /
+        ``infer_qlvm_latents`` blocks.
+
+    Returns
+    -------
+    settings (dict)
+        The same dictionary, with any empty spectrogram-model paths filled in.
+    """
+
+    root = settings['spectrograms_root']
+    sam_dir = f'{root}/sam'
+    qlvm_dir = f'{root}/qlvm'
+    derived = (
+        ('generate_masks', 'sam2_model_dir', sam_dir),
+        ('generate_masks', 'sam2_model_path', f'{sam_dir}/checkpoint.pt'),
+        ('generate_masks', 'yolo_weights', f'{sam_dir}/best.pt'),
+        ('infer_qlvm_latents', 'weights_npz_path', f'{qlvm_dir}/qmc_decoder_weights.npz'),
+        ('infer_qlvm_latents', 'reference_arrays_fine_npz_path', f'{qlvm_dir}/arrays_fine.npz'),
+        ('infer_qlvm_latents', 'reference_arrays_coarse_npz_path', f'{qlvm_dir}/arrays_coarse.npz'),
+    )
+    for block, key, derived_path in derived:
+        if not settings[block][key]:
+            settings[block][key] = derived_path
+    return settings
+
+
 def find_base_path() -> str | None:
     """
     Description

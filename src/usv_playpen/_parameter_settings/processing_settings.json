@@ -215,6 +215,7 @@
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/conformer_smol_4.00",
     "vcl_version": "vcl-ssl"
   },
+  "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
   "generate_spectrograms": {
     "num_freq_bins": 128,
     "num_time_bins": 128,
@@ -230,10 +231,10 @@
   "generate_masks": {
     "method": "boxprompt",
     "detector": "yolo",
-    "sam2_model_dir": "/mnt/falkner/Bartul/spectrograms/sam",
+    "sam2_model_dir": "",
     "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-    "sam2_model_path": "/mnt/falkner/Bartul/spectrograms/sam/checkpoint.pt",
-    "yolo_weights": "/mnt/falkner/Bartul/spectrograms/sam/best.pt",
+    "sam2_model_path": "",
+    "yolo_weights": "",
     "yolo_conf": 0.25,
     "yolo_iou": 0.7,
     "yolo_imgsz": 128,
@@ -296,9 +297,9 @@
     "run_name": "usv_yolo_detector"
   },
   "infer_qlvm_latents": {
-    "weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz",
-    "reference_arrays_fine_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz",
-    "reference_arrays_coarse_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_coarse.npz",
+    "weights_npz_path": "",
+    "reference_arrays_fine_npz_path": "",
+    "reference_arrays_coarse_npz_path": "",
     "lattice_type": "korobov",
     "latent_dim": 2,
     "n_points": 1021,

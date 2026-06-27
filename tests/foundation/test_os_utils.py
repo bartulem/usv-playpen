@@ -434,6 +434,54 @@ def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
     assert os_utils.resolve_consolidated_h5_path(str(tmp_path)) == str(new)
 
 
+# derive_spectrogram_model_paths
+
+def test_derive_spectrogram_model_paths_fills_empties_from_root():
+    settings = {
+        "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
+        "generate_masks": {
+            "sam2_model_dir": "", "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+            "sam2_model_path": "", "yolo_weights": "",
+        },
+        "infer_qlvm_latents": {
+            "weights_npz_path": "", "reference_arrays_fine_npz_path": "",
+            "reference_arrays_coarse_npz_path": "",
+        },
+    }
+    returned = os_utils.derive_spectrogram_model_paths(settings)
+    root = "/mnt/falkner/Bartul/spectrograms"
+    assert returned is settings  # mutates in place and returns the same dict
+    assert settings["generate_masks"]["sam2_model_dir"] == f"{root}/sam"
+    assert settings["generate_masks"]["sam2_model_path"] == f"{root}/sam/checkpoint.pt"
+    assert settings["generate_masks"]["yolo_weights"] == f"{root}/sam/best.pt"
+    # the SAM2 config NAME is never derived
+    assert settings["generate_masks"]["sam2_model_cfg"] == "configs/sam2.1/sam2.1_hiera_b+.yaml"
+    assert settings["infer_qlvm_latents"]["weights_npz_path"] == f"{root}/qlvm/qmc_decoder_weights.npz"
+    assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == f"{root}/qlvm/arrays_fine.npz"
+    assert settings["infer_qlvm_latents"]["reference_arrays_coarse_npz_path"] == f"{root}/qlvm/arrays_coarse.npz"
+
+
+def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
+    settings = {
+        "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
+        "generate_masks": {
+            "sam2_model_dir": "", "sam2_model_cfg": "cfg.yaml",
+            "sam2_model_path": "/custom/elsewhere/checkpoint.pt", "yolo_weights": "",
+        },
+        "infer_qlvm_latents": {
+            "weights_npz_path": "/custom/w.npz", "reference_arrays_fine_npz_path": "",
+            "reference_arrays_coarse_npz_path": "",
+        },
+    }
+    os_utils.derive_spectrogram_model_paths(settings)
+    # explicit (non-empty) paths win
+    assert settings["generate_masks"]["sam2_model_path"] == "/custom/elsewhere/checkpoint.pt"
+    assert settings["infer_qlvm_latents"]["weights_npz_path"] == "/custom/w.npz"
+    # empty siblings are still derived from the root
+    assert settings["generate_masks"]["sam2_model_dir"] == "/mnt/falkner/Bartul/spectrograms/sam"
+    assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz"
+
+
 def test_resolve_consolidated_h5_raises_when_no_store(tmp_path):
     (tmp_path / "qlvm_clusters_x.h5").write_bytes(b"x")  # only a non-consolidated .h5
     with pytest.raises(FileNotFoundError, match="consolidated"):

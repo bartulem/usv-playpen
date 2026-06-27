@@ -3270,7 +3270,7 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_dir_edit = QTextEdit('', self.ProcessSettings)
         self.processing_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.processing_dir_edit.move(10, 40)
-        self.processing_dir_edit.setFixedSize(295, 290)
+        self.processing_dir_edit.setFixedSize(295, 350)
 
         exp_codes_dir_label = QLabel('ExCode', self.ProcessSettings)
         exp_codes_dir_label.setFont(QFont(self.font_id, 13+self.font_size_increase))
@@ -3279,7 +3279,7 @@ class USVPlaypenWindow(QMainWindow):
         self.exp_codes_edit = QTextEdit('', self.ProcessSettings)
         self.exp_codes_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.exp_codes_edit.move(310, 40)
-        self.exp_codes_edit.setFixedSize(100, 290)
+        self.exp_codes_edit.setFixedSize(100, 350)
 
         self.processing_credentials_dir_edit = QLineEdit(f"{self.processing_input_dict['credentials_directory']}", self.ProcessSettings)
         self.processing_credentials_dir_edit.setPlaceholderText('Credentials directory')
@@ -3287,10 +3287,10 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_credentials_dir_edit.textChanged.connect(update_credentials)
         self.processing_credentials_dir_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.processing_credentials_dir_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.processing_credentials_dir_edit.move(10, 335)
+        self.processing_credentials_dir_edit.move(10, 395)
         processing_credentials_dir_btn = QPushButton('Browse', self.ProcessSettings)
         processing_credentials_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
-        processing_credentials_dir_btn.move(310, 334)
+        processing_credentials_dir_btn.move(310, 394)
         processing_credentials_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         open_dialog = partial(self._open_directory_dialog, self.processing_credentials_dir_edit, 'Select Credentials Directory')
         processing_credentials_dir_btn.clicked.connect(open_dialog)
@@ -3301,10 +3301,10 @@ class USVPlaypenWindow(QMainWindow):
         self.centroid_model_edit.setPlaceholderText('SLEAP centroid model directory')
         self.centroid_model_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.centroid_model_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.centroid_model_edit.move(10, 365)
+        self.centroid_model_edit.move(10, 425)
         centroid_model_btn = QPushButton('Browse', self.ProcessSettings)
         centroid_model_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        centroid_model_btn.move(310, 364)
+        centroid_model_btn.move(310, 424)
         centroid_model_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         centroid_model_dir_dialog = partial(self._open_directory_dialog, self.centroid_model_edit, 'Select SLEAP centroid model directory')
         centroid_model_btn.clicked.connect(centroid_model_dir_dialog)
@@ -3315,10 +3315,10 @@ class USVPlaypenWindow(QMainWindow):
         self.centered_instance_model_edit.setPlaceholderText('SLEAP centered instance model directory')
         self.centered_instance_model_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.centered_instance_model_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.centered_instance_model_edit.move(10, 395)
+        self.centered_instance_model_edit.move(10, 455)
         centered_instance_btn = QPushButton('Browse', self.ProcessSettings)
         centered_instance_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        centered_instance_btn.move(310, 394)
+        centered_instance_btn.move(310, 454)
         centered_instance_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         open_centered_instance_dir_dialog = partial(self._open_directory_dialog, self.centered_instance_model_edit, 'Select SLEAP centered instance directory')
         centered_instance_btn.clicked.connect(open_centered_instance_dir_dialog)
@@ -3329,10 +3329,10 @@ class USVPlaypenWindow(QMainWindow):
         self.inference_root_dir_edit.setPlaceholderText('SLEAP inference directory')
         self.inference_root_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.inference_root_dir_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.inference_root_dir_edit.move(10, 425)
+        self.inference_root_dir_edit.move(10, 485)
         inference_root_dir_btn = QPushButton('Browse', self.ProcessSettings)
         inference_root_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        inference_root_dir_btn.move(310, 424)
+        inference_root_dir_btn.move(310, 484)
         inference_root_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 13px; }')
         inference_root_dir_dialog = partial(self._open_directory_dialog, self.inference_root_dir_edit, 'Select SLEAP inference directory')
         inference_root_dir_btn.clicked.connect(inference_root_dir_dialog)
@@ -3345,21 +3345,13 @@ class USVPlaypenWindow(QMainWindow):
         self.calibration_file_loc_edit.setPlaceholderText('Tracking calibration / Arena root directory')
         self.calibration_file_loc_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.calibration_file_loc_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.calibration_file_loc_edit.move(10, 455)
+        self.calibration_file_loc_edit.move(10, 515)
         calibration_file_loc_btn = QPushButton('Browse', self.ProcessSettings)
         calibration_file_loc_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        calibration_file_loc_btn.move(310, 454)
+        calibration_file_loc_btn.move(310, 514)
         calibration_file_loc_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
         calibration_file_loc_dialog = partial(self._open_directory_dialog, self.calibration_file_loc_edit, 'Select calibration/arena root directory')
         calibration_file_loc_btn.clicked.connect(calibration_file_loc_dialog)
-
-        das_conda_label = QLabel('DAS conda environment name:', self.ProcessSettings)
-        das_conda_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        das_conda_label.move(10, 485)
-        self.das_conda = QLineEdit(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_conda_env_name'], self.ProcessSettings)
-        self.das_conda.setFont(QFont(self.font_id, 10+self.font_size_increase))
-        self.das_conda.setStyleSheet('QLineEdit { width: 98px; }')
-        self.das_conda.move(310, 487)
 
         self.das_model_dir_edit = QLineEdit(self.das_model_dir_global, self.ProcessSettings)
         update_das_model_dir = partial(self._update_nested_dict_value, self.processing_input_dict, ('usv_inference', 'FindMouseVocalizations', 'das_command_line_inference', 'das_model_directory'))
@@ -3367,29 +3359,21 @@ class USVPlaypenWindow(QMainWindow):
         self.das_model_dir_edit.setPlaceholderText('DAS model directory')
         self.das_model_dir_edit.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_model_dir_edit.setStyleSheet('QLineEdit { width: 295px; }')
-        self.das_model_dir_edit.move(10, 515)
+        self.das_model_dir_edit.move(10, 545)
         das_model_dir_btn = QPushButton('Browse', self.ProcessSettings)
         das_model_dir_btn.setFont(QFont(self.font_id, 8+self.font_size_increase))
-        das_model_dir_btn.move(310, 514)
-        das_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
+        das_model_dir_btn.move(310, 544)
+        das_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 13px; max-width: 77px; max-height: 13px; }')
         open_das_model_dir_dialog = partial(self._open_directory_dialog, self.das_model_dir_edit, 'Select DAS model directory')
         das_model_dir_btn.clicked.connect(open_das_model_dir_dialog)
 
         das_model_base_label = QLabel('DAS model base (timestamp):', self.ProcessSettings)
         das_model_base_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        das_model_base_label.move(10, 545)
+        das_model_base_label.move(10, 575)
         self.das_model_base = QLineEdit(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_name_base'], self.ProcessSettings)
         self.das_model_base.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.das_model_base.setStyleSheet('QLineEdit { width: 178px; }')
-        self.das_model_base.move(230, 547)
-
-        vcl_conda_label = QLabel('Vocalocator conda environment name:', self.ProcessSettings)
-        vcl_conda_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        vcl_conda_label.move(10, 575)
-        self.vcl_conda = QLineEdit(self.processing_input_dict['vocalocator']['vcl_conda_env_name'], self.ProcessSettings)
-        self.vcl_conda.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.vcl_conda.setStyleSheet('QLineEdit { width: 98px; }')
-        self.vcl_conda.move(310, 577)
+        self.das_model_base.move(230, 577)
 
         self.vcl_model_dir_edit = QLineEdit(self.vcl_model_dir_global, self.ProcessSettings)
         update_vcl_model_dir = partial(self._update_nested_dict_value, self.processing_input_dict, ('vocalocator', 'vcl_model_directory'))
@@ -3401,70 +3385,84 @@ class USVPlaypenWindow(QMainWindow):
         vcl_model_dir_btn = QPushButton('Browse', self.ProcessSettings)
         vcl_model_dir_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
         vcl_model_dir_btn.move(310, 604)
-        vcl_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 12px; max-width: 77px; max-height: 12px; }')
+        vcl_model_dir_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 13px; max-width: 77px; max-height: 13px; }')
         vcl_model_dir_dialog = partial(self._open_directory_dialog, self.vcl_model_dir_edit, 'Select VCL model directory')
         vcl_model_dir_btn.clicked.connect(vcl_model_dir_dialog)
 
+        self.spectrograms_root_edit = QLineEdit(self.spectrograms_root_global, self.ProcessSettings)
+        update_spectrograms_root = partial(self._update_nested_dict_value, self.processing_input_dict, ('spectrograms_root',))
+        self.spectrograms_root_edit.textChanged.connect(update_spectrograms_root)
+        self.spectrograms_root_edit.setPlaceholderText('Spectrogram models directory')
+        self.spectrograms_root_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.spectrograms_root_edit.setStyleSheet('QLineEdit { width: 295px; }')
+        self.spectrograms_root_edit.move(10, 635)
+        spectrograms_root_btn = QPushButton('Browse', self.ProcessSettings)
+        spectrograms_root_btn.setFont(QFont(self.font_id, 8 + self.font_size_increase))
+        spectrograms_root_btn.move(310, 634)
+        spectrograms_root_btn.setStyleSheet('QPushButton { min-width: 77px; min-height: 13px; max-width: 77px; max-height: 13px; }')
+        spectrograms_root_dialog = partial(self._open_directory_dialog, self.spectrograms_root_edit, 'Select spectrogram models directory')
+        spectrograms_root_btn.clicked.connect(spectrograms_root_dialog)
+
         pc_usage_process_label = QLabel('Notify e-mail(s) of PC usage:', self.ProcessSettings)
         pc_usage_process_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        pc_usage_process_label.move(10, 635)
+        pc_usage_process_label.move(10, 665)
         self.pc_usage_process = QLineEdit('', self.ProcessSettings)
         self.pc_usage_process.setFont(QFont(self.font_id, 10+self.font_size_increase))
         self.pc_usage_process.setStyleSheet('QLineEdit { width: 183px; }')
-        self.pc_usage_process.move(225, 637)
+        self.pc_usage_process.move(225, 667)
 
         processing_pc_label = QLabel('Processing PC of choice:', self.ProcessSettings)
         processing_pc_label.setFont(QFont(self.font_id, 12+self.font_size_increase))
-        processing_pc_label.move(10, 665)
+        processing_pc_label.move(10, 695)
         self.loaded_processing_pc_list = sorted(self.processing_input_dict['send_email']['Messenger']['processing_pc_list'], key=lambda x: x == self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'], reverse=True)
         self.processing_pc_cb = QComboBox(self.ProcessSettings)
         self.processing_pc_cb.addItems(self.loaded_processing_pc_list)
         self.processing_pc_cb.setStyleSheet('QComboBox { width: 155px; }')
         self.processing_pc_cb.activated.connect(partial(self._combo_box_prior_processing_pc_choice, variable_id='processing_pc_choice'))
-        self.processing_pc_cb.move(225, 665)
+        self.processing_pc_cb.move(225, 695)
 
         ev_sync_label = QLabel('E-PHYS processing settings', self.ProcessSettings)
         ev_sync_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         ev_sync_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        ev_sync_label.move(10, 705)
+        ev_sync_label.move(10, 735)
 
         conduct_nv_sync_cb_label = QLabel('Run E/V sync check:', self.ProcessSettings)
         conduct_nv_sync_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         conduct_nv_sync_cb_label.setStyleSheet(self.orange_label_style)
-        conduct_nv_sync_cb_label.move(10, 735)
+        conduct_nv_sync_cb_label.move(10, 765)
         self.conduct_nv_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_nv_sync_cb.addItems(['No', 'Yes'])
         self.conduct_nv_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_nv_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_nv_sync_cb_bool'))
-        self.conduct_nv_sync_cb.move(225, 735)
+        self.conduct_nv_sync_cb.move(225, 765)
 
         conduct_ephys_file_chaining_label = QLabel('Concatenate e-phys files:', self.ProcessSettings)
         conduct_ephys_file_chaining_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         conduct_ephys_file_chaining_label.setStyleSheet(self.orange_label_style)
-        conduct_ephys_file_chaining_label.move(10, 765)
+        conduct_ephys_file_chaining_label.move(10, 795)
         self.conduct_ephys_file_chaining_cb = QComboBox(self.ProcessSettings)
         self.conduct_ephys_file_chaining_cb.addItems(['No', 'Yes'])
         self.conduct_ephys_file_chaining_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_ephys_file_chaining_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_ephys_file_chaining_cb_bool'))
-        self.conduct_ephys_file_chaining_cb.move(225, 765)
+        self.conduct_ephys_file_chaining_cb.move(225, 795)
 
         split_cluster_spikes_cb_label = QLabel('Split clusters to sessions:', self.ProcessSettings)
         split_cluster_spikes_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         split_cluster_spikes_cb_label.setStyleSheet(self.orange_label_style)
-        split_cluster_spikes_cb_label.move(10, 795)
+        split_cluster_spikes_cb_label.move(10, 825)
         self.split_cluster_spikes_cb = QComboBox(self.ProcessSettings)
         self.split_cluster_spikes_cb.addItems(['No', 'Yes'])
         self.split_cluster_spikes_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.split_cluster_spikes_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='split_cluster_spikes_cb_bool'))
-        self.split_cluster_spikes_cb.move(225, 795)
+        self.split_cluster_spikes_cb.move(225, 825)
 
         min_spike_num_label = QLabel('Min num of spikes:', self.ProcessSettings)
         min_spike_num_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        min_spike_num_label.move(10, 825)
+        min_spike_num_label.move(10, 855)
         self.min_spike_num = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num']}", self.ProcessSettings)
         self.min_spike_num.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.min_spike_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.min_spike_num.move(225, 827)
+        self.min_spike_num.move(225, 857)
 
         # column 2
         column_two_x1 = 440
@@ -5184,12 +5182,12 @@ class USVPlaypenWindow(QMainWindow):
 
         qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'ch_receiving_input',
                           'a_ch_receiving_input', 'pc_usage_process', 'min_spike_num', 'phidget_extra_data_camera',
-                          'n_deriv_smooth','das_conda', 'das_model_base', 'das_output_type',
+                          'n_deriv_smooth', 'das_model_base', 'das_output_type',
                           'smooth_scale', 'static_reference_len', 'weight_rigid', 'weight_weak',
                           'reprojection_error_threshold', 'regularization_function',
                           'segment_confidence_threshold', 'segment_minlen', 'segment_fillgap',
-                          'rigid_body_constraints', 'weak_body_constraints', 'vcl_conda',
-                          'das_model_dir_edit', 'vcl_model_dir_edit', 'inference_root_dir_edit',
+                          'rigid_body_constraints', 'weak_body_constraints',
+                          'das_model_dir_edit', 'vcl_model_dir_edit', 'spectrograms_root_edit', 'inference_root_dir_edit',
                           'centroid_model_edit', 'centered_instance_model_edit']
         lists_in_string = ['v_camera_serial_num', 'filter_dirs', 'concat_dirs', 'filter_freq_bounds', 'frame_restriction', 'excluded_views']
 
@@ -5227,7 +5225,6 @@ class USVPlaypenWindow(QMainWindow):
             self.pc_usage_process = self.pc_usage_process.split(',')
 
         self.processing_input_dict['vocalocator']['vcl_version'] = str(getattr(self, 'vcl_version'))
-        self.processing_input_dict['vocalocator']['vcl_conda_env_name'] = self.vcl_conda
 
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
         self.device_receiving_input = self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input']
@@ -5250,7 +5247,6 @@ class USVPlaypenWindow(QMainWindow):
         self.processing_input_dict['modify_files']['Operator']['filter_audio_files']['filter_dirs'] = self.filter_dirs
         self.processing_input_dict['modify_files']['Operator']['concatenate_audio_files']['concat_dirs'] = self.concat_dirs
 
-        self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_conda_env_name'] = self.das_conda
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['model_name_base'] = self.das_model_base
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['output_file_type'] = self.das_output_type
 
@@ -5260,6 +5256,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'] = self.das_model_dir_edit
         self.processing_input_dict['vocalocator']['vcl_model_directory'] = self.vcl_model_dir_edit
+        self.processing_input_dict['spectrograms_root'] = self.spectrograms_root_edit
         self.processing_input_dict['prepare_cluster_job']['inference_root_dir'] = self.inference_root_dir_edit
         self.processing_input_dict['prepare_cluster_job']['centroid_model_path'] = self.centroid_model_edit
         self.processing_input_dict['prepare_cluster_job']['centered_instance_model_path'] = self.centered_instance_model_edit
@@ -5480,6 +5477,7 @@ class USVPlaypenWindow(QMainWindow):
         das_model_dir = configure_path(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'])
         sleap_inference_dir = configure_path(self.processing_input_dict['prepare_cluster_job']['inference_root_dir'])
         vcl_model_dir = configure_path(self.processing_input_dict['vocalocator']['vcl_model_directory'])
+        spectrograms_root_dir = configure_path(self.processing_input_dict['spectrograms_root'])
 
         self.das_model_dir_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
                                                          recording_files_destinations=[das_model_dir],
@@ -5492,6 +5490,10 @@ class USVPlaypenWindow(QMainWindow):
         self.vcl_model_dir_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
                                                          recording_files_destinations=[vcl_model_dir],
                                                          exp_id=self.exp_id)
+
+        self.spectrograms_root_global = replace_name_in_path(experimenter_list=self.exp_settings_dict['experimenter_list'],
+                                                             recording_files_destinations=[spectrograms_root_dir],
+                                                             exp_id=self.exp_id)
 
         self.avisoft_rec_dir_global = self.exp_settings_dict['avisoft_recorder_exe_directory']
         self.avisoft_base_dir_global = self.exp_settings_dict['avisoft_basedirectory']

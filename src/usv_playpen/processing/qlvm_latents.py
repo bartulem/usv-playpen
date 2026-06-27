@@ -37,7 +37,7 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import configure_path, first_match_or_raise
+from ..os_utils import configure_path, derive_spectrogram_model_paths, first_match_or_raise
 from ..processing.build_qlvm_training_set import stretch_specs
 from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
@@ -209,6 +209,7 @@ class QLVMLatentInference:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
+        derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['infer_qlvm_latents']
         params = load_decoder_params(cfg['weights_npz_path'])
         lattice = build_lattice(cfg)
