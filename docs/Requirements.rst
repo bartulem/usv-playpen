@@ -3,10 +3,13 @@
 Requirements
 ============
 
-This page explains how to set up your equipment and PCs before using the *usv-playpen* GUI for behavioral recordings.
+This page lists the **recording-rig hardware** -- the exact components used in the PNI Falkner/Murthy setup -- and the **recording software** to install per machine, before running *usv-playpen* for behavioral recordings. Hardware is grouped by modality (audio, video, e-phys); software by machine (audio, video, e-phys PCs), followed by *usv-playpen*'s own credential setup. The data-processing, analysis, and visualization stages are platform-independent and need none of this recording hardware.
 
-Audio recording essentials
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+Recording hardware
+------------------
+
+Audio
+~~~~~
 
 * `Dell Precision 3680 Tower Intel(R) Core(TM) i9-1900 CPU @ 2.00 GHz and 64 GB RAM <https://www.dell.com/en-us/shop/desktop-computers/precision-3680-tower-workstation/spd/precision-t3680-workstation>`_ (1x)
 * `Avisoft UltraSoundGate Player 1216H (comes with SYNC cable) <https://avisoft.com/ultrasoundgate/1216h/>`_ (2x)
@@ -24,8 +27,8 @@ Audio recording essentials
 
    <br>
 
-Video recording essentials
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+Video
+~~~~~
 
 * `Dell Precision 3650 Tower <https://www.dell.com/en-us/shop/desktops-all-in-ones/precision-3650-tower-workstation/spd/precision-3650-workstation>`_ (2x)
 * `PNY NVIDIA Quadro P2200 <https://www.pny.com/nvidia-quadro-p2200>`_ (2x)
@@ -53,8 +56,8 @@ Video recording essentials
 
    <br>
 
-E-phys recording essentials
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E-phys
+~~~~~~
 
 * `PXIe-1071 Chassis with power cord <https://www.ni.com/en-us/shop/model/pxie-1071.html>`_ (1x)
 * `PXIe-8381 module and card with MXI-Express cable <https://www.ni.com/en-us/shop/model/pxie-8381.html>`_ (1x)
@@ -74,8 +77,8 @@ E-phys recording essentials
 
    <br>
 
-Other essentials
-^^^^^^^^^^^^^^^^
+Other
+~~~~~
 
 * `Arduino Uno <https://store.arduino.cc/products/arduino-uno-rev3?srsltid=AfmBOoqCHxeme84k9_8zMTa3JTGYYzw20P36GEmJQBJGSvEcd48ShLBj>`_ (1x)
 * `IR-LEDs <https://www.digikey.com/en/products/detail/marktech-optoelectronics/MTE9440M3A/2798891?so=88479393&content=productdetail_US&mkt_tok=MDI4LVNYSy01MDcAAAGVQEcEiS5xq-g7fZ0YNeAbQF1X6l1rQPO9OE8iU9Wud3fwZjjEL8KwezzzxWCu9NMbWbQtBvKalYDJcFjhdLc-2ckFNKIZoD6xJa_ac1xa>`_ (3x)
@@ -92,11 +95,11 @@ Other essentials
 * `Intel Ethernet Converged X710-DA2 Network Adapter (X710DA2) for high speed ethernet <https://www.amazon.com/gp/product/B00NJ3ZC26/>`_ (2x)
 * `Intel E10GSFPSR 10G SFP+ SR SFP for high speed ethernet <https://www.amazon.com/Intel-E10GSFPSR-10G-SFP-SR/dp/B016YK9CPI/>`_ (2x)
 
+Recording software
+------------------
 
-Software Requirements
-
-Audio PC essentials
-^^^^^^^^^^^^^^^^^^^
+Audio PC
+~~~~~~~~
 
 Whatever operating system you are using, you will need to ensure the existence of the following software *prior to* using *usv-playpen*: (1) `git <https://git-scm.com/downloads>`_ (and add PATH to USER VARIABLES on Windows), (2) `uv <https://docs.astral.sh/uv/getting-started/installation/>`_ (and add PATH to USER VARIABLES on Windows).
 
@@ -135,8 +138,8 @@ One can also enable/disable the Ethernet connection with:
 
    netsh interface set interface "ethernet_network_name" enable
 
-Video PC essentials
-^^^^^^^^^^^^^^^^^^^
+Video PC
+~~~~~~~~
 
 There are two PCs running Ubuntu 18.04 LTS controlling camera acquisition with `Motif <http://loopbio.com/recording/>`_.
 Three cameras are connected to the main PC, and two are connected to the secondary PC *via* the USB3 Micro-B Locking Cable. The main PC
@@ -164,8 +167,8 @@ Another thing that needs to be ensured prior to recording is that the file serve
 
 The video data is saved in /mnt/DATA of each computer.
 
-EPHYS PC essentials
-^^^^^^^^^^^^^^^^^^^
+E-phys PC
+~~~~~~~~~
 
 On the firmware/software side, install the following (note that SpikeGLX only works on Windows!):
 
@@ -182,7 +185,7 @@ To make SpikeGLX functional (once the module and card are connected, and probe i
 * load BSC firmware from, e.g., "C:\SpikeGLX\Release_vXXXXXXXX-phaseXX\Firmware"
 
 Setting up *usv-playpen*
-^^^^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 If you plan to conduct behavioral recordings and/or send/receive e-mail notifications when jobs start/complete, you need to create and configure 3 *credential files*:
 
@@ -194,7 +197,7 @@ If you plan to conduct behavioral recordings and/or send/receive e-mail notifica
 
    <br>
 
-You do this by selecting a *Save directory* and filling out the form loaded in the window. After you are done, just click the *Save* button:
+You do this by selecting a *Save directory* and filling out the form loaded in the window. After you are done, just click the *Save* button (you over-write an existing file the same way):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/credentials_step_1.png
    :align: center

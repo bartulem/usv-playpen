@@ -155,7 +155,7 @@ null), the BIC and AIC sweeps with the LRT-selected K highlighted, the best-fit 
 per-component triangles labelled ``(a)``, ``(b)``, ... and a left-aligned legend mapping each
 letter to its component median in seconds, an optional per-component pdf overlay, and a
 log-log Q-Q diagnostic inset. The GUI does not expose this analysis; its parameters
-(``session_lists``, ``output_directory``, ``fit_gmm``, the ``model_class`` t/gauss choice,
+(``session_lists``, ``output_directory``, ``fit_mixture_model``, the ``model_class`` t/gauss choice,
 the component-count sweep and EM/CV knobs, ``bins_per_sex``, ``plot_log_xlims``, …) live in
 ``analyses_settings.json``. See :doc:`Analyze` for the archive schema and the compute step.
 Source: `usv_interval_mixture_models_plots.ipynb

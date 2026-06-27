@@ -40,7 +40,7 @@ device_pc_memory = '4Gb'
 device_pc_os = 'Raspberry Pi OS'
 device_sn = '100000005c5e21a6'
 device_amplifier = 'TDT SA1 Stereo Amplifier'
-device_sound_card = 'HifiBa=erry DAC2 HW1.2'
+device_sound_card = 'HifiBerry DAC2 HW1.2'
 speaker_model = 'Sony MDREX15LP/B'
 
 [ephys.NI_NPX]
@@ -92,7 +92,7 @@ device_vendor = 'SLOC'
 device_model = 'RLM635TA-100FC'
 device_sn = 'RI02S10775'
 device_max_power = 500
-device_wavelenght = 634.2
+device_wavelength = 634.2
 patch_cord_vendor = 'Doric'
 patch_cord_model = 'FCM-MF1.25_LAF'
 patch_cord_sn = 'P115017-01'

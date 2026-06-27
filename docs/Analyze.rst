@@ -269,7 +269,7 @@ The pickle this step produces is the input to all downstream cross-session plott
 
 Compute inter-vocalization-interval (inter-USV interval) distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-This analysis pools same-emitter inter-vocalization intervals (inter-USV intervals) across one or more cohorts and (optionally) sweeps a 1D Gaussian Mixture Model (GMM) on the log-transformed inter-USV intervals to identify behavioral regimes (e.g. "short" intra-bout intervals vs "long" inter-bout intervals). Unlike the other analyses on this page, this one is **not** driven by the *Root directories* GUI field — it is driven by one or more **session-list text files**, each containing one session root per line. This lets multi-cohort comparisons be assembled by simply pointing at additional list files (each session is tagged with the list file it came from for downstream grouping).
+This analysis pools same-emitter inter-vocalization intervals (inter-USV intervals) across one or more cohorts and (optionally) sweeps a 1D mixture model (Gaussian or Student-t) on the log-transformed inter-USV intervals to identify behavioral regimes (e.g. "short" intra-bout intervals vs "long" inter-bout intervals). Unlike the other analyses on this page, this one is **not** driven by the *Root directories* GUI field — it is driven by one or more **session-list text files**, each containing one session root per line. This lets multi-cohort comparisons be assembled by simply pointing at additional list files (each session is tagged with the list file it came from for downstream grouping).
 
 By convention, ``track_names[0]`` in each session's tracking H5 is treated as the male and ``track_names[1]`` as the female. Each session-list path and each line within is run through ``configure_path`` so paths written for Linux/Mac/Windows resolve correctly on the host platform.
 
@@ -292,7 +292,7 @@ The archive's structure (see :mod:`usv_playpen.analyses.usv_interval_archive` fo
 * Root ``/attrs`` -- every JSON parameter that drove the run, plus ``created_at_iso``, ``git_sha``, ``source_lists`` and ``n_sessions_loaded``, so a months-later reader is fully self-describing.
 * ``/<mode>/intervals`` -- tidy one-row-per-inter-USV interval table (``session_id``, ``source_list``, ``interval_type``, ``sex``, ``interval_s``, ``log_interval``, ``male_id``, ``female_id``).
 * ``/<mode>/drop_counts`` -- per-sex count of dropped non-positive intervals (only meaningful for ``e2s``).
-* ``/<mode>/gmm_fits`` (when ``fit_gmm`` is true) -- the full GMM / t-mixture sweep with all four ICs (``bic``, ``aic``, ``icl``, ``cv_neg_loglik``) and per-component parameters (``logmean_k``, ``logsd_k``, ``weight_k``, ``nu_k``) per ``(sex, n_comp, rep)`` row. This table doubles as the model-parameter store; downstream plot helpers pick the best-rep row to rebuild the fitted mixture without refitting.
+* ``/<mode>/mixture_model_fits`` (when ``fit_mixture_model`` is true) -- the full Gaussian / t-mixture sweep with all four ICs (``bic``, ``aic``, ``icl``, ``cv_neg_loglik``) and per-component parameters (``logmean_k``, ``logsd_k``, ``weight_k``, ``nu_k``) per ``(sex, n_comp, rep)`` row. This table doubles as the model-parameter store; downstream plot helpers pick the best-rep row to rebuild the fitted mixture without refitting.
 * ``/<mode>/bootstrap_lrt`` -- per-pair LRT summary with columns ``[sex, K_null, K_alt, lr_obs, null_mean, null_p95, null_max, p_value, B, n_subsample, model_class, alpha_used, K_selected_step_up]``. ``K_selected_step_up`` is constant within each sex and records the per-sex K chosen by the step-up rule.
 * ``/<mode>/bootstrap_lrt_null`` -- long-form bootstrap LR null draws, one row per ``(sex, K_null, K_alt, b)`` with the bootstrap statistic ``lr_b``. Used to re-render the null-distribution panel without re-running the test.
 * ``/<mode>/attrs`` -- ``alpha_effective`` (post-Bonferroni alpha if requested) plus the per-sex step-up-selected K (``K_selected_male``, ``K_selected_female``).
@@ -305,15 +305,15 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **output_directory** : directory in which to write the consolidated ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` archive (and where the notebook's ``find_latest_archive`` looks)
 * **noise_col_id** : name of the noise classification column in the USV summary CSV
 * **noise_categories** : integer label(s) in ``noise_col_id`` that mark a USV as noise
-* **fit_gmm** : whether to run the GMM sweep after inter-USV interval extraction
+* **fit_mixture_model** : whether to run the mixture-model sweep after inter-USV interval extraction
 * **n_components_min** / **n_components_max** : range of mixture sizes to sweep
 * **n_repeats** : number of EM-init repeats per ``(key, n_components)``
 * **max_modes_reported** : maximum number of mixture modes recorded per fit
 * **random_seed_base** : base seed; rep ``r`` uses ``random_seed_base + r``
 * **cv_n_folds** : Number of K-fold splits for cross-validated log-likelihood. Defaults to ``5``. KFold uses ``shuffle=True`` for partition independence.
-* **cv_n_init** : Number of EM restarts inside each fold's GMM fit during cross-validation. Defaults to ``5`` (smaller than the in-sample ``gmm_n_init`` because folds already average out EM noise).
-* **gmm_n_init** : Number of EM restarts per in-sample GMM fit. Defaults to ``10``. Higher values make EM more robust to local optima but cost compute.
-* **gmm_reg_covar** : Regularisation added to component covariances (``sklearn``'s ``reg_covar``). Defaults to ``1e-4`` (above the sklearn default of ``1e-6``) to prevent small components from collapsing to near-singular covariances on log-inter-USV interval data.
+* **cv_n_init** : Number of EM restarts inside each fold's mixture-model fit during cross-validation. Defaults to ``5`` (smaller than the in-sample ``mixture_model_n_init`` because folds already average out EM noise).
+* **mixture_model_n_init** : Number of EM restarts per in-sample mixture-model fit. Defaults to ``10``. Higher values make EM more robust to local optima but cost compute.
+* **mixture_model_reg_covar** : Regularisation added to component covariances (``sklearn``'s ``reg_covar``). Defaults to ``1e-4`` (above the sklearn default of ``1e-6``) to prevent small components from collapsing to near-singular covariances on log-inter-USV interval data.
 * **tau** : Posterior threshold for the LEFT component when computing inter-component decision boundaries. ``0.5`` gives the standard Bayes boundary. Higher values move the boundary toward the left component, making the "short" regime more conservative.
 * **figures_directory** : Directory in which the inter-USV interval notebook saves rendered figures. Run through ``configure_path`` so a Linux-style path resolves on Mac / Windows hosts.
 * **bins_per_sex** : Object mapping ``"male"`` and ``"female"`` to integer histogram bin counts for the fit-plot panels. Females typically have far fewer samples and benefit from fewer bins (e.g. ``30``) so the histogram isn't fragmented into spurious troughs and peaks.
@@ -323,7 +323,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
   - ``"t"`` (default): Student-t mixture in log-space. One heavy-tailed t-component absorbs the long-pause tail, freeing the remaining components to track only the main-peak structure. Recommended for inter-USV interval bout-structure analysis. Per-component degrees of freedom (``nu``) are estimated jointly with the location and scale via the Peel & McLachlan (2000) EM algorithm.
   - ``"gauss"``: log-Gaussian mixture (the original implementation, kept for back-compatibility). With heavy-tailed inter-USV interval distributions this typically requires several wide Gaussians to model the long pause tail, inflating the apparent component count. Use only when you specifically want the classical log-normal mixture.
 
-  Both classes share the same IC sweep (BIC / AIC / ICL / CV-LL) and selection rules; the ``gmm_fits`` table inside the HDF5 archive gains a ``model_class`` column tagging which class produced each row, so artifacts from either class remain interpretable.
+  Both classes share the same IC sweep (BIC / AIC / ICL / CV-LL) and selection rules; the ``mixture_model_fits`` table inside the HDF5 archive gains a ``model_class`` column tagging which class produced each row, so artifacts from either class remain interpretable.
 
 * **bootstrap_lrt_B** : Number of parametric bootstrap replicates per pairwise LRT (McLachlan 1987; McLachlan & Peel 2000 Ch. 6). Defaults to ``1000`` (smooth null distribution + meaningful 99th-percentile reference line); reduce to 100-200 only for fast-iteration debugging.
 * **bootstrap_lrt_n_subsample** : Subsample size used for both observed and bootstrap fits, so the LR statistic is on the same N scale across them. Defaults to ``15000``. The test is asymptotically valid for any sufficiently large value; smaller subsamples trade some power for a faster run.
@@ -339,7 +339,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "output_directory": "/mnt/falkner/{experimenter}/modeling/usv_interval_results",
         "noise_col_id": "vae_supercategory",
         "noise_categories": [0],
-        "fit_gmm": true,
+        "fit_mixture_model": true,
         "n_components_min": 2,
         "n_components_max": 6,
         "n_repeats": 10,
@@ -347,8 +347,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "random_seed_base": 0,
         "cv_n_folds": 5,
         "cv_n_init": 5,
-        "gmm_n_init": 10,
-        "gmm_reg_covar": 1e-4,
+        "mixture_model_n_init": 10,
+        "mixture_model_reg_covar": 1e-4,
         "tau": 0.5,
         "figures_directory": "/mnt/falkner/{experimenter}/figures",
         "bins_per_sex": {"male": 80, "female": 30},

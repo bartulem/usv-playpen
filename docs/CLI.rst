@@ -501,24 +501,24 @@ Analyze
 The inter-USV / inter-sequence interval distributions are not CLI options: they are reconstructed at generation time from the per-sex Student-t mixture in the HDF5 interval archive (configured via ``naturalistic_iui_archive_h5`` in *analyses_settings.json*).
 
 ``generate-usv-interval-distributions``
-``generate-usv-interval-distributions`` is the command-line interface for computing inter-vocalization-interval (inter-USV interval) distributions across one or more session-list text files and (optionally) sweeping a 1D Gaussian Mixture Model on the pooled log-inter-USV intervals.
+``generate-usv-interval-distributions`` is the command-line interface for computing inter-vocalization-interval (inter-USV interval) distributions across one or more session-list text files and (optionally) sweeping a 1D mixture model (Gaussian or Student-t) on the pooled log-inter-USV intervals.
 
 By convention, ``track_names[0]`` is treated as the male and ``track_names[1]`` as the female. Each session-list text file contains one session root directory per line; paths are run through ``configure_path`` so Mac/Linux/Windows entries resolve correctly on the host platform. ``--session-list`` may be passed multiple times to merge multiple cohorts.
 
 Both interval definitions are computed unconditionally on every run: ``s2s`` = ``start[i+1] - start[i]`` (literature standard), and ``e2s`` = ``start[i+1] - stop[i]`` (alternate; can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the drop count reported per session per mode). Both definitions share the same per-session pass over the noise-filtered USV table, so there is no compute saving from omitting one.
 
-For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arrays plus per-session metadata), ``ivi_master_<mode>.csv`` (tidy one-row-per-inter-USV interval table), and (when ``--fit-gmm``) ``gmm_fits_results_<mode>.csv`` with per-component log-means, log-stds, weights, mixture modes, and adjacent-component decision boundaries to ``--output-directory``.
+For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arrays plus per-session metadata), ``ivi_master_<mode>.csv`` (tidy one-row-per-inter-USV interval table), and (when ``--fit-mixture-model``) ``mixture_model_fits_results_<mode>.csv`` with per-component log-means, log-stds, weights, mixture modes, and adjacent-component decision boundaries to ``--output-directory``.
 
 .. code-block:: text
 
     usage: generate-usv-interval-distributions [-h] [--session-list PATH...] [--output-directory PATH]
                             [--noise-col-id TEXT] [--noise-categories INTEGER...]
-                            [--fit-gmm | --no-fit-gmm]
+                            [--fit-mixture-model | --no-fit-mixture-model]
                             [--n-components-min INTEGER] [--n-components-max INTEGER]
                             [--n-repeats INTEGER] [--max-modes-reported INTEGER]
                             [--random-seed-base INTEGER]
                             [--cv-n-folds INTEGER] [--cv-n-init INTEGER]
-                            [--gmm-n-init INTEGER] [--gmm-reg-covar FLOAT]
+                            [--mixture-model-n-init INTEGER] [--mixture-model-reg-covar FLOAT]
                             [--tau FLOAT] [--figures-directory PATH]
                             [--model-class {gauss,t}]
                             [--bootstrap-lrt-B INTEGER]
@@ -531,22 +531,22 @@ For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arr
       --session-list              Path to a text file containing session root
                                   directories (one per line). Repeatable.
       --output-directory          Directory in which to write inter-USV interval master pickles,
-                                  tidy CSVs and GMM sweep CSVs.
+                                  tidy CSVs and mixture-model sweep CSVs.
       --noise-col-id              Name of the noise classification column in the
                                   USV summary CSV.
       --noise-categories          Integer label(s) in noise_col_id that mark a
                                   USV as noise.
-      --fit-gmm / --no-fit-gmm    Whether to run the GMM sweep after inter-USV interval extraction.
-      --n-components-min          Minimum number of GMM components.
-      --n-components-max          Maximum number of GMM components.
+      --fit-mixture-model / --no-fit-mixture-model    Whether to run the mixture-model sweep after inter-USV interval extraction.
+      --n-components-min          Minimum number of mixture components.
+      --n-components-max          Maximum number of mixture components.
       --n-repeats                 Number of EM-init repeats per (key, n_components).
       --max-modes-reported        Maximum number of mixture modes recorded per fit.
       --random-seed-base          Base seed; rep r uses random_seed_base + r.
       --cv-n-folds                Number of K-fold splits for CV log-likelihood.
                                   Default 5.
       --cv-n-init                 EM restarts per fold during CV. Default 5.
-      --gmm-n-init                EM restarts per in-sample GMM fit. Default 10.
-      --gmm-reg-covar             Covariance regularisation passed to sklearn's
+      --mixture-model-n-init      EM restarts per in-sample mixture-model fit. Default 10.
+      --mixture-model-reg-covar   Covariance regularisation passed to sklearn's
                                   GaussianMixture. Default 1e-4.
       --tau                       Posterior threshold for the LEFT component
                                   when computing inter-component decision

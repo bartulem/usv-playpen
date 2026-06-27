@@ -476,6 +476,16 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **centroid_model_path** : path to the SLEAP centroid model
 * **centered_instance_model_path** : path to the SLEAP centered instance model
 
+.. note::
+
+   The shipped ``*_settings.json`` files store a literal default experimenter
+   (currently ``Bartul``). Experimenter-scoped paths are re-keyed to the active
+   experimenter automatically: in the GUI from the front-page experimenter
+   selection, and for headless / CLI / cluster runs from the host
+   ``behavioral_experiments_settings.toml`` ``experimenter`` key. You therefore
+   set your experimenter once instead of editing every path; the
+   ``{experimenter}`` shown in the example paths below stands in for that name.
+
 .. code-block:: json
 
    "prepare_cluster_job": {

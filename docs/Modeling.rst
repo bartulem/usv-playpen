@@ -25,7 +25,7 @@ pipeline:
      - per-bout duration / complexity / intensity
      - bout starts
    * - ``MultinomialModelingPipeline``
-     - per-USV GMM category (one-vs-rest, multinomial)
+     - per-USV vocal category (one-vs-rest, multinomial)
      - per-USV starts
    * - ``ContinuousModelingPipeline``
      - per-USV 2-D acoustic-manifold (UMAP) position
@@ -62,7 +62,7 @@ important blocks are:
 - ``model_params`` — ``random_seed``, ``filter_history`` (seconds of
   behavioral history preceding each event), ``model_engine``
   (``'sklearn'`` or ``'pygam'``), ``split_strategy``, ``split_num``, the
-  GMM inter-bout-interval parameters, and the predictor-mouse index.
+  mixture-model inter-bout-interval parameters, and the predictor-mouse index.
 - ``kinematic_features`` / ``vocal_features`` — which behavioral and vocal
   predictors enter the feature zoo, the manifold metric
   (``'euclidean'`` / ``'torus'``), and the manifold period.
@@ -126,7 +126,7 @@ differ only in *what gets predicted*:
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
 
-    # Vocal categories (multinomial, one-vs-rest across GMM categories)
+    # Vocal categories (multinomial, one-vs-rest across USV categories)
     MultinomialModelingPipeline(
         modeling_settings_dict=None
     ).extract_and_save_multinomial_input_data()
@@ -169,7 +169,7 @@ is fit.
    **all** of the mouse's USVs, so the category choice changes only *which*
    onsets count as events — never the predictors or the negatives. The filter
    is honoured in ``'individual'`` mode only; in ``'bout'`` (and ``'state'``)
-   mode it is ignored, because the GMM inter-syllable-interval threshold used
+   mode it is ignored, because the mixture-model inter-syllable-interval threshold used
    for bout grouping is calibrated on the all-USV interval distribution and
    would mis-group a category-sparsified sequence (a warning is printed if the
    setting is combined with a non-individual mode). When active, the chosen
