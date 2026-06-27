@@ -762,10 +762,10 @@ class TestRunPredictorAudits:
             'model_params': {
                 'random_seed': 0,
                 'filter_history': 1.0,
-                'gmm_component_index': 0,
-                'gmm_z_score': 1.0,
+                'mixture_model_component_index': 0,
+                'mixture_model_z_score': 1.0,
             },
-            'gmm_params': {
+            'mixture_model_params': {
                 'male': {'means': [0.1], 'sds': [0.05]},
                 'female': {'means': [0.12], 'sds': [0.06]},
             },
@@ -819,7 +819,7 @@ class TestRunPredictorAudits:
         assert 's1' in coll_kwargs['event_times_per_session']
         ts_kwargs = ts.call_args.kwargs
         assert ts_kwargs['save_path'].endswith('myinput_timescales.pkl')
-        # IBI thresholds computed for both sexes from the GMM params.
+        # IBI thresholds computed for both sexes from the mixture-model params.
         assert set(ts_kwargs['ibi_thresholds']) == {'male', 'female'}
         # Bout-onset Y trace built from default 'positive_events' key.
         assert 's1' in ts_kwargs['bout_onset_times_per_session']
@@ -964,15 +964,15 @@ class TestRunPredictorAudits:
         assert 's_none_arr' not in evt
         assert 's_empty_arr' not in evt
 
-    def test_ibi_threshold_nan_when_gmm_index_out_of_range(self, mocker, tmp_path):
-        """When ``gmm_component_index`` exceeds the per-sex component count the
+    def test_ibi_threshold_nan_when_mixture_model_index_out_of_range(self, mocker, tmp_path):
+        """When ``mixture_model_component_index`` exceeds the per-sex component count the
         IBI threshold for that sex is NaN (the out-of-range ``else`` branch)."""
 
         mocker.patch.object(mu, 'audit_predictor_collinearity')
         ts = mocker.patch.object(mu, 'audit_predictor_timescales')
         beh, usv, names, fps = self._inputs()
         settings = self._settings(collinearity=False)
-        settings['model_params']['gmm_component_index'] = 5   # out of range
+        settings['model_params']['mixture_model_component_index'] = 5   # out of range
         run_predictor_audits(
             beh, usv, names, fps, target_idx=1, predictor_idx=0,
             history_frames=5, event_keys=['positive_events'],

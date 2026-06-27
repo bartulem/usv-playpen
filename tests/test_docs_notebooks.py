@@ -3,7 +3,7 @@
 Reachability guard for the documentation's notebook catalog.
 
 Every analysis notebook (and the marimo app) shipped under
-``src/usv_playpen/analyses_notebooks/`` must be referenced by name in
+``src/usv_playpen/notebooks/`` must be referenced by name in
 ``docs/Notebooks.rst`` (the single, detailed notebook catalog). This converts
 "no guarantee every notebook is reachable" from a hope into an enforced
 invariant: adding a notebook without documenting it fails the suite rather than
@@ -16,7 +16,7 @@ from __future__ import annotations
 import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-NOTEBOOK_DIR = REPO_ROOT / "src" / "usv_playpen" / "analyses_notebooks"
+NOTEBOOK_DIR = REPO_ROOT / "src" / "usv_playpen" / "notebooks"
 NOTEBOOKS_RST = REPO_ROOT / "docs" / "Notebooks.rst"
 
 
@@ -25,7 +25,7 @@ def _shipped_notebooks() -> list[str]:
     Description
     -----------
     Collect the file names of every notebook artifact under
-    ``analyses_notebooks/`` that should be catalogued: all Jupyter notebooks
+    ``notebooks/`` that should be catalogued: all Jupyter notebooks
     (``*.ipynb``) plus any top-level marimo / script app (``*.py`` that is not a
     dunder module such as ``__init__.py``).
 

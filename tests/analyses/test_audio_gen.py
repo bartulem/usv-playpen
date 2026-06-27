@@ -394,7 +394,7 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, prefix="male",
         "usv_playpen.analyses.generate_audio_files.read_usv_interval_h5",
         return_value={"modes": {"e2s": {
             "attrs": {"K_selected_male": 3, "K_selected_female": 3},
-            "gmm_fits": None,
+            "mixture_model_fits": None,
         }}},
     )
     mocker.patch(

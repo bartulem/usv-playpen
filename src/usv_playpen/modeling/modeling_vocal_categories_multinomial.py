@@ -845,15 +845,15 @@ class MultinomialModelingPipeline(FeatureZoo):
         unique_labels, counts = np.unique(all_labels, return_counts=True)
         class_counts_md = {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, counts)}
 
-        gmm_idx_md = self.modeling_settings['model_params']['gmm_component_index']
+        mixture_model_idx_md = self.modeling_settings['model_params']['mixture_model_component_index']
         ibi_thresholds_md = {}
-        gmm_params_md = self.modeling_settings['gmm_params']
+        mixture_model_params_md = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
-            params = gmm_params_md[sex]
-            if gmm_idx_md < len(params['means']):
+            params = mixture_model_params_md[sex]
+            if mixture_model_idx_md < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
-                    params['means'][gmm_idx_md], params['sds'][gmm_idx_md],
-                    self.modeling_settings['model_params']['gmm_z_score'],
+                    params['means'][mixture_model_idx_md], params['sds'][mixture_model_idx_md],
+                    self.modeling_settings['model_params']['mixture_model_z_score'],
                 ))
             else:
                 ibi_thresholds_md[sex] = float('nan')

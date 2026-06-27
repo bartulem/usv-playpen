@@ -51,7 +51,7 @@ if find_spec("nbsphinx") is not None:
     # The analysis notebooks live under src/ (outside this Sphinx source dir).
     # Copy them into docs/notebooks/ at build time so the Notebooks page can
     # render them via nbsphinx (cross-platform; the copy dir is gitignored).
-    _nb_src_dir = pathlib.Path(__file__).parent.parent / "src" / "usv_playpen" / "analyses_notebooks"
+    _nb_src_dir = pathlib.Path(__file__).parent.parent / "src" / "usv_playpen" / "notebooks"
     _nb_dst_dir = pathlib.Path(__file__).parent / "notebooks"
     _nb_dst_dir.mkdir(exist_ok=True)
     for _notebook in sorted(_nb_src_dir.glob("*.ipynb")):

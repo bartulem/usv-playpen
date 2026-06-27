@@ -7,7 +7,7 @@
 
 # Experimenter id keying the experimenter-owned work/resource/model paths below
 # (session/arena roots stay as entered). Match the `experimenter` key in this
-# checkout's behavioral_experiments_settings.toml (read to fill {experimenter}).
+# checkout's behavioral_experiments_settings.toml (experimenter-scoped *_settings.json paths are re-keyed to it automatically).
 EXPERIMENTER_ID="Name"
 CPUS_PER_TASK=2
 TOTAL_MEMORY="16G"

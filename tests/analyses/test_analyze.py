@@ -2095,7 +2095,7 @@ def _example_per_mode_payload():
                 "n_dropped_male": [0, 1],
                 "n_dropped_female": [2, 0],
             }),
-            "gmm_fits": None,
+            "mixture_model_fits": None,
             "bootstrap_lrt": None,
             "bootstrap_lrt_null": None,
         },
@@ -2112,7 +2112,7 @@ def test_write_and_read_ivi_h5_roundtrip(tmp_path):
         "n_sessions_loaded": 2,
         "source_lists": ["a.txt", "b.txt"],
         "tau": 0.5,
-        "fit_gmm": False,
+        "fit_mixture_model": False,
     }
     written = write_ivi_h5(out, analysis_attrs=analysis_attrs, per_mode=payload)
     assert written == out
@@ -2121,13 +2121,13 @@ def test_write_and_read_ivi_h5_roundtrip(tmp_path):
     # File-level attrs decoded.
     assert archive["attrs"]["created_at_iso"] == "2026-05-09T12:00:00"
     assert archive["attrs"]["source_lists"] == ["a.txt", "b.txt"]
-    assert archive["attrs"]["fit_gmm"] is False or archive["attrs"]["fit_gmm"] == 0
+    assert archive["attrs"]["fit_mixture_model"] is False or archive["attrs"]["fit_mixture_model"] == 0
     # Mode-level: tables exist; missing tables are None.
     s2s = archive["modes"]["s2s"]
     assert s2s["attrs"]["alpha_effective"] == 0.05
     assert s2s["intervals"].height == 3
     assert s2s["drop_counts"].height == 2
-    assert s2s["gmm_fits"] is None
+    assert s2s["mixture_model_fits"] is None
     assert s2s["bootstrap_lrt"] is None
     assert s2s["bootstrap_lrt_null"] is None
 
@@ -2142,7 +2142,7 @@ def test_write_ivi_h5_creates_parent_dir(tmp_path):
 # ---- reconstruct_best_model -----------------------------------------------
 
 
-def _gmm_fits_row(model_class, sex="male", K=2, bic=10.0, cv=1.0):
+def _mixture_model_fits_row(model_class, sex="male", K=2, bic=10.0, cv=1.0):
     """Build a single-row sweep DF that reconstruct_best_model can consume."""
     row = {
         "sex": sex,
@@ -2162,7 +2162,7 @@ def _gmm_fits_row(model_class, sex="male", K=2, bic=10.0, cv=1.0):
 
 def test_reconstruct_best_model_gauss():
     """Gauss path returns an sklearn GMM with score_samples working."""
-    df = _gmm_fits_row("gauss", K=2)
+    df = _mixture_model_fits_row("gauss", K=2)
     model, order = reconstruct_best_model(df, sex="male", K=2)
     from sklearn.mixture import GaussianMixture
     assert isinstance(model, GaussianMixture)
@@ -2176,7 +2176,7 @@ def test_reconstruct_best_model_gauss():
 def test_reconstruct_best_model_t_mixture():
     """t-mixture path returns a TMixture object."""
     from usv_playpen.analyses.mixture_model_utils import TMixture
-    df = _gmm_fits_row("t", K=2)
+    df = _mixture_model_fits_row("t", K=2)
     model, order = reconstruct_best_model(df, sex="male", K=2)
     assert isinstance(model, TMixture)
     np.testing.assert_array_equal(order, np.arange(2))
@@ -2184,22 +2184,22 @@ def test_reconstruct_best_model_t_mixture():
 
 def test_reconstruct_best_model_no_rows_raises():
     """No matching (sex, K) → ValueError."""
-    df = _gmm_fits_row("gauss", sex="male", K=2)
+    df = _mixture_model_fits_row("gauss", sex="male", K=2)
     with pytest.raises(ValueError, match="no rows"):
         reconstruct_best_model(df, sex="female", K=2)
 
 
 def test_reconstruct_best_model_unknown_class_raises():
     """Unknown model_class string → ValueError."""
-    df = _gmm_fits_row("bogus", K=2)
+    df = _mixture_model_fits_row("bogus", K=2)
     with pytest.raises(ValueError, match="unknown model_class"):
         reconstruct_best_model(df, sex="male", K=2)
 
 
 def test_reconstruct_best_model_falls_back_when_cv_all_nan():
     """If every cv_neg_loglik is NaN, reconstruct_best_model should fall back to bic."""
-    df1 = _gmm_fits_row("gauss", K=2, bic=10.0, cv=float("nan"))
-    df2 = _gmm_fits_row("gauss", K=2, bic=5.0, cv=float("nan"))
+    df1 = _mixture_model_fits_row("gauss", K=2, bic=10.0, cv=float("nan"))
+    df2 = _mixture_model_fits_row("gauss", K=2, bic=5.0, cv=float("nan"))
     # Ensure 'rep' dtype matches df1's (Int64) — pls.lit(1) is Int32 by default.
     df2 = df2.with_columns(pls.lit(1, dtype=pls.Int64).alias("rep"))
     df = pls.concat([df1, df2])

@@ -55,7 +55,7 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     build_master_usv_interval_dataframe,
     find_latest_archive,
     load_intervals_from_h5,
-    load_gmm_fits_from_h5,
+    load_mixture_model_fits_from_h5,
     load_best_fit_from_h5,
     load_lrt_sweep_from_h5,
     selected_K_from_h5,
@@ -455,7 +455,7 @@ def test_build_master_usv_dataframe_skips_session_without_category_col(tmp_path)
 # ===========================================================================
 
 
-def _build_archive(tmp_path: Path, *, with_gmm: bool = True, with_lrt: bool = True) -> Path:
+def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt: bool = True) -> Path:
     """Constructs a usv_interval_analysis_<ts>.h5 file with both modes populated."""
     intervals_df = pls.DataFrame({
         "session_id": ["s1", "s1", "s1", "s2"],
@@ -485,8 +485,8 @@ def _build_archive(tmp_path: Path, *, with_gmm: bool = True, with_lrt: bool = Tr
         },
     }
 
-    if with_gmm:
-        gmm_rows = []
+    if with_mixture_model:
+        mixture_model_rows = []
         for sex in ("male", "female"):
             for K in (1, 2):
                 row = {
@@ -501,8 +501,8 @@ def _build_archive(tmp_path: Path, *, with_gmm: bool = True, with_lrt: bool = Tr
                     row[f"logmean_{k+1}"] = float(k - 0.5) if k < K else float("nan")
                     row[f"logsd_{k+1}"] = 0.5 if k < K else float("nan")
                     row[f"nu_{k+1}"] = float("nan")
-                gmm_rows.append(row)
-        payload["s2s"]["gmm_fits"] = pls.DataFrame(gmm_rows)
+                mixture_model_rows.append(row)
+        payload["s2s"]["mixture_model_fits"] = pls.DataFrame(mixture_model_rows)
 
     if with_lrt:
         # Schema must match what load_lrt_sweep_from_h5 expects to read.
@@ -556,7 +556,7 @@ def test_find_latest_archive_raises_when_none(tmp_path):
         find_latest_archive(str(tmp_path))
 
 
-# ---- load_intervals_from_h5 / load_gmm_fits_from_h5 / load_best_fit -------
+# ---- load_intervals_from_h5 / load_mixture_model_fits_from_h5 / load_best_fit -------
 
 
 def test_load_intervals_from_h5_returns_tidy_frame(tmp_path):
@@ -574,24 +574,24 @@ def test_load_intervals_from_h5_unknown_mode_raises(tmp_path):
         load_intervals_from_h5(str(arc), interval_type="e2s")
 
 
-def test_load_gmm_fits_from_h5_round_trip(tmp_path):
-    """gmm_fits comes back with all per-component columns intact."""
-    arc = _build_archive(tmp_path, with_gmm=True)
-    df = load_gmm_fits_from_h5(str(arc), interval_type="s2s")
+def test_load_mixture_model_fits_from_h5_round_trip(tmp_path):
+    """mixture_model_fits comes back with all per-component columns intact."""
+    arc = _build_archive(tmp_path, with_mixture_model=True)
+    df = load_mixture_model_fits_from_h5(str(arc), interval_type="s2s")
     for col in ("weight_1", "logmean_1", "logsd_1", "model_class"):
         assert col in df.columns
 
 
-def test_load_gmm_fits_from_h5_missing_raises(tmp_path):
-    """Archive without GMM sweep (fit_gmm=false at compute time) → ValueError."""
-    arc = _build_archive(tmp_path, with_gmm=False)
-    with pytest.raises(ValueError, match="contains no\\s+GMM sweep"):
-        load_gmm_fits_from_h5(str(arc), interval_type="s2s")
+def test_load_mixture_model_fits_from_h5_missing_raises(tmp_path):
+    """Archive without mixture-model sweep (fit_mixture_model=false at compute time) → ValueError."""
+    arc = _build_archive(tmp_path, with_mixture_model=False)
+    with pytest.raises(ValueError, match="contains no\\s+mixture model sweep"):
+        load_mixture_model_fits_from_h5(str(arc), interval_type="s2s")
 
 
 def test_load_best_fit_from_h5_returns_a_model(tmp_path):
     """End-to-end: load fits then reconstruct the (sex, K) model."""
-    arc = _build_archive(tmp_path, with_gmm=True)
+    arc = _build_archive(tmp_path, with_mixture_model=True)
     model, order = load_best_fit_from_h5(str(arc), interval_type="s2s",
                                          sex="male", K=2)
     assert model is not None
@@ -603,7 +603,7 @@ def test_load_best_fit_from_h5_returns_a_model(tmp_path):
 
 def test_load_lrt_sweep_from_h5_returns_dict(tmp_path):
     """Re-hydrates the per-(sex, K_null, K_alt) sweep dict."""
-    arc = _build_archive(tmp_path, with_gmm=True, with_lrt=True)
+    arc = _build_archive(tmp_path, with_mixture_model=True, with_lrt=True)
     sweep = load_lrt_sweep_from_h5(str(arc), interval_type="s2s")
     assert "male" in sweep
     # Each key is a (K_null, K_alt) tuple
@@ -619,7 +619,7 @@ def test_load_lrt_sweep_from_h5_returns_dict(tmp_path):
 
 def test_load_lrt_sweep_from_h5_missing_tables_raises(tmp_path):
     """Archive without bootstrap_lrt → ValueError."""
-    arc = _build_archive(tmp_path, with_gmm=False, with_lrt=False)
+    arc = _build_archive(tmp_path, with_mixture_model=False, with_lrt=False)
     with pytest.raises(ValueError, match="missing the\\s+bootstrap-LRT"):
         load_lrt_sweep_from_h5(str(arc), interval_type="s2s")
 
@@ -629,14 +629,14 @@ def test_load_lrt_sweep_from_h5_missing_tables_raises(tmp_path):
 
 def test_selected_K_from_h5_reads_attrs(tmp_path):
     """K_selected_{male,female} attrs come back as ints."""
-    arc = _build_archive(tmp_path, with_gmm=True, with_lrt=True)
+    arc = _build_archive(tmp_path, with_mixture_model=True, with_lrt=True)
     sel = selected_K_from_h5(str(arc), interval_type="s2s")
     assert sel == {"male": 2, "female": 3}
 
 
 def test_selected_K_from_h5_unknown_mode_raises(tmp_path):
     """Asking for a mode not in the archive → ValueError."""
-    arc = _build_archive(tmp_path, with_gmm=True, with_lrt=True)
+    arc = _build_archive(tmp_path, with_mixture_model=True, with_lrt=True)
     with pytest.raises(ValueError, match="not found"):
         selected_K_from_h5(str(arc), interval_type="e2s")
 
@@ -1076,7 +1076,7 @@ def test_plot_qq():
     Description
     -----------
     `plot_qq` must draw the empirical-vs-model quantile plot by inverting
-    the fitted log-space GMM CDF and return the log-space Pearson r
+    the fitted log-space mixture model CDF and return the log-space Pearson r
     goodness-of-fit.
 
     Parameters
@@ -1091,10 +1091,10 @@ def test_plot_qq():
 
     rng = np.random.default_rng(8)
     intervals_sec = np.exp(rng.normal(0.0, 1.0, 300))
-    gmm = GaussianMixture(n_components=2, random_state=0).fit(
+    mixture_model = GaussianMixture(n_components=2, random_state=0).fit(
         np.log(intervals_sec).reshape(-1, 1)
     )
-    fig, ax, stats = plot_qq(intervals_sec, gmm, dot_color=_HEX_MALE)
+    fig, ax, stats = plot_qq(intervals_sec, mixture_model, dot_color=_HEX_MALE)
     assert "pearson_r" in stats
     plt.close(fig)
 
@@ -1316,9 +1316,9 @@ def test_plot_best_fit_with_annotations():
     """
     Description
     -----------
-    `plot_best_fit_with_annotations` must render the best-fit GMM density
+    `plot_best_fit_with_annotations` must render the best-fit mixture model density
     over the log-interval histogram, annotate each component mean, draw the
-    Q-Q inset, and return the GMM summary (incl. the inset's log-log
+    Q-Q inset, and return the mixture model summary (incl. the inset's log-log
     Pearson r). Driven by a directly-fitted sklearn GaussianMixture.
 
     Parameters
@@ -1335,12 +1335,12 @@ def test_plot_best_fit_with_annotations():
     intervals_sec = np.exp(np.concatenate([
         rng.normal(-1.0, 0.5, 200), rng.normal(1.0, 0.5, 200),
     ]))
-    gmm = GaussianMixture(n_components=2, random_state=0).fit(
+    mixture_model = GaussianMixture(n_components=2, random_state=0).fit(
         np.log(intervals_sec).reshape(-1, 1)
     )
-    gmm_order = np.argsort(gmm.means_.ravel())
+    mixture_model_order = np.argsort(mixture_model.means_.ravel())
     fig, ax, summary = plot_best_fit_with_annotations(
-        intervals_sec, gmm, gmm_order, color=_HEX_MALE,
+        intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
     )
     assert "qq_pearson_r" in summary
     plt.close(fig)
@@ -1350,10 +1350,10 @@ def test_run_bic_sweep_feeds_plot_ic_curves():
     """
     Description
     -----------
-    `run_bic_sweep` must fit the GMM sweep across n_components for each sex
+    `run_bic_sweep` must fit the mixture-model sweep across n_components for each sex
     from a tidy {sex, interval_s} frame and return a tidy results table;
     that table must then drive `plot_ic_curves` end-to-end (real compute ->
-    real figure), exercising the fit_gmm_sweep wrap path with no mocks.
+    real figure), exercising the fit_mixture_model_sweep wrap path with no mocks.
 
     Parameters
     ----------
@@ -2107,7 +2107,7 @@ def test_save_notebook_archive_to_h5_round_trips(tmp_path):
     Description
     -----------
     `save_notebook_archive_to_h5` must consolidate the notebook's in-memory
-    interval frame + GMM sweep + bootstrap-LRT sweep into a single
+    interval frame + mixture-model sweep + bootstrap-LRT sweep into a single
     `usv_interval_analysis_<ts>.h5` archive (applying the step-up rule and
     writing the `K_selected_step_up` column), skipping the empty `e2s`
     mode entirely. Asserts the archive is written and reloads via the
@@ -2142,7 +2142,7 @@ def test_save_notebook_archive_to_h5_round_trips(tmp_path):
         Path(settings_path).read_text()
     )["compute_inter_usv_interval_distributions"]
 
-    gmm_rows = []
+    mixture_model_rows = []
     for sex in ("male", "female"):
         for K in (1, 2):
             row = {
@@ -2155,14 +2155,14 @@ def test_save_notebook_archive_to_h5_round_trips(tmp_path):
                 row[f"logmean_{k+1}"] = float(k - 0.5) if k < K else float("nan")
                 row[f"logsd_{k+1}"] = 0.5 if k < K else float("nan")
                 row[f"nu_{k+1}"] = float("nan")
-            gmm_rows.append(row)
+            mixture_model_rows.append(row)
 
     h5_path = save_notebook_archive_to_h5(
         output_directory=str(tmp_path),
         usv_interval_df=intervals_df,
         usv_interval_summary=summary,
         usv_interval_cfg=cfg,
-        gmm_fits_by_mode={"s2s": pls.DataFrame(gmm_rows)},
+        mixture_model_fits_by_mode={"s2s": pls.DataFrame(mixture_model_rows)},
         lrt_sweep_by_mode={"s2s": _lrt_sweep()},
         message_output=lambda *a, **k: None,
     )
@@ -2185,7 +2185,7 @@ def _fit_two_comp_gmm(seed: int):
     Description
     -----------
     Fit a 2-component sklearn `GaussianMixture` to a bimodal synthetic
-    log-interval sample and return `(intervals_sec, gmm, gmm_order)` ready
+    log-interval sample and return `(intervals_sec, mixture_model, mixture_model_order)` ready
     for `plot_best_fit_with_annotations`.
 
     Parameters
@@ -2195,7 +2195,7 @@ def _fit_two_comp_gmm(seed: int):
 
     Returns
     -------
-    intervals_sec, gmm, gmm_order (tuple)
+    intervals_sec, mixture_model, mixture_model_order (tuple)
         Positive intervals, the fitted mixture, and the ascending-log-mean
         component order.
     """
@@ -2206,11 +2206,11 @@ def _fit_two_comp_gmm(seed: int):
     intervals_sec = np.exp(np.concatenate([
         rng.normal(-1.0, 0.5, 200), rng.normal(1.0, 0.5, 200),
     ]))
-    gmm = GaussianMixture(n_components=2, random_state=0).fit(
+    mixture_model = GaussianMixture(n_components=2, random_state=0).fit(
         np.log(intervals_sec).reshape(-1, 1)
     )
-    gmm_order = np.argsort(gmm.means_.ravel())
-    return intervals_sec, gmm, gmm_order
+    mixture_model_order = np.argsort(mixture_model.means_.ravel())
+    return intervals_sec, mixture_model, mixture_model_order
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -2238,9 +2238,9 @@ def test_plot_best_fit_with_annotations_corners_auto_inset_and_components(corner
     None
     """
 
-    intervals_sec, gmm, gmm_order = _fit_two_comp_gmm(seed=21)
+    intervals_sec, mixture_model, mixture_model_order = _fit_two_comp_gmm(seed=21)
     fig, ax, summary = plot_best_fit_with_annotations(
-        intervals_sec, gmm, gmm_order, color=_HEX_MALE,
+        intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
         legend_corner=corner,
         auto_inset_below_legend=True,
         show_components=True,
@@ -2264,9 +2264,9 @@ def test_plot_best_fit_with_annotations_invalid_corner_raises():
     None
     """
 
-    intervals_sec, gmm, gmm_order = _fit_two_comp_gmm(seed=22)
+    intervals_sec, mixture_model, mixture_model_order = _fit_two_comp_gmm(seed=22)
     with pytest.raises(ValueError, match="unknown corner"):
         plot_best_fit_with_annotations(
-            intervals_sec, gmm, gmm_order, color=_HEX_MALE,
+            intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
             legend_corner="middle",
         )

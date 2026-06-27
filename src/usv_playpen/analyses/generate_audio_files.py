@@ -332,7 +332,7 @@ class AudioGenerator:
         interval_archive = read_usv_interval_h5(self.create_playback_settings_dict['naturalistic_iui_archive_h5'])
         mode_node = interval_archive['modes'][interval_mode]
         k_selected = int(mode_node['attrs'][f'K_selected_{sex}'])
-        interval_model, _ = reconstruct_best_model(mode_node['gmm_fits'], sex, k_selected)
+        interval_model, _ = reconstruct_best_model(mode_node['mixture_model_fits'], sex, k_selected)
         iui_model, isi_model = _split_iui_isi(interval_model)
         iui_lo_log, iui_hi_log = _mixture_log_bounds(iui_model, clip_pct)
         isi_lo_log, isi_hi_log = _mixture_log_bounds(isi_model, clip_pct)

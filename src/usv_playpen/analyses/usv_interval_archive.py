@@ -17,7 +17,7 @@ self-describing HDF5 file, structured as::
     │   │                        K_selected_female)
     │   ├── intervals           tidy one-row-per-inter-USV interval table
     │   ├── drop_counts         dropped non-positive intervals per sex
-    │   ├── gmm_fits            full IC sweep (every K x every rep,
+    │   ├── mixture_model_fits            full IC sweep (every K x every rep,
     │   │                       including per-component params -- this
     │   │                       table doubles as the model-parameter
     │   │                       store; pick the best rep at load time)
@@ -261,10 +261,10 @@ def write_ivi_h5(
         ``n_sessions_loaded``.
     per_mode (dict)
         Mapping ``mode -> {'attrs': {...}, 'intervals': pls.DataFrame,
-        'drop_counts': pls.DataFrame, 'gmm_fits': pls.DataFrame |
+        'drop_counts': pls.DataFrame, 'mixture_model_fits': pls.DataFrame |
         None, 'bootstrap_lrt': pls.DataFrame | None,
         'bootstrap_lrt_null': pls.DataFrame | None}``. Tables that the
-        compute path skipped (e.g. when ``fit_gmm`` is false) may be
+        compute path skipped (e.g. when ``fit_mixture_model`` is false) may be
         ``None`` and are then not written.
 
     Returns
@@ -288,7 +288,7 @@ def write_ivi_h5(
             tables = (
                 "intervals",
                 "drop_counts",
-                "gmm_fits",
+                "mixture_model_fits",
                 "bootstrap_lrt",
                 "bootstrap_lrt_null",
             )
@@ -349,7 +349,7 @@ def read_usv_interval_h5(h5_path: str | Path) -> dict:
               "attrs": {...},
               "intervals": pls.DataFrame,
               "drop_counts": pls.DataFrame,
-              "gmm_fits": pls.DataFrame | None,
+              "mixture_model_fits": pls.DataFrame | None,
               "bootstrap_lrt": pls.DataFrame | None,
               "bootstrap_lrt_null": pls.DataFrame | None,
             },
@@ -388,7 +388,7 @@ def read_usv_interval_h5(h5_path: str | Path) -> dict:
             for table_name in (
                 "intervals",
                 "drop_counts",
-                "gmm_fits",
+                "mixture_model_fits",
                 "bootstrap_lrt",
                 "bootstrap_lrt_null",
             ):
@@ -454,7 +454,7 @@ def _decode_attr(v: Any) -> Any:
 
 
 def reconstruct_best_model(
-    gmm_fits: pls.DataFrame,
+    mixture_model_fits: pls.DataFrame,
     sex: str,
     K: int,
     ic_col: str = "cv_neg_loglik",
@@ -465,7 +465,7 @@ def reconstruct_best_model(
     Picks the lowest-IC rep at ``(sex, K)`` from a sweep DataFrame and
     rebuilds the fitted mixture model from the per-component parameters
     archived in that row, without re-running EM. Returns a
-    ``(model, gmm_order)`` pair shaped exactly like the live compute
+    ``(model, mixture_model_order)`` pair shaped exactly like the live compute
     path returns, so any downstream plot helper consumes it without
     modification.
 
@@ -480,14 +480,14 @@ def reconstruct_best_model(
     ascending log-mean order by the compute path (matching the
     ``model_order`` convention used elsewhere). This function does not
     sort or verify that ordering; it preserves the stored column order
-    and returns ``gmm_order = arange(K)`` unconditionally, so the
+    and returns ``mixture_model_order = arange(K)`` unconditionally, so the
     returned components are in ascending log-mean order only insofar as
     the writer stored them that way.
 
     Parameters
     ----------
-    gmm_fits (pls.DataFrame)
-        Sweep DataFrame as written to ``gmm_fits``. Must contain the
+    mixture_model_fits (pls.DataFrame)
+        Sweep DataFrame as written to ``mixture_model_fits``. Must contain the
         per-component columns ``logmean_k``, ``logsd_k``, ``weight_k``
         and ``nu_k`` for ``k=1..K`` (NaN-padded for k > K), plus a
         ``model_class`` column whose unique value within the
@@ -507,13 +507,13 @@ def reconstruct_best_model(
     -------
     model (GaussianMixture | TMixture)
         Reconstructed mixture; ``score_samples`` etc. work directly.
-    gmm_order (np.ndarray)
+    mixture_model_order (np.ndarray)
         ``np.arange(K)`` -- returned unconditionally, reflecting the
         stored column order (assumed ascending log-mean per the compute
         path; not re-sorted or verified here).
     """
 
-    sub = gmm_fits.filter(
+    sub = mixture_model_fits.filter(
         (pls.col("sex") == sex) & (pls.col("n_comp") == int(K))
     )
     if sub.height == 0:
@@ -544,15 +544,15 @@ def reconstruct_best_model(
     covs = (logsds ** 2)
 
     if model_class == "gauss":
-        gmm = GaussianMixture(n_components=K, covariance_type="full")
-        gmm.weights_ = weights
-        gmm.means_ = means.reshape(K, 1)
-        gmm.covariances_ = covs.reshape(K, 1, 1)
+        mixture_model = GaussianMixture(n_components=K, covariance_type="full")
+        mixture_model.weights_ = weights
+        mixture_model.means_ = means.reshape(K, 1)
+        mixture_model.covariances_ = covs.reshape(K, 1, 1)
         # 1-D precisions_cholesky_: (1 / sqrt(cov)) for each component,
         # shape (K, 1, 1). sklearn's scoring routines require this
         # attribute even when covariances_ is fully specified.
-        gmm.precisions_cholesky_ = (1.0 / np.sqrt(covs)).reshape(K, 1, 1)
-        return gmm, np.arange(K)
+        mixture_model.precisions_cholesky_ = (1.0 / np.sqrt(covs)).reshape(K, 1, 1)
+        return mixture_model, np.arange(K)
 
     if model_class == "t":
         nus = np.array(

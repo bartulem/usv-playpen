@@ -24,7 +24,7 @@ from ..analyses.compute_inter_usv_interval_distributions import (
     _read_session_lists,
     _session_source_map,
     compute_session_usv_intervals,
-    fit_gmm_sweep,
+    fit_mixture_model_sweep,
 )
 from ..analyses.mixture_model_utils import (
     TMixture,
@@ -73,7 +73,7 @@ def build_master_usv_interval_dataframe(
     ``female_id``.
 
     Pure compute helper -- no disk side-effects. To persist results,
-    pass the returned frame and any GMM / LRT outputs to
+    pass the returned frame and any mixture model / LRT outputs to
     :func:`save_notebook_archive_to_h5`.
 
     Parameters
@@ -199,7 +199,7 @@ def plot_log_usv_interval_histograms(
     -----------
     Histograms of ``log_interval`` for males and females overlaid on a
     single axis, normalised to integrate to 1 within each sex. Useful
-    as a sanity check before any GMM fitting.
+    as a sanity check before any mixture model fitting.
 
     The caller is responsible for pre-filtering ``usv_interval_df`` to a single
     ``interval_type`` (the master DataFrame produced by
@@ -274,7 +274,7 @@ def run_bic_sweep(
     """
     Description
     -----------
-    Convenience wrapper around :func:`compute_inter_usv_interval_distributions.fit_gmm_sweep`
+    Convenience wrapper around :func:`compute_inter_usv_interval_distributions.fit_mixture_model_sweep`
     that takes a tidy inter-USV interval DataFrame and returns the same tidy results
     table.
 
@@ -287,9 +287,9 @@ def run_bic_sweep(
     usv_interval_df (pls.DataFrame)
         Tidy inter-USV interval DataFrame from :func:`build_master_usv_interval_dataframe`.
     n_components_min (int)
-        Minimum number of GMM components.
+        Minimum number of mixture model components.
     n_components_max (int)
-        Maximum number of GMM components.
+        Maximum number of mixture model components.
     n_repeats (int)
         Number of EM-init repeats per fit.
     max_modes_reported (int)
@@ -298,18 +298,18 @@ def run_bic_sweep(
         Base seed; rep ``r`` uses ``random_seed_base + r``.
     model_class (str)
         ``'gauss'`` or ``'t'``; passed straight through to
-        :func:`fit_gmm_sweep`.
+        :func:`fit_mixture_model_sweep`.
 
     Returns
     -------
     df_results (pls.DataFrame)
-        Tidy GMM / t-mixture sweep results.
+        Tidy Gaussian / t-mixture sweep results.
     """
 
     male_arr = usv_interval_df.filter(pls.col("sex") == "male")["interval_s"].to_numpy()
     female_arr = usv_interval_df.filter(pls.col("sex") == "female")["interval_s"].to_numpy()
 
-    return fit_gmm_sweep(
+    return fit_mixture_model_sweep(
         intervals_by_key={"male": male_arr, "female": female_arr},
         n_components_min=n_components_min,
         n_components_max=n_components_max,
@@ -457,8 +457,8 @@ def plot_ic_curves(
 
 def plot_best_fit_with_annotations(
     intervals_sec: np.ndarray,
-    gmm,
-    gmm_order: np.ndarray,
+    mixture_model,
+    mixture_model_order: np.ndarray,
     color: str,
     figsize: tuple = (5, 5),
     bins: int = 80,
@@ -496,9 +496,9 @@ def plot_best_fit_with_annotations(
     intervals_sec (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval
         values (in seconds).
-    gmm (GaussianMixture | TMixture)
+    mixture_model (GaussianMixture | TMixture)
         The fitted mixture in log-space.
-    gmm_order (np.ndarray)
+    mixture_model_order (np.ndarray)
         Sort indices for the components (ascending by log-mean).
     color (str)
         Histogram fill colour and Q-Q-inset dot colour.
@@ -560,7 +560,7 @@ def plot_best_fit_with_annotations(
 
     log_x = np.log(intervals_sec)
     f, ax = plot_gmm_fit(
-        model=gmm,
+        model=mixture_model,
         x=log_x,
         figsize=figsize,
         bins=bins,
@@ -581,14 +581,14 @@ def plot_best_fit_with_annotations(
     # via summarize_best_gmm; Student-t path uses summarize_best_t_mixture
     # which leaves boundaries empty (decision boundaries between t-components
     # have no closed form and are not currently rendered).
-    if isinstance(gmm, TMixture):
-        summary = summarize_best_t_mixture(gmm, gmm_order)
+    if isinstance(mixture_model, TMixture):
+        summary = summarize_best_t_mixture(mixture_model, mixture_model_order)
     else:
-        summary = summarize_best_gmm(gmm, gmm_order, tau=tau)
+        summary = summarize_best_gmm(mixture_model, mixture_model_order, tau=tau)
 
     if show_components:
         _draw_mixture_components(
-            ax, gmm, gmm_order, xlims=xlims,
+            ax, mixture_model, mixture_model_order, xlims=xlims,
         )
 
     logmeans = summary["logmeans"]
@@ -596,7 +596,7 @@ def plot_best_fit_with_annotations(
 
     if logmeans.size:
         peaks_log = logmeans.reshape(-1, 1)
-        mixture_pdf_at_peaks = np.exp(gmm.score_samples(peaks_log))
+        mixture_pdf_at_peaks = np.exp(mixture_model.score_samples(peaks_log))
 
         # Triangles: marker='v' is centred on the data point so the
         # bottom apex sits below the centre. Offsetting the marker
@@ -677,7 +677,7 @@ def plot_best_fit_with_annotations(
         qq_pearson_r = _draw_qq_into_axes(
             ax_qq,
             intervals_sec=intervals_sec,
-            gmm=gmm,
+            mixture_model=mixture_model,
             dot_color=color,
             line_color=edge_color,
             n_q=qq_n_q,
@@ -688,7 +688,7 @@ def plot_best_fit_with_annotations(
         qq_pearson_r = _draw_qq_into_axes(
             ax_qq,
             intervals_sec=intervals_sec,
-            gmm=gmm,
+            mixture_model=mixture_model,
             dot_color=color,
             line_color=edge_color,
             n_q=qq_n_q,
@@ -781,8 +781,8 @@ _COMPONENT_PALETTE: tuple[tuple[str, object], ...] = (
 
 def _draw_mixture_components(
     ax: plt.Axes,
-    gmm,
-    gmm_order: np.ndarray,
+    mixture_model,
+    mixture_model_order: np.ndarray,
     *,
     xlims: tuple,
     n_grid: int = 500,
@@ -809,18 +809,18 @@ def _draw_mixture_components(
     ``mixture(mu_k)``. The component shape (ratio of values across
     x) is preserved; the components no longer sum to the mixture.
 
-    Components are rendered in the order given by ``gmm_order``
+    Components are rendered in the order given by ``mixture_model_order``
     (ascending log-mean), so component ``(a)`` is the leftmost peak.
 
     Parameters
     ----------
     ax (plt.Axes)
         Destination axes (the main best-fit panel).
-    gmm (GaussianMixture | TMixture)
+    mixture_model (GaussianMixture | TMixture)
         Fitted mixture in log-space.
-    gmm_order (np.ndarray)
+    mixture_model_order (np.ndarray)
         Sort indices that map ascending-log-mean position -> original
-        component index. ``gmm_order[0]`` is the index of component
+        component index. ``mixture_model_order[0]`` is the index of component
         ``(a)`` in the model's internal arrays.
     xlims (tuple)
         ``(low, high)`` bounds in log-seconds within which to
@@ -837,18 +837,18 @@ def _draw_mixture_components(
     """
 
     xx = np.linspace(xlims[0], xlims[1], n_grid).reshape(-1, 1)
-    mixture_pdf = np.exp(gmm.score_samples(xx))           # shape (N,)
-    posteriors = gmm.predict_proba(xx)                    # shape (N, K_orig)
-    K = int(np.asarray(gmm_order).size)
+    mixture_pdf = np.exp(mixture_model.score_samples(xx))           # shape (N,)
+    posteriors = mixture_model.predict_proba(xx)                    # shape (N, K_orig)
+    K = int(np.asarray(mixture_model_order).size)
 
     # Posterior of component k at its own mean (Gaussian / Student-t
     # modes both coincide with mu_k). 1 / this value is the scale that
     # lifts the component's peak onto the mixture curve.
-    means_orig = np.asarray(gmm.means_).reshape(-1, 1)    # (K_orig, 1)
-    posteriors_at_mu = gmm.predict_proba(means_orig)      # (K_orig, K_orig)
+    means_orig = np.asarray(mixture_model.means_).reshape(-1, 1)    # (K_orig, 1)
+    posteriors_at_mu = mixture_model.predict_proba(means_orig)      # (K_orig, K_orig)
 
     for k_sorted in range(K):
-        k_orig = int(gmm_order[k_sorted])
+        k_orig = int(mixture_model_order[k_sorted])
         post_k_at_mu_k = float(posteriors_at_mu[k_orig, k_orig])
         # Guard against pathological cases (collapsed component or
         # numerical underflow) where the posterior at the mean rounds
@@ -866,7 +866,7 @@ def _draw_qq_into_axes(
     ax: plt.Axes,
     *,
     intervals_sec: np.ndarray,
-    gmm,
+    mixture_model,
     dot_color: str,
     line_color: str = "#202020",
     n_q: int = 200,
@@ -889,7 +889,7 @@ def _draw_qq_into_axes(
     intervals_sec (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval
         values.
-    gmm (GaussianMixture | TMixture)
+    mixture_model (GaussianMixture | TMixture)
         The fitted mixture in log-space.
     dot_color (str)
         Colour for the empirical-vs-model quantile dots.
@@ -911,10 +911,10 @@ def _draw_qq_into_axes(
 
     qs = np.linspace(0.01, 0.99, n_q)
     obs_q = np.quantile(intervals_sec, qs)
-    if isinstance(gmm, TMixture):
-        model_q = np.exp(t_mixture_quantile_logspace(qs, gmm))
+    if isinstance(mixture_model, TMixture):
+        model_q = np.exp(t_mixture_quantile_logspace(qs, mixture_model))
     else:
-        model_q = np.exp(gmm_quantile_logspace(qs, gmm))
+        model_q = np.exp(gmm_quantile_logspace(qs, mixture_model))
 
     # Larger, more opaque dots so the cloud reads at small inset sizes;
     # the standalone variant uses an even larger marker.
@@ -951,7 +951,7 @@ def _draw_qq_into_axes(
 
 def plot_qq(
     intervals_sec: np.ndarray,
-    gmm,
+    mixture_model,
     dot_color: str,
     figsize: tuple = (5, 5),
     n_q: int = 200,
@@ -962,7 +962,7 @@ def plot_qq(
     Description
     -----------
     Q-Q plot of empirical quantiles (in seconds) against model
-    quantiles obtained by inverting the analytic GMM CDF (no
+    quantiles obtained by inverting the analytic mixture model CDF (no
     Monte-Carlo noise). The reference y=x line is drawn in
     ``line_color`` (black by default); the dots are drawn in
     ``dot_color`` (typically the male / female palette colour
@@ -977,7 +977,7 @@ def plot_qq(
     intervals_sec (np.ndarray)
         A (n_samples,) shape ndarray of strictly positive interval
         values.
-    gmm (GaussianMixture | TMixture)
+    mixture_model (GaussianMixture | TMixture)
         The fitted mixture in log-space.
     dot_color (str)
         Colour for the empirical-vs-model quantile dots.
@@ -1010,7 +1010,7 @@ def plot_qq(
     pearson_r = _draw_qq_into_axes(
         ax,
         intervals_sec=intervals_sec,
-        gmm=gmm,
+        mixture_model=mixture_model,
         dot_color=dot_color,
         line_color=line_color,
         n_q=n_q,
@@ -1402,7 +1402,7 @@ def save_notebook_archive_to_h5(
     usv_interval_df: pls.DataFrame,
     usv_interval_summary: dict,
     usv_interval_cfg: dict,
-    gmm_fits_by_mode: dict[str, pls.DataFrame] | None = None,
+    mixture_model_fits_by_mode: dict[str, pls.DataFrame] | None = None,
     lrt_sweep_by_mode: dict[str, dict] | None = None,
     message_output=print,
 ) -> Path:
@@ -1416,7 +1416,7 @@ def save_notebook_archive_to_h5(
     family (:func:`load_intervals_from_h5` etc.).
 
     Empty / missing modes are handled gracefully: a mode with no
-    intervals is not written; a mode with intervals but no GMM /
+    intervals is not written; a mode with intervals but no mixture model /
     bootstrap-LRT outputs is written with the corresponding tables
     omitted.
 
@@ -1438,11 +1438,11 @@ def save_notebook_archive_to_h5(
         The ``compute_inter_usv_interval_distributions`` block from
         ``analyses_settings.json``. Every parameter that drove the
         run is stored as a root-level attribute for provenance.
-    gmm_fits_by_mode (dict | None)
-        Optional ``{mode: pls.DataFrame}`` mapping of GMM-sweep
+    mixture_model_fits_by_mode (dict | None)
+        Optional ``{mode: pls.DataFrame}`` mapping of mixture-model-sweep
         results (one frame per mode) returned by
         :func:`run_bic_sweep`. ``None`` is equivalent to "no sweeps
-        ran" -- the ``gmm_fits`` dataset is omitted from each mode.
+        ran" -- the ``mixture_model_fits`` dataset is omitted from each mode.
     lrt_sweep_by_mode (dict | None)
         Optional ``{mode: sweep_dict}`` mapping returned by
         :func:`run_bootstrap_lrt_sweep`. The step-up rule is applied
@@ -1471,7 +1471,7 @@ def save_notebook_archive_to_h5(
         sub = usv_interval_df.filter(pls.col("interval_type") == it)
         # No intervals at all for this mode -- skip writing the group.
         if sub.height == 0 and (
-            gmm_fits_by_mode is None or gmm_fits_by_mode.get(it) is None
+            mixture_model_fits_by_mode is None or mixture_model_fits_by_mode.get(it) is None
         ) and (
             lrt_sweep_by_mode is None or lrt_sweep_by_mode.get(it) is None
         ):
@@ -1487,14 +1487,14 @@ def save_notebook_archive_to_h5(
             "attrs": {},
             "intervals": sub,
             "drop_counts": drop_df,
-            "gmm_fits": None,
+            "mixture_model_fits": None,
             "bootstrap_lrt": None,
             "bootstrap_lrt_null": None,
         }
 
-        gmm_fits = (gmm_fits_by_mode or {}).get(it)
-        if gmm_fits is not None:
-            mode_payload["gmm_fits"] = gmm_fits
+        mixture_model_fits = (mixture_model_fits_by_mode or {}).get(it)
+        if mixture_model_fits is not None:
+            mode_payload["mixture_model_fits"] = mixture_model_fits
 
         sweep = (lrt_sweep_by_mode or {}).get(it)
         if sweep:
@@ -1558,7 +1558,7 @@ def save_notebook_archive_to_h5(
         "n_sessions_loaded": int(usv_interval_summary["n_sessions_loaded"]),
         "noise_col_id": usv_interval_cfg["noise_col_id"],
         "noise_categories": list(usv_interval_cfg["noise_categories"]),
-        "fit_gmm": bool(usv_interval_cfg["fit_gmm"]),
+        "fit_mixture_model": bool(usv_interval_cfg["fit_mixture_model"]),
         "n_components_min": int(usv_interval_cfg["n_components_min"]),
         "n_components_max": int(usv_interval_cfg["n_components_max"]),
         "n_repeats": int(usv_interval_cfg["n_repeats"]),
@@ -1566,8 +1566,8 @@ def save_notebook_archive_to_h5(
         "random_seed_base": int(usv_interval_cfg["random_seed_base"]),
         "cv_n_folds": int(usv_interval_cfg["cv_n_folds"]),
         "cv_n_init": int(usv_interval_cfg["cv_n_init"]),
-        "gmm_n_init": int(usv_interval_cfg["gmm_n_init"]),
-        "gmm_reg_covar": float(usv_interval_cfg["gmm_reg_covar"]),
+        "mixture_model_n_init": int(usv_interval_cfg["mixture_model_n_init"]),
+        "mixture_model_reg_covar": float(usv_interval_cfg["mixture_model_reg_covar"]),
         "tau": float(usv_interval_cfg["tau"]),
         "model_class": str(usv_interval_cfg["model_class"]),
         "bootstrap_lrt_B": int(usv_interval_cfg["bootstrap_lrt_B"]),
@@ -1667,7 +1667,7 @@ def load_lrt_sweep_from_h5(
         msg = (
             f"load_lrt_sweep_from_h5: archive {h5_path} is missing the "
             f"bootstrap-LRT tables for interval_type={interval_type!r} "
-            "(was fit_gmm=true when the archive was written?)."
+            "(was fit_mixture_model=true when the archive was written?)."
         )
         raise ValueError(
             msg
@@ -1801,14 +1801,14 @@ def load_intervals_from_h5(
     return mode["intervals"]
 
 
-def load_gmm_fits_from_h5(
+def load_mixture_model_fits_from_h5(
     h5_path: str,
     interval_type: str,
 ) -> pls.DataFrame:
     """
     Description
     -----------
-    Convenience loader for the GMM / t-mixture sweep table archived
+    Convenience loader for the Gaussian / t-mixture sweep table archived
     inside an inter-USV interval HDF5 file. Returns a polars DataFrame ready to pass
     to :func:`plot_ic_curves`.
 
@@ -1822,7 +1822,7 @@ def load_gmm_fits_from_h5(
     Returns
     -------
     df (pls.DataFrame)
-        Tidy GMM/t-mixture sweep results, including the per-component
+        Tidy Gaussian/t-mixture sweep results, including the per-component
         parameter columns (``logmean_k`` / ``logsd_k`` / ``weight_k``
         / ``nu_k``) needed to reconstruct fitted models without
         refitting.
@@ -1832,18 +1832,18 @@ def load_gmm_fits_from_h5(
     mode = archive["modes"].get(interval_type)
     if mode is None:
         msg = (
-            f"load_gmm_fits_from_h5: interval_type={interval_type!r} "
+            f"load_mixture_model_fits_from_h5: interval_type={interval_type!r} "
             f"not found in archive {h5_path}."
         )
         raise ValueError(
             msg
         )
-    df = mode.get("gmm_fits")
+    df = mode.get("mixture_model_fits")
     if df is None:
         msg = (
-            f"load_gmm_fits_from_h5: archive {h5_path} contains no "
-            f"GMM sweep for interval_type={interval_type!r} "
-            "(was fit_gmm=true when the archive was written?)."
+            f"load_mixture_model_fits_from_h5: archive {h5_path} contains no "
+            f"mixture model sweep for interval_type={interval_type!r} "
+            "(was fit_mixture_model=true when the archive was written?)."
         )
         raise ValueError(
             msg
@@ -1863,14 +1863,14 @@ def load_best_fit_from_h5(
     -----------
     Reconstructs the best-rep fitted mixture for ``(sex, K)`` from the
     archived sweep, without re-running EM. Returns a
-    ``(model, gmm_order)`` pair shaped exactly like the live compute
+    ``(model, mixture_model_order)`` pair shaped exactly like the live compute
     path returns, suitable for direct use by
     :func:`plot_best_fit_with_annotations` and :func:`plot_qq`.
 
     The ``model_class`` (``'gauss'`` / ``'t'``) is inferred from the
     archived row, so callers do not have to know which family the run
     used. Components are returned in ascending log-mean order; the
-    returned ``gmm_order`` is therefore ``np.arange(K)``.
+    returned ``mixture_model_order`` is therefore ``np.arange(K)``.
 
     Parameters
     ----------
@@ -1890,9 +1890,9 @@ def load_best_fit_from_h5(
     -------
     model (GaussianMixture | TMixture)
         Reconstructed mixture; ``score_samples`` etc. work directly.
-    gmm_order (np.ndarray)
+    mixture_model_order (np.ndarray)
         ``np.arange(K)`` (model is pre-sorted by ascending log-mean).
     """
 
-    df = load_gmm_fits_from_h5(h5_path, interval_type)
+    df = load_mixture_model_fits_from_h5(h5_path, interval_type)
     return reconstruct_best_model(df, sex=sex, K=int(K), ic_col=ic_col)

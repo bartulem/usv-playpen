@@ -56,7 +56,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .analyses.analyze_data import Analyst
-from .os_utils import configure_path
+from .os_utils import configure_path, rebase_experimenter_in_paths
 from .processing.preprocess_data import Stylist
 from .recording.behavioral_experiments import ExperimentController
 from .visualizations.visualize_data import Visualizer
@@ -1868,6 +1868,16 @@ class USVPlaypenWindow(QMainWindow):
 
         with open((Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'r') as visualizations_json_file:
             self.visualizations_input_dict = json.load(visualizations_json_file)
+
+        # Experimenter-scoped paths in the settings files are shipped under a
+        # default name ("Bartul"); rewrite every experimenter path component to
+        # the experimenter selected on the front page so the GUI never displays
+        # (or saves) a path scoped to the wrong experimenter. Re-applied on every
+        # experimenter change in `_combo_box_prior_name`.
+        _experimenter_list = self.exp_settings_dict['experimenter_list']
+        self.processing_input_dict = rebase_experimenter_in_paths(self.processing_input_dict, _experimenter_list, self.exp_id)
+        self.analyses_input_dict = rebase_experimenter_in_paths(self.analyses_input_dict, _experimenter_list, self.exp_id)
+        self.visualizations_input_dict = rebase_experimenter_in_paths(self.visualizations_input_dict, _experimenter_list, self.exp_id)
 
         exp_id_label = QLabel('Experimenter:', self.Main)
         exp_id_label.setFont(QFont(self.font_id, 10+self.font_size_increase))
@@ -6005,6 +6015,16 @@ class USVPlaypenWindow(QMainWindow):
             if index == idx:
                 self.__dict__[variable_id] = self.exp_id_list[idx]
                 break
+
+        # When the experimenter changes, re-scope every experimenter path
+        # component in the already-loaded settings dicts to the new selection,
+        # so settings windows built afterwards display/save the correct paths.
+        if variable_id == 'exp_id':
+            _experimenter_list = self.exp_settings_dict['experimenter_list']
+            for _settings_dict_name in ('processing_input_dict', 'analyses_input_dict', 'visualizations_input_dict'):
+                if hasattr(self, _settings_dict_name):
+                    setattr(self, _settings_dict_name,
+                            rebase_experimenter_in_paths(getattr(self, _settings_dict_name), _experimenter_list, self.exp_id))
 
     def _checkbox_state_read(self, checkbox_id: str = None, variable_id: str = None) -> None:
         """

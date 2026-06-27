@@ -12,6 +12,8 @@ from typing import Any
 
 import click
 
+from .os_utils import _host_experimenter, _host_experimenter_list, rebase_experimenter_in_paths
+
 
 class StringTuple(click.ParamType):
     """
@@ -160,6 +162,25 @@ def modify_settings_json_for_cli(
         encoding="utf-8",
     ) as input_json_file:
         settings_parameter_dict = json.load(input_json_file)
+
+    # Re-key experimenter-scoped paths to this checkout's experimenter (the
+    # top-level ``experimenter`` in the host TOML), mirroring the GUI's
+    # front-page rebase, so a headless / cluster run does not silently fall back
+    # to the shipped default experimenter baked into the settings JSON. The
+    # explicit CLI overrides below are applied AFTER this, so a flag still wins.
+    # If the host experimenter can not be resolved (e.g. no host config on this
+    # machine), the paths are left exactly as shipped rather than crashing.
+    try:
+        settings_parameter_dict = rebase_experimenter_in_paths(
+            settings_parameter_dict, _host_experimenter_list(), _host_experimenter()
+        )
+    except (RuntimeError, KeyError) as exc:
+        print(
+            f"Warning: could not resolve the host experimenter for path "
+            f"re-keying ({type(exc).__name__}); '{settings_dict}.json' paths "
+            f"left as shipped.",
+            file=sys.stderr,
+        )
 
     if parameters_lists is None:
         parameters_lists = []

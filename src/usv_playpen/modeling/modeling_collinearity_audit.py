@@ -829,7 +829,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         Mapping `session_id -> (starts, stops)` of per-USV `[start,
         stop)` arrays (in seconds), used solely for the empirical
         IBI-percentile report block (inter-USV gaps `gap_i =
-        start[i+1] - stop[i]`, directly comparable to the GMM-derived
+        start[i+1] - stop[i]`, directly comparable to the mixture-model-derived
         `ibi_threshold`). Not a source of `Y`. Passing `None` raises a
         `ValueError`; pipelines that expose bout onsets but no per-USV
         `[start, stop)` arrays should supply an empty dict, in which
@@ -1111,7 +1111,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             "audit_predictor_timescales requires `event_intervals_per_session` "
             "for the IBI-percentile report block (per-USV `[start, stop)` "
             "arrays — used to compute inter-USV gaps that are directly "
-            "comparable to the GMM-derived `ibi_threshold`)."
+            "comparable to the mixture-model-derived `ibi_threshold`)."
         )
     valid_sessions = []
     for sess_id, per_feature in session_blocks.items():
@@ -1335,7 +1335,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
 
         # Empirical IBI percentiles, computed as inter-USV gaps using
         # the same definition the loader applies against the
-        # GMM-derived `ibi_threshold`: `gap_i = start[i+1] - stop[i]`.
+        # mixture-model-derived `ibi_threshold`: `gap_i = start[i+1] - stop[i]`.
         # Per-USV starts and stops come straight from
         # `event_intervals_per_session[sess]` *when available*. Pipelines
         # whose data dict carries bout onsets but no per-USV

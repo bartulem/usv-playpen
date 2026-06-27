@@ -463,8 +463,8 @@ def _full_modeling_settings(model_engine='sklearn',
             'model_engine': model_engine,
             'model_basis_function': model_basis_function,
             'model_predictor_mouse_index': predictor_idx,
-            'gmm_component_index': 3,
-            'gmm_z_score': 1.5,
+            'mixture_model_component_index': 3,
+            'mixture_model_z_score': 1.5,
             'random_seed': 42,
             'spatial_cluster_num': 8,
             'test_proportion': 0.25,
@@ -719,8 +719,8 @@ class TestBuildInputMetadata:
         assert md['filter_history_seconds'] == 2.0
         assert md['filter_history_frames'] == 300
         assert md['camera_sampling_rate_hz'] == 150.0
-        assert md['gmm_component_index'] == 3
-        assert md['gmm_z_score'] == 1.5
+        assert md['mixture_model_component_index'] == 3
+        assert md['mixture_model_z_score'] == 1.5
         assert md['ibi_thresholds'] == {'male': 0.4, 'female': 0.5}
         # Analysis-specific passthrough.
         assert md['analysis_specific'] == {'model_target_vocal_type': 'usv',

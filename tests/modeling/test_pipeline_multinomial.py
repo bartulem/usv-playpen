@@ -1433,22 +1433,22 @@ class TestMultinomialRunnerExtraBranches:
 
 
 class TestMultinomialExtractionEdgeCases:
-    """Extraction guards: the out-of-range GMM IBI fallback and no-target abort."""
+    """Extraction guards: the out-of-range mixture-model IBI fallback and no-target abort."""
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_out_of_range_gmm_index_writes_nan_ibi(self, tmp_path):
+    def test_extraction_out_of_range_mixture_model_index_writes_nan_ibi(self, tmp_path):
         """
-        When ``gmm_component_index`` exceeds the per-sex GMM means length, the
+        When ``mixture_model_component_index`` exceeds the per-sex mixture-model means length, the
         metadata IBI-threshold computation takes its NaN fallback arm for both
         sexes; extraction still completes and writes a valid pickle.
         """
 
         settings, save_dir = _build_extraction_settings(tmp_path)
-        # Push the component index past the shipped GMM mixture length so the
-        # `gmm_idx_md < len(params['means'])` guard fails for both sexes.
-        settings['model_params']['gmm_component_index'] = 999
+        # Push the component index past the shipped mixture-model length so the
+        # `mixture_model_idx_md < len(params['means'])` guard fails for both sexes.
+        settings['model_params']['mixture_model_component_index'] = 999
 
         pipeline = MultinomialModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_multinomial_input_data()

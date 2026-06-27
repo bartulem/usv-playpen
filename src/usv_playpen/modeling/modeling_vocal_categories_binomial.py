@@ -355,15 +355,15 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
         # Build `_input_metadata` once. Per-session event counts are
         # backfilled at the dump site (after epoch slicing).
-        gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
+        mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
         ibi_thresholds_md = {}
-        gmm_params = self.modeling_settings['gmm_params']
+        mixture_model_params = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
-            params = gmm_params[sex]
-            if gmm_idx < len(params['means']):
+            params = mixture_model_params[sex]
+            if mixture_model_idx < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
-                    params['means'][gmm_idx], params['sds'][gmm_idx],
-                    self.modeling_settings['model_params']['gmm_z_score'],
+                    params['means'][mixture_model_idx], params['sds'][mixture_model_idx],
+                    self.modeling_settings['model_params']['mixture_model_z_score'],
                 ))
             else:
                 ibi_thresholds_md[sex] = float('nan')

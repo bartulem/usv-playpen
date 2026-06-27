@@ -1398,9 +1398,9 @@ def run_predictor_audits(processed_beh_dict: dict,
         The modeling settings dictionary. Reads
         `settings['diagnostics']` (toggle flags + `timescale_max_lag_seconds`
         / `timescale_n_shuffles`), `settings['model_params']['filter_history']`
-        (recommendation line), `settings['model_params']['gmm_component_index']`
-        and `settings['model_params']['gmm_z_score']` (IBI thresholds), and
-        `settings['gmm_params']` (per-sex GMM components).
+        (recommendation line), `settings['model_params']['mixture_model_component_index']`
+        and `settings['model_params']['mixture_model_z_score']` (IBI thresholds), and
+        `settings['mixture_model_params']` (per-sex mixture-model components).
     save_dir : str
         Output directory for the audit artifacts (typically the modeling
         save directory).
@@ -1552,7 +1552,7 @@ def run_predictor_audits(processed_beh_dict: dict,
     # IBI-percentile reporting. Read directly from the loader's
     # `usv_data_dict[sess][target]['start' | 'stop']` arrays. The audit
     # computes inter-USV gaps (`gap_i = start[i+1] − stop[i]`) for the
-    # IBI percentile block; the GMM-derived `ibi_threshold` is on the
+    # IBI percentile block; the mixture-model-derived `ibi_threshold` is on the
     # same gaps so the percentiles are directly comparable to the
     # threshold.
     event_intervals_per_session = {}
@@ -1597,21 +1597,21 @@ def run_predictor_audits(processed_beh_dict: dict,
         try:
             # Sex-specific IBI thresholds — same recipe used by the loaders
             # so the audit's headline matches what gates bout detection.
-            gmm_idx = settings['model_params']['gmm_component_index']
-            gmm_z = settings['model_params']['gmm_z_score']
-            gmm_params = settings['gmm_params']
+            mixture_model_idx = settings['model_params']['mixture_model_component_index']
+            mixture_model_z = settings['model_params']['mixture_model_z_score']
+            mixture_model_params = settings['mixture_model_params']
             ibi_thresholds = {}
             for sex in ('male', 'female'):
-                params = gmm_params[sex]
-                # Lower-bound the index too: a negative `gmm_idx` would pass a
+                params = mixture_model_params[sex]
+                # Lower-bound the index too: a negative `mixture_model_idx` would pass a
                 # bare `< len(...)` guard and then index `params['means']` from
-                # the end of the array, silently selecting the wrong GMM
+                # the end of the array, silently selecting the wrong mixture-model
                 # component. Require a non-negative in-range index so any
                 # out-of-range value (negative or too large) falls to the NaN
                 # branch instead.
-                if 0 <= gmm_idx < len(params['means']):
+                if 0 <= mixture_model_idx < len(params['means']):
                     ibi_thresholds[sex] = float(_calculate_ibi_threshold(
-                        params['means'][gmm_idx], params['sds'][gmm_idx], gmm_z
+                        params['means'][mixture_model_idx], params['sds'][mixture_model_idx], mixture_model_z
                     ))
                 else:
                     ibi_thresholds[sex] = float('nan')

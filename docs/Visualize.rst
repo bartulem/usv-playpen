@@ -405,15 +405,15 @@ The rendering knobs for the spectrogram plotter live in the ``make_usv_spectrogr
 
 Interactively explore USV embeddings (marimo app)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-For interactive (rather than static) exploration of the embedding spaces, the repository ships a `marimo <https://marimo.io>`_ app, ``analyses_notebooks/usv_embedding_explorer.py``. It pools every selected session's ``*_usv_summary.csv`` into one scatter of the chosen embedding map (VAE UMAP or QLVM torus), lets you brush a region, and shows a grid of example spectrograms sampled from inside that region. Launch it from the repo root in either of two modes:
+For interactive (rather than static) exploration of the embedding spaces, the repository ships a `marimo <https://marimo.io>`_ app, ``notebooks/usv_embedding_explorer.py``. It pools every selected session's ``*_usv_summary.csv`` into one scatter of the chosen embedding map (VAE UMAP or QLVM torus), lets you brush a region, and shows a grid of example spectrograms sampled from inside that region. Launch it from the repo root in either of two modes:
 
 .. code-block:: bash
 
     # editable, reactive code view (for tweaking the notebook)
-    uv run marimo edit src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
+    uv run marimo edit src/usv_playpen/notebooks/usv_embedding_explorer.py
 
     # clean app view (just the controls + plot, no code)
-    uv run marimo run  src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
+    uv run marimo run  src/usv_playpen/notebooks/usv_embedding_explorer.py
 
 Both open in the browser at ``http://localhost:2718``. Its controls (session-list picker, map, color-by, cluster boundaries, brushed-region spectrogram examples) and the settings it reads are catalogued in :doc:`Notebooks`.
 

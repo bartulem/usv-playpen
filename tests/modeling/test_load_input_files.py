@@ -67,11 +67,11 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     pls.DataFrame(rows).write_csv(file=csv_path, separator=csv_sep)
 
 
-def _gmm_params() -> dict:
+def _mixture_model_params() -> dict:
     """
     Description
     -----------
-    Returns a minimal sex-specific GMM parameter dict of the shape the loaders
+    Returns a minimal sex-specific mixture-model parameter dict of the shape the loaders
     require (``{'male': {'means': [...], 'sds': [...]}, 'female': {...}}``).
 
     The log-space mean/sd are chosen so the resulting inter-bout-interval (IBI)
@@ -85,7 +85,7 @@ def _gmm_params() -> dict:
     Returns
     -------
     params (dict)
-        A ``{'male': ..., 'female': ...}`` GMM parameter dictionary.
+        A ``{'male': ..., 'female': ...}`` mixture-model parameter dictionary.
     """
 
     return {'male': {'means': [0.0], 'sds': [0.0]},
@@ -310,7 +310,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
 
         male = out['sess_B']['male']
@@ -337,7 +337,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=3,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
         assert out['sess_B']['male']['positive_events'].size == 0
 
@@ -355,7 +355,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
         male = out['sess_B']['male']
         # 0.5 is dropped (<= filter_history); 2.0 and 3.0 survive.
@@ -376,7 +376,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows, n_frames=600, fps=100.0)
         out = find_bout_epochs(prediction_mode='state', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
         male = out['sess_B']['male']
         # Grid is at 1.0 spacing; the t=2.0 grid point falls inside the USV.
@@ -398,7 +398,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=2.0, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='all_rate',
                                **kwargs)
         signals = out['sess_B']['male']['continuous_vocal_signals']
@@ -421,7 +421,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='pooled_binary',
                                **kwargs)
         signals = out['sess_B']['male']['continuous_vocal_signals']
@@ -442,7 +442,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                noise_vocal_categories=[0],
                                **kwargs)
         # All male USVs were noise -> no positive events, empty start array.
@@ -464,7 +464,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                target_category=6,
                                **kwargs)
         male = out['sess_B']['male']
@@ -485,7 +485,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         common = dict(prediction_mode='individual', filter_history=1.0,
                       usv_bout_time=0.5, min_usv_per_bout=2,
-                      proportion_smoothing_sd=None, gmm_params=_gmm_params())
+                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         # Both calls read the same (read-only) session tree.
         out_all = find_bout_epochs(target_category=None, **common, **kwargs)
         out_cat = find_bout_epochs(target_category=6, **common, **kwargs)
@@ -506,7 +506,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                target_category=None,
                                **kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0, 4.0])
@@ -528,7 +528,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=2.0, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='all_rate', target_category=6,
                                **kwargs)
         male = out['sess_B']['male']
@@ -557,7 +557,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         common = dict(prediction_mode='bout', filter_history=1.0, usv_bout_time=0.5,
                       min_usv_per_bout=2, proportion_smoothing_sd=None,
-                      gmm_params=_gmm_params())
+                      mixture_model_params=_mixture_model_params())
         out_all = find_bout_epochs(target_category=None, **common, **kwargs)
         out_cat = find_bout_epochs(target_category=6, **common, **kwargs)
         np.testing.assert_allclose(out_all['sess_B']['male']['positive_events'],
@@ -578,7 +578,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                category_column='vae_supercategory', target_category=6,
                                **kwargs)
         # Column absent -> no filtering -> both onsets remain.
@@ -597,7 +597,7 @@ class TestFindBoutEpochs:
                                features_dict={'sess_empty': _features_df(100)},
                                prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params())
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         assert out['sess_empty'] == {}
         assert 'No USV summary' in capsys.readouterr().out
 
@@ -616,7 +616,7 @@ class TestFindBoutEpochs:
                                features_dict={'sess_C': _features_df(100)},
                                prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params())
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         assert out['sess_C'] == {}
         assert 'No mouse names registered' in capsys.readouterr().out
 
@@ -630,21 +630,21 @@ class TestFindBoutEpochs:
         with pytest.raises(ValueError, match='Unknown prediction_mode'):
             find_bout_epochs(prediction_mode='bogus', filter_history=1.0,
                              usv_bout_time=0.5, min_usv_per_bout=2,
-                             proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                             proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                              **kwargs)
 
-    def test_invalid_gmm_component_index_raises(self, tmp_path):
-        """An out-of-range ``gmm_component_index`` raises ``ValueError``."""
+    def test_invalid_mixture_model_component_index_raises(self, tmp_path):
+        """An out-of-range ``mixture_model_component_index`` raises ``ValueError``."""
 
         kwargs = self._build(tmp_path, {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
             'usv_category': [1], 'usv_supercategory': [1],
         })
-        with pytest.raises(ValueError, match='Invalid gmm_component_index'):
+        with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
             find_bout_epochs(prediction_mode='bout', filter_history=1.0,
                              usv_bout_time=0.5, min_usv_per_bout=2,
-                             gmm_component_index=5,
-                             proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                             mixture_model_component_index=5,
+                             proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                              **kwargs)
 
     def test_bout_mode_rejects_bout_with_dirty_history(self, tmp_path):
@@ -662,11 +662,11 @@ class TestFindBoutEpochs:
         # IBI threshold ~ exp(log(0.3)) so the first USV breaks into its own
         # single-syllable bout and the [2.5, 2.6] bout has a prior USV at 2.05,
         # only 0.45 s away (< filter_history = 1.0) -> rejected.
-        gmm = {'male': {'means': [np.log(0.3)], 'sds': [0.0]},
+        mixture_model = {'male': {'means': [np.log(0.3)], 'sds': [0.0]},
                'female': {'means': [np.log(0.3)], 'sds': [0.0]}}
         out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=gmm,
+                               proportion_smoothing_sd=None, mixture_model_params=mixture_model,
                                **kwargs)
         assert out['sess_B']['male']['positive_events'].size == 0
 
@@ -685,7 +685,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=2.0, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='categories_rate',
                                **kwargs)
         signals = out['sess_B']['male']['continuous_vocal_signals']
@@ -703,7 +703,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=1,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0])
 
@@ -719,7 +719,7 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows, n_frames=50, fps=100.0)
         out = find_bout_epochs(prediction_mode='state', filter_history=2.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, gmm_params=_gmm_params(),
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
         male = out['sess_B']['male']
         assert male['positive_events'].size == 0
@@ -990,7 +990,7 @@ class TestFindVariableLengthBouts:
             'mask_number': [2, 3, 5],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(),
+                                         mixture_model_params=_mixture_model_params(),
                                          **self._kwargs(tmp_path, rows))
         male = out['sess_E']['male']
         np.testing.assert_allclose(male['bout_onsets'], [2.0])
@@ -1009,7 +1009,7 @@ class TestFindVariableLengthBouts:
             'usv_category': [1], 'usv_supercategory': [1], 'mask_number': [1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(),
+                                         mixture_model_params=_mixture_model_params(),
                                          **self._kwargs(tmp_path, rows))
         assert out['sess_E']['male']['bout_onsets'].size == 0
 
@@ -1023,7 +1023,7 @@ class TestFindVariableLengthBouts:
             'usv_category': [1, 1], 'usv_supercategory': [1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(),
+                                         mixture_model_params=_mixture_model_params(),
                                          **self._kwargs(tmp_path, rows))
         assert 'mask_number' in capsys.readouterr().out
         np.testing.assert_allclose(out['sess_E']['male']['total_mask_complexity'], [2])
@@ -1042,7 +1042,7 @@ class TestFindVariableLengthBouts:
             'mask_number': [1, 1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(),
+                                         mixture_model_params=_mixture_model_params(),
                                          proportion_smoothing_sd=2.0,
                                          vocal_output_type='all_rate',
                                          noise_vocal_categories=[0],
@@ -1061,21 +1061,21 @@ class TestFindVariableLengthBouts:
             'usv_category': [1], 'usv_supercategory': [1], 'mask_number': [1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(),
+                                         mixture_model_params=_mixture_model_params(),
                                          **self._kwargs(tmp_path, rows))
-        # exp(0 + 2.58 * 0) == 1.0 for the chosen GMM params.
+        # exp(0 + 2.58 * 0) == 1.0 for the chosen mixture-model params.
         assert out['sess_E']['male']['ibi_threshold_used'] == pytest.approx(1.0)
 
-    def test_invalid_gmm_component_index_raises(self, tmp_path):
-        """An out-of-range ``gmm_component_index`` raises ``ValueError``."""
+    def test_invalid_mixture_model_component_index_raises(self, tmp_path):
+        """An out-of-range ``mixture_model_component_index`` raises ``ValueError``."""
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
             'usv_category': [1], 'usv_supercategory': [1], 'mask_number': [1],
         }
-        with pytest.raises(ValueError, match='Invalid gmm_component_index'):
+        with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
             find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                       gmm_component_index=9, gmm_params=_gmm_params(),
+                                       mixture_model_component_index=9, mixture_model_params=_mixture_model_params(),
                                        **self._kwargs(tmp_path, rows))
 
     def test_missing_summary_csv_skips_session(self, tmp_path, capsys):
@@ -1088,7 +1088,7 @@ class TestFindVariableLengthBouts:
             mouse_ids_dict={'sess_F': ['male', 'female']},
             camera_fps_dict={'sess_F': 100.0},
             features_dict={'sess_F': _features_df(100)},
-            min_vocalizations=2, filter_history=1.0, gmm_params=_gmm_params())
+            min_vocalizations=2, filter_history=1.0, mixture_model_params=_mixture_model_params())
         assert out['sess_F'] == {}
         assert 'No USV summary' in capsys.readouterr().out
 
@@ -1103,7 +1103,7 @@ class TestFindVariableLengthBouts:
         kwargs = self._kwargs(tmp_path, rows)
         kwargs['mouse_ids_dict'] = {}
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(), **kwargs)
+                                         mixture_model_params=_mixture_model_params(), **kwargs)
         assert out['sess_E'] == {}
         assert 'No mouse names registered' in capsys.readouterr().out
 
@@ -1118,7 +1118,7 @@ class TestFindVariableLengthBouts:
             'mask_number': [1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(),
+                                         mixture_model_params=_mixture_model_params(),
                                          vocal_output_type='pooled_binary',
                                          **self._kwargs(tmp_path, rows))
         signals = out['sess_E']['male']['continuous_vocal_signals']
@@ -1137,7 +1137,7 @@ class TestFindVariableLengthBouts:
             'mask_number': [1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                         gmm_params=_gmm_params(),
+                                         mixture_model_params=_mixture_model_params(),
                                          proportion_smoothing_sd=2.0,
                                          vocal_output_type='categories_rate',
                                          **self._kwargs(tmp_path, rows))

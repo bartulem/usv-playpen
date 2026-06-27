@@ -3,9 +3,9 @@
 Mock-based tests for the InterUSVIntervalCalculator orchestration class.
 
 The class drives a per-mode loop over compute_session_usv_intervals, optionally
-invokes the GMM sweep + bootstrap LRT, and writes a single HDF5 archive. We
+invokes the mixture-model sweep + bootstrap LRT, and writes a single HDF5 archive. We
 mock every heavy compute helper (compute_session_usv_intervals,
-fit_gmm_sweep, bootstrap_lrt, write_ivi_h5) so the orchestration can be
+fit_mixture_model_sweep, bootstrap_lrt, write_ivi_h5) so the orchestration can be
 exercised end-to-end against synthetic disk fixtures.
 """
 
@@ -28,7 +28,7 @@ from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
 # ---------------------------------------------------------------------------
 
 
-def _make_settings(tmp_path, fit_gmm=False):
+def _make_settings(tmp_path, fit_mixture_model=False):
     """Build the analyses_settings sub-block expected by the class."""
     return {
         "compute_inter_usv_interval_distributions": {
@@ -36,7 +36,7 @@ def _make_settings(tmp_path, fit_gmm=False):
             "output_directory": str(tmp_path / "out"),
             "noise_col_id": "cluster",
             "noise_categories": [99],
-            "fit_gmm": fit_gmm,
+            "fit_mixture_model": fit_mixture_model,
             "n_components_min": 1,
             "n_components_max": 3,
             "n_repeats": 2,
@@ -44,8 +44,8 @@ def _make_settings(tmp_path, fit_gmm=False):
             "random_seed_base": 0,
             "cv_n_folds": 5,
             "cv_n_init": 2,
-            "gmm_n_init": 3,
-            "gmm_reg_covar": 1e-4,
+            "mixture_model_n_init": 3,
+            "mixture_model_reg_covar": 1e-4,
             "tau": 0.5,
             "model_class": "gauss",
             "bootstrap_lrt_B": 2,
@@ -175,14 +175,14 @@ def _mock_session_resolution(monkeypatch, tmp_path):
     return sess_root
 
 
-def test_save_iui_writes_archive_when_fit_gmm_false(tmp_path, mocker, monkeypatch):
-    """fit_gmm=False → archive contains intervals + drop_counts but NOT
-    gmm_fits / bootstrap_lrt tables. Verifies write_ivi_h5 was invoked once
+def test_save_iui_writes_archive_when_fit_mixture_model_false(tmp_path, mocker, monkeypatch):
+    """fit_mixture_model=False → archive contains intervals + drop_counts but NOT
+    mixture_model_fits / bootstrap_lrt tables. Verifies write_ivi_h5 was invoked once
     with the expected per_mode payload shape."""
     list_file = tmp_path / "sessions.txt"
     list_file.write_text("/dummy/session\n")
 
-    settings = _make_settings(tmp_path, fit_gmm=False)
+    settings = _make_settings(tmp_path, fit_mixture_model=False)
     settings["compute_inter_usv_interval_distributions"]["session_lists"] = [str(list_file)]
 
     _mock_session_resolution(monkeypatch, tmp_path)
@@ -199,34 +199,34 @@ def test_save_iui_writes_archive_when_fit_gmm_false(tmp_path, mocker, monkeypatc
     assert write_mock.call_count == 1
     per_mode = write_mock.call_args.kwargs["per_mode"]
     assert set(per_mode.keys()) == {"s2s", "e2s"}
-    # Both modes have intervals + drop_counts; gmm_fits / bootstrap_lrt are None
+    # Both modes have intervals + drop_counts; mixture_model_fits / bootstrap_lrt are None
     for mode in per_mode.values():
         assert mode["intervals"].height == 5  # 3 male + 2 female per mode
-        assert mode["gmm_fits"] is None
+        assert mode["mixture_model_fits"] is None
         assert mode["bootstrap_lrt"] is None
         assert mode["bootstrap_lrt_null"] is None
 
 
-def test_save_iui_writes_archive_when_fit_gmm_true(tmp_path, mocker, monkeypatch):
-    """fit_gmm=True → invokes fit_gmm_sweep AND bootstrap_lrt; the resulting
-    archive carries the gmm_fits + bootstrap_lrt + bootstrap_lrt_null tables.
+def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, monkeypatch):
+    """fit_mixture_model=True → invokes fit_mixture_model_sweep AND bootstrap_lrt; the resulting
+    archive carries the mixture_model_fits + bootstrap_lrt + bootstrap_lrt_null tables.
     Both expensive calls are mocked."""
     list_file = tmp_path / "sessions.txt"
     list_file.write_text("/dummy/session\n")
 
-    settings = _make_settings(tmp_path, fit_gmm=True)
+    settings = _make_settings(tmp_path, fit_mixture_model=True)
     settings["compute_inter_usv_interval_distributions"]["session_lists"] = [str(list_file)]
 
     _mock_session_resolution(monkeypatch, tmp_path)
 
-    # Synthetic GMM sweep result with the per-component columns the archive expects.
+    # Synthetic mixture-model sweep result with the per-component columns the archive expects.
     fake_sweep = pls.DataFrame({
         "sex": ["male"], "n_comp": [1], "rep": [0],
         "bic": [1.0], "aic": [1.0], "icl": [1.0], "cv_neg_loglik": [1.0],
         "model_class": ["gauss"],
         "weight_1": [1.0], "logmean_1": [0.0], "logsd_1": [0.5], "nu_1": [float("nan")],
     })
-    monkeypatch.setattr(iui_mod, "fit_gmm_sweep",
+    monkeypatch.setattr(iui_mod, "fit_mixture_model_sweep",
                         lambda **kw: fake_sweep)
 
     fake_lrt_res = {
@@ -253,7 +253,7 @@ def test_save_iui_writes_archive_when_fit_gmm_true(tmp_path, mocker, monkeypatch
     assert write_mock.call_count == 1
     per_mode = write_mock.call_args.kwargs["per_mode"]
     for mode in per_mode.values():
-        assert mode["gmm_fits"] is not None
+        assert mode["mixture_model_fits"] is not None
         assert mode["bootstrap_lrt"] is not None
         assert mode["bootstrap_lrt_null"] is not None
         # Per-mode attrs include the step-up selected K values

@@ -6,7 +6,7 @@ and regression analysis.
 Key Capabilities:
 1.  Data ingestion: Loading 3D behavioral features (CSV), track metadata (H5),
     and USV summaries.
-2.  Epoch sampling: Identifying USV and No-USV event times using dynamic GMM
+2.  Epoch sampling: Identifying USV and No-USV event times using dynamic mixture-model
     clustering (bout mode), individual syllable onsets, or state-based sampling.
 3.  Category classification: Organizing USVs into target vs. other categories
     to enable one-vs-rest syntax models.
@@ -296,9 +296,9 @@ def find_bout_epochs(root_directories: list = None,
                      prediction_mode: str = 'bout',
                      usv_bout_time: int | float = None,
                      min_usv_per_bout: int = None,
-                     gmm_component_index: int = 0,
-                     gmm_z_score: float = 2.58,
-                     gmm_params: dict = None,
+                     mixture_model_component_index: int = 0,
+                     mixture_model_z_score: float = 2.58,
+                     mixture_model_params: dict = None,
                      vocal_output_type: str = None,
                      noise_vocal_categories: list = None,
                      category_column: str = 'usv_category',
@@ -335,15 +335,15 @@ def find_bout_epochs(root_directories: list = None,
         Duration of the "post-onset" window (in s). Used in 'bout' mode logic for NEGATIVE events.
     min_usv_per_bout : int
         Min USVs for a positive 'bout' event. Used in 'bout' mode.
-    gmm_component_index : int
-        GMM component index for IBI threshold calculation (default 0).
-    gmm_z_score : float
+    mixture_model_component_index : int
+        mixture-model component index for IBI threshold calculation (default 0).
+    mixture_model_z_score : float
         Z-score for IBI threshold calculation (default 2.58).
-    gmm_params : dict
+    mixture_model_params : dict
         A dict with 'male' and 'female' keys, each containing 'means' and 'sds' lists
-        for the sex-specific IBI GMM components. Required: it is dereferenced
-        unconditionally (gmm_params['male'] / gmm_params['female']), so passing
-        None raises TypeError. Typically loaded from modeling_settings['gmm_params'].
+        for the sex-specific IBI mixture-model components. Required: it is dereferenced
+        unconditionally (mixture_model_params['male'] / mixture_model_params['female']), so passing
+        None raises TypeError. Typically loaded from modeling_settings['mixture_model_params'].
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
         - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
@@ -364,7 +364,7 @@ def find_bout_epochs(root_directories: list = None,
         vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
         (negative) reference are still computed over ALL of the mouse's USVs, so
         the category choice changes only which onsets count as positive events.
-        Ignored in 'bout' and 'state' modes, because the GMM inter-syllable-
+        Ignored in 'bout' and 'state' modes, because the mixture-model inter-syllable-
         interval threshold used for bout grouping is calibrated on the all-USV
         interval distribution and would mis-group a category-sparsified
         sequence; in those modes all categories are pooled as before. If None
@@ -390,9 +390,9 @@ def find_bout_epochs(root_directories: list = None,
             'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
     """
 
-    # GMM parameters (modeling inter-USV interval distributions)
-    male_gmm_params = gmm_params['male']
-    female_gmm_params = gmm_params['female']
+    # mixture-model parameters (modeling inter-USV interval distributions)
+    male_mixture_model_params = mixture_model_params['male']
+    female_mixture_model_params = mixture_model_params['female']
 
     usv_data_dict = {}
     for one_root_directory in root_directories:
@@ -420,21 +420,21 @@ def find_bout_epochs(root_directories: list = None,
         for i, mouse_name in enumerate(mouse_track_names):
             usv_data_dict[session_id][mouse_name] = {'continuous_vocal_signals': {}}
 
-            # Find inter-bout interval threshold based on GMM
+            # Find inter-bout interval threshold based on mixture model
             if i == 0:
-                params = male_gmm_params
+                params = male_mixture_model_params
                 sex_label = 'male'
             else:
-                params = female_gmm_params
+                params = female_mixture_model_params
                 sex_label = 'female'
 
             try:
-                comp_mean = params['means'][gmm_component_index]
-                comp_sd = params['sds'][gmm_component_index]
+                comp_mean = params['means'][mixture_model_component_index]
+                comp_sd = params['sds'][mixture_model_component_index]
             except IndexError:
-                raise ValueError(f"Invalid gmm_component_index {gmm_component_index} for {sex_label}.")
+                raise ValueError(f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}.")
 
-            ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, gmm_z_score)
+            ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, mixture_model_z_score)
 
             # Finds start and stop times of USVs for this particular mouse.
             # Sort by `start` so downstream IBI-gap and bout-indexing logic
@@ -876,7 +876,7 @@ def find_usv_categories(root_directories: list = None,
 
 def _calculate_ibi_threshold(log_mean: float, log_sd: float, z_score: float) -> float:
     """
-    Calculates the Inter-Bout Interval (IBI) threshold based on GMM statistics.
+    Calculates the Inter-Bout Interval (IBI) threshold based on mixture-model statistics.
     Typically, uses the log-normal properties of the first component (respiratory rhythm).
 
     IBI = exp( mu_log + (Z * sigma_log) )
@@ -904,9 +904,9 @@ def find_variable_length_bouts(root_directories: list = None,
                                camera_fps_dict: dict = None,
                                features_dict: dict = None,
                                csv_sep: str = ',',
-                               gmm_component_index: int = 0,
-                               gmm_z_score: float = 2.58,
-                               gmm_params: dict = None,
+                               mixture_model_component_index: int = 0,
+                               mixture_model_z_score: float = 2.58,
+                               mixture_model_params: dict = None,
                                min_vocalizations: int = 2,
                                filter_history: float = 4.0,
                                proportion_smoothing_sd: float = 1.0,
@@ -926,7 +926,7 @@ def find_variable_length_bouts(root_directories: list = None,
     1.  Noise Filtering: Immediately removes rows where `usv_category` matches
         any integer in `noise_vocal_categories`. This prevents noise from acting as a "bridge"
         that merges distinct bouts and ensures continuous signals represent only biological audio.
-    2.  GMM Thresholding: Selects sex-specific GMM parameters (from `gmm_params`).
+    2.  Mixture-model Thresholding: Selects sex-specific mixture-model parameters (from `mixture_model_params`).
         Calculates a dynamic inter-bout interval (IBI) threshold using the log-mean
         and log-sd of the specified component (usually respiratory rhythm) plus a Z-score buffer.
     3.  Continuous Signal Generation:
@@ -952,15 +952,15 @@ def find_variable_length_bouts(root_directories: list = None,
         Mapping session_id -> behavioral dataframe (needed for session duration).
     csv_sep : str, optional
         Separator for the CSV files.
-    gmm_component_index : int, default 0
-        GMM component index to use for IBI threshold calculation.
-    gmm_z_score : float, default 2.58
-        Z-score to apply to the GMM component statistics.
-    gmm_params : dict
+    mixture_model_component_index : int, default 0
+        mixture-model component index to use for IBI threshold calculation.
+    mixture_model_z_score : float, default 2.58
+        Z-score to apply to the mixture-model component statistics.
+    mixture_model_params : dict
         A dict with 'male' and 'female' keys, each containing 'means' and 'sds' lists
-        for the sex-specific IBI GMM components. Required: it is dereferenced
-        unconditionally (gmm_params['male'] / gmm_params['female']), so passing
-        None raises TypeError. Typically loaded from modeling_settings['gmm_params'].
+        for the sex-specific IBI mixture-model components. Required: it is dereferenced
+        unconditionally (mixture_model_params['male'] / mixture_model_params['female']), so passing
+        None raises TypeError. Typically loaded from modeling_settings['mixture_model_params'].
     min_vocalizations : int, default 2
         Minimum number of syllables required to form a valid bout.
     filter_history : float, default 4.0
@@ -998,9 +998,9 @@ def find_variable_length_bouts(root_directories: list = None,
             'continuous_vocal_signals': dict containing generated arrays (e.g., 'usv_rate').
     """
 
-    # GMM parameters (for modeling inter-USV interval distributions)
-    male_gmm_params = gmm_params['male']
-    female_gmm_params = gmm_params['female']
+    # mixture-model parameters (for modeling inter-USV interval distributions)
+    male_mixture_model_params = mixture_model_params['male']
+    female_mixture_model_params = mixture_model_params['female']
 
     usv_data_dict = {}
 
@@ -1037,19 +1037,19 @@ def find_variable_length_bouts(root_directories: list = None,
 
         for i, mouse_name in enumerate(mouse_track_names):
             if i == 0:
-                params = male_gmm_params
+                params = male_mixture_model_params
                 sex_label = 'male'
             else:
-                params = female_gmm_params
+                params = female_mixture_model_params
                 sex_label = 'female'
 
             try:
-                comp_mean = params['means'][gmm_component_index]
-                comp_sd = params['sds'][gmm_component_index]
+                comp_mean = params['means'][mixture_model_component_index]
+                comp_sd = params['sds'][mixture_model_component_index]
             except IndexError:
-                raise ValueError(f"Invalid gmm_component_index {gmm_component_index} for {sex_label}.")
+                raise ValueError(f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}.")
 
-            ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, gmm_z_score)
+            ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, mixture_model_z_score)
 
             usv_data_dict[session_id][mouse_name] = {
                 'bout_onsets': [],

@@ -12,7 +12,7 @@ exercising isolated helpers:
   ``BoutParameterPipeline.extract_and_save_modeling_input_data`` against a
   synthetic session tree, lighting up ``load_behavioral_feature_data``,
   ``find_variable_length_bouts`` (variable-length bout detection +
-  GMM-IVI thresholding + continuous vocal-signal generation),
+  mixture-model-IVI thresholding + continuous vocal-signal generation),
   ``modeling_utils`` (session prep, role resolution, kinematic-column
   selection, vocal-column building, harmonization, cross-session z-scoring,
   ``run_predictor_audits``), and ``modeling_metadata``. It asserts the

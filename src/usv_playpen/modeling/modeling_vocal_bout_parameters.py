@@ -10,7 +10,7 @@ implementing specialized logic for regression on strictly positive, skewed data.
 
 Key Scientific and Computational Components:
 1.  Focuses exclusively on valid USV bouts
-    identified via GMM-based inter-vocal interval (IVI) clustering. Unlike
+    identified via mixture-model-based inter-vocal interval (IVI) clustering. Unlike
     onset modeling, this pipeline performs regression on the properties of
     the vocalization events themselves.
 2.  Tailored for modeling non-negative, heavy-tailed
@@ -147,8 +147,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 
-        gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
-        gmm_z = self.modeling_settings['model_params']['gmm_z_score']
+        mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
+        mixture_model_z = self.modeling_settings['model_params']['mixture_model_z_score']
         min_usv = self.modeling_settings['model_params']['usv_per_bout_floor']
 
         voc_type = self.modeling_settings['vocal_features']['usv_predictor_type']
@@ -169,9 +169,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             camera_fps_dict=camera_fr_dict,
             features_dict=beh_feature_data_dict,
             csv_sep=self.modeling_settings['io']['csv_separator'],
-            gmm_component_index=gmm_idx,
-            gmm_z_score=gmm_z,
-            gmm_params=self.modeling_settings['gmm_params'],
+            mixture_model_component_index=mixture_model_idx,
+            mixture_model_z_score=mixture_model_z,
+            mixture_model_params=self.modeling_settings['mixture_model_params'],
             min_vocalizations=min_usv,
             filter_history=self.modeling_settings['model_params']['filter_history'],
             proportion_smoothing_sd=smooth_sd,
@@ -284,13 +284,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
         ibi_thresholds_md = {}
-        gmm_params_md = self.modeling_settings['gmm_params']
+        mixture_model_params_md = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
-            params = gmm_params_md[sex]
-            if gmm_idx < len(params['means']):
+            params = mixture_model_params_md[sex]
+            if mixture_model_idx < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
-                    params['means'][gmm_idx], params['sds'][gmm_idx],
-                    self.modeling_settings['model_params']['gmm_z_score'],
+                    params['means'][mixture_model_idx], params['sds'][mixture_model_idx],
+                    self.modeling_settings['model_params']['mixture_model_z_score'],
                 ))
             else:
                 ibi_thresholds_md[sex] = float('nan')

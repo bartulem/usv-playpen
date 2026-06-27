@@ -10,8 +10,8 @@ both used by this notebook):
 
 From the repo root, edit (reactive code view) or run (clean app view):
 
-    uv run marimo edit src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
-    uv run marimo run  src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py
+    uv run marimo edit src/usv_playpen/notebooks/usv_embedding_explorer.py
+    uv run marimo run  src/usv_playpen/notebooks/usv_embedding_explorer.py
 
 Settings (the ``shared_resources`` block of ``visualizations_settings.json``)
 supply the directory of session-list ``*.txt`` files and the consolidated

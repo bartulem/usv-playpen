@@ -8,8 +8,8 @@
 
   "model_params": {
     "filter_history": 4,
-    "gmm_component_index": 0,
-    "gmm_z_score": 2.58,
+    "mixture_model_component_index": 0,
+    "mixture_model_z_score": 2.58,
     "model_basis_function": "raised_cosine",
     "model_engine": "pygam",
     "model_predictor_mouse_index": 1,
@@ -78,7 +78,7 @@
     "timescale_signal_min_run_seconds": 0.2
   },
 
-  "gmm_params": {
+  "mixture_model_params": {
     "male": {
       "means": [-2.76955, -1.73685, -0.99831, 2.03705],
       "sds": [0.24298, 0.20695, 0.92012, 1.1465]

@@ -1,6 +1,16 @@
 {
+  "visualize_booleans": {
+    "make_neuronal_tuning_figures_bool": false,
+    "make_behavioral_videos_bool": false,
+    "make_usv_spectrograms_bool": false,
+    "make_qlvm_torus_traversal_video_bool": false,
+    "make_embedding_thumbnails_bool": false
+  },
+  "visualize_data": {
+    "root_directories": []
+  },
   "figures": {
-    "save_directory": "/mnt/falkner/{experimenter}/figures",
+    "save_directory": "/mnt/falkner/Bartul/figures",
     "fig_format": "png",
     "dpi": 300,
     "timestamp_in_name": true,
@@ -8,8 +18,8 @@
     "seed": 0
   },
   "shared_resources": {
-    "spectrograms_dir": "/mnt/falkner/{experimenter}/spectrograms",
-    "input_files_directory": "/mnt/falkner/{experimenter}/modeling/input_files"
+    "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms",
+    "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   },
   "credentials_directory": "",
   "male_colors": ["#9AC0CD", "#8CA252"],
@@ -24,16 +34,6 @@
     "CENT": "#D88080",
     "MB": "#9BBE85",
     "other": "#B8B8B8"
-  },
-  "visualize_booleans": {
-    "make_neuronal_tuning_figures_bool": false,
-    "make_behavioral_videos_bool": false,
-    "make_usv_spectrograms_bool": false,
-    "make_qlvm_torus_traversal_video_bool": false,
-    "make_embedding_thumbnails_bool": true
-  },
-  "visualize_data": {
-    "root_directories": []
   },
   "send_email": {
     "visualizations_pc_list": [

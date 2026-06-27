@@ -353,16 +353,16 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Directory in which to write the consolidated usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5 archive.')
 @click.option('--noise-col-id', 'noise_col_id', type=str, default=None, required=False, help='Name of the noise classification column in the USV summary CSV.')
 @click.option('--noise-categories', 'noise_categories', multiple=True, type=int, default=None, required=False, help='Integer label(s) in noise_col_id that mark a USV as noise.')
-@click.option('--fit-gmm/--no-fit-gmm', 'fit_gmm', default=None, required=False, help='Whether to run the GMM sweep after inter-USV interval extraction.')
-@click.option('--n-components-min', 'n_components_min', type=int, default=None, required=False, help='Minimum number of GMM components.')
-@click.option('--n-components-max', 'n_components_max', type=int, default=None, required=False, help='Maximum number of GMM components.')
+@click.option('--fit-mixture-model/--no-fit-mixture-model', 'fit_mixture_model', default=None, required=False, help='Whether to run the mixture-model sweep after inter-USV interval extraction.')
+@click.option('--n-components-min', 'n_components_min', type=int, default=None, required=False, help='Minimum number of mixture-model components.')
+@click.option('--n-components-max', 'n_components_max', type=int, default=None, required=False, help='Maximum number of mixture-model components.')
 @click.option('--n-repeats', 'n_repeats', type=int, default=None, required=False, help='Number of EM-init repeats per (key, n_components).')
 @click.option('--max-modes-reported', 'max_modes_reported', type=int, default=None, required=False, help='Maximum number of mixture modes recorded per fit.')
 @click.option('--random-seed-base', 'random_seed_base', type=int, default=None, required=False, help='Base seed; rep r uses random_seed_base + r.')
 @click.option('--cv-n-folds', 'cv_n_folds', type=int, default=None, required=False, help='Number of K-fold splits used by cross-validated log-likelihood.')
 @click.option('--cv-n-init', 'cv_n_init', type=int, default=None, required=False, help='Number of EM restarts per fold during cross-validation.')
-@click.option('--gmm-n-init', 'gmm_n_init', type=int, default=None, required=False, help='Number of EM restarts per in-sample GMM fit.')
-@click.option('--gmm-reg-covar', 'gmm_reg_covar', type=float, default=None, required=False, help='Regularisation added to GMM covariances (sklearn reg_covar).')
+@click.option('--mixture-model-n-init', 'mixture_model_n_init', type=int, default=None, required=False, help='Number of EM restarts per in-sample mixture-model fit.')
+@click.option('--mixture-model-reg-covar', 'mixture_model_reg_covar', type=float, default=None, required=False, help='Regularisation added to mixture-model covariances (sklearn reg_covar).')
 @click.option('--tau', 'tau', type=float, default=None, required=False, help='Posterior threshold for the LEFT component when computing inter-component decision boundaries; 0.5 = standard Bayes boundary.')
 @click.option('--figures-directory', 'figures_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Directory where the inter-USV interval notebook saves figures (used by downstream plotting; not consumed by the analysis CLI itself).')
 @click.option('--model-class', 'model_class', type=click.Choice(['gauss', 't'], case_sensitive=False), default=None, required=False, help='Mixture model class: "gauss" (log-Gaussian mixture, classical) or "t" (Student-t mixture in log-space, recommended for inter-USV interval bout structure because one heavy-tailed t-component absorbs the long-pause tail without inflating the component count).')
@@ -377,7 +377,7 @@ def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
     -----------
     A command-line tool to compute inter-vocalization-interval (inter-USV interval)
     distributions across one or more session lists, and (optionally)
-    sweep a 1D GMM on the pooled log-inter-USV intervals.
+    sweep a 1D mixture model on the pooled log-inter-USV intervals.
 
     Parameters
     ----------

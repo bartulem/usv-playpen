@@ -378,7 +378,7 @@ def build_input_metadata(modeling_settings: dict,
       `vocal_signal_columns_added`).
     - **Temporal frame** (`filter_history_seconds`,
       `filter_history_frames`, `camera_sampling_rate_hz`,
-      `gmm_component_index`, `gmm_z_score`, `ibi_thresholds`).
+      `mixture_model_component_index`, `mixture_model_z_score`, `ibi_thresholds`).
     - **Analysis-specific knobs** (whatever the caller passes through
       `analysis_specific`).
     - **Provenance** (`pipeline_class`, `analysis_type`,
@@ -429,7 +429,7 @@ def build_input_metadata(modeling_settings: dict,
         The `kinematic_features.dyadic_pose_symmetric` flag that was
         active during extraction.
     noise_vocal_categories_excluded : list of int
-        GMM-supercategory codes stripped at load time
+        mixture-model-supercategory codes stripped at load time
         (`vocal_features.usv_noise_categories`).
     vocal_signal_columns_added : list of str
         Vocal-history column names injected into the per-session DFs by
@@ -444,7 +444,7 @@ def build_input_metadata(modeling_settings: dict,
         default) or a `{session_id: float}` map (heterogeneous fps).
     ibi_thresholds : dict
         Pre-computed `{'male': float, 'female': float}` IBI-gap
-        thresholds derived from the GMM means / SDs at the configured
+        thresholds derived from the mixture-model means / SDs at the configured
         z-score. Stored once here so downstream consumers do not
         recompute them.
     analysis_specific : dict
@@ -509,8 +509,8 @@ def build_input_metadata(modeling_settings: dict,
         'filter_history_seconds': float(filter_history_seconds),
         'filter_history_frames': int(filter_history_frames),
         'camera_sampling_rate_hz': camera_sampling_rate_hz,
-        'gmm_component_index': int(modeling_settings['model_params']['gmm_component_index']),
-        'gmm_z_score': float(modeling_settings['model_params']['gmm_z_score']),
+        'mixture_model_component_index': int(modeling_settings['model_params']['mixture_model_component_index']),
+        'mixture_model_z_score': float(modeling_settings['model_params']['mixture_model_z_score']),
         'ibi_thresholds': dict(ibi_thresholds),
 
         # Analysis-specific knobs (passed through verbatim)

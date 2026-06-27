@@ -94,7 +94,7 @@ def fit_log_gmm(
     gmm (GaussianMixture)
         The fitted sklearn ``GaussianMixture`` instance (full covariance,
         in log-space).
-    gmm_order (np.ndarray)
+    mixture_model_order (np.ndarray)
         A (n_components,) shape ndarray of indices that sorts the
         components by their log-space means in ascending order.
     """
@@ -109,8 +109,8 @@ def fit_log_gmm(
     )
     gmm.fit(log_x)
 
-    gmm_order = np.argsort(gmm.means_.flatten())
-    return gmm, gmm_order
+    mixture_model_order = np.argsort(gmm.means_.flatten())
+    return gmm, mixture_model_order
 
 
 def plot_gmm_fit(
@@ -742,13 +742,13 @@ def gmm_modes(
 
 def report_gmm_stats(
     gmm: GaussianMixture,
-    gmm_order: np.ndarray,
+    mixture_model_order: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
     -----------
     Returns the per-component log-space means and standard deviations
-    (aligned to ``gmm_order``, ascending in mean) and the mixture-level
+    (aligned to ``mixture_model_order``, ascending in mean) and the mixture-level
     modes with their densities (independently sorted in ascending mode
     location).
 
@@ -764,7 +764,7 @@ def report_gmm_stats(
     ----------
     gmm (GaussianMixture)
         A fitted GMM in log-space.
-    gmm_order (np.ndarray)
+    mixture_model_order (np.ndarray)
         Sort indices over components (typically from
         :func:`fit_log_gmm`).
 
@@ -782,8 +782,8 @@ def report_gmm_stats(
         A (n_modes,) shape ndarray of mixture densities at ``modes``.
     """
 
-    means = gmm.means_.flatten()[gmm_order]
-    sds   = np.sqrt(gmm.covariances_.flatten())[gmm_order]
+    means = gmm.means_.flatten()[mixture_model_order]
+    sds   = np.sqrt(gmm.covariances_.flatten())[mixture_model_order]
     modes_arr, densities_arr = gmm_modes(gmm)
     if modes_arr.shape[0] == 0:
         return means, sds, np.empty((0,)), np.empty((0,))
@@ -796,7 +796,7 @@ def report_gmm_stats(
 
 def summarize_best_gmm(
     gmm: GaussianMixture,
-    gmm_order: np.ndarray,
+    mixture_model_order: np.ndarray,
     tau: float = 0.5,
 ) -> dict:
     """
@@ -816,7 +816,7 @@ def summarize_best_gmm(
     ----------
     gmm (GaussianMixture)
         A fitted 1D GMM in log-space.
-    gmm_order (np.ndarray)
+    mixture_model_order (np.ndarray)
         Sort indices over components.
     tau (float)
         Posterior threshold passed to
@@ -831,9 +831,9 @@ def summarize_best_gmm(
         ``'boundaries_sec'``, ``'tau'``.
     """
 
-    logmeans, logsds, modes_log, mode_densities = report_gmm_stats(gmm, gmm_order)
+    logmeans, logsds, modes_log, mode_densities = report_gmm_stats(gmm, mixture_model_order)
     boundaries_log, boundaries_sec = gmm_boundaries_logspace(gmm, tau=tau)
-    weights = gmm.weights_.flatten()[gmm_order]
+    weights = gmm.weights_.flatten()[mixture_model_order]
 
     return {
         'logmeans': logmeans,
@@ -1417,7 +1417,7 @@ def fit_log_t_mixture(
         The best-of-``n_init`` fitted t-mixture.
     order (np.ndarray)
         Indices that sort components by ascending log-mean (the
-        analog of :func:`fit_log_gmm`'s ``gmm_order``).
+        analog of :func:`fit_log_gmm`'s ``mixture_model_order``).
     """
 
     log_x = np.log(np.asarray(x, dtype=float))

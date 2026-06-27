@@ -237,6 +237,125 @@ def _host_experimenter() -> str:
     return _HOST_EXPERIMENTER_CACHE[0]
 
 
+# One-element cache for the resolved experimenter roster; a list-of-lists so it
+# can be populated by mutation (no ``global``). Cleared in tests to force a
+# re-read.
+_HOST_EXPERIMENTER_LIST_CACHE: list[list] = []
+
+
+def _host_experimenter_list() -> list:
+    """
+    Description
+    -----------
+    Returns the configured experimenter roster from the host config TOML (the
+    top-level ``experimenter_list`` key of
+    ``_config/behavioral_experiments_settings.toml``), resolved once and cached
+    for the process. This is the set of names :func:`rebase_experimenter_in_paths`
+    matches (as whole path components / standalone values) when re-keying the
+    experimenter-scoped paths in the ``*_settings.json`` files to the host
+    experimenter. A missing or unparseable host config, or one lacking an
+    ``experimenter_list`` entry, raises rather than guessing, so a broken config
+    fails loud rather than silently leaving paths scoped to the wrong person.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    experimenter_list (list)
+        The configured experimenter names (e.g. ``["Annegret", "Bartul", ...]``).
+    """
+
+    if _HOST_EXPERIMENTER_LIST_CACHE:
+        return _HOST_EXPERIMENTER_LIST_CACHE[0]
+
+    try:
+        host_config = toml.load(_HOST_CONFIG_PATH)
+    except (OSError, toml.TomlDecodeError) as exc:
+        msg = (
+            f"Cannot read the host config '{_HOST_CONFIG_PATH}' required to resolve "
+            f"the experimenter roster for path re-keying: {type(exc).__name__}: {exc}"
+        )
+        raise RuntimeError(msg) from exc
+
+    if "experimenter_list" not in host_config:
+        msg = (
+            f"Host config '{_HOST_CONFIG_PATH}' has no 'experimenter_list' entry; "
+            "cannot re-key experimenter-scoped paths."
+        )
+        raise KeyError(msg)
+
+    _HOST_EXPERIMENTER_LIST_CACHE.append(list(host_config["experimenter_list"]))
+    return _HOST_EXPERIMENTER_LIST_CACHE[0]
+
+
+def rebase_experimenter_in_paths(obj: object = None,
+                                 experimenter_list: list = None,
+                                 exp_id: str = None) -> object:
+    """
+    Description
+    -----------
+    Recursively rewrites every experimenter reference found in the string
+    leaves of a (possibly nested) settings structure to ``exp_id``, so the
+    experimenter-scoped paths in the ``*_settings.json`` files follow the
+    experimenter in use rather than the shipped default. Used both by the GUI
+    (target = the front-page selection) and by the headless CLI loader
+    (target = the host ``experimenter`` from the TOML), so the two contexts
+    re-key paths identically.
+
+    Two reference forms are handled:
+
+    * the literal ``{experimenter}`` placeholder (replaced wholesale,
+      regardless of position), and
+    * any name in ``experimenter_list`` that occurs either as a complete
+      path component (bounded by ``/`` or ``\\`` or a string end) or as the
+      entire string (e.g. the ``send_email.experimenter`` field).
+
+    Strings that merely contain a name as an unbounded substring (e.g. a PC
+    label such as ``"A84I Linux"``) are left untouched, and a reference that
+    already equals ``exp_id`` is a no-op -- so repeated application (on load
+    and on every experimenter change) is idempotent.
+
+    Parameters
+    ----------
+    obj (dict | list | str | object)
+        The structure (or leaf) to rewrite; dicts and lists are recursed
+        into, strings are rewritten, all other types are returned as-is.
+    experimenter_list (list)
+        Known experimenter names matched as path components / standalone names.
+    exp_id (str)
+        The selected experimenter id substituted in place of every match.
+
+    Returns
+    -------
+    rebased (dict | list | str | object)
+        A structurally identical copy with experimenter references rewritten.
+    """
+
+    if isinstance(obj, dict):
+        return {key: rebase_experimenter_in_paths(value, experimenter_list, exp_id) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [rebase_experimenter_in_paths(value, experimenter_list, exp_id) for value in obj]
+    if isinstance(obj, str):
+        rebased_string = obj.replace('{experimenter}', exp_id)
+        is_pathlike = ('/' in rebased_string) or ('\\' in rebased_string)
+        for name in experimenter_list:
+            if name == exp_id or name not in rebased_string:
+                continue
+            if rebased_string == name:
+                return exp_id
+            if is_pathlike:
+                name_start = rebased_string.find(name)
+                boundary_before_ok = name_start == 0 or rebased_string[name_start - 1] in ('/', '\\')
+                name_end = name_start + len(name)
+                boundary_after_ok = name_end == len(rebased_string) or rebased_string[name_end] in ('/', '\\')
+                if boundary_before_ok and boundary_after_ok:
+                    rebased_string = rebased_string[:name_start] + exp_id + rebased_string[name_end:]
+        return rebased_string
+    return obj
+
+
 def find_base_path() -> str | None:
     """
     Description

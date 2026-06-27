@@ -55,7 +55,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
     The pipeline has three responsibilities:
 
     1. **Data preparation**: ingests raw behavioural time-series (polars DataFrames
-       produced by the upstream extraction), detects vocal bouts via GMM-driven
+       produced by the upstream extraction), detects vocal bouts via mixture-model-driven
        inter-bout-interval thresholds, assembles per-session history windows
        around USV and No-USV event timestamps, applies cross-session z-scoring,
        and serializes the resulting `{feature: {session: {usv_feature_arr,
@@ -140,11 +140,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         This method orchestrates the data preparation pipeline for each session, specifically designed
         for classification tasks (USV vs. No-USV epochs). It incorporates advanced bout detection
-        using Gaussian Mixture Models (GMM) to define dynamic inter-bout intervals (IBI).
+        using mixture models to define dynamic inter-bout intervals (IBI).
 
         Pipeline Steps:
         1.  Calls `find_bout_epochs` to detect vocal bouts.
-            - Uses `gmm_component_index` and `gmm_z_score` to calculate a dynamic IBI threshold per mouse.
+            - Uses `mixture_model_component_index` and `mixture_model_z_score` to calculate a dynamic IBI threshold per mouse.
             - Filters out specific noise categories (e.g., [0, 19]) via `noise_vocal_categories`.
             - Enforces `min_usv_per_bout` constraints.
             - Returns positive (`positive_events`) and negative (`negative_events`) event times.
@@ -200,9 +200,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             camera_fps_dict=camera_fr_dict,
             features_dict=beh_feature_data_dict,
             csv_sep=self.modeling_settings['io']['csv_separator'],
-            gmm_component_index=self.modeling_settings['model_params']['gmm_component_index'],
-            gmm_z_score=self.modeling_settings['model_params']['gmm_z_score'],
-            gmm_params=self.modeling_settings['gmm_params'],
+            mixture_model_component_index=self.modeling_settings['model_params']['mixture_model_component_index'],
+            mixture_model_z_score=self.modeling_settings['model_params']['mixture_model_z_score'],
+            mixture_model_params=self.modeling_settings['mixture_model_params'],
             noise_vocal_categories=self.modeling_settings['vocal_features']['usv_noise_categories'],
             proportion_smoothing_sd=self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd'],
             vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
@@ -321,7 +321,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         max_hist_sec = self.modeling_settings['model_params']['filter_history']
         target_vocal_type = self.modeling_settings['model_params']['model_target_vocal_type']
-        gmm_idx = self.modeling_settings['model_params']['gmm_component_index']
+        mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
 
         # Optional single-category onset target (e.g. broadband vocalizations =
         # vae_supercategory 6). The category COLUMN is the existing
@@ -340,7 +340,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         # Build the unified Level-1 filename — the analysis_tag identifies
         # the pipeline, the experimental_condition identifies the cohort,
-        # and the rest of the historical fields (n_sessions, hist, gmm
+        # and the rest of the historical fields (n_sessions, hist, mixture-model
         # idx, target_vocal_type) live in `_input_metadata` rather than
         # in the filename.
         cohort_condition = derive_experimental_condition(self.modeling_settings)
@@ -367,13 +367,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # univariate pickle so each downstream artifact is independently
         # provenance-complete.
         ibi_thresholds_md = {}
-        gmm_params = self.modeling_settings['gmm_params']
+        mixture_model_params = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
-            params = gmm_params[sex]
-            if gmm_idx < len(params['means']):
+            params = mixture_model_params[sex]
+            if mixture_model_idx < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
-                    params['means'][gmm_idx], params['sds'][gmm_idx],
-                    self.modeling_settings['model_params']['gmm_z_score'],
+                    params['means'][mixture_model_idx], params['sds'][mixture_model_idx],
+                    self.modeling_settings['model_params']['mixture_model_z_score'],
                 ))
             else:
                 ibi_thresholds_md[sex] = float('nan')

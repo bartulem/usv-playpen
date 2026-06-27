@@ -2,7 +2,7 @@ Notebooks
 =========
 
 The repository ships a set of Jupyter notebooks (plus one `marimo <https://marimo.io>`_
-app) under ``src/usv_playpen/analyses_notebooks/`` that drive the advanced analysis and
+app) under ``src/usv_playpen/notebooks/`` that drive the advanced analysis and
 figure-generation workflows. This page is the single, detailed home for them: each
 notebook is described here and rendered in full below (code only — outputs are stripped
 on commit), and the topical sections (:doc:`Analyze`, :doc:`Modeling`, :doc:`Visualize`,
@@ -45,7 +45,7 @@ Every stochastic step is seeded from ``model_params.random_seed`` for reproducib
 every pipeline reads ``_parameter_settings/modeling_settings.json`` (override by passing an
 explicit ``modeling_settings_dict``). See :doc:`Modeling` for the conceptual workflow.
 Source: `modeling_analyses.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/modeling_analyses.ipynb>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/modeling_analyses.ipynb>`_.
 
 Neural
 ------
@@ -75,7 +75,7 @@ Neural
 
 See :doc:`Analyze` for the compute step that produces the per-cluster pkls. Source:
 `neuronal_tuning_summary.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/neuronal_tuning_summary.ipynb>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/neuronal_tuning_summary.ipynb>`_.
 
 **neuronal_coactivity_analyses.ipynb** — quantifies how coordinated a PAG (or other
 region) population is during one USV class versus another, using the pairwise spike-count
@@ -93,7 +93,7 @@ colors. The loader picks, per animal, the single recording day with the largest
 filtered-unit pool so the analysed population is fixed across the day's sessions. Every
 stochastic routine accepts an optional ``seed`` for reproducible nulls. See :doc:`Analyze`
 for context. Source: `neuronal_coactivity_analyses.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/neuronal_coactivity_analyses.ipynb>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/neuronal_coactivity_analyses.ipynb>`_.
 
 **npx_histology_unit_quality_processing.ipynb** — end-to-end histology /
 Neuropixels-alignment workflow for one session, covering two phases that bracket the
@@ -111,7 +111,7 @@ manual brainreg + napari steps run outside the notebook:
 Every acquisition path and session identifier lives in the **Parameters** cell. See
 :doc:`Histology` for the conceptual workflow and the underlying helpers. Source:
 `npx_histology_unit_quality_processing.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/npx_histology_unit_quality_processing.ipynb>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/npx_histology_unit_quality_processing.ipynb>`_.
 
 USV
 ---
@@ -141,7 +141,7 @@ The spectrogram-plotter rendering knobs live in the ``make_usv_spectrograms`` bl
 ``nfft``, colorbar limits, save options); the helper inputs are surfaced in the
 **Parameters** cell. The cohort-level ``plot_embedding_with_category_thumbnails`` figure
 is GUI-driven instead — see :doc:`Visualize`. Source: `usv_spectrogram_analyses.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_spectrogram_analyses.ipynb>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_spectrogram_analyses.ipynb>`_.
 
 **usv_interval_mixture_models_plots.ipynb** — fits and visualises mixture models on the
 distribution of inter-USV intervals (in seconds, log-transformed) for one or more
@@ -159,7 +159,7 @@ log-log Q-Q diagnostic inset. The GUI does not expose this analysis; its paramet
 the component-count sweep and EM/CV knobs, ``bins_per_sex``, ``plot_log_xlims``, …) live in
 ``analyses_settings.json``. See :doc:`Analyze` for the archive schema and the compute step.
 Source: `usv_interval_mixture_models_plots.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_interval_mixture_models_plots.ipynb>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_interval_mixture_models_plots.ipynb>`_.
 
 **usv_summary_statistics_plots.ipynb** — produces every figure summarising a recording
 session's USVs. Runs **after** processing has produced a ``*_usv_summary.csv`` (per-USV
@@ -187,7 +187,7 @@ derived from ``visualizations_settings.json``. The figures, each in an independe
   ``occupancy_thresh``, ``kde_max_points``, per-sex polar grid thresholds).
 
 Source: `usv_summary_statistics_plots.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_summary_statistics_plots.ipynb>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_summary_statistics_plots.ipynb>`_.
 
 Interactive (marimo)
 --------------------
@@ -206,7 +206,7 @@ spectrogram/SAM2 store are read from the ``shared_resources`` block of
 ``visualizations_settings.json`` (``input_files_directory`` / ``spectrograms_dir``), resolved
 per-host via ``configure_path``. See :doc:`Visualize` for launch instructions. Source:
 `usv_embedding_explorer.py
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/analyses_notebooks/usv_embedding_explorer.py>`_.
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_embedding_explorer.py>`_.
 
 Rendered notebooks
 ------------------

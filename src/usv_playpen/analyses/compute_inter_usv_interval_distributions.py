@@ -292,7 +292,7 @@ def compute_session_usv_intervals(
     }
 
 
-def fit_gmm_sweep(
+def fit_mixture_model_sweep(
     intervals_by_key: dict[str, np.ndarray],
     n_components_min: int,
     n_components_max: int,
@@ -302,8 +302,8 @@ def fit_gmm_sweep(
     tau: float = 0.5,
     cv_n_folds: int = 5,
     cv_n_init: int = 5,
-    gmm_n_init: int = 10,
-    gmm_reg_covar: float = 1e-4,
+    mixture_model_n_init: int = 10,
+    mixture_model_reg_covar: float = 1e-4,
     model_class: str = "gauss",
 ) -> pls.DataFrame:
     """
@@ -312,8 +312,8 @@ def fit_gmm_sweep(
     Sweeps mixture models of size ``n_components_min`` through
     ``n_components_max`` on each pooled inter-USV interval array
     (typically ``{'male': ..., 'female': ...}``), repeating each fit
-    ``n_repeats`` times under different seeds. Despite the ``gmm`` in
-    the name and in the ``gmm_fits`` archive group, this function is
+    ``n_repeats`` times under different seeds. Despite the ``mixture_model`` in
+    the name and in the ``mixture_model_fits`` archive group, this function is
     model-class agnostic: ``model_class`` selects a Gaussian mixture
     (``'gauss'``) or a Student-t mixture (``'t'``); the shipped config
     default is ``'t'``. Selection across reps and across K is
@@ -353,9 +353,9 @@ def fit_gmm_sweep(
         column.
     cv_n_init (int)
         EM restarts per CV fold.
-    gmm_n_init (int)
+    mixture_model_n_init (int)
         EM restarts for each in-sample fit.
-    gmm_reg_covar (float)
+    mixture_model_reg_covar (float)
         Variance floor passed to the EM solver.
     model_class (str)
         ``'gauss'`` (sklearn ``GaussianMixture``) or ``'t'``
@@ -375,12 +375,12 @@ def fit_gmm_sweep(
         (``boundary_log_k`` / ``boundary_sec_k``). For the Student-t
         path (``model_class='t'``), ``mode_sec_k`` / ``density_k``
         carry per-component peak locations and the mixture density at
-        each component peak rather than distinct GMM-style mixture
+        each component peak rather than distinct Gaussian-style mixture
         modes.
     """
 
     if model_class not in ("gauss", "t"):
-        msg = f"fit_gmm_sweep: model_class must be 'gauss' or 't', got {model_class!r}."
+        msg = f"fit_mixture_model_sweep: model_class must be 'gauss' or 't', got {model_class!r}."
         raise ValueError(
             msg
         )
@@ -404,7 +404,7 @@ def fit_gmm_sweep(
                     seed=random_seed_base,
                     n_folds=cv_n_folds,
                     n_init=cv_n_init,
-                    reg_covar=gmm_reg_covar,
+                    reg_covar=mixture_model_reg_covar,
                 )
             else:  # t-mixture
                 cv_val = t_mixture_cv_neg_loglik(
@@ -413,7 +413,7 @@ def fit_gmm_sweep(
                     seed=random_seed_base,
                     n_folds=cv_n_folds,
                     n_init=max(1, cv_n_init - 2),  # t-mix EM is heavier; trim per-fold inits
-                    reg_covar=gmm_reg_covar,
+                    reg_covar=mixture_model_reg_covar,
                 )
             cv_per_key_n[key][n_components] = cv_val
 
@@ -450,7 +450,7 @@ def fit_gmm_sweep(
                 if model_class == "gauss":
                     model, model_order = fit_log_gmm(
                         iui, n_components=n_components, seed=seed,
-                        n_init=gmm_n_init, reg_covar=gmm_reg_covar,
+                        n_init=mixture_model_n_init, reg_covar=mixture_model_reg_covar,
                     )
                     logmeans, logsds, modes_log, densities = report_gmm_stats(model, model_order)
                     weights = model.weights_.flatten()[model_order]
@@ -459,7 +459,7 @@ def fit_gmm_sweep(
                 else:  # t-mixture
                     model, model_order = fit_log_t_mixture(
                         iui, n_components=n_components, seed=seed,
-                        n_init=gmm_n_init, reg_covar=gmm_reg_covar,
+                        n_init=mixture_model_n_init, reg_covar=mixture_model_reg_covar,
                     )
                     logmeans, logsds, nus, weights, mode_dens = report_t_mixture_stats(model, model_order)
                     # For the rep-row schema, "modes" are the per-component
@@ -530,7 +530,7 @@ class InterUSVIntervalCalculator:
     Cross-session inter-vocalization-interval driver. Reads one or more
     session-list text files, computes per-session inter-USV intervals in each
     interval-definition mode (``s2s`` and ``e2s``), runs the optional
-    GMM / t-mixture sweep and bootstrap LRT, and consolidates the
+    Gaussian / t-mixture sweep and bootstrap LRT, and consolidates the
     whole run into a single ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5``
     archive (see :mod:`usv_playpen.analyses.usv_interval_archive`).
     """
@@ -590,8 +590,8 @@ class InterUSVIntervalCalculator:
           ``interval_s``, ``log_interval``, ``male_id``, ``female_id``.
         * ``/<mode>/drop_counts`` -- per-sex count of dropped
           non-positive intervals (only meaningful for ``e2s`` mode).
-        * ``/<mode>/gmm_fits`` (only when ``fit_gmm`` is true) -- the
-          full GMM / t-mixture sweep with all four ICs (``bic``,
+        * ``/<mode>/mixture_model_fits`` (only when ``fit_mixture_model`` is true) -- the
+          full Gaussian / t-mixture sweep with all four ICs (``bic``,
           ``aic``, ``icl``, ``cv_neg_loglik``) and per-component
           parameters (``logmean_k``, ``logsd_k``, ``weight_k``,
           ``nu_k``) per ``(sex, n_comp, rep)`` row. This table doubles
@@ -624,7 +624,7 @@ class InterUSVIntervalCalculator:
         interval_types = ("s2s", "e2s")
         noise_col_id = cfg['noise_col_id']
         noise_categories = cfg['noise_categories']
-        fit_gmm = cfg['fit_gmm']
+        fit_mixture_model = cfg['fit_mixture_model']
         n_components_min = cfg['n_components_min']
         n_components_max = cfg['n_components_max']
         n_repeats = cfg['n_repeats']
@@ -632,8 +632,8 @@ class InterUSVIntervalCalculator:
         random_seed_base = cfg['random_seed_base']
         cv_n_folds = cfg['cv_n_folds']
         cv_n_init = cfg['cv_n_init']
-        gmm_n_init = cfg['gmm_n_init']
-        gmm_reg_covar = cfg['gmm_reg_covar']
+        mixture_model_n_init = cfg['mixture_model_n_init']
+        mixture_model_reg_covar = cfg['mixture_model_reg_covar']
         tau = cfg['tau']
         model_class = cfg['model_class']
         bootstrap_lrt_B = cfg['bootstrap_lrt_B']
@@ -760,13 +760,13 @@ class InterUSVIntervalCalculator:
                 "attrs": {},
                 "intervals": tidy_df,
                 "drop_counts": drop_df,
-                "gmm_fits": None,
+                "mixture_model_fits": None,
                 "bootstrap_lrt": None,
                 "bootstrap_lrt_null": None,
             }
 
-            if fit_gmm and (male_pool.size >= 2 or female_pool.size >= 2):
-                df_results = fit_gmm_sweep(
+            if fit_mixture_model and (male_pool.size >= 2 or female_pool.size >= 2):
+                df_results = fit_mixture_model_sweep(
                     intervals_by_key={"male": male_pool, "female": female_pool},
                     n_components_min=n_components_min,
                     n_components_max=n_components_max,
@@ -776,12 +776,12 @@ class InterUSVIntervalCalculator:
                     tau=tau,
                     cv_n_folds=cv_n_folds,
                     cv_n_init=cv_n_init,
-                    gmm_n_init=gmm_n_init,
-                    gmm_reg_covar=gmm_reg_covar,
+                    mixture_model_n_init=mixture_model_n_init,
+                    mixture_model_reg_covar=mixture_model_reg_covar,
                     model_class=model_class,
                 )
-                mode_payload["gmm_fits"] = df_results
-                message(f"  [{interval_type}] GMM sweep ({df_results.height} rows) recorded.")
+                mode_payload["mixture_model_fits"] = df_results
+                message(f"  [{interval_type}] mixture model sweep ({df_results.height} rows) recorded.")
 
                 # Parametric bootstrap LRT for K-selection (McLachlan 1987;
                 # McLachlan & Peel 2000 Ch. 6). Step-up rule: stop at the
@@ -810,9 +810,9 @@ class InterUSVIntervalCalculator:
                                 B=bootstrap_lrt_B,
                                 n_subsample=bootstrap_lrt_n_subsample,
                                 model_class=model_class,
-                                n_init_obs=gmm_n_init,
-                                n_init_boot=max(1, gmm_n_init - 7),
-                                reg_covar=gmm_reg_covar,
+                                n_init_obs=mixture_model_n_init,
+                                n_init_boot=max(1, mixture_model_n_init - 7),
+                                reg_covar=mixture_model_reg_covar,
                                 seed=random_seed_base,
                             )
                             pair_results[(K_n, K_a)] = res
@@ -883,7 +883,7 @@ class InterUSVIntervalCalculator:
             "n_sessions_loaded": int(len(sessions_with_data)),
             "noise_col_id": noise_col_id,
             "noise_categories": list(noise_categories),
-            "fit_gmm": bool(fit_gmm),
+            "fit_mixture_model": bool(fit_mixture_model),
             "n_components_min": int(n_components_min),
             "n_components_max": int(n_components_max),
             "n_repeats": int(n_repeats),
@@ -891,8 +891,8 @@ class InterUSVIntervalCalculator:
             "random_seed_base": int(random_seed_base),
             "cv_n_folds": int(cv_n_folds),
             "cv_n_init": int(cv_n_init),
-            "gmm_n_init": int(gmm_n_init),
-            "gmm_reg_covar": float(gmm_reg_covar),
+            "mixture_model_n_init": int(mixture_model_n_init),
+            "mixture_model_reg_covar": float(mixture_model_reg_covar),
             "tau": float(tau),
             "model_class": str(model_class),
             "bootstrap_lrt_B": int(bootstrap_lrt_B),
