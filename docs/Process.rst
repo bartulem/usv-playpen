@@ -26,6 +26,16 @@ Clicking the *Process* button will open a new window with all the processing fun
 
 All the main functions are outlined in orange, and black fields are function-specific options tunable by the user in the GUI. It is important to note that these are not necessarily *all* the options the user can set, and the full list of options can be found under each function in the */usv-playpen/_parameter_settings/processing_settings.json* file. Each time the user clicks the *Next* button in the window above, *processing_settings.json* is modified to the newest input configuration.
 
+.. note::
+
+   The shipped ``*_settings.json`` files store a literal default experimenter
+   (by default ``Bartul``). Experimenter-scoped paths are re-keyed to the active
+   experimenter automatically: in the GUI from the front-page experimenter
+   selection, and for headless / CLI / cluster runs from the host
+   ``behavioral_experiments_settings.toml`` ``experimenter`` key. You therefore
+   set your experimenter once instead of editing every path; the
+   ``experimenter`` shown in the example paths below stands in for that name.
+
 It is relevant to note here, that just like in the *Record* section, you have the capability to *Notify e-mail(s) of PC usage*. This is useful if you are running a long processing job and want to be notified when it is finished. The e-mails about start and end of jobs will be sent to the addresses listed in the *Notify e-mail(s) of PC usage* field (**no space after comma for multiple e-mails**), and it requires you to choose what particular PC you are using for this job. Since the e-mails are sent from a Google account, the first e-mail you receive may end up in the Spam folder, so make sure to check that:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_email.png
@@ -51,6 +61,12 @@ For **combined processing**, the order of processing steps is as follows:
     #. Concatenate e-phys files
     #. Split clusters to sessions
     #. Prepare SLEAP cluster job
+    #. Build QLVM training set (CLI only)
+    #. Train QLVM (CLI only)
+    #. Export YOLO dataset (CLI only)
+    #. Train (spectrogram) masks (CLI only)
+
+The last four run only when (re)training the spectrogram-pipeline models: they aggregate a cohort of sessions and produce the QLVM decoder and YOLO weights that the per-session *Infer QLVM latents* / *Generate (spectrogram) masks* steps reload (see the *USV spectrogram, mask & latent pipeline* section below).
 
 On the other hand, for **processing sessions separately**, the order of processing steps is as follows:
 
@@ -71,6 +87,10 @@ On the other hand, for **processing sessions separately**, the order of processi
     #. Curate DAS outputs
     #. Prepare USV assignment
     #. Run USV assignment
+    #. Generate spectrograms
+    #. Generate (spectrogram) masks
+    #. Compute USV features
+    #. Infer QLVM latents
 
 If you recorded a session with audio, e-phys and video data (imaginary example: 20250430_145017) and a calibration session (20250430_141750), the directory and file structure should look as follows:
 
@@ -123,8 +143,8 @@ If you recorded a session with audio, e-phys and video data (imaginary example: 
     │        ├── calibration_20250430_141321.21241563
     │        │   ...
 
-E-PHYS Processing
-^^^^^^^^^^^^^^^^^
+E-phys processing
+-----------------
 The processing of e-phys data passes several stages:
 
     #. Check e-phys data is synchronized with video
@@ -132,11 +152,11 @@ The processing of e-phys data passes several stages:
     #. Conduct spike sorting with `Kilosort4 <https://github.com/MouseLand/Kilosort/tree/main>`_ (not implemented in *usv-playpen*)
     #. Manually curate sorting outputs in `Phy <https://github.com/cortex-lab/phy>`_ (not implemented in *usv-playpen*)
     #. Split cluster spikes back to individual sessions
-    #. Trace probe tracks in Allen atlas coordinates with `brainreg <https://github.com/brainglobe/brainreg-napari>`_ and `brainglobe-segmentation <https://github.com/brainglobe/brainglobe-segmentation>`_ to determine what brain regions individual channels were recorded from using `iblapps <https://github.com/int-brain-lab/iblapps>`_ (not implemented in *usv-playpen*)
-    #. Compute unit quality metrics and categorize units with `SpikeInterface <https://github.com/SpikeInterface/spikeinterface>`_ (not implemented in *usv-playpen*)
+    #. Conduct light-sheet brain volume assembly, trace probe tracks in Allen atlas coordinates with `brainreg <https://github.com/brainglobe/brainreg-napari>`_ and `brainglobe-segmentation <https://github.com/brainglobe/brainglobe-segmentation>`_ to determine what brain regions individual channels were in using `iblapps <https://github.com/int-brain-lab/iblapps>`_, but IBL ephys-alignment functionality is provided (see :ref:`Histology`)
+    #. Compute unit quality metrics and categorize units with `SpikeInterface <https://github.com/SpikeInterface/spikeinterface>`_ (see :ref:`Histology` for details on how this is implemented in *usv-playpen*)
 
 Run E/V sync check
-""""""""""""""""""
+~~~~~~~~~~~~~~~~~~
 To run the e-phys/video synchronization check, you need to list the root directories of interest, select *Run E/V sync check*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_1.png
@@ -147,7 +167,7 @@ To run the e-phys/video synchronization check, you need to list the root directo
 
    <br>
 
-Neural recording data is aligned to the start of video recording, which is identifiable by searching for a ~2.3 s break in Loopbio Triggerbox pulses, which are constantly being transmitted to the Neuropixels digital input channel. The code recursively finds all the *ap.bin* files in the root directory and saves the digital input channel data (385th or last channel) to a separate Numpy file (which ends with *_sync_ch_data.npy*), if it hasn't been saved already. After finding the tracking start and end (based on the largest Triggerbox break duration and total number of recording frames) in this Numpy file. The total video duration will then be compared to the total video-aligned neural recording, and you will get a report back whether that discrepancy is below 12 ms (in other words, less than 2 video frames, which is an acceptable level of distortion). Information at what Neuropixels sample the first and last video recording frame were detected will be saved to, for instance. */mnt/falkner/Bartul/EPHYS/20250430_imec0/changepoints_info_20250430_imec0.json*, as exemplified below:
+Neural recording data is aligned to the start of video recording, which is identifiable by searching for a ~2.3 s break in Loopbio Triggerbox pulses, which are constantly being transmitted to the Neuropixels digital input channel. The code recursively finds all the *ap.bin* files in the root directory and saves the digital input channel data (385th or last channel) to a separate Numpy file (which ends with *_sync_ch_data.npy*), if it hasn't been saved already. After finding the tracking start and end (based on the largest Triggerbox break duration and total number of recording frames) in this Numpy file, the total video duration will then be compared to the total video-aligned neural recording, and you will get a report back whether that discrepancy is below 12 ms (in other words, less than 2 video frames, which is an acceptable level of distortion). Information at what Neuropixels sample the first and last video recording frame were detected will be saved to, for instance, */mnt/falkner/Bartul/EPHYS/20250430_imec0/changepoints_info_20250430_imec0.json*, as exemplified below:
 
 .. parsed-literal::
 
@@ -192,7 +212,7 @@ In the *changepoints* JSON file, the E/V sync check process will save the *track
         ],
         "largest_camera_break_duration": 69341,
         "file_duration_samples": 37825731,
-        "root_directory": "F:\Bartul\Data\20250430_145017",
+        "root_directory": "/mnt/falkner/Bartul/Data/20250430_145017",
         "total_num_channels": 385,
         "headstage_sn": "23280196",
         "imec_probe_sn": "22420015064"
@@ -212,7 +232,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
 
 
 Concatenate e-phys files
-""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~
 To run the concatenation of e-phys files (ap.bin), you need to list *all* the root directories of interest *in order you want them to be concatenated*, select *Concatenate e-phys files*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_2.png
@@ -254,7 +274,7 @@ The code will find all the *ap.bin* files for each probe and conduct the concate
     │   ├── changepoints_info_20250430_imec1.json
     │   ├── **concatenated_20250430_imec1.ap.bin**
 
-In the *changepoints* JSON file, the concatenation process will modify all other lines than the ones described above for E/V sync.
+In the *changepoints* JSON file, the concatenation process will modify all lines other than the ones described above for E/V sync.
 
 .. code-block:: json
 
@@ -269,7 +289,7 @@ In the *changepoints* JSON file, the concatenation process will modify all other
         ],
         "largest_camera_break_duration": 69341,
         "file_duration_samples": 37825731,
-        "root_directory": "F:\Bartul\Data\20250430_145017",
+        "root_directory": "/mnt/falkner/Bartul/Data/20250430_145017",
         "total_num_channels": 385,
         "headstage_sn": "23280196",
         "imec_probe_sn": "22420015064"
@@ -277,7 +297,7 @@ In the *changepoints* JSON file, the concatenation process will modify all other
 
 
 Split clusters to sessions
-""""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 After spike sorting and post-sorting curation are complete, you can split the spikes of individual clusters back to the original sessions. To do this, even if you recorded multiple sessions in one day, **it is sufficient to put only one root directory for that day**, e.g., the first one. The script will find EPHYS root directory, and split spikes from all probes into sessions based on the inputs in the changepoints JSON file. Select *Split clusters to sessions*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_3.png
@@ -329,8 +349,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
         "kilosort_version": "4"
       },
 
-Video Processing
-^^^^^^^^^^^^^^^^
+Video processing
+----------------
 The processing of video data passes multiple stages:
 
     #. Video concatenation and re-encoding (runs locally <20 min)
@@ -341,7 +361,7 @@ The processing of video data passes multiple stages:
     #. Translate, rotate and scale SLEAP coordinates to metric units (runs locally <1 min)
 
 Video concatenation and re-encoding
-"""""""""""""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Before running this section, it is always a good idea to check that video files were copied to the file server correctly. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run video concatenation and re-encoding, you need to list the root directories of interest, select *Run video concatenation* and *Run video re-encoding*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_4.png
@@ -444,12 +464,12 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
       }
 
 Prepare SLEAP cluster job
-"""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~~
 The *usv-playpen* GUI assumes usage of `SLEAP <https://sleap.ai/>`_ for animal pose tracking. To do this, one first needs to train one or multiple models on the data of interest (*i.e.*, social interactions). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *top-down centroid and centered instance model* ready for running inference.
 
 Since the average office PC does not necessarily have GPU-capabilities, it is advised to run SLEAP inference on a high-performance computing cluster, as these usually have GPU-capabilities and allow for the parallelization of the inference process. The *usv-playpen* GUI helps you prepare the SLEAP cluster job, but you will need to run the job on the cluster yourself.
 
-The preparation consists of creating a *job_list.txt* file which contains the paths to the video files and the model(s) to be used for inference. The job list can then be used by a shell script, such as the one in */usv-playpen/other/cluster/SLEAP/sleap.inference_global.sh* to execute inference on all video files of interest.
+The preparation consists of creating a *job_list.txt* file which contains the paths to the video files and the model(s) to be used for inference. The job list can then be used by a shell script, such as the one in */usv-playpen/other/cluster/SLEAP/sleap_inference_global.sh* to execute inference on all video files of interest.
 
 To run the SLEAP cluster job preparation, you need to list the root directories of interest (which will search for all videos recorded in those sessions), select the SLEAP conda environment name used **on the cluster**, select directories of centroid and centered instance models, select the output inference directory, select *Prepare SLEAP cluster job*, click *Next* and finally *Process*:
 
@@ -476,16 +496,6 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **centroid_model_path** : path to the SLEAP centroid model
 * **centered_instance_model_path** : path to the SLEAP centered instance model
 
-.. note::
-
-   The shipped ``*_settings.json`` files store a literal default experimenter
-   (currently ``Bartul``). Experimenter-scoped paths are re-keyed to the active
-   experimenter automatically: in the GUI from the front-page experimenter
-   selection, and for headless / CLI / cluster runs from the host
-   ``behavioral_experiments_settings.toml`` ``experimenter`` key. You therefore
-   set your experimenter once instead of editing every path; the
-   ``{experimenter}`` shown in the example paths below stands in for that name.
-
 .. code-block:: json
 
    "prepare_cluster_job": {
@@ -502,11 +512,11 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
   }
 
 SLEAP inference and proofreading
-""""""""""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The SLEAP inference and proofreading steps are not implemented in the *usv-playpen* GUI. However, you can run the inference job on the cluster using the shell script mentioned above. The proofreading step is done in the SLEAP GUI, where it is crucial to correct identity switches and to **keep the same animal identities across different video views**. By current convention, that means the male mouse is always assigned identity 0, and the female mouse is always assigned identity 1.
 
 Run SLP-H5 conversion
-"""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~
 After proofreading, you convert SLP to H5 files, which is the format SLEAP-Anipose operates on (*usv-playpen* runs this in parallel for all views). To do this, you need to list the root directories of interest, select *Run SLP-H5 conversion*, click *Next* and then *Process* (NB: using the SLEAP uvx functionality, it is no longer necessary to install SLEAP to run this step):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_6.png
@@ -544,12 +554,14 @@ This step shouldn’t take longer than two minutes to run; the directory structu
 
 
 Run AP triangulation & Re-coordinate
-""""""""""""""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Once SLP files are converted to H5, you are ready to run triangulation. Triangulation is the process of estimating the 3D coordinates of the tracked items based on the 2D coordinates from multiple camera views.
 
 SLEAP-Anipose triangulation can be run to obtain **3D arena points**, or **3D animal points**.
 
 3D arena points
+^^^^^^^^^^^^^^^
+
 It was previously explained how to record a calibration session, and in that session you recorded a 1-minute video of the arena with visible microphones and IR-reflective markers in its corners. All the video views of this recording can be loaded into the SLEAP GUI, and **only on the first frame of each view**, you label the 24 microphones and 4 corners with a 28-node skeleton that can be found in */usv-playpen/_config/playpen_skeleton.json*. You label the microphones with the corresponding channel number, and corners with N, E, S and W, according to the following schematic:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/arena_mics_avisoft_devices.png
@@ -593,6 +605,8 @@ This shouldn’t take longer than one minute; the directory structure and file n
     │        │   ...
 
 3D animal points
+^^^^^^^^^^^^^^^^
+
 To triangulate animal points, you need to list the root directories of interest, list their respective experimental codes, select the directory with the triangulated arena file, select *Run AP triangulation* and *Re-coordinate*, select "animal" for *Save transformation type* and choose "Yes" for *Delete original .h5*. Finally, click *Next* and then *Process* (a progress bar in the terminal will update you on the status of the process):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_8.png
@@ -703,11 +717,11 @@ The experimental codes are used to identify the session and the type of experime
 
    p - proestrus
    e - estrus
-   m - matestrus
+   m - metestrus
    d - diestrus
 
-Audio Processing
-^^^^^^^^^^^^^^^^
+Audio processing
+----------------
 The processing of audio data passes multiple stages:
 
     #. Split audio to single files and crop to video duration (runs locally <15 min)
@@ -718,9 +732,16 @@ The processing of audio data passes multiple stages:
     #. Curate DAS outputs (runs locally <2 min)
     #. Prepare USV assignment (runs locally <1 min)
     #. Run USV assignment (runs locally <5 min)
+    #. Generate per-USV spectrograms (runs on cluster)
+    #. Generate USV masks — YOLO detection + SAM2 segmentation (runs on cluster)
+    #. Compute USV acoustic features (runs on cluster)
+    #. Infer QLVM latents and watershed categories (runs on cluster)
+
+The QLVM decoder and mask detector that the last two steps rely on are trained separately, once per cohort — see *Train spectrogram-pipeline models* below.
 
 Convert to single-channel and crop to video
-"""""""""""""""""""""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 Before running this section, it is always a good idea to check that audio files were copied to the file server correctly. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select *Convert to single-ch files* and *Crop AUDIO (to VIDEO)*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_9.png
@@ -731,7 +752,7 @@ Before running this section, it is always a good idea to check that audio files 
 
    <br>
 
-If you used used the SYNC recording mode (usghflags: 1574), the *Trgbox-USGH device(s)* needs to be set to **m**. If you, however, used the NO SYNC recording mode (usghflags: 1862), the *Trgbox-USGH device(s)* needs to be set to **both**:
+If you used the SYNC recording mode (usghflags: 1574), the *Trgbox-USGH device(s)* needs to be set to **m**. If you, however, used the NO SYNC recording mode (usghflags: 1862), the *Trgbox-USGH device(s)* needs to be set to **both**:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_9b.png
    :align: center
@@ -793,7 +814,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
       }
 
 Run HPSS
-""""""""
+~~~~~~~~
 You have the option to denoise audio data using harmonic-percussive source separation (implemented with `librosa <https://librosa.org/doc/main/auto_examples/plot_hprss.html>`_). You can find materials that allow you to run this analysis on the cluster in: */usv-playpen/other/cluster/HPSS*. Alternatively, to run HPSS locally, you need to list the root directories of interest, select *Run HPSS*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_10.png
@@ -863,7 +884,7 @@ These four parameters are no longer exposed in the GUI (only the *Run HPSS* togg
     }
 
 Filter and concatenate to MEMMAP
-""""""""""""""""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select *Filter audio files* and *Concatenate to MEMMAP*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_11.png
@@ -919,7 +940,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
     }
 
 Run DAS inference
-"""""""""""""""""
+~~~~~~~~~~~~~~~~~
 The *usv-playpen* GUI assumes usage of `DAS <https://janclemenslab.org/das/>`_ for identifying vocalizations in audio recordings. To do this, one first needs to train a model on the data of interest (*i.e.*, social interactions with vocal output). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *model* ready for running inference.
 
 Since the average office PC does not necessarily have GPU-capabilities, it is advised to run DAS inference on a high-performance computing cluster, as these usually have GPU-capabilities and allow for the parallelization of the inference process. The *usv-playpen* GUI allows you to run the process locally (which can be time consuming), and it provides you with a shell script you can modify for cluster usage (*/usv-playpen/other/cluster/DAS/das_inference_global.sh*).
@@ -960,10 +981,10 @@ This will create a *das_annotations* subdirectory which will contain a CSV file 
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
-* **das_conda_env_name** : name of the local conda environment used for running DAS inference
-* **model_directory** : directory containing the trained DAS model
+* **das_conda_env_name** : name of the local conda environment used for running DAS inference (settings / CLI only; not exposed in the GUI)
+* **das_model_directory** : directory containing the trained DAS model
 * **model_name_base** : base name (date) of the trained DAS model
 * **output_file_type** : output file type ("csv" or "h5")
 * **segment_confidence_threshold** : confidence threshold for segmenting vocalizations
@@ -983,7 +1004,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
       },
 
 Curate DAS outputs
-""""""""""""""""""
+~~~~~~~~~~~~~~~~~~
 As explained above, DAS is run on every channel separately, such that a need arises to systematize different channel detections in one singular table. This code identifies the same detections across different channels and creates a single CSV file with the start and end times of each detected vocalization.
 
 To run, you need to list the root directories of interest, select *Curate DAS outputs*, click *Next* and then *Process*:
@@ -1058,7 +1079,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
 * **filter_putative_noise_bool** : whether to run the Phase-4 amplitude/spectrogram noise rejection; when ``false``, every merged detection is kept and the summary CSV is written as-is (peak/mean amplitude channels left at 0)
 * **len_win_signal** : STFT window length
-* **low_freq_cutoff** : frequency cutoff for filtering (in kHz)
+* **low_freq_cutoff** : frequency cutoff for filtering (in Hz)
 * **noise_corr_cutoff_min** : minimum correlation coefficient for noise
 * **noise_var_cutoff_max** : maximum variance for noise
 
@@ -1073,8 +1094,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
      }
 
 Prepare and run USV assignment
-""""""""""""""""""""""""""""""
-You might also want to know which animal emitted which vocalization. To do this, *usv-playpen* relies on `vocalocator <https://github.com/neurostatslab/vocalocator>`_, a tool for localizing animal vocalizations in 3D space, and it assumes you already have a trained model. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select the arena directory, select the conda environment name for vocalocator, select the directory of the vocalocator model, select *Prepare USV assignment* and *Run USV assignment*, select the *Assignment type* (``vcl`` or ``vcl-ssl``), click *Next* and then *Process*:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+You might also want to know which animal emitted which vocalization. To do this, *usv-playpen* relies on `vocalocator <https://github.com/neurostatslab/vocalocator>`_, a tool for localizing animal vocalizations in 3D space, and it assumes you already have a trained model. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select the arena directory, select the directory of the vocalocator model, select *Prepare USV assignment* and *Run USV assignment*, select the *Assignment type* (``vcl`` or ``vcl-ssl``), click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_14.png
    :align: center
@@ -1136,9 +1157,9 @@ The modified *usv_summary.csv* file now contains information in the last column 
     └────────┴─────────────┴─────────────┴──────────┴───┴─────────────┴───────────┴─────────────────────────────────┴──────────┘
 
 
-The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
-* **vcl_conda_env_name** : name of the local conda environment used for running Vocalocator
+* **vcl_conda_env_name** : name of the local conda environment used for running Vocalocator (settings / CLI only; not exposed in the GUI)
 * **vcl_model_directory** : directory containing the trained Vocalocator model
 * **vcl_version** : version of the Vocalocator model (e.g., "vcl-ssl" for the SSL model)
 
@@ -1147,11 +1168,251 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
    "vocalocator": {
     "vcl_conda_env_name": "vcl",
     "vcl_model_directory": "",
-    "vcl_version": "vcl-ssl",
+    "vcl_version": "vcl-ssl"
    }
 
-A/V Synchronization
-^^^^^^^^^^^^^^^^^^^
+USV spectrogram, mask & latent pipeline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an in-house, self-contained pipeline turns every detected USV into a spectrogram, a USV mask, interpretable acoustic features, and toroidal **QLVM** latents. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run them together, you need to list the root directories of interest, set the *Spectrogram models directory* (the single root from which the SAM2, YOLO, and QLVM model paths are derived), select *Generate spectrograms*, *Generate masks*, *Compute USV features* and *Infer QLVM latents*, click *Next* and then *Process*:
+
+.. raw:: html
+
+   <br>
+
+The *Generate spectrograms* step computes a variance-weighted, multi-channel spectrogram of every USV; *Generate masks* runs a YOLO box detector and prompts SAM2 to segment each call; *Compute USV features* derives per-USV spectral and amplitude features; and *Infer QLVM latents* embeds each spectrogram into the trained QLVM torus and assigns it a vocal category. The mask and latent steps run on the GPU and rely on two pre-trained models (see *Train spectrogram-pipeline models* below). The spectrogram and mask arrays are written to a new *spectrograms* subdirectory, while the acoustic features and QLVM latents are merged into *usv_summary.csv*:
+
+.. parsed-literal::
+
+    ├── 20250430_145017
+    │   ├── 20250430_145017_metadata.yaml
+    │   ├── audio
+    │   │   ├── cropped_to_video
+    │   │   │   ...
+    │   │   ├── das_annotations
+    │   │   │   ...
+    │   │   ├── hpss
+    │   │   │   ...
+    │   │   ├── hpss_filtered
+    │   │   │   ...
+    │   │   ├── original_mc
+    │   │   │   ...
+    │   │   ├── sound_localization
+    │   │   │   ...
+    │   │   ├── **spectrograms**
+    │   │   │   ├── **20250430_145017_spectrograms.h5**
+    │   │   ├── 20250430_145017_usv_summary.csv
+    │   │   ├── audio_triggerbox_sync_info.json
+    │   ├── ephys
+    │   │   ...
+    │   ├── sync
+    │   │   ...
+    │   └── video
+    │       ...
+
+The *20250430_145017_spectrograms.h5* file holds the spectrograms (created by *Generate spectrograms*) and the masks (appended by *Generate masks*), grouped per session:
+
+.. code-block:: text
+
+    20250430_145017_spectrograms.h5
+    ├── frequency_bins (F,)                                  # Generate spectrograms
+    ├── spectrogram/20250430_145017/spectrograms (N, F, T)   # Generate spectrograms
+    ├── spectrogram/20250430_145017/durations (N,)           # Generate spectrograms
+    ├── mask/20250430_145017/segmentations (M, F, T) bool    # Generate masks
+    └── mask/20250430_145017/spectrogram_index (M,)          # Generate masks
+
+The spectrogram rows are 1:1 with *usv_summary.csv*; each mask row carries a *spectrogram_index* pointing back to the spectrogram (and USV) it segments. Re-running a step overwrites only the group it owns and leaves the rest of the file intact.
+
+The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_summary.csv* in place. *Compute USV features* adds:
+
+* **mean_freq_hz** : energy-weighted mean frequency of the call (Hz)
+* **peak_freq_hz** : frequency of peak energy (Hz)
+* **freq_bandwidth_hz** : spectral bandwidth between the low/high cumulative-energy edges (Hz)
+* **mean_amplitude** : mean spectrogram amplitude over the call
+* **max_amplitude** : maximum spectrogram amplitude over the call
+* **spectral_entropy** : spectral entropy of the call
+
+.. parsed-literal::
+
+    ┌────────┬──────────────┬──────────────┬───────────────────┬────────────────┬───────────────┬──────────────────┐
+    │ usv_id ┆ mean_freq_hz ┆ peak_freq_hz ┆ freq_bandwidth_hz ┆ mean_amplitude ┆ max_amplitude ┆ spectral_entropy │
+    │ ---    ┆ ---          ┆ ---          ┆ ---               ┆ ---            ┆ ---           ┆ ---              │
+    │ i64    ┆ f64          ┆ f64          ┆ f64               ┆ f64            ┆ f64           ┆ f64              │
+    ╞════════╪══════════════╪══════════════╪═══════════════════╪════════════════╪═══════════════╪══════════════════╡
+    │ 0      ┆ 68421.3      ┆ 71250.0      ┆ 24180.5           ┆ 0.182          ┆ 0.94          ┆ 0.61             │
+    │ 1      ┆ 72980.1      ┆ 75000.0      ┆ 18640.2           ┆ 0.211          ┆ 0.88          ┆ 0.55             │
+    │ …      ┆ …            ┆ …            ┆ …                 ┆ …              ┆ …             ┆ …                │
+    └────────┴──────────────┴──────────────┴───────────────────┴────────────────┴───────────────┴──────────────────┘
+
+*Infer QLVM latents* adds:
+
+* **qlvm_dim1** / **qlvm_dim2** : the two torus (latent) coordinates
+* **qlvm_category** : the FINE watershed cluster label (vocal category)
+* **qlvm_supercategory** : the COARSE watershed cluster label (``0`` = background / noise)
+
+.. parsed-literal::
+
+    ┌────────┬───────────┬───────────┬───────────────┬────────────────────┐
+    │ usv_id ┆ qlvm_dim1 ┆ qlvm_dim2 ┆ qlvm_category ┆ qlvm_supercategory │
+    │ ---    ┆ ---       ┆ ---       ┆ ---           ┆ ---                │
+    │ i64    ┆ f64       ┆ f64       ┆ i64           ┆ i64                │
+    ╞════════╪═══════════╪═══════════╪═══════════════╪════════════════════╡
+    │ 0      ┆ 0.4123    ┆ 0.8871    ┆ 7             ┆ 3                  │
+    │ 1      ┆ 0.1902    ┆ 0.3320    ┆ 2             ┆ 1                  │
+    │ …      ┆ …         ┆ …         ┆ …             ┆ …                  │
+    └────────┴───────────┴───────────┴───────────────┴────────────────────┘
+
+These columns are comparable across every session embedded into the same QLVM model, and are consumed by the categorical USV-tuning analysis in :ref:`Analyze <Analyze>` (*Compute neuronal tuning curves*). When a mask is present for a call, the acoustic features are computed over the true SAM mask region; otherwise they fall back to the signal time-window.
+
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains the settings for these steps, partially modifiable in the GUI but fully modifiable manually. The six SAM2 / YOLO / QLVM model paths all derive from a single ``spectrograms_root`` (GUI: *Spectrogram models directory*): set that one directory and the paths below are filled as ``<root>/sam/...`` and ``<root>/qlvm/...``. Set any individual path explicitly (in the JSON or via a CLI flag) to override its derived default; ``generate_masks.sam2_model_cfg`` is a config name, not a path, so it is never derived.
+
+.. code-block:: json
+
+    "spectrograms_root": "/mnt/falkner/{experimenter}/spectrograms"
+
+*Generate spectrograms* (``generate_spectrograms``):
+
+* **num_freq_bins** : number of spectrogram frequency bins (output height)
+* **num_time_bins** : number of spectrogram time bins (output width)
+* **nperseg** : STFT window length / n_fft (samples)
+* **noverlap** : STFT overlap between successive windows (samples)
+* **min_freq** : lower frequency cutoff (Hz)
+* **max_freq** : upper frequency cutoff (Hz)
+* **hop_length** : STFT hop length (samples; defaults to ``nperseg // 4`` when null)
+* **window** : STFT window function
+* **offset** : time padding added before each USV onset and after each offset (seconds)
+* **normalize** : whether to min-max normalize each spectrogram to [0, 1]
+
+.. code-block:: json
+
+    "generate_spectrograms": {
+        "num_freq_bins": 128,
+        "num_time_bins": 128,
+        "nperseg": 2048,
+        "noverlap": 1792,
+        "min_freq": 30000,
+        "max_freq": 120000,
+        "hop_length": 512,
+        "window": "blackmanharris",
+        "offset": 0.0,
+        "normalize": true
+      }
+
+*Generate masks* (``generate_masks``):
+
+* **method** : mask-generation method (``boxprompt`` = box-prompted SAM2 segmentation)
+* **detector** : box detector backend (``yolo`` learned detector or ``cc`` connected-component baseline)
+* **sam2_model_dir** : SAM2 model directory (config/checkpoint resolve against it; the step changes into it)
+* **sam2_model_cfg** : SAM2 config name/path (resolved from the SAM2 install's Hydra search path)
+* **sam2_model_path** : SAM2 checkpoint path
+* **yolo_weights** : trained YOLO ``best.pt`` weights path
+* **yolo_conf** : YOLO confidence threshold (lower → more recall)
+* **yolo_iou** : YOLO NMS IoU (raise to keep stacked calls)
+* **yolo_imgsz** : YOLO inference image size (px)
+* **mask_cmap** : colormap used to render each spectrogram to RGB before detection
+* **duration_min** : minimum USV duration (time bins) to segment; shorter rows are skipped
+* **batch_size** : number of spectrograms per SAM2 batch
+* **multimask_output** : whether SAM2 returns multiple candidate masks per box (the best is kept)
+* **iou_floor** : minimum SAM2 predicted-IoU quality for a mask
+* **drop_below_iou** : if true, drop masks below ``iou_floor`` (else keep)
+* **split_disconnected** : split a mask with disconnected components into separate instances
+* **max_iters** : maximum SAM2 prompt-refinement iterations per box
+* **merge_instances** : merge overlapping per-box mask instances
+* **merge_iou** : IoU above which two instances are merged
+* **merge_containment** : containment fraction above which one instance is absorbed into another
+* **mask_intensity_floor** : minimum normalized spectrogram intensity for a pixel to remain in a mask
+* **tiny_mask_floor_px** : drop masks smaller than this many pixels
+* **min_box_area** : drop detector boxes smaller than this area (px²; 0 disables)
+
+.. code-block:: json
+
+    "generate_masks": {
+        "method": "boxprompt",
+        "detector": "yolo",
+        "sam2_model_dir": "",
+        "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+        "sam2_model_path": "",
+        "yolo_weights": "",
+        "yolo_conf": 0.25,
+        "yolo_iou": 0.7,
+        "yolo_imgsz": 128,
+        "mask_cmap": "viridis",
+        "duration_min": 10,
+        "batch_size": 12,
+        "multimask_output": true,
+        "iou_floor": 0.7,
+        "drop_below_iou": false,
+        "split_disconnected": true,
+        "max_iters": 1,
+        "merge_instances": true,
+        "merge_iou": 0.5,
+        "merge_containment": 0.8,
+        "mask_intensity_floor": 0.0,
+        "tiny_mask_floor_px": 12,
+        "min_box_area": 0
+      }
+
+When left empty (the default) the SAM2/YOLO paths are derived from ``spectrograms_root`` above; whether derived or set explicitly, they are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path``, the same handling as the DAS / Vocalocator model paths. ``sam2_model_cfg`` is a config name resolved inside the SAM2 install, not a mount path. Both ``sam2`` and ``ultralytics`` (usv-playpen core dependencies) must be installed.
+
+*Compute USV features* (``compute_usv_acoustic_features``):
+
+* **low_energy_frac** : lower edge of the cumulative-energy band used for spectral bandwidth
+* **high_energy_frac** : upper edge of the cumulative-energy band used for spectral bandwidth
+
+.. code-block:: json
+
+    "compute_usv_acoustic_features": {
+        "low_energy_frac": 0.05,
+        "high_energy_frac": 0.95
+      }
+
+*Infer QLVM latents* (``infer_qlvm_latents``):
+
+* **weights_npz_path** : path to the QLVM decoder weights ``.npz`` (written by *Train QLVM*)
+* **reference_arrays_fine_npz_path** : path to the FINE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_category``)
+* **reference_arrays_coarse_npz_path** : path to the COARSE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_supercategory``)
+* **lattice_type** : quasi-random lattice generator (must match training)
+* **latent_dim** : torus latent dimensionality (must match training)
+* **n_points** : number of lattice points (must match training)
+* **korobov_a** : Korobov generating integer (must match training)
+* **fib_m** : Fibonacci lattice parameter (must match training)
+* **time_stretch** : whether to time-stretch spectrograms before embedding (must match training)
+
+.. code-block:: json
+
+    "infer_qlvm_latents": {
+        "weights_npz_path": "",
+        "reference_arrays_fine_npz_path": "",
+        "reference_arrays_coarse_npz_path": "",
+        "lattice_type": "korobov",
+        "latent_dim": 2,
+        "n_points": 1021,
+        "korobov_a": 76,
+        "fib_m": 16,
+        "time_stretch": false
+      }
+
+Train spectrogram-pipeline models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Two per-session inference steps lean on learned models: *Generate (spectrogram) masks* uses a detector to find each call, and *Infer QLVM latents* uses a decoder to embed it. Both are trained **once on a representative cohort** and then reused for every future session — so this is a setup / maintenance step, not part of routine per-experiment processing. Retrain only when something changes materially: a new or substantially expanded cohort, a different spectrogram representation, or revised category definitions.
+
+Both train cross-session via CLI / cluster commands only (no GUI buttons): each is a two-command chain over a comma-separated list of session ``--root-directories`` writing standalone artifacts to ``--output-directory``. **SAM2 is used pretrained — it is not trained here.** Full flags: :ref:`the CLI reference <usv-pipeline-cli>`.
+
+QLVM decoder
+^^^^^^^^^^^^
+
+Defines the shared toroidal latent space (and watershed categories) that makes the ``qlvm_*`` columns comparable across every session embedded with the same model. ``build-qlvm-training-set`` aggregates the cohort's ``*_spectrograms.h5`` into a curated set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms) → ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``. ``train-qlvm`` then trains the decoder → ``qmc_train_qlvm.tar`` + ``qmc_decoder_weights.npz`` (reloaded by ``infer-qlvm-latents``). Cluster submitter: ``train_qlvm_global.sh``.
+
+Mask detector
+^^^^^^^^^^^^^
+
+The YOLO box detector that localizes each call in its spectrogram so SAM2 can segment it; ``generate-usv-masks`` reloads its weights. ``export-yolo-dataset`` renders the cohort's spectrograms to an Ultralytics dataset (``images/`` + ``labels/`` + ``data.yaml``); ``train-masks`` fine-tunes YOLO → the run directory + ``best.pt``. Cluster submitter: ``train_masks_global.sh``.
+
+Box labels are set by ``--label-source`` (or ``export_yolo_dataset.label_source``): ``cc`` (default — pseudo-labels from the connected-component detector; zero manual work, no GPU; the recommended start), ``manual`` (hand-verified ``{spec_id}.txt`` YOLO files in ``--manual-labels-directory``), or ``merge`` (``cc`` pseudo-labels overridden by manual files where present). ``manual`` / ``merge`` require ``--manual-labels-directory``; ``cc`` ignores it. The submitter exposes a ``LABEL_SOURCE`` knob and ``MANUAL_LABELS_DIRECTORY``. Both ``generate-usv-masks`` and ``train-masks`` need the ``sam2`` and ``ultralytics`` packages (usv-playpen core dependencies).
+
+A/V synchronization
+-------------------
 To run A/V synchronization, you need to list the root directories of interest, select *A/V Synchronization*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_15.png
@@ -1162,7 +1423,7 @@ To run A/V synchronization, you need to list the root directories of interest, s
 
    <br>
 
-The A/V synchronization procedure will first crate a *sync_px* file for each input camera, recording pixel intensities of each LED position. The objective is to identify the start of each IPI event in camera time and on both audio devices. One can then compare, for each individual IPI event, what the discrepancy is between the clocks of both devices and that is captured in the *summary.svg* histograms.
+The A/V synchronization procedure will first create a *sync_px* file for each input camera, recording pixel intensities of each LED position. The objective is to identify the start of each IPI event in camera time and on both audio devices. One can then compare, for each individual IPI event, what the discrepancy is between the clocks of both devices and that is captured in the *summary.svg* histograms.
 
 .. parsed-literal::
 
@@ -1245,95 +1506,3 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "relative_intensity_threshold": 1.0,
         "millisecond_divergence_tolerance": 12
    }
-
-USV spectrogram, mask & latent pipeline
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Once the audio-processing steps above have produced each session's curated ``*_usv_summary.csv`` (DAS-detected USVs), an in-house, self-contained pipeline turns those calls into spectrograms, call masks, interpretable acoustic features, and toroidal **QLVM** latents — and trains the two models the pipeline relies on. The four per-session **inference** steps are exposed as *Yes/No* checkboxes in the audio column of the *Process* GUI window (*Generate spectrograms*, *Generate masks*, *Compute USV features*, *Infer QLVM latents*); ticking several at once dispatches them in pipeline order (spectrograms → masks → features → QLVM). The two cross-session **training** chains are intentionally **CLI / cluster only** (they are not GUI buttons). Every step is a ``click`` command whose full options live under its block in */usv-playpen/_parameter_settings/processing_settings.json*, and they are documented with their flags in :ref:`the CLI reference <usv-pipeline-cli>`.
-
-Each per-session step reads and writes that session's ``audio/spectrograms/<session>_spectrograms.h5``; the model-training steps aggregate a list of those H5 files across a cohort and run once (not per session).
-
-**Inference (per session), in order:**
-
-    #. ``generate-usv-spectrograms`` — variance-weighted multi-channel spectrogram of every USV → the ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)), rows 1:1 with ``usv_summary.csv``.
-    #. ``generate-usv-masks`` — YOLO box detector → SAM2 segmentation of each call, written back into the SAME H5 as a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,)). Needs a pretrained SAM2 checkpoint + a trained YOLO ``best.pt`` set in settings (GPU recommended).
-    #. ``generate-usv-acoustic-features`` — per-USV spectral/amplitude features merged into ``usv_summary.csv``; restricted to the true SAM mask region when a ``mask/<session>`` group is present, else the signal time-window.
-    #. ``infer-qlvm-latents`` — embeds the spectrograms into the trained QLVM torus and merges the latent coordinates + watershed categories into ``usv_summary.csv`` (detailed below).
-
-**Training (cross-session, run once on a cohort):**
-
-    #. *QLVM decoder.* ``build-qlvm-training-set`` aggregates the per-session H5 files into a curated ``.npz`` set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms), then ``train-qlvm`` trains the decoder and writes ``qmc_decoder_weights.npz`` — the file ``infer-qlvm-latents`` reloads.
-    #. *YOLO box detector.* ``export-yolo-dataset`` renders the spectrograms to an Ultralytics dataset and attaches a box label to each, then ``train-masks`` fine-tunes YOLO and produces the ``best.pt`` that ``generate-usv-masks`` points at. **SAM2 itself is used pretrained — it is not trained here.**
-
-How the boxes are labelled is set by ``--label-source`` (or the ``export_yolo_dataset.label_source`` setting), and this is the one real fork in the mask-training workflow:
-
-* **Auto, no annotation** — ``--label-source cc`` (the default). Boxes are *pseudo-labelled* by the unlearned connected-component detector, so you can build a dataset and fine-tune YOLO straight from raw spectrograms with zero manual work. This is the recommended starting point; it bootstraps a learned detector that already outperforms the connected-component baseline. The build is pure ``numpy``/``scipy``/``skimage`` (no GPU, no ``torch``).
-* **Hand-labelled** — ``--label-source manual``. Boxes come from your own hand-verified YOLO-format label files, one ``{spec_id}.txt`` per spectrogram (the standard ``class x_centre y_centre width height``, normalised), read from ``--manual-labels-directory`` (or the ``export_yolo_dataset.manual_labels_directory`` setting). Any spectrogram without a matching file is exported with an empty label (treated as background).
-* **Hybrid** — ``--label-source merge``. Starts from the ``cc`` pseudo-labels and overrides them with a manual ``{spec_id}.txt`` wherever you have provided one — i.e. correct only the calls you care about and let the detector label the rest. Also needs ``--manual-labels-directory``.
-
-``manual`` and ``merge`` therefore require ``--manual-labels-directory`` to be set; ``cc`` ignores it.
-
-On the cluster, ready-made SLURM submitters live in */usv-playpen/other/cluster/usv_playpen*: the per-session inference half runs via ``process_data_step_four_inference_global.sh`` (a single GPU job that chains all four inference steps for one session), while the two training chains run via ``train_qlvm_global.sh`` (``build-qlvm-training-set`` → ``train-qlvm``) and ``train_masks_global.sh`` (``export-yolo-dataset`` → ``train-masks``) — both GPU jobs that take a comma-separated cohort of session ``--root-directories`` and write the model artifacts the inference steps reload. Edit the hyper-parameter block at the top of each script (cohort list, dataset / output directories, resources) before submitting. ``train_masks_global.sh`` additionally exposes a ``LABEL_SOURCE`` knob (``cc`` / ``manual`` / ``merge``) and a ``MANUAL_LABELS_DIRECTORY`` — leave it ``cc`` for the auto path, or set it to ``manual`` / ``merge`` and point ``MANUAL_LABELS_DIRECTORY`` at your hand-labelled ``{spec_id}.txt`` files; the script then passes ``--manual-labels-directory`` only when it is needed.
-
-To run ``generate-usv-masks`` / ``train-masks`` the environment must provide the ``sam2`` and ``ultralytics`` packages (both are usv-playpen core dependencies) plus, for ``generate-usv-masks``, the SAM2 checkpoint/config and the trained YOLO weights configured in the ``generate_masks`` settings block:
-
-.. code-block:: json
-
-    "generate_masks": {
-        "method": "boxprompt",
-        "detector": "yolo",
-        "sam2_model_dir": "/mnt/falkner/{experimenter}/spectrograms/sam",
-        "sam2_model_cfg": "configs/sam2.1/sam2.1_hiera_b+.yaml",
-        "sam2_model_path": "/mnt/falkner/{experimenter}/spectrograms/sam/checkpoint.pt",
-        "yolo_weights": "/mnt/falkner/{experimenter}/spectrograms/sam/best.pt"
-    }
-
-``sam2_model_path`` and ``yolo_weights`` are the fine-tuned/handoff weight files; ``sam2_model_dir`` is the directory they live in (the step changes into it), and the stock ``sam2_model_cfg`` config NAME is resolved by the installed ``sam2`` package's Hydra search path (a co-located ``configs/sam2.1/sam2.1_hiera_b+.yaml`` copy is also kept under ``sam2_model_dir``). The three filesystem paths are stored in the canonical ``/mnt/falkner/...`` lab-share form and translated to the host's mount root (e.g. ``/Volumes/falkner`` on macOS) via ``configure_path`` — the same handling as the DAS / Vocalocator model paths — so the defaults work on any lab host that has the share mounted. Override any of them per run with the CLI flags (``--sam2-model-dir`` / ``--sam2-model-cfg`` / ``--sam2-model-path`` / ``--yolo-weights``).
-
-Infer QLVM vocalization latents
-"""""""""""""""""""""""""""""""
-
-Each USV can be embedded into a trained **QLVM** (Quasi-Monte-Carlo latent-variable model) toroidal latent space, giving every call a pair of torus coordinates and a categorical label that are comparable across every session embedded into the same model. These ``qlvm_*`` columns are what the categorical USV-tuning analysis in :ref:`Analyze <Analyze>`'s *Compute neuronal tuning curves* (``usv_category_tuning`` / ``usv_category_peth``) consumes.
-
-``infer-qlvm-latents`` runs per session after the spectrogram pipeline above has produced ``audio/spectrograms/<session>_spectrograms.h5``. It loads the frozen decoder weights (``qmc_decoder_weights.npz``, written by ``train-qlvm``), rebuilds the fixed lattice, embeds the session's spectrograms via the torch-free JAX inference path, assigns each USV a cluster by spatial lookup into two fixed reference watershed grids (a fine and a coarse one), and merges the results into ``usv_summary.csv``:
-
-* ``qlvm_dim1`` / ``qlvm_dim2`` — the torus coordinates,
-* ``qlvm_category`` — the FINE cluster label (from the fine watershed grid, e.g. 12 clusters), and
-* ``qlvm_supercategory`` — the COARSE cluster label (from the coarse watershed grid, e.g. 7 clusters; ``0`` = background / noise).
-
-Both cluster labels are looked up in the torus-periodic ``ws_labels_periodic`` grid of the respective reference ``arrays.npz``. The decoder weights and the two reference grids are pointed at via the ``infer_qlvm_latents`` block of */usv-playpen/_parameter_settings/processing_settings.json* (``weights_npz_path``, ``reference_arrays_fine_npz_path``, ``reference_arrays_coarse_npz_path``; or the ``--weights-npz-path`` / ``--reference-arrays-fine-npz-path`` / ``--reference-arrays-coarse-npz-path`` flags). The full option list and the training command that produces the weights are documented in :ref:`the CLI reference <usv-pipeline-cli>`.
-
-Input / output structure
-""""""""""""""""""""""""
-
-The per-session steps share and mutate **two files** — the session's spectrogram H5 and its ``usv_summary.csv`` — while the cross-session training steps read many sessions and write standalone artifacts. After the per-session steps run, one session looks like:
-
-.. code-block:: text
-
-    <session>/
-    └── audio/
-        ├── <session>_usv_summary.csv                        # DAS USVs + columns added in place (below)
-        ├── hpss_filtered/*.mmap                             # input to generate-usv-spectrograms
-        └── spectrograms/
-            └── <session>_spectrograms.h5
-                ├── frequency_bins (F,)                      # generate-usv-spectrograms
-                ├── spectrogram/<session>/spectrograms (N,F,T)    # generate-usv-spectrograms
-                ├── spectrogram/<session>/durations  (N,)         # generate-usv-spectrograms
-                ├── mask/<session>/segmentations (M,F,T) bool     # generate-usv-masks
-                └── mask/<session>/spectrogram_index (M,)          # generate-usv-masks
-
-Per-session steps — which file each writes, and how:
-
-* ``generate-usv-spectrograms`` — **creates** ``<session>_spectrograms.h5`` (the ``spectrogram/<session>`` group + top-level ``frequency_bins``).
-* ``generate-usv-masks`` — **appends** the ``mask/<session>`` group to that same H5 (deleted + rewritten on re-run; the spectrogram group is left untouched).
-* ``generate-usv-acoustic-features`` — **rewrites ``usv_summary.csv`` in place**, adding/replacing ``mean_freq_hz``, ``peak_freq_hz``, ``freq_bandwidth_hz``, ``mean_amplitude``, ``max_amplitude``, ``spectral_entropy``.
-* ``infer-qlvm-latents`` — **rewrites ``usv_summary.csv`` in place**, adding/replacing ``qlvm_dim1``, ``qlvm_dim2``, ``qlvm_category``, ``qlvm_supercategory``.
-
-The three in-place steps are idempotent: re-running overwrites only the group / columns they own and leaves everything else intact.
-
-Cross-session steps take a comma-separated list of session **root directories** (``--root-directories``; each session's ``audio/spectrograms/*_spectrograms.h5`` is found within it) and write standalone artifacts to ``--output-directory``:
-
-* ``build-qlvm-training-set`` → ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``.
-* ``train-qlvm`` → ``qmc_train_qlvm.tar`` (checkpoint) + ``qmc_decoder_weights.npz`` (the file ``infer-qlvm-latents`` loads).
-* ``export-yolo-dataset`` → ``images/{train,val}/`` + ``labels/{train,val}/`` + ``data.yaml``.
-* ``train-masks`` → the Ultralytics run directory + ``best.pt`` (the file ``generate-usv-masks`` loads).

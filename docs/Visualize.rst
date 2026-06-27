@@ -30,9 +30,9 @@ The *Root directories* field enables you to list the directories containing the 
 
 .. parsed-literal::
 
-    F:\\Bartul\\Data\\20250430_145017
-    F:\\Bartul\\Data\\20250430_165730
-    F:\\Bartul\\Data\\20250430_182145
+    /mnt/falkner/Bartul/Data/20250430_145017
+    /mnt/falkner/Bartul/Data/20250430_165730
+    /mnt/falkner/Bartul/Data/20250430_182145
 
 Plot neuronal tuning figures
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
