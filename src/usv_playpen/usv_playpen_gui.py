@@ -1319,35 +1319,6 @@ class ConductVisualizations(QWidget):
 class USVPlaypenWindow(QMainWindow):
     """ Main window of usv-playpen GUI """
 
-    def changeEvent(self, event: QEvent) -> None:
-        """
-        Description
-        -----------
-        Reverts any compositor-initiated maximize / fullscreen back to the
-        window's fixed size, but only on Linux. Every page is ``setFixedSize``
-        with absolute-positioned widgets, and the maximize button is hidden; on
-        macOS and Windows those hints are honoured, so the GUI never maximizes
-        there and this method is a no-op. On Linux, however, Wayland
-        compositors (notably COSMIC) ignore the fixed-size / maximize-off hints
-        and can still maximize or fullscreen the window via a keybind, leaving
-        the absolute-positioned widgets stranded in a corner. The platform gate
-        guarantees the working operating systems are left entirely unaffected.
-
-        Parameters
-        ----------
-        event (QEvent)
-            The change event; only ``WindowStateChange`` is acted upon.
-
-        Returns
-        -------
-        None
-        """
-        if (event.type() == QEvent.Type.WindowStateChange
-                and platform.system() == 'Linux'
-                and (self.isMaximized() or self.isFullScreen())):
-            self.showNormal()
-        super().changeEvent(event)
-
     def __init__(self, **kwargs) -> None:
         """
         Description
