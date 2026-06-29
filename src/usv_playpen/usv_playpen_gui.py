@@ -7226,6 +7226,53 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.appendPlainText(s)
 
 
+def _ensure_linux_desktop_entry() -> None:
+    """
+    Description
+    -----------
+    On Linux, write a ``usv-playpen.desktop`` launcher entry into the user's
+    applications directory so the desktop environment can associate the running
+    window with a dock / app-grid icon. The window's Wayland ``app_id`` (and X11
+    ``WM_CLASS``) is set to ``usv-playpen`` via
+    :meth:`QApplication.setDesktopFileName`; a compositor like COSMIC then looks
+    up a ``usv-playpen.desktop`` with a matching ``StartupWMClass`` to find the
+    icon (a client-set window icon alone is not used for the dock on Wayland).
+    The entry points ``Icon=`` at the bundled ``gui_icon.png``. It is written
+    only when absent (idempotent) and only on Linux -- macOS and Windows use
+    their own native icon mechanisms and are left untouched. Any failure is
+    swallowed so it can never block GUI startup.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    if platform.system() != 'Linux':
+        return
+    try:
+        applications_directory = Path.home() / '.local' / 'share' / 'applications'
+        desktop_entry = applications_directory / 'usv-playpen.desktop'
+        if desktop_entry.exists():
+            return
+        applications_directory.mkdir(parents=True, exist_ok=True)
+        desktop_entry.write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=usv-playpen\n"
+            "Comment=Behavioral experiments, data processing and analyses\n"
+            "Exec=usv-playpen\n"
+            f"Icon={gui_icon}\n"
+            "Terminal=false\n"
+            "StartupWMClass=usv-playpen\n"
+            "Categories=Science;Education;\n"
+        )
+    except OSError:
+        pass
+
+
 def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMainWindow]:
     """
     Description
@@ -7260,6 +7307,10 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
         usv_playpen_app.setStyleSheet(file.read())
 
     usv_playpen_app.setWindowIcon(QIcon(gui_icon))
+    # Wayland/X11 dock-icon association: set the app_id (== the .desktop basename)
+    # and ensure a matching usv-playpen.desktop exists on Linux. No-op elsewhere.
+    QApplication.setDesktopFileName('usv-playpen')
+    _ensure_linux_desktop_entry()
 
     _toml = toml.load(Path(__file__).parent / '_config/behavioral_experiments_settings.toml')
 
