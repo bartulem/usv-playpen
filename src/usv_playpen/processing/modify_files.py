@@ -747,6 +747,7 @@ class Operator:
         """
 
         self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
         subprocesses = []
 
@@ -820,6 +821,7 @@ class Operator:
         """
 
         self.message_output(f"Video re-encoding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+        smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
         video_dir = pathlib.Path(self.root_directory) / 'video'
         non_hidden_files = [p.name for p in video_dir.iterdir() if p.is_file() and not p.name.startswith('.')]
