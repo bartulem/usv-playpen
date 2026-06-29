@@ -33,8 +33,8 @@ All the main functions are outlined in orange, and black fields are function-spe
    experimenter automatically: in the GUI from the front-page experimenter
    selection, and for headless / CLI / cluster runs from the host
    ``behavioral_experiments_settings.toml`` ``experimenter`` key. You therefore
-   set your experimenter once instead of editing every path; the
-   ``experimenter`` shown in the example paths below stands in for that name.
+   set your experimenter once instead of editing every path; the example paths
+   below show that shipped default.
 
 It is relevant to note here, that just like in the *Record* section, you have the capability to *Notify e-mail(s) of PC usage*. This is useful if you are running a long processing job and want to be notified when it is finished. The e-mails about start and end of jobs will be sent to the addresses listed in the *Notify e-mail(s) of PC usage* field (**no space after comma for multiple e-mails**), and it requires you to choose what particular PC you are using for this job. Since the e-mails are sent from a Google account, the first e-mail you receive may end up in the Spam folder, so make sure to check that:
 
@@ -506,7 +506,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
       "22085397",
       "21241563"
     ],
-    "inference_root_dir": "/mnt/falkner/{experimenter}/SLEAP/inference",
+    "inference_root_dir": "/mnt/falkner/Bartul/SLEAP/inference",
     "centroid_model_path": "",
     "centered_instance_model_path": ""
   }
@@ -995,7 +995,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
     "das_command_line_inference": {
         "das_conda_env_name": "das",
-        "das_model_directory": "/mnt/falkner/{experimenter}/DAS/model_2024-03-25",
+        "das_model_directory": "/mnt/falkner/Bartul/DAS/model_2024-03-25",
         "model_name_base": "20240325_073951",
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,
@@ -1268,7 +1268,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
 
 .. code-block:: json
 
-    "spectrograms_root": "/mnt/falkner/{experimenter}/spectrograms"
+    "spectrograms_root": "/mnt/falkner/Bartul/spectrograms"
 
 *Generate spectrograms* (``generate_spectrograms``):
 

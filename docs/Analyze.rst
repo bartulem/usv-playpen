@@ -389,7 +389,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "naturalistic_wav_sampling_rate": 250,
         "naturalistic_playback_snippets_dir_prefix": "female",
         "total_acceptable_naturalistic_playback_time": 1080,
-        "naturalistic_iui_archive_h5": "/mnt/falkner/{experimenter}/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
+        "naturalistic_iui_archive_h5": "/mnt/falkner/Bartul/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
         "naturalistic_interval_mode": "e2s",
         "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
         "playback_seed": null

@@ -127,7 +127,7 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 .. code-block:: json
 
     "figures": {
-        "save_directory": "/mnt/falkner/{experimenter}/figures",
+        "save_directory": "/mnt/falkner/Bartul/figures",
         "fig_format": "png",
         "dpi": 300,
         "timestamp_in_name": true,

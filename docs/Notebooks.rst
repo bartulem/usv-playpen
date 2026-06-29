@@ -232,9 +232,9 @@ The run is configured in the ``compute_inter_usv_interval_distributions`` block 
 
     "compute_inter_usv_interval_distributions": {
         "session_lists": [
-          "/mnt/falkner/{experimenter}/modeling/input_files/courtship_behavioral_intact_partners_sessions_list.txt"
+          "/mnt/falkner/Bartul/modeling/input_files/courtship_behavioral_intact_partners_sessions_list.txt"
         ],
-        "output_directory": "/mnt/falkner/{experimenter}/modeling/usv_interval_results",
+        "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
         "noise_col_id": "vae_supercategory",
         "noise_categories": [0],
         "fit_mixture_model": true,
@@ -248,7 +248,7 @@ The run is configured in the ``compute_inter_usv_interval_distributions`` block 
         "mixture_model_n_init": 10,
         "mixture_model_reg_covar": 1e-4,
         "tau": 0.5,
-        "figures_directory": "/mnt/falkner/{experimenter}/figures",
+        "figures_directory": "/mnt/falkner/Bartul/figures",
         "bins_per_sex": {"male": 80, "female": 30},
         "plot_log_xlims": [-5.0, 5.0],
         "model_class": "t",
