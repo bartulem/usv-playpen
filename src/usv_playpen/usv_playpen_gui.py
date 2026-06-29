@@ -17,6 +17,14 @@ from functools import partial
 from importlib import metadata
 from pathlib import Path
 
+# torch MUST be imported before PyQt6. On Windows, importing Qt first makes
+# torch's c10.dll fail to initialise (OSError [WinError 1114]) because Qt and
+# torch ship conflicting low-level DLLs and the first loader wins. The GUI pulls
+# torch in transitively anyway (via noisereduce in the analyses package), so it
+# is hoisted to the front here so its native DLLs load first. Keep it first;
+# do not re-sort below the PyQt6 imports.
+import torch  # noqa: F401
+
 import platformdirs
 import toml
 import yaml
