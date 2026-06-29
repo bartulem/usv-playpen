@@ -49,6 +49,8 @@ Source: `modeling_analyses.ipynb
 
 Neural
 ------
+.. _unit-triage-aggregator:
+
 **neuronal_tuning_summary.ipynb** — has two independent halves.
 
 * **Cross-session unit-triage aggregator** — drives ``aggregate_units_across_conditions``:
@@ -57,12 +59,22 @@ Neural
   ``triage_stats`` block, joins each cluster with ``unit_catalog.csv`` for ``mouse_id`` /
   ``rec_date`` / ``brain_area``, collapses same-day duplicate units into one record with
   per-session evidence stacked underneath each modality, and pickles a unit-keyed roll-up
-  ``<out_dir>/unit_triage_<YYYYMMDD>_<HHMMSS>.pkl``. It never re-loads spike or USV data —
-  a pure pkl-to-pickle pass — so thresholds can be swept without re-running compute. Edit
-  ``CONDITION_TO_SESSION_LIST`` to point at the lists and optionally ``THRESHOLDS``
-  (mirrors the ``detect_interesting_tuning_neurons`` block of ``analyses_settings.json``:
-  ``z_threshold``, ``min_consecutive_bins``, ``vmi_alpha``, ``vmi_min_bouts``,
-  ``spatial_info_bps_threshold``).
+  ``<out_dir>/unit_triage_<YYYYMMDD>_<HHMMSS>.pkl`` (``thresholds_used``,
+  ``conditions_included`` / ``sessions_skipped``, ``n_units_total`` /
+  ``n_units_per_condition``, and a ``units`` map keyed by
+  ``unit_uid = f"{mouse_id}_{rec_date}_{unit_id}"`` — each unit carrying identity,
+  ``anatomy_region``, and a per-condition / per-modality ``n_significant`` / ``n_tested`` /
+  ``consistency`` plus a ``per_session`` evidence list and an ``aggregate`` scalar). It
+  never re-loads spike or USV data — a pure pkl-to-pickle pass — so thresholds can be swept
+  without re-running compute. Edit ``CONDITION_TO_SESSION_LIST`` to point at the lists and
+  optionally ``THRESHOLDS`` (mirrors the ``detect_interesting_tuning_neurons`` block of
+  ``analyses_settings.json``: ``z_threshold`` (3.0), ``min_consecutive_bins`` (3),
+  ``vmi_alpha`` (0.01), ``vmi_min_bouts`` (10), ``spatial_info_bps_threshold`` (0.5)). The
+  ``z_threshold`` / ``min_consecutive_bins`` gate the ``usv_peth`` / ``usv_property_tuning``
+  / ``usv_category_peth`` / ``usv_category_tuning`` / ``behavioral`` modalities (peak Z +
+  run length; ``usv_category_tuning`` is peak-Z only, no axis order); ``vmi_alpha`` /
+  ``vmi_min_bouts`` gate VMI; ``spatial_info_bps_threshold`` is the Skaggs-info gate for the
+  2D spatial modality.
 * **Anatomy / dataset-overview figures** — renders per-session SVG/PNG anatomy panels
   (recording yield by mouse and cell type, per-probe unit waveforms with the four-shank
   schematic, a 360° rotating brain video of every SU-somatic unit's 3D position coloured by
@@ -91,8 +103,7 @@ per unit in ``unit_catalog.csv``), the animal-to-sessions map, the coactivity
 hyperparameters (window, bootstrap N, shuffle / permutation counts), and per-group plot
 colors. The loader picks, per animal, the single recording day with the largest
 filtered-unit pool so the analysed population is fixed across the day's sessions. Every
-stochastic routine accepts an optional ``seed`` for reproducible nulls. See :doc:`Analyze`
-for context. Source: `neuronal_coactivity_analyses.ipynb
+stochastic routine accepts an optional ``seed`` for reproducible nulls. Source: `neuronal_coactivity_analyses.ipynb
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/neuronal_coactivity_analyses.ipynb>`_.
 
 **npx_histology_unit_quality_processing.ipynb** — end-to-end histology /
@@ -154,10 +165,99 @@ LRT null-distribution panel (with broken-axis support when ``LR_obs`` falls far 
 null), the BIC and AIC sweeps with the LRT-selected K highlighted, the best-fit mixture with
 per-component triangles labelled ``(a)``, ``(b)``, ... and a left-aligned legend mapping each
 letter to its component median in seconds, an optional per-component pdf overlay, and a
-log-log Q-Q diagnostic inset. The GUI does not expose this analysis; its parameters
-(``session_lists``, ``output_directory``, ``fit_mixture_model``, the ``model_class`` t/gauss choice,
-the component-count sweep and EM/CV knobs, ``bins_per_sex``, ``plot_log_xlims``, …) live in
-``analyses_settings.json``. See :doc:`Analyze` for the archive schema and the compute step.
+log-log Q-Q diagnostic inset.
+
+The GUI does not expose this analysis; the compute step is the CLI
+``generate-usv-interval-distributions`` command (see :doc:`CLI` for its flags). It pools
+same-emitter inter-USV intervals across one or more **session-list text files**
+(``session_lists``, one session root per line; each path is run through ``configure_path``
+so Linux / Mac / Windows paths resolve on the host), tags each session with its source
+list for grouping, and writes the self-describing ``usv_interval_analysis_<...>.h5`` archive
+this notebook reads. By convention ``track_names[0]`` is the male and ``track_names[1]`` the
+female. Two interval definitions are always computed:
+
+* ``s2s`` -- ``start[i+1] - start[i]`` (literature standard).
+* ``e2s`` -- ``start[i+1] - stop[i]`` (alternate; negative for overlapping calls, dropped via
+  the ``> 0`` filter with the dropped count reported per session per mode).
+
+The archive (full schema in :mod:`usv_playpen.analyses.usv_interval_archive`) holds, per
+interval ``<mode>``:
+
+* Root ``/attrs`` -- every JSON parameter that drove the run, plus ``created_at_iso``,
+  ``git_sha``, ``source_lists`` and ``n_sessions_loaded``.
+* ``/<mode>/intervals`` -- tidy one-row-per-interval table (``session_id``, ``source_list``,
+  ``interval_type``, ``sex``, ``interval_s``, ``log_interval``, ``male_id``, ``female_id``).
+* ``/<mode>/drop_counts`` -- per-sex count of dropped non-positive intervals (only
+  meaningful for ``e2s``).
+* ``/<mode>/mixture_model_fits`` (when ``fit_mixture_model``) -- the full Gaussian / t-mixture
+  sweep with all four ICs (``bic``, ``aic``, ``icl``, ``cv_neg_loglik``) and per-component
+  parameters (``logmean_k``, ``logsd_k``, ``weight_k``, ``nu_k``) per ``(sex, n_comp, rep)``
+  row; this table doubles as the model-parameter store the plot helpers rebuild fits from.
+* ``/<mode>/bootstrap_lrt`` / ``/<mode>/bootstrap_lrt_null`` -- per-pair LRT summary
+  (with ``K_selected_step_up``) and the long-form bootstrap LR null draws.
+* ``/<mode>/attrs`` -- ``alpha_effective`` plus the per-sex step-up-selected K
+  (``K_selected_male``, ``K_selected_female``).
+
+The run is configured in the ``compute_inter_usv_interval_distributions`` block of
+``analyses_settings.json`` (mirrored by the CLI flags above):
+
+* **session_lists** / **output_directory** -- session-list text files, and where the
+  ``usv_interval_analysis_<...>.h5`` archive is written.
+* **noise_col_id** / **noise_categories** -- the noise column in the USV summary CSV and the
+  integer label(s) marking a USV as noise.
+* **fit_mixture_model** -- whether to run the mixture-model sweep after interval extraction.
+* **n_components_min** / **n_components_max** / **n_repeats** / **max_modes_reported** /
+  **random_seed_base** -- the component-count sweep, EM-init repeats per ``(key, n_components)``,
+  modes recorded per fit, and base seed (rep ``r`` uses ``random_seed_base + r``).
+* **cv_n_folds** / **cv_n_init** / **mixture_model_n_init** / **mixture_model_reg_covar** --
+  cross-validation folds and per-fold EM restarts, in-sample EM restarts, and the covariance
+  regularisation (``1e-4``, above sklearn's ``1e-6``, to keep small components from
+  collapsing on log-interval data).
+* **tau** -- posterior threshold for the LEFT component when computing decision boundaries
+  (``0.5`` = standard Bayes boundary; higher makes the "short" regime more conservative).
+* **figures_directory** / **bins_per_sex** / **plot_log_xlims** -- where the notebook saves
+  figures, per-sex histogram bin counts, and the log-seconds x-axis clip.
+* **model_class** -- ``"t"`` (default): a Student-t mixture in log-space whose one
+  heavy-tailed component absorbs the long-pause tail (per-component ``nu`` estimated via the
+  Peel & McLachlan (2000) EM), recommended for bout-structure analysis; or ``"gauss"``: the
+  classical log-Gaussian mixture (kept for back-compatibility, but tends to need several wide
+  Gaussians for the heavy tail). Both share the IC sweep and selection rules; a ``model_class``
+  column tags each ``mixture_model_fits`` row.
+* **bootstrap_lrt_B** / **bootstrap_lrt_n_subsample** / **bootstrap_lrt_alpha** /
+  **bootstrap_lrt_bonferroni** -- parametric-bootstrap replicate count, the subsample size
+  fits share so the LR statistic is on one N scale, the step-up alpha, and whether to
+  Bonferroni-divide it across the consecutive K-pairs.
+
+.. code-block:: json
+
+    "compute_inter_usv_interval_distributions": {
+        "session_lists": [
+          "/mnt/falkner/{experimenter}/modeling/input_files/courtship_behavioral_intact_partners_sessions_list.txt"
+        ],
+        "output_directory": "/mnt/falkner/{experimenter}/modeling/usv_interval_results",
+        "noise_col_id": "vae_supercategory",
+        "noise_categories": [0],
+        "fit_mixture_model": true,
+        "n_components_min": 2,
+        "n_components_max": 6,
+        "n_repeats": 10,
+        "max_modes_reported": 3,
+        "random_seed_base": 0,
+        "cv_n_folds": 5,
+        "cv_n_init": 5,
+        "mixture_model_n_init": 10,
+        "mixture_model_reg_covar": 1e-4,
+        "tau": 0.5,
+        "figures_directory": "/mnt/falkner/{experimenter}/figures",
+        "bins_per_sex": {"male": 80, "female": 30},
+        "plot_log_xlims": [-5.0, 5.0],
+        "model_class": "t",
+        "bootstrap_lrt_B": 1000,
+        "bootstrap_lrt_n_subsample": 15000,
+        "bootstrap_lrt_alpha": 0.05,
+        "bootstrap_lrt_bonferroni": false
+    }
+
 Source: `usv_interval_mixture_models_plots.ipynb
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_interval_mixture_models_plots.ipynb>`_.
 

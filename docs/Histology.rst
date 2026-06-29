@@ -56,7 +56,7 @@ essential when joining IBL anatomy to Kilosort spike data.
    (``npx-meta-to-coords``).
 
 Settings and inputs
-^^^^^^^^^^^^^^^^^^^^
+--------------------
 The stable per-step tunables live in
 ``_parameter_settings/analyses_settings.json`` and are read once at the
 top of the notebook; each section's acquisition paths and session
@@ -86,7 +86,7 @@ in ``configure_path`` so they resolve on macOS (``/Volumes/...``) too.
 .. _histology-lightsheet:
 
 1. Light-sheet volume assembly
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-------------------------------
 Two acquisition modalities are supported. **LaVision UltraMicroscope**
 acquisitions are a flat directory of OME-TIFF Z-planes per channel
 (single tile); ``stack_lightsheet_volume`` glues the planes into one
@@ -138,7 +138,7 @@ upside-down in coronal and sagittal → toggle ``z_flip``.
 .. _histology-ibl-export:
 
 2. IBL ephys-alignment export (pre-alignment)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------------------------
 Once the volumes are registered with brainreg and per-shank tracks are
 traced in napari, the IBL ephys-alignment GUI anchors every recording
 channel to an Allen CCF region. It needs two inputs per session / probe /
@@ -196,7 +196,7 @@ from ``spike_templates``.
 .. _histology-ibl-postalign:
 
 3. IBL ephys-alignment export (post-alignment)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------------------------------
 Two pure-JSON steps consume the GUI's per-shank output:
 
 .. code-block:: python
@@ -223,7 +223,7 @@ expects downstream.
 .. _histology-spike-quality:
 
 4. Spike quality metrics
-^^^^^^^^^^^^^^^^^^^^^^^^^
+-------------------------
 With the unified ``channel_locations.json`` in place for every probe,
 ``SpikeQualityMetricsExtractor`` computes the per-unit quality-metrics
 catalog on pinned stock ``spikeinterface==0.104.3``. It reads the
@@ -277,7 +277,7 @@ columns. ``run`` writes the global ``EPHYS/unit_catalog.csv`` and a per-probe
 .. _histology-utilities:
 
 Anatomy-converter utility
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+---------------------------
 The sites-to-anatomy converter is exposed as a ``python -m`` module CLI. It
 defaults to a dry run via ``--dry-run`` and prints a JSON summary. Its path
 flags default to the paths in ``analyses_settings.json`` under ``data_roots``
@@ -296,7 +296,7 @@ override:
 .. _histology-meta-to-coords:
 
 SpikeGLX meta → probe-geometry converter
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------------------------
 ``sglx_meta_to_coords`` converts a SpikeGLX ``.ap.meta`` file into a
 per-channel geometry artifact for a downstream sorter — a Kilosort
 ``chanMap.mat``, a JRClust ``.prm`` string set, a ``(n_channels, 2)``
@@ -328,7 +328,7 @@ the public SpikeGLX / Imec documentation. Run it as a GUI via the
 .. _histology-notebook:
 
 Interactive notebook
-^^^^^^^^^^^^^^^^^^^^^
+---------------------
 The ``npx_histology_unit_quality_processing.ipynb`` notebook is the
 recommended entry point — it runs the whole workflow above in order from a
 single **Parameters** cell. Its detailed walkthrough, knobs, and rendered

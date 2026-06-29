@@ -35,7 +35,7 @@ The *Root directories* field enables you to list the directories containing the 
     /mnt/falkner/Bartul/Data/20250430_182145
 
 Plot neuronal tuning figures
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------
 Once the *Compute neuronal tuning curves* function from the *Analyze* section has completed, you have the ability to plot its results. Output is one combined multi-page document per cluster: a behavioral page per temporal offset and per plot-feature group (``individual.<mouse>`` and ``social``) followed by the vocal pages — Page 1 (bout raster + pooled pre-USV ``usv_peth`` on top, ``usv_property_tuning`` continuous-property grid below) and Page 2 (``usv_category_tuning`` watersheds + ``usv_category_peth`` per-category PETH grid). 1D ratemaps are drawn as a line spanning the plot, colored by the per-mouse palette (or the social color for social features). The 99% CI of the shuffled distribution is shown as a shaded band around the line.
 
 To obtain this visualization, list the root directories of interest, select *Plot neuronal tuning figures* in the GUI and click *Next* and then *Visualize*:
@@ -135,7 +135,7 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
     }
 
 Visualize 3D behavior (figure/video)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+------------------------------------
 Once 3D tracked data is available, you can visualize animal social behavior, either in figure or video. This GUI segment allows for a wide array of options in creating such visualizations. For example, you can choose whether you want to view the interaction from above or the side, and you can also choose to rotate the view as the behavior unfolds.
 
 To obtain this visualization, you need to list the root directories of interest (it is best to stick with one), select the *Visualize 3D behavior (figure/video)* option in the GUI, insert the arena directory for that session, pick all desired figure features, click *Next* and then *Visualize*. It is important to point out that there are many more features available in the *visualizations_settings.json* file than are available in the GUI, and these options are explained in detail several sections below:
@@ -396,7 +396,7 @@ Parameters specific to subplots include:
     }
 
 Render USV spectrograms and embedding maps
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+--------------------------------------------
 Beyond the GUI functions above, the ``usv_playpen.visualizations.make_usv_spectrograms`` module renders publication figures for ultrasonic vocalizations (USVs) directly from the processed session artifacts. Its per-session and pooled helpers (``USVSpectrogramPlotter``, ``plot_usv_property_histograms``, ``plot_session_type_usv_counts``, ``plot_session_usv_timeline``) are driven from the ``usv_spectrogram_analyses.ipynb`` notebook rather than the GUI — the notebook catalogue and its **Parameters** cell are detailed in :doc:`Notebooks`. The remaining helper is **cohort-level** and GUI-exposed:
 
 - ``plot_embedding_with_category_thumbnails`` — a two-panel figure pairing an embedding scatter (VAE umap or QLVM torus) — colored by call category and overlaid with kNN cluster boundaries — against a per-category grid of spectrogram thumbnails sampled from the consolidated SAM2 + spectrogram store. Unlike the helpers above it is **cohort-level** and exposed in the GUI: enabling *Render embedding thumbnails* in the *Visualize* window (third column, with **map type**, **clustering type borders** (coarse / fine), **thumbnails per category**, **thumbnail layout**, **draw cluster boundaries**, **apply SAM2 mask** and **per-cluster sampling** selectors) pools every cohort session list under ``shared_resources.input_files_directory`` and resolves the store from ``shared_resources.spectrograms_dir``, then runs ONCE (the same run-once dispatch as the QLVM torus video, via ``render_embedding_thumbnails_for_cohort``). The remaining knobs — per-cluster sampling, spiral overlay, kNN boundary density, pick / cluster-ID annotations, thumbnail spacing / stretch, ``mask_excluded_categories`` and ``category_colors`` — all live in the ``embedding_thumbnails`` settings block; the figure DPI and the sampling seed are taken from the general ``figures`` block (``dpi`` / ``seed``); the QLVM cluster centers (for cluster-ID labels / spiral centers) are auto-resolved from the newest ``qlvm_clusters_*.h5`` under ``spectrograms_dir`` (QLVM map only); and the cohort scatter is read from the precomputed pooled-embeddings cache ``<spectrograms_dir>/embeddings/pooled_embeddings.parquet`` (one parquet holding both embeddings' coordinates and the coarse + fine labels) — built once on a fast mount via ``build_pooled_embeddings_df`` so the figure does not re-read every session's ``usv_summary.csv``.
@@ -404,7 +404,7 @@ Beyond the GUI functions above, the ``usv_playpen.visualizations.make_usv_spectr
 The rendering knobs for the spectrogram plotter live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar limits and the save options); the module-level helpers take their inputs as function arguments, surfaced in ``usv_spectrogram_analyses.ipynb`` — see :doc:`Notebooks`.
 
 Interactively explore USV embeddings (marimo app)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+---------------------------------------------------
 For interactive (rather than static) exploration of the embedding spaces, the repository ships a `marimo <https://marimo.io>`_ app, ``notebooks/usv_embedding_explorer.py``. It pools every selected session's ``*_usv_summary.csv`` into one scatter of the chosen embedding map (VAE UMAP or QLVM torus), lets you brush a region, and shows a grid of example spectrograms sampled from inside that region. Launch it from the repo root in either of two modes:
 
 .. code-block:: bash
@@ -418,7 +418,7 @@ For interactive (rather than static) exploration of the embedding spaces, the re
 Both open in the browser at ``http://localhost:2718``. Its controls (session-list picker, map, color-by, cluster boundaries, brushed-region spectrogram examples) and the settings it reads are catalogued in :doc:`Notebooks`.
 
 Render the QLVM torus-traversal video
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+--------------------------------------
 The ``usv_playpen.visualizations.qlvm_torus_traversal_video`` module renders a two-panel "torus walkthrough" animation (the in-house, torch-free port of ``qmc_deep_gen``'s ``inference_latents_video.py``). The **left** panel is the QLVM latent map — the density heatmap with watershed cluster contours (no axes/ticks) and a recency-coloured trajectory trail (cyan at the current position, fading to white going back, built with ``create_colormap``); the **right** panel is a phase-specific spectrogram board. All spectrograms have their SAM2 mask applied (``apply_mask``) and the call centred in its window with equal padding on both sides (so duration is preserved, not stretched). It runs in three parts, each introduced by a Helvetica-Light title card:
 
 - **Part 1 — Cluster peaks**: one phase per cluster, the right panel showing that cluster's peak spectrogram surrounded by its ``m`` nearest USVs in concentric rings; on the left the active cluster is outlined in a thick **pulsating cyan** contour with a cyan dot at its centre.
@@ -438,7 +438,7 @@ Inputs — resolved by convention from the single ``shared_resources.spectrogram
 The output ``.mp4`` is written to ``figures.save_directory`` with a timestamped name (``qlvm_torus_traversal_<YYYYMMDD_HHMMSS>.mp4``) when no explicit ``--output-path`` is given. All text renders in Helvetica (titles in Helvetica Light) via the shared ``apply_plot_style`` helper. The module lives in the repository at `qlvm_torus_traversal_video.py <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/visualizations/qlvm_torus_traversal_video.py>`_.
 
 Render a USV sequence figure
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------------
 ``USVSpectrogramPlotter.plot_sequence`` (the ``'sequence'`` mode of ``make_usv_spectrograms``) renders a **per-session**, static two-panel figure of the USVs in a chosen ``[start, start + duration]`` window (seconds). It is wired into the GUI *Visualize* window (third column) under "Render USV sequence figure" and dispatched per session in ``visualize_data.py`` via ``make_usv_spectrograms_bool`` (enabling the GUI toggle sets ``make_usv_spectrograms.mode = 'sequence'``).
 
 - **Left** — a precomputed cohort embedding landscape (``embedding`` = ``qlvm`` or ``vae``), drawn with no ticks/ticklabels. The window's USVs are colored by emitter (``male_colors[0]`` / ``female_colors[0]`` / ``unassigned_colors[0]``), sized by call duration, numbered ``1..n`` in time order, and joined by a connecting line whose color runs white → male color along the bout and whose per-segment width tracks the inter-USV silent gap (``start`` of the next minus ``stop`` of the previous; on the QLVM torus the line takes the short wrap-around route across an edge when that is closer — VAE is a plain plane, no wrapping). Both embeddings draw a gray_r density heatmap and, when ``draw_boundaries`` is on, overlay black category boundaries selected by ``boundary_clustering`` (``coarse`` / ``fine``). Both maps are resolved by convention from the shared ``shared_resources.spectrograms_dir``: QLVM from ``<dir>/qlvm/arrays_{coarse,fine}.npz`` (the watershed arrays, on the unit torus); VAE from ``<dir>/vae/vae_density_{coarse,fine}.npz`` (a cohort density precomputed over the umap coordinate extent), where **coarse** = ``vae_supercategory`` and **fine** = ``vae_category`` regions. The VAE files are built once with ``build_vae_density_npz`` (CLI ``build-vae-density``), which pools the cohort via ``build_pooled_embeddings_df``, histograms a density, and rasterizes a nearest-neighbour category field. VAE still requires the session's ``usv_summary`` to carry ``vae_umap1``/``vae_umap2`` (else a clear error is raised); when the resolved npz is absent (e.g. the VAE density was never precomputed) the panel falls back to a bare (tick-free) scatter.

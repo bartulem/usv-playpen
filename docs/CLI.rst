@@ -5,7 +5,7 @@ Command Line Interfaces (CLI)
 This page explains how to use the *usv-playpen* CLI (command line interfaces).
 
 Record
-^^^^^^
+------
 
 ``conduct-calibration``
 ``conduct-calibration`` is the command-line interface for performing a tracking camera calibration.
@@ -37,7 +37,7 @@ Record
                             --set arduino_sync_port=COM7
 
 Process
-^^^^^^^
+-------
 
 ``concatenate-ephys-files``
 ``concatenate-ephys-files`` is the command-line interface for concatenating ephys binary files across multiple sessions.
@@ -418,7 +418,7 @@ Process
       --model-dir           Directory of the Vocalocator model.
 
 Neuropixels
-^^^^^^^^^^^
+-----------
 
 ``npx-meta-to-coords``
 ``npx-meta-to-coords`` launches a small Qt GUI that converts a SpikeGLX ``*.ap.meta`` file into a probe-geometry artifact: a Kilosort ``chanMap.mat``, plain-text or ``.npy`` site coordinates, JRClust ``.prm`` strings, or an in-place upgrade of a legacy (pre-SpikeGLX 032623) meta file. It takes no command-line flags — every choice is made through three dialogs. The related ``python -m usv_playpen.neuropixels.anatomy_converter`` utility, and the programmatic API, are documented on the :ref:`Histology` page.
@@ -433,7 +433,7 @@ Neuropixels
       3. confirm the destination, optionally showing the probe-layout plot.
 
 Analyze
-^^^^^^^
+-------
 
 ``generate-beh-features``
 ``generate-beh-features`` is the command-line interface for calculating 3D behavioral features.
@@ -507,7 +507,7 @@ By convention, ``track_names[0]`` is treated as the male and ``track_names[1]`` 
 
 Both interval definitions are computed unconditionally on every run: ``s2s`` = ``start[i+1] - start[i]`` (literature standard), and ``e2s`` = ``start[i+1] - stop[i]`` (alternate; can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the drop count reported per session per mode). Both definitions share the same per-session pass over the noise-filtered USV table, so there is no compute saving from omitting one.
 
-For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arrays plus per-session metadata), ``ivi_master_<mode>.csv`` (tidy one-row-per-inter-USV interval table), and (when ``--fit-mixture-model``) ``mixture_model_fits_results_<mode>.csv`` with per-component log-means, log-stds, weights, mixture modes, and adjacent-component decision boundaries to ``--output-directory``.
+The command writes a single self-describing HDF5 archive ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` to ``--output-directory``. Per interval mode it holds the tidy one-row-per-interval table, the per-sex drop counts, and (when ``--fit-mixture-model``) the full Gaussian / Student-t mixture sweep — all four information criteria plus per-component parameters — and the bootstrap-LRT results; the root ``/attrs`` records every parameter that drove the run (plus ``git_sha`` and the source lists), so the archive is fully self-describing. See :doc:`Notebooks` for the complete archive schema and the plotting notebook that reads it.
 
 .. code-block:: text
 
@@ -530,8 +530,8 @@ For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arr
       -h, --help                  Show this help message and exit.
       --session-list              Path to a text file containing session root
                                   directories (one per line). Repeatable.
-      --output-directory          Directory in which to write inter-USV interval master pickles,
-                                  tidy CSVs and mixture-model sweep CSVs.
+      --output-directory          Directory in which to write the consolidated
+                                  usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5 archive.
       --noise-col-id              Name of the noise classification column in the
                                   USV summary CSV.
       --noise-categories          Integer label(s) in noise_col_id that mark a
@@ -608,7 +608,7 @@ For each mode, the command writes ``ivi_intervals_<mode>.pkl`` (pooled M / F arr
                                              applied to ratemaps and shuffle distributions; ``0`` disables.
 
 Visualize
-^^^^^^^^^
+---------
 
 ``generate-rm-figs``
 ``generate-rm-figs`` is the command-line interface for rendering the per-cluster neuronal tuning figures from existing pkls. Each cluster gets one combined output (behavioral pages + vocal Page 1 / Page 2). The output file format and ratemap colormap are read from ``visualizations_settings.json`` under the shared ``figures`` block; compute-time knobs (``smoothing_sd``, ``behavioral_min_occupancy_seconds``) live on the analyses side and are read from each pkl's ``behavioral_metadata`` block at render time.
@@ -804,7 +804,7 @@ Visualize
 .. _usv-pipeline-cli:
 
 USV vocalization & model-training pipeline
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+--------------------------------------------
 
 These commands form the in-house, self-contained pipeline that turns segmented USVs into spectrograms, call masks, interpretable acoustic features, and toroidal QLVM latents — and that trains the two models the pipeline relies on (the SAM2 box-prompt **YOLO detector** and the **QLVM decoder**). Every step is a `click <https://click.palletsprojects.com>`_ CLI whose full option set lives under its block in */usv-playpen/_parameter_settings/processing_settings.json*; the flags below are the common overrides. The per-session steps read/write each session's ``audio/spectrograms/<session>_spectrograms.h5``; the cross-session steps aggregate a list of those files.
 
@@ -958,7 +958,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       (full parameters under processing_settings.json -> "train_masks")
 
 Set up and use the CLI on the *Spock* cluster
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+---------------------------------------------
 
 In order to exploit the full functionality of *usv-playpen*, one should install subsidiary uv (sleap) or conda packages (das, vcl-ssl). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
 

@@ -52,7 +52,7 @@ described in :ref:`modeling-model-selection`.
    ``modeling_settings_dict=None``; pass an explicit dict to override.
 
 Settings and inputs
-^^^^^^^^^^^^^^^^^^^^
+--------------------
 All knobs live in ``_parameter_settings/modeling_settings.json``. The most
 important blocks are:
 
@@ -98,7 +98,7 @@ embedded into every output filename for provenance.
 .. _modeling-extract:
 
 1. Extract and save modeling input data
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------------------
 Each pipeline converts the per-session loader output into a
 **modeling-input pickle** — a nested ``{feature: {session: {event-window
 arrays}}}`` dictionary with an embedded ``_input_metadata`` provenance
@@ -181,7 +181,7 @@ is fit.
 .. _modeling-diagnostics:
 
 2. Predictor diagnostics
-^^^^^^^^^^^^^^^^^^^^^^^^^
+-------------------------
 Before committing to model fitting, inspect how the candidate predictors
 relate to each other and to the event train. The three diagnostic plots
 share feature ordering and per-group colour so a feature can be
@@ -214,7 +214,7 @@ flags predictor pairs whose ``|rho|`` crosses the audit's concern / exclude
 thresholds and reports per-feature VIFs.
 
 3. Univariate modeling and ranking
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------------------
 Univariate fits (one behavioral feature at a time) produce the ranking that
 seeds model selection. At cohort scale they are dispatched as a SLURM job
 array (one feature per task) via ``main_univariate_dispatcher``; the
@@ -225,7 +225,7 @@ The ranking is visualised with ``plot_feature_ranking`` (single target) or
 .. _modeling-model-selection:
 
 4. Model selection (forward stepwise)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+--------------------------------------
 Greedy forward-stepwise selection stacks features on top of the univariate
 ranking, adding at each step the feature whose contribution most improves
 the held-out score (one-standard-error rule; see the source for the exact
@@ -287,7 +287,7 @@ per-feature / per-step pickle each, ready for consolidation.
 .. _modeling-consolidate:
 
 5. Consolidate per-feature / per-step pickles
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------------------------
 After a SLURM array finishes, merge its outputs into a single artifact. The
 consolidators assert metadata equality across every per-feature / per-step
 pickle (guarding against stray files from a different run), hoist the agreed
@@ -322,7 +322,7 @@ Set ``delete_individuals_after=True`` only once you have verified the
 consolidated artifact is correct.
 
 6. Visualisations
-^^^^^^^^^^^^^^^^^
+-----------------
 The ``usv_playpen.visualizations.modeling_plots`` module renders every
 modeling figure. The univariate set (``plot_feature_ranking``,
 ``plot_significant_filters``, ``plot_significant_filters_grid``,
@@ -335,7 +335,7 @@ pickle; the selection set (``plot_model_selection_results``,
 ``output_dir`` arguments and otherwise renders inline.
 
 7. CNN deep-learning baseline
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+------------------------------
 A non-linear baseline for the continuous manifold-position regression. The
 runner loads the modeling-input pickle, stacks the per-feature ``(N, T)``
 matrices into the ``(N, F, T)`` tensor the 1-D ResNet consumes, trains over
@@ -357,7 +357,7 @@ spatial-precision grid, error landscape, regional saliency) are rendered by
 ``DeepResultsVisualizer`` from the same prediction artifact.
 
 Interactive notebook
-^^^^^^^^^^^^^^^^^^^^^
+---------------------
 The ``modeling_analyses.ipynb`` notebook is the recommended interactive
 entry point — it runs the whole workflow above in order from a single
 **Parameters** cell. Its detailed walkthrough, knobs, and rendered source

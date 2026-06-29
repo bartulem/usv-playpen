@@ -1174,7 +1174,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 USV spectrogram, mask & latent pipeline
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an in-house, self-contained pipeline turns every detected USV into a spectrogram, a USV mask, interpretable acoustic features, and toroidal **QLVM** latents. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run them together, you need to list the root directories of interest, set the *Spectrogram models directory* (the single root from which the SAM2, YOLO, and QLVM model paths are derived), select *Generate spectrograms*, *Generate masks*, *Compute USV features* and *Infer QLVM latents*, click *Next* and then *Process*:
+Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an in-house, self-contained pipeline turns every detected USV into a spectrogram, a USV mask, interpretable acoustic features, and toroidal **QLVM** latents. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run them together, you need to list the root directories of interest, set the *Spectrogram models directory* (the single root from which the SAM2, YOLO, and QLVM model paths are derived), select *Generate spectrograms*, *Generate masks*, *Compute USV features* and *Infer QLVM latents*, click *Next* and then *Process* (GPU is required):
 
 .. raw:: html
 
@@ -1225,24 +1225,24 @@ The spectrogram rows are 1:1 with *usv_summary.csv*; each mask row carries a *sp
 
 The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_summary.csv* in place. *Compute USV features* adds:
 
-* **mean_freq_hz** : energy-weighted mean frequency of the call (Hz)
+* **mean_freq_hz** : energy-weighted mean frequency of the USV (Hz)
 * **peak_freq_hz** : frequency of peak energy (Hz)
 * **freq_bandwidth_hz** : spectral bandwidth between the low/high cumulative-energy edges (Hz)
-* **mean_amplitude** : mean spectrogram amplitude over the call
-* **max_amplitude** : maximum spectrogram amplitude over the call
-* **spectral_entropy** : spectral entropy of the call
+* **mean_amplitude** : mean spectrogram amplitude over the USV (a.u.)
+* **max_amplitude** : maximum spectrogram amplitude over the USV (a.u.)
+* **spectral_entropy** : spectral entropy of the USV (nats)
 
 .. parsed-literal::
 
-    ┌────────┬──────────────┬──────────────┬───────────────────┬────────────────┬───────────────┬──────────────────┐
-    │ usv_id ┆ mean_freq_hz ┆ peak_freq_hz ┆ freq_bandwidth_hz ┆ mean_amplitude ┆ max_amplitude ┆ spectral_entropy │
-    │ ---    ┆ ---          ┆ ---          ┆ ---               ┆ ---            ┆ ---           ┆ ---              │
-    │ i64    ┆ f64          ┆ f64          ┆ f64               ┆ f64            ┆ f64           ┆ f64              │
-    ╞════════╪══════════════╪══════════════╪═══════════════════╪════════════════╪═══════════════╪══════════════════╡
-    │ 0      ┆ 68421.3      ┆ 71250.0      ┆ 24180.5           ┆ 0.182          ┆ 0.94          ┆ 0.61             │
-    │ 1      ┆ 72980.1      ┆ 75000.0      ┆ 18640.2           ┆ 0.211          ┆ 0.88          ┆ 0.55             │
-    │ …      ┆ …            ┆ …            ┆ …                 ┆ …              ┆ …             ┆ …                │
-    └────────┴──────────────┴──────────────┴───────────────────┴────────────────┴───────────────┴──────────────────┘
+    ┌────────┬───┬──────────────┬──────────────┬───────────────────┬────────────────┬───────────────┬──────────────────┐
+    │ usv_id ┆ … ┆ mean_freq_hz ┆ peak_freq_hz ┆ freq_bandwidth_hz ┆ mean_amplitude ┆ max_amplitude ┆ spectral_entropy │
+    │ ---    ┆   ┆ ---          ┆ ---          ┆ ---               ┆ ---            ┆ ---           ┆ ---              │
+    │ i64    ┆   ┆ f64          ┆ f64          ┆ f64               ┆ f64            ┆ f64           ┆ f64              │
+    ╞════════╪═══╪══════════════╪══════════════╪═══════════════════╪════════════════╪═══════════════╪══════════════════╡
+    │ 0      ┆ … ┆ 68421.3      ┆ 71250.0      ┆ 24180.5           ┆ 0.182          ┆ 0.94          ┆ 0.61             │
+    │ 1      ┆ … ┆ 72980.1      ┆ 75000.0      ┆ 18640.2           ┆ 0.211          ┆ 0.88          ┆ 0.55             │
+    │ …      ┆ … ┆ …            ┆ …            ┆ …                 ┆ …              ┆ …             ┆ …                │
+    └────────┴───┴──────────────┴──────────────┴───────────────────┴────────────────┴───────────────┴──────────────────┘
 
 *Infer QLVM latents* adds:
 
@@ -1252,15 +1252,15 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
 
 .. parsed-literal::
 
-    ┌────────┬───────────┬───────────┬───────────────┬────────────────────┐
-    │ usv_id ┆ qlvm_dim1 ┆ qlvm_dim2 ┆ qlvm_category ┆ qlvm_supercategory │
-    │ ---    ┆ ---       ┆ ---       ┆ ---           ┆ ---                │
-    │ i64    ┆ f64       ┆ f64       ┆ i64           ┆ i64                │
-    ╞════════╪═══════════╪═══════════╪═══════════════╪════════════════════╡
-    │ 0      ┆ 0.4123    ┆ 0.8871    ┆ 7             ┆ 3                  │
-    │ 1      ┆ 0.1902    ┆ 0.3320    ┆ 2             ┆ 1                  │
-    │ …      ┆ …         ┆ …         ┆ …             ┆ …                  │
-    └────────┴───────────┴───────────┴───────────────┴────────────────────┘
+    ┌────────┬───┬───────────┬───────────┬───────────────┬────────────────────┐
+    │ usv_id ┆ … ┆ qlvm_dim1 ┆ qlvm_dim2 ┆ qlvm_category ┆ qlvm_supercategory │
+    │ ---    ┆   ┆ ---       ┆ ---       ┆ ---           ┆ ---                │
+    │ i64    ┆   ┆ f64       ┆ f64       ┆ i64           ┆ i64                │
+    ╞════════╪═══╪═══════════╪═══════════╪═══════════════╪════════════════════╡
+    │ 0      ┆ … ┆ 0.4123    ┆ 0.8871    ┆ 7             ┆ 3                  │
+    │ 1      ┆ … ┆ 0.1902    ┆ 0.3320    ┆ 2             ┆ 1                  │
+    │ …      ┆ … ┆ …         ┆ …         ┆ …             ┆ …                  │
+    └────────┴───┴───────────┴───────────┴───────────────┴────────────────────┘
 
 These columns are comparable across every session embedded into the same QLVM model, and are consumed by the categorical USV-tuning analysis in :ref:`Analyze <Analyze>` (*Compute neuronal tuning curves*). When a mask is present for a call, the acoustic features are computed over the true SAM mask region; otherwise they fall back to the signal time-window.
 
@@ -1395,9 +1395,9 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 Train spectrogram-pipeline models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Two per-session inference steps lean on learned models: *Generate (spectrogram) masks* uses a detector to find each call, and *Infer QLVM latents* uses a decoder to embed it. Both are trained **once on a representative cohort** and then reused for every future session — so this is a setup / maintenance step, not part of routine per-experiment processing. Retrain only when something changes materially: a new or substantially expanded cohort, a different spectrogram representation, or revised category definitions.
+Two per-session inference steps lean on learned models: *Generate (spectrogram) masks* uses a detector to find each USV, and *Infer QLVM latents* uses a decoder to embed it. Both are trained **once on a representative cohort** and then reused for every future session — so this is a setup / maintenance step, not part of routine per-experiment processing. Retrain only when something changes materially: a new or substantially expanded cohort, a different spectrogram representation, or revised category definitions.
 
-Both train cross-session via CLI / cluster commands only (no GUI buttons): each is a two-command chain over a comma-separated list of session ``--root-directories`` writing standalone artifacts to ``--output-directory``. **SAM2 is used pretrained — it is not trained here.** Full flags: :ref:`the CLI reference <usv-pipeline-cli>`.
+Both train cross-session via CLI / cluster commands only (no GUI buttons): each is a two-command chain over a comma-separated list of session ``--root-directories`` writing standalone artifacts to ``--output-directory``. **SAM2 is used pretrained — it is not trained here.** Full flags for CLI can be found :ref:`here <usv-pipeline-cli>`.
 
 QLVM decoder
 ^^^^^^^^^^^^
