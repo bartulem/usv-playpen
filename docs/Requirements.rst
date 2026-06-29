@@ -206,3 +206,23 @@ You do this by selecting a *Save directory* and filling out the form loaded in t
 .. raw:: html
 
    <br>
+
+Linux / Wayland (COSMIC)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+On Linux desktops running a **Wayland** compositor -- notably Pop!_OS **COSMIC**
+-- the GUI's native-Wayland window handling can misbehave: the fixed-size
+windows shrink when refocused, and the terminal prints harmless
+``qt.accessibility.atspi`` warnings. Run the GUI through **XWayland** instead,
+which restores the traditional fixed-size window behaviour and silences those
+warnings, by exporting before launch:
+
+.. code-block:: bash
+
+   export QT_QPA_PLATFORM=xcb
+
+Add that line to your shell profile (``~/.bashrc`` or ``~/.zshrc``) so it applies
+to every session, then run ``usv-playpen`` as usual. Window maximize / fullscreen
+(which COSMIC permits regardless of the app's fixed-size hints) is in any case
+reverted to the fixed size automatically on Linux, and the dock / app-grid icon
+is installed on first launch.
