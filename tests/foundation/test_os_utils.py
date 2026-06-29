@@ -482,6 +482,24 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
     assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz"
 
 
+def test_derive_spectrogram_model_paths_noop_when_root_absent():
+    # legacy settings: granular paths set directly, no spectrograms_root key -> must not KeyError
+    settings = {
+        "generate_masks": {
+            "sam2_model_dir": "/legacy/sam", "sam2_model_path": "/legacy/sam/ck.pt",
+            "yolo_weights": "/legacy/sam/best.pt",
+        },
+        "infer_qlvm_latents": {"weights_npz_path": "/legacy/w.npz"},
+    }
+    returned = os_utils.derive_spectrogram_model_paths(settings)
+    assert returned is settings
+    assert settings["generate_masks"]["sam2_model_dir"] == "/legacy/sam"
+    assert settings["infer_qlvm_latents"]["weights_npz_path"] == "/legacy/w.npz"
+    # an empty root is likewise a no-op (no garbage "/sam" paths)
+    s2 = {"spectrograms_root": "", "generate_masks": {"sam2_model_dir": "x"}}
+    assert os_utils.derive_spectrogram_model_paths(s2)["generate_masks"]["sam2_model_dir"] == "x"
+
+
 def test_resolve_consolidated_h5_raises_when_no_store(tmp_path):
     (tmp_path / "qlvm_clusters_x.h5").write_bytes(b"x")  # only a non-consolidated .h5
     with pytest.raises(FileNotFoundError, match="consolidated"):

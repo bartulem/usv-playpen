@@ -385,9 +385,10 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     Parameters
     ----------
     settings (dict)
-        The full processing-settings dictionary; must contain the
-        ``spectrograms_root`` key and the ``generate_masks`` /
-        ``infer_qlvm_latents`` blocks.
+        The full processing-settings dictionary. When ``spectrograms_root`` is
+        absent or empty the dictionary is returned unchanged (legacy settings
+        files that set the granular ``generate_masks`` / ``infer_qlvm_latents``
+        paths directly keep working); otherwise those two blocks must exist.
 
     Returns
     -------
@@ -395,6 +396,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         The same dictionary, with any empty spectrogram-model paths filled in.
     """
 
+    if 'spectrograms_root' not in settings or not settings['spectrograms_root']:
+        return settings
     root = settings['spectrograms_root']
     sam_dir = f'{root}/sam'
     qlvm_dir = f'{root}/qlvm'
