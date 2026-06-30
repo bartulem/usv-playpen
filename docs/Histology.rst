@@ -274,57 +274,6 @@ records the peak/trough sizes, widths and ratios it rests on as catalog
 columns. ``run`` writes the global ``EPHYS/unit_catalog.csv`` and a per-probe
 ``channel_order_per_shank.json``.
 
-.. _histology-utilities:
-
-Anatomy-converter utility
----------------------------
-The sites-to-anatomy converter is exposed as a ``python -m`` module CLI. It
-defaults to a dry run via ``--dry-run`` and prints a JSON summary. Its path
-flags default to the paths in ``analyses_settings.json`` under ``data_roots``
-(translated to the host OS via ``configure_path``), so pass them only to
-override:
-
-.. code-block:: bash
-
-    # Regenerate the sites-to-anatomy converter so its per-region ranges
-    # are keyed by Kilosort-row index (see the Channel indexing section).
-    $ python -m usv_playpen.neuropixels.anatomy_converter --dry-run \
-        --converter-path /mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json \
-        --ephys-root /mnt/falkner/Bartul/EPHYS \
-        --histology-root /mnt/falkner/Bartul/histology
-
-.. _histology-meta-to-coords:
-
-SpikeGLX meta → probe-geometry converter
------------------------------------------
-``sglx_meta_to_coords`` converts a SpikeGLX ``.ap.meta`` file into a
-per-channel geometry artifact for a downstream sorter — a Kilosort
-``chanMap.mat``, a JRClust ``.prm`` string set, a ``(n_channels, 2)``
-``.npy``, a plain tab-delimited file, or an in-place upgrade of a legacy
-(pre-SpikeGLX 032623) meta. It is a clean-room reimplementation built from
-the public SpikeGLX / Imec documentation. Run it as a GUI via the
-``npx-meta-to-coords`` console script (see :ref:`CLI`), or programmatically:
-
-.. code-block:: python
-
-    from pathlib import Path
-    from usv_playpen.neuropixels.sglx_meta_to_coords import (
-        OutputFormat,
-        parse_spikeglx_meta,
-        coords_from_meta,
-        write_coords_file,
-    )
-
-    meta = parse_spikeglx_meta(Path("/path/to/run.imec0.ap.meta"))
-    coords = coords_from_meta(meta)  # auto-picks snsGeomMap vs snsShankMap
-    write_coords_file(
-        meta=meta,
-        coords=coords,
-        output_format=OutputFormat.KILOSORT_MAT,
-        save_dir=Path("/some/dir"),
-        base_name="run.imec0.ap",
-    )
-
 .. _channel-indexing:
 
 Channel indexing
@@ -438,33 +387,6 @@ the converter into Kilosort row space. After that, every consumer
 that already treated the converter as KS-keyed begins returning the
 right region without any code change.
 
-How the regenerator works
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-For every ``(mouse, session, probe)`` triple already present in the
-converter:
-
-1. Load the IBL ``channel_locations.json`` for the appropriate
-   hemisphere (``imec0`` → right, ``imec1`` → left in this dataset),
-   and build a ``(lateral, axial) -> brain_region`` lookup.
-2. Load ``channel_positions.npy`` from the Kilosort directory.
-3. For every Kilosort row ``i``, the row's region is the IBL region
-   at the physical position ``cp[i]``.
-4. Compress contiguous runs of identical regions into
-   ``[lo, hi]`` half-open ranges per region.
-
-The generated entries are written back to
-``neuropixels_sites_to_anatomy_converter.json`` in the same nested
-``{mouse: {session: {probe: {region: [[lo, hi], ...]}}}}`` layout.
-
-Because Kilosort row ordering is shank-major, each probe's
-regenerated entry has every range bounded inside one shank's KS-row
-block (rows 0..95, 96..191, etc.). The within-shank axial ordering
-is not always monotonic, so a single anatomical band on a shank may
-appear as two non-contiguous ``[lo, hi]`` KS-row intervals in the
-JSON. Set membership against the converter still resolves the right
-region regardless.
-
 Translating between spaces
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -483,16 +405,81 @@ For any case where you just want to know "what is at this physical
 position", join on ``cp[i]`` against the IBL entry's
 ``lateral``/``axial`` fields and skip the index translation.
 
-Module reference
-~~~~~~~~~~~~~~~~
+.. _histology-utilities:
 
-The regenerator lives in
-:mod:`usv_playpen.neuropixels.anatomy_converter`. It can be run from
-the command line::
+Anatomy-converter utility
+---------------------------
+The sites-to-anatomy converter (:mod:`usv_playpen.neuropixels.anatomy_converter`)
+maps Kilosort-row index ranges to brain regions. The original generator wrote it
+with raw-meta channel ranges; it is regenerated into Kilosort-row space (see
+:ref:`channel-indexing`) so that downstream consumers passing Kilosort row numbers
+into membership checks return the right region without any code change.
 
-    uv run python -m usv_playpen.neuropixels.anatomy_converter
+For every ``(mouse, session, probe)`` triple already present in the converter:
 
-with ``--dry-run`` to inspect the summary without writing the file.
+1. Load the IBL ``channel_locations.json`` for the appropriate hemisphere
+   (``imec0`` → right, ``imec1`` → left in this dataset), and build a
+   ``(lateral, axial) -> brain_region`` lookup.
+2. Load ``channel_positions.npy`` from the Kilosort directory.
+3. For every Kilosort row ``i``, the row's region is the IBL region at the
+   physical position ``cp[i]``.
+4. Compress contiguous runs of identical regions into ``[lo, hi]`` half-open
+   ranges per region.
+
+The generated entries are written back to
+``neuropixels_sites_to_anatomy_converter.json`` in the same nested
+``{mouse: {session: {probe: {region: [[lo, hi], ...]}}}}`` layout. Because
+Kilosort row ordering is shank-major, each probe's regenerated entry has every
+range bounded inside one shank's KS-row block (rows 0..95, 96..191, etc.); the
+within-shank axial ordering is not always monotonic, so a single anatomical band
+on a shank may appear as two non-contiguous ``[lo, hi]`` KS-row intervals — set
+membership still resolves the right region regardless.
+
+It is exposed as a ``python -m`` module CLI that defaults to a dry run via
+``--dry-run`` and prints a JSON summary. Its path flags default to the paths in
+``analyses_settings.json`` under ``data_roots`` (translated to the host OS via
+``configure_path``), so pass them only to override:
+
+.. code-block:: bash
+
+    # Regenerate the sites-to-anatomy converter so its per-region ranges
+    # are keyed by Kilosort-row index (see the Channel indexing section).
+    $ python -m usv_playpen.neuropixels.anatomy_converter --dry-run \
+        --converter-path /mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json \
+        --ephys-root /mnt/falkner/Bartul/EPHYS \
+        --histology-root /mnt/falkner/Bartul/histology
+
+.. _histology-meta-to-coords:
+
+SpikeGLX meta → probe-geometry converter
+-----------------------------------------
+``sglx_meta_to_coords`` converts a SpikeGLX ``.ap.meta`` file into a
+per-channel geometry artifact for a downstream sorter — a Kilosort
+``chanMap.mat``, a JRClust ``.prm`` string set, a ``(n_channels, 2)``
+``.npy``, a plain tab-delimited file, or an in-place upgrade of a legacy
+(pre-SpikeGLX 032623) meta. It is a clean-room reimplementation built from
+the public SpikeGLX / Imec documentation. Run it as a GUI via the
+``npx-meta-to-coords`` console script (see :ref:`CLI`), or programmatically:
+
+.. code-block:: python
+
+    from pathlib import Path
+    from usv_playpen.neuropixels.sglx_meta_to_coords import (
+        OutputFormat,
+        parse_spikeglx_meta,
+        coords_from_meta,
+        write_coords_file,
+    )
+
+    meta = parse_spikeglx_meta(Path("/path/to/run.imec0.ap.meta"))
+    coords = coords_from_meta(meta)  # auto-picks snsGeomMap vs snsShankMap
+    write_coords_file(
+        meta=meta,
+        coords=coords,
+        output_format=OutputFormat.KILOSORT_MAT,
+        save_dir=Path("/some/dir"),
+        base_name="run.imec0.ap",
+    )
 
 .. _histology-notebook:
 
