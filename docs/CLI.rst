@@ -960,7 +960,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 Set up and use the CLI on the *Spock* cluster
 ---------------------------------------------
 
-In order to exploit the full functionality of *usv-playpen*, one should install subsidiary uv (sleap) or conda packages (das, vcl-ssl). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
+In order to exploit the full functionality of *usv-playpen*, one should install subsidiary uv (sleap) or conda packages (das, vcl-ssl or vcl-ssl-ss). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
 
 .. code-block:: bash
 
@@ -980,5 +980,16 @@ In order to exploit the full functionality of *usv-playpen*, one should install 
     $ conda create --name vcl-ssl python=3.10 torchaudio packaging -y
     $ git clone https://github.com/Aramist/vocalocator-ssl.git && cd vocalocator-ssl
     $ conda activate vcl-ssl && pip install -e .
+
+The shipped default ``vcl_conda_env_name`` is ``vcl-ssl-ss``, which uses the
+`separate-scorers <https://github.com/Aramist/vocalocator-ssl/tree/separate-scorers>`_
+branch of the same repository (this branch may become the default in the future). To
+set that environment up instead of (or alongside) ``vcl-ssl``:
+
+.. code-block:: bash
+
+    $ conda create --name vcl-ssl-ss python=3.10 torchaudio packaging -y
+    $ git clone -b separate-scorers https://github.com/Aramist/vocalocator-ssl.git vocalocator-ssl-ss && cd vocalocator-ssl-ss
+    $ conda activate vcl-ssl-ss && pip install -e .
 
 Having set up these environments, you can set up directories with bash scripts in /src/other/DAS, /src/other/HPSS, /src/other/SLEAP and /src/other/USV_PLAYPEN and run them to expedite your data processing or analysis.
