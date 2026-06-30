@@ -12,7 +12,6 @@ import ctypes
 import json
 import os
 import platform
-import shutil
 import sys
 from functools import partial
 from importlib import metadata
@@ -7198,67 +7197,6 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.appendPlainText(s)
 
 
-def _ensure_linux_desktop_entry() -> None:
-    """
-    Description
-    -----------
-    On Linux, write a ``usv-playpen.desktop`` launcher entry into the user's
-    applications directory so the desktop environment can associate the running
-    window with a dock / app-grid icon. The window's Wayland ``app_id`` (and X11
-    ``WM_CLASS``) is set to ``usv-playpen`` via
-    :meth:`QApplication.setDesktopFileName`; a compositor like COSMIC then looks
-    up a ``usv-playpen.desktop`` with a matching ``StartupWMClass`` to find the
-    icon (a client-set window icon alone is not used for the dock on Wayland).
-    The bundled ``gui_icon.png`` is installed as a named ``hicolor`` theme icon
-    (``Icon=usv-playpen``) because GNOME Shell renders theme-name icons reliably,
-    whereas an absolute ``Icon=`` path is shown only intermittently. The entry is
-    (re)written when absent or stale -- which also upgrades earlier installs that
-    still carry the absolute path -- and only on Linux; macOS and Windows use
-    their own native icon mechanisms and are left untouched. Any failure is
-    swallowed so it can never block GUI startup.
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-    None
-    """
-
-    if platform.system() != 'Linux':
-        return
-    try:
-        # Install the bundled icon as a named hicolor theme icon. GNOME Shell
-        # renders icons referenced by theme name reliably, whereas an absolute
-        # Icon= path is shown only intermittently. 512x512 is a standard hicolor
-        # size (listed in the system index.theme), so the ~509x506 source is
-        # found under the 'usv-playpen' name and scaled to the requested size.
-        icon_entry = Path.home() / '.local' / 'share' / 'icons' / 'hicolor' / '512x512' / 'apps' / 'usv-playpen.png'
-        if not icon_entry.exists():
-            icon_entry.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(gui_icon, icon_entry)
-        applications_directory = Path.home() / '.local' / 'share' / 'applications'
-        desktop_entry = applications_directory / 'usv-playpen.desktop'
-        desktop_contents = (
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=usv-playpen\n"
-            "Comment=Behavioral experiments, data processing and analyses\n"
-            "Exec=usv-playpen\n"
-            "Icon=usv-playpen\n"
-            "Terminal=false\n"
-            "StartupWMClass=usv-playpen\n"
-            "Categories=Science;Education;\n"
-        )
-        # Write when absent or stale; the staleness check also upgrades earlier
-        # installs whose entry still carries the absolute Icon= path.
-        if not desktop_entry.exists() or desktop_entry.read_text() != desktop_contents:
-            applications_directory.mkdir(parents=True, exist_ok=True)
-            desktop_entry.write_text(desktop_contents)
-    except OSError:
-        pass
-
-
 def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMainWindow]:
     """
     Description
@@ -7293,10 +7231,6 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
         usv_playpen_app.setStyleSheet(file.read())
 
     usv_playpen_app.setWindowIcon(QIcon(gui_icon))
-    # Wayland/X11 dock-icon association: set the app_id (== the .desktop basename)
-    # and ensure a matching usv-playpen.desktop exists on Linux. No-op elsewhere.
-    QApplication.setDesktopFileName('usv-playpen')
-    _ensure_linux_desktop_entry()
 
     _toml = toml.load(Path(__file__).parent / '_config/behavioral_experiments_settings.toml')
 
