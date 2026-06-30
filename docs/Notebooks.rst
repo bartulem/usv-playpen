@@ -311,7 +311,17 @@ plotted** (5–50, sampled along an Archimedean spiral and laid out as a square 
 call's width preserving its true duration). The session-list directory and the consolidated
 spectrogram/SAM2 store are read from the ``shared_resources`` block of
 ``visualizations_settings.json`` (``input_files_directory`` / ``spectrograms_dir``), resolved
-per-host via ``configure_path``. See :doc:`Visualize` for launch instructions. Source:
+per-host via ``configure_path``. Launch it from the repo root in either of two modes:
+
+.. code-block:: bash
+
+    # editable, reactive code view (for tweaking the notebook)
+    uv run marimo edit src/usv_playpen/notebooks/usv_embedding_explorer.py
+
+    # clean app view (just the controls + plot, no code)
+    uv run marimo run  src/usv_playpen/notebooks/usv_embedding_explorer.py
+
+Both open in the browser at ``http://localhost:2718``. Source:
 `usv_embedding_explorer.py
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_embedding_explorer.py>`_.
 
