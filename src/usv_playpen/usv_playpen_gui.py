@@ -12,6 +12,7 @@ import ctypes
 import json
 import os
 import platform
+import shutil
 import sys
 from functools import partial
 from importlib import metadata
@@ -7208,8 +7209,11 @@ def _ensure_linux_desktop_entry() -> None:
     :meth:`QApplication.setDesktopFileName`; a compositor like COSMIC then looks
     up a ``usv-playpen.desktop`` with a matching ``StartupWMClass`` to find the
     icon (a client-set window icon alone is not used for the dock on Wayland).
-    The entry points ``Icon=`` at the bundled ``gui_icon.png``. It is written
-    only when absent (idempotent) and only on Linux -- macOS and Windows use
+    The bundled ``gui_icon.png`` is installed as a named ``hicolor`` theme icon
+    (``Icon=usv-playpen``) because GNOME Shell renders theme-name icons reliably,
+    whereas an absolute ``Icon=`` path is shown only intermittently. The entry is
+    (re)written when absent or stale -- which also upgrades earlier installs that
+    still carry the absolute path -- and only on Linux; macOS and Windows use
     their own native icon mechanisms and are left untouched. Any failure is
     swallowed so it can never block GUI startup.
 
@@ -7224,22 +7228,33 @@ def _ensure_linux_desktop_entry() -> None:
     if platform.system() != 'Linux':
         return
     try:
+        # Install the bundled icon as a named hicolor theme icon. GNOME Shell
+        # renders icons referenced by theme name reliably, whereas an absolute
+        # Icon= path is shown only intermittently. 512x512 is a standard hicolor
+        # size (listed in the system index.theme), so the ~509x506 source is
+        # found under the 'usv-playpen' name and scaled to the requested size.
+        icon_entry = Path.home() / '.local' / 'share' / 'icons' / 'hicolor' / '512x512' / 'apps' / 'usv-playpen.png'
+        if not icon_entry.exists():
+            icon_entry.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(gui_icon, icon_entry)
         applications_directory = Path.home() / '.local' / 'share' / 'applications'
         desktop_entry = applications_directory / 'usv-playpen.desktop'
-        if desktop_entry.exists():
-            return
-        applications_directory.mkdir(parents=True, exist_ok=True)
-        desktop_entry.write_text(
+        desktop_contents = (
             "[Desktop Entry]\n"
             "Type=Application\n"
             "Name=usv-playpen\n"
             "Comment=Behavioral experiments, data processing and analyses\n"
             "Exec=usv-playpen\n"
-            f"Icon={gui_icon}\n"
+            "Icon=usv-playpen\n"
             "Terminal=false\n"
             "StartupWMClass=usv-playpen\n"
             "Categories=Science;Education;\n"
         )
+        # Write when absent or stale; the staleness check also upgrades earlier
+        # installs whose entry still carries the absolute Icon= path.
+        if not desktop_entry.exists() or desktop_entry.read_text() != desktop_contents:
+            applications_directory.mkdir(parents=True, exist_ok=True)
+            desktop_entry.write_text(desktop_contents)
     except OSError:
         pass
 
