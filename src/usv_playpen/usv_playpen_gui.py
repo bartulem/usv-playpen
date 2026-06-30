@@ -12,6 +12,7 @@ import ctypes
 import json
 import os
 import platform
+import shutil
 import sys
 from functools import partial
 from importlib import metadata
@@ -7197,6 +7198,97 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.appendPlainText(s)
 
 
+def _ensure_linux_desktop_entry() -> None:
+    """
+    Description
+    -----------
+    On Linux, write a ``usv-playpen.desktop`` launcher entry into the user's
+    applications directory so the desktop environment can associate the running
+    window with a dock / app-grid icon. GNOME Shell maps a window to an
+    application before it ever consults a client-set window icon, and on this
+    GUI that mapping is driven by the window's ``_GTK_APPLICATION_ID`` -- which
+    Qt sets to ``usv-playpen`` once :meth:`QApplication.setDesktopFileName` has
+    been called (otherwise Qt derives it from the interpreter's program name,
+    e.g. ``python3``, and GNOME shows a generic icon). GNOME then looks up the
+    matching ``usv-playpen.desktop`` (by id, and -- as a fallback for other
+    compositors -- by its ``StartupWMClass``) to find the icon.
+
+    The entry's ``Exec=`` is written as an ABSOLUTE path to the launcher, because
+    GIO refuses to build a ``GAppInfo`` whose command cannot be resolved and
+    GNOME Shell only associates windows with applications GIO has built; a bare
+    ``usv-playpen`` (installed inside the venv and absent from the desktop
+    session's ``PATH``) would leave the ``.desktop`` invisible to GNOME and the
+    dock showing a generic icon.
+
+    The bundled ``gui_icon.png`` is installed as a named ``hicolor`` theme icon
+    (``Icon=usv-playpen``) because GNOME Shell renders theme-name icons reliably,
+    whereas an absolute ``Icon=`` path is shown only intermittently. The entry is
+    (re)written when absent or stale -- which also upgrades earlier installs that
+    still carry an absolute ``Icon=`` path -- and only on Linux; macOS and Windows
+    use their own native icon mechanisms and are left untouched. Any failure is
+    swallowed so it can never block GUI startup.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    if platform.system() != 'Linux':
+        return
+    try:
+        # Install the bundled icon as a named hicolor theme icon. GNOME Shell
+        # renders icons referenced by theme name reliably, whereas an absolute
+        # Icon= path is shown only intermittently. 512x512 is a standard hicolor
+        # size (listed in the system index.theme), so the ~509x506 source is
+        # found under the 'usv-playpen' name and scaled to the requested size.
+        icon_entry = Path.home() / '.local' / 'share' / 'icons' / 'hicolor' / '512x512' / 'apps' / 'usv-playpen.png'
+        if not icon_entry.exists():
+            icon_entry.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(gui_icon, icon_entry)
+        # Resolve an ABSOLUTE path for Exec=. GIO refuses to build a GAppInfo
+        # whose Exec program cannot be found, and GNOME Shell only associates a
+        # window with applications GIO has built -- so a bare 'usv-playpen' (which
+        # lives inside the venv and is not on the desktop session's PATH) makes
+        # the .desktop invisible to GNOME and the dock falls back to a generic
+        # icon. The console script sits next to the interpreter in the venv's
+        # bin/ (Scripts/ on Windows); prefer the launcher that actually started
+        # this process (sys.argv[0]), then the script beside sys.executable, then
+        # PATH, and only as a last resort the bare name.
+        launcher = Path(sys.argv[0])
+        if launcher.name.startswith('usv-playpen') and launcher.is_file():
+            exec_target = str(launcher.resolve())
+        else:
+            beside_python = Path(sys.executable).resolve().parent / 'usv-playpen'
+            found_on_path = shutil.which('usv-playpen')
+            exec_target = str(beside_python) if beside_python.is_file() else (found_on_path or 'usv-playpen')
+        # Quote the Exec value if the path contains spaces, per the Desktop Entry
+        # Specification (reserved characters inside the command must be quoted).
+        exec_field = f'"{exec_target}"' if ' ' in exec_target else exec_target
+        applications_directory = Path.home() / '.local' / 'share' / 'applications'
+        desktop_entry = applications_directory / 'usv-playpen.desktop'
+        desktop_contents = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=usv-playpen\n"
+            "Comment=Behavioral experiments, data processing and analyses\n"
+            f"Exec={exec_field}\n"
+            "Icon=usv-playpen\n"
+            "Terminal=false\n"
+            "StartupWMClass=usv-playpen\n"
+            "Categories=Science;\n"
+        )
+        # Write when absent or stale; the staleness check also upgrades earlier
+        # installs whose entry still carries the absolute Icon= path.
+        if not desktop_entry.exists() or desktop_entry.read_text() != desktop_contents:
+            applications_directory.mkdir(parents=True, exist_ok=True)
+            desktop_entry.write_text(desktop_contents)
+    except OSError:
+        pass
+
+
 def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMainWindow]:
     """
     Description
@@ -7231,6 +7323,14 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
         usv_playpen_app.setStyleSheet(file.read())
 
     usv_playpen_app.setWindowIcon(QIcon(gui_icon))
+    # Linux dock-icon association: GNOME maps a window to an application via its
+    # _GTK_APPLICATION_ID before any client-set window icon is consulted. Setting
+    # the desktop file name makes Qt advertise _GTK_APPLICATION_ID='usv-playpen'
+    # (rather than the interpreter's program name, e.g. 'python3'), and the
+    # matching usv-playpen.desktop installed below supplies the icon. No-op on
+    # macOS/Windows, which use their own native icon mechanisms.
+    QApplication.setDesktopFileName('usv-playpen')
+    _ensure_linux_desktop_entry()
 
     _toml = toml.load(Path(__file__).parent / '_config/behavioral_experiments_settings.toml')
 
