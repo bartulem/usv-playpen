@@ -34,9 +34,3 @@ the tool correctly. Should you have any questions, please do not hesitate to ope
    Visualize
    Notebooks
    CLI
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Reference
-
-   channel_indexing
