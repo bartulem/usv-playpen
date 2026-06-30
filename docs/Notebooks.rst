@@ -20,6 +20,31 @@ place; paths are written ``/mnt/falkner/...`` and ``configure_path()``-normalise
 host OS. Each plotting cell is independent — re-run any single one once the imports /
 parameters / setup cells have run.
 
+Histology
+---------
+This subsystem turns Neuropixels recordings into anatomy: it assembles light-sheet
+histology volumes, bridges Kilosort output and brainreg track tracing through the IBL
+ephys-alignment GUI, and distils every unit into an Allen-CCF-anchored
+``unit_catalog.csv``. It is not a GUI tab — it is driven by the notebook below.
+
+**npx_histology_unit_quality_processing.ipynb** — end-to-end histology /
+Neuropixels-alignment workflow for one session, covering two phases that bracket the
+manual brainreg + napari steps run outside the notebook:
+
+* **Light-sheet volume assembly** — combine raw light-sheet microscopy acquisitions into
+  single BigTIFF volumes that brainreg / napari ingest (LaVision UltraMicroscope and
+  LifeCanvas SmartSPIM modalities supported).
+* **IBL ephys-alignment export** — bridge Kilosort output + brainreg track tracing into
+  the IBL ephys-alignment GUI, then post-process the GUI's per-shank channel-location
+  JSONs into a single SpikeInterface-ready file (replacing the slow upstream
+  ``atlaselectrophysiology.extract_files.extract_data`` call), plus Neuropixels
+  spike-quality metrics.
+
+Every acquisition path and session identifier lives in the **Parameters** cell. See
+:doc:`Histology` for the conceptual workflow and the underlying helpers. Source:
+`npx_histology_unit_quality_processing.ipynb
+<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/npx_histology_unit_quality_processing.ipynb>`_.
+
 .. _modeling-notebook:
 
 Modeling
@@ -47,8 +72,8 @@ explicit ``modeling_settings_dict``). See :doc:`Modeling` for the conceptual wor
 Source: `modeling_analyses.ipynb
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/modeling_analyses.ipynb>`_.
 
-Neural
-------
+Neural analyses
+---------------
 .. _unit-triage-aggregator:
 
 **neuronal_tuning_summary.ipynb** — has two independent halves.
@@ -106,26 +131,8 @@ filtered-unit pool so the analysed population is fixed across the day's sessions
 stochastic routine accepts an optional ``seed`` for reproducible nulls. Source: `neuronal_coactivity_analyses.ipynb
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/neuronal_coactivity_analyses.ipynb>`_.
 
-**npx_histology_unit_quality_processing.ipynb** — end-to-end histology /
-Neuropixels-alignment workflow for one session, covering two phases that bracket the
-manual brainreg + napari steps run outside the notebook:
-
-* **Light-sheet volume assembly** — combine raw light-sheet microscopy acquisitions into
-  single BigTIFF volumes that brainreg / napari ingest (LaVision UltraMicroscope and
-  LifeCanvas SmartSPIM modalities supported).
-* **IBL ephys-alignment export** — bridge Kilosort output + brainreg track tracing into
-  the IBL ephys-alignment GUI, then post-process the GUI's per-shank channel-location
-  JSONs into a single SpikeInterface-ready file (replacing the slow upstream
-  ``atlaselectrophysiology.extract_files.extract_data`` call), plus Neuropixels
-  spike-quality metrics.
-
-Every acquisition path and session identifier lives in the **Parameters** cell. See
-:doc:`Histology` for the conceptual workflow and the underlying helpers. Source:
-`npx_histology_unit_quality_processing.ipynb
-<https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/npx_histology_unit_quality_processing.ipynb>`_.
-
-USV
----
+USV analyses
+------------
 **usv_spectrogram_analyses.ipynb** — renders USV spectrograms and the embedding / summary
 figures derived from them, all driven from
 ``usv_playpen.visualizations.make_usv_spectrograms``. Runs **after** processing has
