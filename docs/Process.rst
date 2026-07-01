@@ -939,6 +939,20 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         ]
     }
 
+The *Concatenate to MEMMAP* step takes its parameters from the adjacent ``concatenate_audio_files`` block (also fully modifiable in the GUI):
+
+* **concatenate_audio_format** : audio file format to concatenate (usually "wav")
+* **concat_dirs** : list of directories whose single-channel files are concatenated into the memory-mapped file (usually "hpss_filtered")
+
+.. code-block:: json
+
+    "concatenate_audio_files": {
+        "concatenate_audio_format": "wav",
+        "concat_dirs": [
+          "hpss_filtered"
+        ]
+    }
+
 Run DAS inference
 ~~~~~~~~~~~~~~~~~
 The *usv-playpen* GUI assumes usage of `DAS <https://janclemenslab.org/das/>`_ for identifying vocalizations in audio recordings. To do this, one first needs to train a model on the data of interest (*i.e.*, social interactions with vocal output). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *model* ready for running inference.

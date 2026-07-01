@@ -226,3 +226,61 @@ to every session, then run ``usv-playpen`` as usual. Window maximize / fullscree
 (which COSMIC permits regardless of the app's fixed-size hints) is in any case
 reverted to the fixed size automatically on Linux, and the dock / app-grid icon
 is installed on first launch.
+
+.. _configuration-files:
+
+Configuration files
+~~~~~~~~~~~~~~~~~~~~~
+
+Everything *usv-playpen* reads at start-up that is not a per-run settings file (the
+``*_settings.json`` files documented in :doc:`Process`, :doc:`Analyze`,
+:doc:`Visualize` and :doc:`Modeling`) lives in ``src/usv_playpen/_config/``. Most are
+meant to be edited to match your rig; a few are bundled data assets you will rarely
+touch. Grouped by role:
+
+**Plotting / GUI appearance**
+
+- ``usv_playpen.mplstyle`` — the matplotlib style applied to every generated figure and
+  video through ``apply_plot_style`` (font family, per-role font weights, font / label
+  sizes, colors, figure size and DPI). Edit it to restyle *all* plots at once; the
+  default font is Helvetica Light. Per-call ``fontweight=`` / ``color=`` arguments still
+  override it.
+- ``gui_style_sheet.css`` — the Qt style sheet that themes the GUI window itself (loaded
+  at launch). Edit to restyle the application chrome.
+
+**Acquisition / recording** (only needed if you run experiments from this machine)
+
+- ``behavioral_experiments_settings.toml`` — the experiment-run settings: experimenter
+  list + default, the Avisoft RECORDER and CoolTerm install paths, the Arduino sync COM
+  port, the credentials directory, file server, recording / calibration durations and the
+  Ethernet toggle. This is the main file to edit before recording.
+- ``equipment.toml`` — a description of the rig hardware / software (triggerbox, cameras,
+  lenses, acquisition PCs, the Avisoft device). Update it to describe your own equipment.
+- ``avisoft_config.ini`` — the Avisoft RECORDER USGH configuration exported from the
+  Avisoft software and mirrored by *usv-playpen* to drive audio recording. Re-export it
+  from Avisoft whenever you change microphone / recording settings.
+- ``coolterm_config.stc`` — the CoolTerm serial-terminal profile (COM port, 9600 baud …)
+  used to talk to the Arduino sync board.
+- ``calibrated_sample_rates_imec.ini`` / ``calibrated_sample_rates_nidq.ini`` — the
+  measured true sample rates of each Neuropixels headstage (``imec``, ≈ 30 kHz keyed by
+  probe serial) and NI-DAQ device (``nidq``). Replace these with your own calibration
+  values.
+
+**Session metadata**
+
+- ``_metadata.yaml`` — the per-session metadata template (institution, lab, experimenter,
+  session id / duration / description, USV counts, keywords …). It is copied and filled in
+  for each session; edit the template to change the default fields.
+
+**Tracking skeletons**
+
+- ``mouse_skeleton.json`` / ``playpen_skeleton.json`` — the SLEAP / Anipose
+  node-and-edge skeletons for the mouse body and the arena calibration board, consumed by
+  the 3D triangulation. Only edit these if you change the tracked keypoints or the arena.
+
+**Bundled data assets** (rarely edited)
+
+- ``spike.wav`` — the short spike-sound clip mixed into behavioral videos when the
+  spike-sound option is enabled.
+- ``usv_latent_embedding_segmentation.npz`` — the precomputed QLVM latent-embedding
+  watershed segmentation used to render the neuronal-tuning figures.

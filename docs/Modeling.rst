@@ -57,8 +57,10 @@ All knobs live in ``_parameter_settings/modeling_settings.json``. The most
 important blocks are:
 
 - ``io`` — ``session_list_file`` (a text file listing one session root per
-  line) and ``save_directory`` (where modeling-input pickles and results
-  are written).
+  line), ``save_directory`` (where modeling-input pickles and results are
+  written), ``camera_sampling_rate`` (``150``; the camera frame rate used to
+  convert ``filter_history`` seconds into frames across every pipeline), and
+  ``csv_separator`` (``','``; the delimiter for the per-session feature CSVs).
 - ``model_params`` — ``random_seed``, ``filter_history`` (seconds of
   behavioral history preceding each event), ``model_engine``
   (``'sklearn'`` or ``'pygam'``), ``split_strategy``, ``split_num``, the
