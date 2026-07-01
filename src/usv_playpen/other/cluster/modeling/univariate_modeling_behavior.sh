@@ -42,7 +42,6 @@ set -e
 
 # Environment
 source ${USV_PLAYPEN_PATH}.venv/bin/activate
-(cd ${USV_PLAYPEN_PATH} && uv sync --extra gpu)
 
 export PYTHONUNBUFFERED=1
 

@@ -50,7 +50,6 @@ echo "" >> "$JOB_SCRIPT"
 echo "set -e" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
-echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
 echo "export EXPERIMENTER_ID=\"$EXPERIMENTER_ID\"" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "generate-naturalistic-usv-playback \\
