@@ -38,8 +38,8 @@ Phases (each preceded by a full-figure white title card):
     right 5x15 grid uses columns = trajectory positions, rows = nearest
     neighbours.
 
-All text renders in Helvetica via the shared ``apply_plot_style`` helper; every
-``color=`` argument is a hex string.
+All text renders in the project mplstyle's font (Helvetica Light by default) via
+the shared ``apply_plot_style`` helper; every ``color=`` argument is a hex string.
 """
 
 from __future__ import annotations
@@ -594,10 +594,13 @@ class QLVMTorusTraversalVideo:
             ax_card.set_xticks([]); ax_card.set_yticks([])
             for sp in ax_card.spines.values():
                 sp.set_visible(False)
+            # Font weight is intentionally left unset so the title card inherits the
+            # project mplstyle's font.weight (light by default); this keeps a user's
+            # _config/usv_playpen.mplstyle change from being silently overridden here.
             card_title = ax_card.text(0.5, 0.58, '', ha='center', va='center',
-                                      fontsize=36, fontweight='light', color=_C_BLACK)
+                                      fontsize=36, color=_C_BLACK)
             card_sub = ax_card.text(0.5, 0.44, '', ha='center', va='center',
-                                    fontsize=20, fontweight='light', color=_C_SUBTITLE, style='italic')
+                                    fontsize=20, color=_C_SUBTITLE, style='italic')
             ax_card.set_visible(False)
 
             # --- Static left panel ---
@@ -647,8 +650,10 @@ class QLVMTorusTraversalVideo:
             # pulses with the cluster outline.
             cluster_center_marker = ax_l.scatter([], [], c=accent_color, s=120, marker='o',
                                                  edgecolors=_C_BLACK, linewidths=1.2, zorder=12)
-            title = ax_l.set_title('', fontsize=13, loc='left', fontweight='light')
-            sup = fig.suptitle('', fontsize=18, fontweight='light')
+            # As with the title card, the weight is inherited from the mplstyle
+            # (axes.titleweight / figure.titleweight), not hard-coded here.
+            title = ax_l.set_title('', fontsize=13, loc='left')
+            sup = fig.suptitle('', fontsize=18)
 
             BLANK = np.zeros((spec_H, spec_W))
 
