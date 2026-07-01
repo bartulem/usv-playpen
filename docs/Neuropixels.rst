@@ -1,7 +1,7 @@
-.. _Histology:
+.. _Neuropixels:
 
-Histology
-==================
+Neuropixels
+===========
 This page explains how to use the **Neuropixels histology and
 unit-quality pipelines** in ``usv_playpen.neuropixels``. Where the
 :ref:`Process` section ends with spike-sorted, session-split clusters,

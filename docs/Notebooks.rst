@@ -6,7 +6,7 @@ app) under ``src/usv_playpen/notebooks/`` that drive the advanced analysis and
 figure-generation workflows. This page is the single, detailed home for them: each
 notebook is described here and rendered in full below (code only — outputs are stripped
 on commit), and the topical sections (:doc:`Analyze`, :doc:`Modeling`, :doc:`Visualize`,
-:doc:`Histology`) link here rather than duplicating the explanation.
+:doc:`Neuropixels`) link here rather than duplicating the explanation.
 
 .. note::
 
@@ -41,7 +41,7 @@ manual brainreg + napari steps run outside the notebook:
   spike-quality metrics.
 
 Every acquisition path and session identifier lives in the **Parameters** cell. See
-:doc:`Histology` for the conceptual workflow and the underlying helpers. Source:
+:doc:`Neuropixels` for the conceptual workflow and the underlying helpers. Source:
 `npx_histology_unit_quality_processing.ipynb
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/npx_histology_unit_quality_processing.ipynb>`_.
 
