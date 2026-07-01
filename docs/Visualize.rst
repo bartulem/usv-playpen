@@ -156,8 +156,8 @@ Running this function results in the creation of the *data_animation_examples* s
     │   ├── audio
     │   │   ...
     │   ├── **data_animation_examples**
-    │   │   ├── **20250430_145017_3D_30045fr_dark_topview_Bartul.png**
-    │   │   ├── **20250430_145017_3D_30045-30795fr_dark_topview_Bartul.mp4**
+    │   │   ├── **20250430_145017_3D_30045fr_dark_topview_17features_spectrogram_ch0_Bartul_20260701_133612.png**
+    │   │   ├── **20250430_145017_3D_30045-30795fr_dark_topview_17features_spectrogram_ch0_Bartul.mp4**
     │   │   ...
     │   ├── ephys
     │   │   ...
