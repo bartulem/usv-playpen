@@ -56,15 +56,41 @@ def test_host_experimenter_reads_from_host_config(monkeypatch):
     """The experimenter id is read from the `experimenter` key of the host
     config TOML (the same key `exp_id` derives from)."""
     monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.delenv("EXPERIMENTER_ID", raising=False)
     assert os_utils._host_experimenter() == "Bartul"
 
 
 def test_host_experimenter_raises_when_config_missing(monkeypatch, tmp_path):
     """A missing host config raises rather than guessing the experimenter."""
     monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.delenv("EXPERIMENTER_ID", raising=False)
     monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
     with pytest.raises(RuntimeError, match="Cannot read the host config"):
         os_utils._host_experimenter()
+
+
+def test_host_experimenter_env_var_overrides_toml(monkeypatch):
+    """An EXPERIMENTER_ID environment variable overrides the host TOML, so a
+    cluster / headless run selects the experimenter without editing the TOML."""
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.setenv("EXPERIMENTER_ID", "Liza")
+    assert os_utils._host_experimenter() == "Liza"
+
+
+def test_host_experimenter_blank_env_var_falls_back_to_toml(monkeypatch):
+    """A blank / whitespace EXPERIMENTER_ID is ignored; the host TOML wins."""
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.setenv("EXPERIMENTER_ID", "   ")
+    assert os_utils._host_experimenter() == "Bartul"
+
+
+def test_host_experimenter_env_var_used_when_config_missing(monkeypatch, tmp_path):
+    """With EXPERIMENTER_ID set the host TOML is never read -- the override wins
+    even when the config is absent (the cluster case: shipped TOML untouched)."""
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
+    monkeypatch.setenv("EXPERIMENTER_ID", "Charlie")
+    assert os_utils._host_experimenter() == "Charlie"
 
 
 @pytest.mark.parametrize("system,expected", [

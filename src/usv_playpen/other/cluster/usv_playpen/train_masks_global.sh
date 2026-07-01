@@ -6,8 +6,10 @@
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
 # Experimenter id keying the experimenter-owned work/resource/model paths below
-# (session/arena roots stay as entered). Match the `experimenter` key in this
-# checkout's behavioral_experiments_settings.toml (experimenter-scoped *_settings.json paths are re-keyed to it automatically).
+# (session/arena roots stay as entered). It is exported into the SLURM job and
+# overrides the checkout's behavioral_experiments_settings.toml, so the
+# experimenter-scoped *_settings.json paths are re-keyed to it automatically --
+# no TOML edit needed.
 EXPERIMENTER_ID="Name"
 WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/processing"
 CPUS_PER_TASK=8
@@ -56,6 +58,7 @@ echo "set -e" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
 echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
+echo "export EXPERIMENTER_ID=\"$EXPERIMENTER_ID\"" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 EXPORT_DATASET_CMD="export-yolo-dataset --root-directories \"$SESSION_ROOT_DIRECTORIES\" --output-directory \"$DATASET_DIRECTORY\" --label-source \"$LABEL_SOURCE\""
 if [ "$LABEL_SOURCE" != "cc" ]; then

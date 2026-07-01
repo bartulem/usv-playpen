@@ -194,15 +194,23 @@ def _host_experimenter() -> str:
     """
     Description
     -----------
-    Returns the canonical experimenter id from the host config TOML (the
-    top-level ``experimenter`` key of
-    ``_config/behavioral_experiments_settings.toml``), resolved once and cached
-    for the process. This is the single source the ``{experimenter}`` placeholder
-    in the analysis data / model paths resolves to (via :func:`configure_path`),
-    so the experimenter is declared in exactly one place -- the same key the
-    recording GUI writes and ``exp_id`` is derived from. A missing or unparseable
-    host config, or one lacking an ``experimenter`` entry, raises rather than
-    guessing, so a broken config fails loud at the first templated-path read.
+    Returns the canonical experimenter id used to resolve the ``{experimenter}``
+    placeholder in the analysis data / model paths (via :func:`configure_path`)
+    and to re-key experimenter-scoped settings paths on headless / CLI runs. It
+    is resolved once and cached for the process, from two sources in order:
+
+    1. the ``EXPERIMENTER_ID`` environment variable, when set and non-empty --
+       so a cluster / headless run can select the experimenter without editing
+       this checkout's ``behavioral_experiments_settings.toml`` (the shared
+       convention is to set ``EXPERIMENTER_ID`` at the top of the cluster
+       scripts, which export it into the generated SLURM job); used verbatim.
+    2. otherwise the top-level ``experimenter`` key of the host config TOML
+       (``_config/behavioral_experiments_settings.toml``) -- the same key the
+       recording GUI writes and ``exp_id`` is derived from.
+
+    When the environment variable is unset, a missing or unparseable host config,
+    or one lacking an ``experimenter`` entry, raises rather than guessing, so a
+    broken config fails loud at the first templated-path read.
 
     Parameters
     ----------
@@ -215,6 +223,14 @@ def _host_experimenter() -> str:
     """
 
     if _HOST_EXPERIMENTER_CACHE:
+        return _HOST_EXPERIMENTER_CACHE[0]
+
+    # An EXPERIMENTER_ID environment variable overrides the host TOML, so a
+    # cluster / headless run selects the experimenter without editing this
+    # checkout's behavioral_experiments_settings.toml. Used verbatim when
+    # non-empty; the host TOML is the fallback.
+    if "EXPERIMENTER_ID" in os.environ and os.environ["EXPERIMENTER_ID"].strip():
+        _HOST_EXPERIMENTER_CACHE.append(os.environ["EXPERIMENTER_ID"].strip())
         return _HOST_EXPERIMENTER_CACHE[0]
 
     try:

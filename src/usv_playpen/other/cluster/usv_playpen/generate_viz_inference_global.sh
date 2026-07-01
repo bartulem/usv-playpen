@@ -6,9 +6,10 @@
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
 # Experimenter id keying the experimenter-owned work/resource/model paths below
-# and the `--exp-id` passed to the function (session/arena roots stay as
-# entered). Match the `experimenter` key in this checkout's
-# behavioral_experiments_settings.toml (experimenter-scoped *_settings.json paths are re-keyed to it automatically).
+# (session/arena roots stay as entered). It is exported into the SLURM job and
+# overrides the checkout's behavioral_experiments_settings.toml, so the
+# experimenter-scoped *_settings.json paths are re-keyed to it automatically --
+# no TOML edit needed.
 EXPERIMENTER_ID="Name"
 WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/USV_PLAYPEN/visualizations"
 CPUS_PER_TASK=6
@@ -48,6 +49,7 @@ echo "#SBATCH --mail-user=$EMAIL_ADDRESS" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "source $USV_PLAYPEN_PATH/.venv/bin/activate" >> "$JOB_SCRIPT"
 echo "(cd $USV_PLAYPEN_PATH && uv sync --extra gpu)" >> "$JOB_SCRIPT"
+echo "export EXPERIMENTER_ID=\"$EXPERIMENTER_ID\"" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "generate-viz \\
     --root-directory \"$SESSION_ROOT_DIRECTORY\" \\
