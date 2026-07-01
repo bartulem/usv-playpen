@@ -881,7 +881,15 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
     optional arguments:
       -h, --help              Show this help message and exit.
       --masking-type          Apply SAM mask regions ("sam") or keep raw spectrograms ("none").
-      (full parameters under processing_settings.json -> "build_qlvm_training_set")
+      settings (processing_settings.json -> "build_qlvm_training_set"), overridden by any flag above:
+      length_threshold         Minimum USV duration in ms to keep a call (default 50.0).
+      dataset_size_constraint  Optional cap on the number of spectrograms; null = no cap (default null).
+      validation_split         Fraction held out as val_data.npz (default 0.2).
+      random_state             Seed for the train/val split (default 42).
+      full_dataset             Write a single full_data.npz instead of a train/val split (default false).
+      target_shape             (H, W) each spectrogram is resized to (default [128, 128]).
+      time_stretch             Augment with random time-stretching (default false).
+      masking_type             Apply SAM mask regions ("sam") or keep raw spectrograms ("none") (default "sam").
 
 ``train-qlvm``
 ``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz``. That ``.npz`` is the train→inference bridge: point ``infer-qlvm-latents``' ``weights_npz_path`` at it (the torch-free JAX inference reloads exactly these decoder weights). GPU recommended.
@@ -890,7 +898,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     usage: train-qlvm [-h] --dataset-directory PATH --output-directory PATH
                             [--n-epochs INTEGER] [--latent-dim INTEGER]
-                            [--lattice-type {korobov,roberts,fib}] [--korobov-a INTEGER]
+                            [--lattice-type {korobov,roberts,fibonacci}] [--korobov-a INTEGER]
                             [--batch-size INTEGER] [--learning-rate FLOAT]
 
     required arguments:
@@ -899,7 +907,19 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      (full parameters under processing_settings.json -> "train_qlvm")
+      settings (processing_settings.json -> "train_qlvm"), overridden by any flag above:
+      n_epochs        Number of training epochs (default 300).
+      latent_dim      Torus latent dimensionality (default 2).
+      lattice_type    Quasi-random lattice generator: korobov / roberts / fibonacci (default korobov).
+      korobov_a       Korobov generating integer, used when lattice_type=korobov (default 76).
+      train_n_points  Lattice points used during training (default 1021).
+      test_n_points   Lattice points used at evaluation (default 2039).
+      fib_m           Fibonacci lattice order, used when lattice_type=fibonacci (default 15).
+      batch_size      Training batch size (default 64).
+      learning_rate   Adam learning rate (default 0.001).
+      val_freq        Run validation every N epochs (default 10).
+      seed            Global RNG seed (default 42).
+      num_workers     DataLoader worker processes; 0 = main process (default 0).
 
 ``infer-qlvm-latents``
 ``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm_dim1`` / ``qlvm_dim2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``.
@@ -938,7 +958,12 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       -h, --help              Show this help message and exit.
       --label-source          Box label source: cc pseudo-labels, manual files, or merge.
       --manual-labels-directory  Directory of hand-verified {spec_id}.txt YOLO labels.
-      (full parameters under processing_settings.json -> "export_yolo_dataset")
+      settings (processing_settings.json -> "export_yolo_dataset"), overridden by any flag above:
+      label_source             Box-label source: "cc" pseudo-labels / "manual" / "merge" (default "cc").
+      validation_split         Fraction of images held out for val (default 0.2).
+      random_state             Seed for the train/val split (default 42).
+      colormap                 Matplotlib colormap the spectrogram images are rendered with (default viridis).
+      manual_labels_directory  Directory of hand-verified {spec_id}.txt labels, for "manual"/"merge" (default "").
 
 ``train-masks``
 ``train-masks`` fine-tunes the Ultralytics YOLO box detector on an ``export-yolo-dataset`` dataset (from a COCO-pretrained ``yolo11n.pt`` by default) and copies the resulting ``best.pt`` to ``<output-directory>/best.pt`` — the path to set as ``generate-usv-masks``' ``yolo_weights``. GPU recommended.
@@ -955,7 +980,13 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
     optional arguments:
       -h, --help            Show this help message and exit.
       --base-weights        Base YOLO checkpoint to fine-tune from (e.g. yolo11n.pt).
-      (full parameters under processing_settings.json -> "train_masks")
+      settings (processing_settings.json -> "train_masks"), overridden by any flag above:
+      base_weights  COCO-pretrained YOLO checkpoint to fine-tune from (default yolo11n.pt).
+      n_epochs      Number of training epochs (default 100).
+      imgsz         Square image size in px the detector trains at (default 128).
+      batch_size    Training batch size (default 16).
+      device        CUDA device; null = auto-select, e.g. 0 or "cpu" (default null).
+      run_name      Ultralytics run name (subdir under the output directory) (default usv_yolo_detector).
 
 Set up and use the CLI on the *Spock* cluster
 ---------------------------------------------
