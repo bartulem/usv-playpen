@@ -5,8 +5,11 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-CUP_ROOT_DIR="falkner/Name/Data"
-WORK_DIR="/mnt/cup/labs/falkner/Name/HPSS"
+# Experimenter id for the paths below (edit to yours). These scripts pass explicit
+# paths, so EXPERIMENTER_ID is not exported and no TOML re-keying is involved.
+EXPERIMENTER_ID="Name"
+CUP_ROOT_DIR="falkner/$EXPERIMENTER_ID/Data"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/HPSS"
 AUDIO_CH_NUM=24
 CPUS_PER_TASK=4
 MEMORY_PER_CPU="40G"
