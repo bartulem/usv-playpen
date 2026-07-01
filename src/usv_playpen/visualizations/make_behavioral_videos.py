@@ -1214,16 +1214,21 @@ def plot_arena_corners_mics(data: np.ndarray,
                      color=color_mode_preferences['text_color'],
                      transform=plot_axes.transAxes)
     for animal_idx, animal_key in enumerate(animal_id.keys()):
-        # An explicit family *list* (not the generic 'sans-serif' alias) is
-        # what triggers matplotlib's silent per-glyph fallback: the ID renders
-        # in Helvetica and the ♂ / ♀ sign, which Helvetica lacks, is supplied
-        # by DejaVu Sans without any "missing glyph" warning.
+        # An explicit family *list* (not the generic 'sans-serif' alias) triggers
+        # matplotlib's silent per-glyph fallback: the ID renders in Helvetica and
+        # the ♂ / ♀ sign, which Helvetica lacks, is supplied by DejaVu Sans.
+        # fontweight='normal' is required here: the project style sets
+        # font.weight=light, and at the light weight 'DejaVu Sans' resolves to a
+        # system DejaVuSans-ExtraLight that ALSO lacks ♂ / ♀ (rendering a tofu
+        # box); the normal weight resolves to the regular/bundled DejaVu Sans,
+        # which carries the glyphs.
         plot_axes.text2D(x=text_start_coords[0],
                          y=text_start_coords[1] - mouse_id_text_offset - (animal_idx * main_text_offset),
                          s=f"{animal_key} {animal_id[animal_key]}",
                          fontsize=text_fontsize,
                          color=animal_colors[animal_idx],
                          fontfamily=['Helvetica', 'DejaVu Sans'],
+                         fontweight='normal',
                          transform=plot_axes.transAxes)
 
 
