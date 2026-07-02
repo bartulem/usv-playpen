@@ -16,12 +16,15 @@ import json
 import sys
 
 import numpy as np
+import pytest
 
 from usv_playpen.neuropixels.anatomy_converter import (
     _build_ks_keyed_block,
     _cli,
     _load_ibl_position_to_region,
     _runs_to_ranges,
+    _write_converter,
+    add_session_to_anatomy_converter,
     regenerate_anatomy_converter,
 )
 
@@ -313,8 +316,8 @@ def test_cli_dry_run_prints_summary(tmp_path, monkeypatch, capsys):
     -----------
     The argparse entry point wires its flags through to
     :func:`regenerate_anatomy_converter` and prints a JSON summary; a
-    ``--dry-run`` invocation over a synthetic dataset reports one
-    regenerated triple without writing the converter.
+    ``--regenerate-all --dry-run`` invocation over a synthetic dataset reports
+    one regenerated triple without writing the converter.
     """
 
     converter_path, ephys_root, histology_root = _make_full_dataset(tmp_path)
@@ -323,9 +326,247 @@ def test_cli_dry_run_prints_summary(tmp_path, monkeypatch, capsys):
         "--converter-path", str(converter_path),
         "--ephys-root", str(ephys_root),
         "--histology-root", str(histology_root),
+        "--regenerate-all",
         "--dry-run",
     ])
     _cli()
     out = json.loads(capsys.readouterr().out)
     assert out["n_triples_regenerated"] == 1
     assert out["output"] == "(dict returned in-memory)"
+
+
+def test_add_session_adds_new_triple_and_preserves_others(tmp_path):
+    """
+    Description
+    -----------
+    Adding a ``(mouse, session, probe)`` absent from the converter builds
+    its KS-row-keyed block and merges it in, leaving every other entry
+    byte-for-byte intact.
+    """
+
+    _, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    converter_path = tmp_path / "conv_add.json"
+    converter_path.write_text(
+        json.dumps({"other_mouse": {"20230101_000000": {"imec1": {"AAA": [[0, 5]]}}}})
+    )
+    summary = add_session_to_anatomy_converter(
+        "mouse_A", "20240101_120000", "imec0",
+        converter_path=converter_path,
+        ephys_root=ephys_root,
+        histology_root=histology_root,
+    )
+    assert summary["status"] == "added"
+    conv = json.loads(converter_path.read_text())
+    assert conv["mouse_A"]["20240101_120000"]["imec0"] == {"PAG": [[0, 2]], "VISp": [[2, 3]]}
+    assert conv["other_mouse"] == {"20230101_000000": {"imec1": {"AAA": [[0, 5]]}}}
+
+
+def test_add_session_already_present_is_noop(tmp_path):
+    """
+    Description
+    -----------
+    Add-if-missing: when the triple is already in the converter and
+    ``force`` is False, it is left untouched and the file is not rewritten.
+    """
+
+    _, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    converter_path = tmp_path / "conv_noop.json"
+    converter_path.write_text(
+        json.dumps({"mouse_A": {"20240101_120000": {"imec0": {"OLD": [[0, 3]]}}}})
+    )
+    before = converter_path.read_text()
+    summary = add_session_to_anatomy_converter(
+        "mouse_A", "20240101_120000", "imec0",
+        converter_path=converter_path,
+        ephys_root=ephys_root,
+        histology_root=histology_root,
+    )
+    assert summary["status"] == "already_present"
+    assert converter_path.read_text() == before
+
+
+def test_add_session_force_regenerates_existing(tmp_path):
+    """
+    Description
+    -----------
+    ``force=True`` rebuilds and overwrites an already-present triple's
+    block (status ``'updated'``).
+    """
+
+    _, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    converter_path = tmp_path / "conv_force.json"
+    converter_path.write_text(
+        json.dumps({"mouse_A": {"20240101_120000": {"imec0": {"OLD": [[0, 3]]}}}})
+    )
+    summary = add_session_to_anatomy_converter(
+        "mouse_A", "20240101_120000", "imec0", force=True,
+        converter_path=converter_path,
+        ephys_root=ephys_root,
+        histology_root=histology_root,
+    )
+    assert summary["status"] == "updated"
+    conv = json.loads(converter_path.read_text())
+    assert conv["mouse_A"]["20240101_120000"]["imec0"] == {"PAG": [[0, 2]], "VISp": [[2, 3]]}
+
+
+def test_add_session_creates_converter_if_absent(tmp_path):
+    """
+    Description
+    -----------
+    When the converter file does not exist yet, it is created holding just
+    the newly added triple.
+    """
+
+    _, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    converter_path = tmp_path / "does_not_exist.json"
+    summary = add_session_to_anatomy_converter(
+        "mouse_A", "20240101_120000", "imec0",
+        converter_path=converter_path,
+        ephys_root=ephys_root,
+        histology_root=histology_root,
+    )
+    assert summary["status"] == "added"
+    assert converter_path.exists()
+    conv = json.loads(converter_path.read_text())
+    assert conv == {"mouse_A": {"20240101_120000": {"imec0": {"PAG": [[0, 2]], "VISp": [[2, 3]]}}}}
+
+
+def test_add_session_skips_when_data_missing_without_writing(tmp_path):
+    """
+    Description
+    -----------
+    A triple whose Kilosort output is missing is skipped (status
+    ``'skipped'`` with a reason) and nothing is written to the converter.
+    """
+
+    converter_path = tmp_path / "conv_skip.json"
+    converter_path.write_text(json.dumps({}))
+    summary = add_session_to_anatomy_converter(
+        "mouse_A", "20240101_120000", "imec0",
+        converter_path=converter_path,
+        ephys_root=tmp_path / "no_ephys",
+        histology_root=tmp_path / "no_hist",
+    )
+    assert summary["status"] == "skipped"
+    assert "no channel_positions.npy" in summary["reason"]
+    assert json.loads(converter_path.read_text()) == {}
+
+
+def test_regenerate_preserves_existing_block_for_skipped_triple(tmp_path):
+    """
+    Description
+    -----------
+    The batch regenerator seeds from the existing converter, so a triple it
+    cannot regenerate (here ``imec7`` — no Kilosort output) keeps its
+    previous on-disk block instead of being dropped when the file is
+    rewritten, while a regenerable sibling (``imec0``) is updated.
+    """
+
+    _, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    converter_path = tmp_path / "conv_preserve.json"
+    converter_path.write_text(json.dumps({
+        "mouse_A": {"20240101_120000": {
+            "imec0": {"OLD": [[0, 3]]},
+            "imec7": {"KEEP_ME": [[0, 9]]},
+        }}
+    }))
+    summary = regenerate_anatomy_converter(
+        converter_path=converter_path,
+        ephys_root=ephys_root,
+        histology_root=histology_root,
+        dry_run=False,
+    )
+    conv = json.loads(converter_path.read_text())
+    assert conv["mouse_A"]["20240101_120000"]["imec0"] == {"PAG": [[0, 2]], "VISp": [[2, 3]]}
+    assert conv["mouse_A"]["20240101_120000"]["imec7"] == {"KEEP_ME": [[0, 9]]}
+    assert summary["n_triples_regenerated"] == 1
+    assert summary["n_triples_skipped"] == 1
+
+
+def test_write_converter_keeps_region_rows_on_one_line(tmp_path):
+    """
+    Description
+    -----------
+    The shared guarded writer collapses each region's ``[[lo, hi], ...]``
+    list onto a single line and round-trips to an identical dict.
+    """
+
+    converter_path = tmp_path / "fmt.json"
+    payload = {"m": {"s": {"imec0": {"PAG": [[0, 40], [72, 136]], "MRN": [[40, 72]]}}}}
+    _write_converter(converter_path, payload)
+    txt = converter_path.read_text()
+    assert '"PAG": [[0, 40], [72, 136]]' in txt
+    assert '"MRN": [[40, 72]]' in txt
+    assert json.loads(txt) == payload
+
+
+def test_cli_single_triple_mode_adds_one_triple(tmp_path, monkeypatch, capsys):
+    """
+    Description
+    -----------
+    Passing ``--mouse/--session/--probe`` routes the CLI to the
+    incremental adder, which merges just that triple into the converter.
+    """
+
+    _, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    converter_path = tmp_path / "conv_cli_single.json"
+    converter_path.write_text(json.dumps({}))
+    monkeypatch.setattr(sys, "argv", [
+        "prog",
+        "--converter-path", str(converter_path),
+        "--ephys-root", str(ephys_root),
+        "--histology-root", str(histology_root),
+        "--mouse", "mouse_A",
+        "--session", "20240101_120000",
+        "--probe", "imec0",
+    ])
+    _cli()
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "added"
+    conv = json.loads(converter_path.read_text())
+    assert conv["mouse_A"]["20240101_120000"]["imec0"] == {"PAG": [[0, 2]], "VISp": [[2, 3]]}
+
+
+def test_cli_bare_invocation_prints_help_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    """
+    Description
+    -----------
+    With no action flag (neither ``--regenerate-all`` nor
+    ``--mouse``/``--session``/``--probe``) the CLI prints usage and leaves the
+    converter untouched, so a stray bare invocation can never overwrite it.
+    """
+
+    converter_path, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    before = converter_path.read_text()
+    monkeypatch.setattr(sys, "argv", [
+        "prog",
+        "--converter-path", str(converter_path),
+        "--ephys-root", str(ephys_root),
+        "--histology-root", str(histology_root),
+    ])
+    _cli()
+    out = capsys.readouterr().out
+    assert "usage" in out.lower()
+    assert converter_path.read_text() == before
+
+
+def test_cli_regenerate_all_and_single_triple_are_mutually_exclusive(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    Combining ``--regenerate-all`` with the single-triple flags is rejected
+    (argparse ``error`` raises ``SystemExit``), so the two modes cannot be
+    requested at once.
+    """
+
+    converter_path, ephys_root, histology_root = _make_full_dataset(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "prog",
+        "--converter-path", str(converter_path),
+        "--ephys-root", str(ephys_root),
+        "--histology-root", str(histology_root),
+        "--regenerate-all",
+        "--mouse", "mouse_A", "--session", "20240101_120000", "--probe", "imec0",
+    ])
+    with pytest.raises(SystemExit):
+        _cli()
