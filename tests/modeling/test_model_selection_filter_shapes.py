@@ -99,10 +99,10 @@ def test_compute_filter_shapes_per_fold_returns_one_dict_per_fold(mocker):
         })
 
     from usv_playpen.modeling.model_selection import (
-        compute_filter_shapes_per_fold_bout_onset,
+        compute_filter_shapes_per_fold_vocal_onset,
     )
 
-    result = compute_filter_shapes_per_fold_bout_onset(
+    result = compute_filter_shapes_per_fold_vocal_onset(
         cv_folds=cv_folds,
         current_model_features=feature_names,
         all_feature_data={},

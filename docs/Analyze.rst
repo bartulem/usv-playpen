@@ -296,8 +296,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "fs_volume_adjustment": true
     }
 
-Create artificial playback .WAV file
-------------------------------------
+Create artificial playback .WAV
+-------------------------------
 This function creates a .WAV file containing USV snippets. The snippets are randomly selected from the USV snippet repository in the specified directory and concatenated with inter-pulse intervals (IPIs) of a specified duration. The resulting .WAV file can be used for playback experiments. To achieve this in the GUI, select *Create artificial playback .WAV file* (no need to list root directories!), select total number of files to be created, number of vocalizations in each one, click *Next* and then *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_4.png
@@ -338,8 +338,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "playback_seed": null
     }
 
-Create naturalistic playback .WAV file
---------------------------------------
+Create naturalistic playback .WAV
+---------------------------------
 This function creates a .WAV file containing naturalistic sequences of USV snippets. The snippets are randomly selected from the female or male USV snippet repository in
 the specified directory and assembled into sequences with empirically derived inter-event intervals. The resulting .WAV file can be used for playback experiments.
 To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no need to list root directories!), select total number of files to be created, number of vocalizations in each one, click *Next* and then *Analyze*:

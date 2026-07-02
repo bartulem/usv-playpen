@@ -217,7 +217,7 @@ def build_usv_summary_csv(
     -----------
     Writes a synthetic ``*_usv_summary.csv`` under ``<session_root>/audio`` that
     yields a controllable number of valid vocal *bouts* for the target mouse
-    when run through ``find_bout_epochs`` in ``'bout'`` prediction mode.
+    when run through ``find_onset_epochs`` in ``'bout'`` prediction mode.
 
     Construction guarantees, per bout:
       - ``usv_per_bout`` syllables packed tightly (gap << IBI threshold) so they

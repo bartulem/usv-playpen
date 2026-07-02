@@ -793,7 +793,7 @@ def plot_raw_feature_difference(
     Visualizes the raw difference of a specific feature between two conditions.
 
     This function loads modeling data from a pickle file, automatically detects the
-    data structure (either "Bout Onset" or "Vocal Category"), and generates two
+    data structure (either "Vocal Onset" or "Vocal Category"), and generates two
     complementary visualizations:
     1.  **Bootstrap Average Plot:** A line plot comparing the mean feature value
         of the target condition vs. the contrast condition (e.g., USV vs. No-USV).
@@ -852,10 +852,10 @@ def plot_raw_feature_difference(
     if 'usv_feature_arr' in first_session:
         key_target = 'usv_feature_arr'
         key_other = 'no_usv_feature_arr'
-        label_target = 'USV Bout Trials'
+        label_target = 'USV Trials'
         label_other = 'No-USV Trials'
-        figure_name_label = 'bout_onset'
-        print("Detected mode: Bout Onset (USV vs No-USV)")
+        figure_name_label = 'vocal_onset'
+        print("Detected mode: Vocal Onset (USV vs No-USV)")
 
     elif 'target_feature_arr' in first_session:
         key_target = 'target_feature_arr'

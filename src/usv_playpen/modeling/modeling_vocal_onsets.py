@@ -20,7 +20,7 @@ from sklearn.metrics import balanced_accuracy_score, log_loss, f1_score, recall_
 from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
-from .load_input_files import load_behavioral_feature_data, find_bout_epochs
+from .load_input_files import load_behavioral_feature_data, find_onset_epochs
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -143,7 +143,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         using mixture models to define dynamic inter-bout intervals (IBI).
 
         Pipeline Steps:
-        1.  Calls `find_bout_epochs` to detect vocal bouts.
+        1.  Calls `find_onset_epochs` to detect vocal bouts.
             - Uses `mixture_model_component_index` and `mixture_model_z_score` to calculate a dynamic IBI threshold per mouse.
             - Filters out specific noise categories (e.g., [0, 19]) via `noise_vocal_categories`.
             - Enforces `min_usv_per_bout` constraints.
@@ -161,7 +161,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
               Engagement Index (SEI); the directional rule is never applied here.
             - Adds 1st/2nd derivatives if configured.
         4.  Ingests pre-generated vocal signals (proportion/categories)
-            from `find_bout_epochs`.
+            from `find_onset_epochs`.
             - Partner (other) mouse: Ingests all biological vocal signals.
             - Subject (self) mouse: Ingests ONLY categories (syntax), never proportion/event,
               to prevent self-autocorrelation from drowning out behavioral predictors.
@@ -194,7 +194,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         )
         print("Loading USV data and selecting epochs...")
 
-        usv_data_dict = find_bout_epochs(
+        usv_data_dict = find_onset_epochs(
             root_directories=txt_modeling_sessions,
             mouse_ids_dict=mouse_track_names_dict,
             camera_fps_dict=camera_fr_dict,
@@ -327,7 +327,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # vae_supercategory 6). The category COLUMN is the existing
         # `usv_category_column_name`; only the integer index lives in
         # `onset_target_category`. Category filtering is honoured in
-        # 'individual' mode only (see `find_bout_epochs`): in 'bout'/'state'
+        # 'individual' mode only (see `find_onset_epochs`): in 'bout'/'state'
         # mode the setting is ignored and the run pools all USVs as before, so
         # warn the user that their category choice has no effect there.
         onset_cat = self.modeling_settings['model_params']['onset_target_category']
@@ -1232,7 +1232,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 # the permutation is reproducible and independent of global RNG.
                 #
                 # IMPORTANT — only LOG-LOSS (`ll`) is a valid actual-vs-null
-                # comparison for this null, and `bout_onset_model_selection`
+                # comparison for this null, and `vocal_onset_model_selection`
                 # screens on `ll` for exactly that reason. The null's reported
                 # `auc` / `score` (balanced accuracy) are NOT interpretable: the
                 # GAM on shuffled labels predicts probabilities tightly clustered

@@ -8,7 +8,7 @@ per-session behavioral-feature tables, the modeling subsystem asks the
 inverse question: *how well, and with what temporal structure, do those
 behavioral kinematics predict a mouse's vocal behavior?*
 
-Four prediction targets are supported, each with its own extraction
+Five prediction targets are supported, each with its own extraction
 pipeline:
 
 .. list-table::
@@ -19,13 +19,18 @@ pipeline:
      - Predicts
      - ``Y(t)`` impulses
    * - ``VocalOnsetModelingPipeline``
-     - whether a frame is the start of a vocal bout
-     - bout starts
+     - whether a frame starts a vocal event — a bout, an individual USV, or a
+       vocalizing state (set by ``model_target_vocal_type``)
+     - bout / USV / state onsets
    * - ``BoutParameterPipeline``
      - per-bout duration / complexity / intensity
      - bout starts
+   * - ``VocalCategoryModelingPipeline``
+     - whether a USV is a specific target category vs a pooled "other"
+       (binomial, one-vs-rest)
+     - per-USV starts
    * - ``MultinomialModelingPipeline``
-     - per-USV vocal category (one-vs-rest, multinomial)
+     - the USV's vocal category across all categories jointly (multinomial)
      - per-USV starts
    * - ``ContinuousModelingPipeline``
      - per-USV 2-D acoustic-manifold (UMAP) position
@@ -51,8 +56,8 @@ described in :ref:`modeling-model-selection`.
    pipeline reads ``_parameter_settings/modeling_settings.json`` via
    ``modeling_settings_dict=None``; pass an explicit dict to override.
 
-Settings and inputs
---------------------
+Modeling settings
+-----------------
 All knobs live in ``_parameter_settings/modeling_settings.json``. The most
 important blocks are:
 
@@ -99,18 +104,21 @@ embedded into every output filename for provenance.
 
 .. _modeling-extract:
 
-1. Extract and save modeling input data
-----------------------------------------
+Modeling input data
+-------------------
 Each pipeline converts the per-session loader output into a
 **modeling-input pickle** — a nested ``{feature: {session: {event-window
 arrays}}}`` dictionary with an embedded ``_input_metadata`` provenance
-block — that every downstream runner consumes. The four extraction calls
+block — that every downstream runner consumes. The five extraction calls
 differ only in *what gets predicted*:
 
 .. code-block:: python
 
     from usv_playpen.modeling.modeling_vocal_onsets import VocalOnsetModelingPipeline
     from usv_playpen.modeling.modeling_vocal_bout_parameters import BoutParameterPipeline
+    from usv_playpen.modeling.modeling_vocal_categories_binomial import (
+        VocalCategoryModelingPipeline,
+    )
     from usv_playpen.modeling.modeling_vocal_categories_multinomial import (
         MultinomialModelingPipeline,
     )
@@ -118,7 +126,8 @@ differ only in *what gets predicted*:
         ContinuousModelingPipeline,
     )
 
-    # Bout onsets (binary: is this frame a bout start?)
+    # Vocal-event onsets (bout / individual USV / vocalizing state, set by
+    # model_target_vocal_type)
     VocalOnsetModelingPipeline(
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
@@ -128,7 +137,12 @@ differ only in *what gets predicted*:
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
 
-    # Vocal categories (multinomial, one-vs-rest across USV categories)
+    # One target USV category vs pooled "other" (binomial, one-vs-rest)
+    VocalCategoryModelingPipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_category_input_data(target_category=6)
+
+    # Vocal categories across all categories jointly (multinomial)
     MultinomialModelingPipeline(
         modeling_settings_dict=None
     ).extract_and_save_multinomial_input_data()
@@ -182,8 +196,8 @@ is fit.
 
 .. _modeling-diagnostics:
 
-2. Predictor diagnostics
--------------------------
+Predictor diagnostics
+---------------------
 Before committing to model fitting, inspect how the candidate predictors
 relate to each other and to the event train. The three diagnostic plots
 share feature ordering and per-group colour so a feature can be
@@ -215,19 +229,40 @@ that null envelope (the cross-correlation horizon). ``plot_collinearity_audit``
 flags predictor pairs whose ``|rho|`` crosses the audit's concern / exclude
 thresholds and reports per-feature VIFs.
 
-3. Univariate modeling and ranking
------------------------------------
+Univariate modeling
+-------------------
 Univariate fits (one behavioral feature at a time) produce the ranking that
 seeds model selection. At cohort scale they are dispatched as a SLURM job
-array (one feature per task) via ``main_univariate_dispatcher``; the
-per-feature pickles are then consolidated (see :ref:`modeling-consolidate`).
-The ranking is visualised with ``plot_feature_ranking`` (single target) or
-``plot_univariate_multinomial_performance`` (multinomial).
+array (one feature per task) via ``main_univariate_dispatcher``, writing one
+per-feature pickle each. The ranking is visualised with ``plot_feature_ranking``
+(single target) or ``plot_univariate_multinomial_performance`` (multinomial).
+
+After the array finishes, merge the per-feature pickles into a single artifact.
+``consolidate_univariate`` asserts metadata equality across every pickle
+(guarding against stray files from a different run), hoists the agreed
+``_input_metadata`` / ``_run_metadata`` / ``_univariate_metadata`` blocks to the
+top, and emits a self-describing filename:
+
+.. code-block:: python
+
+    from usv_playpen.modeling.consolidate_univariate_results import (
+        consolidate as consolidate_univariate,
+    )
+
+    consolidate_univariate(
+        input_dir="/mnt/falkner/Bartul/modeling/<univariate_dir>",
+        delete_individuals_after=False,
+    )
+
+The consolidated filename is self-describing, e.g.
+``univariate_onsets_bout_male_mute_partner_<ts>.pkl``. Set
+``delete_individuals_after=True`` only once you have verified the consolidated
+artifact is correct.
 
 .. _modeling-model-selection:
 
-4. Model selection (forward stepwise)
---------------------------------------
+Model selection
+---------------
 Greedy forward-stepwise selection stacks features on top of the univariate
 ranking, adding at each step the feature whose contribution most improves
 the held-out score (one-standard-error rule; see the source for the exact
@@ -263,11 +298,11 @@ Run on a single node from the notebook:
 .. code-block:: python
 
     from usv_playpen.modeling.model_selection import (
-        bout_onset_model_selection,
+        vocal_onset_model_selection,
         vocal_category_model_selection,
     )
 
-    bout_onset_model_selection(
+    vocal_onset_model_selection(
         univariate_results_path="/mnt/falkner/Bartul/modeling/univariate_<...>.pkl",
         input_data_path="/mnt/falkner/Bartul/modeling/modeling_<...>_bout_hist4s.pkl",
         output_directory="/mnt/falkner/Bartul/modeling/model_selection_results/<...>",
@@ -284,60 +319,25 @@ for the inner-loop parallelism):
     python -m usv_playpen.modeling.main_model_selection_dispatcher
 
 The dispatchers read the same ``modeling_settings.json`` and write one
-per-feature / per-step pickle each, ready for consolidation.
-
-.. _modeling-consolidate:
-
-5. Consolidate per-feature / per-step pickles
-----------------------------------------------
-After a SLURM array finishes, merge its outputs into a single artifact. The
-consolidators assert metadata equality across every per-feature / per-step
-pickle (guarding against stray files from a different run), hoist the agreed
-``_input_metadata`` / ``_run_metadata`` / ``_univariate_metadata`` blocks to
-the top of the consolidated artifact, and emit a self-describing filename:
+per-feature / per-step pickle each. Consolidate the model-selection steps with
+``consolidate_model_selection`` (the same metadata-equality guard and metadata
+hoisting as the univariate consolidator above):
 
 .. code-block:: python
 
-    from usv_playpen.modeling.consolidate_univariate_results import (
-        consolidate as consolidate_univariate,
-    )
     from usv_playpen.modeling.consolidate_model_selection_results import (
         consolidate as consolidate_model_selection,
     )
 
-    consolidate_univariate(
-        input_dir="/mnt/falkner/Bartul/modeling/<univariate_dir>",
-        delete_individuals_after=False,
-    )
     consolidate_model_selection(
         input_dir="/mnt/falkner/Bartul/modeling/<selection_dir>", move_to_steps_subdir=False
     )
 
-The consolidated filenames are self-describing, e.g.:
+The consolidated filename is self-describing, e.g.
+``model_selection_final_male_intact_partners_onsets_bout_mixed_<ts>.pkl``.
 
-.. parsed-literal::
-
-    univariate_onsets_bout_male_mute_partner_<ts>.pkl
-    model_selection_final_male_intact_partners_onsets_bout_mixed_<ts>.pkl
-
-Set ``delete_individuals_after=True`` only once you have verified the
-consolidated artifact is correct.
-
-6. Visualisations
------------------
-The ``usv_playpen.visualizations.modeling_plots`` module renders every
-modeling figure. The univariate set (``plot_feature_ranking``,
-``plot_significant_filters``, ``plot_significant_filters_grid``,
-``plot_raw_feature_difference``) operates on the consolidated univariate
-pickle; the selection set (``plot_model_selection_results``,
-``plot_multinomial_selection_trajectory``,
-``plot_manifold_selection_trajectory``, the multivariate-filter atlases, and
-``plot_multinomial_selection_diagnosis``) operates on the consolidated
-``selection_*.pkl`` artifacts. Every plotter takes ``save_plot``/
-``output_dir`` arguments and otherwise renders inline.
-
-7. CNN deep-learning baseline
-------------------------------
+CNN modeling
+------------
 A non-linear baseline for the continuous manifold-position regression. The
 runner loads the modeling-input pickle, stacks the per-feature ``(N, T)``
 matrices into the ``(N, F, T)`` tensor the 1-D ResNet consumes, trains over
@@ -357,6 +357,19 @@ writes a ``cnn_*_predictions_*.pkl`` artifact:
 The trained-network diagnostics (permutation test, feature importance,
 spatial-precision grid, error landscape, regional saliency) are rendered by
 ``DeepResultsVisualizer`` from the same prediction artifact.
+
+Visualizations
+--------------
+The ``usv_playpen.visualizations.modeling_plots`` module renders every
+modeling figure. The univariate set (``plot_feature_ranking``,
+``plot_significant_filters``, ``plot_significant_filters_grid``,
+``plot_raw_feature_difference``) operates on the consolidated univariate
+pickle; the selection set (``plot_model_selection_results``,
+``plot_multinomial_selection_trajectory``,
+``plot_manifold_selection_trajectory``, the multivariate-filter atlases, and
+``plot_multinomial_selection_diagnosis``) operates on the consolidated
+``selection_*.pkl`` artifacts. Every plotter takes ``save_plot``/
+``output_dir`` arguments and otherwise renders inline.
 
 Interactive notebook
 ---------------------

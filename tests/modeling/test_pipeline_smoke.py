@@ -18,7 +18,7 @@ isolated helpers:
   construction, ``_run_model_for_feature_sklearn``, run-metadata building, and
   the per-feature pickle serialization.
 
-* ``TestModelSelection`` runs the real ``bout_onset_model_selection`` (the bulk
+* ``TestModelSelection`` runs the real ``vocal_onset_model_selection`` (the bulk
   of the 2k-statement ``model_selection.py``) on a strong-signal synthetic
   input pickle plus a freshly-computed univariate ranking, asserting that the
   forward-selection step pickles are produced with the expected structure.
@@ -68,7 +68,7 @@ with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     import usv_playpen.modeling.main_model_selection_dispatcher as ms_dispatcher
     import usv_playpen.modeling.main_univariate_dispatcher as univ_dispatcher
-    from usv_playpen.modeling.model_selection import bout_onset_model_selection
+    from usv_playpen.modeling.model_selection import vocal_onset_model_selection
     from usv_playpen.modeling.modeling_vocal_onsets import VocalOnsetModelingPipeline
 
 
@@ -147,7 +147,7 @@ def _run_univariate_and_consolidate(settings, input_pkl, feature_names, out_dir,
     Runs the univariate ``onset`` dispatcher once per feature against a given
     input pickle, then consolidates the per-feature result pickles into a single
     ``{feature: results}`` dict written to ``out_dir / 'univariate_combined.pkl'``
-    (the single-file form ``bout_onset_model_selection`` expects).
+    (the single-file form ``vocal_onset_model_selection`` expects).
 
     The dispatcher hard-codes loading the *package* settings JSON; this helper
     monkeypatches ``json.load`` inside the dispatcher module so the synthetic,
@@ -349,12 +349,12 @@ class TestUnivariateDispatcher:
 
 
 class TestModelSelection:
-    """The real forward-stepwise ``bout_onset_model_selection`` orchestrator."""
+    """The real forward-stepwise ``vocal_onset_model_selection`` orchestrator."""
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_bout_onset_selection_writes_step_pickles(self, tmp_path, monkeypatch):
         """
-        Running ``bout_onset_model_selection`` on a strong-signal synthetic input
+        Running ``vocal_onset_model_selection`` on a strong-signal synthetic input
         pickle (with a matching freshly-computed univariate ranking) performs the
         greedy forward search and writes the per-step result pickles. Each step
         pickle carries the ``current_features`` / ``baseline_score`` /
@@ -391,7 +391,7 @@ class TestModelSelection:
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        bout_onset_model_selection(
+        vocal_onset_model_selection(
             univariate_results_path=str(combined_path),
             input_data_path=input_pkl,
             settings_path=str(settings_json),
@@ -419,7 +419,7 @@ class TestModelSelection:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_bout_onset_selection_session_strategy(self, tmp_path, monkeypatch):
         """
-        Re-runs ``bout_onset_model_selection`` with ``split_strategy='session'``
+        Re-runs ``vocal_onset_model_selection`` with ``split_strategy='session'``
         and *without* the auto-anchor, exercising the session-split CV-fold
         construction and the non-anchored Step-0 candidate sweep — code paths
         distinct from the 'mixed'/anchored run above. Asserts the orchestrator
@@ -456,7 +456,7 @@ class TestModelSelection:
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        bout_onset_model_selection(
+        vocal_onset_model_selection(
             univariate_results_path=str(combined_path),
             input_data_path=input_pkl,
             settings_path=str(settings_json),
@@ -476,7 +476,7 @@ class TestModelSelectionDispatcher:
     def test_dispatch_onset_runs_through_validation_and_routing(self, tmp_path, monkeypatch):
         """
         ``dispatch_model_selection`` validates the three required paths and routes
-        the 'onset' task into ``bout_onset_model_selection``. The dispatcher
+        the 'onset' task into ``vocal_onset_model_selection``. The dispatcher
         auto-resolves the package settings JSON, so the real selection function
         is wrapped to inject the synthetic settings path; this still exercises
         the dispatcher's own validation and routing statements end-to-end without
@@ -511,13 +511,13 @@ class TestModelSelectionDispatcher:
 
         # The dispatcher resolves and passes the package settings path; redirect
         # the selection call to the synthetic settings instead of editing src/.
-        real_selection = bout_onset_model_selection
+        real_selection = vocal_onset_model_selection
 
         def _wrapped(**kwargs):
             kwargs['settings_path'] = str(settings_json)
             return real_selection(**kwargs)
 
-        monkeypatch.setattr(ms_dispatcher, 'bout_onset_model_selection', _wrapped)
+        monkeypatch.setattr(ms_dispatcher, 'vocal_onset_model_selection', _wrapped)
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()

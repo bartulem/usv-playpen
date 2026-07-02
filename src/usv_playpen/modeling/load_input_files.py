@@ -286,7 +286,7 @@ def _generate_vocal_trace(event_starts: np.ndarray,
     return trace
 
 
-def find_bout_epochs(root_directories: list = None,
+def find_onset_epochs(root_directories: list = None,
                      mouse_ids_dict: dict = None,
                      camera_fps_dict: dict = None,
                      features_dict: dict = None,

@@ -66,7 +66,7 @@ For **combined processing**, the order of processing steps is as follows:
     #. Export YOLO dataset (CLI only)
     #. Train (spectrogram) masks (CLI only)
 
-The last four run only when (re)training the spectrogram-pipeline models: they aggregate a cohort of sessions and produce the QLVM decoder and YOLO weights that the per-session *Infer QLVM latents* / *Generate (spectrogram) masks* steps reload (see the *USV spectrogram, mask & latent pipeline* section below).
+The last four run only when (re)training the spectrogram-pipeline models: they aggregate a cohort of sessions and produce the QLVM decoder and YOLO weights that the per-session *Infer QLVM latents* / *Generate (spectrogram) masks* steps reload (see the *Render spectrograms and latents* section below).
 
 On the other hand, for **processing sessions separately**, the order of processing steps is as follows:
 
@@ -739,8 +739,8 @@ The processing of audio data passes multiple stages:
 
 The QLVM decoder and mask detector that the last two steps rely on are trained separately, once per cohort — see *Train spectrogram-pipeline models* below.
 
-Convert to single-channel and crop to video
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Make mono and crop to video
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Before running this section, it is always a good idea to check that audio files were copied to the file server correctly. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select *Convert to single-ch files* and *Crop AUDIO (to VIDEO)*, click *Next* and then *Process*:
 
@@ -1185,8 +1185,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
     "vcl_version": "vcl-ssl"
    }
 
-USV spectrogram, mask & latent pipeline
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Render spectrograms and latents
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an in-house, self-contained pipeline turns every detected USV into a spectrogram, a USV mask, interpretable acoustic features, and toroidal **QLVM** latents. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run them together, you need to list the root directories of interest, set the *Spectrogram models directory* (the single root from which the SAM2, YOLO, and QLVM model paths are derived), select *Generate spectrograms*, *Generate masks*, *Compute USV features* and *Infer QLVM latents*, click *Next* and then *Process* (GPU is required):
 

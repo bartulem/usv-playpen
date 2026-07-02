@@ -735,7 +735,7 @@ def _make_timescale_inputs(n_frames: int, fps: float, n_sessions: int):
     -------
     tuple
         ``(processed_beh_dict, mouse_names_dict, camera_fps_dict,
-        bout_onset_times_per_session, event_intervals_per_session,
+        onset_times_per_session, event_intervals_per_session,
         event_times_per_session)`` ready to splat into the audit.
     """
 
@@ -785,7 +785,7 @@ class TestAuditPredictorTimescales:
                 input_metadata={'pipeline': 'vocal_onsets'},
                 shuffle_range_seconds=(3.0, 6.0),     # floor 30 frames < 50 -> invalid
                 event_intervals_per_session=intervals,
-                bout_onset_times_per_session=bouts,
+                onset_times_per_session=bouts,
             )
 
     def test_full_payload_structure_and_artifact(self, tmp_path):
@@ -817,7 +817,7 @@ class TestAuditPredictorTimescales:
             input_metadata={'pipeline': 'vocal_onsets'},
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session=intervals,
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
 
         n_feat = len(payload['features'])
@@ -876,7 +876,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session=intervals,
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
         p_a = audit_predictor_timescales(
             save_path=str(tmp_path / 'a.pkl'), random_seed=7, **common)
@@ -929,7 +929,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session=intervals,
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
         idx = payload['features'].index('self.speed')
         row = payload['rho_signal'][idx]
@@ -963,7 +963,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session=intervals,
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
         idx = payload['features'].index('self.speed')
         row = payload['rho_signal'][idx]
@@ -971,14 +971,14 @@ class TestAuditPredictorTimescales:
         assert peak_lag_frames == 0
 
     def test_missing_bout_onsets_raises(self, tmp_path):
-        """Omitting ``bout_onset_times_per_session`` removes the audit's
+        """Omitting ``onset_times_per_session`` removes the audit's
         sole ``Y`` source and must raise ``ValueError``."""
 
         fps = 10.0
         beh, names, cam, _, intervals, events = _make_timescale_inputs(
             n_frames=400, fps=fps, n_sessions=2,
         )
-        with pytest.raises(ValueError, match='bout_onset_times_per_session'):
+        with pytest.raises(ValueError, match='onset_times_per_session'):
             audit_predictor_timescales(
                 processed_beh_dict=beh,
                 mouse_names_dict=names,
@@ -992,7 +992,7 @@ class TestAuditPredictorTimescales:
                 save_path=str(tmp_path / 'x.pkl'),
                 source_pickle='input.pkl',
                 event_intervals_per_session=intervals,
-                bout_onset_times_per_session=None,
+                onset_times_per_session=None,
             )
 
     def test_missing_event_intervals_raises(self, tmp_path):
@@ -1017,7 +1017,7 @@ class TestAuditPredictorTimescales:
                 save_path=str(tmp_path / 'x.pkl'),
                 source_pickle='input.pkl',
                 event_intervals_per_session=None,
-                bout_onset_times_per_session=bouts,
+                onset_times_per_session=bouts,
             )
 
     def test_empty_input_payload(self, tmp_path):
@@ -1039,7 +1039,7 @@ class TestAuditPredictorTimescales:
             save_path=str(save_path),
             source_pickle='input.pkl',
             event_intervals_per_session={},
-            bout_onset_times_per_session={},
+            onset_times_per_session={},
         )
         assert payload['features'] == []
         assert payload['n_sessions'] == 0
@@ -1065,7 +1065,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             input_metadata={'pipeline': 'manifold'},
             event_intervals_per_session={},
-            bout_onset_times_per_session={},
+            onset_times_per_session={},
         )
         assert payload['_input_metadata'] == {'pipeline': 'manifold'}
 
@@ -1100,7 +1100,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session={},  # required key, no intervals
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
         assert payload['n_bouts'] > 0
         assert payload['n_usvs'] == 0
@@ -1139,7 +1139,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session=intervals,
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
         # 's_extra' contributed no generic features (no names) -> only the
         # two named sessions populate session_blocks.
@@ -1172,7 +1172,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session=intervals,
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
         assert 'nose-nose' in payload['features']
         idx = payload['features'].index('nose-nose')
@@ -1213,7 +1213,7 @@ class TestAuditPredictorTimescales:
             source_pickle='input.pkl',
             shuffle_range_seconds=(3.0, 5.0),
             event_intervals_per_session=intervals,
-            bout_onset_times_per_session=bouts,
+            onset_times_per_session=bouts,
         )
         # 's_blank' adds no features; the real session's 4 features remain.
         assert len(payload['features']) == 4
@@ -1242,7 +1242,7 @@ class TestAuditPredictorTimescales:
             save_path=str(save_path),
             source_pickle='input.pkl',
             event_intervals_per_session={},  # required but empty
-            bout_onset_times_per_session={},  # no session has Y
+            onset_times_per_session={},  # no session has Y
         )
         n_feat = len(payload['features'])
         max_lag_frames = int(np.ceil(2.0 * fps))

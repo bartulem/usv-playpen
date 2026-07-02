@@ -822,7 +822,7 @@ class TestRunPredictorAudits:
         # IBI thresholds computed for both sexes from the mixture-model params.
         assert set(ts_kwargs['ibi_thresholds']) == {'male', 'female'}
         # Bout-onset Y trace built from default 'positive_events' key.
-        assert 's1' in ts_kwargs['bout_onset_times_per_session']
+        assert 's1' in ts_kwargs['onset_times_per_session']
 
     def test_balance_event_keys_subsamples_per_session(self, mocker, tmp_path):
         """With ``balance_event_keys`` and two event keys of unequal size the
@@ -844,7 +844,7 @@ class TestRunPredictorAudits:
             settings=self._settings(timescale=False),
             save_dir=str(tmp_path), pickle_basename='b.pkl',
             balance_event_keys=True,
-            bout_onset_event_key='target_events',
+            onset_event_key='target_events',
         )
         pooled = coll.call_args.kwargs['event_times_per_session']['s1']
         assert pooled.size == 2     # 1 (min) per key, two keys
@@ -885,7 +885,7 @@ class TestRunPredictorAudits:
         assert 'collinearity audit failed' in capsys.readouterr().out
 
     def test_missing_bout_onset_key_raises_into_nonfatal_path(self, mocker, tmp_path, capsys):
-        """A ``bout_onset_event_key`` absent from every target entry raises
+        """A ``onset_event_key`` absent from every target entry raises
         the universal-absence guard, which the timescale try/except converts
         into a non-fatal warning."""
 
@@ -897,13 +897,13 @@ class TestRunPredictorAudits:
             history_frames=5, event_keys=['positive_events'],
             settings=self._settings(collinearity=False),
             save_dir=str(tmp_path), pickle_basename='g.pkl',
-            bout_onset_event_key='does_not_exist',
+            onset_event_key='does_not_exist',
         )
         ts.assert_not_called()      # guard raised before the audit call
         assert 'timescale audit failed' in capsys.readouterr().out
 
     def test_precomputed_bout_onset_times_used(self, mocker, tmp_path):
-        """``precomputed_bout_onset_times`` bypasses the string-key lookup and
+        """``precomputed_onset_times`` bypasses the string-key lookup and
         is forwarded (sorted, empties dropped) as the timescale ``Y`` source."""
 
         mocker.patch.object(mu, 'audit_predictor_collinearity')
@@ -914,10 +914,10 @@ class TestRunPredictorAudits:
             history_frames=5, event_keys=['positive_events'],
             settings=self._settings(collinearity=False),
             save_dir=str(tmp_path), pickle_basename='h.pkl',
-            precomputed_bout_onset_times={'s1': np.array([3.0, 1.0, 2.0]),
+            precomputed_onset_times={'s1': np.array([3.0, 1.0, 2.0]),
                                           's_empty': np.array([])},
         )
-        bo = ts.call_args.kwargs['bout_onset_times_per_session']
+        bo = ts.call_args.kwargs['onset_times_per_session']
         np.testing.assert_array_equal(bo['s1'], np.array([1.0, 2.0, 3.0]))
         assert 's_empty' not in bo       # empty array dropped
 
@@ -1038,5 +1038,5 @@ class TestRunPredictorAudits:
             save_dir=str(tmp_path), pickle_basename='ts.pkl',
         )
         ts.assert_called_once()
-        bo = ts.call_args.kwargs['bout_onset_times_per_session']
+        bo = ts.call_args.kwargs['onset_times_per_session']
         assert set(bo) == {'s_ok'}

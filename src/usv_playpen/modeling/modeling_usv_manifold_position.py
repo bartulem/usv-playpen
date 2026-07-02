@@ -1065,7 +1065,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
             precomputed_event_times=precomputed_events,
-            precomputed_bout_onset_times=precomputed_events,
+            precomputed_onset_times=precomputed_events,
             input_metadata=input_metadata,
         )
 

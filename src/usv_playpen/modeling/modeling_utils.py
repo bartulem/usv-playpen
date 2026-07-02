@@ -353,7 +353,7 @@ def build_vocal_signal_columns(usv_data_dict: dict,
     Constructs the list of per-mouse vocal signal columns for one session.
 
     Reads the continuous vocal signals previously attached to the USV data
-    dictionary (by `find_bout_epochs`, `find_usv_categories`, or
+    dictionary (by `find_onset_epochs`, `find_usv_categories`, or
     `find_variable_length_bouts`) and turns them into polars Series ready to
     be `.with_columns`-attached to a behavioral DataFrame.
 
@@ -1335,8 +1335,8 @@ def run_predictor_audits(processed_beh_dict: dict,
                          precomputed_event_times: dict = None,
                          input_metadata: dict = None,
                          balance_event_keys: bool = False,
-                         bout_onset_event_key: str = 'positive_events',
-                         precomputed_bout_onset_times: dict = None) -> None:
+                         onset_event_key: str = 'positive_events',
+                         precomputed_onset_times: dict = None) -> None:
     """
     Runs the collinearity and timescale audits as a single non-fatal
     diagnostic step at modeling-input-pickle creation time.
@@ -1440,9 +1440,9 @@ def run_predictor_audits(processed_beh_dict: dict,
         different mice rather than two outcome classes for the same
         decision). The timescale audit's binary `Y` trace and the
         empirical IBI block are unaffected — they read
-        `bout_onset_event_key` / `start` / `stop` directly, not the
+        `onset_event_key` / `start` / `stop` directly, not the
         balanced pool.
-    bout_onset_event_key : str, default 'positive_events'
+    onset_event_key : str, default 'positive_events'
         Per-mouse key under `usv_data_dict[sess][target_name]` whose
         stored array is the event time set used to build the
         timescale audit's binary `Y(t)` impulse trace. The kwarg
@@ -1459,17 +1459,17 @@ def run_predictor_audits(processed_beh_dict: dict,
         `'target_events'`). Without this override `Y(t)` ends up
         empty, every cross-correlation row becomes NaN, and no XC
         marker can be located. Ignored when
-        `precomputed_bout_onset_times` is supplied.
-    precomputed_bout_onset_times : dict, optional
+        `precomputed_onset_times` is supplied.
+    precomputed_onset_times : dict, optional
         Pre-built `session_id -> np.ndarray` mapping of model-event
         impulse times in seconds, used as the timescale audit's
         `Y(t)` source. When supplied the wrapper bypasses the
-        `bout_onset_event_key` string-key lookup entirely. Use this
+        `onset_event_key` string-key lookup entirely. Use this
         when the calling pipeline stores its events in a non-flat
         shape (e.g. the multinomial pipeline's `events_by_category`
         nested dict, or the continuous manifold pipeline's
         `continuous_targets` packets). Like
-        `bout_onset_event_key`, the kwarg name retains the
+        `onset_event_key`, the kwarg name retains the
         historical "bout-onset" wording but the actual semantic is
         **per-prediction event times** — for the multinomial /
         manifold pipelines those are per-USV starts (one impulse
@@ -1662,7 +1662,7 @@ def run_predictor_audits(processed_beh_dict: dict,
             # Bout-onset times for the timescale audit's binary `Y`
             # trace. Built here (inside the timescale audit's
             # try/except) rather than at the top of the wrapper so a
-            # mis-specified `bout_onset_event_key` raises into the
+            # mis-specified `onset_event_key` raises into the
             # non-fatal warning path instead of crashing the calling
             # pipeline. The vocal_onsets pipeline in `bout` mode
             # writes onsets to `usv_data_dict[sess][target]
@@ -1670,23 +1670,23 @@ def run_predictor_audits(processed_beh_dict: dict,
             # writes them to `[...]['bout_onsets']`; the binomial
             # Category pipeline writes them to
             # `[...]['target_events']`. The per-pipeline key is
-            # parameterised via `bout_onset_event_key`. Pipelines
+            # parameterised via `onset_event_key`. Pipelines
             # whose events are stored in a non-flat shape (e.g. the
             # multinomial `events_by_category` nested dict, or the
             # continuous manifold's per-session `continuous_targets`
             # packets) bypass the string-key lookup by passing
-            # `precomputed_bout_onset_times` directly. Either way,
+            # `precomputed_onset_times` directly. Either way,
             # the audit's `Y` is exactly the set of bout onsets the
             # model is trained to predict — no duplicate
             # bout-detection logic in the audit.
-            if precomputed_bout_onset_times is not None:
-                bout_onset_times_per_session = {
+            if precomputed_onset_times is not None:
+                onset_times_per_session = {
                     sess_id: np.sort(np.asarray(arr).ravel())
-                    for sess_id, arr in precomputed_bout_onset_times.items()
+                    for sess_id, arr in precomputed_onset_times.items()
                     if np.asarray(arr).size > 0
                 }
             else:
-                bout_onset_times_per_session = {}
+                onset_times_per_session = {}
                 n_sessions_with_target = 0
                 for sess_id, track_names in mouse_names_dict.items():
                     if sess_id not in usv_data_dict:
@@ -1696,16 +1696,16 @@ def run_predictor_audits(processed_beh_dict: dict,
                         continue
                     n_sessions_with_target += 1
                     per_mouse = usv_data_dict[sess_id][target_name]
-                    if bout_onset_event_key not in per_mouse:
+                    if onset_event_key not in per_mouse:
                         continue
-                    bout_starts = np.asarray(per_mouse[bout_onset_event_key])
+                    bout_starts = np.asarray(per_mouse[onset_event_key])
                     if bout_starts.size == 0:
                         continue
-                    bout_onset_times_per_session[sess_id] = np.sort(bout_starts.ravel())
+                    onset_times_per_session[sess_id] = np.sort(bout_starts.ravel())
 
                 # Universal-absence guard. If every session that had a
                 # target-mouse entry was silently skipped because none
-                # carried `bout_onset_event_key`, the key is wrong (typo,
+                # carried `onset_event_key`, the key is wrong (typo,
                 # or the calling pipeline stores its onsets under a
                 # different name). A degenerate audit pickle with
                 # `n_bouts=0` and all-NaN ρ rows would otherwise be
@@ -1716,15 +1716,15 @@ def run_predictor_audits(processed_beh_dict: dict,
                 # warning instead of crashing the pipeline. Sessions
                 # that legitimately have *some* onsets but not all
                 # continue to skip silently as before.
-                if n_sessions_with_target > 0 and not bout_onset_times_per_session:
+                if n_sessions_with_target > 0 and not onset_times_per_session:
                     raise ValueError(
-                        f"`bout_onset_event_key={bout_onset_event_key!r}` was not "
+                        f"`onset_event_key={onset_event_key!r}` was not "
                         f"found in any of the {n_sessions_with_target} session(s) "
                         f"that carried a target-mouse entry in `usv_data_dict`. "
                         f"Either the key is a typo, or the calling pipeline "
                         f"stores its onsets under a different key — pass "
-                        f"`bout_onset_event_key=...` or "
-                        f"`precomputed_bout_onset_times=...` explicitly. The "
+                        f"`onset_event_key=...` or "
+                        f"`precomputed_onset_times=...` explicitly. The "
                         f"audit refuses to write a pickle whose `Y(t)` is empty, "
                         f"since every cross-correlation row would collapse to "
                         f"NaN."
@@ -1746,7 +1746,7 @@ def run_predictor_audits(processed_beh_dict: dict,
                 input_metadata=input_metadata,
                 shuffle_range_seconds=shuffle_range_seconds,
                 event_intervals_per_session=event_intervals_per_session,
-                bout_onset_times_per_session=bout_onset_times_per_session,
+                onset_times_per_session=onset_times_per_session,
                 signal_floor_seconds=signal_floor_seconds,
                 signal_min_run_seconds=signal_min_run_seconds,
             )

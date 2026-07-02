@@ -22,7 +22,7 @@ downstream of the previous:
 
     Level 3 — consolidated model-selection result
         Output of `consolidate_model_selection_results.py`, fed by the
-        per-step pickles written by `bout_onset_model_selection`,
+        per-step pickles written by `vocal_onset_model_selection`,
         `vocal_category_model_selection`, and `bout_param_model_selection`.
         Carries everything from Level 1 and Level 2 plus the
         forward-stepwise selection knobs.
@@ -764,7 +764,7 @@ def build_selection_metadata(modeling_settings: dict,
         Fully loaded settings JSON.
     selection_function : str
         Name of the entry-point function that built this artifact —
-        `'bout_onset_model_selection'`, `'vocal_category_model_selection'`,
+        `'vocal_onset_model_selection'`, `'vocal_category_model_selection'`,
         or `'bout_param_model_selection'`.
     selection_metric : str
         Primary scoring metric used to rank features at each step

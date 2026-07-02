@@ -6,7 +6,7 @@ self-describing artifact.
 
 Background
 ----------
-Each selector (`bout_onset_model_selection`,
+Each selector (`vocal_onset_model_selection`,
 `vocal_category_model_selection`, `bout_parameter_model_selection`,
 `multinomial_vocal_category_model_selection`,
 `continuous_vocal_manifold_model_selection`) writes one

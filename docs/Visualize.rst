@@ -395,8 +395,8 @@ Parameters specific to subplots include:
         }
     }
 
-Render the QLVM torus-traversal video
---------------------------------------
+Render the QLVM torus-traversal
+-------------------------------
 The ``usv_playpen.visualizations.qlvm_torus_traversal_video`` module renders a two-panel "torus walkthrough" animation (the in-house, torch-free port of ``qmc_deep_gen``'s ``inference_latents_video.py``). The **left** panel is the QLVM latent map — the density heatmap with watershed cluster contours (no axes/ticks) and a recency-coloured trajectory trail (cyan at the current position, fading to white going back, built with ``create_colormap``); the **right** panel is a phase-specific spectrogram board. All spectrograms have their SAM2 mask applied (``apply_mask``) and the call centred in its window with equal padding on both sides (so duration is preserved, not stretched). It runs in three parts, each introduced by a title card:
 
 - **Part 1 — Cluster peaks**: one phase per cluster, the right panel showing that cluster's peak spectrogram surrounded by its ``m`` nearest USVs in concentric rings; on the left the active cluster is outlined in a thick **pulsating cyan** contour with a cyan dot at its centre.

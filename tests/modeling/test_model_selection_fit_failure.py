@@ -7,7 +7,7 @@ These tests deliberately do NOT re-walk the happy paths already covered by the
 ``test_pipeline_multinomial`` / ``test_pipeline_manifold`` smoke suites. Instead
 they drive the *uncovered* per-fold fit-failure NaN-padding branches of the two
 JAX-driven fold-fitters — the analogue of the existing
-``compute_filter_shapes_per_fold_bout_onset`` failure test in
+``compute_filter_shapes_per_fold_vocal_onset`` failure test in
 ``test_model_selection_filter_shapes`` / ``test_model_selection_tail``, but for
 the multinomial and manifold orchestrators:
 

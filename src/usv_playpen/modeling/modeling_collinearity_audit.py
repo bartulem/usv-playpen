@@ -688,7 +688,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                                input_metadata: dict = None,
                                shuffle_range_seconds: tuple = (20.0, 60.0),
                                event_intervals_per_session: dict = None,
-                               bout_onset_times_per_session: dict = None,
+                               onset_times_per_session: dict = None,
                                signal_floor_seconds: float = 0.5,
                                signal_min_run_seconds: float = 0.2) -> dict:
     """
@@ -701,7 +701,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     ---------------------
     `Y(t) = 1` at every frame index that is the start of a model
     event (single-frame impulse, sparse), and `Y(t) = 0` everywhere
-    else. Model-event times come from `bout_onset_times_per_session`,
+    else. Model-event times come from `onset_times_per_session`,
     whose granularity is set by the calling pipeline:
 
       - **Bout-level pipelines** — vocal_onsets in `bout` mode and
@@ -720,11 +720,11 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     The kwarg names retain the historical "bout-onset" wording from
     when the audit was first written; treat them all as the
     **generalized model-event impulse source**, with the per-pipeline
-    granularity documented above. Only `bout_onset_times_per_session`
-    is a parameter of this function; `bout_onset_event_key` and
-    `precomputed_bout_onset_times` are wrapper-side kwargs of
+    granularity documented above. Only `onset_times_per_session`
+    is a parameter of this function; `onset_event_key` and
+    `precomputed_onset_times` are wrapper-side kwargs of
     `run_predictor_audits` (in `modeling_utils`) that ultimately
-    resolve into the `bout_onset_times_per_session` dict passed here.
+    resolve into the `onset_times_per_session` dict passed here.
     The trace is built via `_binary_event_trace`, which marks the
     integer frame index of each onset (one `1.0` per event, no
     within-event duty cycle).
@@ -834,7 +834,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         `ValueError`; pipelines that expose bout onsets but no per-USV
         `[start, stop)` arrays should supply an empty dict, in which
         case the IBI percentiles come back NaN.
-    bout_onset_times_per_session : dict, optional but required at runtime
+    onset_times_per_session : dict, optional but required at runtime
         Mapping `session_id -> np.ndarray` of per-session model-event
         onset times (in seconds). This is the audit's sole source of
         the binary `Y(t)` impulse trace (see the "Binary `Y`
@@ -1098,9 +1098,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     # draw). The `event_intervals_per_session` dict is also required,
     # but only for the IBI-percentile reporting (it is the inter-USV
     # gap source, not a `Y` source).
-    if bout_onset_times_per_session is None:
+    if onset_times_per_session is None:
         raise ValueError(
-            "audit_predictor_timescales requires `bout_onset_times_per_session`. "
+            "audit_predictor_timescales requires `onset_times_per_session`. "
             "The binary `Y(t) = bout-onset-at-frame-t` trace is built "
             "exclusively from per-session bout-onset arrays "
             "(typically `usv_data_dict[sess][target]['positive_events']` "
@@ -1115,7 +1115,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         )
     valid_sessions = []
     for sess_id, per_feature in session_blocks.items():
-        if sess_id not in bout_onset_times_per_session:
+        if sess_id not in onset_times_per_session:
             continue
         if sess_id not in camera_fps_dict:
             # The phase-1 loop below indexes ``camera_fps_dict[sess_id]``
@@ -1193,7 +1193,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             # at the integer frame index of each bout's first USV,
             # zero everywhere else. `valid_sessions` is already gated
             # on having bout onsets so no fallback is needed.
-            _bout_times = bout_onset_times_per_session[sess_id]
+            _bout_times = onset_times_per_session[sess_id]
             Y_sess = _binary_event_trace(
                 _bout_times, n_frames_sess, camera_fps_dict[sess_id]
             )
@@ -1345,7 +1345,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         # `event_intervals_per_session` dict. For those sessions we
         # skip the IBI gap computation (the percentiles end up NaN
         # for the cohort) but still count bouts from
-        # `bout_onset_times_per_session`, which is the audit's `Y`-
+        # `onset_times_per_session`, which is the audit's `Y`-
         # event source and is populated for every session in
         # `valid_sessions`.
         all_ibis = []
@@ -1366,7 +1366,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                     if gaps.size > 0:
                         all_ibis.append(gaps)
             n_total_bouts += int(np.asarray(
-                bout_onset_times_per_session[sess_id]
+                onset_times_per_session[sess_id]
             ).size)
         if all_ibis:
             ibis = np.concatenate(all_ibis)

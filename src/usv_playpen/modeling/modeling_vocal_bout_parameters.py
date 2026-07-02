@@ -335,7 +335,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         # Predictor diagnostics audit (collinearity + timescales). Diagnostic-
         # only: any failure inside the wrapper warns and continues.
-        # `bout_onset_event_key='bout_onsets'` because this pipeline
+        # `onset_event_key='bout_onsets'` because this pipeline
         # stores per-target bout onsets under `'bout_onsets'` (not
         # `'positive_events'`, which is the vocal-onsets pipeline's
         # key) — without this override the timescale audit's `Y(t)`
@@ -354,7 +354,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             save_dir=self.modeling_settings['io']['save_directory'],
             pickle_basename=fname,
             input_metadata=input_metadata,
-            bout_onset_event_key='bout_onsets',
+            onset_event_key='bout_onsets',
         )
 
         final_data_dict = {}

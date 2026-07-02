@@ -988,8 +988,8 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       device        CUDA device; null = auto-select, e.g. 0 or "cpu" (default null).
       run_name      Ultralytics run name (subdir under the output directory) (default usv_yolo_detector).
 
-Set up and use the CLI on the *Spock* cluster
----------------------------------------------
+CLI Spock cluster usage
+-----------------------
 
 In order to exploit the full functionality of *usv-playpen*, one should install subsidiary uv (sleap) or conda packages (das, vcl-ssl or vcl-ssl-ss). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
 

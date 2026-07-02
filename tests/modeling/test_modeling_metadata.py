@@ -968,7 +968,7 @@ class TestBuildSelectionMetadata:
         )
         return build_selection_metadata(
             modeling_settings=_full_modeling_settings(),
-            selection_function='bout_onset_model_selection',
+            selection_function='vocal_onset_model_selection',
             selection_metric='AUC',
             n_splits_selection=5,
             test_proportion=0.2,
@@ -990,7 +990,7 @@ class TestBuildSelectionMetadata:
 
         md = self._build(mocker)
         assert md['_schema_version'] == SCHEMA_VERSIONS['selection']
-        assert md['selection_function'] == 'bout_onset_model_selection'
+        assert md['selection_function'] == 'vocal_onset_model_selection'
         assert md['selection_metric'] == 'AUC'
         assert md['n_splits_selection'] == 5
         assert md['test_proportion'] == 0.2

@@ -506,10 +506,10 @@ class TestValidatePaths:
 class TestDispatchModelSelection:
 
     def test_onset_route(self, tmp_path, mocker):
-        """The ``onset`` route calls ``bout_onset_model_selection`` with
+        """The ``onset`` route calls ``vocal_onset_model_selection`` with
         the anchor flag and p-value threaded through."""
 
-        spy = mocker.patch.object(sel, 'bout_onset_model_selection')
+        spy = mocker.patch.object(sel, 'vocal_onset_model_selection')
         args = _sel_args('onset', tmp_path, pval=0.02)
         sel.dispatch_model_selection(args)
         spy.assert_called_once()
@@ -563,7 +563,7 @@ class TestDispatchModelSelection:
         dispatcher's try/except and surfaced as a ``CRITICAL FAILURE``
         rather than propagating out."""
 
-        mocker.patch.object(sel, 'bout_onset_model_selection',
+        mocker.patch.object(sel, 'vocal_onset_model_selection',
                             side_effect=RuntimeError('selection blew up'))
         sel.dispatch_model_selection(_sel_args('onset', tmp_path))
         assert 'CRITICAL FAILURE' in capsys.readouterr().out

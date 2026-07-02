@@ -6,10 +6,10 @@ These tests deliberately do NOT re-walk the happy paths already covered by the
 ``test_pipeline_*`` smoke suites. Instead they drive the *uncovered* branches of
 the forward-stepwise selectors:
 
-* the standalone ``compute_filter_shapes_per_fold_bout_onset`` helper, exercised
+* the standalone ``compute_filter_shapes_per_fold_vocal_onset`` helper, exercised
   directly with hand-built CV-fold dicts so its unknown-fold-type skip, empty-
   class skip, and per-fold ``except`` accounting all execute;
-* ``bout_onset_model_selection`` resume-from-checkpoint logic (a pre-existing
+* ``vocal_onset_model_selection`` resume-from-checkpoint logic (a pre-existing
   Step pickle in the output directory makes the selector resume instead of
   recomputing), the unknown-``split_strategy`` ``raise``, the
   no-significant-candidates early-abort, the per-fold ``except`` (estimator
@@ -63,9 +63,9 @@ with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     from usv_playpen.modeling import model_selection as ms
     from usv_playpen.modeling.model_selection import (
-        bout_onset_model_selection,
+        vocal_onset_model_selection,
         bout_parameter_model_selection,
-        compute_filter_shapes_per_fold_bout_onset,
+        compute_filter_shapes_per_fold_vocal_onset,
         continuous_vocal_manifold_model_selection,
         get_unrolled_X_for_multivariate,
         multinomial_vocal_category_model_selection,
@@ -261,7 +261,7 @@ def _settings_json(tmp_path: Path, settings: dict) -> str:
 
 
 class TestComputeFilterShapesHelper:
-    """Direct unit coverage of ``compute_filter_shapes_per_fold_bout_onset``."""
+    """Direct unit coverage of ``compute_filter_shapes_per_fold_vocal_onset``."""
 
     def test_unknown_fold_type_is_skipped(self):
         """
@@ -271,7 +271,7 @@ class TestComputeFilterShapesHelper:
         unknown fold the returned list is therefore empty.
         """
 
-        out = compute_filter_shapes_per_fold_bout_onset(
+        out = compute_filter_shapes_per_fold_vocal_onset(
             cv_folds=[{'type': 'bogus'}],
             current_model_features=['f0'],
             all_feature_data={},
@@ -298,7 +298,7 @@ class TestComputeFilterShapesHelper:
         x_full = np.zeros((n_pos_total + n_neg_total, HISTORY_FRAMES), dtype=float)
         # train_idx selects only the negative half -> zero positive rows.
         neg_only_idx = np.arange(n_pos_total, n_pos_total + n_neg_total)
-        out = compute_filter_shapes_per_fold_bout_onset(
+        out = compute_filter_shapes_per_fold_vocal_onset(
             cv_folds=[{
                 'type': 'mixed',
                 'train_idx': neg_only_idx,
@@ -338,7 +338,7 @@ class TestComputeFilterShapesHelper:
         x_full = np.random.default_rng(0).standard_normal(
             (n_pos_total + n_neg_total, HISTORY_FRAMES)
         )
-        out = compute_filter_shapes_per_fold_bout_onset(
+        out = compute_filter_shapes_per_fold_vocal_onset(
             cv_folds=[{
                 'type': 'mixed',
                 'train_idx': np.arange(n_pos_total + n_neg_total),
@@ -359,7 +359,7 @@ class TestComputeFilterShapesHelper:
 
 
 class TestBoutOnsetSelectionBranches:
-    """Uncovered control-flow branches of ``bout_onset_model_selection``."""
+    """Uncovered control-flow branches of ``vocal_onset_model_selection``."""
 
     def test_no_significant_features_aborts(self, tmp_path):
         """
@@ -389,7 +389,7 @@ class TestBoutOnsetSelectionBranches:
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        bout_onset_model_selection(
+        vocal_onset_model_selection(
             univariate_results_path=ranking_pkl,
             input_data_path=input_pkl,
             settings_path=_settings_json(tmp_path, settings),
@@ -414,7 +414,7 @@ class TestBoutOnsetSelectionBranches:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         with pytest.raises(ValueError, match="Unknown split_strategy"):
-            bout_onset_model_selection(
+            vocal_onset_model_selection(
                 univariate_results_path=ranking_pkl,
                 input_data_path=input_pkl,
                 settings_path=_settings_json(tmp_path, settings),
@@ -459,7 +459,7 @@ class TestBoutOnsetSelectionBranches:
         with (ms_dir / f'{prefix}0.pkl').open('wb') as fh:
             pickle.dump(checkpoint, fh)
 
-        bout_onset_model_selection(
+        vocal_onset_model_selection(
             univariate_results_path=ranking_pkl,
             input_data_path=input_pkl,
             settings_path=_settings_json(tmp_path, settings),
@@ -498,7 +498,7 @@ class TestBoutOnsetSelectionBranches:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         with pytest.raises(RuntimeError, match="fold"):
-            bout_onset_model_selection(
+            vocal_onset_model_selection(
                 univariate_results_path=ranking_pkl,
                 input_data_path=input_pkl,
                 settings_path=_settings_json(tmp_path, settings),
@@ -547,7 +547,7 @@ class TestPooledCacheMisalignment:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         with pytest.raises(ValueError, match="misalignment"):
-            bout_onset_model_selection(
+            vocal_onset_model_selection(
                 univariate_results_path=ranking_pkl,
                 input_data_path=str(input_pkl),
                 settings_path=_settings_json(tmp_path, settings),
@@ -1196,7 +1196,7 @@ class TestMultinomialAndManifoldAborts:
 
 
 @pytest.mark.parametrize('selector', [
-    bout_onset_model_selection,
+    vocal_onset_model_selection,
     vocal_category_model_selection,
     bout_parameter_model_selection,
     multinomial_vocal_category_model_selection,

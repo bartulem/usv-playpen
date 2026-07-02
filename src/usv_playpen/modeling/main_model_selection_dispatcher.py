@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .model_selection import (
-    bout_onset_model_selection,
+    vocal_onset_model_selection,
     vocal_category_model_selection,
     bout_parameter_model_selection,
     multinomial_vocal_category_model_selection,
@@ -112,7 +112,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
 
         if args.analysis_type == 'onset':
 
-            bout_onset_model_selection(
+            vocal_onset_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
                 settings_path=settings_path,

@@ -25,7 +25,7 @@ from usv_playpen.modeling.load_input_files import (
     _calculate_ibi_threshold,
     _generate_vocal_trace,
     _get_clean_tiled_epochs,
-    find_bout_epochs,
+    find_onset_epochs,
     find_usv_categories,
     find_variable_length_bouts,
     load_behavioral_feature_data,
@@ -41,7 +41,7 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     Description
     -----------
     Writes a synthetic ``*_usv_summary.csv`` under ``<session_root>/audio`` so
-    the disk-reading loaders (``find_bout_epochs``, ``find_usv_categories``,
+    the disk-reading loaders (``find_onset_epochs``, ``find_usv_categories``,
     ``find_variable_length_bouts``) can ingest it through their polars
     ``read_csv`` glob (``audio/**/*_usv_summary.csv``).
 
@@ -276,7 +276,7 @@ class TestLoadBehavioralFeatureData:
         assert names['sess_A'] == ['male', 'female']
 
 
-# find_bout_epochs
+# find_onset_epochs
 
 
 class TestFindBoutEpochs:
@@ -284,7 +284,7 @@ class TestFindBoutEpochs:
     def _build(self, tmp_path, rows: dict, n_frames: int = 600, fps: float = 100.0):
         """Builds a one-session tree from ``rows`` and returns the kwargs
         triplet (mouse_ids/camera_fps/features dicts) plus the root list that
-        every ``find_bout_epochs`` test below feeds in."""
+        every ``find_onset_epochs`` test below feeds in."""
 
         sess = tmp_path / 'sess_B'
         _write_usv_summary(sess, rows)
@@ -308,7 +308,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
@@ -335,7 +335,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=3,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
@@ -353,7 +353,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
@@ -374,7 +374,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1],
         }
         kwargs = self._build(tmp_path, rows, n_frames=600, fps=100.0)
-        out = find_bout_epochs(prediction_mode='state', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='state', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
@@ -396,7 +396,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='all_rate',
@@ -419,7 +419,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='pooled_binary',
@@ -440,7 +440,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [0, 0, 0],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                noise_vocal_categories=[0],
@@ -462,7 +462,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                target_category=6,
@@ -487,8 +487,8 @@ class TestFindBoutEpochs:
                       usv_bout_time=0.5, min_usv_per_bout=2,
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         # Both calls read the same (read-only) session tree.
-        out_all = find_bout_epochs(target_category=None, **common, **kwargs)
-        out_cat = find_bout_epochs(target_category=6, **common, **kwargs)
+        out_all = find_onset_epochs(target_category=None, **common, **kwargs)
+        out_cat = find_onset_epochs(target_category=6, **common, **kwargs)
         np.testing.assert_allclose(out_all['sess_B']['male']['negative_events'],
                                    out_cat['sess_B']['male']['negative_events'])
 
@@ -504,7 +504,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                target_category=None,
@@ -526,7 +526,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='all_rate', target_category=6,
@@ -558,8 +558,8 @@ class TestFindBoutEpochs:
         common = dict(prediction_mode='bout', filter_history=1.0, usv_bout_time=0.5,
                       min_usv_per_bout=2, proportion_smoothing_sd=None,
                       mixture_model_params=_mixture_model_params())
-        out_all = find_bout_epochs(target_category=None, **common, **kwargs)
-        out_cat = find_bout_epochs(target_category=6, **common, **kwargs)
+        out_all = find_onset_epochs(target_category=None, **common, **kwargs)
+        out_cat = find_onset_epochs(target_category=6, **common, **kwargs)
         np.testing.assert_allclose(out_all['sess_B']['male']['positive_events'],
                                    out_cat['sess_B']['male']['positive_events'])
         # The pooled 3-syllable cluster still forms exactly one bout onset.
@@ -576,7 +576,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                category_column='vae_supercategory', target_category=6,
@@ -591,7 +591,7 @@ class TestFindBoutEpochs:
 
         sess = tmp_path / 'sess_empty'
         (sess / 'audio').mkdir(parents=True)
-        out = find_bout_epochs(root_directories=[str(sess)],
+        out = find_onset_epochs(root_directories=[str(sess)],
                                mouse_ids_dict={'sess_empty': ['male', 'female']},
                                camera_fps_dict={'sess_empty': 100.0},
                                features_dict={'sess_empty': _features_df(100)},
@@ -610,7 +610,7 @@ class TestFindBoutEpochs:
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
             'usv_category': [1], 'usv_supercategory': [1],
         })
-        out = find_bout_epochs(root_directories=[str(sess)],
+        out = find_onset_epochs(root_directories=[str(sess)],
                                mouse_ids_dict={},
                                camera_fps_dict={'sess_C': 100.0},
                                features_dict={'sess_C': _features_df(100)},
@@ -628,7 +628,7 @@ class TestFindBoutEpochs:
             'usv_category': [1], 'usv_supercategory': [1],
         })
         with pytest.raises(ValueError, match='Unknown prediction_mode'):
-            find_bout_epochs(prediction_mode='bogus', filter_history=1.0,
+            find_onset_epochs(prediction_mode='bogus', filter_history=1.0,
                              usv_bout_time=0.5, min_usv_per_bout=2,
                              proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                              **kwargs)
@@ -641,7 +641,7 @@ class TestFindBoutEpochs:
             'usv_category': [1], 'usv_supercategory': [1],
         })
         with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
-            find_bout_epochs(prediction_mode='bout', filter_history=1.0,
+            find_onset_epochs(prediction_mode='bout', filter_history=1.0,
                              usv_bout_time=0.5, min_usv_per_bout=2,
                              mixture_model_component_index=5,
                              proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
@@ -664,7 +664,7 @@ class TestFindBoutEpochs:
         # only 0.45 s away (< filter_history = 1.0) -> rejected.
         mixture_model = {'male': {'means': [np.log(0.3)], 'sds': [0.0]},
                'female': {'means': [np.log(0.3)], 'sds': [0.0]}}
-        out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=mixture_model,
                                **kwargs)
@@ -683,7 +683,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='individual', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='categories_rate',
@@ -701,7 +701,7 @@ class TestFindBoutEpochs:
             'usv_category': [1], 'usv_supercategory': [1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_bout_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=1,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
@@ -717,7 +717,7 @@ class TestFindBoutEpochs:
         }
         # n_frames=50 at 100 fps -> 0.5 s session; filter_history=2.0 > 0.5.
         kwargs = self._build(tmp_path, rows, n_frames=50, fps=100.0)
-        out = find_bout_epochs(prediction_mode='state', filter_history=2.0,
+        out = find_onset_epochs(prediction_mode='state', filter_history=2.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)

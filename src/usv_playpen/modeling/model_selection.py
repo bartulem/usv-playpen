@@ -214,7 +214,7 @@ def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
     return X_unrolled
 
 
-def compute_filter_shapes_per_fold_bout_onset(
+def compute_filter_shapes_per_fold_vocal_onset(
         *,
         cv_folds: list[dict],
         current_model_features: list[str],
@@ -407,7 +407,7 @@ def compute_filter_shapes_per_fold_bout_onset(
     return final_fold_shapes
 
 
-def bout_onset_model_selection(univariate_results_path: str,
+def vocal_onset_model_selection(univariate_results_path: str,
                                input_data_path: str,
                                output_directory: str,
                                settings_path: str = None,
@@ -541,7 +541,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     # block (the consolidator asserts equality across step files).
     _run_md = build_selection_metadata(
         modeling_settings=settings,
-        selection_function='bout_onset_model_selection',
+        selection_function='vocal_onset_model_selection',
         selection_metric='log_likelihood',
         n_splits_selection=int(n_splits_selection),
         test_proportion=float(test_prop),
@@ -1017,7 +1017,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     # lost per-fold filter data was only spotted after a 6-day run.
     #
     # The loop body is factored into
-    # ``compute_filter_shapes_per_fold_bout_onset`` purely for
+    # ``compute_filter_shapes_per_fold_vocal_onset`` purely for
     # readability (this is its single caller).
     # Safety nets are layered here (caller side) rather than inside
     # the helper:
@@ -1034,7 +1034,7 @@ def bout_onset_model_selection(univariate_results_path: str,
     # any unexpected error now propagates so the regression is
     # impossible to miss.
     print(f"  Calculating filter shapes across {len(cv_folds)} fold(s)...")
-    final_fold_shapes = compute_filter_shapes_per_fold_bout_onset(
+    final_fold_shapes = compute_filter_shapes_per_fold_vocal_onset(
         cv_folds=cv_folds,
         current_model_features=current_model_features,
         all_feature_data=all_feature_data,
