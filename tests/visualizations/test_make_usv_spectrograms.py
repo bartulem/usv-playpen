@@ -1114,6 +1114,7 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert pooled.height == 3  # noise row (vae_supercategory == 0) dropped
     assert set(EMBEDDING_ALL_COLS).issubset(pooled.columns)
     assert "sex" in pooled.columns
+    assert "emitter" in pooled.columns  # raw animal id retained for the explorer tooltip
     assert set(pooled["sex"].to_list()) <= {"male", "female", "unassigned"}
     # The per-USV acoustic features are pulled into the pool (continuous
     # color-by metrics for the embedding explorer).

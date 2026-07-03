@@ -2369,20 +2369,47 @@ Source: `usv_general_analyses.ipynb <https://github.com/bartulem/usv-playpen/blo
 
 USV embedding explorer
 ----------------------
-**usv_embedding_explorer.py** — an interactive `marimo <https://marimo.io>`_ app (not a
-Jupyter notebook, so it is not rendered below): it pools every selected session's
-``*_usv_summary.csv`` into one scatter of the chosen embedding map (VAE UMAP or QLVM torus — a toroidal, doughnut-shaped surface; the QLVM is the in-house quasi-Monte Carlo latent variable model),
-lets you brush a region, and shows a grid of example spectrograms sampled from inside it.
-The controls (above the plot) cover **Session lists** (every ``*.txt`` list in the configured
-input-files directory, playback lists excluded; pooled and parquet-cached under
-``~/.usv_playpen_cache`` only when **Load** is clicked), **Map** (VAE UMAP / QLVM torus),
-**Color by** (a categorical label or a continuous metric rendered through the project
-colormap), **Boundaries** (optional kNN cluster outlines), and **Examples (spectrograms)
-plotted** (5–50, sampled along an Archimedean spiral and laid out as a square grid, each
-call's width preserving its true duration). The session-list directory and the consolidated
-spectrogram/SAM2 store are read from the ``shared_resources`` block of
-``visualizations_settings.json`` (``input_files_directory`` / ``spectrograms_dir``), resolved
-per-host via ``configure_path``. Launch it from the repo root in either of two modes:
+
+**usv_embedding_explorer.py** is an interactive `marimo <https://marimo.io>`_ app — not a
+Jupyter notebook, so it is not rendered below. It pools every selected session's
+``*_usv_summary.csv`` into a single scatter of the chosen embedding map, lets you brush a
+region, and renders a grid of example spectrograms sampled from inside it. Hovering a point
+reveals that USV's identity and acoustics.
+
+**Embedding maps.**
+
+* **VAE UMAP** — a 2-D UMAP of the variational-autoencoder acoustic latents.
+* **QLVM torus** — the toroidal (doughnut-shaped) surface of the in-house QLVM
+  (quasi-Monte Carlo latent variable model).
+
+**Controls** (stacked above the plot):
+
+* **Session lists** — every ``*.txt`` list in the configured input-files directory (playback
+  lists excluded). The union of the picked lists is pooled — and parquet-cached under
+  ``~/.usv_playpen_cache`` — only when **Load** is clicked.
+* **Sessions** — narrows the loaded pool to individual sessions. Empty (the default) shows
+  every session; pick one or more to isolate them.
+* **Map** — VAE UMAP or QLVM torus.
+* **Color by** — a categorical label (fine / coarse category, session type, session id, or
+  emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the
+  latter rendered through the project colormap.
+* **Boundaries** — optional k-NN cluster outlines for the chosen categorical label.
+* **Examples (spectrograms) plotted** — 5–50, sampled along an Archimedean spiral (centre →
+  edge) and laid out as a square grid, each call's width preserving its true duration.
+* **Max points** — caps how many points the scatter draws, keeping the chart under marimo's
+  ``output_max_bytes``.
+* **Apply mask** — multiplies each sampled spectrogram by its SAM2 segmentation mask, so only
+  the segmented call shows.
+
+**Hover tooltip.** Hovering a point shows its ``session id``, ``emitter`` (the animal id, or
+``unassigned``), ``mean amplitude``, ``mean frequency`` (kHz), and ``spectral entropy``.
+
+**Paths.** The session-list directory and the consolidated spectrogram / SAM2 store come from
+the ``shared_resources`` block of ``visualizations_settings.json`` (``input_files_directory`` /
+``spectrograms_dir``); the shipped ``Bartul`` paths are re-keyed to the experimenter in use and
+resolved per host by ``resolve_experimenter_path``.
+
+Launch it from the repo root in either of two modes:
 
 .. code-block:: bash
 
@@ -2390,7 +2417,12 @@ per-host via ``configure_path``. Launch it from the repo root in either of two m
     uv run marimo edit src/usv_playpen/notebooks/usv_embedding_explorer.py
 
     # clean app view (just the controls + plot, no code)
-    uv run marimo run  src/usv_playpen/notebooks/usv_embedding_explorer.py
+    uv run marimo run src/usv_playpen/notebooks/usv_embedding_explorer.py
+
+    # run as a specific experimenter (else the host config's experimenter is used) --
+    # sets both the spectrogram .h5 path and the session-list picker; fixed for the
+    # session, so restart marimo to change it
+    EXPERIMENTER_ID=Bartul uv run marimo run src/usv_playpen/notebooks/usv_embedding_explorer.py
 
 Both open in the browser at ``http://localhost:2718``. Source:
 `usv_embedding_explorer.py

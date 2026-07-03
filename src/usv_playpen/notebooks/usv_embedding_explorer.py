@@ -150,6 +150,24 @@ def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_pat
     else:
         available_lists = {}
 
+    # Per-list session ids, read straight from the *.txt files (each line is a
+    # session root; the id is its basename), keyed by the list's absolute path so the
+    # Sessions picker can prune to whichever lists get Loaded. Cheap -- a handful of
+    # small text files -- so the picker keys on the loaded-lists state, never the
+    # (expensive) pooled build.
+    list_to_sessions = {}
+    for _list_path in available_lists.values():
+        try:
+            _list_lines = Path(_list_path).read_text().splitlines()
+        except OSError:
+            continue
+        _sessions = []
+        for _line in _list_lines:
+            _session = _line.strip()
+            if _session and not _session.startswith("#"):
+                _sessions.append(Path(_session).name)
+        list_to_sessions[_list_path] = _sessions
+
     # Scatter is kept SQUARE so the two embedding dimensions share one scale.
     CHART_DATA_WIDTH_PX = 520
     CHART_HEIGHT_PX = 520
@@ -159,6 +177,7 @@ def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_pat
         available_lists,
         consolidated_h5_path,
         global_cmap,
+        list_to_sessions,
         sex_colors,
     )
 
@@ -192,7 +211,9 @@ def _widgets(available_lists, mo):
             mo.md("**Session lists**"),
             lists_select.style(
                 {
-                    "width": "340px",
+                    "width": "fit-content",
+                    "max-width": "340px",
+                    "min-width": "150px",
                     "max-height": "34px",
                     "overflow": "hidden",
                     "border": "1px solid #CFCFCF",
@@ -261,11 +282,11 @@ def _widgets(available_lists, mo):
         value=True,
         label="Apply mask",
     )
-    # One control per row (label left, input right), the fixed-width session-list
-    # picker + Load button on top.
-    controls = mo.vstack(
+    # One control per row (label left, input right). `session_row` (the list picker
+    # + Load) and the Sessions filter from `_session_filter` are stacked on top of
+    # `other_controls` by `_explorer`, which owns the final layout.
+    other_controls = mo.vstack(
         [
-            session_row,
             map_dropdown,
             color_dropdown,
             boundary_dropdown,
@@ -276,20 +297,52 @@ def _widgets(available_lists, mo):
         align="start",
         gap=0.4,
     )
-    # NOTE: controls are displayed in the dedicated `_controls_display` cell
-    # placed immediately above the plot (so they sit directly over it), not
-    # here. That cell depends only on `controls`, so it still renders before any
-    # selection -- independent of the data build below.
+    # NOTE: `session_row` / `other_controls` are pool-independent, so they render
+    # before any selection; `_explorer` assembles + displays them (with the Sessions
+    # filter between) directly above the plot.
     return (
         apply_mask_checkbox,
         boundary_dropdown,
         color_dropdown,
-        controls,
         get_loaded_lists,
         map_dropdown,
         max_points_slider,
         n_samples_slider,
+        other_controls,
+        session_row,
     )
+
+
+@app.cell
+def _session_filter(get_loaded_lists, list_to_sessions, mo):
+    # Individual-session filter, PRUNED to the sessions of whichever lists are Loaded
+    # (empty before any Load). Keyed on the cheap loaded-lists state and the
+    # pre-parsed {list -> sessions} map -- never the pooled build -- so it updates
+    # instantly on Load and only ever offers sessions that are actually in the plot.
+    # Empty selection == show all (compact box, dropdown arrow visible, native clear
+    # resets to all); pick one or more to ISOLATE them.
+    _loaded = get_loaded_lists() or []
+    _avail = sorted({_s for _lp in _loaded for _s in list_to_sessions.get(_lp, [])})
+    sessions_select = mo.ui.multiselect(options=_avail, value=[], label="")
+    sessions_row = mo.hstack(
+        [
+            mo.md("**Sessions**"),
+            sessions_select.style(
+                {
+                    "width": "fit-content",
+                    "max-width": "200px",
+                    "min-width": "110px",
+                    "max-height": "34px",
+                    "overflow": "hidden",
+                    "border": "1px solid #CFCFCF",
+                    "border-radius": "6px",
+                    "box-sizing": "border-box",
+                }
+            ),
+        ],
+        align="center", justify="start", gap=0.6,
+    )
+    return sessions_row, sessions_select
 
 
 @app.cell
@@ -417,6 +470,7 @@ def _scatter_chart(
     pd,
     plt,
     pooled_df,
+    sessions_select,
     sex_colors,
 ):
     # Inner function so the no-data case can early-return None (a marimo cell
@@ -425,6 +479,15 @@ def _scatter_chart(
     # AND builds the chart -- they share the same reactive inputs.
     def _():
         if pooled_df is None:
+            return None, None, None, None
+
+        # Restrict to the sessions ticked in the Sessions picker. Empty pick == no
+        # filter (show every loaded session), so the default and a deselect-all both
+        # show all and the plot never blanks out. Picking sessions isolates them;
+        # sessions from unloaded lists match nothing, the sole remaining empty case.
+        _picked = list(sessions_select.value)
+        pooled = pooled_df if not _picked else pooled_df.filter(pooled_df["session_id"].is_in(_picked))
+        if pooled.height == 0:
             return None, None, None, None
 
         map_prefix = "vae" if map_dropdown.value == "VAE" else "qlvm"
@@ -468,8 +531,15 @@ def _scatter_chart(
         if boundary_col is not None and boundary_col not in keep:
             keep.append(boundary_col)
 
+        # Extra columns carried only to populate the hover tooltip. Guarded so an
+        # older cache lacking them neither trips the missing-col check below nor
+        # requests a chart field that isn't there.
+        for _tt_src in ("emitter", "mean_amplitude", "mean_freq_hz", "spectral_entropy"):
+            if _tt_src in pooled.columns and _tt_src not in keep:
+                keep.append(_tt_src)
+
         # Guard against a pooled frame whose CSVs predate the current schema.
-        missing_cols = [c for c in keep if c not in pooled_df.columns]
+        missing_cols = [c for c in keep if c not in pooled.columns]
         mo.stop(
             bool(missing_cols),
             mo.md(
@@ -480,12 +550,27 @@ def _scatter_chart(
             ),
         )
 
-        display_df = pooled_df.select(keep).drop_nulls(subset=[x_col, y_col])
+        display_df = pooled.select(keep).drop_nulls(subset=[x_col, y_col])
         max_points = int(max_points_slider.value)
         if display_df.height > max_points:
             display_df = display_df.sample(n=max_points, seed=42)
 
         chart_pd = display_df.to_pandas()
+
+        # Unassigned USVs carry a null emitter (no animal id); show them as
+        # "unassigned" so the tooltip reads cleanly instead of "null".
+        if "emitter" in chart_pd.columns:
+            chart_pd["emitter"] = chart_pd["emitter"].fillna("unassigned")
+
+        # Compact per-point tooltip columns, computed from the RAW values before the
+        # continuous-color rescaling below can mutate a feature column in place;
+        # rounded to 1 dp to keep the inlined data small (frequency shown in kHz).
+        if "mean_amplitude" in chart_pd.columns:
+            chart_pd["_tt_amp"] = chart_pd["mean_amplitude"].round(1)
+        if "mean_freq_hz" in chart_pd.columns:
+            chart_pd["_tt_freq_khz"] = (chart_pd["mean_freq_hz"] / 1000.0).round(1)
+        if "spectral_entropy" in chart_pd.columns:
+            chart_pd["_tt_entropy"] = chart_pd["spectral_entropy"].round(1)
 
         # No axes -- points alone. Keep the scales (data domain) but drop
         # ticks/labels/titles/spines via axis=None. Shared scales so the scatter
@@ -535,6 +620,25 @@ def _scatter_chart(
             cat_domain = sorted(set(chart_pd[color_col].tolist()))
             cat_range = [PALETTE[i % len(PALETTE)] for i in range(len(cat_domain))]
 
+        # Drop the raw feature columns now that the tooltip's compact copies exist;
+        # keep the one that is the active color field (the color scale still needs it).
+        _tt_raw = {"mean_amplitude", "mean_freq_hz", "spectral_entropy"}
+        _drop = [c for c in _tt_raw if c in chart_pd.columns and c != color_field]
+        if _drop:
+            chart_pd = chart_pd.drop(columns=_drop)
+
+        # Per-point hover tooltip: identity (session / emitter) + the three rounded
+        # acoustic readouts; each entry appears only if its column is present.
+        tooltip = [alt.Tooltip("session_id:N", title="session id")]
+        for _tip_field, _tip_title in (
+            ("emitter:N", "emitter"),
+            ("_tt_amp:Q", "mean amplitude (a.u.)"),
+            ("_tt_freq_khz:Q", "mean frequency (kHz)"),
+            ("_tt_entropy:Q", "spectral entropy (nats)"),
+        ):
+            if _tip_field.split(":")[0] in chart_pd.columns:
+                tooltip.append(alt.Tooltip(_tip_field, title=_tip_title))
+
         # Built-in Altair legend on the LEFT (vertical), TITLE OMITTED -- the
         # "Color by" dropdown already names the field, dropping the title also
         # sidesteps Vega-Lite's inability to rotate a legend title, and a left
@@ -542,7 +646,9 @@ def _scatter_chart(
         mark_kwargs = dict(size=8, opacity=0.5)
         if color_field is None:
             mark_kwargs["color"] = "#9E9E9E"
-        scatter = alt.Chart(chart_pd).mark_circle(**mark_kwargs).encode(x=x_enc, y=y_enc)
+        scatter = alt.Chart(chart_pd).mark_circle(**mark_kwargs).encode(
+            x=x_enc, y=y_enc, tooltip=tooltip
+        )
         if color_field is not None:
             if color_kind in ("density", "continuous"):
                 color_enc = alt.Color(
@@ -677,6 +783,19 @@ def _scatter_chart(
 
 
 @app.cell
+def _tooltip_style(mo):
+    # Left-align the Vega tooltip's key column so the short labels (session id /
+    # emitter) sit flush-left with the longer acoustic labels instead of being
+    # right-indented. The tooltip is a body-level portal, so a page-wide <style>
+    # reaches it. Harmless no-op if the vega-tooltip class names ever change.
+    mo.Html(
+        "<style>.vg-tooltip td.key, .vg-tooltip .key "
+        "{ text-align: left !important; }</style>"
+    )
+    return
+
+
+@app.cell
 def _explorer(
     BytesIO,
     CHART_HEIGHT_PX,
@@ -688,14 +807,16 @@ def _explorer(
     consolidated_h5_path,
     coord_x,
     coord_y,
-    controls,
     get_loaded_lists,
     global_cmap,
     h5py,
     mo,
     n_samples_slider,
     np,
+    other_controls,
     plt,
+    session_row,
+    sessions_row,
 ):
     def _():
         # The control panel is rendered at the TOP of THIS cell's output, with
@@ -716,7 +837,7 @@ def _explorer(
                 )
             else:
                 _hint = mo.md("")
-            return mo.vstack([controls, _hint], align="start", gap=0.5)
+            return mo.vstack([session_row, sessions_row, other_controls, _hint], align="start", gap=0.5)
 
         apply_mask = bool(apply_mask_checkbox.value)
 
@@ -900,7 +1021,7 @@ def _explorer(
             justify="start", gap=1, align="start",
         )
         # Controls on top, plot directly beneath -- one cell, nothing between.
-        return mo.vstack([controls, plot_row], align="start", gap=0.5)
+        return mo.vstack([session_row, sessions_row, other_controls, plot_row], align="start", gap=0.5)
 
     _()
     return

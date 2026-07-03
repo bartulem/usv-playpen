@@ -2362,6 +2362,7 @@ def build_pooled_embeddings_df(
             vae_category, vae_supercategory (Int64)
             qlvm_dim1, qlvm_dim2 (Float64)
             qlvm_category, qlvm_supercategory (Int64)
+            emitter (Utf8)
             sex (Utf8)
             duration (Float64)
             mean_freq_hz, peak_freq_hz, freq_bandwidth_hz,
@@ -2377,7 +2378,7 @@ def build_pooled_embeddings_df(
     # disk is missing any of these (older cache), trigger a rebuild
     # transparently so the caller doesn't have to flip ``rebuild_cache``
     # every time the schema is extended.
-    required_extra_cols = {"sex", "duration"} | set(EMBEDDING_FEATURE_COLS)
+    required_extra_cols = {"emitter", "sex", "duration"} | set(EMBEDDING_FEATURE_COLS)
     required_cols = (
         {"session_id", "row_index"}
         | set(EMBEDDING_ALL_COLS)
@@ -2501,7 +2502,7 @@ def build_pooled_embeddings_df(
         keep_cols = ["session_id", "row_index"] + [
             c for c in EMBEDDING_ALL_COLS if c in df.columns
         ]
-        for c in ("sex", "duration") + EMBEDDING_FEATURE_COLS:
+        for c in ("emitter", "sex", "duration") + EMBEDDING_FEATURE_COLS:
             if c in df.columns:
                 keep_cols.append(c)
         frames.append(df.select(keep_cols))
