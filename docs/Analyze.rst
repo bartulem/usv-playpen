@@ -88,32 +88,6 @@ The *behavioral_features.csv* file should look similar to an example table below
     │ -4.699602       ┆ -28.324635      ┆ 3.668698        ┆ 4.805457       ┆ … ┆
     └─────────────────┴─────────────────┴─────────────────┴────────────────┴───┴
 
-An example of typical individual and social feature distributions is shown below:
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_behavioral_features_1.png
-   :align: center
-   :alt: Behavioral Features Example 1
-
-.. raw:: html
-
-   <br>
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_behavioral_features_2.png
-   :align: center
-   :alt: Behavioral Features Example 2
-
-.. raw:: html
-
-   <br>
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_behavioral_features_3.png
-   :align: center
-   :alt: Behavioral Features Example 3
-
-.. raw:: html
-
-   <br>
-
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section not modifiable in the GUI itself, but it can be modified manually:
 
 * **head_points** : head skeleton node names (order matters!)

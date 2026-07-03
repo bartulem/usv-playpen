@@ -66,56 +66,6 @@ Running this function results in the population of the *tuning_curves* subdirect
 
 For non-PDF formats, each page is written to a separate file with a ``_p{N}_{label}`` suffix (e.g. ``..._p1_behavioral_beh_offset=0s_individual.<mouse>.png``, ``..._p3_vocal_a_male.png``). PDF emits a single multi-page file.
 
-An example of such tuning curves for one particular unit is shown below:
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_tuning_1.png
-   :align: center
-   :alt: Example tuning 1
-
-.. raw:: html
-
-   <br>
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_tuning_2.png
-   :align: center
-   :alt: Example tuning 2
-
-.. raw:: html
-
-   <br>
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_tuning_3.png
-   :align: center
-   :alt: Example tuning 3
-
-.. raw:: html
-
-   <br>
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_tuning_4.png
-   :align: center
-   :alt: Example tuning 4
-
-.. raw:: html
-
-   <br>
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_tuning_5.png
-   :align: center
-   :alt: Example tuning 5
-
-.. raw:: html
-
-   <br>
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/example_tuning_6.png
-   :align: center
-   :alt: Example tuning 6
-
-.. raw:: html
-
-   <br>
-
 The rendering-side knobs live in the project-wide ``figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (compute-side knobs such as ``smoothing_sd`` and ``behavioral_min_occupancy_seconds`` live in *analyses_settings.json* under ``calculate_neuronal_tuning_curves`` — see the *Analyze* page):
 
 * **save_directory** : default output directory for figures that aren't written next to their source data (e.g. cross-session anatomy plots). Per-figure code may override this with an explicit ``out_dir`` argument; per-cluster ratemaps and other session-bound figures always stay next to the data.
@@ -165,56 +115,6 @@ Running this function results in the creation of the *data_animation_examples* s
     │   │   ...
     │   └── video
     │       ...
-
-An example figure of male-female courtship behavior (as visualized from the top view with a light background) is shown below:
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_light_mode_fig.png
-   :align: center
-   :alt: Visualization example 1
-
-.. raw:: html
-
-   <br>
-
-Another example male-female courtship interaction with a live spectrogram subplot, with vocalizations labeled by color of animal they were assigned to:
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_dark_mode_fig.png
-   :align: center
-   :alt: Visualization example 2
-
-.. raw:: html
-
-   <br>
-
-An example side view of a male-female courtship interaction with spectrogram, raster plot and behavioral features subplots:
-
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_dark_mode_side.png
-   :align: center
-   :alt: Visualization example 3
-
-.. raw:: html
-
-   <br>
-
-An example of an animated male-female courtship interaction with a light background, side view and history of both animals' heads:
-
-.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_video_example1.gif
-   :align: center
-   :alt: Behavior video example 1
-
-.. raw:: html
-
-   <br>
-
-An example of an animated male-female courtship interaction with a dark background, top view and spectrogram with assigned vocalizations:
-
-.. image:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/behavior_video_example2.gif
-   :align: center
-   :alt: Behavior video example 2
-
-.. raw:: html
-
-   <br>
 
 The */usv-playpen/_parameter_settings/visualizations_settings.json* file contains a section only partially modifiable in the GUI, but it can entirely be modified manually in the *visualizations_settings.json* file:
 
